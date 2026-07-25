@@ -1,0 +1,15 @@
+.DS_Store
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+.build/
+*.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+Pods/
+Carthage/Build/
+.swiftpm/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
