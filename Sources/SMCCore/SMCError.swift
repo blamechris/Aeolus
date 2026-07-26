@@ -39,6 +39,12 @@ public enum SMCError: Error, Sendable, Equatable {
     case malformedKeyCode(FourCharCode)
     /// A negative or otherwise unrepresentable key-table index was requested.
     case invalidIndex(Int)
+    /// `IOConnectCallStructMethod` returned success but wrote fewer than the 80 bytes of
+    /// `SMCKeyData_t`. The reply buffer is zero-initialised and decoded at fixed offsets,
+    /// so a short write would otherwise surface as a zeroed `result` byte — success — and
+    /// an all-zero payload: a fabricated 0 RPM or 0 °C reading rather than an error.
+    /// Never observed on `Mac16,5`; checked because the alternative failure is silent.
+    case truncatedReply(expected: Int, received: Int)
 
     /// `true` when the error is the M3+ "thermal manager is holding the fans" rejection
     /// that the `Ftst` unlock sequence exists to resolve.

@@ -240,6 +240,17 @@ public actor SMCConnection {
             throw SMCError.connectionFailed(kernReturn: kernResult)
         }
 
+        // The reply is decoded from fixed byte offsets into a zero-initialised buffer, so
+        // a short write by the kernel does not fail loudly — it decodes as zeros, and a
+        // zeroed `result` byte reads as *success*. A truncated `READ_BYTES` reply would
+        // therefore become a legitimate-looking all-zero value: 0 RPM, 0 °C. That is the
+        // fabricated data this project refuses to produce, so the reply length is checked
+        // before any field is read. `IOConnectCallStructMethod` reports what it actually
+        // wrote in `outputSize`; nothing else in this function can detect the shortfall.
+        guard outputSize == Self.structSize else {
+            throw SMCError.truncatedReply(expected: Self.structSize, received: outputSize)
+        }
+
         let resultByte = output.load(fromByteOffset: Self.offsetResult, as: UInt8.self)
         let outKey = output.load(fromByteOffset: Self.offsetKey, as: UInt32.self)
         // Meaningful on a READ_KEYINFO reply; see the note above on why it is not used
