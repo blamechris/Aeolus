@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for Aeolus.app (Full configuration only).
+
+  The Monitor configuration ships no entitlements at all: it reads sensors, draws charts,
+  and never talks to a privileged helper, so it needs nothing. That is what makes it
+  buildable by contributors with no Apple Developer account.
+-->
+<plist version="1.0">
+<dict>
+	<!-- The app is not sandboxed: it hosts and registers a launch daemon, which the
+	     App Sandbox does not permit. Aeolus is distributed via Developer ID and
+	     notarisation, not the Mac App Store. -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>

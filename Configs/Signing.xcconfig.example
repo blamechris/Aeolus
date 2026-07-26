@@ -1,0 +1,23 @@
+// Signing.xcconfig.example
+//
+// Copy to Configs/Signing.xcconfig and fill in your own values to build the `Full`
+// configuration (app + privileged helper). Configs/Signing.xcconfig is gitignored.
+//
+// You only need this for the write path. The `Monitor` configuration — all UI, sensor
+// reading, charts, and catalog work — builds with no Apple Developer account at all.
+// See CONTRIBUTING.md.
+
+// Your Apple Developer Team ID (10 characters). Found at
+// https://developer.apple.com/account under Membership Details.
+DEVELOPMENT_TEAM = XXXXXXXXXX
+
+// Must be a real "Developer ID Application" identity. Self-signed certificates and
+// "Sign to Run Locally" do NOT work: SMAppService requires the app and the embedded
+// helper daemon to share a Team ID backed by a genuine Developer ID.
+CODE_SIGN_IDENTITY = Developer ID Application
+
+CODE_SIGN_STYLE = Manual
+
+// Bundle identifier prefix. The helper's mach service name is derived from this and
+// must match what the app's XPC client connects to.
+BUNDLE_ID_PREFIX = com.example

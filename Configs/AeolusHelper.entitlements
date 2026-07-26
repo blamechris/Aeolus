@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for AeolusHelper, the root launch daemon.
+
+  Keep this file as close to empty as it can be. Every entitlement added here is granted
+  to a process running as root that owns the SMC write path; each one is a security
+  review, not a build fix.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>
