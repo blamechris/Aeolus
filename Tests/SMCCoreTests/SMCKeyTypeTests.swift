@@ -147,6 +147,16 @@ struct SMCValueTests {
         #expect(try clear.scalar() == 0.0)
     }
 
+    /// Never observed on `Mac16,5`, but a firmware that returns anything other than
+    /// 0x00/0x01 for a `flag` key is not honouring the boolean type it declared. Passing
+    /// that byte through as a scalar would fabricate a reading nobody measured, so this
+    /// must throw rather than silently surface an arbitrary number.
+    @Test("A flag byte outside {0, 1} is an error, not a silently fabricated number")
+    func flagRejectsNonBooleanByte() {
+        let value = SMCValue(key: SMCKey("AC-S")!, type: .flag, bytes: [0x42])
+        #expect(throws: SMCError.self) { try value.scalar() }
+    }
+
     /// Little-endian signed 32-bit. Real captured bytes from `Mac16,5`: `BC1I`
     /// (positive battery current) and `B0AP` (negative battery power).
     @Test("Decodes si32 as little-endian, including negative values")

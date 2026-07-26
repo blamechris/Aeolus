@@ -19,11 +19,21 @@ public struct SMCValue: Sendable, Hashable {
 extension SMCValue {
     /// Decodes the value as a scalar, or returns `nil` for non-numeric types.
     ///
-    /// Endianness is explicit per type and does not follow a single rule: the Intel
-    /// fixed-point types (`fpe2`, `fp78`, `sp78`) are big-endian by definition, while
-    /// every type observed on Apple Silicon (`flt`, `si32`, `ui64`, `si64`, `ioft`, and
-    /// the plain integer types) is little-endian. That asymmetry is real firmware
-    /// behaviour, not a mistake — see `docs/SMC-RESEARCH.md`.
+    /// Byte order is a genuine property of the type for the fixed-point formats only:
+    /// `flt` and `ioft` are little-endian by construction, and `fpe2`/`fp78`/`sp78` are
+    /// big-endian by definition — those five decode unconditionally and correctly below.
+    ///
+    /// It is **not** a property of the type for the plain integers (`ui16`, `si16`,
+    /// `ui32`, `si32`, `ui64`, `si64`). Byte order for those is firmware-declared per
+    /// key — bit `0x04` of the key's attribute byte on the modern SMC interface, per
+    /// `docs/ADR/0003-integer-byte-order.md` — and this decoder does not yet resolve it.
+    /// The `ui16`/`si16`/`ui32` cases below decode big-endian unconditionally and the
+    /// `si32`/`ui64`/`si64` cases decode little-endian unconditionally, regardless of
+    /// what the key actually declares. Measured on `Mac16,5`, the big-endian guess for
+    /// `ui16`/`ui32` alone is **known to be wrong** for the majority of the roughly 459
+    /// affected keys — see issue #30, which is the tracked fix for this function. Until
+    /// that lands, do not treat a plain-integer reading from this decoder as trustworthy
+    /// beyond the specific keys covered by a passing test.
     public func scalar() throws -> Double? {
         guard type.isNumeric else { return nil }
 
@@ -89,8 +99,15 @@ extension SMCValue {
             return Double(Int64(bitPattern: littleEndianUInt64))
 
         case .flag:
-            // A single byte, 0x00 or 0x01, observed as a boolean across all 50 flag
-            // keys on Mac16,5. No endianness applies to a single byte.
+            // A single byte, expected to be 0x00 or 0x01 — observed as exactly that
+            // across all 50 flag keys on Mac16,5. No endianness applies to a single
+            // byte. But this type is documented and tested as a boolean, so a byte
+            // outside that set means the firmware is not honouring its own declared
+            // type; passing it through as an arbitrary Double would fabricate a
+            // reading nothing observed, so it is reported as an error instead.
+            guard bytes[0] == 0x00 || bytes[0] == 0x01 else {
+                throw SMCError.invalidFlagValue(key: key, byte: bytes[0])
+            }
             return Double(bytes[0])
 
         case .ioft:

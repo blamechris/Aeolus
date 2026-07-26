@@ -15,6 +15,12 @@ public enum SMCError: Error, Sendable, Equatable {
     case firmware(code: UInt8)
     /// The firmware reported a data size that disagrees with the declared type.
     case sizeMismatch(key: SMCKey, declared: SMCKeyType, reportedBytes: Int)
+    /// A `flag` key returned a byte other than `0x00`/`0x01`. All 50 `flag` keys on
+    /// `Mac16,5` were observed as strictly boolean, and the type is documented — and
+    /// tested — as one. A firmware value outside that set means the key is not actually
+    /// behaving like its declared type; surfacing the raw byte as a `Double` would
+    /// fabricate a truth value nobody measured, so this is reported rather than guessed.
+    case invalidFlagValue(key: SMCKey, byte: UInt8)
     /// A value could not be represented in the key's declared type.
     case encodingFailed(key: SMCKey, type: SMCKeyType)
     /// No encoder exists yet for this declared type. Distinct from `encodingFailed`,
