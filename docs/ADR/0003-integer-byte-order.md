@@ -15,7 +15,7 @@ types** (`ui16`/`ui32`/`si16`/`si32`/`ui64`/`si64`).
 
 Observed on `Mac16,5`:
 
-- Ordinary integer data keys are **little-endian**. `B0AV` (`ui16`, `fd2e`) reads 12029 mV
+- Ordinary integer data keys are **little-endian**. `B0AV` (`ui16`, raw bytes `fd2e`) reads 12029 mV
   little-endian — exactly the sum of the three cell voltages `BC1V + BC2V + BC3V`
   (4009 + 4011 + 4009). Big-endian it is 64814, which is nonsense.
 - A minority (~19 non-zero keys, 114 total) are **big-endian**: `#KEY` = 3385 (matches the
@@ -155,7 +155,7 @@ generation bit exists in the model at all.
 
 **Revisit this decision when:** the `#KEY` tripwire fires on any machine; any hardware
 report shows a bit-`0x04`-set integer key that only decodes sanely big-endian (or
-vice-versa); Apple documents the attribute byte; or an Intel report contradicts the
+vice versa); Apple documents the attribute byte; or an Intel report contradicts the
 big-endian default.
 
 ## Consequences
