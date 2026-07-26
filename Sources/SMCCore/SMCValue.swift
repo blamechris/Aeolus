@@ -19,12 +19,18 @@ public struct SMCValue: Sendable, Hashable {
 extension SMCValue {
     /// Decodes the value as a scalar, or returns `nil` for non-numeric types.
     ///
-    /// Fixed-point types are big-endian; `flt` is little-endian. That asymmetry is real
-    /// firmware behaviour, not a mistake — see `docs/SMC-RESEARCH.md`.
+    /// Endianness is explicit per type and does not follow a single rule: the Intel
+    /// fixed-point types (`fpe2`, `fp78`, `sp78`) are big-endian by definition, while
+    /// every type observed on Apple Silicon (`flt`, `si32`, `ui64`, `si64`, `ioft`, and
+    /// the plain integer types) is little-endian. That asymmetry is real firmware
+    /// behaviour, not a mistake — see `docs/SMC-RESEARCH.md`.
     public func scalar() throws -> Double? {
         guard type.isNumeric else { return nil }
 
-        if let expected = type.expectedByteWidth, bytes.count < expected {
+        // A byte count that disagrees with the declared type's width — short or long —
+        // is an error. Decoding a prefix of the wrong-sized bytes would fabricate a
+        // value; the firmware's own report of how many bytes it sent wins.
+        if let expected = type.expectedByteWidth, bytes.count != expected {
             throw SMCError.sizeMismatch(key: key, declared: type, reportedBytes: bytes.count)
         }
 
@@ -70,13 +76,55 @@ extension SMCValue {
                 | UInt32(bytes[3])
             return Double(value)
 
-        case .fds, .ch8, .hex, .unknown:
+        case .si32:
+            // Little-endian signed 32-bit. Observed on Mac16,5 (battery current/power).
+            return Double(Int32(bitPattern: littleEndianUInt32))
+
+        case .ui64:
+            // Little-endian unsigned 64-bit. Observed on Mac16,5 (energy accumulators).
+            return Double(littleEndianUInt64)
+
+        case .si64:
+            // Little-endian signed 64-bit. Observed on Mac16,5.
+            return Double(Int64(bitPattern: littleEndianUInt64))
+
+        case .flag:
+            // A single byte, 0x00 or 0x01, observed as a boolean across all 50 flag
+            // keys on Mac16,5. No endianness applies to a single byte.
+            return Double(bytes[0])
+
+        case .ioft:
+            // Little-endian 48.16 fixed point. Derived by this project, not from a
+            // published source — see the doc comment on SMCKeyType.ioft and
+            // docs/SMC-RESEARCH.md §5. Read the 8 bytes as a little-endian UInt64 and
+            // divide by 65536.
+            return Double(littleEndianUInt64) / 65536.0
+
+        case .fds, .jst, .ch8, .hex, .unknown:
             return nil
         }
     }
 
     private var bigEndianUInt16: UInt16 {
         UInt16(bytes[0]) << 8 | UInt16(bytes[1])
+    }
+
+    private var littleEndianUInt32: UInt32 {
+        UInt32(bytes[0])
+            | UInt32(bytes[1]) << 8
+            | UInt32(bytes[2]) << 16
+            | UInt32(bytes[3]) << 24
+    }
+
+    private var littleEndianUInt64: UInt64 {
+        UInt64(bytes[0])
+            | UInt64(bytes[1]) << 8
+            | UInt64(bytes[2]) << 16
+            | UInt64(bytes[3]) << 24
+            | UInt64(bytes[4]) << 32
+            | UInt64(bytes[5]) << 40
+            | UInt64(bytes[6]) << 48
+            | UInt64(bytes[7]) << 56
     }
 }
 
