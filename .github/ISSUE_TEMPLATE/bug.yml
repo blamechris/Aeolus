@@ -1,0 +1,111 @@
+name: Bug report
+description: Something in Aeolus does not work the way it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **If your fans are stuck right now, fix that first.**
+        [docs/RECOVERY.md](https://github.com/blamechris/Aeolus/blob/main/docs/RECOVERY.md)
+        walks through it — `fanctl reset --all` handles almost every case, and quitting
+        Aeolus returns the fans to automatic within about 30 seconds.
+
+        Then come back and tell us what happened. A report that needed step 5 of that
+        document when it should have needed step 2 is exactly the kind of bug we want.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Set fan 0 to a curve driven by CPU die temperature
+        2. Close the lid, wait a minute, reopen
+        3. Fan speed no longer responds to the curve
+    validations:
+      required: true
+
+  - type: input
+    id: model-identifier
+    attributes:
+      label: Model identifier
+      description: "Run: `system_profiler SPHardwareDataType | grep 'Model Identifier'`"
+      placeholder: Mac16,5
+    validations:
+      required: true
+
+  - type: input
+    id: chip
+    attributes:
+      label: Chip or processor
+      placeholder: Apple M4 Max
+    validations:
+      required: true
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: "Run: `sw_vers`"
+      placeholder: 26.5.2 (25F84)
+    validations:
+      required: true
+
+  - type: input
+    id: aeolus-version
+    attributes:
+      label: Aeolus version
+      description: From the About window, or `fanctl --version`.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part is affected?
+      options:
+        - Monitoring — sensor or fan readings
+        - Fan control — setting speeds or curves
+        - Menu bar
+        - CLI (fanctl)
+        - Installation, updating, or the helper approval step
+        - Sensor names or the catalog
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: fan-state
+    attributes:
+      label: Fan and sensor state
+      description: |
+        If Aeolus still runs, `fanctl list --json` and `fanctl sensors --json` capture
+        far more than a description can. Optional, and skip it if the app will not start.
+      render: shell
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: |
+        Optional. Helper logs:
+        `log show --predicate 'subsystem == "com.blamechris.Aeolus"' --last 30m`
+      render: shell
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Did this involve a safety mechanism?
+      description: Tick anything that applies. These reports are triaged first.
+      options:
+        - label: Fans did NOT return to automatic when Aeolus quit or was killed
+        - label: A fan ran at 0 RPM, or stopped entirely
+        - label: Aeolus displayed a fan speed the hardware was clearly not honouring
+        - label: The machine overheated or throttled while Aeolus was controlling fans

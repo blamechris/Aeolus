@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Launch daemon definition for AeolusHelper.
+
+  Copied into Aeolus.app/Contents/Library/LaunchDaemons/ and registered with
+  SMAppService.daemon(plistName:). Shipping the daemon inside the app bundle means
+  deleting the app removes the daemon with it — the main reason to prefer SMAppService
+  over the legacy SMJobBless flow.
+
+  Do NOT add SMJobBless keys here (SMAuthorizedClients in particular). Mixing the legacy
+  and modern registration schemes produces registration failures whose error messages do
+  not point at the cause. Client authorisation is done in code, by checking the
+  connecting process's code-signing requirement — see docs/SECURITY-adjacent notes in
+  SECURITY.md and epic E2.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.blamechris.Aeolus.Helper</string>
+
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/AeolusHelper</string>
+
+	<key>MachServices</key>
+	<dict>
+		<key>com.blamechris.Aeolus.Helper</key>
+		<true/>
+	</dict>
+
+	<!-- launchd starts the helper on demand when a client connects to the mach
+	     service, and again at boot so a self-renewing lease survives a restart. -->
+	<key>RunAtLoad</key>
+	<true/>
+
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+
+	<key>ProcessType</key>
+	<string>Adaptive</string>
+</dict>
+</plist>

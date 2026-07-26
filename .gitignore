@@ -1,15 +1,42 @@
+# ---- Signing identity (never commit) ----
+# Contains the maintainer's Team ID / signing identity. See CONTRIBUTING.md § Building.
+Configs/Signing.xcconfig
+*.p12
+*.cer
+*.provisionprofile
+AuthKey_*.p8
+
+# ---- XcodeGen ----
+# Both of these are generated from project.yml. Edit project.yml, not them.
+Aeolus.xcodeproj/
+Configs/Aeolus-Info.plist
+*.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+
+# ---- Xcode ----
 .DS_Store
 xcuserdata/
 *.xcuserstate
+*.xcscmblueprint
 DerivedData/
 build/
-.build/
-*.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
-Pods/
-Carthage/Build/
-.swiftpm/
 *.moved-aside
 *.hmap
 *.ipa
 *.dSYM.zip
 *.dSYM
+
+# ---- Swift Package Manager ----
+.build/
+.swiftpm/
+Packages/
+
+# ---- Third-party dependency managers (not used, guarded anyway) ----
+Pods/
+Carthage/Build/
+
+# ---- Release artifacts ----
+dist/
+*.dmg
+
+# ---- Local agent state ----
+.claude/settings.local.json

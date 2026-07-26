@@ -1,0 +1,140 @@
+name: Hardware report
+description: Tell us whether Aeolus works on your Mac. Works or not, both are useful.
+title: "[Hardware] "
+labels: ["hardware-report", "needs-hardware"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This is the most useful thing you can do for this project.**
+
+        Aeolus is developed on exactly one Mac. Every other row in
+        [the compatibility matrix](https://github.com/blamechris/Aeolus/blob/main/docs/HARDWARE-MATRIX.md)
+        says `untested` because nobody has reported back yet — not because it is
+        broken.
+
+        A report saying "this does not work on my machine" is worth as much as one
+        saying it does. We would rather mark something broken and know it than claim
+        support we have not verified.
+
+        This takes about two minutes and needs no build and no developer account.
+
+  - type: input
+    id: model-identifier
+    attributes:
+      label: Model identifier
+      description: "Run: `system_profiler SPHardwareDataType | grep 'Model Identifier'`"
+      placeholder: Mac16,5
+    validations:
+      required: true
+
+  - type: input
+    id: model-name
+    attributes:
+      label: Model name
+      placeholder: MacBook Pro 16-inch, 2024
+    validations:
+      required: true
+
+  - type: input
+    id: chip
+    attributes:
+      label: Chip or processor
+      placeholder: Apple M4 Max / Intel Core i9-9880H
+    validations:
+      required: true
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: "Run: `sw_vers`"
+      placeholder: 26.5.2 (25F84)
+    validations:
+      required: true
+
+  - type: input
+    id: aeolus-version
+    attributes:
+      label: Aeolus version
+    validations:
+      required: true
+
+  - type: dropdown
+    id: monitoring
+    attributes:
+      label: Monitoring — do fan and sensor readings work?
+      description: Do the numbers look plausible and move when the machine heats up?
+      options:
+        - Yes, everything reads correctly
+        - Partly — some readings are missing or wrong
+        - No, nothing reads
+        - Did not test
+    validations:
+      required: true
+
+  - type: dropdown
+    id: control
+    attributes:
+      label: Control — can Aeolus actually set fan speed?
+      description: |
+        Set a fan to a fixed speed noticeably different from its current one and check
+        that the reported RPM follows. If your Mac is fanless, choose that option.
+      options:
+        - Yes, fan speed changes and holds
+        - Partly — it works but stops after sleep, or is unreliable
+        - No, it fails or is rejected
+        - Did not test
+        - This Mac has no fans
+    validations:
+      required: true
+
+  - type: dropdown
+    id: after-sleep
+    attributes:
+      label: Does manual control survive sleep and wake?
+      description: |
+        Set a manual speed, close the lid or sleep the machine, wake it, and check
+        whether the fan is still under Aeolus's control. This is the failure mode we
+        most expect on Apple Silicon M3 and newer.
+      options:
+        - Yes, control persists after wake
+        - No, control was lost after wake
+        - No, but Aeolus noticed and told me
+        - Did not test
+    validations:
+      required: true
+
+  - type: dropdown
+    id: restore-on-quit
+    attributes:
+      label: Do the fans return to automatic when Aeolus quits?
+      options:
+        - Yes
+        - No — this is a safety bug, please say so below
+        - Did not test
+    validations:
+      required: true
+
+  - type: textarea
+    id: fan-list
+    attributes:
+      label: Fan list
+      description: "Paste the output of `fanctl list --json`."
+      render: json
+
+  - type: textarea
+    id: sensor-list
+    attributes:
+      label: Sensor list
+      description: |
+        Paste the output of `fanctl sensors --json`. This is what fills in the sensor
+        catalog for other people with your Mac, so it is worth including even if
+        everything works.
+      render: json
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else?
+      description: Oddities, differences from what the app claimed, or anything surprising.

@@ -1,0 +1,115 @@
+included:
+  - Sources
+  - Tests
+
+excluded:
+  - .build
+  - Aeolus.xcodeproj
+
+analyzer_rules:
+  - unused_import
+
+disabled_rules:
+  # This repository uses TODO(E<n>) markers deliberately: unimplemented scaffolding points
+  # at the epic that fills it in, so a reader always knows whether something is missing by
+  # accident or by plan. The custom epic_reference_in_todo rule below enforces that shape
+  # instead of banning the marker outright.
+  - todo
+  # Fires on String(decoding:as:) over a [UInt8], which is what SMCKeyType uses to render a
+  # four-character code. Lossy decoding is the intent there: a key with non-UTF-8 bytes
+  # must still be displayable rather than vanish from the sensor list.
+  - optional_data_string_conversion
+  # swift-format owns comma placement. The two tools disagree on single-element multi-line
+  # literals — swift-format omits the trailing comma, SwiftLint's mandatory_comma requires
+  # it — and a file cannot satisfy both. One authority per concern.
+  - trailing_comma
+
+opt_in_rules:
+  - array_init
+  - closure_end_indentation
+  - closure_spacing
+  - collection_alignment
+  - contains_over_filter_count
+  - contains_over_first_not_nil
+  - empty_count
+  - empty_string
+  - explicit_init
+  - fatal_error_message
+  - first_where
+  - force_unwrapping
+  - implicitly_unwrapped_optional
+  - last_where
+  - modifier_order
+  - operator_usage_whitespace
+  - overridden_super_call
+  - prefer_self_type_over_type_of_self
+  - redundant_nil_coalescing
+  - sorted_first_last
+  - toggle_bool
+  - unavailable_function
+  - unneeded_parentheses_in_closure_argument
+  - yoda_condition
+
+line_length:
+  warning: 100
+  error: 120
+  ignores_comments: false
+  ignores_urls: true
+
+identifier_name:
+  min_length: 2
+  excluded:
+    - id
+    - to
+
+type_name:
+  min_length: 3
+
+# The SMC type registry and the value decoder are exhaustive switches over an enum. That
+# is the correct shape for them — the whole point is that every declared type is handled
+# explicitly — and counting each case as a branch measures the wrong thing.
+cyclomatic_complexity:
+  ignores_case_statements: true
+
+# Force unwrapping is an error in the helper and the SMC write path, where a crash means
+# a root daemon dies mid-write and the fans are left in an unknown state. It is a warning
+# elsewhere. Tests unwrap freely — a test crash is a test failure and nothing else.
+force_unwrapping:
+  severity: warning
+
+force_try:
+  severity: error
+
+force_cast:
+  severity: error
+
+custom_rules:
+  epic_reference_in_todo:
+    included: ".*\\/Sources\\/.*"
+    name: "TODO without an epic reference"
+    regex: "(?i)\\/\\/\\s*(TODO|FIXME)(?!\\(E\\d)"
+    message: "Write TODO(E<n>): so unimplemented scaffolding names the epic that fills it in. A TODO nobody owns is indistinguishable from a bug."
+    severity: warning
+
+  no_zero_rpm_literal:
+    included: ".*\\/Sources\\/.*"
+    name: "Zero RPM literal"
+    regex: "(rpm|RPM)\\s*[:=]\\s*0(?![\\.\\d])"
+    message: "0 RPM must not be reachable. Clamp to the firmware minimum instead — see docs/SAFETY.md."
+    severity: error
+
+  no_unchecked_sendable_in_helper:
+    included: ".*\\/Sources\\/(AeolusHelper|SMCCore)\\/.*"
+    name: "Unchecked Sendable in privileged code"
+    regex: "@unchecked\\s+Sendable"
+    message: "@unchecked Sendable in the helper or SMC layer is a claim the compiler cannot verify. In a root daemon driving cooling hardware, a data race is a hardware-safety issue. Fix the design or get it reviewed."
+    severity: error
+
+  no_silent_write_failure:
+    included: ".*\\/Sources\\/AeolusHelper\\/.*"
+    name: "Swallowed error in privileged code"
+    regex: "try\\?\\s"
+    message: "A swallowed error in the helper leaves the fans in an unknown state. Handle it, or propagate it."
+    severity: error
+
+reporter: "github-actions-logging"

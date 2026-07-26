@@ -1,0 +1,141 @@
+# XcodeGen project definition.
+#
+# Aeolus.xcodeproj is generated, never committed: agents and humans both merge YAML
+# vastly better than they merge project.pbxproj. Regenerate with:
+#
+#     xcodegen generate
+#
+# The libraries, the CLI, and the helper are defined in Package.swift and built with
+# `swift build`. This file exists for the one thing SPM cannot produce: a signed
+# Aeolus.app bundle with the privileged helper embedded inside it.
+#
+# ## Configurations
+#
+# Monitor — read-only. No helper, no entitlements, ad-hoc signable. Anyone can build and
+#           run this with no Apple Developer account. All UI, sensor, chart, and catalog
+#           work happens here, and it is what CI builds on every pull request.
+# Full    — embeds and registers the privileged helper. Requires a real Developer ID and
+#           a Team ID supplied via the gitignored Configs/Signing.xcconfig.
+#
+# See CONTRIBUTING.md.
+
+name: Aeolus
+
+options:
+  bundleIdPrefix: com.blamechris
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+  groupSortPosition: top
+  # Configs/Signing.xcconfig is gitignored and absent on every machine except the
+  # maintainer's. Without this, `xcodegen generate` fails for contributors and on CI
+  # before it ever reaches the Monitor build that does not need signing at all.
+  disabledValidations:
+    - missingConfigFiles
+
+configs:
+  Monitor Debug: debug
+  Monitor Release: release
+  Full Debug: debug
+  Full Release: release
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    # Universal so one build serves both Apple Silicon and Intel.
+    ARCHS: "$(ARCHS_STANDARD)"
+    ENABLE_HARDENED_RUNTIME: YES
+    MARKETING_VERSION: "0.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Overridden per-configuration below; the Monitor default is what a contributor
+    # with no certificate gets.
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+  configs:
+    Monitor Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG MONITOR_ONLY
+    Monitor Release:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: MONITOR_ONLY
+    Full Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+    Full Release:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
+
+# Signing.xcconfig is gitignored and absent on contributor machines and on CI. It is
+# included only by the Full configurations, so its absence cannot break a Monitor build.
+configFiles:
+  Full Debug: Configs/Signing.xcconfig
+  Full Release: Configs/Signing.xcconfig
+
+packages:
+  AeolusPackage:
+    path: .
+
+targets:
+  Aeolus:
+    type: application
+    platform: macOS
+    # Only the entry point is compiled here. The views themselves live in the AeolusUI
+    # library so `swift build` covers them, which is what lets CI type-check the whole
+    # UI without an app bundle or a signing identity.
+    sources:
+      - path: Sources/Aeolus/main.swift
+      - path: Resources/catalog
+        buildPhase: resources
+    dependencies:
+      - package: AeolusPackage
+        product: AeolusUI
+      - package: AeolusPackage
+        product: SMCCore
+      - package: AeolusPackage
+        product: FanKit
+      - package: AeolusPackage
+        product: AeolusXPC
+      # The helper is embedded in the Full configurations only. E2 wires the copy
+      # phases; until then the Monitor build is the only one that produces a runnable
+      # app, which is the correct state of affairs while the write path does not exist.
+    info:
+      path: Configs/Aeolus-Info.plist
+      properties:
+        CFBundleName: Aeolus
+        CFBundleDisplayName: Aeolus
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
+        # Menu-bar-first application. The main window is opened from the menu bar item.
+        LSUIElement: false
+        NSHumanReadableCopyright: "Licensed under the GNU General Public License v3.0 or later."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.blamechris.Aeolus
+        PRODUCT_NAME: Aeolus
+        COMBINE_HIDPI_IMAGES: YES
+      configs:
+        Full Debug:
+          CODE_SIGN_ENTITLEMENTS: Configs/Aeolus.entitlements
+        Full Release:
+          CODE_SIGN_ENTITLEMENTS: Configs/Aeolus.entitlements
+
+schemes:
+  Aeolus (Monitor):
+    build:
+      targets:
+        Aeolus: all
+    run:
+      config: Monitor Debug
+    test:
+      config: Monitor Debug
+    archive:
+      config: Monitor Release
+  Aeolus (Full):
+    build:
+      targets:
+        Aeolus: all
+    run:
+      config: Full Debug
+    archive:
+      config: Full Release

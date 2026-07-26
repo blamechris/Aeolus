@@ -1,0 +1,68 @@
+name: Feature request
+description: Suggest something Aeolus should do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before writing, please check the
+        [non-goals](https://github.com/blamechris/Aeolus/blob/main/README.md#what-it-will-not-do).
+        Some things are declined on purpose — undervolting, power limits, battery charge
+        limiting, kernel extensions, Windows and Boot Camp, defeating Apple's thermal
+        limits, and anything requiring SIP to be disabled.
+
+        Also worth a look: the [issue board](https://github.com/blamechris/Aeolus/issues)
+        already plans a fair amount. Multi-point curves, sensor groups, profile
+        automation, history and charts, and the CLI are all scheduled rather than
+        missing.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: |
+        Describe the situation you are in, not the feature you have in mind. It is
+        often possible to solve the problem better than the suggested feature would.
+      placeholder: |
+        My Mac mini runs headless in a cupboard. I want the fans to run harder in
+        summer, but I only notice it is too hot when something has already thermally
+        throttled.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like Aeolus to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you tried, or considered?
+      description: Including other tools. Knowing what already exists is useful.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of Aeolus?
+      options:
+        - Fan control and curves
+        - Monitoring and sensors
+        - Menu bar
+        - Profiles and automation
+        - History, charts, and export
+        - CLI (fanctl)
+        - Installation, updates, and uninstall
+        - Sensor catalog and naming
+        - Something else
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Which Mac are you on?
+      description: Relevant when a request depends on hardware behaviour.
+      placeholder: Mac16,5 — MacBook Pro 16-inch, M4 Max
