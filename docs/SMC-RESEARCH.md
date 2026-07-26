@@ -132,15 +132,27 @@ yields denormals and nonsense. This matches the reported table above.
 
 ### Disagreement 1 — temperatures here are `flt`, not `sp78`
 
-368 keys begin with `T`. Every one of them that carries a numeric type is `flt` (4 bytes,
-little-endian). **`sp78`, `fp78`, `fpe2`, and `{fds` appear exactly zero times on this
-machine.** Those are the Intel encodings; our registry carries all four, and none of them
-can be exercised here.
+368 keys begin with `T`, and they are **not** all one type:
+
+| Declared type | Count |
+|---|---|
+| `flt ` | 356 |
+| `ioft` | 9 |
+| `si32` | 3 |
+
+**`sp78`, `fp78`, `fpe2`, and `{fds` appear exactly zero times on this machine.** Those are
+the Intel encodings; our registry carries all four, and none of them can be exercised here.
 
 The reported table earlier in this document presents `sp78` as "the classic Intel
 temperature encoding" — accurate, but easy to misread as *the* temperature encoding. On
-this Apple Silicon machine, `sp78` is not used at all: temperature is `flt`, the same
-encoding used for fan RPM.
+this Apple Silicon machine, `sp78` is not used at all: the dominant temperature encoding is
+`flt`, the same one used for fan RPM.
+
+**Do not read that as "every `T` key is `flt`."** Twelve are not, and the nine `ioft` keys
+(`TG0B`, `TG0C`, `TG0H`, `TG0V`, `TG1B`, `TG2B`, `TR0Z`, `TR1d`, `TR2d`) are real
+temperature sensors carrying a completely different encoding — see the `ioft` finding
+below. Code that keys off the `T` prefix to infer a type will silently mishandle them. The
+prefix is a naming convention; the declared type is the only thing that decides the decode.
 
 ### Disagreement 2 — six declared types are missing from the registry
 
