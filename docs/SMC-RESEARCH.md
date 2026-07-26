@@ -268,14 +268,38 @@ monitoring path. It does need a decision in E1: either chunked reads, or these k
 surfaced with metadata but no value. Silently truncating to 32 bytes is the one option that
 is wrong, because it fabricates data.
 
-### Endianness is uniform on this machine — with a caveat about what that means
+### Byte order is **not** uniform — it is firmware-declared per key
+
+This is the most consequential finding in this document, and an earlier draft of this
+section got it wrong. Byte order is **not** a property of the declared type.
 
 `si32`, `ui64`, and `si64` all produce sane magnitudes little-endian and absurd ones
-big-endian (e.g. `BACC`: 110,928 LE versus 5.8e18 BE), consistent with `flt`. This is a
-property of *this Apple Silicon machine*, not of the SMC generally — the Intel `fpe2` and
-`sp78` types are big-endian by definition and were never observed here, because no key on
-this machine uses them. **The entire big-endian decode path ships untested by this
-project.**
+big-endian (e.g. `BACC`: 110,928 LE versus 5.8e18 BE), consistent with `flt`. But `ui16`
+and `ui32` — 459 keys between them — are **mixed**, and the split tracks bit `0x04` of the
+firmware-declared attribute byte: set → little-endian, clear → big-endian.
+
+Measured across every decidable multi-byte integer key on this machine: **87 bit-set keys
+decode sanely little-endian, 10 bit-clear keys decode sanely big-endian, and there are no
+clean counterexamples.** Two results carry the conclusion beyond a magnitude heuristic:
+
+- `B0AV` (pack voltage, `ui16`, attrs 132, bit set) reads **12029 mV** little-endian —
+  exactly `BC1V + BC2V + BC3V` = 4009 + 4011 + 4009. Big-endian it is 64814, which equals
+  nothing. A pack voltage summing to its own cells can only be right by construction.
+- `#KEY` (attrs 128, bit **clear**) decodes **big-endian** to 3385, matching the walked
+  index count exactly — see the enumeration section above, which bootstraps on precisely
+  this decode.
+
+Other observed big-endian keys: `B0RM` = 6238 mAh (attrs 144), `F0Fc` = 7 (128),
+`RBID` = 6 (128), `RCRV` = 17 (128). Little-endian reads of these give 24088, 1792,
+100663296 and 285212672 respectively.
+
+**The big-endian decode path is therefore exercised on this machine, not untested** — the
+entire key enumeration depends on it. What remains untested here is the Intel *type* set
+(`fpe2`, `fp78`, `sp78`, `{fds`), which no key on `Mac16,5` declares.
+
+The decision this drove is recorded in [ADR 0003](ADR/0003-integer-byte-order.md); the
+resulting fix to `SMCValue.scalar()` is tracked as issue #30. The attribute-bit half of
+the rule is a single-machine observation and stays that way until a second machine reports.
 
 ### The `IOHIDEventSystemClient` question — answered: the SMC alone is sufficient
 
@@ -308,11 +332,18 @@ Intel or M1/M2 hardware, or to any other machine.
 
 ### Untestable on this hardware
 
-`fpe2`, `fp78`, `sp78`, `{fds`, and the entire big-endian decode path were not exercised by
-any observation in this document, because no key on `Mac16,5` uses them. Codec tests for
-those paths have to be written against synthetic byte patterns derived from documented
-behaviour, not from a measurement, and [HARDWARE-MATRIX.md](HARDWARE-MATRIX.md) keeps
-marking Intel and M1/M2 support `untested` until someone reports from that hardware.
+`fpe2`, `fp78`, `sp78`, and `{fds` were not exercised by any observation in this document,
+because no key on `Mac16,5` declares them. Codec tests for those types have to be written
+against synthetic byte patterns derived from documented behaviour, not from a measurement,
+and [HARDWARE-MATRIX.md](HARDWARE-MATRIX.md) keeps marking Intel and M1/M2 support
+`untested` until someone reports from that hardware.
+
+Note that the **big-endian decode path itself is not** in that category — it is exercised
+here by `#KEY` and roughly a hundred other keys, as recorded above. What is untested is
+the Intel type set, not big-endian decoding as such. Conflating the two is what an earlier
+draft of this document did, and it would have led an implementer to make `ui16`/`ui32`
+unconditionally little-endian — which decodes `#KEY` as 957,153,280 instead of 3385 and
+breaks key enumeration outright.
 
 ---
 
