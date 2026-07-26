@@ -22,6 +22,20 @@ public struct SMCKey: Sendable, Hashable, CustomStringConvertible {
     public var fourCharCode: FourCharCode {
         rawValue.utf8.reduce(FourCharCode(0)) { ($0 << 8) | FourCharCode($1) }
     }
+
+    /// Builds a key from the four-character code IOKit hands back, e.g. from
+    /// `READ_INDEX` during enumeration. Returns `nil` if the code does not decode to
+    /// four ASCII characters — index-table entries are firmware data, not something
+    /// this project controls, so this is not force-unwrapped anywhere it is used.
+    public init?(fourCharCode code: FourCharCode) {
+        let bytes = [
+            UInt8((code >> 24) & 0xFF),
+            UInt8((code >> 16) & 0xFF),
+            UInt8((code >> 8) & 0xFF),
+            UInt8(code & 0xFF),
+        ]
+        self.init(String(decoding: bytes, as: UTF8.self))
+    }
 }
 
 extension SMCKey {
