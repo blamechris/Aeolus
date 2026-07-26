@@ -113,13 +113,10 @@ public actor SMCConnection {
     /// observed on Apple Silicon is little-endian. No special-casing is required here;
     /// it falls out of reading the key like any other.
     public func keyCount() throws -> Int {
-        guard let key = SMCKey("#KEY") else {
-            preconditionFailure("'#KEY' is a valid four-character SMC key")
-        }
-        let value = try read(key)
+        let value = try read(SMCKey.keyCount)
         guard let scalar = try value.scalar() else {
             throw SMCError.sizeMismatch(
-                key: key, declared: value.type, reportedBytes: value.bytes.count)
+                key: SMCKey.keyCount, declared: value.type, reportedBytes: value.bytes.count)
         }
         return Int(scalar)
     }

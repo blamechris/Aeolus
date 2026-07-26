@@ -15,8 +15,9 @@ struct SMCKeyTests {
         #expect(rebuilt == key)
     }
 
-    /// `#KEY` itself, since `SMCConnection.keyCount()` depends on building it from a
-    /// literal at runtime rather than force-unwrapping a stored constant.
+    /// `#KEY` itself: `SMCConnection.keyCount()` reads through this stored constant
+    /// rather than re-parsing a literal, so this constant is the single source of truth
+    /// its round trip must hold for.
     @Test("The key-count key round-trips")
     func keyCountKeyRoundTrips() {
         #expect(SMCKey.keyCount.rawValue == "#KEY")
