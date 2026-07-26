@@ -41,8 +41,10 @@ struct SMCSensorProviderKindTests {
     }
 }
 
-/// End-to-end behaviour requires the real SMC and is skipped, not failed, where it is
-/// absent.
+/// End-to-end behaviour that holds for any machine exposing the real SMC, and is skipped,
+/// not failed, where it is absent. Nothing here assumes a fan exists — see
+/// `SMCSensorProviderMac165Tests` below for the one assertion that does, and why it is
+/// gated more tightly than "the SMC is present."
 @Suite("SMC sensor provider, real hardware", .enabled(if: SMCConnection.isHardwareAvailable()))
 struct SMCSensorProviderHardwareTests {
 
@@ -63,8 +65,19 @@ struct SMCSensorProviderHardwareTests {
             #expect(reading.providerIdentifier == "smc")
         }
     }
+}
 
-    @Test("A fan actual RPM reading is present, classified as rpm, and never zero")
+/// A fact specific to this project's sole verified machine, `Mac16,5`: that fan 0 exists
+/// at all. `SMCConnection.isHardwareAvailable()` alone is true of every Mac, including
+/// fanless MacBook Airs that expose no `F0Ac` — so this gates additionally on
+/// `isDevelopmentMachine()`, the same split applied in `SMCConnectionTests.swift`.
+@Suite(
+    "SMC sensor provider, Mac16,5-specific facts",
+    .enabled(if: SMCConnection.isHardwareAvailable() && isDevelopmentMachine())
+)
+struct SMCSensorProviderMac165Tests {
+
+    @Test("A fan actual RPM reading is present and classified as rpm")
     func fanReadingIsPresentAndClassified() async throws {
         let provider = SMCSensorProvider()
         let readings = try await provider.readAll()
@@ -75,10 +88,13 @@ struct SMCSensorProviderHardwareTests {
             return
         }
         #expect(fanReading.kind == .rpm)
-        // Hard rule: never allow 0 RPM to be representable. This is an *observation*,
-        // not a target, so it is not clamped — but a real fan spinning at all should
-        // never report exactly zero.
-        #expect(fanReading.value > 0)
+        // docs/RECOVERY.md: 0 RPM is normal on many Macs when cool or idle, and F0Ac has
+        // been observed reading *below* the declared F0Mn floor on Mac16,5 (see
+        // SMCConnectionTests.swift). Clamping governs targets, never observations, so the
+        // only thing worth asserting about an observed reading is that it is a
+        // non-negative, finite RPM — never that it sits above some floor.
+        #expect(fanReading.value >= 0)
+        #expect(fanReading.value.isFinite)
     }
 }
 

@@ -93,10 +93,13 @@ struct SMCConnectionUnopenedTests {
     }
 }
 
-/// Everything below requires the real `AppleSMC` IOService and is skipped — not failed —
-/// where it is absent, which is every GitHub Actions macOS runner. See
-/// `docs/SMC-RESEARCH.md` for the full enumeration this was verified against on
-/// `Mac16,5`.
+/// Facts true of *any* machine exposing the `AppleSMC` IOService: enumeration completes,
+/// `#KEY`'s own value is what the walk uses as its bound, and a failed key read never
+/// aborts the walk. Gated only on `SMCConnection.isHardwareAvailable()` — cheap,
+/// synchronous, false on every GitHub Actions macOS runner (no SMC at all), true on every
+/// real Mac including CI's absence. Nothing here assumes a fan exists, a specific key
+/// exists, or a specific count — see `SMCConnectionMac165Tests` below for assertions that
+/// are actually facts about this project's one verified machine.
 @Suite("SMC connection, real hardware", .enabled(if: SMCConnection.isHardwareAvailable()))
 struct SMCConnectionHardwareTests {
 
@@ -123,8 +126,9 @@ struct SMCConnectionHardwareTests {
         let count = try await connection.keyCount()
         // Observed 3385 on Mac16,5 / macOS 26.5.2; assert a broad sanity range rather
         // than the exact figure so this does not go red on a firmware update that adds
-        // or removes a handful of keys. See docs/SMC-RESEARCH.md for the exact number
-        // observed and cross-checked against a full manual enumeration.
+        // or removes a handful of keys, and so it holds on any other Mac's key table
+        // too. See docs/SMC-RESEARCH.md for the exact number observed on Mac16,5 and
+        // cross-checked against a full manual enumeration.
         #expect(count > 1000)
         #expect(count < 10000)
     }
@@ -142,10 +146,59 @@ struct SMCConnectionHardwareTests {
             seen.insert(key)
         }
         // Duplicates are possible in principle; the meaningful assertion is that the
-        // whole table walked without throwing and produced a large, plausible set.
+        // whole table walked without throwing and produced a large, plausible set that
+        // includes the very key (#KEY) that told it how far to walk.
         #expect(seen.count > 1000)
         #expect(seen.contains(SMCKey.keyCount))
     }
+
+    @Test("Enumerating every key completes despite all three failure modes")
+    func fullEnumerationSurvivesFailures() async throws {
+        let connection = SMCConnection()
+        try await connection.open()
+        defer { Task { await connection.close() } }
+
+        let count = try await connection.keyCount()
+        var readable = 0
+        var failed = 0
+
+        for index in 0..<count {
+            guard let key = try? await connection.key(at: index) else {
+                failed += 1
+                continue
+            }
+            if (try? await connection.read(key)) != nil {
+                readable += 1
+            } else {
+                failed += 1
+            }
+        }
+
+        #expect(readable + failed == count)
+        #expect(readable > 0)
+        // Observed on Mac16,5: 3 keyinfo failures + 52 declared-unreadable + 52
+        // readable-but-erroring + 30 oversized = 137 of 3385 do not yield a value.
+        // Assert the shape (some, but a small minority, fail) rather than the exact
+        // count, which is a hardware fact recorded in docs/SMC-RESEARCH.md instead —
+        // and which should hold on any Mac's key table, not just this one.
+        #expect(failed < count / 10)
+    }
+}
+
+/// Facts specific to this project's sole verified machine, `Mac16,5` (see
+/// `docs/SMC-RESEARCH.md`): that fan 0 exists at all, and the exact keys behind its three
+/// observed read-failure modes and its one observed oversized key.
+///
+/// `SMCConnection.isHardwareAvailable()` alone is true of every Mac — a fanless MacBook
+/// Air has an `AppleSMC` IOService and no `F0Ac`/`F0Mn`/`F0Mx` at all — so gating these on
+/// it alone would skip correctly on CI but genuinely fail on other real hardware. Gating
+/// additionally on `isDevelopmentMachine()` means a contributor running this suite
+/// elsewhere gets a skip, never a failure.
+@Suite(
+    "SMC connection, Mac16,5-specific facts",
+    .enabled(if: SMCConnection.isHardwareAvailable() && isDevelopmentMachine())
+)
+struct SMCConnectionMac165Tests {
 
     @Test("Fan bounds are present, non-zero, and ordered")
     func fanBoundsArePresentAndOrdered() async throws {
@@ -160,7 +213,9 @@ struct SMCConnectionHardwareTests {
             return
         }
 
-        // Hard rule: never allow 0 RPM to be representable or reachable.
+        // Hard rule: never allow 0 RPM to be representable or reachable. This is a
+        // firmware-declared bound, not an observation — see actualBelowMinimumDoesNotThrow
+        // below for why an *observed* reading is held to no such floor.
         #expect(minRPM > 0)
         #expect(maxRPM > minRPM)
     }
@@ -235,46 +290,19 @@ struct SMCConnectionHardwareTests {
         try await connection.open()
         defer { Task { await connection.close() } }
 
-        // ATP0 was observed at 96 bytes on Mac16,5. Metadata must still be readable.
-        guard let key = SMCKey("ATP0") else { return }
-        let info = try await connection.keyInfo(for: key)
+        // ATP0 was observed at 96 bytes on Mac16,5. Metadata must still be readable. As
+        // with the failure-mode keys above, `keyInfo(for:)` is wrapped in `try?` so a
+        // firmware update that removes or resizes this key degrades to a no-op rather
+        // than an uncaught throw.
+        guard let key = SMCKey("ATP0"), let info = try? await connection.keyInfo(for: key) else {
+            return
+        }
         guard info.dataSize > 32 else { return }
 
         let expected = SMCError.valueTooLargeForSingleRead(key: key, dataSize: info.dataSize)
         await #expect(throws: expected) {
             _ = try await connection.read(key)
         }
-    }
-
-    @Test("Enumerating every key completes despite all three failure modes")
-    func fullEnumerationSurvivesFailures() async throws {
-        let connection = SMCConnection()
-        try await connection.open()
-        defer { Task { await connection.close() } }
-
-        let count = try await connection.keyCount()
-        var readable = 0
-        var failed = 0
-
-        for index in 0..<count {
-            guard let key = try? await connection.key(at: index) else {
-                failed += 1
-                continue
-            }
-            if (try? await connection.read(key)) != nil {
-                readable += 1
-            } else {
-                failed += 1
-            }
-        }
-
-        #expect(readable + failed == count)
-        #expect(readable > 0)
-        // Observed on Mac16,5: 3 keyinfo failures + 52 declared-unreadable + 52
-        // readable-but-erroring + 30 oversized = 137 of 3385 do not yield a value.
-        // Assert the shape (some, but a small minority, fail) rather than the exact
-        // count, which is a hardware fact recorded in docs/SMC-RESEARCH.md instead.
-        #expect(failed < count / 10)
     }
 }
 
