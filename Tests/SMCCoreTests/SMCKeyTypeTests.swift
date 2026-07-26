@@ -2,6 +2,11 @@ import Testing
 
 @testable import SMCCore
 
+// Force unwrapping is fine in tests: a malformed key literal here is a typo, and a
+// crashing test is simply a failing test. In Sources it is a warning, and inside the
+// helper it is an error — see .swiftlint.yml.
+// swiftlint:disable force_unwrapping
+
 @Suite("SMC key type registry")
 struct SMCKeyTypeTests {
 
@@ -75,3 +80,5 @@ struct SMCValueTests {
         #expect(throws: SMCError.self) { try value.scalar() }
     }
 }
+
+// swiftlint:enable force_unwrapping

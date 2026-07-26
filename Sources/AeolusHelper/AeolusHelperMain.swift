@@ -25,18 +25,19 @@ import SMCCore
 @main
 enum AeolusHelperMain {
     static func main() {
-        FileHandle.standardError.write(Data(
-            """
-            AeolusHelper is not implemented yet.
+        FileHandle.standardError.write(
+            Data(
+                """
+                AeolusHelper is not implemented yet.
 
-            This binary is a scaffold. Registering it as a launch daemon would give a \
-            do-nothing process root privileges, so it refuses to run instead.
+                This binary is a scaffold. Registering it as a launch daemon would give a \
+                do-nothing process root privileges, so it refuses to run instead.
 
-            Protocol version: \(AeolusXPCVersion.current)
-            Mach service:     \(AeolusXPCService.machServiceName)
+                Protocol version: \(AeolusXPCVersion.current)
+                Mach service:     \(AeolusXPCService.machServiceName)
 
-            """.utf8
-        ))
+                """.utf8
+            ))
         exit(EXIT_FAILURE)
     }
 }

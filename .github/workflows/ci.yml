@@ -1,0 +1,106 @@
+name: CI
+
+# What CI can and cannot do here is worth stating plainly, because it is unusual.
+#
+# GitHub's macOS runners are virtual machines. They have no SMC. They cannot spin a fan,
+# read a temperature, or verify that a single write to firmware did what it claimed.
+# Everything below builds, lints, and tests the parts of Aeolus that are hardware-
+# independent — which is most of the code, but explicitly not the part that matters most.
+#
+# Hardware verification is manual and always will be. See docs/HARDWARE-MATRIX.md.
+#
+# CI builds the Monitor configuration only. Full requires a Developer ID certificate that
+# exists on exactly one machine, so it is built on maintainer tags, never on a pull
+# request — including pull requests from forks, which must never have access to signing
+# material.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      # Libraries, CLI, helper, and every test. No Xcode project, no signing.
+      - name: Build
+        run: swift build --build-tests
+
+      - name: Test
+        run: swift test --skip-build
+
+  monitor-app:
+    name: Monitor app build
+    runs-on: macos-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # Configs/Signing.xcconfig is absent here, as it is on every contributor's machine.
+      # If this step fails, the repository has grown a dependency on the maintainer's
+      # signing identity — which would lock out every outside contributor.
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build Monitor configuration
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Aeolus.xcodeproj \
+            -scheme "Aeolus (Monitor)" \
+            -configuration "Monitor Debug" \
+            -destination "platform=macOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+  lint:
+    name: Lint and format
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: swift-format
+        run: swift format lint --recursive --strict Sources Tests
+
+      - name: Install SwiftLint
+        run: brew install swiftlint
+
+      # Deliberately not --strict. .swiftlint.yml assigns severities on purpose: force
+      # unwrapping is an error inside the helper and the SMC write path and a warning
+      # elsewhere. --strict flattens that distinction and would fail the build on the
+      # safe cases while saying nothing extra about the dangerous ones.
+      - name: SwiftLint
+        run: swiftlint lint

@@ -1,0 +1,102 @@
+name: Sensor name
+description: Tell us what a sensor key means on your Mac, so it stops being a four-character code.
+title: "[Sensor] "
+labels: ["area:catalog", "good-first-issue", "no-signing-required"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `Tp09` means nothing to anyone. On some Macs it is the efficiency-core cluster;
+        on others it is something else; on most, nobody knows. The mapping differs by
+        chip family and by model, and there is no authoritative source for it — only
+        what people observe on the machines they own.
+
+        **This needs no build, no Xcode, and no developer account.** It is the
+        lowest-friction way to contribute, and it is what turns a wall of four-character
+        codes into something a person can read.
+
+        You can also open a pull request against `Resources/catalog/catalog.json`
+        directly if you prefer.
+
+  - type: input
+    id: model-identifier
+    attributes:
+      label: Model identifier
+      description: "Run: `system_profiler SPHardwareDataType | grep 'Model Identifier'`"
+      placeholder: Mac16,5
+    validations:
+      required: true
+
+  - type: input
+    id: chip
+    attributes:
+      label: Chip family
+      placeholder: M4 Max
+    validations:
+      required: true
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      placeholder: 26.5.2
+    validations:
+      required: true
+
+  - type: textarea
+    id: mappings
+    attributes:
+      label: Sensor mappings
+      description: |
+        One per line, as `KEY = Label (category)`. Categories: cpu, gpu, memory,
+        storage, battery, power, ambient, display, fan, other.
+      placeholder: |
+        Tp09 = CPU Efficiency Core Cluster (cpu)
+        Tg0f = GPU Die (gpu)
+        Ts1P = SSD Controller (storage)
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: confidence
+    attributes:
+      label: How confident are you?
+      description: |
+        **Please answer this honestly — a guess marked as a guess is genuinely useful,
+        and nobody will think less of you for it.** A guess marked "verified" is how
+        someone ends up building a fan curve on the wrong sensor.
+      options:
+        - Verified — I loaded that component and watched that sensor respond
+        - Community — this is the consensus, or it matches other sources
+        - Guess — it looks right based on the name or position
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: How did you check?
+      description: |
+        Required for "verified". What did you run, and what did you see the sensor do?
+      placeholder: |
+        Ran a sustained all-core compile. Tp09 climbed from 38 °C to 71 °C and tracked
+        the efficiency cores in powermetrics within about a degree, while Tp01 stayed
+        below 45 °C.
+
+  - type: textarea
+    id: sensor-dump
+    attributes:
+      label: Full sensor dump
+      description: |
+        Optional but very helpful: `fanctl sensors --json --raw-keys`. It captures keys
+        you have not named yet, which is useful to whoever looks at this Mac next.
+      render: json
+
+  - type: textarea
+    id: sources
+    attributes:
+      label: Sources
+      description: |
+        If this came from somewhere public, link it. Please do not take mappings from
+        decompiled commercial software — see our clean-room rules in CONTRIBUTING.md.

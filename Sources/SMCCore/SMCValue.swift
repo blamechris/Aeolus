@@ -31,7 +31,8 @@ extension SMCValue {
         switch type {
         case .flt:
             // Little-endian IEEE-754 single precision.
-            let bits = UInt32(bytes[0])
+            let bits =
+                UInt32(bytes[0])
                 | UInt32(bytes[1]) << 8
                 | UInt32(bytes[2]) << 16
                 | UInt32(bytes[3]) << 24
@@ -62,7 +63,8 @@ extension SMCValue {
             return Double(Int16(bitPattern: bigEndianUInt16))
 
         case .ui32:
-            let value = UInt32(bytes[0]) << 24
+            let value =
+                UInt32(bytes[0]) << 24
                 | UInt32(bytes[1]) << 16
                 | UInt32(bytes[2]) << 8
                 | UInt32(bytes[3])
@@ -88,6 +90,6 @@ extension SMCKeyType {
     ///   round-trip tests against `SMCValue.scalar()`. Left unimplemented rather than
     ///   guessed: a wrong encoding here writes a wrong RPM to real hardware.
     package func encode(scalar: Double) throws -> [UInt8] {
-        throw SMCError.encodingFailed(key: SMCKey("????")!, type: self)
+        throw SMCError.encodingNotImplemented(type: self)
     }
 }

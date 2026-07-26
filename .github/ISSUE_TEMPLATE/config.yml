@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: My fans are stuck
+    url: https://github.com/blamechris/Aeolus/blob/main/docs/RECOVERY.md
+    about: Start here. `fanctl reset --all` resolves almost every case, and quitting Aeolus restores automatic control within about 30 seconds.
+  - name: Security vulnerability
+    url: https://github.com/blamechris/Aeolus/security/advisories/new
+    about: Aeolus ships a root daemon. Please report privately, not as a public issue.
+  - name: Building without an Apple Developer account
+    url: https://github.com/blamechris/Aeolus/blob/main/CONTRIBUTING.md
+    about: The Monitor configuration builds with no certificate and covers everything except the write path.

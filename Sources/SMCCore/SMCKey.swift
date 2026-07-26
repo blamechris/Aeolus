@@ -25,8 +25,18 @@ public struct SMCKey: Sendable, Hashable, CustomStringConvertible {
 }
 
 extension SMCKey {
+    /// Builds a key from a string literal known at authoring time to be four ASCII
+    /// characters. Traps on a malformed literal, which can only be a typo in this file
+    /// and is caught by the test suite rather than by a user.
+    private static func known(_ raw: String) -> SMCKey {
+        guard let key = SMCKey(raw) else {
+            preconditionFailure("'\(raw)' is not a valid four-character SMC key")
+        }
+        return key
+    }
+
     /// Number of keys the SMC exposes. The root of all key enumeration.
-    public static let keyCount = SMCKey("#KEY")!
+    public static let keyCount = known("#KEY")
 
     /// Per-fan keys. `index` is zero-based; `F0Ac` is fan 0's actual RPM.
     public static func fanActualRPM(_ index: Int) -> SMCKey? { SMCKey("F\(index)Ac") }
@@ -37,13 +47,13 @@ extension SMCKey {
     public static func fanMode(_ index: Int) -> SMCKey? { SMCKey("F\(index)Md") }
 
     /// Total fan count.
-    public static let fanCount = SMCKey("FNum")!
+    public static let fanCount = known("FNum")
 
     /// Intel force-manual bitmask: bit *n* forces fan *n*.
-    public static let fanForceBitmask = SMCKey("FS! ")!
+    public static let fanForceBitmask = known("FS! ")
 
     /// Diagnostic / force key. On Apple Silicon M3 and newer, writing `1` here is what
     /// persuades the thermal manager to yield the fans; firmware resets it across sleep,
     /// which is why the helper must re-run the unlock sequence on wake. See E4.
-    public static let forceTest = SMCKey("Ftst")!
+    public static let forceTest = known("Ftst")
 }

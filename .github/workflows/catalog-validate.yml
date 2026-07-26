@@ -1,0 +1,82 @@
+name: Validate sensor catalog
+
+# The sensor catalog is the project's lowest-friction contribution path: a JSON edit, no
+# certificate, no Xcode, no Swift. That only stays true if the feedback on a malformed
+# entry is immediate and specific rather than a maintainer noticing later.
+#
+# Runs on catalog changes only, so a two-line JSON contribution does not wait on a full
+# macOS build.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Resources/catalog/**"
+      - ".github/workflows/catalog-validate.yml"
+  pull_request:
+    paths:
+      - "Resources/catalog/**"
+      - ".github/workflows/catalog-validate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Schema and consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install validator
+        run: pip install --quiet "jsonschema>=4.21"
+
+      - name: Validate against schema
+        run: |
+          python - <<'PY'
+          import json, sys
+          from jsonschema import Draft202012Validator
+
+          schema = json.load(open("Resources/catalog/catalog.schema.json"))
+          catalog = json.load(open("Resources/catalog/catalog.json"))
+
+          errors = sorted(
+              Draft202012Validator(schema).iter_errors(catalog),
+              key=lambda e: list(e.path),
+          )
+          for error in errors:
+              location = "/".join(str(p) for p in error.path) or "(root)"
+              print(f"::error::{location}: {error.message}")
+
+          sys.exit(1 if errors else 0)
+          PY
+
+      # Checks the schema cannot express: an entry claiming 'verified' without saying
+      # where the verification came from. A verified label with no provenance is exactly
+      # the thing that leads someone to build a fan curve on the wrong sensor.
+      - name: Check verified entries cite a source
+        run: |
+          python - <<'PY'
+          import json, sys
+
+          catalog = json.load(open("Resources/catalog/catalog.json"))
+          failed = False
+
+          for index, entry in enumerate(catalog["entries"]):
+              if entry.get("confidence") == "verified" and not entry.get("source"):
+                  print(
+                      f"::error::entries/{index} ({entry.get('key')}): "
+                      "confidence is 'verified' but no source is cited. "
+                      "Link the issue or PR that confirmed it, or lower the confidence."
+                  )
+                  failed = True
+
+          sys.exit(1 if failed else 0)
+          PY

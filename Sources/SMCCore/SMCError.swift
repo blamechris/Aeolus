@@ -17,6 +17,10 @@ public enum SMCError: Error, Sendable, Equatable {
     case sizeMismatch(key: SMCKey, declared: SMCKeyType, reportedBytes: Int)
     /// A value could not be represented in the key's declared type.
     case encodingFailed(key: SMCKey, type: SMCKeyType)
+    /// No encoder exists yet for this declared type. Distinct from `encodingFailed`,
+    /// which means the value did not fit: this means the code is not written. Refusing
+    /// is the only safe answer — a guessed encoding writes a wrong RPM to real hardware.
+    case encodingNotImplemented(type: SMCKeyType)
     /// The caller lacks the privileges required for the operation. Writes need root.
     case notPermitted
 

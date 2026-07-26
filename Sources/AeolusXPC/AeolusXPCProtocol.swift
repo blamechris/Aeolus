@@ -25,8 +25,9 @@ import Foundation
 
     /// Requests manual control of one or more fans.
     ///
-    /// - Parameter request: JSON-encoded `LeaseRequest`.
-    /// - Returns: JSON-encoded `Lease` on success.
+    /// - Parameters:
+    ///   - request: JSON-encoded `LeaseRequest`.
+    ///   - reply: Receives a JSON-encoded `Lease` on success, or the refusal.
     func acquireLease(request: Data, reply: @escaping (Data?, Error?) -> Void)
 
     /// Renews an existing lease. Clients must call this on their heartbeat interval or
@@ -38,7 +39,11 @@ import Foundation
 
     /// Applies fan settings under an active lease.
     ///
-    /// - Parameter settings: JSON-encoded `[FanSetting]`.
+    /// - Parameters:
+    ///   - settings: JSON-encoded `[FanSetting]`.
+    ///   - leaseID: The lease authorising the change. An expired or unknown lease is a
+    ///     refusal, never a silently accepted no-op.
+    ///   - reply: Receives the failure, or `nil` on success.
     func apply(settings: Data, leaseID: String, reply: @escaping (Error?) -> Void)
 
     /// The panic path. Restores every fan to automatic, clears the Apple Silicon force
