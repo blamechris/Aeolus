@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(swift build:*)",
+      "Bash(swift test:*)",
+      "Bash(swift format lint:*)",
+      "Bash(swift --version)",
+      "Bash(swiftlint lint:*)",
+      "Bash(xcodegen generate:*)",
+      "Bash(xcodebuild -list:*)",
+      "Bash(xcodebuild -version)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh label list:*)",
+      "Bash(system_profiler SPHardwareDataType:*)",
+      "Bash(sw_vers:*)",
+      "Bash(uname:*)"
+    ],
+    "deny": [
+      "Read(./Configs/Signing.xcconfig)",
+      "Read(./**/*.p12)",
+      "Read(./**/AuthKey_*.p8)",
+      "Bash(security find-identity:*)",
+      "Bash(security unlock-keychain:*)",
+      "Bash(sudo launchctl:*)",
+      "Bash(launchctl bootstrap:*)",
+      "Bash(launchctl bootout:*)"
+    ]
+  }
+}
