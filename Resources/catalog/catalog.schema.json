@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/blamechris/Aeolus/blob/main/Resources/catalog/catalog.schema.json",
+  "title": "Aeolus sensor catalog",
+  "description": "Maps raw SMC keys to human-readable labels, scoped by chip family and Mac model. The catalog only decorates: sensor discovery is dynamic, and a machine with no catalog entries at all still shows every sensor it has, unlabelled and fully usable. Validated in CI on every pull request.",
+  "type": "object",
+  "required": ["schemaVersion", "entries"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": ["key", "label", "category", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "description": "The raw four-character SMC key, e.g. Tp09.",
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 4
+        },
+        "match": {
+          "description": "Restricts this entry to specific hardware. An entry with no match applies everywhere, which should be rare — most keys mean different things on different chips.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "chipFamily": {
+              "type": "array",
+              "items": { "type": "string" },
+              "examples": [["M1", "M1 Pro", "M1 Max"]]
+            },
+            "modelIdentifier": {
+              "type": "array",
+              "items": { "type": "string" },
+              "examples": [["Mac16,5", "MacBookPro18,3"]]
+            }
+          }
+        },
+        "label": {
+          "description": "The human-readable name. Always displayed alongside the raw key, never instead of it.",
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "type": "string",
+          "enum": ["cpu", "gpu", "memory", "storage", "battery", "power", "ambient", "display", "fan", "other"]
+        },
+        "confidence": {
+          "description": "How much this label should be trusted. Shown in the UI. 'verified' means someone confirmed the mapping against observed behaviour on that hardware; 'guess' is displayed as a guess so a wrong label cannot quietly mislead someone into a bad fan curve.",
+          "type": "string",
+          "enum": ["verified", "community", "guess"]
+        },
+        "source": {
+          "description": "Where the mapping came from — an issue number, a pull request, or a citation. Required in practice for 'verified'.",
+          "type": "string"
+        }
+      }
+    }
+  }
+}
