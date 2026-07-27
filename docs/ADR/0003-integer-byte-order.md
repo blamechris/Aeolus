@@ -1,6 +1,6 @@
 # ADR 0003 — Integer byte order is resolved from firmware-declared metadata, not from the declared type alone
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-25
 - **Deciders:** Project maintainer
 - **Supersedes:** — (amends the "key on the declared type" principle in ARCHITECTURE.md)

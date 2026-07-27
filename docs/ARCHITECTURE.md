@@ -101,6 +101,35 @@ also exposes keys of several types at once, so architecture is the wrong axis re
 `SMCKeyType` is that registry. An unrecognised type is preserved as `.unknown(FourCharCode)`
 rather than discarded, so a Mac nobody has seen still shows every sensor it has.
 
+#### Amendment (ADR 0003): the declared type determines format, not byte order
+
+E1 found that "key on the declared type" was incomplete for one family of types. The
+declared type still determines *format* unconditionally — `flt`/`ioft` decode
+little-endian, `fpe2`/`fp78`/`sp78` decode big-endian, always, on both generations. But for
+the plain integers (`ui16`, `si16`, `ui32`, `si32`, `ui64`, `si64`) the declared type does
+**not** determine byte order: that is firmware-declared per key, via attribute bit `0x04`
+on the modern (Apple Silicon) interface, and unconditionally big-endian on the legacy
+(Intel) interface. See `docs/ADR/0003-integer-byte-order.md` and
+`resolveByteOrder(generation:attributes:)` in `Sources/SMCCore/SMCByteOrderResolver.swift`
+for the evidence and the single function that owns the rule.
+
+This still bans `uname -m` — it does not weaken the ban, it gives it a sharper
+justification. The generation half of the resolved metadata is read once per connection
+from the `AppleSMC` IOService's own IORegistry provenance (`SMCConnection.open()`), never
+from the process's architecture, which reports the wrong thing entirely (the running
+process, not the firmware) and lies outright under Rosetta.
+
+**No control-path key is in the ambiguous class.** Fan RPM is `flt` (Apple Silicon) or
+`fpe2` (Intel); temperatures are `flt`/`ioft`/`sp78`; mode keys (`F0Md`, `Ftst`, `FNum`) are
+single-byte `ui8`, which has no byte order to resolve; Intel's `FS!` bitmask is `ui16` but
+exists only on the legacy interface, where big-endian is unconditional regardless of the
+resolver. The ambiguity this amendment addresses only ever affects display-grade integers
+— battery telemetry, IDs, counters — never a value that drives or bounds a fan.
+
+If the interface generation cannot be determined for a connection, plain-integer keys
+surface raw bytes only: `SMCValue.scalar()` returns `nil` rather than decoding with a
+guessed order, and logs. Refusing to guess beats guessing.
+
 ### Discovery is dynamic
 
 Key enumeration walks `#KEY` and the index table. There is no hard-coded key list, because

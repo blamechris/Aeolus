@@ -297,9 +297,29 @@ Other observed big-endian keys: `B0RM` = 6238 mAh (attrs 144), `F0Fc` = 7 (128),
 entire key enumeration depends on it. What remains untested here is the Intel *type* set
 (`fpe2`, `fp78`, `sp78`, `{fds`), which no key on `Mac16,5` declares.
 
-The decision this drove is recorded in [ADR 0003](ADR/0003-integer-byte-order.md); the
-resulting fix to `SMCValue.scalar()` is tracked as issue #30. The attribute-bit half of
-the rule is a single-machine observation and stays that way until a second machine reports.
+The decision this drove is recorded in [ADR 0003](ADR/0003-integer-byte-order.md) (now
+**Accepted**); the fix to `SMCValue.scalar()` shipped in issue #30, via
+`resolveByteOrder(generation:attributes:)` in `Sources/SMCCore/SMCByteOrderResolver.swift`.
+The attribute-bit half of the rule is a single-machine observation and stays that way
+until a second machine reports.
+
+#### Interface generation, detected from IORegistry provenance
+
+ADR 0003 requires the SMC interface generation to come from the `AppleSMC` IOService's own
+IORegistry provenance, never from `uname -m`. Observed on `Mac16,5`: the service matched by
+`IOServiceMatching("AppleSMC")` declares `IOProviderClass` as `"RTBuddyEndpointService"` —
+the modern SMC is reached over the always-on coprocessor's RTKit mailbox, not a direct ACPI
+device, consistent with Asahi's description of the SMC as an RTKit endpoint service.
+`SMCConnection.smcGeneration(for:)` resolves this to `.modern`, unconditionally scoping the
+attribute-bit rule to the modern interface as ADR 0003 requires.
+
+Two runtime checks pass live on this machine as a result: `SMCConnection.verifyKeyCountCrossCheck()`
+— the `#KEY`-versus-walked-index-count tripwire — reports a match, and `B0AV`, read live,
+equals `BC1V + BC2V + BC3V` read live (both exercised in `Tests/SMCCoreTests/SMCConnectionTests.swift`,
+gated on `isDevelopmentMachine()`). The legacy (Intel) branch — `IOProviderClass` containing
+`"ACPI"` — is not observed on any hardware available to this project; it follows documented
+community sources (VirtualSMC and others) and ships `untested` like the rest of the Intel
+path.
 
 ### The `IOHIDEventSystemClient` question — answered: the SMC alone is sufficient
 
@@ -359,6 +379,8 @@ what licence.
 | `raminsharifi/MacFanControl` | Prior art on the Apple Silicon path | To be confirmed before any adaptation |
 | `tw93/Mole` issue #1119 | Community discussion of fan control on recent silicon | Discussion only, no code |
 | `smcFanControl` (hholtmann) | Prior art on the Intel path | GPL — compatible with this project |
+| [Asahi Linux SMC documentation](https://asahilinux.org/docs/hw/soc/smc/) | Independent, clean-room hardware reverse-engineering corroborating the little-endian-with-quirks model behind ADR 0003, and naming `#KEY`/`B0RM`/`VP3b` specifically | Documentation consulted, no code adapted |
+| [VirtualSMC](https://github.com/acidanthera/VirtualSMC/blob/master/VirtualSMCSDK/kern_vsmcapi.hpp) | Documents attribute bit `0x04` as `ATTR_ATOMIC` on Intel, which is why ADR 0003's byte-order rule is scoped to the modern interface only | Documentation consulted, no code adapted |
 
 **Before adapting code from any of these**, confirm the licence, record it above, and
 attribute it in the source file. Reading a project's documentation and reimplementing from
