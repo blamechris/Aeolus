@@ -304,6 +304,63 @@ struct SMCConnectionMac165Tests {
             _ = try await connection.read(key)
         }
     }
+
+    /// `open()` resolves the interface generation from the `AppleSMC` service's own
+    /// IORegistry provenance (never `uname -m`) — see `smcGeneration(for:)`.
+    /// Observed on `Mac16,5`: `IOProviderClass` is `"RTBuddyEndpointService"`, so this
+    /// resolves `.modern`. A single-machine fact, hence gated here rather than in the
+    /// broader hardware suite.
+    @Test("open() resolves the interface generation as modern")
+    func interfaceGenerationResolvesModern() async throws {
+        let connection = SMCConnection()
+        try await connection.open()
+        defer { Task { await connection.close() } }
+
+        let generation = await connection.interfaceGeneration
+        #expect(generation == .modern)
+    }
+
+    /// ADR 0003's runtime tripwire: `#KEY`'s own decoded value against an independent
+    /// walk of the key table. A live pass here is direct evidence the resolver's
+    /// hypothesis holds on this machine, right now, not just at the moment the bytes in
+    /// `SMCByteOrderResolverTests` were captured.
+    @Test("#KEY cross-check passes on live hardware")
+    func keyCountCrossCheckPassesLive() async throws {
+        let connection = SMCConnection()
+        try await connection.open()
+        defer { Task { await connection.close() } }
+
+        let result = try await connection.verifyKeyCountCrossCheck()
+        #expect(result.matches)
+        #expect(result.declaredCount > 1000)
+    }
+
+    /// The cell-sum identity, read live rather than from a fixed capture. `B0AV`,
+    /// `BC1V`, `BC2V`, and `BC3V` are four separate IPC round trips, not one atomic
+    /// snapshot, so a live pack under charge can drift a millivolt between them —
+    /// observed on this machine. A tolerance of 50 mV absorbs that jitter while still
+    /// failing hard if the byte order were actually wrong: a wrong order does not read a
+    /// few mV off, it reads tens of thousands off (see `SMCByteOrderCapturedBytesTests`
+    /// for the exact, non-fuzzy version of this same identity, pinned to fixed bytes).
+    /// Skips rather than fails if any of the four keys is absent, since battery key sets
+    /// vary even within this one model's configurations.
+    @Test("Live cell-sum identity: B0AV ≈ BC1V + BC2V + BC3V")
+    func liveCellSumIdentity() async throws {
+        let connection = SMCConnection()
+        try await connection.open()
+        defer { Task { await connection.close() } }
+
+        guard
+            let b0av = SMCKey("B0AV"), let bc1v = SMCKey("BC1V"),
+            let bc2v = SMCKey("BC2V"), let bc3v = SMCKey("BC3V"),
+            let pack = try? await connection.read(b0av).scalar(),
+            let cell1 = try? await connection.read(bc1v).scalar(),
+            let cell2 = try? await connection.read(bc2v).scalar(),
+            let cell3 = try? await connection.read(bc3v).scalar()
+        else { return }
+
+        #expect(abs(pack - (cell1 + cell2 + cell3)) < 50.0)
+    }
 }
 
 // swiftlint:enable force_unwrapping

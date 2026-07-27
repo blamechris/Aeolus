@@ -90,15 +90,22 @@ public struct SMCSensorProvider: SensorProvider {
     /// key — index lookup, `READ_KEYINFO`, `READ_BYTES`, or decoding — is skipped rather
     /// than aborting the whole enumeration; see `SMCConnection.read(_:)` for the failure
     /// modes this survives.
+    ///
+    /// Also runs the `#KEY` cross-check (ADR 0003's tripwire on the byte-order resolver)
+    /// using the walk this enumeration is already doing, rather than repeating it — see
+    /// `SMCConnection.verifyKeyCountCrossCheck()` for a standalone version of the same
+    /// comparison.
     public func readAll() async throws -> [SensorReading] {
         try await connection.open()
         let count = try await connection.keyCount()
 
         var readings: [SensorReading] = []
         readings.reserveCapacity(count)
+        var walkedKeys = 0
 
         for index in 0..<count {
             guard let key = try? await connection.key(at: index) else { continue }
+            walkedKeys += 1
             guard let value = try? await connection.read(key) else { continue }
             guard let scalar = try? value.scalar() else { continue }
 
@@ -111,6 +118,9 @@ public struct SMCSensorProvider: SensorProvider {
                 )
             )
         }
+
+        SMCConnection.logCrossCheck(
+            KeyCountCrossCheck(declaredCount: count, walkedCount: walkedKeys))
 
         return readings
     }

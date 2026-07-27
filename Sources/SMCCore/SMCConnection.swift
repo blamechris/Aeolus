@@ -1,5 +1,6 @@
 import Foundation
 import IOKit
+import os
 
 /// A connection to the `AppleSMC` IOService.
 ///
@@ -32,6 +33,13 @@ import IOKit
 /// ```
 public actor SMCConnection {
     private var connection: io_connect_t = 0
+
+    /// The SMC interface generation, resolved once by `open()` from the `AppleSMC`
+    /// service's own IORegistry provenance. `nil` before `open()`, or if undetermined —
+    /// see `smcGeneration(for:)`.
+    private var generation: SMCInterfaceGeneration?
+
+    private static let logger = Logger(subsystem: "dev.aeolus.SMCCore", category: "SMCConnection")
 
     // MARK: - Wire format
 
@@ -68,6 +76,9 @@ public actor SMCConnection {
 
     /// Opens the connection. Idempotent: calling this again while already open is a
     /// harmless no-op rather than a second `IOServiceOpen`.
+    ///
+    /// Also resolves `interfaceGeneration` from the matched service's own IORegistry
+    /// provenance, once, before the connection is opened — see `smcGeneration(for:)`.
     public func open() throws {
         guard connection == 0 else { return }
 
@@ -77,6 +88,8 @@ public actor SMCConnection {
         }
         defer { IOObjectRelease(service) }
 
+        generation = Self.smcGeneration(for: service)
+
         var newConnection: io_connect_t = 0
         let openResult = IOServiceOpen(service, mach_task_self_, 0, &newConnection)
         guard openResult == kIOReturnSuccess else {
@@ -84,6 +97,59 @@ public actor SMCConnection {
         }
 
         connection = newConnection
+    }
+
+    /// The SMC interface generation resolved by `open()`. Plain-integer keys decode only
+    /// when this is non-`nil` — see `SMCValue.scalar()`.
+    public var interfaceGeneration: SMCInterfaceGeneration? { generation }
+
+    /// Detects which SMC firmware interface `service` is, from the service's own
+    /// IORegistry provenance — **never** from `uname -m`/`utsname`, which report the
+    /// running process's architecture, not the firmware, and lie outright under Rosetta.
+    /// See ADR 0003 and `resolveByteOrder(generation:attributes:)`.
+    ///
+    /// Observed on `Mac16,5`: `IOProviderClass` is `"RTBuddyEndpointService"` — the modern
+    /// SMC is reached over the always-on coprocessor's RTKit mailbox, not a direct ACPI
+    /// device. A single-machine observation, kept only for the `.modern` branch below. The
+    /// `.legacy` branch (`IOProviderClass` containing `"ACPI"`) is not observed on any
+    /// hardware available to this project; it follows documented, corroborated community
+    /// sources (VirtualSMC and others) and ships `untested` until an Intel report confirms
+    /// it, same as the rest of the Intel path.
+    ///
+    /// Returns `nil` — undetectable — if the property is absent or matches neither branch,
+    /// rather than guessing. Every caller must treat `nil` as "do not resolve plain-integer
+    /// byte order for this connection" (ADR 0003's fail-safe).
+    private static func smcGeneration(for service: io_service_t) -> SMCInterfaceGeneration? {
+        guard
+            let providerClass = IORegistryEntryCreateCFProperty(
+                service, "IOProviderClass" as CFString, kCFAllocatorDefault, 0
+            )?.takeRetainedValue() as? String
+        else {
+            logger.error(
+                """
+                AppleSMC has no readable IOProviderClass; the SMC interface generation is \
+                undetectable for this connection. Plain-integer keys will surface raw \
+                bytes only — see docs/ADR/0003-integer-byte-order.md.
+                """
+            )
+            return nil
+        }
+
+        if providerClass.contains("RTBuddy") {
+            return .modern
+        }
+        if providerClass.contains("ACPI") {
+            return .legacy
+        }
+
+        logger.error(
+            """
+            AppleSMC's IOProviderClass '\(providerClass, privacy: .public)' does not match \
+            a recognised SMC interface generation. Plain-integer keys will surface raw \
+            bytes only — see docs/ADR/0003-integer-byte-order.md.
+            """
+        )
+        return nil
     }
 
     /// Closes the connection. Safe to call when already closed, and safe to `open()`
@@ -108,15 +174,14 @@ public actor SMCConnection {
 
     /// The number of keys this machine exposes, read from `#KEY`.
     ///
-    /// `#KEY` declares itself `ui32`, and `SMCValue`'s `ui32` decode is big-endian —
-    /// which is exactly what `#KEY`'s value needs, even though every other numeric type
-    /// observed on Apple Silicon is little-endian. No special-casing is required here;
-    /// it falls out of reading the key like any other.
+    /// `#KEY` declares `ui32` with attribute bit `0x04` clear, so
+    /// `resolveByteOrder(generation:attributes:)` predicts big-endian — exactly what
+    /// `#KEY` needs, with no special-casing. See `verifyKeyCountCrossCheck()` for the
+    /// tripwire that checks this decode against an independent walk of the table.
     public func keyCount() throws -> Int {
         let value = try read(SMCKey.keyCount)
         guard let scalar = try value.scalar() else {
-            throw SMCError.sizeMismatch(
-                key: SMCKey.keyCount, declared: value.type, reportedBytes: value.bytes.count)
+            throw SMCError.integerByteOrderUndetectable(key: SMCKey.keyCount)
         }
         return Int(scalar)
     }
@@ -160,6 +225,10 @@ public actor SMCConnection {
     ///
     /// A `dataSize` above the 32-byte payload throws `SMCError.valueTooLargeForSingleRead`
     /// rather than silently truncating: see the type's documentation for why.
+    ///
+    /// The returned value's `integerByteOrder` comes from `interfaceGeneration` and the
+    /// key's attribute byte, via `resolveByteOrder(generation:attributes:)` — `nil`, and
+    /// plain-integer keys `nil` from `scalar()`, when the generation is undetermined.
     public func read(_ key: SMCKey) throws -> SMCValue {
         let info = try keyInfo(for: key)
 
@@ -169,8 +238,14 @@ public actor SMCConnection {
         guard info.dataSize <= Self.maxPayloadBytes else {
             throw SMCError.valueTooLargeForSingleRead(key: key, dataSize: info.dataSize)
         }
+
+        let integerByteOrder = generation.map {
+            resolveByteOrder(generation: $0, attributes: info.attributes)
+        }
+
         guard info.dataSize > 0 else {
-            return SMCValue(key: key, type: info.type, bytes: [])
+            return SMCValue(
+                key: key, type: info.type, bytes: [], integerByteOrder: integerByteOrder)
         }
 
         let reply = try call(
@@ -188,7 +263,45 @@ public actor SMCConnection {
                 key: key, declared: info.type, reportedBytes: reply.bytes.count)
         }
 
-        return SMCValue(key: key, type: info.type, bytes: reply.bytes)
+        return SMCValue(
+            key: key, type: info.type, bytes: reply.bytes, integerByteOrder: integerByteOrder)
+    }
+
+    /// A free runtime tripwire on `resolveByteOrder(generation:attributes:)`'s central
+    /// hypothesis (ADR 0003): `#KEY`'s own decoded value should exactly equal the number of
+    /// indices this connection can actually retrieve by walking the key table from 0. `#KEY`
+    /// is decoded by the very resolver this checks, so a wrong rule is likely to show up
+    /// here as a loud, logged mismatch rather than a silently wrong reading downstream.
+    ///
+    /// Intended to run once, near startup. `SMCSensorProvider.readAll()` performs the same
+    /// comparison from the walk it already does for enumeration, at no extra cost; this
+    /// method is the standalone, independently testable version of that check.
+    public func verifyKeyCountCrossCheck() throws -> KeyCountCrossCheck {
+        let declaredCount = try keyCount()
+
+        var walkedCount = 0
+        for index in 0..<declaredCount where (try? key(at: index)) != nil {
+            walkedCount += 1
+        }
+
+        let result = KeyCountCrossCheck(declaredCount: declaredCount, walkedCount: walkedCount)
+        Self.logCrossCheck(result)
+        return result
+    }
+
+    /// Logs loudly when a `KeyCountCrossCheck` disagrees; silent when it matches. Shared
+    /// by `verifyKeyCountCrossCheck()` and `SMCSensorProvider.readAll()`, which computes
+    /// the same comparison from a walk it is already doing rather than repeating it.
+    static func logCrossCheck(_ result: KeyCountCrossCheck) {
+        guard !result.matches else { return }
+        logger.fault(
+            """
+            #KEY cross-check failed: the firmware declares \
+            \(result.declaredCount, privacy: .public) keys but only \
+            \(result.walkedCount, privacy: .public) were walkable. This is the tripwire on \
+            ADR 0003's byte-order hypothesis — see docs/ADR/0003-integer-byte-order.md.
+            """
+        )
     }
 
     // MARK: - Write path (helper-only)
@@ -274,28 +387,6 @@ public actor SMCConnection {
             key: outKey, dataSize: outDataSize, dataType: outDataType, attributes: outAttributes,
             bytes: bytes)
     }
-}
-
-/// A key's declared type, size, and attribute byte, independent of whether its value can
-/// actually be read. Always obtainable, including for keys `SMCConnection.read(_:)`
-/// refuses — see its documentation for the three failure modes this exists to survive.
-public struct SMCKeyInfo: Sendable, Hashable {
-    public let key: SMCKey
-    public let type: SMCKeyType
-    public let dataSize: Int
-    public let attributes: UInt8
-
-    public init(key: SMCKey, type: SMCKeyType, dataSize: Int, attributes: UInt8) {
-        self.key = key
-        self.type = type
-        self.dataSize = dataSize
-        self.attributes = attributes
-    }
-
-    /// Attribute bit `0x80`. Observed as a perfect correlation with a successful read
-    /// across all 3385 keys on `Mac16,5`: necessary, but — per 52 further keys that set
-    /// it and still error on `READ_BYTES` — not sufficient.
-    public var isReadable: Bool { attributes & 0x80 != 0 }
 }
 
 /// One decoded `IOConnectCallStructMethod` reply. Internal: callers see `SMCKeyInfo` and

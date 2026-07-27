@@ -51,6 +51,13 @@ public enum SMCError: Error, Sendable, Equatable {
     /// an all-zero payload: a fabricated 0 RPM or 0 °C reading rather than an error.
     /// Never observed on `Mac16,5`; checked because the alternative failure is silent.
     case truncatedReply(expected: Int, received: Int)
+    /// A plain-integer key (`ui16`/`si16`/`ui32`/`si32`/`ui64`/`si64`) could not be
+    /// decoded because the SMC interface generation was undetectable for this connection.
+    /// Byte order for these types is firmware-declared per key, not implied by the type —
+    /// see `docs/ADR/0003-integer-byte-order.md` — and refusing to guess beats guessing.
+    /// Distinct from `sizeMismatch`: the bytes are exactly the length the type declares,
+    /// but this decoder does not know which order to read them in.
+    case integerByteOrderUndetectable(key: SMCKey)
 
     /// `true` when the error is the M3+ "thermal manager is holding the fans" rejection
     /// that the `Ftst` unlock sequence exists to resolve.
