@@ -119,16 +119,32 @@ from the `AppleSMC` IOService's own IORegistry provenance (`SMCConnection.open()
 from the process's architecture, which reports the wrong thing entirely (the running
 process, not the firmware) and lies outright under Rosetta.
 
-**No control-path key is in the ambiguous class.** Fan RPM is `flt` (Apple Silicon) or
-`fpe2` (Intel); temperatures are `flt`/`ioft`/`sp78`; mode keys (`F0Md`, `Ftst`, `FNum`) are
-single-byte `ui8`, which has no byte order to resolve; Intel's `FS!` bitmask is `ui16` but
-exists only on the legacy interface, where big-endian is unconditional regardless of the
-resolver. The ambiguity this amendment addresses only ever affects display-grade integers
-— battery telemetry, IDs, counters — never a value that drives or bounds a fan.
+**No control-path key is a plain integer** — the only class this resolver governs. Fan RPM
+is `flt` (Apple Silicon) or `fpe2` (Intel); temperatures are `flt`/`ioft`/`sp78`; mode keys
+(`F0Md`, `Ftst`, `FNum`) are single-byte `ui8`, which has no byte order to resolve; Intel's
+`FS!` bitmask is `ui16` but exists only on the legacy interface, where big-endian is
+unconditional regardless of the resolver. The ambiguity this amendment addresses only ever
+affects display-grade integers — battery telemetry, IDs, counters — never a value routed
+through this resolver.
+
+That is narrower than claiming `flt`/`ioft` themselves are unambiguous, which this project
+cannot establish on its one machine: on `Mac16,5`, every readable `flt` key (2073 of them)
+and `ioft` key (10 of 11 readable) carries attribute bit `0x04` set, so nothing on this
+hardware can distinguish "the bit governs byte order for plain integers only" (what is
+implemented — `flt`/`ioft` decode little-endian unconditionally by type, never through the
+resolver) from "the bit governs byte order for every type, `flt`/`ioft` included"
+(untested, and unfalsifiable here since both hypotheses predict the same little-endian
+result for every key this machine can read). Whether the bit governs `flt` on other
+firmware is open — see issue #35.
 
 If the interface generation cannot be determined for a connection, plain-integer keys
 surface raw bytes only: `SMCValue.scalar()` returns `nil` rather than decoding with a
-guessed order, and logs. Refusing to guess beats guessing.
+guessed order, and logs. Refusing to guess beats guessing. `#KEY` is the one exception,
+and by necessity: without a key count nothing can be enumerated, control path included, so
+`SMCConnection.keyCount()` decodes it directly as big-endian in the enumeration layer
+instead — a guess, not a resolved fact, validated on every connection by
+`verifyKeyCountCrossCheck()`'s independent walk of the table. See
+`SMCConnection.decodeKeyCountFallback(value:)`.
 
 ### Discovery is dynamic
 

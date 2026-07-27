@@ -31,11 +31,15 @@ Independent corroboration, from clean-room sources:
   (independent hardware reverse-engineering, no macOS tools involved) documents the Apple
   Silicon SMC as natively little-endian with a small set of byte-reversed quirk keys — and
   names `#KEY` and `B0RM` explicitly. Both carry bit `0x04` clear in our dump.
-- Asahi also lists `VP3b` as byte-reversed on M1-era hardware. On our M4 Max, `VP3b` has
-  bit `0x04` **set** and decodes little-endian to 1.8057 — a sane 1.8 V rail reading. The
-  quirk population migrates between firmware generations, **and the attribute bit tracks
-  the migration**. Any static quirk list is therefore wrong across generations, not merely
-  incomplete.
+- Asahi also lists `VP3b` as byte-reversed on M1-era hardware. On our M4 Max, `VP3b` is
+  declared `flt`, not a plain integer — a type this ADR's resolver never consults, since
+  `flt` decodes little-endian unconditionally by type (see Decision below). Its attribute
+  bit being set here is therefore not evidence for or against the resolver's rule, one way
+  or the other; it says nothing about whether the bit tracks quirk migration for the class
+  this ADR actually governs. Whether the same migration Asahi describes for `VP3b`
+  recurs among the plain integers this resolver governs is untested on this machine.
+  Whether it recurs for `flt` itself — where this project has no fail-safe at all — is
+  tracked separately as issue #35.
 - [VirtualSMC](https://github.com/acidanthera/VirtualSMC/blob/master/VirtualSMCSDK/kern_vsmcapi.hpp)
   documents bit `0x04` on **Intel** as `ATTR_ATOMIC`, and its Intel key databases show
   data keys with `attr [84]` that are big-endian like everything else on Intel. So the bit
@@ -50,12 +54,25 @@ little-endian and observed only on the modern one. **The only types whose byte o
 genuinely underdetermined by the type are the plain integers — exactly the types that
 exist on both interface generations.**
 
-One further fact shapes the risk: **no control-path key is in the ambiguous class.** Fan
-RPM is `flt` (always LE) or `fpe2` (always BE); temperatures are `flt`/`ioft`/`sp78`;
-mode keys (`F0Md`, `Ftst`, `FNum`) are single-byte `ui8`; Intel's `FS!` bitmask is
-`ui16` but exists only on the legacy interface, where big-endian is unconditional. The
-ambiguity affects display-grade readings (battery telemetry, IDs, counters), never a
-value that drives or bounds a fan.
+One further fact bounds this ADR's own scope: **no control-path key is a plain integer**,
+the only class the resolver below governs. Fan RPM is `flt` (always LE by type) or `fpe2`
+(always BE by type); temperatures are `flt`/`ioft`/`sp78`; mode keys (`F0Md`, `Ftst`,
+`FNum`) are single-byte `ui8`; Intel's `FS!` bitmask is `ui16` but exists only on the
+legacy interface, where big-endian is unconditional. So the resolver, and its fail-safe,
+never touch a control-path value, by construction — that much is true by exhaustive
+enumeration of the control-path key set, not by measurement.
+
+That is a narrower claim than "no control-path key is ambiguous," and the narrower claim
+is the one this ADR can actually support. Whether attribute bit `0x04` also governs byte
+order for `flt`/`ioft` themselves — decoded unconditionally little-endian in this decision,
+never through the resolver — is a separate question this ADR does not answer and cannot:
+on `Mac16,5`, all 2073 readable `flt` keys and 10 of 11 readable `ioft` keys carry bit
+`0x04` set, so this machine contains no key that could falsify "the bit only governs plain
+integers" (what is implemented) against "the bit governs every type" (untested) — both
+hypotheses predict the same little-endian result for every `flt`/`ioft` key this hardware
+can read. Tracked as issue #35, `safety-critical` because `flt` is the write-path encoding
+target on Apple Silicon and has no fail-safe of its own: unlike a plain integer, a wrong
+guess there does not decline and log, it silently returns a wrong number.
 
 ## Decision
 
@@ -80,8 +97,16 @@ machine.
 **Fail-safe:** if the interface generation cannot be determined, plain-integer keys
 surface raw bytes with no scalar (`scalar()` returns `nil`), and the condition is logged.
 Guessing is worse than declining: a wrong reading presented confidently is the failure
-mode this project's rules exist to prevent. All control-path types decode by type alone
-and are unaffected.
+mode this project's rules exist to prevent. Every control-path type decodes by type alone,
+never through this resolver, so this fail-safe never reaches one — whether attribute bit
+`0x04` would matter for those types too, had this resolver been asked to consult it, is
+the separate question tracked as issue #35, not a claim this fail-safe depends on.
+
+`#KEY` is the one exception to "surface raw bytes only": without a key count nothing can
+be enumerated, control path included, so `SMCConnection.keyCount()` decodes it directly as
+big-endian in the enumeration layer — a guess, not a resolved fact, validated on every
+connection by the cross-check below. See `decodeKeyCountFallback(value:)` in
+`Sources/SMCCore/SMCConnection.swift`.
 
 Mechanically: the read layer resolves a `ByteOrder` per key at read time and stores it on
 `SMCValue`; `scalar()` consumes it for plain integers only. The resolution policy lives in
@@ -95,7 +120,12 @@ one function, with the citations and the falsification criteria in its doc comme
 - It is the project's stated epistemology applied honestly: ask the firmware, honour the
   answer. The firmware declares the attribute byte per key, exactly as it declares the
   type. We widen "declared type" to "declared metadata"; we do not abandon it.
-- It handles quirk migration (`VP3b`) for free, which no static table can.
+- It would handle quirk migration for free among the plain integers it actually governs,
+  the class where a static table would need per-generation entries. The one migration case
+  actually on record, `VP3b`, turned out on inspection to be `flt` on this machine — outside
+  this resolver's domain, so it is not an instance of this benefit, just a reminder that the
+  benefit is scoped to plain integers. See issue #35 for whether the same migration risk
+  exists for `flt` itself.
 - Its failure mode is bounded: if the attribute hypothesis fails on some other machine,
   the damage is wrong display-grade integers plus a tripwire firing at startup — never a
   wrong fan bound, RPM, or temperature.
@@ -113,12 +143,17 @@ grown ad hoc.
 
 ### A static per-key quirk table
 
-Honest about endianness being per-key, but the table must come from somewhere, and the
-evidence says it cannot be right: Asahi's M1-era list marks `VP3b` byte-reversed, while on
-the M4 it is native little-endian. A table keyed to any one machine's observations is
-wrong on the others — this is not incompleteness, it is active wrongness that tracks
-firmware revisions we cannot enumerate. It is also exactly the hard-coded key list the
-architecture rejects for discovery, reintroduced through the codec.
+Honest about endianness being per-key, but the table must come from somewhere, and a table
+built from any one machine's observations is wrong on the others once firmware quirks
+migrate between generations — this is not incompleteness, it is active wrongness that
+tracks firmware revisions we cannot enumerate. (Asahi's own M1-era report of `VP3b` as
+byte-reversed, compared against this machine, was this ADR's original illustration of that
+migration risk — but `VP3b` is `flt` here, outside a plain-integer quirk table's domain
+entirely, so it illustrates the general risk of static tables tracking firmware revisions
+without actually being an instance of the plain-integer table changing under it. The
+argument against a static table stands on the general point regardless.) It is also
+exactly the hard-coded key list the architecture rejects for discovery, reintroduced
+through the codec.
 
 ### Treat `#KEY` as protocol metadata outside the codec
 
@@ -152,11 +187,13 @@ generation bit exists in the model at all.
 | Intel integers are all BE; bit `0x04` = `ATOMIC` | Documented (VirtualSMC et al.), untestable here | Intel path ships `untested` regardless; first Intel report validates |
 | Generation is detectable from IORegistry provenance | To be implemented and verified in E1 | Fail-safe already specified: raw-only integers, logged |
 | M1/M2 behave like the M4 (modern) | Assumed, untested | Tripwire fires at startup; report captures the dump |
+| Bit `0x04` governs plain integers *only*, never `flt`/`ioft` | **Unfalsifiable on `Mac16,5`** — every readable `flt`/`ioft` key is bit-set, so this machine cannot distinguish that from "the bit governs every type" | See issue #35; `flt` is the write-path encoding target and has no fail-safe if wrong |
 
 **Revisit this decision when:** the `#KEY` tripwire fires on any machine; any hardware
 report shows a bit-`0x04`-set integer key that only decodes sanely big-endian (or
-vice versa); Apple documents the attribute byte; or an Intel report contradicts the
-big-endian default.
+vice versa); Apple documents the attribute byte; an Intel report contradicts the
+big-endian default; or issue #35 reaches a decision on whether `flt`/`ioft` should consult
+this resolver too.
 
 ## Consequences
 
@@ -172,3 +209,13 @@ big-endian default.
   Linux and VirtualSMC in the sources table (documentation consulted; no code adapted).
 - Write-path encoding (E3/E4) must use the same resolver in reverse. Round-trip tests are
   mandatory before any write ships.
+- `#KEY` is decoded directly, big-endian, in the enumeration layer
+  (`SMCConnection.decodeKeyCountFallback(value:)`) when the interface generation cannot be
+  determined — a guess, not a resolved fact, and the one exception to "plain integers
+  surface raw bytes only." Without it, an undetectable generation would take out
+  enumeration entirely, not just the display-grade integers the fail-safe is meant to
+  degrade. `verifyKeyCountCrossCheck()` validates the guess on every connection.
+- Whether attribute bit `0x04` governs `flt`/`ioft` byte order, in addition to the plain
+  integers this ADR resolves, is unestablished and unfalsifiable on `Mac16,5` — tracked as
+  issue #35, `safety-critical` because `flt` is the write-path encoding target on Apple
+  Silicon.

@@ -60,11 +60,13 @@ public enum SMCByteOrder: Sendable, Hashable {
 /// - The [Asahi Linux SMC documentation](https://asahilinux.org/docs/hw/soc/smc/)
 ///   (independent hardware reverse-engineering) documents the Apple Silicon SMC as
 ///   natively little-endian with a small byte-reversed quirk subset, and names `#KEY` and
-///   `B0RM` explicitly — both bit-clear on this machine. Asahi also lists `VP3b` as
-///   byte-reversed on M1-era hardware; on this M4 Max, `VP3b` is bit-**set** and decodes
-///   little-endian to a sane 1.8 V rail. The quirk population migrates between firmware
-///   generations, and the attribute bit tracks the migration — a static quirk table would
-///   be wrong across generations, not merely incomplete.
+///   `B0RM` explicitly — both bit-clear on this machine, both plain integers, both
+///   squarely within this resolver's own domain. (Asahi separately lists `VP3b` as a
+///   byte-reversed quirk key on M1-era hardware; on this M4 Max `VP3b` is declared `flt`,
+///   a type this resolver never consults — see the "Does not apply to" note above — so its
+///   attribute bit is not evidence for or against the rule below, one way or the other.
+///   Whether bit `0x04` matters for `flt` too is a separate, untested question: see
+///   issue #35.)
 /// - [VirtualSMC](https://github.com/acidanthera/VirtualSMC/blob/master/VirtualSMCSDK/kern_vsmcapi.hpp)
 ///   documents bit `0x04` on Intel as `ATTR_ATOMIC` and shows Intel data keys with that
 ///   bit set decoding big-endian like everything else on that generation — confirmation
@@ -78,6 +80,13 @@ public enum SMCByteOrder: Sendable, Hashable {
 ///   bit-clear key that only decodes sanely little-endian.
 /// - An Intel report contradicting the unconditional big-endian default on `.legacy`.
 /// - Apple documenting the attribute byte with a different meaning.
+///
+/// Not addressed here at all: whether this rule's premise — that byte order is a property
+/// of *type*, not of *key*, for `flt`/`ioft` — holds. `Mac16,5` cannot falsify it either
+/// way (every readable `flt`/`ioft` key on this machine carries bit `0x04` set, so it
+/// offers no counterexample regardless of which hypothesis is true), which is exactly why
+/// that question is open and tracked separately rather than folded into "what would
+/// falsify this" above. See issue #35.
 ///
 /// The `.modern` half of this rule is, as of this writing, a **single-machine
 /// observation** and stays a hypothesis until a second machine reports. If it is
