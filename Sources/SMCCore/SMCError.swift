@@ -58,6 +58,16 @@ public enum SMCError: Error, Sendable, Equatable {
     /// Distinct from `sizeMismatch`: the bytes are exactly the length the type declares,
     /// but this decoder does not know which order to read them in.
     case integerByteOrderUndetectable(key: SMCKey)
+    /// `#KEY` decoded to a value outside `SMCConnection.maxPlausibleKeyCount`.
+    ///
+    /// This is a firmware/decode-consistency fault, not an I/O failure, and is reported as
+    /// its own case so a caller can tell the two apart. It is the exact failure ADR 0003's
+    /// `#KEY` cross-check exists to catch: a misdecoded `#KEY` used, unchecked, to size an
+    /// allocation and bound an enumeration loop. On `Mac16,5`, `#KEY`'s raw bytes
+    /// (`00000d39`) decode to 3385 big-endian (correct) or 957,153,280 little-endian (a
+    /// ~957-million-element allocation and loop) — this case is what stands between a
+    /// byte-order regression and that outcome. Carries the offending decoded value.
+    case implausibleKeyCount(declared: Int)
 
     /// `true` when the error is the M3+ "thermal manager is holding the fans" rejection
     /// that the `Ftst` unlock sequence exists to resolve.

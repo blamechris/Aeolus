@@ -172,18 +172,62 @@ public actor SMCConnection {
 
     // MARK: - Read path (public)
 
+    /// The largest `#KEY` decode this project will trust as a genuine firmware value,
+    /// rather than a byte-order decode fault.
+    ///
+    /// `Mac16,5` reports 3385. No hardware report this project has seen — its own dump or
+    /// any community source cited in `docs/SMC-RESEARCH.md` — describes an SMC key table
+    /// within even one order of magnitude of six figures; the most densely instrumented
+    /// Macs documented anywhere are in the low thousands. 100,000 is roughly 30x
+    /// `Mac16,5`'s own count: generous headroom for a Mac with meaningfully more sensors
+    /// than any observed so far, while sitting almost four orders of magnitude below the
+    /// one byte-swap artefact this project has actually measured — `#KEY`'s own raw bytes
+    /// (`00000d39`) decode to 957,153,280 read little-endian instead of the correct
+    /// big-endian 3385 (see ADR 0003). This ceiling only has to separate "any plausible
+    /// key table" from "a byte order got flipped"; it does not need to be tight, and
+    /// picking it wide keeps a legitimately larger future Mac from tripping it.
+    static let maxPlausibleKeyCount = 100_000
+
+    /// Sanity-bounds a decoded `#KEY` value before it is trusted to size an allocation or
+    /// bound a loop — the fix for the scenario `SMCError.implausibleKeyCount` documents.
+    ///
+    /// Pure and synchronous, deliberately not private, so the exact failure value ADR 0003
+    /// records (957,153,280, `#KEY` misdecoded little-endian on `Mac16,5`) is directly
+    /// unit-testable via `@testable import SMCCore` without hardware — see
+    /// `SMCConnectionKeyCountPlausibilityTests`.
+    static func validatePlausibleKeyCount(_ count: Int) throws -> Int {
+        guard count >= 0, count <= maxPlausibleKeyCount else {
+            logger.fault(
+                """
+                #KEY decoded to \(count, privacy: .public), outside the plausible range \
+                0...\(maxPlausibleKeyCount, privacy: .public). Refusing to use it to size \
+                an allocation or bound an enumeration — this is ADR 0003's byte-order \
+                tripwire firing on a decode fault, not a real key count. See \
+                docs/ADR/0003-integer-byte-order.md.
+                """
+            )
+            throw SMCError.implausibleKeyCount(declared: count)
+        }
+        return count
+    }
+
     /// The number of keys this machine exposes, read from `#KEY`.
     ///
     /// `#KEY` declares `ui32` with attribute bit `0x04` clear, so
     /// `resolveByteOrder(generation:attributes:)` predicts big-endian — exactly what
     /// `#KEY` needs, with no special-casing. See `verifyKeyCountCrossCheck()` for the
     /// tripwire that checks this decode against an independent walk of the table.
+    ///
+    /// The decoded value is sanity-bounded by `validatePlausibleKeyCount(_:)` before it is
+    /// returned: every caller of this method — `SMCSensorProvider.readAll()` and
+    /// `verifyKeyCountCrossCheck()` both allocate and iterate on this value — inherits the
+    /// bound automatically rather than needing to apply it themselves.
     public func keyCount() throws -> Int {
         let value = try read(SMCKey.keyCount)
         guard let scalar = try value.scalar() else {
             throw SMCError.integerByteOrderUndetectable(key: SMCKey.keyCount)
         }
-        return Int(scalar)
+        return try Self.validatePlausibleKeyCount(Int(scalar))
     }
 
     /// Returns the key at `index` in the SMC's key table. Used to enumerate every key on
@@ -272,6 +316,16 @@ public actor SMCConnection {
     /// indices this connection can actually retrieve by walking the key table from 0. `#KEY`
     /// is decoded by the very resolver this checks, so a wrong rule is likely to show up
     /// here as a loud, logged mismatch rather than a silently wrong reading downstream.
+    ///
+    /// - Important: `declaredCount` comes from `keyCount()`, which refuses — via
+    ///   `validatePlausibleKeyCount(_:)` — to hand back a value outside
+    ///   `maxPlausibleKeyCount`. That refusal *is* this tripwire firing: it throws
+    ///   `SMCError.implausibleKeyCount` instead of entering a walk bounded by a decode
+    ///   fault, which is a stronger, more specific signal than letting the walk run and
+    ///   reporting a `KeyCountCrossCheck` whose `matches` happens to be `false` — and it is
+    ///   what stops a misdecoded `#KEY` (957,153,280 on `Mac16,5`, decoded little-endian
+    ///   instead of the correct big-endian 3385) from turning this check into the
+    ///   ~957-million-iteration walk it exists to catch before it can complete.
     ///
     /// Intended to run once, near startup. `SMCSensorProvider.readAll()` performs the same
     /// comparison from the walk it already does for enumeration, at no extra cost; this

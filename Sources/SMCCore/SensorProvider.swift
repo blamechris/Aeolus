@@ -91,6 +91,13 @@ public struct SMCSensorProvider: SensorProvider {
     /// than aborting the whole enumeration; see `SMCConnection.read(_:)` for the failure
     /// modes this survives.
     ///
+    /// `count` below drives both `reserveCapacity` and the enumeration bound, so it must
+    /// never be a raw, unchecked decode of `#KEY`: `connection.keyCount()` already
+    /// sanity-bounds it via `SMCConnection.validatePlausibleKeyCount(_:)` and throws
+    /// `SMCError.implausibleKeyCount` rather than returning a value this method would then
+    /// allocate and loop on. This is what stands between a byte-order regression and a
+    /// ~957-million-element allocation — see `SMCConnection.maxPlausibleKeyCount`.
+    ///
     /// Also runs the `#KEY` cross-check (ADR 0003's tripwire on the byte-order resolver)
     /// using the walk this enumeration is already doing, rather than repeating it — see
     /// `SMCConnection.verifyKeyCountCrossCheck()` for a standalone version of the same

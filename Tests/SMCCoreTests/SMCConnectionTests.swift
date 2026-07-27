@@ -93,6 +93,47 @@ struct SMCConnectionUnopenedTests {
     }
 }
 
+/// `SMCConnection.validatePlausibleKeyCount(_:)` is the sanity bound the write-up on
+/// issue #30 asked for: a decoded `#KEY` must never reach an allocation or a loop bound
+/// unchecked, because a misdecoded one is exactly the scenario the byte-order tripwire
+/// exists to catch, and an unbounded count turns the tripwire into a ~957-million-element
+/// allocation and a ~957-million-iteration loop instead of a report. Pure and synchronous,
+/// so none of this needs hardware.
+@Suite("SMC key count plausibility bound")
+struct SMCConnectionKeyCountPlausibilityTests {
+
+    @Test("A normal count (3385, observed on Mac16,5) passes through unchanged")
+    func normalCountPasses() throws {
+        #expect(try SMCConnection.validatePlausibleKeyCount(3385) == 3385)
+    }
+
+    @Test("The exact byte-swap artefact observed on Mac16,5 is rejected")
+    func exactObservedArtefactIsRejected() {
+        // #KEY's raw bytes (00000d39) decode to 3385 big-endian (correct) or
+        // 957,153,280 little-endian — the exact value a byte-order regression on a
+        // future machine would hand to keyCount() if this bound did not exist.
+        #expect(throws: SMCError.implausibleKeyCount(declared: 957_153_280)) {
+            _ = try SMCConnection.validatePlausibleKeyCount(957_153_280)
+        }
+    }
+
+    @Test("A count exactly at the ceiling is accepted; one above is rejected")
+    func ceilingIsInclusive() throws {
+        let ceiling = SMCConnection.maxPlausibleKeyCount
+        #expect(try SMCConnection.validatePlausibleKeyCount(ceiling) == ceiling)
+        #expect(throws: SMCError.implausibleKeyCount(declared: ceiling + 1)) {
+            _ = try SMCConnection.validatePlausibleKeyCount(ceiling + 1)
+        }
+    }
+
+    @Test("A negative count is rejected, not just a huge one")
+    func negativeCountIsRejected() {
+        #expect(throws: SMCError.implausibleKeyCount(declared: -1)) {
+            _ = try SMCConnection.validatePlausibleKeyCount(-1)
+        }
+    }
+}
+
 /// Facts true of *any* machine exposing the `AppleSMC` IOService: enumeration completes,
 /// `#KEY`'s own value is what the walk uses as its bound, and a failed key read never
 /// aborts the walk. Gated only on `SMCConnection.isHardwareAvailable()` — cheap,
