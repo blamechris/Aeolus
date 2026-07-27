@@ -268,6 +268,33 @@ monitoring path. It does need a decision in E1: either chunked reads, or these k
 surfaced with metadata but no value. Silently truncating to 32 bytes is the one option that
 is wrong, because it fabricates data.
 
+### `READ_BYTES`'s own `dataSize` reads back as 0 — only `READ_KEYINFO` populates it reliably
+
+Every community implementation consulted for this document reads the payload size from the
+`keyInfo.dataSize` field of the *same* reply that carries the bytes — offset 28 of
+`SMCKeyData_t`, on a `READ_BYTES` (selector 5) response. On `Mac16,5`, that field reads back
+as **0 on every observed `READ_BYTES` reply, including successful ones.** The payload bytes
+themselves are present and correct; only the reply's own account of how many are valid is
+wrong. A `READ_KEYINFO` (selector 9) reply against the same key populates `dataSize`
+reliably, matching the table in "Enumeration and index integrity" above.
+
+This was not caught by the `smcdump.swift` spike described in the Method paragraph — it
+surfaced building the production `SMCConnection` for E1.2 (issue #25, shipped in PR #29),
+which initially sized the returned payload from the `READ_BYTES` reply's `dataSize` field.
+Every call reported success and returned zero bytes: a silent, total failure
+indistinguishable from working code until the values were inspected. The fix sizes the
+payload from the `dataSize` the caller already obtained from a prior `READ_KEYINFO` call,
+rather than trusting the `READ_BYTES` reply's own field — the same approach the enumeration
+spike used from the start, which is why the spike's dumps were never affected. Both now
+agree, and `SMCConnection.read(_:)` documents the reasoning inline at
+`call(key:selector:data32:dataSize:)`.
+
+The failure mode is what makes this worth recording here rather than letting it stay in a
+PR body: it does not throw, does not log, and does not fail a health check. It produces
+empty reads while reporting success, on a struct the eventual E4 write path shares. Anyone
+implementing against `SMCKeyData_t` from a community reference that reads `dataSize` off the
+`READ_BYTES` reply will hit exactly this on this machine.
+
 ### Byte order is **not** uniform — it is firmware-declared per key
 
 This is the most consequential finding in this document, and an earlier draft of this
