@@ -158,37 +158,48 @@ struct SMCValueTests {
     }
 
     /// Little-endian signed 32-bit. Real captured bytes from `Mac16,5`: `BC1I`
-    /// (positive battery current) and `B0AP` (negative battery power).
+    /// (positive battery current, attrs 132) and `B0AP` (negative battery power, attrs
+    /// 132) — bit `0x04` set on both, so `resolveByteOrder` predicts little-endian; see
+    /// ADR 0003.
     @Test("Decodes si32 as little-endian, including negative values")
     func decodesSignedInt32() throws {
-        let positive = SMCValue(key: SMCKey("BC1I")!, type: .si32, bytes: [0xF3, 0x00, 0x00, 0x00])
+        let positive = SMCValue(
+            key: SMCKey("BC1I")!, type: .si32, bytes: [0xF3, 0x00, 0x00, 0x00],
+            integerByteOrder: .littleEndian)
         #expect(try positive.scalar() == 243.0)
 
-        let negative = SMCValue(key: SMCKey("B0AP")!, type: .si32, bytes: [0x44, 0x64, 0xFF, 0xFF])
+        let negative = SMCValue(
+            key: SMCKey("B0AP")!, type: .si32, bytes: [0x44, 0x64, 0xFF, 0xFF],
+            integerByteOrder: .littleEndian)
         #expect(try negative.scalar() == -39868.0)
     }
 
-    /// Little-endian unsigned 64-bit. Real captured bytes from `Mac16,5`: `AOPb`.
+    /// Little-endian unsigned 64-bit. Real captured bytes from `Mac16,5`: `AOPb`
+    /// (attrs 132, bit `0x04` set).
     @Test("Decodes ui64 as little-endian")
     func decodesUnsignedInt64() throws {
         let value = SMCValue(
             key: SMCKey("AOPb")!, type: .ui64,
-            bytes: [0x00, 0xC1, 0xE7, 0x0D, 0x05, 0x00, 0x00, 0x00])
+            bytes: [0x00, 0xC1, 0xE7, 0x0D, 0x05, 0x00, 0x00, 0x00],
+            integerByteOrder: .littleEndian)
         #expect(try value.scalar() == 21_708_128_512.0)
     }
 
     /// Little-endian signed 64-bit. Real captured bytes from `Mac16,5`: `BAAC`
-    /// (positive) and `zSDa` (negative — top byte `0xff`).
+    /// (positive) and `zSDa` (negative — top byte `0xff`), both attrs 132 (bit `0x04`
+    /// set).
     @Test("Decodes si64 as little-endian, including negative values")
     func decodesSignedInt64() throws {
         let positive = SMCValue(
             key: SMCKey("BAAC")!, type: .si64,
-            bytes: [0xFF, 0x1D, 0x54, 0x01, 0x00, 0x00, 0x00, 0x00])
+            bytes: [0xFF, 0x1D, 0x54, 0x01, 0x00, 0x00, 0x00, 0x00],
+            integerByteOrder: .littleEndian)
         #expect(try positive.scalar() == 22_289_919.0)
 
         let negative = SMCValue(
             key: SMCKey("zSDa")!, type: .si64,
-            bytes: [0x51, 0x57, 0x1B, 0xEB, 0xFF, 0xFF, 0xFF, 0xFF])
+            bytes: [0x51, 0x57, 0x1B, 0xEB, 0xFF, 0xFF, 0xFF, 0xFF],
+            integerByteOrder: .littleEndian)
         #expect(try negative.scalar() == -350_529_711.0)
     }
 

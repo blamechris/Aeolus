@@ -1,39 +1,48 @@
 import Foundation
+import os
 
-/// A raw SMC read: the declared type plus the bytes the firmware handed back.
+/// A raw SMC read: the declared type, the bytes the firmware handed back, and — for the
+/// plain integer types only — the byte order resolved for this key by `SMCConnection`.
 ///
-/// Decoding is driven entirely by `type`. Nothing here knows or cares which machine it
-/// is running on.
+/// Decoding is driven by `type`. The one exception is deliberate: byte order for a plain
+/// integer is not implied by its declared type, so it travels alongside the value instead
+/// — see `integerByteOrder` and `docs/ADR/0003-integer-byte-order.md`.
 public struct SMCValue: Sendable, Hashable {
     public let key: SMCKey
     public let type: SMCKeyType
     public let bytes: [UInt8]
 
-    public init(key: SMCKey, type: SMCKeyType, bytes: [UInt8]) {
+    /// The byte order resolved for this key's plain-integer decode, or `nil` if the SMC
+    /// interface generation could not be determined for the connection that produced this
+    /// value. Ignored by every type except `ui16`/`si16`/`ui32`/`si32`/`ui64`/`si64` — see
+    /// `scalar()`.
+    public let integerByteOrder: SMCByteOrder?
+
+    public init(
+        key: SMCKey, type: SMCKeyType, bytes: [UInt8], integerByteOrder: SMCByteOrder? = nil
+    ) {
         self.key = key
         self.type = type
         self.bytes = bytes
+        self.integerByteOrder = integerByteOrder
     }
 }
 
 extension SMCValue {
     /// Decodes the value as a scalar, or returns `nil` for non-numeric types.
     ///
-    /// Byte order is a genuine property of the type for the fixed-point formats only:
-    /// `flt` and `ioft` are little-endian by construction, and `fpe2`/`fp78`/`sp78` are
-    /// big-endian by definition — those five decode unconditionally and correctly below.
+    /// Byte order is a genuine, unconditional property of the type for five formats:
+    /// `flt` and `ioft` are little-endian by construction; `fpe2`, `fp78`, and `sp78` are
+    /// big-endian by definition. Those decode below without consulting anything else.
     ///
     /// It is **not** a property of the type for the plain integers (`ui16`, `si16`,
-    /// `ui32`, `si32`, `ui64`, `si64`). Byte order for those is firmware-declared per
-    /// key — bit `0x04` of the key's attribute byte on the modern SMC interface, per
-    /// `docs/ADR/0003-integer-byte-order.md` — and this decoder does not yet resolve it.
-    /// The `ui16`/`si16`/`ui32` cases below decode big-endian unconditionally and the
-    /// `si32`/`ui64`/`si64` cases decode little-endian unconditionally, regardless of
-    /// what the key actually declares. Measured on `Mac16,5`, the big-endian guess for
-    /// `ui16`/`ui32` alone is **known to be wrong** for the majority of the roughly 459
-    /// affected keys — see issue #30, which is the tracked fix for this function. Until
-    /// that lands, do not treat a plain-integer reading from this decoder as trustworthy
-    /// beyond the specific keys covered by a passing test.
+    /// `ui32`, `si32`, `ui64`, `si64`). Byte order for those is firmware-declared per key
+    /// — resolved by `resolveByteOrder(generation:attributes:)` and carried on
+    /// `integerByteOrder` — per `docs/ADR/0003-integer-byte-order.md`. When that has not
+    /// been resolved (the SMC interface generation was undetectable for this connection),
+    /// this function refuses to guess: it logs and returns `nil` rather than decoding with
+    /// an assumed order. `bytes` remains available on this value regardless, so a caller
+    /// that wants the raw payload still has it.
     public func scalar() throws -> Double? {
         guard type.isNumeric else { return nil }
 
@@ -72,31 +81,10 @@ extension SMCValue {
         case .si8:
             return Double(Int8(bitPattern: bytes[0]))
 
-        case .ui16:
-            return Double(bigEndianUInt16)
-
-        case .si16:
-            return Double(Int16(bitPattern: bigEndianUInt16))
-
-        case .ui32:
-            let value =
-                UInt32(bytes[0]) << 24
-                | UInt32(bytes[1]) << 16
-                | UInt32(bytes[2]) << 8
-                | UInt32(bytes[3])
-            return Double(value)
-
-        case .si32:
-            // Little-endian signed 32-bit. Observed on Mac16,5 (battery current/power).
-            return Double(Int32(bitPattern: littleEndianUInt32))
-
-        case .ui64:
-            // Little-endian unsigned 64-bit. Observed on Mac16,5 (energy accumulators).
-            return Double(littleEndianUInt64)
-
-        case .si64:
-            // Little-endian signed 64-bit. Observed on Mac16,5.
-            return Double(Int64(bitPattern: littleEndianUInt64))
+        case .ui16, .si16, .ui32, .si32, .ui64, .si64:
+            // Byte order is firmware-declared per key, not implied by the type — see
+            // decodePlainInteger() and docs/ADR/0003-integer-byte-order.md.
+            return decodePlainInteger()
 
         case .flag:
             // A single byte, expected to be 0x00 or 0x01 — observed as exactly that
@@ -122,8 +110,70 @@ extension SMCValue {
         }
     }
 
+    /// Decodes a plain integer (`ui16`, `si16`, `ui32`, `si32`, `ui64`, `si64`) using
+    /// `integerByteOrder`, or returns `nil` — via `resolvedIntegerByteOrder()` — if that
+    /// was never resolved. Split out of `scalar()`'s switch purely for readability: these
+    /// six cases share one guard and differ only in width and signedness.
+    private func decodePlainInteger() -> Double? {
+        guard let order = resolvedIntegerByteOrder() else { return nil }
+
+        switch type {
+        case .ui16:
+            return Double(order == .littleEndian ? littleEndianUInt16 : bigEndianUInt16)
+        case .si16:
+            let bits = order == .littleEndian ? littleEndianUInt16 : bigEndianUInt16
+            return Double(Int16(bitPattern: bits))
+        case .ui32:
+            return Double(order == .littleEndian ? littleEndianUInt32 : bigEndianUInt32)
+        case .si32:
+            let bits = order == .littleEndian ? littleEndianUInt32 : bigEndianUInt32
+            return Double(Int32(bitPattern: bits))
+        case .ui64:
+            return Double(order == .littleEndian ? littleEndianUInt64 : bigEndianUInt64)
+        case .si64:
+            let bits = order == .littleEndian ? littleEndianUInt64 : bigEndianUInt64
+            return Double(Int64(bitPattern: bits))
+        default:
+            // Unreachable: scalar() only calls this for the six plain-integer cases.
+            return nil
+        }
+    }
+
+    /// Returns the byte order this value's plain-integer decode should use, or logs and
+    /// returns `nil` if it was never resolved. The log line is the "plus a log line" half
+    /// of ADR 0003's fail-safe: a caller that only inspects the returned `nil` cannot tell
+    /// "non-numeric type" apart from "refused to guess", but the log can.
+    private func resolvedIntegerByteOrder() -> SMCByteOrder? {
+        guard let order = integerByteOrder else {
+            Self.logger.error(
+                """
+                \(self.key.rawValue, privacy: .public) is a plain integer \
+                (\(self.type.fourCharString, privacy: .public)) whose byte order could not \
+                be resolved — the SMC interface generation was undetectable for this \
+                connection. Refusing to guess; see docs/ADR/0003-integer-byte-order.md. \
+                Raw bytes remain on SMCValue.bytes.
+                """
+            )
+            return nil
+        }
+        return order
+    }
+
+    private static let logger = Logger(subsystem: "dev.aeolus.SMCCore", category: "ByteOrder")
+
     private var bigEndianUInt16: UInt16 {
         UInt16(bytes[0]) << 8 | UInt16(bytes[1])
+    }
+
+    private var littleEndianUInt16: UInt16 {
+        UInt16(bytes[1]) << 8 | UInt16(bytes[0])
+    }
+
+    private var bigEndianUInt32: UInt32 {
+        UInt32(bytes[0]) << 24
+            | UInt32(bytes[1]) << 16
+            | UInt32(bytes[2]) << 8
+            | UInt32(bytes[3])
     }
 
     private var littleEndianUInt32: UInt32 {
@@ -131,6 +181,17 @@ extension SMCValue {
             | UInt32(bytes[1]) << 8
             | UInt32(bytes[2]) << 16
             | UInt32(bytes[3]) << 24
+    }
+
+    private var bigEndianUInt64: UInt64 {
+        UInt64(bytes[0]) << 56
+            | UInt64(bytes[1]) << 48
+            | UInt64(bytes[2]) << 40
+            | UInt64(bytes[3]) << 32
+            | UInt64(bytes[4]) << 24
+            | UInt64(bytes[5]) << 16
+            | UInt64(bytes[6]) << 8
+            | UInt64(bytes[7])
     }
 
     private var littleEndianUInt64: UInt64 {
