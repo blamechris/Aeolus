@@ -41,6 +41,36 @@ struct SMCSensorProviderKindTests {
     }
 }
 
+/// `read(keys:)` splitting malformed key strings out before ever touching a connection
+/// (see the type's documentation for why) needs no hardware: a request made entirely of
+/// malformed strings never opens one, so this holds identically on CI's SMC-less runners
+/// and on real hardware.
+@Suite("SMC sensor provider, malformed key strings")
+struct SMCSensorProviderMalformedKeyTests {
+
+    @Test("A key string that is not four ASCII characters reports unknownKey, not a throw")
+    func malformedKeyReportsUnknownKey() async throws {
+        let provider = SMCSensorProvider()
+        let outcomes = try await provider.read(keys: ["ABC", "TOOLONG"])
+
+        #expect(outcomes.count == 2)
+        for outcome in outcomes {
+            guard case .failure(.unknownKey(let reported)) = outcome.result else {
+                Issue.record("expected .unknownKey for \(outcome.key)")
+                continue
+            }
+            #expect(reported == outcome.key)
+        }
+    }
+
+    @Test("An empty request returns an empty result without opening a connection")
+    func emptyRequestReturnsEmpty() async throws {
+        let provider = SMCSensorProvider()
+        let outcomes = try await provider.read(keys: [])
+        #expect(outcomes.isEmpty)
+    }
+}
+
 /// End-to-end behaviour that holds for any machine exposing the real SMC, and is skipped,
 /// not failed, where it is absent. Nothing here assumes a fan exists — see
 /// `SMCSensorProviderMac165Tests` below for the one assertion that does, and why it is
@@ -70,6 +100,36 @@ struct SMCSensorProviderHardwareTests {
             #expect(reading.key.count == 4)
             #expect(reading.providerIdentifier == "smc")
         }
+    }
+
+    @Test("read(keys:) works standalone, with no prior readAll(), and matches readAll()'s value")
+    func readKeysWorksWithoutPriorReadAll() async throws {
+        // A fresh provider/connection: this is the acceptance criterion that a subset
+        // read must not require a prior full enumeration to function at all.
+        let subsetProvider = SMCSensorProvider()
+        let outcomes = try await subsetProvider.read(keys: ["#KEY"])
+
+        guard let outcome = outcomes.first, case .success(let reading) = outcome.result else {
+            Issue.record("expected #KEY to read successfully with no prior readAll()")
+            return
+        }
+        #expect(reading.key == "#KEY")
+        #expect(reading.value > 0)
+    }
+
+    @Test("read(keys:) reports unknownKey for a key this machine does not expose")
+    func readKeysReportsUnknownKeyForAbsentKey() async throws {
+        let provider = SMCSensorProvider()
+        // Establish discovery first so the machine's key set is actually known, rather
+        // than this being indistinguishable from "never attempted."
+        _ = try await provider.readAll()
+
+        let outcomes = try await provider.read(keys: ["ZZZZ"])
+        guard let outcome = outcomes.first else {
+            Issue.record("expected exactly one outcome")
+            return
+        }
+        #expect(outcome.result == .failure(.unknownKey("ZZZZ")))
     }
 }
 
@@ -101,6 +161,50 @@ struct SMCSensorProviderMac165Tests {
         // non-negative, finite RPM — never that it sits above some floor.
         #expect(fanReading.value >= 0)
         #expect(fanReading.value.isFinite)
+    }
+
+    /// Issue #32's own performance claim, verified live rather than only measured once
+    /// by hand: a second `readAll()`, run against a connection whose cache is already
+    /// warm from the first, is materially faster. The exact multiple is a machine-and-
+    /// moment fact (see the PR body for what was actually measured on `Mac16,5`), so
+    /// this asserts a conservative fraction — "at least twice as fast" — rather than
+    /// pinning the precise ratio observed once.
+    @Test("A second readAll() is materially faster than the first, once the cache is warm")
+    func secondReadAllIsMaterallyFaster() async throws {
+        let provider = SMCSensorProvider()
+
+        let firstStart = ContinuousClock.now
+        _ = try await provider.readAll()
+        let firstDuration = ContinuousClock.now - firstStart
+
+        let secondStart = ContinuousClock.now
+        _ = try await provider.readAll()
+        let secondDuration = ContinuousClock.now - secondStart
+
+        #expect(secondDuration < firstDuration / 2)
+    }
+
+    /// The other half of #32's claim: once the cache is warm, a small subset read is
+    /// fast enough for a ~1 Hz monitoring UI. The issue's own target is "under 50 ms";
+    /// this asserts a looser 100 ms bound to absorb ordinary scheduling jitter between
+    /// runs rather than pin a number close enough to the target to occasionally flake —
+    /// the PR body carries the actual measured figure from a real run.
+    @Test("A ~40-key subset read on a warm cache is fast enough for 1 Hz monitoring")
+    func warmSubsetReadIsFast() async throws {
+        let provider = SMCSensorProvider()
+        let allReadings = try await provider.readAll()  // warms the cache
+        let sample = Array(allReadings.prefix(40)).map(\.key)
+        guard sample.count >= 10 else {
+            Issue.record("expected at least 10 readings to sample from")
+            return
+        }
+
+        let start = ContinuousClock.now
+        let outcomes = try await provider.read(keys: sample)
+        let duration = ContinuousClock.now - start
+
+        #expect(outcomes.count == sample.count)
+        #expect(duration < .milliseconds(100))
     }
 }
 
