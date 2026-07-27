@@ -109,12 +109,24 @@ struct SMCSensorProviderHardwareTests {
         let subsetProvider = SMCSensorProvider()
         let outcomes = try await subsetProvider.read(keys: ["#KEY"])
 
-        guard let outcome = outcomes.first, case .success(let reading) = outcome.result else {
+        guard let outcome = outcomes.first, case .success(let subsetReading) = outcome.result
+        else {
             Issue.record("expected #KEY to read successfully with no prior readAll()")
             return
         }
-        #expect(reading.key == "#KEY")
-        #expect(reading.value > 0)
+        #expect(subsetReading.key == "#KEY")
+        #expect(subsetReading.value > 0)
+
+        // #KEY is firmware-static — the same machine's key count cannot differ between
+        // these two calls — so the value this standalone subset read reported must agree
+        // exactly with a full enumeration's own reading of the same key.
+        let allProvider = SMCSensorProvider()
+        let allReadings = try await allProvider.readAll()
+        guard let fullReading = allReadings.first(where: { $0.key == "#KEY" }) else {
+            Issue.record("expected #KEY to be present in a full enumeration")
+            return
+        }
+        #expect(subsetReading.value == fullReading.value)
     }
 
     @Test("read(keys:) reports unknownKey for a key this machine does not expose")
@@ -170,7 +182,7 @@ struct SMCSensorProviderMac165Tests {
     /// this asserts a conservative fraction — "at least twice as fast" — rather than
     /// pinning the precise ratio observed once.
     @Test("A second readAll() is materially faster than the first, once the cache is warm")
-    func secondReadAllIsMaterallyFaster() async throws {
+    func secondReadAllIsMateriallyFaster() async throws {
         let provider = SMCSensorProvider()
 
         let firstStart = ContinuousClock.now

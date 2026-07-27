@@ -179,17 +179,27 @@ public struct SMCSensorProvider: SensorProvider {
         }
 
         let keyExistsPastDeclaredCount = (try? await connection.key(at: count)) != nil
-        SMCConnection.logCrossCheck(
-            KeyCountCrossCheck(
-                declaredCount: count, walkedCount: walkedKeys,
-                keyExistsPastDeclaredCount: keyExistsPastDeclaredCount))
+        let crossCheck = KeyCountCrossCheck(
+            declaredCount: count, walkedCount: walkedKeys,
+            keyExistsPastDeclaredCount: keyExistsPastDeclaredCount)
+        SMCConnection.logCrossCheck(crossCheck)
 
         // Discovery — the point of this issue: every key this walk actually resolved
         // (regardless of whether its value went on to read successfully) is recorded as
         // the machine's known key set, so a later read(keys:) can answer "does this
         // machine expose this key" without spending a round trip on it. See
         // SMCConnection.markDiscoveryComplete(_:).
-        await connection.markDiscoveryComplete(discoveredKeys)
+        //
+        // Only when the cross-check actually matches, though: if it does not,
+        // discoveredKeys is not the complete key set — some index inside 0..<count
+        // failed to resolve, or a key exists past the declared bound the walk never
+        // looked at — and marking it complete anyway would let read(keys:) report a
+        // false .keyNotFound for a key that is genuinely there but simply wasn't reached
+        // this time. An incomplete walk leaves knownKeys exactly as it was: unset if this
+        // is the first attempt, or whatever a previous complete walk established.
+        if crossCheck.matches {
+            await connection.markDiscoveryComplete(discoveredKeys)
+        }
 
         return readings
     }
