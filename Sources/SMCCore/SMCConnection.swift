@@ -39,6 +39,63 @@ public actor SMCConnection {
     /// see `smcGeneration(for:)`.
     private var generation: SMCInterfaceGeneration?
 
+    // MARK: - Read cache
+    //
+    // A full enumeration is a one-time discovery cost, not a per-refresh one: a key's
+    // four-character code, declared type, dataSize, and attribute byte do not change
+    // while the machine is running, only the bytes behind them do. See `read(keys:)` and
+    // `docs/ARCHITECTURE.md`.
+    //
+    // - Important: **Never a cache of values.** Only metadata lives here — `SMCKeyInfo`
+    //   and the index → key mapping. Every `SMCValue` is read fresh, on every call, via
+    //   `READ_BYTES`; nothing in this type ever hands back a value it did not just read.
+    //   A cached *reading* served as though current is exactly the failure mode CLAUDE.md
+    //   hard rule 6 exists to prevent — a UI showing a number nothing is currently
+    //   honouring.
+    //
+    // - Note: Whether these attributes are actually stable across sleep/wake or a reboot
+    //   is **unverified** on this project's one development machine. ADR 0004 already
+    //   requires the write path to re-resolve byte order from a fresh `keyInfo(for:)` at
+    //   write time rather than trust an earlier enumeration, for exactly this reason.
+    //   This cache is a read-path performance optimisation only, and nothing in the write
+    //   path may come to rely on it. `close()` deliberately leaves it populated (see its
+    //   documentation); `invalidate()` is the explicit escape hatch for a caller who
+    //   suspects staleness. Nothing currently calls `invalidate()` automatically — wiring
+    //   it to a sleep/wake notification, if warranted, is a decision for whoever owns
+    //   that lifecycle, not this cache.
+
+    /// Per-key metadata: `dataType`, `dataSize`, and the attribute byte, keyed by
+    /// `SMCKey`. Populated as each key is first looked up via `keyInfo(for:)` — most
+    /// commonly by `SMCSensorProvider.readAll()`'s enumeration walk, but equally by an
+    /// individual `read(_:)` or `read(keys:)` call that has never seen this key before.
+    private var keyInfoCache: [SMCKey: SMCKeyInfo] = [:]
+
+    /// The index → key table, populated as `key(at:)` resolves each index. Lets a
+    /// repeated walk over the same index range skip `READ_INDEX` entirely.
+    private var keyTableCache: [Int: SMCKey] = [:]
+
+    /// The complete key set this machine is known to expose, recorded once a full
+    /// enumeration walk has finished — see `markDiscoveryComplete(_:)`, called by
+    /// `SMCSensorProvider.readAll()`. `nil` until that has happened at least once.
+    ///
+    /// Used only so `read(keys:)` can report a key this machine provably does not have
+    /// without spending a round trip on it — see that method. A subset read never
+    /// requires this to be populated; before any full enumeration, an unrecognised key is
+    /// simply attempted like any other.
+    private var knownKeys: Set<SMCKey>?
+
+    /// Counts each `READ_KEYINFO` attempt actually issued — cache misses only, since a
+    /// cache hit in `keyInfo(for:)` never reaches `call(key:selector:data32:dataSize:)`
+    /// at all. Not `private`, so `@testable import SMCCore` can prove the cache actually
+    /// skips the round trip it claims to, without needing an open hardware connection to
+    /// observe it — see `SMCConnectionCacheTests`. Not `public`: no real caller has a
+    /// legitimate reason to read call-count telemetry through the public API.
+    private(set) var readKeyInfoAttempts = 0
+
+    /// Counts each `READ_INDEX` attempt actually issued — cache misses only. Same
+    /// rationale as `readKeyInfoAttempts`.
+    private(set) var readIndexAttempts = 0
+
     private static let logger = Logger(subsystem: "dev.aeolus.SMCCore", category: "SMCConnection")
 
     // MARK: - Wire format
@@ -169,6 +226,17 @@ public actor SMCConnection {
     /// Clears `interfaceGeneration` along with `connection`, so the two stay consistent —
     /// see `interfaceGeneration` — and a subsequent `open()` re-resolves the generation
     /// rather than trusting a value captured by a now-closed connection.
+    ///
+    /// - Important: Deliberately does **not** clear the read cache
+    ///   (`keyInfoCache`/`keyTableCache`/`knownKeys`). The cache is firmware-static
+    ///   metadata, not connection state — a `close()`/`open()` cycle means the IOKit
+    ///   handle was recycled, not that the machine's key table changed underneath it.
+    ///   Clearing here would cost a full rediscovery (~4.5 s on `Mac16,5`) on every
+    ///   reopen for no established benefit; the alternative that does clear it is
+    ///   `invalidate()`, kept separate and explicit so a caller who actually suspects
+    ///   staleness (a wake from sleep, say — unverified either way, see the read-cache
+    ///   note above `keyInfoCache`) can ask for it deliberately rather than paying the
+    ///   cost on every ordinary reconnect.
     public func close() {
         guard connection != 0 else { return }
         IOServiceClose(connection)
@@ -316,28 +384,52 @@ public actor SMCConnection {
 
     /// Returns the key at `index` in the SMC's key table. Used to enumerate every key on
     /// the machine without a hard-coded list.
+    ///
+    /// Consults `keyTableCache` first: the index → key mapping is firmware-static (see
+    /// the read cache note above), so once an index has been resolved once — typically
+    /// by a prior `readAll()` walk — a repeated lookup at the same index is a dictionary
+    /// read, not a second `READ_INDEX` round trip.
     public func key(at index: Int) throws -> SMCKey {
+        if let cached = keyTableCache[index] {
+            return cached
+        }
         guard let index32 = UInt32(exactly: index) else {
             throw SMCError.invalidIndex(index)
         }
+        readIndexAttempts += 1
         let reply = try call(key: 0, selector: Self.selectorReadIndex, data32: index32)
         guard let key = SMCKey(fourCharCode: reply.key) else {
             throw SMCError.malformedKeyCode(reply.key)
         }
+        keyTableCache[index] = key
         return key
     }
 
     /// Reads a key's declared type, size, and attribute byte without attempting to read
     /// its value. Always available, even for keys `read(_:)` refuses — an unreadable key
     /// or one whose `dataSize` exceeds 32 bytes still has metadata worth showing.
+    ///
+    /// Consults `keyInfoCache` first: this metadata is firmware-static for the life of
+    /// the machine (see the read cache note above `keyInfoCache`), so once a key's
+    /// metadata has been read once — by a prior `readAll()`, a prior `read(_:)`, or a
+    /// prior `keyInfo(for:)` call on this same connection — every later lookup for that
+    /// key is a dictionary read, not a second `READ_KEYINFO` round trip. This is what
+    /// lets `read(_:)` and `read(keys:)` cost one round trip instead of two once a key is
+    /// warm.
     public func keyInfo(for key: SMCKey) throws -> SMCKeyInfo {
+        if let cached = keyInfoCache[key] {
+            return cached
+        }
+        readKeyInfoAttempts += 1
         let reply = try call(key: key.fourCharCode, selector: Self.selectorReadKeyInfo)
-        return SMCKeyInfo(
+        let info = SMCKeyInfo(
             key: key,
             type: SMCKeyType(fourCharCode: reply.dataType),
             dataSize: Int(reply.dataSize),
             attributes: reply.attributes
         )
+        keyInfoCache[key] = info
+        return info
     }
 
     /// Reads a key's declared type and current bytes.
@@ -541,6 +633,108 @@ public actor SMCConnection {
     }
 }
 
+// MARK: - Subset reads and cache management
+//
+// Split into its own extension, separate from the actor's primary declaration above,
+// purely for file organisation — actor isolation applies identically to members declared
+// in an extension, so every method here runs on the same actor as `read(_:)`,
+// `keyInfo(for:)`, and `key(at:)` above.
+extension SMCConnection {
+    /// Reads a subset of keys directly, without enumerating the full key table — the
+    /// whole point of this method next to `readAll()`. `keyInfo(for:)` and `READ_BYTES`
+    /// both address a key by its four-character code, so nothing here ever walks the
+    /// index: a cold cache costs at most `READ_KEYINFO` + `READ_BYTES` (2 round trips)
+    /// per key, and a warm one — a key `readAll()` or a prior `read(_:)`/`read(keys:)`
+    /// has already seen — costs exactly 1.
+    ///
+    /// Returns one `SMCKeyReadOutcome` per requested key, in the order requested,
+    /// including duplicates if `keys` has any. Never a filtered array: a caller asking
+    /// for 40 keys and getting 3 failures can tell which 3 failed, rather than silently
+    /// receiving 37 successes and having to infer the rest — collapsing that distinction
+    /// is exactly the "renders a shorter list as though it were the whole answer"
+    /// mistake this exists to avoid.
+    ///
+    /// A key this machine is *known* not to expose — because a prior `readAll()` walk
+    /// completed and did not see it, recorded via `markDiscoveryComplete(_:)` — reports
+    /// `.keyNotFound` at zero round trips. Before any full enumeration has completed,
+    /// `knownKeys` is `nil` and an unrecognised key is simply attempted like any other:
+    /// this method never guesses that a failure means "does not exist" when the honest
+    /// answer is "was never asked" — it reports whatever `SMCError` firmware actually
+    /// produced instead.
+    public func read(keys: [SMCKey]) -> [SMCKeyReadOutcome] {
+        keys.map(readOutcome(for:))
+    }
+
+    /// One key's outcome from `read(keys:)`, split out purely for readability.
+    private func readOutcome(for key: SMCKey) -> SMCKeyReadOutcome {
+        if let knownKeys, !knownKeys.contains(key) {
+            return SMCKeyReadOutcome(key: key, result: .failure(.keyNotFound(key)))
+        }
+        do {
+            return SMCKeyReadOutcome(key: key, result: .success(try read(key)))
+        } catch {
+            // Every throw site reachable from read(_:) — keyInfo(for:), the READ_BYTES
+            // call, and read(_:) itself — is SMCError; see SMCError.swift. This is not
+            // a real fallback path, only a way to make that invariant loud rather than
+            // silently coercing an unexpected error into a fabricated SMCError case.
+            guard let smcError = error as? SMCError else {
+                preconditionFailure(
+                    "SMCConnection.read(_:) threw a non-SMCError for \(key): \(error)")
+            }
+            return SMCKeyReadOutcome(key: key, result: .failure(smcError))
+        }
+    }
+
+    /// Clears the metadata and index caches, forcing the next `keyInfo(for:)`,
+    /// `key(at:)`, `read(_:)`, or `read(keys:)` to rediscover from firmware rather than
+    /// trust anything seen before this call — including the "does this machine expose
+    /// this key at all" answer `read(keys:)` otherwise gets to skip.
+    ///
+    /// Does not touch the underlying IOKit connection — see `close()`, which
+    /// deliberately does the opposite (closes the connection, leaves the cache alone)
+    /// for the reasoning captured there. Call this, not `close()`/`open()`, when the
+    /// cache itself — not the connection — is what is suspected stale.
+    public func invalidate() {
+        keyInfoCache.removeAll()
+        keyTableCache.removeAll()
+        knownKeys = nil
+    }
+
+    /// Records `keys` as the complete key set this machine is known to expose, once a
+    /// full enumeration walk has finished. Called by `SMCSensorProvider.readAll()` after
+    /// its walk completes, from the same keys it already collected — this never issues a
+    /// round trip of its own.
+    ///
+    /// Internal rather than `public`: `readAll()`'s full walk over `0..<keyCount()` is
+    /// the only pass this project performs that can honestly claim to have seen "every
+    /// key," so recording is scoped to that caller rather than opened up to arbitrary
+    /// partial sets, which would let `read(keys:)` report a false `.keyNotFound` for a
+    /// key that exists but simply was not part of whatever was recorded. Visible to
+    /// `SensorProvider.swift` within this module, and directly unit-testable via
+    /// `@testable import SMCCore`.
+    func markDiscoveryComplete(_ keys: Set<SMCKey>) {
+        knownKeys = keys
+    }
+
+    // MARK: - Test-only cache seams
+    //
+    // Neither of these issues a round trip; both exist purely so cache-hit behaviour is
+    // directly assertable via @testable import without an open hardware connection — see
+    // SMCConnectionCacheTests. Not private (so @testable import can reach them), not
+    // public (no real caller has a legitimate reason to seed the cache with data it did
+    // not itself read from firmware).
+
+    /// Seeds `keyInfoCache` directly, as if `keyInfo(for:)` had already read it once.
+    func seedKeyInfoCacheForTesting(_ info: SMCKeyInfo) {
+        keyInfoCache[info.key] = info
+    }
+
+    /// Seeds `keyTableCache` directly, as if `key(at:)` had already resolved `index`.
+    func seedKeyTableCacheForTesting(index: Int, key: SMCKey) {
+        keyTableCache[index] = key
+    }
+}
+
 /// One decoded `IOConnectCallStructMethod` reply. Internal: callers see `SMCKeyInfo` and
 /// `SMCValue`, never this.
 private struct RawSMCReply {
@@ -549,4 +743,21 @@ private struct RawSMCReply {
     let dataType: FourCharCode
     let attributes: UInt8
     let bytes: [UInt8]
+}
+
+/// One key's outcome from `SMCConnection.read(keys:)`.
+///
+/// Deliberately not a filtered array of successes: see that method's documentation for
+/// why a caller must be able to tell a key that failed apart from one silently omitted.
+/// `result`'s failure case is `SMCError`, not `any Error` — every throw site reachable
+/// from `read(_:)` is already `SMCError` (see `SMCError.swift`), so this stays strongly
+/// typed rather than erasing that back to `any Error` for no benefit.
+public struct SMCKeyReadOutcome: Sendable, Equatable {
+    public let key: SMCKey
+    public let result: Result<SMCValue, SMCError>
+
+    public init(key: SMCKey, result: Result<SMCValue, SMCError>) {
+        self.key = key
+        self.result = result
+    }
 }
