@@ -279,14 +279,15 @@ wrong. A `READ_KEYINFO` (selector 9) reply against the same key populates `dataS
 reliably, matching the table in "Enumeration and index integrity" above.
 
 This was not caught by the `smcdump.swift` spike described in the Method paragraph — it
-surfaced building the production `SMCConnection` for E1.2 (issue #29), which initially sized
-the returned payload from the `READ_BYTES` reply's `dataSize` field. Every call reported
-success and returned zero bytes: a silent, total failure indistinguishable from working code
-until the values were inspected. The fix sizes the payload from the `dataSize` the caller
-already obtained from a prior `READ_KEYINFO` call, rather than trusting the `READ_BYTES`
-reply's own field — the same approach the enumeration spike used from the start, which is
-why the spike's dumps were never affected. Both now agree, and `SMCConnection.read(_:)`
-documents the reasoning inline at `call(key:selector:data32:dataSize:)`.
+surfaced building the production `SMCConnection` for E1.2 (issue #25, shipped in PR #29),
+which initially sized the returned payload from the `READ_BYTES` reply's `dataSize` field.
+Every call reported success and returned zero bytes: a silent, total failure
+indistinguishable from working code until the values were inspected. The fix sizes the
+payload from the `dataSize` the caller already obtained from a prior `READ_KEYINFO` call,
+rather than trusting the `READ_BYTES` reply's own field — the same approach the enumeration
+spike used from the start, which is why the spike's dumps were never affected. Both now
+agree, and `SMCConnection.read(_:)` documents the reasoning inline at
+`call(key:selector:data32:dataSize:)`.
 
 The failure mode is what makes this worth recording here rather than letting it stay in a
 PR body: it does not throw, does not log, and does not fail a health check. It produces
