@@ -231,19 +231,86 @@ public actor SMCConnection {
     ///
     /// `#KEY` declares `ui32` with attribute bit `0x04` clear, so
     /// `resolveByteOrder(generation:attributes:)` predicts big-endian — exactly what
-    /// `#KEY` needs, with no special-casing. See `verifyKeyCountCrossCheck()` for the
-    /// tripwire that checks this decode against an independent walk of the table.
+    /// `#KEY` needs, with no special-casing, whenever the interface generation is known.
+    /// See `verifyKeyCountCrossCheck()` for the tripwire that checks this decode against an
+    /// independent walk of the table.
     ///
-    /// The decoded value is sanity-bounded by `validatePlausibleKeyCount(_:)` before it is
-    /// returned: every caller of this method — `SMCSensorProvider.readAll()` and
-    /// `verifyKeyCountCrossCheck()` both allocate and iterate on this value — inherits the
-    /// bound automatically rather than needing to apply it themselves.
+    /// - Important: When the generation is **not** known, `value.scalar()` correctly
+    ///   returns `nil` per ADR 0003's fail-safe — `SMCValue` itself never guesses. But
+    ///   `#KEY` is not an ordinary plain integer: without a key count, nothing can be
+    ///   enumerated, `#KEY` included, so declining here would silently take out every
+    ///   sensor reading on a machine with an undetectable generation, not just the
+    ///   display-grade integers the fail-safe is scoped to (`docs/ARCHITECTURE.md` and
+    ///   ADR 0003 both promise the control path is unaffected). This method therefore
+    ///   falls back to `decodeKeyCountFallback(bytes:)` for `#KEY` specifically, in this
+    ///   enumeration layer rather than through the resolver — ADR 0003's own designated
+    ///   fallback shape. See that function's documentation for the justification and for
+    ///   why `verifyKeyCountCrossCheck()` still catches a wrong guess.
+    ///
+    /// The decoded value — resolved or guessed — is sanity-bounded by
+    /// `validatePlausibleKeyCount(_:)` before it is returned: every caller of this method —
+    /// `SMCSensorProvider.readAll()` and `verifyKeyCountCrossCheck()` both allocate and
+    /// iterate on this value — inherits the bound automatically rather than needing to
+    /// apply it themselves.
     public func keyCount() throws -> Int {
         let value = try read(SMCKey.keyCount)
-        guard let scalar = try value.scalar() else {
+
+        let decoded: Int
+        if let scalar = try value.scalar() {
+            decoded = Int(scalar)
+        } else if generation == nil, let fallback = Self.decodeKeyCountFallback(value: value) {
+            decoded = fallback
+        } else {
             throw SMCError.integerByteOrderUndetectable(key: SMCKey.keyCount)
         }
-        return try Self.validatePlausibleKeyCount(Int(scalar))
+
+        return try Self.validatePlausibleKeyCount(decoded)
+    }
+
+    /// Decodes `#KEY` directly as big-endian, bypassing `resolveByteOrder(generation:attributes:)`
+    /// and `SMCValue.scalar()` entirely, for the one case both of those correctly refuse:
+    /// the SMC interface generation could not be determined for this connection.
+    ///
+    /// This is ADR 0003's own designated fallback shape for exactly this situation —
+    /// "`#KEY` handled by the enumeration layer instead of this rule" — because without a
+    /// key count `SMCSensorProvider.readAll()` cannot enumerate a single reading, control
+    /// path included, which is a stronger failure than the fail-safe is meant to cause.
+    ///
+    /// Justification for guessing big-endian specifically here, when every other plain
+    /// integer correctly declines rather than guess:
+    /// - Unconditionally correct on `.legacy` (Intel), where all plain integers are
+    ///   big-endian regardless of the attribute byte — so this guess is right by
+    ///   construction on one of the two generations this project models.
+    /// - Correct on the only `.modern` case this project has observed: `#KEY` on
+    ///   `Mac16,5` carries attribute bit `0x04` clear (128), which
+    ///   `resolveByteOrder(generation:attributes:)` already resolves to big-endian when the
+    ///   generation *is* known — see `SMCByteOrderCapturedBytesTests`.
+    /// - The Asahi Linux SMC documentation names `#KEY` explicitly as one of the
+    ///   byte-reversed quirk keys on Apple Silicon, independent of and prior to this
+    ///   project's own attribute-bit hypothesis.
+    ///
+    /// This is a guess, not a resolved fact, and is not treated as one:
+    /// `verifyKeyCountCrossCheck()` independently validates whatever `keyCount()` returns —
+    /// resolved or guessed — against an actual walk of the key table. If `#KEY` were ever
+    /// little-endian on some future machine with an undetectable generation, the walk would
+    /// not reach the guessed count and the tripwire fires loudly, exactly as it would for a
+    /// wrong resolver decode. See issue #35 for the open question of whether attribute bit
+    /// `0x04` governs byte order beyond the plain integers this resolver actually covers.
+    ///
+    /// Scoped to `#KEY` only — `value.key` and `value.type` are checked so a caller cannot
+    /// accidentally widen this into a general "guess big-endian" escape hatch for other
+    /// plain integers, which must keep declining per the fail-safe. Returns `nil` if either
+    /// check fails, or if `bytes` is not the 4 bytes a `ui32` should be (defensive; not
+    /// expected, since `SMCValue.scalar()` already validates width before this is reached).
+    static func decodeKeyCountFallback(value: SMCValue) -> Int? {
+        guard value.key == SMCKey.keyCount, value.type == .ui32, value.bytes.count == 4 else {
+            return nil
+        }
+        let bytes = value.bytes
+        let bits =
+            UInt32(bytes[0]) << 24 | UInt32(bytes[1]) << 16 | UInt32(bytes[2]) << 8
+            | UInt32(bytes[3])
+        return Int(bits)
     }
 
     /// Returns the key at `index` in the SMC's key table. Used to enumerate every key on

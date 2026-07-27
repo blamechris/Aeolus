@@ -45,6 +45,12 @@ struct SMCSensorProviderKindTests {
 /// not failed, where it is absent. Nothing here assumes a fan exists — see
 /// `SMCSensorProviderMac165Tests` below for the one assertion that does, and why it is
 /// gated more tightly than "the SMC is present."
+///
+/// Not additionally gated on the SMC interface generation being resolvable: `readAll()`
+/// enumerates via `SMCConnection.keyCount()`, whose `#KEY` fallback means enumeration
+/// completes either way — an undetectable generation only degrades the individual
+/// display-grade plain-integer readings among the results (each decodes to `nil` and is
+/// skipped), never the enumeration itself. `!readings.isEmpty` below holds regardless.
 @Suite("SMC sensor provider, real hardware", .enabled(if: SMCConnection.isHardwareAvailable()))
 struct SMCSensorProviderHardwareTests {
 

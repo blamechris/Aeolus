@@ -165,6 +165,46 @@ struct SMCConnectionKeyCountPlausibilityTests {
     }
 }
 
+/// `SMCConnection.decodeKeyCountFallback(value:)` is the fix for the blocker found in
+/// review of #34: without it, a machine whose SMC interface generation cannot be
+/// determined gets zero sensor readings at all, not just degraded display-grade
+/// integers, because `#KEY` itself is a plain integer and `readAll()`/
+/// `verifyKeyCountCrossCheck()` cannot proceed without a key count. Pure and
+/// synchronous — no hardware, no actor, no connection needed — since it operates only on
+/// an already-constructed `SMCValue`.
+@Suite("SMC #KEY generation-undetermined fallback decode")
+struct SMCConnectionKeyCountFallbackTests {
+
+    @Test("#KEY's captured Mac16,5 bytes decode to 3385 via the fallback, matching the resolver")
+    func decodesTheCapturedBytes() {
+        // Same raw bytes as SMCByteOrderCapturedBytesTests.keyCountDecodesBigEndian, so
+        // the fallback and the resolver agree on the one case this project has observed.
+        let value = SMCValue(key: SMCKey.keyCount, type: .ui32, bytes: [0x00, 0x00, 0x0D, 0x39])
+        #expect(SMCConnection.decodeKeyCountFallback(value: value) == 3385)
+    }
+
+    @Test("A key other than #KEY is refused, even with #KEY's own type and bytes")
+    func refusesAKeyThatIsNotKeyCount() {
+        let value = SMCValue(key: SMCKey("RBID")!, type: .ui32, bytes: [0x00, 0x00, 0x0D, 0x39])
+        #expect(SMCConnection.decodeKeyCountFallback(value: value) == nil)
+    }
+
+    @Test("A type other than ui32 is refused, even for the #KEY key itself")
+    func refusesAWrongType() {
+        let value = SMCValue(key: SMCKey.keyCount, type: .ui16, bytes: [0x0D, 0x39])
+        #expect(SMCConnection.decodeKeyCountFallback(value: value) == nil)
+    }
+
+    @Test("A byte count other than 4 is refused rather than decoding a partial value")
+    func refusesTheWrongByteCount() {
+        let short = SMCValue(key: SMCKey.keyCount, type: .ui32, bytes: [0x0D, 0x39])
+        let long = SMCValue(
+            key: SMCKey.keyCount, type: .ui32, bytes: [0x00, 0x00, 0x00, 0x0D, 0x39])
+        #expect(SMCConnection.decodeKeyCountFallback(value: short) == nil)
+        #expect(SMCConnection.decodeKeyCountFallback(value: long) == nil)
+    }
+}
+
 /// Facts true of *any* machine exposing the `AppleSMC` IOService: enumeration completes,
 /// `#KEY`'s own value is what the walk uses as its bound, and a failed key read never
 /// aborts the walk. Gated only on `SMCConnection.isHardwareAvailable()` — cheap,
@@ -172,6 +212,15 @@ struct SMCConnectionKeyCountPlausibilityTests {
 /// real Mac including CI's absence. Nothing here assumes a fan exists, a specific key
 /// exists, or a specific count — see `SMCConnectionMac165Tests` below for assertions that
 /// are actually facts about this project's one verified machine.
+///
+/// Deliberately *not* additionally gated on the SMC interface generation being
+/// resolvable: `keyCount()`'s fallback (`decodeKeyCountFallback(value:)`) means
+/// enumeration completes regardless of whether this machine's generation is detectable,
+/// so these are still facts about "a Mac with an SMC," not "a Mac this project can fully
+/// classify" — the split this suite exists to honour (see #29). Only
+/// `SMCConnectionMac165Tests.interfaceGenerationResolvesModern()` below asserts anything
+/// about generation detection itself, and stays gated on `isDevelopmentMachine()` because
+/// that assertion genuinely is a fact about one machine, not every Mac.
 @Suite("SMC connection, real hardware", .enabled(if: SMCConnection.isHardwareAvailable()))
 struct SMCConnectionHardwareTests {
 
