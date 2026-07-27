@@ -19,6 +19,53 @@ public protocol SensorProvider: Sendable {
     /// Discovery is dynamic. An unrecognised Mac must still show every sensor it has,
     /// unlabelled, and remain fully functional — the catalog only decorates.
     func readAll() async throws -> [SensorReading]
+
+    /// Reads a subset of keys directly, without a prior full `readAll()`. The reason
+    /// this lives on the protocol rather than only on `SMCSensorProvider`: E7's
+    /// monitoring UI and E10a's `fanctl` read commands both need to refresh a handful of
+    /// keys cheaply and repeatedly, and programming against the protocol means a future
+    /// second provider (`IOHIDEventSystemClient`, if one is ever added) has to answer
+    /// the same question rather than letting callers special-case `SMCSensorProvider`.
+    ///
+    /// One outcome per requested key, in the order requested — never a filtered array.
+    /// A caller asking for 40 keys and getting 3 failures must be able to tell which 3
+    /// failed, not silently receive 37 successes and infer the rest.
+    func read(keys: [String]) async throws -> [SensorReadOutcome]
+}
+
+/// One key's outcome from `SensorProvider.read(keys:)`.
+public struct SensorReadOutcome: Sendable, Hashable {
+    /// The raw key exactly as requested — always retained, even on failure, so a caller
+    /// can match outcomes back to what it asked for without assuming array order.
+    public let key: String
+    public let result: Result<SensorReading, SensorReadFailure>
+
+    public init(key: String, result: Result<SensorReading, SensorReadFailure>) {
+        self.key = key
+        self.result = result
+    }
+}
+
+/// Why a single key in a `SensorProvider.read(keys:)` subset read did not produce a
+/// reading.
+///
+/// Deliberately provider-agnostic rather than `SMCError`: `SensorProvider` is the shared
+/// abstraction over potentially more than one sensor source (see this file's own
+/// documentation on why the SMC is not assumed to be the only one), and a future
+/// non-SMC provider would have its own failure vocabulary. This is what any conforming
+/// provider can promise a caller, regardless of backend.
+public enum SensorReadFailure: Error, Sendable, Hashable {
+    /// The provider does not recognise this key as one it can read at all — including a
+    /// string that is not even well-formed for this provider's key space. Never a
+    /// fabricated zero-valued reading; see `SMCSensorProvider.read(keys:)`.
+    case unknownKey(String)
+    /// The key is recognised but reading it failed. `reason` is the provider's own
+    /// human-readable description (e.g. an `SMCError`'s), carried for diagnostics only —
+    /// never parsed or matched on by a caller.
+    case readFailed(reason: String)
+    /// The provider produced a value but it does not decode to a usable reading — for
+    /// example a non-numeric SMC type, or a scalar decode that itself failed.
+    case notDecodable(reason: String)
 }
 
 /// One sensor reading at one instant.
@@ -111,10 +158,13 @@ public struct SMCSensorProvider: SensorProvider {
         var readings: [SensorReading] = []
         readings.reserveCapacity(count)
         var walkedKeys = 0
+        var discoveredKeys: Set<SMCKey> = []
+        discoveredKeys.reserveCapacity(count)
 
         for index in 0..<count {
             guard let key = try? await connection.key(at: index) else { continue }
             walkedKeys += 1
+            discoveredKeys.insert(key)
             guard let value = try? await connection.read(key) else { continue }
             guard let scalar = try? value.scalar() else { continue }
 
@@ -129,12 +179,107 @@ public struct SMCSensorProvider: SensorProvider {
         }
 
         let keyExistsPastDeclaredCount = (try? await connection.key(at: count)) != nil
-        SMCConnection.logCrossCheck(
-            KeyCountCrossCheck(
-                declaredCount: count, walkedCount: walkedKeys,
-                keyExistsPastDeclaredCount: keyExistsPastDeclaredCount))
+        let crossCheck = KeyCountCrossCheck(
+            declaredCount: count, walkedCount: walkedKeys,
+            keyExistsPastDeclaredCount: keyExistsPastDeclaredCount)
+        SMCConnection.logCrossCheck(crossCheck)
+
+        // Discovery — the point of this issue: every key this walk actually resolved
+        // (regardless of whether its value went on to read successfully) is recorded as
+        // the machine's known key set, so a later read(keys:) can answer "does this
+        // machine expose this key" without spending a round trip on it. See
+        // SMCConnection.markDiscoveryComplete(_:).
+        //
+        // Only when the cross-check actually matches, though: if it does not,
+        // discoveredKeys is not the complete key set — some index inside 0..<count
+        // failed to resolve, or a key exists past the declared bound the walk never
+        // looked at — and marking it complete anyway would let read(keys:) report a
+        // false .keyNotFound for a key that is genuinely there but simply wasn't reached
+        // this time. An incomplete walk leaves knownKeys exactly as it was: unset if this
+        // is the first attempt, or whatever a previous complete walk established.
+        if crossCheck.matches {
+            await connection.markDiscoveryComplete(discoveredKeys)
+        }
 
         return readings
+    }
+
+    /// Reads a subset of keys directly — see `SensorProvider.read(keys:)`. Never requires
+    /// a prior `readAll()`: `open()` is idempotent, so calling it here costs nothing once
+    /// a connection already exists and makes a bare `read(keys:)` call work standalone.
+    /// Malformed key strings (not exactly four ASCII characters) are reported as
+    /// `.unknownKey` rather than thrown, consistent with every other outcome here being
+    /// per-key rather than aborting the whole request.
+    public func read(keys: [String]) async throws -> [SensorReadOutcome] {
+        var smcKeys: [String: SMCKey] = [:]
+        smcKeys.reserveCapacity(keys.count)
+        var malformed: Set<String> = []
+
+        for raw in keys where smcKeys[raw] == nil && !malformed.contains(raw) {
+            if let key = SMCKey(raw) {
+                smcKeys[raw] = key
+            } else {
+                malformed.insert(raw)
+            }
+        }
+
+        // A request made entirely of malformed strings has nothing to actually read, so
+        // it needs no connection at all — opening one would fail with a hardware error
+        // (no AppleSMC service) that has nothing to do with why this request failed, and
+        // would make "every key I asked for was spelled wrong" indistinguishable from
+        // "there is no SMC on this machine."
+        let outcomesByKey: [SMCKey: SMCKeyReadOutcome]
+        if smcKeys.isEmpty {
+            outcomesByKey = [:]
+        } else {
+            try await connection.open()
+            outcomesByKey = await connection.read(keys: Array(smcKeys.values))
+                .reduce(into: [SMCKey: SMCKeyReadOutcome]()) { $0[$1.key] = $1 }
+        }
+
+        return keys.map { raw in
+            if malformed.contains(raw) {
+                return SensorReadOutcome(key: raw, result: .failure(.unknownKey(raw)))
+            }
+            guard let smcKey = smcKeys[raw], let outcome = outcomesByKey[smcKey] else {
+                // Unreachable in practice: every non-malformed raw string produced an
+                // SMCKey above and was included in the request to connection.read(keys:),
+                // which returns exactly one outcome per requested key. Reported rather
+                // than force-unwrapped so a violated assumption surfaces as a normal
+                // per-key failure instead of a crash.
+                return SensorReadOutcome(
+                    key: raw, result: .failure(.readFailed(reason: "no outcome returned")))
+            }
+            return SensorReadOutcome(
+                key: raw, result: sensorResult(for: smcKey, outcome))
+        }
+    }
+
+    /// Converts one `SMCKeyReadOutcome` into the provider-agnostic `SensorReadOutcome`
+    /// vocabulary — see `SensorReadFailure` for why this does not simply pass `SMCError`
+    /// through.
+    private func sensorResult(
+        for key: SMCKey, _ outcome: SMCKeyReadOutcome
+    ) -> Result<SensorReading, SensorReadFailure> {
+        switch outcome.result {
+        case .failure(.keyNotFound(let missingKey)):
+            return .failure(.unknownKey(missingKey.rawValue))
+        case .failure(let error):
+            return .failure(.readFailed(reason: String(describing: error)))
+        case .success(let value):
+            do {
+                guard let scalar = try value.scalar() else {
+                    return .failure(
+                        .notDecodable(reason: "\(value.type.fourCharString) is not numeric"))
+                }
+                return .success(
+                    SensorReading(
+                        key: key.rawValue, value: scalar, kind: Self.kind(for: key),
+                        providerIdentifier: identifier))
+            } catch {
+                return .failure(.notDecodable(reason: String(describing: error)))
+            }
+        }
     }
 
     /// Classifies a key's physical kind using only the fan-key naming convention

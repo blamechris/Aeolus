@@ -94,6 +94,168 @@ struct SMCConnectionUnopenedTests {
     }
 }
 
+/// The read cache #32 adds: populated once, reused, invalidated correctly, and a subset
+/// read that skips a round trip once it is warm — all provable without hardware, by
+/// seeding the cache directly (see `SMCConnection`'s test-only seams) and observing
+/// behaviour on a connection that is deliberately never opened. If a lookup returns
+/// without throwing `SMCError.connectionFailed`, or `readKeyInfoAttempts`/
+/// `readIndexAttempts` stays at 0, that lookup could not have reached IOKit — the guard
+/// at the top of `call(key:selector:data32:dataSize:)` throws immediately on an unopened
+/// connection, before any wire call, so the only way to avoid that is a cache hit.
+@Suite("SMC connection, read cache")
+struct SMCConnectionCacheTests {
+
+    @Test("keyInfo(for:) returns a seeded entry without attempting READ_KEYINFO")
+    func keyInfoServesFromCache() async throws {
+        let connection = SMCConnection()
+        let key = SMCKey("F0Ac")!
+        let info = SMCKeyInfo(key: key, type: .flt, dataSize: 4, attributes: 0x80)
+        await connection.seedKeyInfoCacheForTesting(info)
+
+        let result = try await connection.keyInfo(for: key)
+        #expect(result == info)
+        #expect(await connection.readKeyInfoAttempts == 0)
+    }
+
+    @Test("keyInfo(for:) on a cold cache attempts READ_KEYINFO and fails without a connection")
+    func keyInfoColdCacheAttemptsAndFails() async {
+        let connection = SMCConnection()
+        await #expect(throws: SMCError.self) {
+            _ = try await connection.keyInfo(for: SMCKey("F0Ac")!)
+        }
+        #expect(await connection.readKeyInfoAttempts == 1)
+    }
+
+    @Test("key(at:) returns a seeded entry without attempting READ_INDEX")
+    func keyAtIndexServesFromCache() async throws {
+        let connection = SMCConnection()
+        let key = SMCKey("F0Ac")!
+        await connection.seedKeyTableCacheForTesting(index: 0, key: key)
+
+        let result = try await connection.key(at: 0)
+        #expect(result == key)
+        #expect(await connection.readIndexAttempts == 0)
+    }
+
+    @Test("key(at:) on a cold cache attempts READ_INDEX and fails without a connection")
+    func keyAtIndexColdCacheAttemptsAndFails() async {
+        let connection = SMCConnection()
+        await #expect(throws: SMCError.self) {
+            _ = try await connection.key(at: 0)
+        }
+        #expect(await connection.readIndexAttempts == 1)
+    }
+
+    @Test("invalidate() forces keyInfo(for:) to rediscover rather than trust the seeded entry")
+    func invalidateClearsKeyInfoCache() async {
+        let connection = SMCConnection()
+        let key = SMCKey("F0Ac")!
+        await connection.seedKeyInfoCacheForTesting(
+            SMCKeyInfo(key: key, type: .flt, dataSize: 4, attributes: 0x80))
+        await connection.invalidate()
+
+        await #expect(throws: SMCError.self) {
+            _ = try await connection.keyInfo(for: key)
+        }
+        #expect(await connection.readKeyInfoAttempts == 1)
+    }
+
+    @Test("invalidate() forces key(at:) to rediscover rather than trust the seeded entry")
+    func invalidateClearsKeyTableCache() async {
+        let connection = SMCConnection()
+        await connection.seedKeyTableCacheForTesting(index: 0, key: SMCKey("F0Ac")!)
+        await connection.invalidate()
+
+        await #expect(throws: SMCError.self) {
+            _ = try await connection.key(at: 0)
+        }
+        #expect(await connection.readIndexAttempts == 1)
+    }
+
+    @Test("read(_:) with a warm keyInfo cache skips READ_KEYINFO and only attempts READ_BYTES")
+    func readSkipsKeyInfoOnWarmCache() async {
+        let connection = SMCConnection()
+        let key = SMCKey("F0Ac")!
+        await connection.seedKeyInfoCacheForTesting(
+            SMCKeyInfo(key: key, type: .flt, dataSize: 4, attributes: 0x80))
+
+        // The connection is never opened, so the READ_BYTES attempt this makes is bound
+        // to fail — the point is *which* round trip was skipped, not that this succeeds.
+        await #expect(throws: SMCError.self) {
+            _ = try await connection.read(key)
+        }
+        #expect(await connection.readKeyInfoAttempts == 0)
+    }
+
+    @Test("read(_:) on a cold cache attempts READ_KEYINFO first")
+    func readAttemptsKeyInfoOnColdCache() async {
+        let connection = SMCConnection()
+        await #expect(throws: SMCError.self) {
+            _ = try await connection.read(SMCKey("F0Ac")!)
+        }
+        #expect(await connection.readKeyInfoAttempts == 1)
+    }
+
+    @Test("read(keys:) returns one outcome per requested key, in the order requested")
+    func readKeysReturnsOneOutcomePerKey() async {
+        let connection = SMCConnection()
+        let keys = [SMCKey("F0Ac")!, SMCKey("F0Tg")!, SMCKey("F0Ac")!]
+
+        let outcomes = await connection.read(keys: keys)
+
+        #expect(outcomes.map(\.key) == keys)
+    }
+
+    @Test("read(keys:) reports keyNotFound at zero round trips once discovery excludes the key")
+    func readKeysReportsKeyNotFoundAfterDiscovery() async {
+        let connection = SMCConnection()
+        let known = SMCKey("F0Ac")!
+        let missing = SMCKey("ZZZZ")!
+        await connection.markDiscoveryComplete([known])
+
+        let outcomes = await connection.read(keys: [missing])
+
+        let expected = SMCKeyReadOutcome(key: missing, result: .failure(.keyNotFound(missing)))
+        #expect(outcomes == [expected])
+        // Zero round trips: the connection was never opened, and a real attempt would
+        // have incremented this from a READ_KEYINFO call.
+        #expect(await connection.readKeyInfoAttempts == 0)
+    }
+
+    @Test("read(keys:) attempts a key discovery confirmed exists, rather than assuming success")
+    func readKeysAttemptsAKnownKey() async {
+        let connection = SMCConnection()
+        let key = SMCKey("F0Ac")!
+        await connection.markDiscoveryComplete([key])
+
+        let outcomes = await connection.read(keys: [key])
+
+        guard case .failure(let error) = outcomes[0].result else {
+            Issue.record("expected a failure — the connection was never opened")
+            return
+        }
+        // Confirmed known, so this must be a real attempt (connectionFailed, since the
+        // connection is closed), never a fabricated keyNotFound.
+        #expect(error != .keyNotFound(key))
+        #expect(await connection.readKeyInfoAttempts == 1)
+    }
+
+    @Test("read(keys:) before any full discovery attempts every key rather than assuming unknown")
+    func readKeysAttemptsBeforeDiscovery() async {
+        let connection = SMCConnection()
+        let key = SMCKey("ZZZZ")!
+
+        let outcomes = await connection.read(keys: [key])
+
+        guard case .failure(let error) = outcomes[0].result else {
+            Issue.record("expected a failure — the connection was never opened")
+            return
+        }
+        #expect(error != .keyNotFound(key))
+        #expect(await connection.readKeyInfoAttempts == 1)
+    }
+}
+
 /// The one `open()` failure mode this project can exercise without hardware: no
 /// `AppleSMC` IOService at all, which is exactly CI's situation (GitHub's macOS runners
 /// are VMs with no SMC) and therefore runs there, not on `Mac16,5`. `IOServiceOpen`
