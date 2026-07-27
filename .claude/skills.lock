@@ -73,6 +73,14 @@
         "claude"
       ]
     },
+    "prime-directive": {
+      "hash": "d318c59",
+      "installed": "2026-07-27",
+      "profileHash": "d0531c0",
+      "targets": [
+        "claude"
+      ]
+    },
     "skill": {
       "hash": "f937026",
       "installed": "2026-07-25",
