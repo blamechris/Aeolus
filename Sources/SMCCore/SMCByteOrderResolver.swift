@@ -104,11 +104,30 @@ public struct KeyCountCrossCheck: Sendable, Hashable {
     public let declaredCount: Int
     /// The number of indices `0..<declaredCount` for which `key(at:)` succeeded.
     public let walkedCount: Int
+    /// Whether a key exists at index `declaredCount` — one past the declared bound.
+    ///
+    /// The walk that produces `walkedCount` is bounded by `declaredCount`, so on its own
+    /// it can only ever detect a declared count that is too *large* (some indices in
+    /// `0..<declaredCount` fail). A declared count that is too *small* walks exactly that
+    /// many indices, every one succeeds, `walkedCount == declaredCount`, and the walk alone
+    /// reports a spurious match while a real key sits one past where the walk stopped
+    /// looking and enumeration silently truncates it. This field closes that half of the
+    /// blind spot: `true` means the table has at least one more entry than `#KEY` claimed.
+    /// Defaults to `false` — "no evidence of undercounting" — for call sites that have not
+    /// probed this index; see `matches`.
+    public let keyExistsPastDeclaredCount: Bool
 
-    public init(declaredCount: Int, walkedCount: Int) {
+    public init(
+        declaredCount: Int, walkedCount: Int, keyExistsPastDeclaredCount: Bool = false
+    ) {
         self.declaredCount = declaredCount
         self.walkedCount = walkedCount
+        self.keyExistsPastDeclaredCount = keyExistsPastDeclaredCount
     }
 
-    public var matches: Bool { declaredCount == walkedCount }
+    /// `true` only when the walk found exactly `declaredCount` keys **and** nothing exists
+    /// past that bound — the two-sided check. A one-sided caller that never probed
+    /// `declaredCount` itself leaves `keyExistsPastDeclaredCount` at its `false` default,
+    /// so `matches` there still reduces to the original `declaredCount == walkedCount`.
+    public var matches: Bool { declaredCount == walkedCount && !keyExistsPastDeclaredCount }
 }

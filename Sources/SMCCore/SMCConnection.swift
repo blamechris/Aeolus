@@ -413,6 +413,14 @@ public actor SMCConnection {
     /// Intended to run once, near startup. `SMCSensorProvider.readAll()` performs the same
     /// comparison from the walk it already does for enumeration, at no extra cost; this
     /// method is the standalone, independently testable version of that check.
+    ///
+    /// - Note: The walk bounded by `0..<declaredCount` is one-sided — it can only detect a
+    ///   declared count that is too *large* (some index inside the bound fails). A count
+    ///   that is too *small* would walk exactly that many indices, all succeed, and report
+    ///   a spurious match while a real key sits just past where the walk stopped looking.
+    ///   This method additionally probes index `declaredCount` itself and expects it to
+    ///   fail; `KeyCountCrossCheck.keyExistsPastDeclaredCount` carries the result, and
+    ///   `matches` folds it in, making the tripwire two-sided.
     public func verifyKeyCountCrossCheck() throws -> KeyCountCrossCheck {
         let declaredCount = try keyCount()
 
@@ -420,8 +428,11 @@ public actor SMCConnection {
         for index in 0..<declaredCount where (try? key(at: index)) != nil {
             walkedCount += 1
         }
+        let keyExistsPastDeclaredCount = (try? key(at: declaredCount)) != nil
 
-        let result = KeyCountCrossCheck(declaredCount: declaredCount, walkedCount: walkedCount)
+        let result = KeyCountCrossCheck(
+            declaredCount: declaredCount, walkedCount: walkedCount,
+            keyExistsPastDeclaredCount: keyExistsPastDeclaredCount)
         Self.logCrossCheck(result)
         return result
     }
@@ -434,9 +445,12 @@ public actor SMCConnection {
         logger.fault(
             """
             #KEY cross-check failed: the firmware declares \
-            \(result.declaredCount, privacy: .public) keys but only \
-            \(result.walkedCount, privacy: .public) were walkable. This is the tripwire on \
-            ADR 0003's byte-order hypothesis — see docs/ADR/0003-integer-byte-order.md.
+            \(result.declaredCount, privacy: .public) keys, \
+            \(result.walkedCount, privacy: .public) were walkable in that range, and a key \
+            past the declared bound \
+            \(result.keyExistsPastDeclaredCount ? "exists" : "does not exist", privacy: .public). \
+            This is the tripwire on ADR 0003's byte-order hypothesis — see \
+            docs/ADR/0003-integer-byte-order.md.
             """
         )
     }

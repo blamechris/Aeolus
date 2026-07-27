@@ -205,6 +205,42 @@ struct SMCConnectionKeyCountFallbackTests {
     }
 }
 
+/// `KeyCountCrossCheck.matches` folding in `keyExistsPastDeclaredCount` is what makes the
+/// tripwire two-sided: a declared count that undercounts the real table walks and
+/// succeeds on every index inside its own (too-small) bound, so `declaredCount ==
+/// walkedCount` alone reports a spurious match. Pure struct logic, no hardware.
+@Suite("KeyCountCrossCheck — two-sided matches")
+struct KeyCountCrossCheckMatchesTests {
+
+    @Test("Equal counts with nothing past the bound: matches")
+    func equalCountsNothingPastBoundMatches() {
+        let result = KeyCountCrossCheck(declaredCount: 3385, walkedCount: 3385)
+        #expect(result.matches)
+    }
+
+    @Test("Equal counts but a key exists past the declared bound: does not match")
+    func equalCountsButUndercountedDoesNotMatch() {
+        // The exact blind spot this field closes: a #KEY that undercounts the real table
+        // would otherwise report a clean match here.
+        let result = KeyCountCrossCheck(
+            declaredCount: 3385, walkedCount: 3385, keyExistsPastDeclaredCount: true)
+        #expect(!result.matches)
+    }
+
+    @Test("Unequal counts still do not match, regardless of the past-bound probe")
+    func unequalCountsDoNotMatch() {
+        let result = KeyCountCrossCheck(declaredCount: 3385, walkedCount: 3000)
+        #expect(!result.matches)
+    }
+
+    @Test("keyExistsPastDeclaredCount defaults to false for one-sided callers")
+    func defaultsToFalse() {
+        let result = KeyCountCrossCheck(declaredCount: 10, walkedCount: 10)
+        #expect(!result.keyExistsPastDeclaredCount)
+        #expect(result.matches)
+    }
+}
+
 /// Facts true of *any* machine exposing the `AppleSMC` IOService: enumeration completes,
 /// `#KEY`'s own value is what the walk uses as its bound, and a failed key read never
 /// aborts the walk. Gated only on `SMCConnection.isHardwareAvailable()` — cheap,

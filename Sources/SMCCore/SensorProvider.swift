@@ -101,7 +101,9 @@ public struct SMCSensorProvider: SensorProvider {
     /// Also runs the `#KEY` cross-check (ADR 0003's tripwire on the byte-order resolver)
     /// using the walk this enumeration is already doing, rather than repeating it — see
     /// `SMCConnection.verifyKeyCountCrossCheck()` for a standalone version of the same
-    /// comparison.
+    /// comparison, including why it also probes one index past `count`: a declared count
+    /// that is too small walks and succeeds on every index inside its own bound, so that
+    /// alone cannot detect undercounting — only the probe can.
     public func readAll() async throws -> [SensorReading] {
         try await connection.open()
         let count = try await connection.keyCount()
@@ -126,8 +128,11 @@ public struct SMCSensorProvider: SensorProvider {
             )
         }
 
+        let keyExistsPastDeclaredCount = (try? await connection.key(at: count)) != nil
         SMCConnection.logCrossCheck(
-            KeyCountCrossCheck(declaredCount: count, walkedCount: walkedKeys))
+            KeyCountCrossCheck(
+                declaredCount: count, walkedCount: walkedKeys,
+                keyExistsPastDeclaredCount: keyExistsPastDeclaredCount))
 
         return readings
     }
