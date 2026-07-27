@@ -1,9 +1,17 @@
 # ADR 0003 — Integer byte order is resolved from firmware-declared metadata, not from the declared type alone
 
-- **Status:** Accepted
+- **Status:** Accepted, amended by [ADR 0004](0004-float-byte-order.md)
 - **Date:** 2026-07-25
 - **Deciders:** Project maintainer
 - **Supersedes:** — (amends the "key on the declared type" principle in ARCHITECTURE.md)
+- **Amended by:** [ADR 0004](0004-float-byte-order.md) — extends per-key byte-order
+  resolution to `flt` and `ioft` on the modern interface
+
+> **Read ADR 0004 before implementing against this one.** This ADR scopes per-key byte
+> order to the plain integers and decodes `flt`/`ioft` little-endian unconditionally by
+> type. ADR 0004 found that carve-out unsupported by the evidence and extends the resolver
+> to cover them on the modern interface. Everything else here — the generation split, the
+> attribute-bit rule, the fail-safe, the `#KEY` cross-check — stands unchanged.
 
 ## Context
 

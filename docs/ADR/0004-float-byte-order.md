@@ -18,7 +18,7 @@ during this decision rather than taken from the original dump:
 
 - All **2073** `flt` keys carry bit `0x04` **set** — including the 9 unreadable ones. Of 11
   `ioft` keys, 10 are bit-set; the sole bit-clear key (`pcHS`, attrs `0xF0`) is unreadable, and
-  Asahi independently notes that `0xf0`-flagged keys do not return values reliably. **The machine
+  Asahi independently notes that `0xF0`-flagged keys do not return values reliably. **The machine
   contains no readable key that can distinguish "the type is little-endian" from "the bit is
   set."** Every local observation supports both hypotheses equally.
 - Every control-path fan key is individually bit-set: `F0Ac`/`F1Ac` (132), `F0Mn`/`F1Mn` (132),
