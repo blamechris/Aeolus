@@ -1,6 +1,6 @@
 # ADR 0004 — `flt` and `ioft` resolve byte order per key on the modern interface, like the plain integers
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-26
 - **Deciders:** Project maintainer
 - **Supersedes:** — (amends ADR 0003, which scoped per-key resolution to plain integers)

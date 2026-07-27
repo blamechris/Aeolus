@@ -1,7 +1,8 @@
 import Foundation
+import os
 
-/// The two SMC firmware interface generations, each with its own rule for how a plain
-/// integer key's byte order is determined. See `resolveByteOrder(generation:attributes:)`.
+/// The two SMC firmware interface generations, each with its own rule for how a key's
+/// byte order is determined. See `resolveByteOrder(generation:attributes:type:)`.
 ///
 /// Detected once per connection from the `AppleSMC` IOService's own IORegistry
 /// provenance — never from `uname -m`/`utsname`. Those report the architecture of the
@@ -20,31 +21,50 @@ public enum SMCByteOrder: Sendable, Hashable {
     case bigEndian
 }
 
-/// Resolves the byte order of a **plain integer** key (`ui16`, `si16`, `ui32`, `si32`,
-/// `ui64`, `si64`) from firmware-declared metadata.
+/// Resolves the byte order of a numeric SMC key from firmware-declared metadata.
 ///
 /// This is deliberately the only function in the codebase that knows about the bit-`0x04`
 /// hypothesis. Every citation and every condition that would falsify the hypothesis is
 /// documented here, and nowhere else, so that if the hypothesis is falsified the retreat
-/// is a change to this one function — see ADR 0003's designated fallback.
+/// is a change to this one function.
 ///
-/// Does **not** apply to `flt`/`ioft` (little-endian by construction) or
-/// `fpe2`/`fp78`/`sp78` (big-endian by definition of the type). Those five types decode
-/// unconditionally in `SMCValue.scalar()` and never call this function.
+/// [ADR 0003](../../docs/ADR/0003-integer-byte-order.md) established the rule for the six
+/// plain-integer types. [ADR 0004](../../docs/ADR/0004-float-byte-order.md) extended it to
+/// `flt`/`ioft`, which this function previously decoded unconditionally little-endian by
+/// type, bypassing this resolver entirely. Read ADR 0004 before changing anything below.
 ///
 /// ## The rule
 ///
-/// - **`.legacy`** (Intel-era SMC): always `.bigEndian`. The attribute byte is **not**
-///   consulted for byte order on this generation — VirtualSMC documents bit `0x04` there
-///   as `ATTR_ATOMIC`, an unrelated meaning. Applying the modern rule on legacy firmware
-///   would actively corrupt Intel readings, not merely leave them unresolved.
-/// - **`.modern`** (Apple Silicon SMC): bit `0x04` of `attributes` set → `.littleEndian`;
-///   clear → `.bigEndian`.
+/// - **The plain integers** (`ui16`, `si16`, `ui32`, `si32`, `ui64`, `si64`) **and,
+///   since ADR 0004, `flt`/`ioft`:**
+///   - **`.legacy`** (Intel-era SMC): the plain integers are `.bigEndian` unconditionally,
+///     by type; `flt`/`ioft` are `.littleEndian` unconditionally, by type. The attribute
+///     byte is **not** consulted for byte order on this generation for either group —
+///     VirtualSMC documents bit `0x04` there as `ATTR_ATOMIC`, an unrelated meaning, and
+///     applying the modern rule on legacy firmware would actively corrupt Intel readings,
+///     not merely leave them unresolved.
+///   - **`.modern`** (Apple Silicon SMC): bit `0x04` of `attributes` set → `.littleEndian`;
+///     clear → `.bigEndian`. The identical formula for both groups — ADR 0004 found no
+///     evidentiary basis to treat `flt`/`ioft` differently from the plain integers on this
+///     generation, and the asymmetric failure mode (a silently wrong `F0Mx`, with no
+///     fail-safe at all under the prior rule) argued for folding them in rather than
+///     carving them out.
+/// - **`fpe2`/`fp78`/`sp78`:** `.bigEndian`, unconditionally, on both generations, by
+///   *definition* of the type — genuinely fixed, never firmware-declared, never consults
+///   the attribute byte. These are Intel-only formats; observing one on `.modern` is not
+///   predicted by any hypothesis this project holds (zero occurrences across the 3385 keys
+///   enumerated on `Mac16,5`), so this function logs it as an anomaly via
+///   `logUnexpectedFixedPointOnModern(type:)` rather than silently returning a
+///   plausible-looking answer.
+/// - **Every other type** (`ui8`, `si8`, `flag`, and the non-numeric types) has no
+///   meaningful byte order — a single byte, or no numeric interpretation at all — and
+///   falls through to the plain-integer formula above harmlessly: `SMCValue.scalar()`
+///   never consults the result for those types.
 ///
-/// ## Evidence (`Mac16,5`, macOS 26.5.2 — see `docs/SMC-RESEARCH.md` and ADR 0003)
+/// ## Evidence (`Mac16,5`, macOS 26.5.2 — see `docs/SMC-RESEARCH.md`, ADR 0003, ADR 0004)
 ///
-/// 97 supporting cases, zero clean counterexamples. Two results carry the conclusion
-/// beyond a magnitude heuristic:
+/// **The plain-integer half** — 97 supporting cases, zero clean counterexamples. Two
+/// results carry the conclusion beyond a magnitude heuristic:
 ///
 /// - `B0AV` (pack voltage, `ui16`, attrs `132`, bit set) decodes little-endian to
 ///   **12029 mV** — exactly `BC1V + BC2V + BC3V` (4009 + 4011 + 4009). Big-endian it is
@@ -54,19 +74,30 @@ public enum SMCByteOrder: Sendable, Hashable {
 ///   walked index count exactly, with no special case — see
 ///   `SMCConnection.verifyKeyCountCrossCheck()`, the runtime tripwire on this rule.
 ///
+/// **The `flt`/`ioft` half is a provable no-op on this machine, not new evidence.** All
+/// 2073 readable `flt` keys and 10 of 11 readable `ioft` keys carry bit `0x04` **set**, so
+/// every one of them resolves little-endian under this rule — exactly the answer the prior,
+/// unconditional-by-type rule already gave, verified key by key rather than in aggregate.
+/// Every control-path fan key is individually bit-set: `F0Ac`/`F1Ac` (132), `F0Mn`/`F1Mn`
+/// (132), `F0Mx`/`F1Mx` (133), `F0Tg`/`F1Tg` (212). The machine contains **no** readable
+/// bit-clear `flt`/`ioft` key, so it cannot distinguish "byte order is a property of the
+/// type" from "byte order is a property of the bit" for these two types — see ADR 0004's
+/// "No cheap local experiment exists" section.
+///
 /// Independent corroboration, from clean-room sources (documentation consulted, no code
 /// adapted — see `docs/SMC-RESEARCH.md` sources table):
 ///
 /// - The [Asahi Linux SMC documentation](https://asahilinux.org/docs/hw/soc/smc/)
 ///   (independent hardware reverse-engineering) documents the Apple Silicon SMC as
 ///   natively little-endian with a small byte-reversed quirk subset, and names `#KEY` and
-///   `B0RM` explicitly — both bit-clear on this machine, both plain integers, both
-///   squarely within this resolver's own domain. (Asahi separately lists `VP3b` as a
-///   byte-reversed quirk key on M1-era hardware; on this M4 Max `VP3b` is declared `flt`,
-///   a type this resolver never consults — see the "Does not apply to" note above — so its
-///   attribute bit is not evidence for or against the rule below, one way or the other.
-///   Whether bit `0x04` matters for `flt` too is a separate, untested question: see
-///   issue #35.)
+///   `B0RM` explicitly — both bit-clear on this machine, both plain integers. It also
+///   names `VP3b` as byte-reversed on M1-era hardware. On this M4 Max, `VP3b` is `flt`,
+///   attrs `133` (bit set), raw `8020e73f`, decoding little-endian to **1.8057** — bit-set,
+///   so it cannot discriminate the two `flt` hypotheses here either, and ADR 0004 does not
+///   treat it as corroboration. It is, however, the concrete reminder that a byte-reversed
+///   float is a documented phenomenon on other firmware, which is why `flt`/`ioft` are no
+///   longer carved out as immune to it. The designated discriminator is an M1/M2 report of
+///   `VP3b`'s type, attributes, and raw bytes.
 /// - [VirtualSMC](https://github.com/acidanthera/VirtualSMC/blob/master/VirtualSMCSDK/kern_vsmcapi.hpp)
 ///   documents bit `0x04` on Intel as `ATTR_ATOMIC` and shows Intel data keys with that
 ///   bit set decoding big-endian like everything else on that generation — confirmation
@@ -76,33 +107,63 @@ public enum SMCByteOrder: Sendable, Hashable {
 /// ## What would falsify this
 ///
 /// - `SMCConnection.verifyKeyCountCrossCheck()` disagreeing, on any machine.
-/// - Any bit-set integer key on `.modern` that only decodes sanely big-endian, or a
-///   bit-clear key that only decodes sanely little-endian.
-/// - An Intel report contradicting the unconditional big-endian default on `.legacy`.
+/// - Any bit-set key on `.modern` (integer, `flt`, or `ioft`) that only decodes sanely
+///   big-endian, or a bit-clear key that only decodes sanely little-endian.
+/// - An Intel report contradicting the unconditional big-endian default for plain integers
+///   on `.legacy`, or the unconditional little-endian default for `flt`/`ioft` there.
 /// - Apple documenting the attribute byte with a different meaning.
-///
-/// Not addressed here at all: whether this rule's premise — that byte order is a property
-/// of *type*, not of *key*, for `flt`/`ioft` — holds. `Mac16,5` cannot falsify it either
-/// way (every readable `flt`/`ioft` key on this machine carries bit `0x04` set, so it
-/// offers no counterexample regardless of which hypothesis is true), which is exactly why
-/// that question is open and tracked separately rather than folded into "what would
-/// falsify this" above. See issue #35.
+/// - Any hardware report of a readable bit-clear `flt`/`ioft` key — whichever way it
+///   decodes, it is the first direct evidence either hypothesis has ever had for these two
+///   types. Byte-reversed and bit-clear confirms this rule for floats; byte-reversed and
+///   bit-**set** falsifies it (fall back to unconditional little-endian for `flt`/`ioft` on
+///   `.modern`, still a one-function change here).
 ///
 /// The `.modern` half of this rule is, as of this writing, a **single-machine
-/// observation** and stays a hypothesis until a second machine reports. If it is
-/// falsified, the designated fallback (ADR 0003) is: all plain integers little-endian on
-/// `.modern`, with `#KEY` handled by the enumeration layer instead of this rule — still a
-/// one-function change here.
+/// observation** and stays a hypothesis until a second machine reports.
 public func resolveByteOrder(
     generation: SMCInterfaceGeneration,
-    attributes: UInt8
+    attributes: UInt8,
+    type: SMCKeyType
 ) -> SMCByteOrder {
-    switch generation {
-    case .legacy:
+    switch type {
+    case .flt, .ioft:
+        switch generation {
+        case .legacy:
+            return .littleEndian
+        case .modern:
+            return attributes & 0x04 != 0 ? .littleEndian : .bigEndian
+        }
+    case .fpe2, .fp78, .sp78:
+        if generation == .modern {
+            logUnexpectedFixedPointOnModern(type: type)
+        }
         return .bigEndian
-    case .modern:
-        return attributes & 0x04 != 0 ? .littleEndian : .bigEndian
+    default:
+        switch generation {
+        case .legacy:
+            return .bigEndian
+        case .modern:
+            return attributes & 0x04 != 0 ? .littleEndian : .bigEndian
+        }
     }
+}
+
+private let byteOrderResolverLogger = Logger(subsystem: "dev.aeolus.SMCCore", category: "ByteOrder")
+
+/// The anomaly log ADR 0004 asks for: `fpe2`/`fp78`/`sp78` are Intel-only formats with a
+/// byte order fixed by the type, never firmware-declared. Zero occurrences across the 3385
+/// keys enumerated on `Mac16,5` — seeing one on `.modern` would be the first evidence
+/// either way about whether these three types can appear there at all, so it is worth a
+/// loud log rather than a silent decode.
+private func logUnexpectedFixedPointOnModern(type: SMCKeyType) {
+    byteOrderResolverLogger.error(
+        """
+        \(type.fourCharString, privacy: .public) observed on the modern (Apple Silicon) \
+        SMC interface — an Intel-only encoding this project has never seen there (zero \
+        occurrences on Mac16,5). Decoding big-endian, per its fixed type-defined order, but \
+        this is an anomaly worth investigating: see docs/ADR/0004-float-byte-order.md.
+        """
+    )
 }
 
 /// The result of `SMCConnection.verifyKeyCountCrossCheck()`: `#KEY`'s own decoded value

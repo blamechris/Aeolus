@@ -117,7 +117,7 @@ public actor SMCConnection {
     /// Detects which SMC firmware interface `service` is, from the service's own
     /// IORegistry provenance — **never** from `uname -m`/`utsname`, which report the
     /// running process's architecture, not the firmware, and lie outright under Rosetta.
-    /// See ADR 0003 and `resolveByteOrder(generation:attributes:)`.
+    /// See ADR 0003, ADR 0004, and `resolveByteOrder(generation:attributes:type:)`.
     ///
     /// Observed on `Mac16,5`: `IOProviderClass` is `"RTBuddyEndpointService"` — the modern
     /// SMC is reached over the always-on coprocessor's RTKit mailbox, not a direct ACPI
@@ -230,7 +230,7 @@ public actor SMCConnection {
     /// The number of keys this machine exposes, read from `#KEY`.
     ///
     /// `#KEY` declares `ui32` with attribute bit `0x04` clear, so
-    /// `resolveByteOrder(generation:attributes:)` predicts big-endian — exactly what
+    /// `resolveByteOrder(generation:attributes:type:)` predicts big-endian — exactly what
     /// `#KEY` needs, with no special-casing, whenever the interface generation is known.
     /// See `verifyKeyCountCrossCheck()` for the tripwire that checks this decode against an
     /// independent walk of the table.
@@ -267,8 +267,9 @@ public actor SMCConnection {
         return try Self.validatePlausibleKeyCount(decoded)
     }
 
-    /// Decodes `#KEY` directly as big-endian, bypassing `resolveByteOrder(generation:attributes:)`
-    /// and `SMCValue.scalar()` entirely, for the one case both of those correctly refuse:
+    /// Decodes `#KEY` directly as big-endian, bypassing
+    /// `resolveByteOrder(generation:attributes:type:)` and `SMCValue.scalar()` entirely,
+    /// for the one case both of those correctly refuse:
     /// the SMC interface generation could not be determined for this connection.
     ///
     /// This is ADR 0003's own designated fallback shape for exactly this situation —
@@ -283,8 +284,8 @@ public actor SMCConnection {
     ///   construction on one of the two generations this project models.
     /// - Correct on the only `.modern` case this project has observed: `#KEY` on
     ///   `Mac16,5` carries attribute bit `0x04` clear (128), which
-    ///   `resolveByteOrder(generation:attributes:)` already resolves to big-endian when the
-    ///   generation *is* known — see `SMCByteOrderCapturedBytesTests`.
+    ///   `resolveByteOrder(generation:attributes:type:)` already resolves to big-endian
+    ///   when the generation *is* known — see `SMCByteOrderCapturedBytesTests`.
     /// - The Asahi Linux SMC documentation names `#KEY` explicitly as one of the
     ///   byte-reversed quirk keys on Apple Silicon, independent of and prior to this
     ///   project's own attribute-bit hypothesis.
@@ -353,9 +354,11 @@ public actor SMCConnection {
     /// A `dataSize` above the 32-byte payload throws `SMCError.valueTooLargeForSingleRead`
     /// rather than silently truncating: see the type's documentation for why.
     ///
-    /// The returned value's `integerByteOrder` comes from `interfaceGeneration` and the
-    /// key's attribute byte, via `resolveByteOrder(generation:attributes:)` — `nil`, and
-    /// plain-integer keys `nil` from `scalar()`, when the generation is undetermined.
+    /// The returned value's `byteOrder` comes from `interfaceGeneration`, the key's
+    /// attribute byte, and its declared type, via
+    /// `resolveByteOrder(generation:attributes:type:)` — `nil` when the generation is
+    /// undetermined, which in turn makes `scalar()` return `nil` for the plain-integer and
+    /// `flt`/`ioft` keys that consume it (see ADR 0003 and ADR 0004).
     public func read(_ key: SMCKey) throws -> SMCValue {
         let info = try keyInfo(for: key)
 
@@ -366,13 +369,12 @@ public actor SMCConnection {
             throw SMCError.valueTooLargeForSingleRead(key: key, dataSize: info.dataSize)
         }
 
-        let integerByteOrder = generation.map {
-            resolveByteOrder(generation: $0, attributes: info.attributes)
+        let byteOrder = generation.map {
+            resolveByteOrder(generation: $0, attributes: info.attributes, type: info.type)
         }
 
         guard info.dataSize > 0 else {
-            return SMCValue(
-                key: key, type: info.type, bytes: [], integerByteOrder: integerByteOrder)
+            return SMCValue(key: key, type: info.type, bytes: [], byteOrder: byteOrder)
         }
 
         let reply = try call(
@@ -390,11 +392,10 @@ public actor SMCConnection {
                 key: key, declared: info.type, reportedBytes: reply.bytes.count)
         }
 
-        return SMCValue(
-            key: key, type: info.type, bytes: reply.bytes, integerByteOrder: integerByteOrder)
+        return SMCValue(key: key, type: info.type, bytes: reply.bytes, byteOrder: byteOrder)
     }
 
-    /// A free runtime tripwire on `resolveByteOrder(generation:attributes:)`'s central
+    /// A free runtime tripwire on `resolveByteOrder(generation:attributes:type:)`'s central
     /// hypothesis (ADR 0003): `#KEY`'s own decoded value should exactly equal the number of
     /// indices this connection can actually retrieve by walking the key table from 0. `#KEY`
     /// is decoded by the very resolver this checks, so a wrong rule is likely to show up

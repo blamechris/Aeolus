@@ -2,47 +2,56 @@ import Foundation
 import os
 
 /// A raw SMC read: the declared type, the bytes the firmware handed back, and — for the
-/// plain integer types only — the byte order resolved for this key by `SMCConnection`.
+/// types whose byte order is firmware-declared per key rather than fixed by the type —
+/// the byte order resolved for this key by `SMCConnection`.
 ///
-/// Decoding is driven by `type`. The one exception is deliberate: byte order for a plain
-/// integer is not implied by its declared type, so it travels alongside the value instead
-/// — see `integerByteOrder` and `docs/ADR/0003-integer-byte-order.md`.
+/// Decoding is driven by `type`. The one exception is deliberate: byte order is not
+/// implied by the declared type for every numeric format, so it travels alongside the
+/// value instead — see `byteOrder`, `docs/ADR/0003-integer-byte-order.md`, and
+/// `docs/ADR/0004-float-byte-order.md`.
 public struct SMCValue: Sendable, Hashable {
     public let key: SMCKey
     public let type: SMCKeyType
     public let bytes: [UInt8]
 
-    /// The byte order resolved for this key's plain-integer decode, or `nil` if the SMC
-    /// interface generation could not be determined for the connection that produced this
-    /// value. Ignored by every type except `ui16`/`si16`/`ui32`/`si32`/`ui64`/`si64` — see
-    /// `scalar()`.
-    public let integerByteOrder: SMCByteOrder?
+    /// The byte order resolved for this key by
+    /// `resolveByteOrder(generation:attributes:type:)`, or `nil` if the SMC interface
+    /// generation could not be determined for the connection that produced this value.
+    ///
+    /// Consumed by `scalar()` for the six plain-integer types
+    /// (`ui16`/`si16`/`ui32`/`si32`/`ui64`/`si64`) and, since ADR 0004, `flt`/`ioft` — the
+    /// types whose byte order the firmware declares per key rather than fixing by type.
+    /// Ignored by every other type: `fpe2`/`fp78`/`sp78` are big-endian by definition of
+    /// the type, and `ui8`/`si8`/`flag` are a single byte with no order to resolve.
+    public let byteOrder: SMCByteOrder?
 
     public init(
-        key: SMCKey, type: SMCKeyType, bytes: [UInt8], integerByteOrder: SMCByteOrder? = nil
+        key: SMCKey, type: SMCKeyType, bytes: [UInt8], byteOrder: SMCByteOrder? = nil
     ) {
         self.key = key
         self.type = type
         self.bytes = bytes
-        self.integerByteOrder = integerByteOrder
+        self.byteOrder = byteOrder
     }
 }
 
 extension SMCValue {
     /// Decodes the value as a scalar, or returns `nil` for non-numeric types.
     ///
-    /// Byte order is a genuine, unconditional property of the type for five formats:
-    /// `flt` and `ioft` are little-endian by construction; `fpe2`, `fp78`, and `sp78` are
-    /// big-endian by definition. Those decode below without consulting anything else.
+    /// Byte order is a genuine, unconditional property of the type for exactly three
+    /// formats: `fpe2`, `fp78`, and `sp78` are big-endian by definition. Those decode
+    /// below without consulting anything else.
     ///
     /// It is **not** a property of the type for the plain integers (`ui16`, `si16`,
-    /// `ui32`, `si32`, `ui64`, `si64`). Byte order for those is firmware-declared per key
-    /// — resolved by `resolveByteOrder(generation:attributes:)` and carried on
-    /// `integerByteOrder` — per `docs/ADR/0003-integer-byte-order.md`. When that has not
-    /// been resolved (the SMC interface generation was undetectable for this connection),
-    /// this function refuses to guess: it logs and returns `nil` rather than decoding with
-    /// an assumed order. `bytes` remains available on this value regardless, so a caller
-    /// that wants the raw payload still has it.
+    /// `ui32`, `si32`, `ui64`, `si64`) or, since
+    /// [ADR 0004](../../docs/ADR/0004-float-byte-order.md), for `flt`/`ioft`. Byte order
+    /// for those is firmware-declared per key — resolved by
+    /// `resolveByteOrder(generation:attributes:type:)` and carried on `byteOrder` — per
+    /// `docs/ADR/0003-integer-byte-order.md` and ADR 0004. When that has not been resolved
+    /// (the SMC interface generation was undetectable for this connection), this function
+    /// refuses to guess: it logs and returns `nil` rather than decoding with an assumed
+    /// order. `bytes` remains available on this value regardless, so a caller that wants
+    /// the raw payload still has it.
     public func scalar() throws -> Double? {
         guard type.isNumeric else { return nil }
 
@@ -55,12 +64,11 @@ extension SMCValue {
 
         switch type {
         case .flt:
-            // Little-endian IEEE-754 single precision.
-            let bits =
-                UInt32(bytes[0])
-                | UInt32(bytes[1]) << 8
-                | UInt32(bytes[2]) << 16
-                | UInt32(bytes[3]) << 24
+            // IEEE-754 single precision. Byte order is firmware-declared per key, not
+            // implied by the type — see resolvedByteOrder() and
+            // docs/ADR/0004-float-byte-order.md.
+            guard let order = resolvedByteOrder() else { return nil }
+            let bits = order == .littleEndian ? littleEndianUInt32 : bigEndianUInt32
             return Double(Float(bitPattern: bits))
 
         case .fpe2:
@@ -86,6 +94,15 @@ extension SMCValue {
             // decodePlainInteger() and docs/ADR/0003-integer-byte-order.md.
             return decodePlainInteger()
 
+        case .ioft:
+            // Little-endian 48.16 fixed point, derived by this project — see the doc
+            // comment on SMCKeyType.ioft and docs/SMC-RESEARCH.md §5. As of ADR 0004,
+            // byte order is firmware-declared per key like flt, not fixed by the type;
+            // divide the resolved-order UInt64 by 65536.
+            guard let order = resolvedByteOrder() else { return nil }
+            let bits = order == .littleEndian ? littleEndianUInt64 : bigEndianUInt64
+            return Double(bits) / 65536.0
+
         case .flag:
             // A single byte, expected to be 0x00 or 0x01 — observed as exactly that
             // across all 50 flag keys on Mac16,5. No endianness applies to a single
@@ -98,24 +115,17 @@ extension SMCValue {
             }
             return Double(bytes[0])
 
-        case .ioft:
-            // Little-endian 48.16 fixed point. Derived by this project, not from a
-            // published source — see the doc comment on SMCKeyType.ioft and
-            // docs/SMC-RESEARCH.md §5. Read the 8 bytes as a little-endian UInt64 and
-            // divide by 65536.
-            return Double(littleEndianUInt64) / 65536.0
-
         case .fds, .jst, .ch8, .hex, .unknown:
             return nil
         }
     }
 
     /// Decodes a plain integer (`ui16`, `si16`, `ui32`, `si32`, `ui64`, `si64`) using
-    /// `integerByteOrder`, or returns `nil` — via `resolvedIntegerByteOrder()` — if that
-    /// was never resolved. Split out of `scalar()`'s switch purely for readability: these
-    /// six cases share one guard and differ only in width and signedness.
+    /// `byteOrder`, or returns `nil` — via `resolvedByteOrder()` — if that was never
+    /// resolved. Split out of `scalar()`'s switch purely for readability: these six cases
+    /// share one guard and differ only in width and signedness.
     private func decodePlainInteger() -> Double? {
-        guard let order = resolvedIntegerByteOrder() else { return nil }
+        guard let order = resolvedByteOrder() else { return nil }
 
         switch type {
         case .ui16:
@@ -139,19 +149,20 @@ extension SMCValue {
         }
     }
 
-    /// Returns the byte order this value's plain-integer decode should use, or logs and
-    /// returns `nil` if it was never resolved. The log line is the "plus a log line" half
-    /// of ADR 0003's fail-safe: a caller that only inspects the returned `nil` cannot tell
-    /// "non-numeric type" apart from "refused to guess", but the log can.
-    private func resolvedIntegerByteOrder() -> SMCByteOrder? {
-        guard let order = integerByteOrder else {
+    /// Returns the byte order this value's decode should use — for the plain integers and,
+    /// since ADR 0004, `flt`/`ioft` — or logs and returns `nil` if it was never resolved.
+    /// The log line is the "plus a log line" half of the fail-safe both ADRs share: a
+    /// caller that only inspects the returned `nil` cannot tell "non-numeric type" apart
+    /// from "refused to guess", but the log can.
+    private func resolvedByteOrder() -> SMCByteOrder? {
+        guard let order = byteOrder else {
             Self.logger.error(
                 """
-                \(self.key.rawValue, privacy: .public) is a plain integer \
-                (\(self.type.fourCharString, privacy: .public)) whose byte order could not \
-                be resolved — the SMC interface generation was undetectable for this \
-                connection. Refusing to guess; see docs/ADR/0003-integer-byte-order.md. \
-                Raw bytes remain on SMCValue.bytes.
+                \(self.key.rawValue, privacy: .public) \
+                (\(self.type.fourCharString, privacy: .public)) has no resolved byte order \
+                — the SMC interface generation was undetectable for this connection. \
+                Refusing to guess; see docs/ADR/0003-integer-byte-order.md and \
+                docs/ADR/0004-float-byte-order.md. Raw bytes remain on SMCValue.bytes.
                 """
             )
             return nil
@@ -212,10 +223,19 @@ extension SMCKeyType {
     /// This is the inverse of `SMCValue.scalar()` and is used only on the write path,
     /// which means only inside `AeolusHelper`. It is deliberately not `public`.
     ///
+    /// `byteOrder` is the order to encode with — resolved the same way a read resolves
+    /// it, via `resolveByteOrder(generation:attributes:type:)` from a fresh `keyInfo` at
+    /// write time, per [ADR 0004](../../docs/ADR/0004-float-byte-order.md). `nil` means
+    /// the interface generation was undetectable; a multi-byte numeric type whose order is
+    /// firmware-declared (the plain integers, `flt`, `ioft`) must throw rather than guess,
+    /// exactly as `scalar()` refuses to decode. `ui8`/`flag` ignore this argument — a
+    /// single byte has no byte order to apply — and so do `fpe2`/`fp78`/`sp78`, which are
+    /// big-endian by definition of the type.
+    ///
     /// - Note: Implemented in E3 (Intel, `fpe2`) and E4 (Apple Silicon, `flt`), each with
     ///   round-trip tests against `SMCValue.scalar()`. Left unimplemented rather than
     ///   guessed: a wrong encoding here writes a wrong RPM to real hardware.
-    package func encode(scalar: Double) throws -> [UInt8] {
+    package func encode(scalar: Double, byteOrder: SMCByteOrder?) throws -> [UInt8] {
         throw SMCError.encodingNotImplemented(type: self)
     }
 }
