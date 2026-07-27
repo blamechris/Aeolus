@@ -118,7 +118,7 @@ Three keys fail `READ_KEYINFO` outright and carry no type at all: `BDFU`, `CH0J`
 Enumeration has to tolerate this — a key can appear in the index and still have no
 retrievable metadata.
 
-### `flt` is little-endian — agrees, decisively
+### `flt` decodes little-endian on this machine — agrees, but not decisively about *why*
 
 | Key | Raw | As LE Float32 | As BE Float32 |
 |---|---|---|---|
@@ -129,6 +129,30 @@ retrievable metadata.
 
 Little-endian yields round RPM figures and plausible Celsius temperatures. Big-endian
 yields denormals and nonsense. This matches the reported table above.
+
+**What this table does not establish, and an earlier version of this section overstated:**
+every `flt` key on `Mac16,5` — all 2073 of them, these four included — carries
+firmware-declared attribute bit `0x04` **set**. The machine contains no readable
+bit-clear `flt` key, and of 11 `ioft` keys the single bit-clear one (`pcHS`) is
+unreadable. That means this data can only ever show "bit-set keys decode sanely
+little-endian" — it cannot show whether little-endian is a property of the *type* `flt`,
+independent of the bit, or a property of the *bit*, coincidentally set on every `flt` key
+this hardware happens to expose. Those two hypotheses predict the identical result for
+every row above. A negative result, not a decisive one: see
+[ADR 0004](ADR/0004-float-byte-order.md), which found this carve-out unsupported for
+exactly this reason and folded `flt`/`ioft` into the same per-key attribute-bit resolution
+as the plain integers below, rather than leaving them decoded unconditionally by type.
+
+The Asahi Linux SMC documentation, cited in the sources table below, independently reports
+that `VP3b` is byte-reversed on M1-era hardware. On `Mac16,5`, `VP3b` is `flt`, attrs 133
+(bit set), raw `8020e73f`, decoding little-endian to 1.8057 — bit-set, so, like every
+other `flt` key here, it cannot discriminate the two hypotheses above either. **The
+standing discriminating request this document records:** an M1/M2 report of `VP3b`'s
+declared type, attribute byte, and raw bytes. Byte-reversed and bit-clear would confirm
+the attribute-bit hypothesis for floats directly; byte-reversed and bit-**set** would
+falsify it; not reversed at all would date Asahi's observation to a particular firmware
+rather than to the M1/M2 generation broadly. `fanctl`'s planned dump subcommand (E10a)
+exists partly to make this report easy to produce.
 
 ### Disagreement 1 — temperatures here are `flt`, not `sp78`
 
@@ -326,9 +350,12 @@ entire key enumeration depends on it. What remains untested here is the Intel *t
 
 The decision this drove is recorded in [ADR 0003](ADR/0003-integer-byte-order.md) (now
 **Accepted**); the fix to `SMCValue.scalar()` shipped in issue #30, via
-`resolveByteOrder(generation:attributes:)` in `Sources/SMCCore/SMCByteOrderResolver.swift`.
-The attribute-bit half of the rule is a single-machine observation and stays that way
-until a second machine reports.
+`resolveByteOrder(generation:attributes:type:)` in
+`Sources/SMCCore/SMCByteOrderResolver.swift`. The attribute-bit half of the rule is a
+single-machine observation and stays that way until a second machine reports.
+[ADR 0004](ADR/0004-float-byte-order.md) later widened the same resolver to `flt`/`ioft` —
+see the `flt` section above for why that widening rests on failure-mode reasoning, not on
+new local evidence.
 
 #### Interface generation, detected from IORegistry provenance
 
@@ -406,7 +433,7 @@ what licence.
 | `raminsharifi/MacFanControl` | Prior art on the Apple Silicon path | To be confirmed before any adaptation |
 | `tw93/Mole` issue #1119 | Community discussion of fan control on recent silicon | Discussion only, no code |
 | `smcFanControl` (hholtmann) | Prior art on the Intel path | GPL — compatible with this project |
-| [Asahi Linux SMC documentation](https://asahilinux.org/docs/hw/soc/smc/) | Independent, clean-room hardware reverse-engineering corroborating the little-endian-with-quirks model behind ADR 0003, and naming `#KEY`/`B0RM`/`VP3b` specifically | Documentation consulted, no code adapted |
+| [Asahi Linux SMC documentation](https://asahilinux.org/docs/hw/soc/smc/) | Independent, clean-room hardware reverse-engineering corroborating the little-endian-with-quirks model behind ADR 0003, naming `#KEY`/`B0RM`/`VP3b` specifically, and (for ADR 0004) documenting `VP3b` as byte-reversed on M1-era hardware — the reason `flt`/`ioft` are no longer assumed unconditionally little-endian | Documentation consulted, no code adapted |
 | [VirtualSMC](https://github.com/acidanthera/VirtualSMC/blob/master/VirtualSMCSDK/kern_vsmcapi.hpp) | Documents attribute bit `0x04` as `ATTR_ATOMIC` on Intel, which is why ADR 0003's byte-order rule is scoped to the modern interface only | Documentation consulted, no code adapted |
 
 **Before adapting code from any of these**, confirm the licence, record it above, and

@@ -70,6 +70,17 @@ legacy interface, where big-endian is unconditional. So the resolver, and its fa
 never touch a control-path value, by construction — that much is true by exhaustive
 enumeration of the control-path key set, not by measurement.
 
+> **Amended by ADR 0004.** "The resolver never touches a control-path value" was true
+> only of this ADR's original scope, which excluded `flt`/`ioft` by definition. It is not
+> true of the shipped codec: `flt` **is** the Apple Silicon control path — `F0Ac`, `F0Mn`,
+> `F0Mx`, `F0Tg` — and ADR 0004 found the claim that its byte order is "always LE by type"
+> unsupported by the evidence available on this machine, and contradicted by Asahi's own
+> documentation of a byte-reversed `flt` key. `flt`/`ioft` now go through this same
+> resolver and this same fail-safe on `.modern`, precisely because the narrower claim this
+> ADR could support ("no control-path key is a plain integer") is not the same claim as
+> "no control-path key is ambiguous" — see ADR 0004's Context section for the full
+> reasoning, and `docs/ARCHITECTURE.md` for the corrected architectural statement.
+
 That is a narrower claim than "no control-path key is ambiguous," and the narrower claim
 is the one this ADR can actually support. Whether attribute bit `0x04` also governs byte
 order for `flt`/`ioft` themselves — decoded unconditionally little-endian in this decision,
@@ -110,6 +121,13 @@ never through this resolver, so this fail-safe never reaches one — whether att
 `0x04` would matter for those types too, had this resolver been asked to consult it, is
 the separate question tracked as issue #35, not a claim this fail-safe depends on.
 
+> **Amended by ADR 0004.** Issue #35 is resolved: `flt`/`ioft` now go through this same
+> resolver and this same fail-safe on `.modern`. "Every control-path type decodes by type
+> alone, never through this resolver" was true of this ADR's original scope and is no
+> longer true of the shipped behaviour — fan RPM and the `[F0Mn, F0Mx]` bounds now decline
+> to `nil` rather than guess when the generation is undetectable, same as a plain integer.
+> See ADR 0004's decision and its "Mechanically" paragraph.
+
 `#KEY` is the one exception to "surface raw bytes only": without a key count nothing can
 be enumerated, control path included, so `SMCConnection.keyCount()` decodes it directly as
 big-endian in the enumeration layer — a guess, not a resolved fact, validated on every
@@ -119,6 +137,9 @@ connection by the cross-check below. See `decodeKeyCountFallback(value:)` in
 Mechanically: the read layer resolves a `ByteOrder` per key at read time and stores it on
 `SMCValue`; `scalar()` consumes it for plain integers only. The resolution policy lives in
 one function, with the citations and the falsification criteria in its doc comment.
+(Amended by ADR 0004: the resolver function now also decides `flt`/`ioft`, and `scalar()`
+consumes its result for those two types as well — see ADR 0004's "Mechanically" paragraph
+and `Sources/SMCCore/SMCByteOrderResolver.swift`.)
 
 ## Rationale
 
@@ -136,7 +157,12 @@ one function, with the citations and the falsification criteria in its doc comme
   exists for `flt` itself.
 - Its failure mode is bounded: if the attribute hypothesis fails on some other machine,
   the damage is wrong display-grade integers plus a tripwire firing at startup — never a
-  wrong fan bound, RPM, or temperature.
+  wrong fan bound, RPM, or temperature. **Amended by ADR 0004:** this bound held only
+  because `flt`/`ioft` were assumed unconditionally little-endian by type. ADR 0004 found
+  that assumption unsupported by the evidence — a byte-reversed `flt` was exactly the
+  "wrong fan bound" case this bullet claimed could not happen — and folded `flt`/`ioft`
+  into the same per-key resolution and fail-safe as the plain integers, closing the gap
+  rather than leaving it as an accepted risk.
 
 ## Alternatives considered
 
@@ -195,19 +221,22 @@ generation bit exists in the model at all.
 | Intel integers are all BE; bit `0x04` = `ATOMIC` | Documented (VirtualSMC et al.), untestable here | Intel path ships `untested` regardless; first Intel report validates |
 | Generation is detectable from IORegistry provenance | To be implemented and verified in E1 | Fail-safe already specified: raw-only integers, logged |
 | M1/M2 behave like the M4 (modern) | Assumed, untested | Tripwire fires at startup; report captures the dump |
-| Bit `0x04` governs plain integers *only*, never `flt`/`ioft` | **Unfalsifiable on `Mac16,5`** — every readable `flt`/`ioft` key is bit-set, so this machine cannot distinguish that from "the bit governs every type" | See issue #35; `flt` is the write-path encoding target and has no fail-safe if wrong |
+| Bit `0x04` governs plain integers *only*, never `flt`/`ioft` | **Unfalsifiable on `Mac16,5`** — every readable `flt`/`ioft` key is bit-set, so this machine cannot distinguish that from "the bit governs every type" | **Resolved by ADR 0004**, not by new evidence: still unfalsifiable on this machine, but the resolver now covers `flt`/`ioft` on `.modern` too, since the assumption's failure mode (a silently wrong `F0Mx`) was worse than the alternative's |
 
 **Revisit this decision when:** the `#KEY` tripwire fires on any machine; any hardware
 report shows a bit-`0x04`-set integer key that only decodes sanely big-endian (or
 vice versa); Apple documents the attribute byte; an Intel report contradicts the
-big-endian default; or issue #35 reaches a decision on whether `flt`/`ioft` should consult
-this resolver too.
+big-endian default; or — resolved by ADR 0004 — a hardware report shows a readable
+bit-clear `flt`/`ioft` key, which is now that decision's own designated discriminator.
 
 ## Consequences
 
 - `SMCValue` carries a resolved byte order; `scalar()` uses it for plain integers only.
   `flt`/`ioft` stay little-endian and `fpe2`/`fp78`/`sp78` stay big-endian by type,
-  unconditionally.
+  unconditionally. **Amended by ADR 0004:** `flt`/`ioft` no longer decode unconditionally
+  by type on `.modern` — they consume the same resolved order as the plain integers, per
+  key, via the same resolver and the same fail-safe. Only `fpe2`/`fp78`/`sp78` remain
+  unconditional by type, on both generations.
 - The enumeration layer must capture the attribute byte (needed anyway for readability
   filtering) and cross-check `#KEY` against the walked count.
 - `docs/ARCHITECTURE.md` § "Key on the declared type" is amended: the type determines the
@@ -226,4 +255,6 @@ this resolver too.
 - Whether attribute bit `0x04` governs `flt`/`ioft` byte order, in addition to the plain
   integers this ADR resolves, is unestablished and unfalsifiable on `Mac16,5` — tracked as
   issue #35, `safety-critical` because `flt` is the write-path encoding target on Apple
-  Silicon.
+  Silicon. **Resolved by [ADR 0004](0004-float-byte-order.md):** yes, on `.modern`, through
+  the same resolver — see that ADR for the reasoning and for what remains unfalsifiable on
+  this machine.

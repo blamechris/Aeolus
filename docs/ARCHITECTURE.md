@@ -101,17 +101,30 @@ also exposes keys of several types at once, so architecture is the wrong axis re
 `SMCKeyType` is that registry. An unrecognised type is preserved as `.unknown(FourCharCode)`
 rather than discarded, so a Mac nobody has seen still shows every sensor it has.
 
-#### Amendment (ADR 0003): the declared type determines format, not byte order
+#### Amendment (ADR 0003, widened by ADR 0004): the declared type determines format, not byte order
 
-E1 found that "key on the declared type" was incomplete for one family of types. The
-declared type still determines *format* unconditionally — `flt`/`ioft` decode
-little-endian, `fpe2`/`fp78`/`sp78` decode big-endian, always, on both generations. But for
-the plain integers (`ui16`, `si16`, `ui32`, `si32`, `ui64`, `si64`) the declared type does
-**not** determine byte order: that is firmware-declared per key, via attribute bit `0x04`
-on the modern (Apple Silicon) interface, and unconditionally big-endian on the legacy
-(Intel) interface. See `docs/ADR/0003-integer-byte-order.md` and
-`resolveByteOrder(generation:attributes:)` in `Sources/SMCCore/SMCByteOrderResolver.swift`
-for the evidence and the single function that owns the rule.
+E1 found that "key on the declared type" was incomplete for one family of types, and
+adversarial review before E4 found the incompleteness ran wider than first scoped. The
+declared type still determines *format* unconditionally. But byte order is **not**
+determined by the declared type alone for two groups:
+
+- The plain integers (`ui16`, `si16`, `ui32`, `si32`, `ui64`, `si64`) — [ADR
+  0003](ADR/0003-integer-byte-order.md).
+- `flt` and `ioft` — [ADR 0004](ADR/0004-float-byte-order.md), which found ADR 0003's
+  original "little-endian by construction" carve-out for these two types unsupported by
+  the evidence and contradicted by Asahi's own documentation of a byte-reversed `flt` key.
+
+For both groups, byte order is firmware-declared per key: attribute bit `0x04` on the
+modern (Apple Silicon) interface (set → little-endian, clear → big-endian), and fixed
+unconditionally by type on the legacy (Intel) interface — big-endian for the plain
+integers, little-endian for `flt`/`ioft`, with the attribute byte never consulted there
+(VirtualSMC documents that bit as `ATTR_ATOMIC` on Intel, an unrelated meaning).
+`fpe2`/`fp78`/`sp78` remain big-endian by definition of the type, unconditionally, on both
+generations — genuinely fixed, not firmware-declared; ADR 0004 declined to extend the
+per-key rule to them since they have zero occurrences on `.modern` and no source describes
+their behaviour there. See `resolveByteOrder(generation:attributes:type:)` in
+`Sources/SMCCore/SMCByteOrderResolver.swift` for the evidence and the single function that
+owns the rule for all of it.
 
 This still bans `uname -m` — it does not weaken the ban, it gives it a sharper
 justification. The generation half of the resolved metadata is read once per connection
@@ -119,28 +132,33 @@ from the `AppleSMC` IOService's own IORegistry provenance (`SMCConnection.open()
 from the process's architecture, which reports the wrong thing entirely (the running
 process, not the firmware) and lies outright under Rosetta.
 
-**No control-path key is a plain integer** — the only class this resolver governs. Fan RPM
-is `flt` (Apple Silicon) or `fpe2` (Intel); temperatures are `flt`/`ioft`/`sp78`; mode keys
-(`F0Md`, `Ftst`, `FNum`) are single-byte `ui8`, which has no byte order to resolve; Intel's
-`FS!` bitmask is `ui16` but exists only on the legacy interface, where big-endian is
-unconditional regardless of the resolver. The ambiguity this amendment addresses only ever
-affects display-grade integers — battery telemetry, IDs, counters — never a value routed
-through this resolver.
+**No control-path key's byte order is unambiguously fixed by its type on this machine.**
+Fan RPM on Apple Silicon (`F0Ac`, `F0Mn`, `F0Mx`, `F0Tg`) is `flt`; temperatures are
+`flt`/`ioft`/`sp78`; Intel fan RPM is `fpe2`. Every readable `flt` key (2073 of them) and
+`ioft` key (10 of 11 readable) on `Mac16,5` carries attribute bit `0x04` set, and every
+control-path fan key individually so — `F0Ac`/`F1Ac` (132), `F0Mn`/`F1Mn` (132),
+`F0Mx`/`F1Mx` (133), `F0Tg`/`F1Tg` (212) — so routing them through the resolver is a
+**provable no-op** on this machine: decoded output is byte-identical to the prior
+unconditional rule. Mode keys (`F0Md`, `Ftst`, `FNum`) are single-byte `ui8`, which has no
+byte order to resolve; Intel's `FS!` bitmask is `ui16` but exists only on the legacy
+interface, where big-endian is unconditional regardless of the resolver.
 
-That is narrower than claiming `flt`/`ioft` themselves are unambiguous, which this project
-cannot establish on its one machine: on `Mac16,5`, every readable `flt` key (2073 of them)
-and `ioft` key (10 of 11 readable) carries attribute bit `0x04` set, so nothing on this
-hardware can distinguish "the bit governs byte order for plain integers only" (what is
-implemented — `flt`/`ioft` decode little-endian unconditionally by type, never through the
-resolver) from "the bit governs byte order for every type, `flt`/`ioft` included"
-(untested, and unfalsifiable here since both hypotheses predict the same little-endian
-result for every key this machine can read). Whether the bit governs `flt` on other
-firmware is open — see issue #35.
+Nothing on `Mac16,5` can establish whether the attribute bit is the *reason* `flt`/`ioft`
+decode correctly here, as opposed to byte order simply being a fixed property of those
+types that happens to agree with the bit on every key this hardware can read: every
+readable `flt`/`ioft` key on this machine carries the bit set, so there is no readable
+bit-clear key to discriminate the two hypotheses. ADR 0004 folds `flt`/`ioft` into the
+per-key rule anyway, because the failure modes are asymmetric, not because the ambiguity
+was resolved by measurement — see that ADR's Rationale. Whether the bit governs `flt` on
+other firmware remains open; the designated discriminator is an M1/M2 report of `VP3b`'s
+type, attributes, and raw bytes.
 
-If the interface generation cannot be determined for a connection, plain-integer keys
-surface raw bytes only: `SMCValue.scalar()` returns `nil` rather than decoding with a
-guessed order, and logs. Refusing to guess beats guessing. `#KEY` is the one exception,
-and by necessity: without a key count nothing can be enumerated, control path included, so
+If the interface generation cannot be determined for a connection, every key whose byte
+order is firmware-declared per key — the plain integers and, since ADR 0004, `flt`/`ioft`
+— surfaces raw bytes only: `SMCValue.scalar()` returns `nil` rather than decoding with a
+guessed order, and logs. Refusing to guess beats guessing; this now covers the control
+path, not just display-grade integers. `#KEY` is the one exception, and by necessity:
+without a key count nothing can be enumerated, control path included, so
 `SMCConnection.keyCount()` decodes it directly as big-endian in the enumeration layer
 instead — a guess, not a resolved fact, validated on every connection by
 `verifyKeyCountCrossCheck()`'s independent walk of the table. See
