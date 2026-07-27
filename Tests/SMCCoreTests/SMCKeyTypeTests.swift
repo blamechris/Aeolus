@@ -86,11 +86,15 @@ struct SMCValueTests {
         #expect(try value.scalar() == 1000.0)
     }
 
-    /// Apple Silicon fan RPM: little-endian IEEE-754.
+    /// Apple Silicon fan RPM: little-endian IEEE-754. Byte order is firmware-declared per
+    /// key since ADR 0004, so the resolved order is supplied explicitly here — `F0Ac`
+    /// carries attribute bit `0x04` set (132) on `Mac16,5`, which resolves little-endian.
     @Test("Decodes flt as a little-endian float")
     func decodesFloat() throws {
         // 1000.0f == 0x447A0000, little-endian on the wire.
-        let value = SMCValue(key: SMCKey("F0Ac")!, type: .flt, bytes: [0x00, 0x00, 0x7A, 0x44])
+        let value = SMCValue(
+            key: SMCKey("F0Ac")!, type: .flt, bytes: [0x00, 0x00, 0x7A, 0x44],
+            byteOrder: .littleEndian)
         #expect(try value.scalar() == 1000.0)
     }
 
@@ -165,12 +169,12 @@ struct SMCValueTests {
     func decodesSignedInt32() throws {
         let positive = SMCValue(
             key: SMCKey("BC1I")!, type: .si32, bytes: [0xF3, 0x00, 0x00, 0x00],
-            integerByteOrder: .littleEndian)
+            byteOrder: .littleEndian)
         #expect(try positive.scalar() == 243.0)
 
         let negative = SMCValue(
             key: SMCKey("B0AP")!, type: .si32, bytes: [0x44, 0x64, 0xFF, 0xFF],
-            integerByteOrder: .littleEndian)
+            byteOrder: .littleEndian)
         #expect(try negative.scalar() == -39868.0)
     }
 
@@ -181,7 +185,7 @@ struct SMCValueTests {
         let value = SMCValue(
             key: SMCKey("AOPb")!, type: .ui64,
             bytes: [0x00, 0xC1, 0xE7, 0x0D, 0x05, 0x00, 0x00, 0x00],
-            integerByteOrder: .littleEndian)
+            byteOrder: .littleEndian)
         #expect(try value.scalar() == 21_708_128_512.0)
     }
 
@@ -193,24 +197,27 @@ struct SMCValueTests {
         let positive = SMCValue(
             key: SMCKey("BAAC")!, type: .si64,
             bytes: [0xFF, 0x1D, 0x54, 0x01, 0x00, 0x00, 0x00, 0x00],
-            integerByteOrder: .littleEndian)
+            byteOrder: .littleEndian)
         #expect(try positive.scalar() == 22_289_919.0)
 
         let negative = SMCValue(
             key: SMCKey("zSDa")!, type: .si64,
             bytes: [0x51, 0x57, 0x1B, 0xEB, 0xFF, 0xFF, 0xFF, 0xFF],
-            integerByteOrder: .littleEndian)
+            byteOrder: .littleEndian)
         #expect(try negative.scalar() == -350_529_711.0)
     }
 
     /// `ioft`: little-endian 48.16 fixed point. Derived by this project — see the doc
     /// comment on `SMCKeyType.ioft`. `TG0C`'s bytes divide out to an exact 30.0, useful
     /// as a sanity check on the shift/divide independent of floating-point tolerance.
+    /// Since ADR 0004, `ioft` consumes the resolved byte order like `flt` — `TG0C`
+    /// carries attribute bit `0x04` set on `Mac16,5`, which resolves little-endian.
     @Test("Decodes ioft as little-endian 48.16 fixed point (TG0C, exact)")
     func decodesIOFTExact() throws {
         let value = SMCValue(
             key: SMCKey("TG0C")!, type: .ioft,
-            bytes: [0x00, 0x00, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00])
+            bytes: [0x00, 0x00, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00],
+            byteOrder: .littleEndian)
         #expect(try value.scalar() == 30.0)
     }
 
@@ -221,7 +228,8 @@ struct SMCValueTests {
     func decodesIOFTCorroborated() throws {
         let value = SMCValue(
             key: SMCKey("TR0Z")!, type: .ioft,
-            bytes: [0x9A, 0xD9, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00])
+            bytes: [0x9A, 0xD9, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00],
+            byteOrder: .littleEndian)
         let scalar = try #require(try value.scalar())
         #expect(abs(scalar - 51.85) < 0.001)
     }
