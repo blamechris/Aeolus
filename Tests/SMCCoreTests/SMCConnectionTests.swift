@@ -1,3 +1,4 @@
+import IOKit
 import Testing
 
 @testable import SMCCore
@@ -90,6 +91,36 @@ struct SMCConnectionUnopenedTests {
         await #expect(throws: SMCError.notPermitted) {
             try await connection.write([0x00], to: SMCKey("F0Md")!)
         }
+    }
+}
+
+/// The one `open()` failure mode this project can exercise without hardware: no
+/// `AppleSMC` IOService at all, which is exactly CI's situation (GitHub's macOS runners
+/// are VMs with no SMC) and therefore runs there, not on `Mac16,5`. `IOServiceOpen`
+/// itself refusing on a *present* service (permissions, exclusive access already held,
+/// etc.) is a second, distinct failure mode this project has no way to provoke on demand
+/// on any machine available to it — real hardware included, since `Mac16,5`'s SMC simply
+/// opens — and there is no injection seam in `SMCConnection` for simulating it. That
+/// sub-case is therefore left untested rather than given a test that does not actually
+/// exercise the failure it claims to.
+@Suite(
+    "SMC connection, no SMC present (open() fails before IOServiceOpen)",
+    .enabled(if: !SMCConnection.isHardwareAvailable())
+)
+struct SMCConnectionNoServiceTests {
+
+    @Test("A failed open() leaves connection and generation both unset")
+    func failedOpenLeavesBothUnset() async {
+        let connection = SMCConnection()
+
+        await #expect(throws: SMCError.connectionFailed(kernReturn: kIOReturnNotFound)) {
+            try await connection.open()
+        }
+
+        // The bug this guards: open() must never assign interfaceGeneration ahead of a
+        // connection that turns out not to exist — see SMCConnection.open().
+        let generation = await connection.interfaceGeneration
+        #expect(generation == nil)
     }
 }
 

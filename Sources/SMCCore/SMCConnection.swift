@@ -78,7 +78,12 @@ public actor SMCConnection {
     /// harmless no-op rather than a second `IOServiceOpen`.
     ///
     /// Also resolves `interfaceGeneration` from the matched service's own IORegistry
-    /// provenance, once, before the connection is opened — see `smcGeneration(for:)`.
+    /// provenance — see `smcGeneration(for:)`. Resolution happens before `IOServiceOpen`
+    /// runs (the service is only available to inspect while this function still holds it),
+    /// but `generation` and `connection` are only ever assigned together, after
+    /// `IOServiceOpen` actually succeeds: a failed open must leave both `connection == 0`
+    /// and `interfaceGeneration == nil`, never a non-`nil` generation paired with no open
+    /// connection. See `interfaceGeneration`.
     public func open() throws {
         guard connection == 0 else { return }
 
@@ -88,7 +93,7 @@ public actor SMCConnection {
         }
         defer { IOObjectRelease(service) }
 
-        generation = Self.smcGeneration(for: service)
+        let resolvedGeneration = Self.smcGeneration(for: service)
 
         var newConnection: io_connect_t = 0
         let openResult = IOServiceOpen(service, mach_task_self_, 0, &newConnection)
@@ -97,10 +102,16 @@ public actor SMCConnection {
         }
 
         connection = newConnection
+        generation = resolvedGeneration
     }
 
     /// The SMC interface generation resolved by `open()`. Plain-integer keys decode only
     /// when this is non-`nil` — see `SMCValue.scalar()`.
+    ///
+    /// Consistent by construction with whether the connection is actually open: `nil`
+    /// before the first successful `open()`, after a failed `open()`, and after `close()`;
+    /// non-`nil` only once `open()` has actually succeeded. Never inspect this to infer
+    /// that the connection is open — use it only after `open()` has not thrown.
     public var interfaceGeneration: SMCInterfaceGeneration? { generation }
 
     /// Detects which SMC firmware interface `service` is, from the service's own
@@ -154,10 +165,15 @@ public actor SMCConnection {
 
     /// Closes the connection. Safe to call when already closed, and safe to `open()`
     /// again afterwards.
+    ///
+    /// Clears `interfaceGeneration` along with `connection`, so the two stay consistent —
+    /// see `interfaceGeneration` — and a subsequent `open()` re-resolves the generation
+    /// rather than trusting a value captured by a now-closed connection.
     public func close() {
         guard connection != 0 else { return }
         IOServiceClose(connection)
         connection = 0
+        generation = nil
     }
 
     /// Whether the `AppleSMC` IOService is present on this machine at all. Cheap,
