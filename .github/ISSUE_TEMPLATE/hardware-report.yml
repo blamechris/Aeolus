@@ -134,6 +134,19 @@ body:
       render: json
 
   - type: textarea
+    id: byte-order-discriminator
+    attributes:
+      label: "M1/M2 only: VP3b's row from `fanctl dump --json`"
+      description: |
+        If your Mac is M1 or M2, this field is the single most valuable thing you can
+        paste into this report — see
+        [ADR 0004](https://github.com/blamechris/Aeolus/blob/main/docs/ADR/0004-float-byte-order.md).
+        Run `fanctl dump --json` (no build, no signing needed) and paste the `VP3b`
+        entry, or the whole output if you are not sure how to find it. On M3 and newer,
+        or on Intel, this field is not needed — leave it blank.
+      render: json
+
+  - type: textarea
     id: notes
     attributes:
       label: Anything else?

@@ -22,7 +22,7 @@ struct Fanctl: AsyncParsableCommand {
             the helper returns the fans to automatic.
             """,
         version: "0.0.0-dev",
-        subcommands: [List.self, Sensors.self, Reset.self]
+        subcommands: [List.self, Sensors.self, Reset.self, Dump.self]
     )
 }
 

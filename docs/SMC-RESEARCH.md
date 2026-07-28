@@ -151,8 +151,10 @@ standing discriminating request this document records:** an M1/M2 report of `VP3
 declared type, attribute byte, and raw bytes. Byte-reversed and bit-clear would confirm
 the attribute-bit hypothesis for floats directly; byte-reversed and bit-**set** would
 falsify it; not reversed at all would date Asahi's observation to a particular firmware
-rather than to the M1/M2 generation broadly. `fanctl`'s planned dump subcommand (E10a)
-exists partly to make this report easy to produce.
+rather than to the M1/M2 generation broadly. Running `fanctl dump --json` and pasting the
+`VP3b` row is exactly that report — one command, no build, no signing — and is the field
+the [hardware report template](../.github/ISSUE_TEMPLATE/hardware-report.yml) asks for
+explicitly on M1/M2.
 
 ### Disagreement 1 — temperatures here are `flt`, not `sp78`
 
