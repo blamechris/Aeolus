@@ -31,10 +31,23 @@ public struct HardwareIdentity: Sendable, Hashable {
 
     /// Reads this machine's real identity from the running system.
     ///
-    /// This is the only non-pure entry point in this file. Everything else here, and all
-    /// of `CatalogMatcher`, is a pure function of whatever `HardwareIdentity` a caller
-    /// supplies — deliberately, so matching stays fully unit-testable without needing real
-    /// hardware or a live sysctl to run the suite.
+    /// This is the only non-pure entry point in this file, and the one deliberate
+    /// exception to `FanKit` otherwise doing no I/O beyond reading a file (see
+    /// `Package.swift`'s `FanKit` target comment). `sysctlbyname` reads a fixed,
+    /// always-available system property — no IOKit connection, no lifecycle to manage,
+    /// no error mode beyond "not present" — which is a materially different, and much
+    /// narrower, commitment than the IOKit/file/network I/O that restriction guards
+    /// against. It belongs here rather than behind a protocol a client injects because
+    /// every consumer of `CatalogMatcher` needs the same answer to "what machine is
+    /// this", and the SMC read core, the CLI, and the app would otherwise each need their
+    /// own copy of it — exactly the duplication `Tests/SMCCoreTests/DevelopmentMachine.swift`
+    /// and `Tests/fanctlTests/DevelopmentMachine.swift` already warn against for the
+    /// test-only version of this same check.
+    ///
+    /// Everything else in this file, and all of `CatalogMatcher`, is a pure function of
+    /// whatever `HardwareIdentity` a caller supplies — deliberately, so matching itself
+    /// stays fully unit-testable without needing real hardware or a live sysctl to run
+    /// the suite.
     public static func current() -> HardwareIdentity {
         HardwareIdentity(
             modelIdentifier: sysctlString("hw.model"),
@@ -69,7 +82,12 @@ public struct HardwareIdentity: Sendable, Hashable {
 
         var buffer = [CChar](repeating: 0, count: size)
         guard sysctlbyname(name, &buffer, &size, nil, 0) == 0 else { return nil }
-        return String(cString: buffer)
+
+        // sysctlbyname null-terminates the string within the reported size; truncate at
+        // the first null byte before decoding rather than using the deprecated
+        // String(cString:) overload.
+        let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 }
 

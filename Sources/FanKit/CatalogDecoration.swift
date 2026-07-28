@@ -2,7 +2,10 @@ import Foundation
 
 /// A resolved catalog match for one raw SMC key on this machine: everything a caller needs
 /// to label a reading, without ever letting the label stand in for the key it came from.
-/// Produced only by `CatalogMatcher`.
+/// In normal use this is produced by `CatalogMatcher`, but construction is public — like
+/// `CatalogEntry`, this is a plain value type, not a capability, so a test or a future
+/// caller assembling one directly (without going through a `SensorCatalog`) is not
+/// restricted.
 ///
 /// - Important: **No API resolves a `CatalogDecoration`, or anything else, from a label
 ///   alone — and none ever should.** A caller that needs to act on a sensor already has
