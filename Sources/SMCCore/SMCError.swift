@@ -2,10 +2,14 @@ import Foundation
 
 /// Errors raised by the SMC layer.
 ///
-/// `firmware(code:)` deserves special attention: SMC result `0x82` is the rejection an
-/// Apple Silicon M3-or-newer machine returns when `thermalmonitord` is holding the fans
-/// and refusing to hand over manual control. It is an expected, recoverable condition
-/// on the write path, not a bug — see `docs/SMC-RESEARCH.md` and epic E4.
+/// `firmware(code:)` deserves special attention: SMC result `0x82` is the Intel-era
+/// `SmcBadCommand` — a **general** firmware status, not a fan-control-specific one. On
+/// `Mac16,5` it is the response to a plain read of 21 power/battery function keys, none of
+/// them fan-related (see `docs/SMC-RESEARCH.md`). Community reports say the same code also
+/// answers an `F0Md` write while `thermalmonitord` is holding the fans on M3-or-newer
+/// hardware. The code alone identifies neither condition: only the combination of *what
+/// was being attempted* and *this code* is diagnostic. See `isCommandRejection` below and
+/// epic E4.
 public enum SMCError: Error, Sendable, Equatable {
     /// Could not open a connection to the `AppleSMC` IOService.
     case connectionFailed(kernReturn: Int32)
@@ -69,9 +73,22 @@ public enum SMCError: Error, Sendable, Equatable {
     /// byte-order regression and that outcome. Carries the offending decoded value.
     case implausibleKeyCount(declared: Int)
 
-    /// `true` when the error is the M3+ "thermal manager is holding the fans" rejection
-    /// that the `Ftst` unlock sequence exists to resolve.
-    public var isThermalManagerRejection: Bool {
+    /// `true` when the firmware answered with `0x82` (`SmcBadCommand`).
+    ///
+    /// This is **not**, by itself, a test for "the thermal manager is holding the fans."
+    /// `0x82` is a general command-rejection status: on `Mac16,5` it is what a plain
+    /// `READ_BYTES` gets back from 21 power/battery function keys (`pcHS`, `rBK0`–`rBK9`,
+    /// `rLD0`–`rLD5`, and others — see `docs/SMC-RESEARCH.md`), none of them related to fan
+    /// control. Community reports separately describe the same code answering an `F0Md`
+    /// write on M3-or-newer hardware while `thermalmonitord` is asserting control.
+    ///
+    /// The code alone identifies nothing. A caller only has evidence of a thermal-manager
+    /// hold when **both** are true: the rejected operation was a write to a fan mode or
+    /// target key (`F0Md`/`F1Md`/`F0Tg`/`F1Tg`), *and* the firmware answered with this code.
+    /// E4's retry loop must branch on that conjunction, not on this property alone — an
+    /// unrelated `0x82` fed into the reported ~300-attempt, 100 ms retry budget is roughly
+    /// 30 seconds of futile retrying before an honest failure is reported.
+    public var isCommandRejection: Bool {
         self == .firmware(code: 0x82)
     }
 }
