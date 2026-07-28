@@ -50,4 +50,22 @@ struct HardwareSmokeTests {
         _ = try SensorsCommand.renderJSON(result)
         _ = SensorsCommand.renderTable(result)
     }
+
+    @Test("watch refreshes real fans across multiple ticks with no helper and no privileges")
+    func watchRefreshesRealFansAcrossTicks() async throws {
+        // interval: 0 and SystemWatchClock together mean this waits out no real time
+        // between ticks — this is a correctness smoke test on a warm connection across
+        // repeated subset reads, not a timing benchmark. See docs/SMC-RESEARCH.md and the
+        // PR that introduced this file for the actual measured refresh cost.
+        var captured: [String] = []
+        let options = WatchCommand.Options(interval: 0, count: 3, json: false, isTerminal: false)
+        try await WatchCommand.run(
+            provider: SMCSensorProvider(), options: options, clock: SystemWatchClock(),
+            output: { captured.append($0) })
+
+        #expect(captured.count == 3)
+        for tick in captured {
+            #expect(!tick.contains("\u{1B}["))
+        }
+    }
 }

@@ -20,7 +20,7 @@ struct Fanctl: AsyncParsableCommand {
             the helper returns the fans to automatic.
             """,
         version: "0.0.0-dev",
-        subcommands: [List.self, Sensors.self, Reset.self, Dump.self]
+        subcommands: [List.self, Sensors.self, Watch.self, Reset.self, Dump.self]
     )
 }
 
@@ -46,6 +46,49 @@ extension Fanctl {
 
         @Flag(name: .long, help: "Show raw SMC keys only, without catalog labels.")
         var rawKeys = false
+    }
+
+    /// See `WatchCommand.swift` for `run()` and the refresh-loop logic.
+    struct Watch: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Live-updating view of fan speeds, suitable for a terminal left open.",
+            discussion: """
+                Refreshes on --interval using the same targeted per-fan reads `list` \
+                uses — never a full SMC enumeration — so every tick stays cheap no \
+                matter how long this has been running. Exits cleanly on Ctrl-C.
+
+                --json emits newline-delimited JSON (NDJSON): one compact object per \
+                line, in the same field shape as `list --json`, rather than repeating \
+                `list`'s pretty-printed document forever. A redirected or piped run \
+                never receives the redrawing table's ANSI escapes either way — the \
+                table falls back to a plain, timestamped block per tick instead.
+                """
+        )
+
+        @Flag(
+            name: .long,
+            help: "Emit newline-delimited JSON (one object per line) instead of a redrawing table."
+        )
+        var json = false
+
+        @Option(name: .long, help: "Seconds between refreshes.")
+        var interval: Double = 1.0
+
+        @Option(
+            name: .long,
+            help: "Stop after this many refreshes. Runs until Ctrl-C if omitted.")
+        var count: Int?
+
+        func validate() throws {
+            guard interval.isFinite, interval > 0 else {
+                throw ValidationError(
+                    "--interval must be a positive, finite number of seconds; got \(interval)."
+                )
+            }
+            if let count, count <= 0 {
+                throw ValidationError("--count must be a positive integer; got \(count).")
+            }
+        }
     }
 
     struct Reset: AsyncParsableCommand {
