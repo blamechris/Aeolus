@@ -9,6 +9,14 @@
         "claude"
       ]
     },
+    "batch-merge": {
+      "hash": "8c8e472",
+      "installed": "2026-07-27",
+      "profileHash": "d0531c0",
+      "targets": [
+        "claude"
+      ]
+    },
     "changelog": {
       "hash": "3254376",
       "installed": "2026-07-25",
@@ -57,6 +65,14 @@
         "claude"
       ]
     },
+    "full-review": {
+      "hash": "1e5962e",
+      "installed": "2026-07-27",
+      "profileHash": "d0531c0",
+      "targets": [
+        "claude"
+      ]
+    },
     "manual-testing-mode": {
       "hash": "a1368f4",
       "installed": "2026-07-25",
@@ -68,6 +84,22 @@
     "merge-gate": {
       "hash": "85269c8",
       "installed": "2026-07-25",
+      "profileHash": "d0531c0",
+      "targets": [
+        "claude"
+      ]
+    },
+    "prime-directive": {
+      "hash": "d318c59",
+      "installed": "2026-07-27",
+      "profileHash": "d0531c0",
+      "targets": [
+        "claude"
+      ]
+    },
+    "project-audit": {
+      "hash": "aae4d65",
+      "installed": "2026-07-27",
       "profileHash": "d0531c0",
       "targets": [
         "claude"
@@ -89,9 +121,33 @@
         "claude"
       ]
     },
+    "tackle-issues": {
+      "hash": "d3cd6f5",
+      "installed": "2026-07-27",
+      "profileHash": "d0531c0",
+      "targets": [
+        "claude"
+      ]
+    },
     "tiered-delegation": {
       "hash": "01903fb",
       "installed": "2026-07-25",
+      "profileHash": "d0531c0",
+      "targets": [
+        "claude"
+      ]
+    },
+    "unattended-merge": {
+      "hash": "d3cd6f5",
+      "installed": "2026-07-27",
+      "profileHash": "d0531c0",
+      "targets": [
+        "claude"
+      ]
+    },
+    "visual-brief": {
+      "hash": "a85c799",
+      "installed": "2026-07-27",
       "profileHash": "d0531c0",
       "targets": [
         "claude"

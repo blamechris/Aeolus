@@ -40,3 +40,6 @@ dist/
 
 # ---- Local agent state ----
 .claude/settings.local.json
+
+# Session/decision log for unattended runs (/prime-directive). Live state, not history.
+autonomous-session-*.md
