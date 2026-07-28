@@ -1,6 +1,4 @@
 import ArgumentParser
-import Foundation
-import SMCCore
 
 /// `fanctl` — the command-line client.
 ///
@@ -27,6 +25,7 @@ struct Fanctl: AsyncParsableCommand {
 }
 
 extension Fanctl {
+    /// See `ListCommand.swift` for `run()` and the read/render logic.
     struct List: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "List fans with their current, minimum, and maximum speeds."
@@ -34,13 +33,9 @@ extension Fanctl {
 
         @Flag(name: .long, help: "Emit JSON instead of a table.")
         var json = false
-
-        func run() async throws {
-            // TODO(E10a): read via SMCCore, render table or JSON.
-            throw CleanExit.message("Not implemented yet — see epic E10a.")
-        }
     }
 
+    /// See `SensorsCommand.swift` for `run()` and the read/render logic.
     struct Sensors: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "List every sensor this machine exposes."
@@ -51,11 +46,6 @@ extension Fanctl {
 
         @Flag(name: .long, help: "Show raw SMC keys only, without catalog labels.")
         var rawKeys = false
-
-        func run() async throws {
-            // TODO(E10a): enumerate via SensorProvider, decorate from the catalog.
-            throw CleanExit.message("Not implemented yet — see epic E10a.")
-        }
     }
 
     struct Reset: AsyncParsableCommand {

@@ -101,9 +101,12 @@ let package = Package(
             dependencies: ["SMCCore"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
-        // Exercises fanctl's pure formatting/classification logic (dump's row model,
-        // error descriptions, table/JSON rendering) via @testable import — none of it
-        // needs an open SMC connection.
+        // Exercises fanctl's read commands (list, sensors, dump) against fake
+        // SensorProviders and pure formatting/classification logic (row models, error
+        // descriptions, table/JSON rendering) via @testable import, so the bulk of the
+        // suite needs no open SMC connection at all. The handful of assertions that do
+        // touch real hardware follow the isDevelopmentMachine() gating pattern from
+        // Tests/SMCCoreTests/DevelopmentMachine.swift.
         .testTarget(
             name: "fanctlTests",
             dependencies: ["fanctl", "SMCCore"],
