@@ -11,6 +11,16 @@ enum FanctlJSON {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
+        // nonConformingFloatEncodingStrategy is deliberately left at its default
+        // (.throw), not overridden to .convertToString: the contract for a non-finite
+        // reading is decided upstream instead, by ListCommand.sanitized(key:value:) and
+        // SensorsCommand.sanitize(_:), which turn NaN/±Inf into `null` plus an error
+        // string *before* any Double reaches this function — see FanctlError
+        // .jsonEncodingFailed's documentation. .convertToString would also make
+        // "value" sometimes a string and sometimes a number, which breaks the type
+        // stability this format otherwise guarantees. Leaving .throw here means a
+        // violation of that upstream contract fails loudly (as jsonEncodingFailed)
+        // instead of silently producing a malformed document.
 
         let data: Data
         do {

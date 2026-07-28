@@ -29,6 +29,7 @@ struct SensorsCommandFetchTests {
         #expect(entry.label == nil)
         #expect(entry.confidence == nil)
         #expect(entry.value == 42.5)
+        #expect(entry.error == nil)
         #expect(entry.unit == .celsius)
     }
 
@@ -95,6 +96,73 @@ struct SensorsCommandFetchTests {
                 provider: provider, catalog: NoSensorCatalog(), rawKeys: false)
         }
     }
+
+    @Test(
+        "A non-finite reading is sanitised into null + an error, never crashes either renderer",
+        arguments: [Double.nan, .infinity, -.infinity]
+    )
+    func nonFiniteReadingIsSanitised(_ nonFiniteValue: Double) async throws {
+        let provider = FakeSensorProvider(
+            allReadings: [.fake(key: "Tp09", value: nonFiniteValue, kind: .temperatureCelsius)])
+
+        let result = try await SensorsCommand.fetch(
+            provider: provider, catalog: NoSensorCatalog(), rawKeys: false)
+
+        let entry = try #require(result.entries.first)
+        #expect(entry.value == nil)
+        #expect(entry.error != nil)
+
+        let table = SensorsCommand.renderTable(result)
+        #expect(table.contains("unavailable"))
+        let json = try SensorsCommand.renderJSON(result)
+        #expect(json.contains("\"error\""))
+    }
+
+    @Test(
+        "A large-but-finite reading renders successfully, not as a sanitised failure",
+        arguments: [Double(UInt64.max), Double(Float.greatestFiniteMagnitude)]
+    )
+    func largeFiniteReadingRendersSuccessfully(_ hugeValue: Double) async throws {
+        let provider = FakeSensorProvider(
+            allReadings: [.fake(key: "B0RM", value: hugeValue, kind: .unknown)])
+
+        let result = try await SensorsCommand.fetch(
+            provider: provider, catalog: NoSensorCatalog(), rawKeys: false)
+
+        let entry = try #require(result.entries.first)
+        #expect(entry.value == hugeValue)
+        #expect(entry.error == nil)
+
+        _ = SensorsCommand.renderTable(result)
+        _ = try SensorsCommand.renderJSON(result)
+    }
+
+    @Test("keysDeclared and keysSkipped surface what readAll() silently dropped")
+    func keysDeclaredAndSkippedSurfaceDrops() async throws {
+        let provider = FakeSensorProvider(
+            allReadings: [.fake(key: "Tp09", value: 1, kind: .temperatureCelsius)],
+            keyedResults: ["#KEY": .success(.fake(key: "#KEY", value: 3385))])
+
+        let result = try await SensorsCommand.fetch(
+            provider: provider, catalog: NoSensorCatalog(), rawKeys: false)
+
+        #expect(result.keysDeclared == 3385)
+        let json = try SensorsCommand.renderJSON(result)
+        #expect(json.contains("\"keysDeclared\" : 3385"))
+        #expect(json.contains("\"keysSkipped\" : 3384"))
+    }
+
+    @Test("keysDeclared is nil, not a crash, when #KEY itself cannot be read")
+    func keysDeclaredIsNilWhenUnavailable() async throws {
+        // No "#KEY" stub: FakeSensorProvider.read(keys:) reports .unknownKey for it —
+        // see declaredKeyCount(provider:)'s best-effort, silent-on-failure contract.
+        let provider = FakeSensorProvider(allReadings: [])
+
+        let result = try await SensorsCommand.fetch(
+            provider: provider, catalog: NoSensorCatalog(), rawKeys: false)
+
+        #expect(result.keysDeclared == nil)
+    }
 }
 
 @Suite("SensorUnit — mirrors AeolusXPC.SensorSample.Unit's raw values")
@@ -124,21 +192,25 @@ struct SensorsCommandRenderTests {
             capturedAt: Self.fixedDate,
             entries: [
                 SensorsCommand.Entry(
-                    key: "F0Ac", label: nil, confidence: nil, value: 1712, unit: .rpm),
+                    key: "F0Ac", label: nil, confidence: nil, value: 1712, error: nil, unit: .rpm),
                 SensorsCommand.Entry(
                     key: "Tp09", label: "CPU Efficiency Cluster", confidence: .community,
-                    value: 42.5, unit: .celsius),
-            ])
+                    value: 42.5, error: nil, unit: .celsius),
+            ],
+            keysDeclared: 3385)
 
         let json = try SensorsCommand.renderJSON(result)
 
         let expected = """
             {
               "capturedAt" : "2023-11-14T22:13:20Z",
+              "keysDeclared" : 3385,
+              "keysSkipped" : 3383,
               "provider" : "smc",
               "sensorCount" : 2,
               "sensors" : [
                 {
+                  "error" : null,
                   "key" : "F0Ac",
                   "label" : null,
                   "labelConfidence" : null,
@@ -146,6 +218,7 @@ struct SensorsCommandRenderTests {
                   "value" : 1712
                 },
                 {
+                  "error" : null,
                   "key" : "Tp09",
                   "label" : "CPU Efficiency Cluster",
                   "labelConfidence" : "community",
@@ -158,6 +231,17 @@ struct SensorsCommandRenderTests {
         #expect(json == expected)
     }
 
+    @Test("keysDeclared/keysSkipped are omitted, not a crash, when unavailable")
+    func keysDeclaredOmittedWhenUnavailable() throws {
+        let result = SensorsCommand.Result(
+            providerIdentifier: "smc", capturedAt: Self.fixedDate, entries: [], keysDeclared: nil)
+
+        let json = try SensorsCommand.renderJSON(result)
+
+        #expect(!json.contains("keysDeclared"))
+        #expect(!json.contains("keysSkipped"))
+    }
+
     @Test("An unlabelled sensor still renders a full table row, not a degraded one")
     func unlabelledSensorRendersFullTableRow() {
         let result = SensorsCommand.Result(
@@ -165,8 +249,10 @@ struct SensorsCommandRenderTests {
             capturedAt: Self.fixedDate,
             entries: [
                 SensorsCommand.Entry(
-                    key: "Tp09", label: nil, confidence: nil, value: 42.5, unit: .celsius)
-            ])
+                    key: "Tp09", label: nil, confidence: nil, value: 42.5, error: nil,
+                    unit: .celsius)
+            ],
+            keysDeclared: nil)
 
         let table = SensorsCommand.renderTable(result)
 
@@ -178,7 +264,37 @@ struct SensorsCommandRenderTests {
     @Test("An empty machine (no sensors) still renders a clear message")
     func emptyResultRendersMessage() {
         let result = SensorsCommand.Result(
-            providerIdentifier: "smc", capturedAt: Self.fixedDate, entries: [])
+            providerIdentifier: "smc", capturedAt: Self.fixedDate, entries: [], keysDeclared: nil)
         #expect(SensorsCommand.renderTable(result) == "No sensors found.")
+    }
+}
+
+@Suite("fanctl sensors — command wiring")
+struct SensorsCommandWiringTests {
+
+    @Test("--json selects the JSON renderer, not just that renderJSON is independently correct")
+    func jsonFlagSelectsJSONRenderer() async throws {
+        let provider = FakeSensorProvider(
+            allReadings: [.fake(key: "Tp09", value: 1, kind: .temperatureCelsius)])
+        let command = try Fanctl.Sensors.parse(["--json"])
+
+        var captured = ""
+        try await command.run(provider: provider, catalog: NoSensorCatalog()) { captured = $0 }
+
+        #expect(captured.hasPrefix("{"))
+        #expect(captured.contains("\"sensors\""))
+    }
+
+    @Test("Without --json, sensors renders a table, not JSON")
+    func withoutJSONFlagRendersTable() async throws {
+        let provider = FakeSensorProvider(
+            allReadings: [.fake(key: "Tp09", value: 1, kind: .temperatureCelsius)])
+        let command = try Fanctl.Sensors.parse([])
+
+        var captured = ""
+        try await command.run(provider: provider, catalog: NoSensorCatalog()) { captured = $0 }
+
+        #expect(!captured.hasPrefix("{"))
+        #expect(captured.contains("Tp09"))
     }
 }

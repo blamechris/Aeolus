@@ -16,14 +16,25 @@ enum FanctlError: Error, LocalizedError, Equatable {
     /// carried for diagnostics only.
     case connectionFailed(context: String, reason: String)
 
-    /// `FNum` decoded to a value this project does not trust as a real fan count. See
-    /// `ListCommand.maxPlausibleFanCount` for why this exists and how the bound was
-    /// chosen — the same defence `SMCConnection` applies to `#KEY` itself.
-    case implausibleFanCount(Int)
+    /// `FNum` decoded to a value this project does not trust as a real fan count —
+    /// non-finite, negative, or outside `ListCommand.maxPlausibleFanCount`. See that
+    /// constant for why this exists — the same defence `SMCConnection` applies to
+    /// `#KEY` itself. Carries a rendering of the raw decoded value (via
+    /// `Formatting.number`, which never traps on the same class of anomaly) rather than
+    /// an `Int`: the value that makes this case worth having at all — `NaN`,
+    /// `Infinity`, or a magnitude that overflows `Int` outright — is often not
+    /// representable as one.
+    case implausibleFanCount(String)
 
-    /// Encoding `--json` output failed. Not expected in practice — every JSON payload
-    /// this CLI produces is built from `Codable` structs with no custom encoding — but
-    /// reported rather than force-unwrapped if it ever does.
+    /// Encoding `--json` output failed. This CLI does have custom `Encodable`
+    /// conformances (`ListCommand.KeyedValueJSON`, `SensorsCommand.SensorJSON`), and the
+    /// case this actually guards against is a non-finite `Double` reaching the encoder:
+    /// `JSONEncoder`'s default `nonConformingFloatEncodingStrategy` throws on `NaN`/
+    /// `±Inf` rather than encoding them. Every reading this CLI hands to `FanctlJSON` is
+    /// sanitised first — see `ListCommand`'s and `SensorsCommand`'s `sanitized`/
+    /// `sanitize` helpers — specifically so that throw is never supposed to fire; this
+    /// case is what surfaces it, reported rather than silently producing partial JSON,
+    /// if that contract is ever violated by a call site that skips sanitisation.
     case jsonEncodingFailed(reason: String)
 
     var errorDescription: String? {
@@ -36,10 +47,10 @@ enum FanctlError: Error, LocalizedError, Equatable {
                 """
         case .connectionFailed(let context, let reason):
             return "Could not \(context): \(reason)"
-        case .implausibleFanCount(let count):
+        case .implausibleFanCount(let decoded):
             return """
-                FNum decoded to \(count), which is outside the range fanctl trusts as a \
-                real fan count. This looks like a decode fault, not actual hardware — \
+                FNum decoded to \(decoded), which is outside the range fanctl trusts as \
+                a real fan count. This looks like a decode fault, not actual hardware — \
                 refusing to enumerate that many fans.
                 """
         case .jsonEncodingFailed(let reason):

@@ -81,7 +81,7 @@ struct ListCommandFetchTests {
                 "FNum": .success(.fake(key: "FNum", value: 9_000_000))
             ])
 
-        await #expect(throws: FanctlError.implausibleFanCount(9_000_000)) {
+        await #expect(throws: FanctlError.implausibleFanCount("9000000")) {
             try await ListCommand.fetch(provider: provider)
         }
     }
@@ -91,6 +91,21 @@ struct ListCommandFetchTests {
         let provider = FakeSensorProvider(
             keyedResults: [
                 "FNum": .success(.fake(key: "FNum", value: -1))
+            ])
+
+        await #expect(throws: FanctlError.self) {
+            try await ListCommand.fetch(provider: provider)
+        }
+    }
+
+    @Test(
+        "A non-finite FNum decode is refused without trapping, validated before conversion",
+        arguments: [Double.nan, .infinity, -.infinity]
+    )
+    func nonFiniteFanCountIsRefusedWithoutTrapping(_ nonFiniteValue: Double) async {
+        let provider = FakeSensorProvider(
+            keyedResults: [
+                "FNum": .success(.fake(key: "FNum", value: nonFiniteValue))
             ])
 
         await #expect(throws: FanctlError.self) {
@@ -108,6 +123,102 @@ struct ListCommandFetchTests {
         await #expect(throws: FanctlError.self) {
             try await ListCommand.fetch(provider: provider)
         }
+    }
+
+    @Test("An absent FNum key (not just FNum == 0) is treated as zero fans, not an error")
+    func absentFNumIsTreatedAsZeroFans() async throws {
+        // FakeSensorProvider with no FNum stub reports .unknownKey for it by
+        // construction — see FakeSensorProvider.read(keys:) — modelling a machine
+        // whose firmware does not expose a fan-count key at all, not one that reports
+        // it as zero.
+        let provider = FakeSensorProvider()
+
+        let result = try await ListCommand.fetch(provider: provider)
+
+        #expect(result.fanCount == 0)
+        #expect(result.fans.isEmpty)
+    }
+
+    @Test(
+        "A non-finite per-fan reading is sanitised into a failure, never fabricated or trapping",
+        arguments: [Double.nan, .infinity, -.infinity]
+    )
+    func nonFiniteFanReadingIsSanitisedIntoFailure(_ nonFiniteValue: Double) async throws {
+        let provider = FakeSensorProvider(
+            keyedResults: [
+                "FNum": .success(.fake(key: "FNum", value: 1)),
+                "F0Ac": .success(.fake(key: "F0Ac", value: nonFiniteValue, kind: .rpm)),
+                "F0Mn": .success(.fake(key: "F0Mn", value: 1200, kind: .rpm)),
+                "F0Mx": .success(.fake(key: "F0Mx", value: 5312, kind: .rpm)),
+            ])
+
+        let result = try await ListCommand.fetch(provider: provider)
+        let fan = try #require(result.fans.first)
+
+        #expect(fan.actual.value == nil)
+        #expect(fan.actual.error != nil)
+
+        // Neither renderer traps or throws — the whole point of sanitising before
+        // either one ever sees the value.
+        let table = ListCommand.renderTable(result)
+        #expect(table.contains("unavailable"))
+        let json = try ListCommand.renderJSON(result)
+        #expect(json.contains("\"error\""))
+    }
+
+    @Test(
+        "A large-but-finite reading renders successfully, not as a sanitised failure",
+        arguments: [Double(UInt64.max), Double(Float.greatestFiniteMagnitude)]
+    )
+    func largeFiniteFanReadingRendersSuccessfully(_ hugeValue: Double) async throws {
+        let provider = FakeSensorProvider(
+            keyedResults: [
+                "FNum": .success(.fake(key: "FNum", value: 1)),
+                "F0Ac": .success(.fake(key: "F0Ac", value: hugeValue, kind: .rpm)),
+                "F0Mn": .success(.fake(key: "F0Mn", value: 1200, kind: .rpm)),
+                "F0Mx": .success(.fake(key: "F0Mx", value: 5312, kind: .rpm)),
+            ])
+
+        let result = try await ListCommand.fetch(provider: provider)
+        let fan = try #require(result.fans.first)
+
+        #expect(fan.actual.value == hugeValue)
+        #expect(fan.actual.error == nil)
+
+        // Both renderers must complete without trapping on a magnitude Int(_:) alone
+        // cannot hold.
+        _ = ListCommand.renderTable(result)
+        _ = try ListCommand.renderJSON(result)
+    }
+}
+
+@Suite("fanctl list — command wiring")
+struct ListCommandWiringTests {
+
+    @Test("--json selects the JSON renderer, not just that renderJSON is independently correct")
+    func jsonFlagSelectsJSONRenderer() async throws {
+        let provider = FakeSensorProvider(
+            keyedResults: ["FNum": .success(.fake(key: "FNum", value: 0))])
+        let command = try Fanctl.List.parse(["--json"])
+
+        var captured = ""
+        try await command.run(provider: provider) { captured = $0 }
+
+        #expect(captured.hasPrefix("{"))
+        #expect(captured.contains("\"fanCount\""))
+    }
+
+    @Test("Without --json, list renders a table, not JSON")
+    func withoutJSONFlagRendersTable() async throws {
+        let provider = FakeSensorProvider(
+            keyedResults: ["FNum": .success(.fake(key: "FNum", value: 0))])
+        let command = try Fanctl.List.parse([])
+
+        var captured = ""
+        try await command.run(provider: provider) { captured = $0 }
+
+        #expect(!captured.hasPrefix("{"))
+        #expect(captured.contains("No fans detected"))
     }
 }
 

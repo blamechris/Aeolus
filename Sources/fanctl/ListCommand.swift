@@ -109,6 +109,17 @@ enum ListCommand {
         return Result(fanCount: fanCount, fanCountKey: "FNum", fans: fans, capturedAt: now())
     }
 
+    /// Reads `FNum`, or `0` if this machine does not expose it at all.
+    ///
+    /// `.unknownKey("FNum")` — the key genuinely absent from this machine's table, not
+    /// present-and-zero — is treated the same as `FNum == 0`, not as an error: observed
+    /// (per community reports; see `docs/SMC-RESEARCH.md`) on some fanless Macs, whose
+    /// firmware does not expose a fan-count key at all. The entire point of `fanctl
+    /// list` — and of `.github/ISSUE_TEMPLATE/hardware-report.yml`, which asks for its
+    /// `--json` output — is to work on exactly this machine; a fanless Air's owner must
+    /// still be able to file that report. `.readFailed`/`.notDecodable` remain errors:
+    /// those mean the key exists but something went wrong reading it, which is worth
+    /// surfacing rather than silently treating as "no fans."
     private static func readFanCount(provider: some SensorProvider) async throws -> Int {
         let outcomes: [SensorReadOutcome]
         do {
@@ -127,14 +138,24 @@ enum ListCommand {
         switch outcome.result {
         case .success(let reading):
             decoded = reading.value
+        case .failure(.unknownKey):
+            return 0
         case .failure(let failure):
             throw FanctlError.connectionFailed(
                 context: "read FNum", reason: failure.readableDescription)
         }
 
-        let fanCount = Int(decoded.rounded())
-        guard fanCount >= 0, fanCount <= maxPlausibleFanCount else {
-            throw FanctlError.implausibleFanCount(fanCount)
+        // Validate the raw Double *before* ever converting it: SMCValue.scalar()
+        // applies no finiteness or magnitude guard on the way out of SMCCore (see
+        // Formatting.number's documentation), so a byte-order fault could in principle
+        // hand back NaN, Inf, or a value nowhere near a real fan count. Int(exactly:)
+        // never traps regardless, but checking isFinite and the plausible range first —
+        // rather than converting and then checking the result — keeps the validation
+        // order honest about what is actually being validated.
+        guard decoded.isFinite, decoded >= 0, decoded <= Double(maxPlausibleFanCount),
+            let fanCount = Int(exactly: decoded.rounded())
+        else {
+            throw FanctlError.implausibleFanCount(Formatting.number(decoded))
         }
         return fanCount
     }
@@ -147,10 +168,32 @@ enum ListCommand {
         }
         switch outcome.result {
         case .success(let reading):
-            return .success(key: key, value: reading.value)
+            return sanitized(key: key, value: reading.value)
         case .failure(let failure):
             return .failure(key: key, reason: failure.readableDescription)
         }
+    }
+
+    /// Guards a successfully-read value before it can reach either renderer.
+    ///
+    /// `SMCValue.scalar()` applies no finiteness check on the way out of `SMCCore` —
+    /// see `Formatting.number`'s documentation for the untested byte-order branch that
+    /// can produce `±.infinity`/`.nan` for an otherwise-successful read. Treated the
+    /// same as a failed read here (`nil` value, a specific error) rather than let a
+    /// non-finite `Double` reach `FanctlJSON`: `JSONEncoder`'s default
+    /// `nonConformingFloatEncodingStrategy` throws on exactly that, which would void
+    /// the *entire* `--json` output for one bad key among however many others read
+    /// cleanly.
+    private static func sanitized(key: String, value: Double) -> KeyedValue {
+        guard value.isFinite else {
+            return .failure(
+                key: key,
+                reason:
+                    "decoded to a non-finite value (\(Formatting.number(value))) "
+                    + "— likely a byte-order fault; see docs/SMC-RESEARCH.md"
+            )
+        }
+        return .success(key: key, value: value)
     }
 }
 
@@ -261,14 +304,20 @@ extension Fanctl.List {
         try await run(provider: SMCSensorProvider())
     }
 
-    /// Provider-injectable so `fanctlTests` can exercise this without hardware — see
-    /// `Tests/fanctlTests`.
-    func run(provider: some SensorProvider) async throws {
+    /// Provider- and output-injectable so `fanctlTests` can exercise this without
+    /// hardware and without touching the real process stdout — see `Tests/fanctlTests`.
+    /// `output` is what actually connects the `--json` flag to `renderJSON` rather than
+    /// `renderTable`; a test that only calls the two render functions directly never
+    /// proves that wiring.
+    func run(
+        provider: some SensorProvider,
+        output: (String) -> Void = { print($0) }
+    ) async throws {
         let result = try await ListCommand.fetch(provider: provider)
         if json {
-            print(try ListCommand.renderJSON(result))
+            output(try ListCommand.renderJSON(result))
         } else {
-            print(ListCommand.renderTable(result))
+            output(ListCommand.renderTable(result))
         }
     }
 }

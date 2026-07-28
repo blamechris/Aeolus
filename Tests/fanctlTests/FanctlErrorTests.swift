@@ -14,7 +14,7 @@ struct FanctlErrorTests {
         let cases: [FanctlError] = [
             .noSMC,
             .connectionFailed(context: "read FNum", reason: "boom"),
-            .implausibleFanCount(9_000_000),
+            .implausibleFanCount("9000000"),
             .jsonEncodingFailed(reason: "boom"),
         ]
         for error in cases {
@@ -35,5 +35,18 @@ struct FanctlErrorTests {
         let description = error.errorDescription ?? ""
         #expect(description.contains("read FNum"))
         #expect(description.contains("kIOReturnNotOpen"))
+    }
+
+    @Test(
+        "implausibleFanCount can describe a non-finite decode (NaN/Infinity), not just an Int"
+    )
+    func implausibleFanCountDescribesNonFiniteDecode() {
+        // The whole reason this case carries a String rather than an Int: a decode
+        // fault worth reporting here is not always representable as one.
+        let nan = FanctlError.implausibleFanCount(Formatting.number(.nan))
+        #expect(nan.errorDescription?.contains("NaN") == true)
+
+        let infinity = FanctlError.implausibleFanCount(Formatting.number(.infinity))
+        #expect(infinity.errorDescription?.contains("Infinity") == true)
     }
 }

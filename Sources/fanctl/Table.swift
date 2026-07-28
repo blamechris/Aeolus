@@ -18,8 +18,14 @@ enum Table {
 
         func line(_ cells: [String]) -> String {
             cells.enumerated()
-                .map { index, cell in
-                    index == cells.count - 1 ? cell : cell.paddedRight(to: widths[index])
+                .map { index, cell -> String in
+                    // The same `index < widths.count` bound as the width-computation
+                    // loop above: `rows` is caller-supplied, so a row with more cells
+                    // than `headers` (a contract violation, but not one this function
+                    // enforces by trapping) must fall through to the unpadded cell
+                    // rather than index `widths` out of range.
+                    guard index != cells.count - 1, index < widths.count else { return cell }
+                    return cell.paddedRight(to: widths[index])
                 }
                 .joined(separator: "  ")
         }
