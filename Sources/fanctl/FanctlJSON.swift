@@ -65,11 +65,16 @@ enum FanctlJSON {
             throw FanctlError.jsonEncodingFailed(reason: "encoded data was not valid UTF-8")
         }
         // NDJSON's contract is exactly one JSON value per line. Nothing this CLI encodes
-        // is expected to contain a literal newline, but the type system does not rule one
-        // out for an arbitrary String field — checked here rather than trusted, since a
-        // violation would silently corrupt line-based framing for whatever reads the next
-        // line as a new object.
-        guard !string.contains("\n") else {
+        // is expected to contain a literal newline — and in practice nothing could:
+        // JSONEncoder escapes every control character inside a JSON string — but the type
+        // system does not rule one out for an arbitrary String field, so this is checked
+        // rather than trusted, on the theory that a violation should fail loudly instead of
+        // silently corrupting line-based framing for whatever reads the next line as a new
+        // object. Checked over `unicodeScalars`, not `Character`: Swift's `String.contains`
+        // over `Character` compares by grapheme cluster, and "\r\n" is one grapheme
+        // cluster distinct from a lone "\n" `Character` — a scalar-level check is what
+        // actually catches both LF and CR regardless of how they're paired.
+        guard !string.unicodeScalars.contains(where: { $0 == "\n" || $0 == "\r" }) else {
             throw FanctlError.jsonEncodingFailed(
                 reason: "encoded line unexpectedly contained a newline")
         }

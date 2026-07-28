@@ -79,10 +79,24 @@ extension Fanctl {
             help: "Stop after this many refreshes. Runs until Ctrl-C if omitted.")
         var count: Int?
 
+        /// A day, in seconds. Generous for a genuine "check back tomorrow" use, and far
+        /// below where `SystemWatchClock.sleep(seconds:)` would need its own fallback: an
+        /// interval anywhere near `UInt64.max` nanoseconds (~1.8446744e10 seconds) is never
+        /// an intentional value, only a mistyped argument, and this rejects it here with an
+        /// actionable message rather than letting it reach a `Double`-to-`UInt64` runtime
+        /// precondition failure.
+        private static let maxIntervalSeconds: Double = 86_400
+
         func validate() throws {
             guard interval.isFinite, interval > 0 else {
                 throw ValidationError(
                     "--interval must be a positive, finite number of seconds; got \(interval)."
+                )
+            }
+            guard interval <= Self.maxIntervalSeconds else {
+                throw ValidationError(
+                    "--interval must be at most \(Self.maxIntervalSeconds) seconds (a day); "
+                        + "got \(interval)."
                 )
             }
             if let count, count <= 0 {

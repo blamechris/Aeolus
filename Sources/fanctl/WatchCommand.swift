@@ -83,7 +83,7 @@ enum WatchCommand {
     /// `--json` always emits a single compact NDJSON line, on a terminal or not — see
     /// `FanctlJSON.encodeLine`'s documentation for why a streaming format never carries
     /// pretty-printing, and there is even less reason for it to carry ANSI. The table view
-    /// clears and redraws only when stdout is a real terminal (`\u{1B}[2J\u{1B}[H}`, the
+    /// clears and redraws only when stdout is a real terminal (`\u{1B}[2J\u{1B}[H`, the
     /// same clear-and-home pair the Unix `watch` utility uses for its own redraw); a pipe
     /// or redirect instead gets a plain, timestamped, append-only block per tick, so a
     /// script capturing this command's output sees a readable, greppable log rather than a
@@ -132,8 +132,27 @@ struct SystemWatchClock: WatchClock {
     func now() -> Date { Date() }
 
     func sleep(seconds: Double) async throws {
-        let nanoseconds = (seconds * 1_000_000_000).rounded()
-        try await Task.sleep(nanoseconds: UInt64(max(0, nanoseconds)))
+        try await Task.sleep(nanoseconds: Self.clampedNanoseconds(forSeconds: seconds))
+    }
+
+    /// The nanosecond duration `sleep(seconds:)` waits for, clamped rather than trapping.
+    ///
+    /// `Fanctl.Watch.validate()` already rejects a non-finite or non-positive `--interval`,
+    /// but not one merely too large to convert: `UInt64(_:)` on an out-of-range `Double`
+    /// (anything at or above ~1.8446744e10 seconds, `UInt64.max` nanoseconds) is a runtime
+    /// precondition failure, not a thrown error — a stack trace from a mistyped argument.
+    /// `UInt64(exactly:)` never traps: it returns `nil` for exactly that case, handled here
+    /// by clamping to `UInt64.max` (effectively "forever, until cancelled") rather than
+    /// crashing, as a second line of defence independent of `validate()`'s own bound.
+    ///
+    /// A free function rather than inlined into `sleep(seconds:)`: this is pure arithmetic,
+    /// directly unit-testable without ever calling `Task.sleep` (and therefore without any
+    /// test needing to wait out or race a real cancellation) — see
+    /// `SystemWatchClockNanosecondClampingTests`. Internal rather than `private` so those
+    /// tests can call it via `@testable import`.
+    static func clampedNanoseconds(forSeconds seconds: Double) -> UInt64 {
+        let nanoseconds = max(0, seconds * 1_000_000_000).rounded()
+        return UInt64(exactly: nanoseconds) ?? UInt64.max
     }
 }
 
@@ -147,6 +166,17 @@ extension Fanctl.Watch {
     /// this carries no assumption about whether `Fanctl.Watch` (an `ArgumentParser`
     /// command struct built from property wrappers) is `Sendable`.
     func run() async throws {
+        // `stdout` is fully-buffered, not line-buffered, whenever it is not a terminal —
+        // the standard C stdio convention Darwin follows: a pipe or file redirect batches
+        // writes into ~16 KB chunks before flushing, only handed to the reader at process
+        // exit or once the buffer fills. That silently defeats NDJSON's entire reason for
+        // existing: a script's `while read -r line` would see nothing for dozens of ticks,
+        // then a burst, at odds with `FanctlJSON.encodeLine`'s and this file's own
+        // documentation of "one line arrives per tick." Forcing line-buffered mode here
+        // means each tick's `print($0)` flushes on its own trailing newline instead,
+        // whether stdout is a terminal, a pipe, or a redirected file.
+        setvbuf(stdout, nil, _IOLBF, 0)
+
         let provider = SMCSensorProvider()
         let options = WatchCommand.Options(
             interval: interval, count: count, json: json, isTerminal: Self.stdoutIsTerminal())
@@ -195,12 +225,24 @@ extension Fanctl.Watch {
     /// instead runs as ordinary code on `queue`, dispatched there once the signal has
     /// already been observed — `signal(SIGINT, SIG_IGN)` only suppresses the default
     /// disposition (process termination) so this source is what actually reacts to it.
+    ///
+    /// The handler restores the default disposition (`SIG_DFL`) the instant it fires, not
+    /// only cancelling `task`: cancellation is cooperative (see `WatchCommand.run`'s own
+    /// documentation), and a tick blocked inside a synchronous SMC call with no timeout
+    /// never reaches a suspension point that would observe it. Without restoring `SIG_DFL`
+    /// here, a second Ctrl-C in that situation would be silently ignored forever — worse
+    /// than the plain `signal()` this replaces, which at least let the *first* one kill the
+    /// process. Restoring it means the first Ctrl-C asks nicely and the second always
+    /// works, the same two-stage convention most long-running Unix tools follow.
     private static func installSIGINTHandler(
         cancelling task: Task<Void, Error>
     ) -> DispatchSourceSignal {
         signal(SIGINT, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-        source.setEventHandler { task.cancel() }
+        source.setEventHandler {
+            task.cancel()
+            signal(SIGINT, SIG_DFL)
+        }
         source.resume()
         return source
     }

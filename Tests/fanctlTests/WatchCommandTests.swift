@@ -195,4 +195,49 @@ struct WatchCommandWiringTests {
             try Fanctl.Watch.parse(["--count", "0"])
         }
     }
+
+    @Test("An --interval far larger than a day is rejected before it can reach the clock")
+    func hugeIntervalIsRejected() {
+        // 1e11 seconds is finite and positive — it would pass the earlier guard — but is
+        // also comfortably past UInt64.max nanoseconds (~1.8446744e10 seconds), which is
+        // exactly what used to reach SystemWatchClock.sleep and trap. Rejected here, at
+        // parse time, well before any conversion is attempted.
+        #expect(throws: (any Error).self) {
+            try Fanctl.Watch.parse(["--interval", "1e11"])
+        }
+    }
+
+    @Test("A day-long --interval is accepted; the bound is inclusive, not off-by-one")
+    func oneDayIntervalIsAccepted() throws {
+        _ = try Fanctl.Watch.parse(["--interval", "86400"])
+    }
+}
+
+@Suite("SystemWatchClock — nanosecond clamping")
+struct SystemWatchClockNanosecondClampingTests {
+
+    @Test("An ordinary interval converts to the expected nanosecond count")
+    func ordinaryIntervalConverts() {
+        #expect(SystemWatchClock.clampedNanoseconds(forSeconds: 1) == 1_000_000_000)
+    }
+
+    @Test("Zero converts to zero, not a trap")
+    func zeroConverts() {
+        #expect(SystemWatchClock.clampedNanoseconds(forSeconds: 0) == 0)
+    }
+
+    @Test(
+        "A value whose nanosecond count exceeds UInt64.max clamps rather than traps",
+        arguments: [1e11, 1e20, .infinity]
+    )
+    func outOfRangeValueClampsRatherThanTraps(_ seconds: Double) {
+        // The value that used to reach `UInt64(_:)` directly and crash the process on a
+        // mistyped --interval — see the reviewer note this test exists to pin down.
+        #expect(SystemWatchClock.clampedNanoseconds(forSeconds: seconds) == UInt64.max)
+    }
+
+    @Test("A negative value clamps to zero rather than underflowing")
+    func negativeValueClampsToZero() {
+        #expect(SystemWatchClock.clampedNanoseconds(forSeconds: -5) == 0)
+    }
 }
