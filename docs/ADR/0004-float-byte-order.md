@@ -17,10 +17,13 @@ Verified by full read-only enumeration on `Mac16,5` (M4 Max, macOS 26.5.2), re-r
 during this decision rather than taken from the original dump:
 
 - All **2073** `flt` keys carry bit `0x04` **set** — including the 9 unreadable ones. Of 11
-  `ioft` keys, 10 are bit-set; the sole bit-clear key (`pcHS`, attrs `0xF0`) is unreadable, and
-  Asahi independently notes that `0xF0`-flagged keys do not return values reliably. **The machine
-  contains no readable key that can distinguish "the type is little-endian" from "the bit is
-  set."** Every local observation supports both hypotheses equally.
+  `ioft` keys, 10 are bit-set; the sole bit-clear key (`pcHS`, attrs `0xF0`) declares itself
+  **readable** (bit `0x80` is set) but has never yielded bytes across 965 probes under varied
+  machine state — see issue #52 and the "No cheap local experiment exists" section below for
+  the full accounting, which corrects an earlier characterisation of this key as simply
+  "unreadable." **The machine contains no readable key that can distinguish "the type is
+  little-endian" from "the bit is set."** Every local observation supports both hypotheses
+  equally.
 - Every control-path fan key is individually bit-set: `F0Ac`/`F1Ac` (132), `F0Mn`/`F1Mn` (132),
   `F0Mx`/`F1Mx` (133), `F0Tg`/`F1Tg` (212). Routing them through the resolver is a decode no-op
   on this machine, verified key by key rather than in aggregate.
@@ -102,23 +105,66 @@ rule would fabricate semantics with no evidence. By-type plus an anomaly log is 
 | `flt` on `.legacy` is little-endian | Documented (VirtualSMC SDK host-order decode); untestable here | Legacy ships `untested`; first Intel report validates |
 | Key attributes are stable between enumeration and write time | Unverified | Writes already re-resolve from fresh `keyInfo`; verify stability across sleep/boot in E4 |
 
-**Revisit when:** any hardware report shows a readable bit-clear `flt`/`ioft` key — whichever way
-it decodes, it is the first direct evidence either hypothesis has ever had; when E4's `F0Tg`
-round trip runs; and above all when any M1/M2 report shows `VP3b`'s type, attributes, and raw
-bytes. Byte-reversed and bit-clear confirms this rule; byte-reversed and bit-**set** falsifies it
+**Revisit when:** any hardware report shows a readable bit-clear `flt`/`ioft` **data** key —
+whichever way it decodes, it is the first direct evidence either hypothesis has ever had; when
+E4's `F0Tg` round trip runs; and above all when any M1/M2 report shows `VP3b`'s type,
+attributes, and raw bytes. Byte-reversed and bit-clear confirms this rule; byte-reversed and bit-**set** falsifies it
 for floats (fall back to unconditional LE); not reversed at all dates Asahi's observation to a
 particular firmware. That single observation is the designated discriminator, and the E10a
 `fanctl` dump subcommand exists partly to collect it.
 
 ## No cheap local experiment exists — this is measured, not assumed
 
-The discriminating population on `Mac16,5` — readable, bit-clear, `flt`/`ioft` — is **empty**.
-Every avenue was checked: the only bit-clear `ioft` candidate (`pcHS`, `0xF0`) never returns
-bytes; the 9 unreadable `flt` keys are bit-*set*; every independently cross-checkable key
-(`B0AV` against its cell sum, `TR0Z` against IOHID's `PMU tcal`, `TG0B` against `TB0T`) is
-bit-set and so confirms both hypotheses equally; and round trips are prohibited before E5 and
-would, on this machine, only ever exercise the bit-set direction anyway.
+An earlier revision of this ADR stated flatly that the discriminating population on `Mac16,5`
+— readable, bit-clear, `flt`/`ioft` — was **empty**, and named `pcHS` as an "unreadable"
+bit-clear `ioft` candidate. **That was wrong.** It rested on a characterisation carried over
+from the original enumeration spike, which logged `pcHS` as `READ_FAILED` without inspecting
+its attribute byte. `pcHS` declares itself readable (bit `0x80` set); it is *gated*, not
+unreadable, and the two are different claims. Issue #52 tracked down what the gate is.
 
-That negative result is itself worth recording: it is why this ADR rests on failure-mode
-asymmetry rather than on local evidence, and why the M1/M2 `VP3b` report is the designated
-discriminator.
+**The investigation.** `pcHS` was probed 965 times on `Mac16,5` across five conditions:
+battery idle, battery under sustained 12-way CPU load, a 300-read 50 ms hammer, a 10-minute
+1 Hz watch, and two full-table walks. **965 rejections, zero bytes.** `READ_KEYINFO` was
+stable throughout every probe: `ioft`, 8 bytes, attributes `0xF0`. Combined with the
+2026-07-25 AC-idle enumeration that first surfaced this key, `pcHS` has never returned bytes
+under AC idle, battery idle, battery under load, rapid retry, or a sustained watch. **Not
+tried:** sleep/wake, the first minutes after boot (uptime at the time of this investigation
+was 5 days), an AC re-test in the same session as the battery runs, and Low Power Mode. Anyone
+extending this investigation should start with those, not repeat the five above.
+
+**The structural explanation**, verified independently against the full enumeration: attribute
+bit `0x10` is `SMC_KEY_ATTRIBUTE_FUNCTION` (VirtualSMC's `AppleSmc.h`; also documented by
+Intel). **All 52 firmware-rejected keys on this machine carry it — zero exceptions.** The
+converse does not hold: **308 bit-`0x10` keys read fine**, including all nine `ioft`
+temperature sensors (`TG*`/`TR*`, attrs `0x94`). The bit means "served by a firmware function
+handler," and only some handlers reject a plain read. The four observed rejection codes map to
+documented Intel result names — `0x82` `SmcBadCommand`, `0x89` `SmcBadArgumentError`, `0xc7`
+`SmcDeviceAccessError`, `0xcb` `SmcUnsupportedFeature` — which supports the namespace carrying
+over to Apple Silicon, but that is **an assumption, not an observation**, since none of the
+four has been independently verified against Apple Silicon firmware source. Asahi's quirks
+section documents this exact cluster from the other side: "`rLD0` etc. cannot be read
+normally, but can be read with a `0x00000001` or `0x00ffffff` payload. Maybe that's related to
+the 'flags' byte being `0xf0`." **The gate is the request shape, not machine state** — a plain,
+payload-less `READ_BYTES` is not a valid command for a function key, and no machine-state
+variable this investigation varied was ever going to change that.
+
+**The verdict: this ADR's decision is unchanged, and stays undetermined on the
+attribute-bit-for-floats question exactly as before.** It always rested on failure-mode
+asymmetry, never on local evidence — see the Rationale above. What was wrong was purely this
+section's *evidence accounting*: calling `pcHS` "unreadable" when its attribute byte says
+readable-but-function-gated overstated how empty the discriminating population was, and
+understated what kind of empty it is.
+
+`pcHS` was also always a weaker lead than hoped, independent of whether it ever yields bytes.
+A function key's payload comes from a firmware function handler, not the data path that serves
+an ordinary `flt` control key like `F0Mx`; even a successful `pcHS` read would have been weak
+evidence about how ordinary `flt`/`ioft` **data** keys decode. And within the function-key
+population, attribute bit `0x04` visibly tracks nothing checkable from here: `pcHS` (`0xF0`,
+bit `0x04` clear) and `aDCR` (`ioft`, `0xF4`, bit `0x04` set) both never return data, so the
+bit's presence or absence predicts nothing observable in this population either way.
+
+**The M1/M2 `VP3b` report stays the designated discriminator, and is now strictly stronger**
+than it was: `VP3b` is an ordinary, non-function `flt` **data** key (attrs 133, bit `0x10`
+clear), so unlike `pcHS` it bears directly on the same data path that serves `F0Mn`/`F0Mx`. No
+change is needed to the `fanctl dump --key VP3b` request this ADR already designates for
+collecting it.

@@ -277,12 +277,79 @@ and no key with bit 7 clear ever read successfully. 52 keys correctly declare th
 unreadable this way.
 
 But the bit is **necessary, not sufficient**. A further 52 keys set bit 7 and still return
-an SMC error on `READ_BYTES`. They cluster obviously — `rBK0`–`rBKa`, `rLD0`–`rLD5`,
-`bVUP`, `bVDN`, `aP70`–`aP80` — and read as action/trigger keys rather than data.
+an SMC error on `READ_BYTES` — `rBK0`–`rBKa`, `rLD0`–`rLD5`, `bVUP`, `bVDN`, `aP70`–`aP80`
+among them. An earlier draft of this section called these "action/trigger keys," a
+characterisation made by feel rather than by inspecting anything structural. Issue #52
+found what actually identifies the population: all 52 carry attribute bit `0x10` set. See
+"Bit `0x10` structurally identifies the 52-key rejection cluster" below for the full
+breakdown — the bit, not a guess about a key's role, is what distinguishes this cluster.
 
 Implication for enumeration: filter on the attribute bit as a cheap first pass, then let
 the read fail gracefully anyway. A failed read of one key must never abort enumeration of
 the rest.
+
+### Bit `0x10` structurally identifies the 52-key rejection cluster (issue #52)
+
+`0x10` is `SMC_KEY_ATTRIBUTE_FUNCTION` in VirtualSMC's `AppleSmc.h`, also documented by
+Intel: the bit means "served by a firmware function handler" rather than "a plain data
+value." **All 52 keys on `Mac16,5` that set bit 7 (readable) and still reject
+`READ_BYTES` carry bit `0x10` — zero exceptions.** The rejection codes returned, by count:
+
+| Code | Documented Intel name | Count | Keys named in this investigation |
+|---|---|---|---|
+| `0x82` | `SmcBadCommand` | 21 | `pcBK`, `pcBS`, `pcHS`, `pcLD`, `rBK0`–`rBK9`, `rBSW`, `rLD0`–`rLD5` |
+| `0x89` | `SmcBadArgumentError` | 20 | not itemised in this pass |
+| `0xc7` | `SmcDeviceAccessError` | 10 | not itemised in this pass |
+| `0xcb` | `SmcUnsupportedFeature` | 1 | not itemised in this pass |
+
+All four codes land on documented Intel result names, which supports the result-code
+namespace carrying over to Apple Silicon — **that carry-over is an assumption, not an
+observation**; none of the four has been independently verified against Apple Silicon
+firmware source, only against the community `AppleSmc.h` reference.
+
+**The converse does not hold.** Bit `0x10` is not itself a predictor of rejection: **308
+bit-`0x10` keys read fine**, including all nine `ioft` temperature sensors this document
+already relies on (`TG0B`, `TG0C`, `TG0H`, `TG0V`, `TG1B`, `TG2B`, `TR0Z`, `TR1d`, `TR2d` —
+attrs `0x94`). So "function key" means "served by a firmware handler that *may* reject a
+plain read," not "will reject a plain read." Within the rejecting population, bit `0x04`
+(the byte-order bit ADR 0003/0004 depend on for data keys) tracks nothing checkable: `pcHS`
+(`0xF0`, bit `0x04` clear) and `aDCR` (`ioft`, `0xF4`, bit `0x04` set) both never return
+data, so its state predicts nothing observable about function-key behaviour either way.
+
+The [Asahi Linux SMC documentation](https://asahilinux.org/docs/hw/soc/smc/) independently
+documents this exact cluster from the write side: "`rLD0` etc. cannot be read normally, but
+can be read with a `0x00000001` or `0x00ffffff` payload. Maybe that's related to the
+'flags' byte being `0xf0`." Read together with the local observation, **the gate looks like
+the request shape — a plain, payload-less `READ_BYTES` is not a valid command for a
+function key — not machine state.**
+
+**The `pcHS` negative result.** `pcHS` (`ioft`, attrs `0xF0`, bit `0x10` set, bit `0x04`
+clear — the sole bit-`0x04`-clear `ioft` key, and ADR 0004's discussion of its population)
+was probed 965 times: battery idle, battery under sustained 12-way CPU load, a 300-read
+50 ms hammer, a 10-minute 1 Hz watch, and two full-table walks. **965 rejections with
+`0x82`, zero bytes returned.** `READ_KEYINFO` was stable throughout — `ioft`, 8 bytes,
+attrs `0xF0` — so the key's declared metadata is not itself in flux. Combined with the
+2026-07-25 AC-idle enumeration that first surfaced it, `pcHS` has never returned bytes
+under AC idle, battery idle, battery under load, rapid retry, or a sustained watch.
+**Conditions not tried:** sleep/wake, the first minutes after boot (system uptime during
+this investigation was 5 days), an AC re-test within the same session as the battery runs,
+and Low Power Mode. See [ADR 0004](ADR/0004-float-byte-order.md) for what this does and
+does not settle about float byte order.
+
+**To verify (E4):**
+
+- Whether `0x82` returned from an actual `F0Md`/`F0Tg` **write** — not a read of an
+  unrelated function key — really is the "thermal manager is holding the fans" rejection
+  the community reports, and what would observationally distinguish it from an unrelated
+  `0x82` if one happened to coincide.
+- Whether a payload-carrying read (Asahi's `0x00000001` / `0x00ffffff` pattern) opens this
+  cluster on the macOS user-client path used here, rather than the kernel-level path Asahi
+  reverse-engineered. This is **gated like a write despite using a read selector** — an
+  undocumented command shape this project has not attempted and does not attempt as part
+  of this issue. Asahi separately records reads with side effects on `gP??` keys, which is
+  its own reason for caution: a "read" is not guaranteed side-effect-free in this firmware.
+- Whether attribute bit `0x20` discriminates anything within the function-key population —
+  unexamined by this investigation.
 
 ### `dataSize` reaches 120 bytes — the 32-byte struct payload is not enough
 
@@ -439,8 +506,9 @@ what licence.
 | `raminsharifi/MacFanControl` | Prior art on the Apple Silicon path | To be confirmed before any adaptation |
 | `tw93/Mole` issue #1119 | Community discussion of fan control on recent silicon | Discussion only, no code |
 | `smcFanControl` (hholtmann) | Prior art on the Intel path | GPL — compatible with this project |
-| [Asahi Linux SMC documentation](https://asahilinux.org/docs/hw/soc/smc/) | Independent, clean-room hardware reverse-engineering corroborating the little-endian-with-quirks model behind ADR 0003, naming `#KEY`/`B0RM`/`VP3b` specifically, and (for ADR 0004) documenting `VP3b` as byte-reversed on M1-era hardware — the reason `flt`/`ioft` are no longer assumed unconditionally little-endian | Documentation consulted, no code adapted |
+| [Asahi Linux SMC documentation](https://asahilinux.org/docs/hw/soc/smc/) | Independent, clean-room hardware reverse-engineering corroborating the little-endian-with-quirks model behind ADR 0003, naming `#KEY`/`B0RM`/`VP3b` specifically, documenting `VP3b` as byte-reversed on M1-era hardware (the reason `flt`/`ioft` are no longer assumed unconditionally little-endian), and (for issue #52) noting that `rLD0`-class keys accept a `0x00000001`/`0x00ffffff` read payload where a plain read is rejected | Documentation consulted, no code adapted |
 | [VirtualSMC](https://github.com/acidanthera/VirtualSMC/blob/master/VirtualSMCSDK/kern_vsmcapi.hpp) | Documents attribute bit `0x04` as `ATTR_ATOMIC` on Intel, which is why ADR 0003's byte-order rule is scoped to the modern interface only | Documentation consulted, no code adapted |
+| [VirtualSMC — `VirtualSMCSDK/AppleSmc.h`](https://github.com/acidanthera/VirtualSMC/blob/master/VirtualSMCSDK/AppleSmc.h) | Names attribute bit `0x10` as `SMC_KEY_ATTRIBUTE_FUNCTION`, and result codes `0x82`/`0x89`/`0xc7`/`0xcb` as `SmcBadCommand`/`SmcBadArgumentError`/`SmcDeviceAccessError`/`SmcUnsupportedFeature` — the reference for issue #52's function-key finding | Documentation consulted, no code adapted |
 
 **Before adapting code from any of these**, confirm the licence, record it above, and
 attribute it in the source file. Reading a project's documentation and reimplementing from
