@@ -26,55 +26,6 @@ public enum CatalogLoader {
     /// still controls).
     public static let supportedSchemaVersion = SensorCatalog.currentSchemaVersion
 
-    // MARK: - Bundled catalog
-
-    /// Loads the catalog Aeolus ships, from FanKit's own SPM resource bundle.
-    ///
-    /// A missing or unreadable bundled resource means the build is broken, not that the
-    /// user did anything wrong — it still degrades to `.empty` plus a warning rather
-    /// than throwing, because "no labels" must always be a reachable, working state.
-    public static func loadBundled() -> CatalogLoadOutcome {
-        loadBundled(bundle: .module)
-    }
-
-    /// Same as `loadBundled()`, with the resource bundle injectable so tests can exercise
-    /// "the bundle doesn't have the resource" without a real broken build.
-    static func loadBundled(bundle: Bundle) -> CatalogLoadOutcome {
-        guard
-            let url = bundle.url(
-                forResource: "catalog", withExtension: "json", subdirectory: "catalog")
-        else {
-            return CatalogLoadOutcome(
-                catalog: .empty,
-                warnings: [
-                    .bundledCatalogUnavailable(
-                        reason: "catalog.json was not found in the FanKit resource bundle")
-                ])
-        }
-        return loadBundled(from: url)
-    }
-
-    /// Loads a bundled-style catalog from an explicit file URL. Exposed for testing the
-    /// "bundle is broken" path without needing a real, malformed resource bundle.
-    static func loadBundled(from url: URL) -> CatalogLoadOutcome {
-        let data: Data
-        do {
-            data = try Data(contentsOf: url)
-        } catch {
-            return CatalogLoadOutcome(
-                catalog: .empty,
-                warnings: [.bundledCatalogUnavailable(reason: describe(error))])
-        }
-        switch decode(data) {
-        case .success(let catalog):
-            return CatalogLoadOutcome(catalog: catalog)
-        case .failure(let error):
-            return CatalogLoadOutcome(
-                catalog: .empty,
-                warnings: [.bundledCatalogUnavailable(reason: error.description)])
-        }
-    }
-
     // MARK: - User override
 
     /// Where the hand-editable override lives: `~/Library/Application
@@ -112,7 +63,7 @@ public enum CatalogLoader {
         overrideURL: URL? = nil,
         fileManager: FileManager = .default
     ) -> CatalogLoadOutcome {
-        load(bundle: .module, overrideURL: overrideURL, fileManager: fileManager)
+        load(bundled: loadBundled(), overrideURL: overrideURL, fileManager: fileManager)
     }
 
     /// Same as `load(overrideURL:fileManager:)`, with the bundled-resource bundle
@@ -123,7 +74,16 @@ public enum CatalogLoader {
         overrideURL: URL? = nil,
         fileManager: FileManager = .default
     ) -> CatalogLoadOutcome {
-        let bundled = loadBundled(bundle: bundle)
+        load(
+            bundled: loadBundled(bundle: bundle), overrideURL: overrideURL,
+            fileManager: fileManager)
+    }
+
+    private static func load(
+        bundled: CatalogLoadOutcome,
+        overrideURL: URL?,
+        fileManager: FileManager
+    ) -> CatalogLoadOutcome {
         let resolvedOverrideURL = overrideURL ?? defaultOverrideURL(fileManager: fileManager)
 
         guard let resolvedOverrideURL, fileManager.fileExists(atPath: resolvedOverrideURL.path)
@@ -243,7 +203,10 @@ public enum CatalogLoader {
         }
     }
 
-    private static func describe(_ error: Error) -> String {
+    /// Renders an `Error` as a loggable string. `internal`, not `private`: also used by
+    /// `CatalogBundleLoading.swift`, which needs to report an `Error` it catches while
+    /// reading the bundled resource without duplicating this one-liner.
+    static func describe(_ error: Error) -> String {
         String(describing: error)
     }
 }

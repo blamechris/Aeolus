@@ -46,13 +46,15 @@ let package = Package(
         // catalog. Pure Swift: no IOKit, no I/O beyond reading a file, fully
         // unit-testable. Keep it that way.
         //
-        // `resources` copies the canonical `Resources/catalog/` — schema and bundled
-        // catalog.json both live at the repo root, not under Sources/FanKit, so every
-        // consumer (SPM, the Xcode app, a future validator) reads the one file rather
-        // than a duplicated copy that can drift.
+        // `resources` copies the canonical `Resources/catalog/catalog.json` — it lives
+        // at the repo root, not under Sources/FanKit, so every consumer (SPM, the Xcode
+        // app) reads the one file rather than a duplicated copy that can drift.
+        // `catalog.schema.json` is deliberately not copied here: nothing at runtime
+        // reads it (CI validates it directly against the source tree), so there is no
+        // reason to ship a development artifact inside the app.
         .target(
             name: "FanKit",
-            resources: [.copy("../../Resources/catalog")],
+            resources: [.copy("../../Resources/catalog/catalog.json")],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
 

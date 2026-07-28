@@ -15,6 +15,16 @@ struct CatalogBundledLoadTests {
     /// per #44 (seeding is a separate issue). This is the "decodes from the bundled
     /// resource" acceptance criterion, proven against the actual shipped file rather
     /// than a stand-in.
+    ///
+    /// - Important: This test is *why* `CatalogLoader.supportedSchemaVersion`'s
+    ///   reject-don't-guess policy (see its doc comment) is safe rather than reckless. If
+    ///   this build's `supportedSchemaVersion` and the committed catalog's
+    ///   `schemaVersion` ever drift apart, this assertion goes red at commit/CI time —
+    ///   loudly, in the one place a maintainer is already looking — instead of quietly
+    ///   shipping an app that rejects its own bundled catalog and shows no labels to
+    ///   every user. Do not weaken `warnings.isEmpty` here without understanding that
+    ///   this is the thing standing between "reject on mismatch" and "silently blind on
+    ///   mismatch".
     @Test("The real bundled catalog decodes with no warnings")
     func realBundledCatalogDecodes() {
         let outcome = CatalogLoader.loadBundled()
@@ -40,6 +50,58 @@ struct CatalogBundledLoadTests {
             Issue.record("expected a bundledCatalogUnavailable warning, got \(outcome.warnings)")
             return
         }
+    }
+
+    /// The important regression case: SwiftPM's generated `Bundle.module` accessor calls
+    /// `fatalError` when it can't find `Aeolus_FanKit.bundle` — a real crash, reproduced
+    /// by moving the resource bundle aside and running a `FanKit`-linked executable from
+    /// somewhere else on disk (see the PR discussion on #42/#49). `loadBundled()` no
+    /// longer goes anywhere near `Bundle.module`; this exercises the *actual* production
+    /// function — not a bundle-injected stand-in — with a candidate search that cannot
+    /// possibly succeed, proving the real code path degrades instead of trapping.
+    @Test(
+        "loadBundled() degrades gracefully, through its real search, when every candidate misses"
+    )
+    func realSearchDegradesGracefullyWhenExhausted() {
+        let unresolvableDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aeolus-catalog-tests-nowhere-\(UUID().uuidString)")
+
+        let outcome = CatalogLoader.loadBundled(
+            searching: [nil, unresolvableDirectory, nil])
+
+        #expect(outcome.catalog == .empty)
+        guard case .bundledCatalogUnavailable = outcome.warnings.first else {
+            Issue.record("expected a bundledCatalogUnavailable warning, got \(outcome.warnings)")
+            return
+        }
+    }
+
+    /// The search must not just check the first candidate and give up: a real process
+    /// context can have several plausible-but-wrong directories (see
+    /// `defaultCandidateDirectories()`) before the one that actually holds the resource
+    /// bundle.
+    @Test("locateResourceBundle(searching:) falls through misses to a later matching candidate")
+    func searchFallsThroughToLaterCandidate() throws {
+        let missA = try makeTemporaryDirectory()
+        let missB = try makeTemporaryDirectory()
+        let hit = try makeTemporaryDirectory()
+        try writeCatalogResource(
+            into: hit.appendingPathComponent("Aeolus_FanKit.bundle", isDirectory: true),
+            json: #"{"schemaVersion": 1, "entries": []}"#)
+
+        let bundle = CatalogLoader.locateResourceBundle(searching: [missA, missB, hit])
+
+        #expect(bundle != nil)
+    }
+
+    /// `nil` entries show up in real candidate lists whenever `Bundle.main.resourceURL`
+    /// or `Bundle(for:).resourceURL` is `nil` (a bundle with no `Contents/Resources`).
+    /// The search must skip them, not crash on force-unwrapping.
+    @Test("locateResourceBundle(searching:) tolerates nil candidates in the list")
+    func searchToleratesNilCandidates() {
+        let bundle = CatalogLoader.locateResourceBundle(searching: [nil, nil, nil])
+
+        #expect(bundle == nil)
     }
 
     @Test("A bundled catalog resource that resolves to a nonexistent file degrades gracefully")
@@ -74,7 +136,7 @@ struct CatalogBundledLoadTests {
     func bundledCatalogWithEntriesDecodes() throws {
         let bundleRoot = try makeTemporaryDirectory()
         try writeCatalogResource(
-            named: "catalog", into: bundleRoot,
+            into: bundleRoot,
             json: """
                 {
                   "schemaVersion": 1,
@@ -104,7 +166,7 @@ struct CatalogOverrideLoadTests {
     func absentOverrideUsesBundledCatalogOnly() throws {
         let bundleRoot = try makeTemporaryDirectory()
         try writeCatalogResource(
-            named: "catalog", into: bundleRoot,
+            into: bundleRoot,
             json: """
                 {"schemaVersion": 1, "entries": [
                   {"key": "Tp09", "label": "CPU", "category": "cpu", "confidence": "guess"}
@@ -146,7 +208,7 @@ struct CatalogOverrideLoadTests {
     func validOverrideLayersOnTop() throws {
         let bundleRoot = try makeTemporaryDirectory()
         try writeCatalogResource(
-            named: "catalog", into: bundleRoot,
+            into: bundleRoot,
             json: """
                 {"schemaVersion": 1, "entries": [
                   {"key": "Tp09", "label": "CPU", "category": "cpu", "confidence": "guess"}
@@ -175,7 +237,7 @@ struct CatalogOverrideLoadTests {
     func malformedOverrideFallsBackToBundled() throws {
         let bundleRoot = try makeTemporaryDirectory()
         try writeCatalogResource(
-            named: "catalog", into: bundleRoot,
+            into: bundleRoot,
             json: """
                 {"schemaVersion": 1, "entries": [
                   {"key": "Tp09", "label": "CPU", "category": "cpu", "confidence": "guess"}
@@ -201,7 +263,7 @@ struct CatalogOverrideLoadTests {
     func overrideMissingRequiredFieldFallsBack() throws {
         let bundleRoot = try makeTemporaryDirectory()
         try writeCatalogResource(
-            named: "catalog", into: bundleRoot,
+            into: bundleRoot,
             json: """
                 {"schemaVersion": 1, "entries": [
                   {"key": "Tp09", "label": "CPU", "category": "cpu", "confidence": "guess"}
@@ -232,7 +294,7 @@ struct CatalogOverrideLoadTests {
     func overrideWithUnsupportedSchemaVersionFallsBack() throws {
         let bundleRoot = try makeTemporaryDirectory()
         try writeCatalogResource(
-            named: "catalog", into: bundleRoot,
+            into: bundleRoot,
             json: """
                 {"schemaVersion": 1, "entries": [
                   {"key": "Tp09", "label": "CPU", "category": "cpu", "confidence": "guess"}
@@ -258,7 +320,7 @@ struct CatalogOverrideLoadTests {
     func overrideAtDirectoryIsUnreadable() throws {
         let bundleRoot = try makeTemporaryDirectory()
         try writeCatalogResource(
-            named: "catalog", into: bundleRoot,
+            into: bundleRoot,
             json: """
                 {"schemaVersion": 1, "entries": []}
                 """)
@@ -303,13 +365,12 @@ func writeTemporaryFile(contents: String) throws -> URL {
     return url
 }
 
-/// Writes `catalog.json` into a `<root>/<name>/` subdirectory, matching the layout
-/// `CatalogLoader.loadBundled(bundle:)` looks for via
-/// `bundle.url(forResource:withExtension:subdirectory:)`.
-func writeCatalogResource(named name: String, into root: URL, json: String) throws {
-    let subdirectory = root.appendingPathComponent(name, isDirectory: true)
-    try FileManager.default.createDirectory(at: subdirectory, withIntermediateDirectories: true)
-    try Data(json.utf8).write(to: subdirectory.appendingPathComponent("catalog.json"))
+/// Writes `catalog.json` at the root of `root`, matching the flat layout
+/// `CatalogLoader.loadBundled(bundle:)` looks for via `bundle.url(forResource:withExtension:)`
+/// — see `Package.swift`'s `FanKit` resource entry, which copies only the file itself.
+func writeCatalogResource(into root: URL, json: String) throws {
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data(json.utf8).write(to: root.appendingPathComponent("catalog.json"))
 }
 
 // swiftlint:enable force_unwrapping
