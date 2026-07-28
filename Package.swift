@@ -42,10 +42,17 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
 
-        // Fan/sensor models, curve engine, profile and config schema.
-        // Pure Swift: no IOKit, no I/O, fully unit-testable. Keep it that way.
+        // Fan/sensor models, curve engine, profile and config schema, and the sensor
+        // catalog. Pure Swift: no IOKit, no I/O beyond reading a file, fully
+        // unit-testable. Keep it that way.
+        //
+        // `resources` copies the canonical `Resources/catalog/` — schema and bundled
+        // catalog.json both live at the repo root, not under Sources/FanKit, so every
+        // consumer (SPM, the Xcode app, a future validator) reads the one file rather
+        // than a duplicated copy that can drift.
         .target(
             name: "FanKit",
+            resources: [.copy("../../Resources/catalog")],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
 
