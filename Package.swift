@@ -43,8 +43,14 @@ let package = Package(
         ),
 
         // Fan/sensor models, curve engine, profile and config schema, and the sensor
-        // catalog. Pure Swift: no IOKit, no I/O beyond reading a file, fully
-        // unit-testable. Keep it that way.
+        // catalog. Pure Swift: no IOKit, no general-purpose I/O, fully unit-testable.
+        // Keep it that way. The two narrow exceptions are reading a file
+        // (CatalogLoader's bundled/override catalog) and reading a fixed system
+        // property via sysctlbyname (HardwareIdentity.current(), for hw.model /
+        // machdep.cpu.brand_string — see that file's doc comment for why this belongs
+        // here rather than in a client). Both are single, clearly-marked non-pure
+        // entry points; everything downstream of them (matching included) stays a pure
+        // function of the value they produce.
         //
         // `resources` copies the canonical `Resources/catalog/catalog.json` — it lives
         // at the repo root, not under Sources/FanKit, so every consumer (SPM, the Xcode
