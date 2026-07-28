@@ -33,7 +33,7 @@ the other, and both are thin.
 | Target | Kind | Responsibility |
 |---|---|---|
 | `SMCCore` | library | IOKit connection, key enumeration, type codec. Read API `public`; write API `package`. |
-| `FanKit` | library | Fan and sensor models, curve engine, profiles, config schema. No IOKit, no I/O. |
+| `FanKit` | library | Fan and sensor models, curve engine, profiles, config schema, sensor catalog. No IOKit. I/O limited to two named exceptions: reading the catalog file, and `sysctlbyname` for hardware identity (`hw.model`, `machdep.cpu.brand_string`) — never `uname -m`. |
 | `AeolusXPC` | library | The `@objc` protocol and the Codable DTOs that cross the privilege boundary. |
 | `AeolusHelper` | root daemon | The only writer. Control loop and safety supervisor. |
 | `fanctl` | executable | XPC client; also standalone in read-only mode. |
