@@ -131,7 +131,9 @@ public enum CatalogLoader {
     ///
     /// An entry's identity for override purposes is its `(key, match)` pair, not `key`
     /// alone. An override entry replaces a bundled entry only when both the key **and**
-    /// the hardware scope match exactly; the override wins that slot.
+    /// the hardware scope match exactly; the override wins that slot. "Match exactly"
+    /// compares `match` by meaning, not by JSON shape — see `OverrideSlot` for what that
+    /// normalizes away.
     ///
     /// This matters because the schema allows several entries to share a key,
     /// differentiated by `match` — the same raw key can mean different things on
@@ -146,6 +148,15 @@ public enum CatalogLoader {
     ///   alongside the bundled entries for that key rather than replacing any of them.
     /// - An override with a key the bundled catalog never mentions is simply added.
     ///
+    /// The result lists override entries **before** surviving bundled entries. For
+    /// entries with genuinely different scopes, order carries no meaning — a downstream
+    /// resolver picks by matching hardware, not position — but it means that if
+    /// normalization above ever still lets a near-miss through as two entries instead of
+    /// one, a first-match resolver reads the user's explicit override rather than the
+    /// shipped guess. Override-first can never make a correct merge wrong; it can only
+    /// make a residual near-miss fail safe instead of failing silently in the user's
+    /// disfavour.
+    ///
     /// The merged catalog's `schemaVersion` is the bundled catalog's — the override has
     /// already been validated against `supportedSchemaVersion` by the time entries reach
     /// this function, so the two necessarily agree.
@@ -156,20 +167,43 @@ public enum CatalogLoader {
         }
         return SensorCatalog(
             schemaVersion: bundled.schemaVersion,
-            entries: survivingBundledEntries + override.entries
+            entries: override.entries + survivingBundledEntries
         )
     }
 
     /// The `(key, match)` identity that determines whether an override entry replaces a
-    /// bundled one. Not part of `CatalogEntry`'s public surface — it exists only to
-    /// drive `merge`.
+    /// bundled one. Not part of `CatalogEntry`'s public surface — it exists only to drive
+    /// `merge`.
+    ///
+    /// `match` is normalized rather than compared as the raw `CatalogMatch` value,
+    /// because `CatalogMatch`'s synthesised `Hashable` treats three things a hand-edited
+    /// override would routinely vary as *different* scopes when they mean the *same*
+    /// scope:
+    ///
+    /// - Array order: `chipFamily: ["M4", "M4 Max"]` vs. `["M4 Max", "M4"]`.
+    /// - Presence vs. absence: no `match` key at all vs. `"match": {}`.
+    /// - Case: `"M4 Max"` vs. `"m4 max"` — these are free-text hardware labels, not raw
+    ///   SMC keys, so case is not meaningful the way it is for `key`.
+    ///
+    /// Any of those would otherwise silently turn an intended replacement into an
+    /// addition, leaving the bundled guess in the merged catalog (and, before the
+    /// override-first ordering above, ahead of the user's override in a first-match
+    /// resolver). Normalizing here closes the gap at the source; ordering override-first
+    /// is the second, independent line of defence for whatever normalization still
+    /// misses.
     private struct OverrideSlot: Hashable {
         let key: String
-        let match: CatalogMatch?
+        let chipFamily: Set<String>
+        let modelIdentifier: Set<String>
 
         init(entry: CatalogEntry) {
             self.key = entry.key
-            self.match = entry.match
+            self.chipFamily = Self.normalize(entry.match?.chipFamily)
+            self.modelIdentifier = Self.normalize(entry.match?.modelIdentifier)
+        }
+
+        private static func normalize(_ values: [String]?) -> Set<String> {
+            Set((values ?? []).map { $0.lowercased() })
         }
     }
 
@@ -197,15 +231,41 @@ public enum CatalogLoader {
         }
 
         do {
-            return .success(try decoder.decode(SensorCatalog.self, from: data))
+            let catalog = try decoder.decode(SensorCatalog.self, from: data)
+            if let violation = firstSchemaViolation(in: catalog) {
+                return .failure(.invalidJSON(violation))
+            }
+            return .success(catalog)
         } catch {
             return .failure(.invalidJSON(describe(error)))
         }
     }
 
+    /// Schema constraints `Decodable` alone doesn't enforce: `key` must be exactly four
+    /// characters (`catalog.schema.json`'s `minLength`/`maxLength: 4`) and `label` must
+    /// be non-empty (`minLength: 1`).
+    ///
+    /// Without this, a typo in a field *value* — `"key": "TOO_LONG_KEY"`, `"label": ""`
+    /// — decodes cleanly and loads silently, while a typo in a field *name* (`"lable"`)
+    /// already fails with a clear `overrideMalformed` warning via the "required key
+    /// missing" path above. This closes that asymmetry: both kinds of mistake now
+    /// produce the same kind of loud, specific rejection.
+    private static func firstSchemaViolation(in catalog: SensorCatalog) -> String? {
+        for (index, entry) in catalog.entries.enumerated() {
+            if entry.key.count != 4 {
+                return
+                    "entries[\(index)]: key \"\(entry.key)\" must be exactly 4 characters, "
+                    + "found \(entry.key.count)"
+            }
+            if entry.label.isEmpty {
+                return "entries[\(index)]: label must not be empty"
+            }
+        }
+        return nil
+    }
+
     /// Renders an `Error` as a loggable string. `internal`, not `private`: also used by
-    /// `CatalogBundleLoading.swift`, which needs to report an `Error` it catches while
-    /// reading the bundled resource without duplicating this one-liner.
+    /// `CatalogBundleLoading.swift`.
     static func describe(_ error: Error) -> String {
         String(describing: error)
     }
