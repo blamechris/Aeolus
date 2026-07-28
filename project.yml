@@ -84,8 +84,12 @@ targets:
     # UI without an app bundle or a signing identity.
     sources:
       - path: Sources/Aeolus/main.swift
-      - path: Resources/catalog
-        buildPhase: resources
+      # Resources/catalog is not listed here on purpose. FanKit's own Package.swift
+      # resource declaration already embeds it as Aeolus_FanKit.bundle — the one
+      # CatalogLoader actually reads via Bundle(for:)-based lookup — and this app
+      # target used to also copy the raw files loose into Contents/Resources.
+      # Nothing read that second copy; it was a duplicate a maintainer could edit
+      # and see no effect from. See CatalogLoader.locateResourceBundle().
     dependencies:
       - package: AeolusPackage
         product: AeolusUI
