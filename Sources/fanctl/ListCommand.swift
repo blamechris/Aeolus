@@ -249,12 +249,18 @@ extension ListCommand {
         let fans: [FanJSON]
     }
 
-    static func renderJSON(_ result: Result) throws -> String {
+    /// Builds the `--json` DTO without encoding it — split out from `renderJSON` so
+    /// `fanctl watch` (`WatchCommand.swift`) can reuse the exact same field-building logic
+    /// for its own NDJSON framing rather than duplicating it: `watch` must never be able
+    /// to show a different number than `list` for the same key, and the surest way to
+    /// guarantee that is for both to build the same `JSONOutput` value from the same
+    /// `Result` and differ only in how they encode it.
+    static func jsonOutput(_ result: Result) -> JSONOutput {
         func keyedValueJSON(_ value: KeyedValue) -> KeyedValueJSON {
             KeyedValueJSON(key: value.key, value: value.value, error: value.error)
         }
 
-        let output = JSONOutput(
+        return JSONOutput(
             capturedAt: result.capturedAt,
             fanCount: FanCountJSON(key: result.fanCountKey, value: result.fanCount),
             fans: result.fans.map { fan in
@@ -267,7 +273,10 @@ extension ListCommand {
                 )
             }
         )
-        return try FanctlJSON.encode(output)
+    }
+
+    static func renderJSON(_ result: Result) throws -> String {
+        try FanctlJSON.encode(jsonOutput(result))
     }
 
     static func renderTable(_ result: Result) -> String {
