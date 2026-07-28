@@ -134,6 +134,34 @@ body:
       render: json
 
   - type: textarea
+    id: byte-order-discriminator
+    attributes:
+      label: "VP3b's row from `fanctl dump --key VP3b`"
+      description: |
+        Highest priority on M1/M2, where this single row settles an open question
+        directly — see
+        [ADR 0004](https://github.com/blamechris/Aeolus/blob/main/docs/ADR/0004-float-byte-order.md).
+        But worth including from any Mac: Intel and every Apple Silicon generation other
+        than `Mac16,5` are still `untested` for this too (see
+        [ADR 0003](https://github.com/blamechris/Aeolus/blob/main/docs/ADR/0003-integer-byte-order.md)
+        and `docs/SMC-RESEARCH.md`), and any of them could be the first report to confirm
+        or contradict it.
+
+        `fanctl` is not distributed as a signed build yet, so this needs a source build —
+        no certificate, no Xcode project, just SwiftPM:
+
+        ```
+        git clone https://github.com/blamechris/Aeolus
+        cd Aeolus && swift build
+        .build/debug/fanctl dump --key VP3b
+        ```
+
+        Paste that output below. If your machine has no `VP3b` key, say so here instead —
+        please don't paste the unfiltered `fanctl dump --json`; at over half a megabyte on
+        `Mac16,5`, it is far past what a GitHub issue body accepts.
+      render: json
+
+  - type: textarea
     id: notes
     attributes:
       label: Anything else?

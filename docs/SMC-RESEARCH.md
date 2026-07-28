@@ -133,9 +133,11 @@ yields denormals and nonsense. This matches the reported table above.
 **What this table does not establish, and an earlier version of this section overstated:**
 every `flt` key on `Mac16,5` — all 2073 of them, these four included — carries
 firmware-declared attribute bit `0x04` **set**. The machine contains no readable
-bit-clear `flt` key, and of 11 `ioft` keys the single bit-clear one (`pcHS`) is
-unreadable. That means this data can only ever show "bit-set keys decode sanely
-little-endian" — it cannot show whether little-endian is a property of the *type* `flt`,
+bit-clear `flt` key, and of 11 `ioft` keys the single bit-clear one (`pcHS`, attrs
+`0xF0`) is not itself unreadable — bit `0x80` is set, so it declares itself readable —
+it simply never yields bytes: firmware rejects `READ_BYTES` with result `0x82`. That
+means this data can only ever show "bit-set keys decode sanely little-endian" — it
+cannot show whether little-endian is a property of the *type* `flt`,
 independent of the bit, or a property of the *bit*, coincidentally set on every `flt` key
 this hardware happens to expose. Those two hypotheses predict the identical result for
 every row above. A negative result, not a decisive one: see
@@ -151,8 +153,12 @@ standing discriminating request this document records:** an M1/M2 report of `VP3
 declared type, attribute byte, and raw bytes. Byte-reversed and bit-clear would confirm
 the attribute-bit hypothesis for floats directly; byte-reversed and bit-**set** would
 falsify it; not reversed at all would date Asahi's observation to a particular firmware
-rather than to the M1/M2 generation broadly. `fanctl`'s planned dump subcommand (E10a)
-exists partly to make this report easy to produce.
+rather than to the M1/M2 generation broadly. Running `fanctl dump --key VP3b` and pasting
+its output is exactly that report — one command from a source build (`fanctl` is not
+distributed as a signed build yet, so this needs `git clone` + `swift build`, not a
+download) — and is the field the
+[hardware report template](../.github/ISSUE_TEMPLATE/hardware-report.yml) asks for from
+every machine, M1/M2 highest priority.
 
 ### Disagreement 1 — temperatures here are `flt`, not `sp78`
 

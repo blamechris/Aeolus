@@ -101,6 +101,14 @@ let package = Package(
             dependencies: ["SMCCore"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        // Exercises fanctl's pure formatting/classification logic (dump's row model,
+        // error descriptions, table/JSON rendering) via @testable import — none of it
+        // needs an open SMC connection.
+        .testTarget(
+            name: "fanctlTests",
+            dependencies: ["fanctl", "SMCCore"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
         .testTarget(
             name: "FanKitTests",
             dependencies: ["FanKit"],
