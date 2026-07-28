@@ -175,7 +175,8 @@ public enum CatalogLoader {
     /// bundled one. Not part of `CatalogEntry`'s public surface — it exists only to drive
     /// `merge`.
     ///
-    /// `match` is normalized rather than compared as the raw `CatalogMatch` value,
+    /// `match` is normalized (via `CatalogMatch.normalizedChipFamily` /
+    /// `normalizedModelIdentifier`) rather than compared as the raw `CatalogMatch` value,
     /// because `CatalogMatch`'s synthesised `Hashable` treats three things a hand-edited
     /// override would routinely vary as *different* scopes when they mean the *same*
     /// scope:
@@ -190,7 +191,9 @@ public enum CatalogLoader {
     /// override-first ordering above, ahead of the user's override in a first-match
     /// resolver). Normalizing here closes the gap at the source; ordering override-first
     /// is the second, independent line of defence for whatever normalization still
-    /// misses.
+    /// misses. `CatalogMatcher` (E6.2) reuses the same normalization for the same reason:
+    /// a hand-edited override or catalog entry must match this machine the same way
+    /// regardless of case or array order.
     private struct OverrideSlot: Hashable {
         let key: String
         let chipFamily: Set<String>
@@ -198,12 +201,8 @@ public enum CatalogLoader {
 
         init(entry: CatalogEntry) {
             self.key = entry.key
-            self.chipFamily = Self.normalize(entry.match?.chipFamily)
-            self.modelIdentifier = Self.normalize(entry.match?.modelIdentifier)
-        }
-
-        private static func normalize(_ values: [String]?) -> Set<String> {
-            Set((values ?? []).map { $0.lowercased() })
+            self.chipFamily = entry.match?.normalizedChipFamily ?? []
+            self.modelIdentifier = entry.match?.normalizedModelIdentifier ?? []
         }
     }
 
