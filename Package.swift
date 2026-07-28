@@ -92,6 +92,15 @@ let package = Package(
             dependencies: ["SMCCore"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        // Exercises fanctl's read commands (list, sensors) against fake SensorProviders,
+        // so the bulk of the suite needs no hardware at all. The handful of assertions
+        // that do touch the real SMC follow the isDevelopmentMachine() gating pattern
+        // from Tests/SMCCoreTests/DevelopmentMachine.swift.
+        .testTarget(
+            name: "fanctlTests",
+            dependencies: ["fanctl", "SMCCore"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
         .testTarget(
             name: "FanKitTests",
             dependencies: ["FanKit"],
