@@ -10,8 +10,9 @@ import SMCCore
 /// ADR decided `flt`/`ioft` resolve byte order per key via attribute bit `0x04`, a rule
 /// that is unfalsifiable on this project's own machine (every readable `flt`/`ioft` key on
 /// `Mac16,5` happens to be bit-set) and names its own discriminator: an M1/M2 report of
-/// `VP3b`'s declared type, attribute byte, and raw bytes. `fanctl dump --json` is how a
-/// contributor produces that in one command instead of building a throwaway tool.
+/// `VP3b`'s declared type, attribute byte, and raw bytes. `fanctl dump --key VP3b` is how
+/// a contributor produces that one row directly, without the full multi-hundred-kilobyte
+/// dump a hardware report's issue body cannot hold.
 extension Fanctl {
     struct Dump: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
@@ -24,43 +25,74 @@ extension Fanctl {
                 machine's dump incomparable with another's.
 
                 This is how to collect the report docs/ADR/0004-float-byte-order.md is \
-                waiting on: run with --json and look at the VP3b row for its declared \
-                type, attribute byte, and raw bytes.
+                waiting on: run with --key VP3b and paste its declared type, attribute \
+                byte, and raw bytes. The unfiltered dump is hundreds of kilobytes as \
+                --json, well over what a GitHub issue body accepts, so --key is the \
+                pasteable form; --json without --key is for local inspection or piping \
+                to another tool, not for pasting into a report.
                 """
         )
 
         @Flag(name: .long, help: "Emit JSON instead of a table.")
         var json = false
 
+        @Option(
+            name: .long,
+            help: "Only show this one key (exactly four characters, e.g. VP3b).")
+        var key: String?
+
         func run() async throws {
+            if let key, let message = keyFilterFormatError(key) {
+                throw ValidationError(message)
+            }
+
             let connection = SMCConnection()
 
             do {
                 try await connection.open()
             } catch {
-                throw ValidationError(
-                    "Could not open a connection to the SMC: \(describeDumpError(error))")
+                throw DumpRuntimeError(
+                    message: "Could not open a connection to the SMC: "
+                        + describeDumpError(error))
             }
 
             let declaredCount: Int
             do {
                 declaredCount = try await connection.keyCount()
             } catch {
-                throw ValidationError(
-                    "Could not read #KEY, this machine's declared key count: "
+                throw DumpRuntimeError(
+                    message: "Could not read #KEY, this machine's declared key count: "
                         + describeDumpError(error))
             }
 
             let generation = await connection.interfaceGeneration
-            let entries = await Self.walk(
+            var entries = await Self.walk(
                 connection: connection, declaredCount: declaredCount, generation: generation)
+
+            // Independent of the walk above: re-probes index `declaredCount` itself,
+            // which the walk never visits, so a #KEY that under-declares the real table
+            // is caught rather than silently producing a clean-looking dump that is
+            // missing keys past the bound. See SMCConnection.verifyKeyCountCrossCheck()
+            // and KeyCountCrossCheck.keyExistsPastDeclaredCount.
+            let crossCheck = try? await connection.verifyKeyCountCrossCheck()
+
+            if let key {
+                entries = filterEntries(entries, byKey: key)
+                guard !entries.isEmpty else {
+                    throw DumpRuntimeError(
+                        message: keyFilterNotFoundMessage(
+                            key: key, declaredCount: declaredCount))
+                }
+            }
 
             let rendered =
                 json
                 ? try DumpFormatter.renderJSON(
-                    entries: entries, generation: generation, declaredKeyCount: declaredCount)
+                    entries: entries, generation: generation, declaredKeyCount: declaredCount,
+                    crossCheck: crossCheck)
                 : DumpFormatter.renderTable(
-                    entries: entries, generation: generation, declaredKeyCount: declaredCount)
+                    entries: entries, generation: generation, declaredKeyCount: declaredCount,
+                    crossCheck: crossCheck)
             print(rendered)
         }
 
@@ -114,6 +146,50 @@ extension Fanctl {
     }
 }
 
+// MARK: - Errors
+
+/// A runtime failure talking to the SMC — deliberately not `ValidationError`.
+/// `ValidationError` prints a usage/help block and exits with `ExitCode.validationFailure`
+/// (64), which is correct for a malformed argument and wrong here: opening the SMC
+/// connection or reading `#KEY` can fail for reasons that have nothing to do with how the
+/// command was invoked, and a usage block below the message wrongly implies the user
+/// typed something wrong. Conforming to `LocalizedError` (rather than a plain `Error`)
+/// makes `errorDescription` the only text ArgumentParser prints — a clean message, exit
+/// code 1, no usage block — which also makes a runtime failure trivially distinguishable
+/// from a usage mistake for automation consuming `--json`.
+struct DumpRuntimeError: Error, LocalizedError, Equatable {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+/// Validates `--key`'s format before any hardware I/O: exactly four ASCII characters,
+/// matching `SMCKey`'s own constructor. Returns a ready-to-throw message, or `nil` if the
+/// format is fine. Pure, so it is directly unit-testable without a connection — unlike
+/// the runtime failures above, a malformed `--key` genuinely is a usage mistake, so the
+/// caller throws this as a `ValidationError`, not a `DumpRuntimeError`.
+func keyFilterFormatError(_ key: String) -> String? {
+    guard SMCKey(key) == nil else { return nil }
+    return "--key must be exactly four ASCII characters (e.g. VP3b); got '\(key)' "
+        + "(\(key.count) characters)."
+}
+
+/// The message for a well-formed `--key` that this machine's key table simply does not
+/// contain — a fact about the hardware, not a usage mistake, so the caller throws this as
+/// a `DumpRuntimeError`.
+func keyFilterNotFoundMessage(key: String, declaredCount: Int) -> String {
+    "No key '\(key)' found among the \(declaredCount) keys this machine's index table "
+        + "exposes."
+}
+
+/// Filters `entries` down to the row(s) matching `key`, or returns them unfiltered if
+/// `key` is `nil`. Pure and testable without hardware; turning "matched nothing" into a
+/// clear runtime error stays with the caller, which also knows `declaredCount` for the
+/// message.
+func filterEntries(_ entries: [DumpEntry], byKey key: String?) -> [DumpEntry] {
+    guard let key else { return entries }
+    return entries.filter { $0.key == key }
+}
+
 // MARK: - Row model
 
 /// One row of `fanctl dump`'s output: a single SMC key's declared metadata, raw bytes,
@@ -147,10 +223,12 @@ struct DumpEntry: Sendable, Equatable, Codable {
     /// The byte order `resolveByteOrder(generation:attributes:type:)` resolves for this
     /// key — `"little-endian"` or `"big-endian"` — independent of whether the value
     /// itself could be read: this is computed straight from `attributes`/`type`, the
-    /// same inputs a successful read would have used. `nil` when `attributes`/`type` are
-    /// themselves unavailable (`READ_KEYINFO` failed) or the SMC interface generation
-    /// could not be determined for this connection — the same fail-safe
-    /// `SMCValue.scalar()` applies, never a guessed order.
+    /// same inputs a successful read would have used. `nil` when `type` is one
+    /// `SMCValue.scalar()` never consults a byte order for at all (see
+    /// `typeConsultsByteOrder(_:)`), when `attributes`/`type` are themselves unavailable
+    /// (`READ_KEYINFO` failed), or when the SMC interface generation could not be
+    /// determined for this connection — the same fail-safe `SMCValue.scalar()` applies,
+    /// never a guessed or inapplicable order.
     let byteOrder: String?
     /// The raw payload as lowercase hex (e.g. `"8020e73f"`), present only on a
     /// successful read. Empty string for a zero-length `dataSize`, `nil` on any failure.
@@ -208,9 +286,31 @@ extension DumpEntry {
     }
 }
 
+/// Whether `SMCValue.scalar()` actually consults a resolved byte order when decoding
+/// this type — see that function's switch. `flt`/`ioft` and the six plain integers do;
+/// every other type either has a byte order fixed by definition
+/// (`fpe2`/`fp78`/`sp78`, always big-endian, never firmware-declared) or none at all
+/// (`ui8`/`si8`/`flag`, a single byte; `{fds`/`{jst`/`ch8*`/`hex_`/unknown, non-numeric
+/// and never decoded as a scalar at all). `resolveByteOrder(generation:attributes:type:)`
+/// is total and will still compute *something* for those — that is correct arithmetic
+/// but false as evidence in a document meant to be read as one, since nothing in the
+/// actual decode path ever looks at the answer. `resolvedByteOrderDescription(info:
+/// generation:)` reports `nil` for them instead of a number nobody consumes.
+///
+/// Internal rather than `private` so it is directly unit-testable.
+func typeConsultsByteOrder(_ type: SMCKeyType) -> Bool {
+    switch type {
+    case .flt, .ioft, .ui16, .si16, .ui32, .si32, .ui64, .si64:
+        return true
+    case .fpe2, .fp78, .sp78, .ui8, .si8, .flag, .fds, .jst, .ch8, .hex, .unknown:
+        return false
+    }
+}
+
 /// The byte order `resolveByteOrder(generation:attributes:type:)` resolves for `info`,
-/// described as `"little-endian"`/`"big-endian"`, or `nil` if the SMC interface
-/// generation could not be determined for this connection — matching
+/// described as `"little-endian"`/`"big-endian"`, or `nil` when either the type never
+/// consults a resolved order at all (see `typeConsultsByteOrder(_:)`) or the SMC
+/// interface generation could not be determined for this connection — matching
 /// `SMCValue.scalar()`'s own fail-safe rather than guessing an order nothing confirmed.
 ///
 /// Internal rather than `private` so it is directly unit-testable without an open
@@ -218,6 +318,7 @@ extension DumpEntry {
 func resolvedByteOrderDescription(
     info: SMCKeyInfo, generation: SMCInterfaceGeneration?
 ) -> String? {
+    guard typeConsultsByteOrder(info.type) else { return nil }
     guard let generation else { return nil }
     let order = resolveByteOrder(
         generation: generation, attributes: info.attributes, type: info.type)
@@ -283,20 +384,39 @@ func describeDumpError(_ error: Error) -> String {
 /// Renders `DumpEntry` rows as a table or as JSON. Both are pure functions over already-
 /// collected data — no I/O, no hardware — so both are directly unit-testable.
 enum DumpFormatter {
+    /// A `Codable` mirror of `SMCCore`'s `KeyCountCrossCheck`, which isn't `Codable` and
+    /// doesn't need to be outside this one render path.
+    struct CrossCheckSummary: Codable, Equatable {
+        let matches: Bool
+        let declaredCount: Int
+        let walkedCount: Int
+        let keyExistsPastDeclaredCount: Bool
+
+        init(_ crossCheck: KeyCountCrossCheck) {
+            matches = crossCheck.matches
+            declaredCount = crossCheck.declaredCount
+            walkedCount = crossCheck.walkedCount
+            keyExistsPastDeclaredCount = crossCheck.keyExistsPastDeclaredCount
+        }
+    }
+
     /// The JSON envelope: entries alongside the context needed to interpret them
-    /// (interface generation, declared key count) rather than a bare array.
+    /// (interface generation, declared key count, the cross-check) rather than a bare
+    /// array.
     private struct Report: Codable {
         let generation: String
         let declaredKeyCount: Int
+        let crossCheck: CrossCheckSummary?
         let entries: [DumpEntry]
     }
 
     static func renderJSON(
-        entries: [DumpEntry], generation: SMCInterfaceGeneration?, declaredKeyCount: Int
+        entries: [DumpEntry], generation: SMCInterfaceGeneration?, declaredKeyCount: Int,
+        crossCheck: KeyCountCrossCheck?
     ) throws -> String {
         let report = Report(
             generation: generationDescription(generation), declaredKeyCount: declaredKeyCount,
-            entries: entries)
+            crossCheck: crossCheck.map(CrossCheckSummary.init), entries: entries)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(report)
@@ -304,12 +424,14 @@ enum DumpFormatter {
     }
 
     static func renderTable(
-        entries: [DumpEntry], generation: SMCInterfaceGeneration?, declaredKeyCount: Int
+        entries: [DumpEntry], generation: SMCInterfaceGeneration?, declaredKeyCount: Int,
+        crossCheck: KeyCountCrossCheck?
     ) -> String {
         var lines: [String] = []
         lines.append(
             "SMC interface: \(generationDescription(generation))"
-                + "  |  #KEY: \(declaredKeyCount)  |  rows: \(entries.count)")
+                + "  |  #KEY: \(declaredKeyCount)  |  shown: \(entries.count)")
+        lines.append(crossCheckLine(for: crossCheck))
         lines.append("")
 
         let header = ["INDEX", "KEY", "TYPE", "SIZE", "ATTRS", "ORDER", "BYTES", "ERROR"]
@@ -326,6 +448,27 @@ enum DumpFormatter {
         lines.append("")
         lines.append(summary(for: entries))
         return lines.joined(separator: "\n")
+    }
+
+    /// The real cross-check, independent of `entries` entirely: `entries` always has
+    /// exactly one row per index in `0..<declaredCount` by construction (or fewer, once
+    /// `--key` filters them), so counting them can never disagree with `declaredCount` —
+    /// that comparison is a tautology, not a check. What actually tests whether `#KEY`
+    /// under-declares the real table is probing index `declaredCount` itself, which the
+    /// walk never visits — see `KeyCountCrossCheck.keyExistsPastDeclaredCount` and
+    /// `SMCConnection.verifyKeyCountCrossCheck()`, the source of `crossCheck` here.
+    private static func crossCheckLine(for crossCheck: KeyCountCrossCheck?) -> String {
+        guard let crossCheck else {
+            return "Cross-check: unavailable (could not re-verify #KEY against the key table)"
+        }
+        guard crossCheck.matches else {
+            return "Cross-check: MISMATCH — walked \(crossCheck.walkedCount) of "
+                + "\(crossCheck.declaredCount) declared; a key exists past the declared "
+                + "bound: \(crossCheck.keyExistsPastDeclaredCount). #KEY may be "
+                + "under-declaring this machine's real key table."
+        }
+        return "Cross-check: MATCH — walked \(crossCheck.walkedCount) of "
+            + "\(crossCheck.declaredCount) declared; nothing exists past the bound."
     }
 
     private static func tableRow(for entry: DumpEntry) -> [String] {
