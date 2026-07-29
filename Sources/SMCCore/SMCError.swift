@@ -2,8 +2,12 @@ import Foundation
 
 /// Errors raised by the SMC layer.
 ///
-/// `firmware(code:)` deserves special attention: SMC result `0x82` is the Intel-era
-/// `SmcBadCommand` — a **general** firmware status, not a fan-control-specific one. On
+/// `firmware(code:)` deserves special attention: SMC result `0x82` is named `SmcBadCommand`
+/// in Intel-era documentation. That the result namespace carries over to Apple Silicon is
+/// **an assumption, not an observation** — it is consistent with every code seen on
+/// `Mac16,5` landing on a defined Intel name, and nothing more; `docs/SMC-RESEARCH.md`
+/// records it with the same caveat. What *is* observed is that `0x82` behaves as a
+/// **general** firmware status here, not a fan-control-specific one. On
 /// `Mac16,5` it is the response to a plain read of 21 power/battery function keys, none of
 /// them fan-related (see `docs/SMC-RESEARCH.md`). Community reports say the same code also
 /// answers an `F0Md` write while `thermalmonitord` is holding the fans on M3-or-newer
@@ -73,7 +77,8 @@ public enum SMCError: Error, Sendable, Equatable {
     /// byte-order regression and that outcome. Carries the offending decoded value.
     case implausibleKeyCount(declared: Int)
 
-    /// `true` when the firmware answered with `0x82` (`SmcBadCommand`).
+    /// `true` when the firmware answered with `0x82` — named `SmcBadCommand` in Intel-era
+    /// documentation, on the assumption that namespace carries over (see the type comment).
     ///
     /// This is **not**, by itself, a test for "the thermal manager is holding the fans."
     /// `0x82` is a general command-rejection status: on `Mac16,5` it is what a plain

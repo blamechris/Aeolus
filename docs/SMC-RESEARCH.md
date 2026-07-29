@@ -277,12 +277,15 @@ and no key with bit 7 clear ever read successfully. 52 keys correctly declare th
 unreadable this way.
 
 But the bit is **necessary, not sufficient**. A further 52 keys set bit 7 and still return
-an SMC error on `READ_BYTES` — `rBK0`–`rBKa`, `rLD0`–`rLD5`, `bVUP`, `bVDN`, `aP70`–`aP80`
-among them. An earlier draft of this section called these "action/trigger keys," a
-characterisation made by feel rather than by inspecting anything structural. Issue #52
-found what actually identifies the population: all 52 carry attribute bit `0x10` set. See
-"Bit `0x10` structurally identifies the 52-key rejection cluster" below for the full
-breakdown — the bit, not a guess about a key's role, is what distinguishes this cluster.
+an SMC error on `READ_BYTES`, spanning **four distinct rejection codes** — `rBK0`–`rBK9`
+and `rBKa`, `rLD0`–`rLD5`, `bVUP`, `bVDN`, `aP70`–`aP80` among them. (`rBKa` belongs to this
+52-key population but not to the narrower `0x82` group in the table below — it rejects with
+`0x89`; see that table for which key belongs to which code.) An earlier draft of this
+section called these "action/trigger keys," a characterisation made by feel rather than by
+inspecting anything structural. Issue #52 found what actually identifies the population:
+all 52 carry attribute bit `0x10` set. See "Bit `0x10` structurally identifies the 52-key
+rejection cluster" below for the full breakdown — the bit, not a guess about a key's role,
+is what distinguishes this cluster.
 
 Implication for enumeration: filter on the attribute bit as a cheap first pass, then let
 the read fail gracefully anyway. A failed read of one key must never abort enumeration of
@@ -293,14 +296,21 @@ the rest.
 `0x10` is `SMC_KEY_ATTRIBUTE_FUNCTION` in VirtualSMC's `AppleSmc.h`, also documented by
 Intel: the bit means "served by a firmware function handler" rather than "a plain data
 value." **All 52 keys on `Mac16,5` that set bit 7 (readable) and still reject
-`READ_BYTES` carry bit `0x10` — zero exceptions.** The rejection codes returned, by count:
+`READ_BYTES` carry bit `0x10` — zero exceptions.** The rejection codes returned, by count,
+each itemised so that a key's membership in one code and not another is never a matter of
+inference:
 
-| Code | Documented Intel name | Count | Keys named in this investigation |
+| Code | Documented Intel name | Count | Keys |
 |---|---|---|---|
 | `0x82` | `SmcBadCommand` | 21 | `pcBK`, `pcBS`, `pcHS`, `pcLD`, `rBK0`–`rBK9`, `rBSW`, `rLD0`–`rLD5` |
-| `0x89` | `SmcBadArgumentError` | 20 | not itemised in this pass |
-| `0xc7` | `SmcDeviceAccessError` | 10 | not itemised in this pass |
-| `0xcb` | `SmcUnsupportedFeature` | 1 | not itemised in this pass |
+| `0x89` | `SmcBadArgumentError` | 20 | `aDC!`, `aDC?`, `aDCR`, `bRIN`, `bVDN`, `bVUP`, `pcAD`, `rARA`, `rARa`, `rASO`, `rASo`, `rBKa`, `rCPU`, `rLOW`, `rRAM`, `rSOC`, `rVDA`, `rVDB`, `rVDF`, `rWRM` |
+| `0xc7` | `SmcDeviceAccessError` | 10 | `CLKo`, `aP00`, `aP70`–`aP74`, `aP7e`, `aP7f`, `aP80` |
+| `0xcb` | `SmcUnsupportedFeature` | 1 | `BMFL` |
+
+Note in particular that `rBKa` — which reads as though it should extend the `rBK0`–`rBK9`
+range above it — is not a `0x82` key at all. It rejects with `0x89`, alongside `aDCR`, the
+`ioft` key referenced a few paragraphs below. Each key belongs to exactly one code; the
+four lists above partition the 52, they do not overlap.
 
 All four codes land on documented Intel result names, which supports the result-code
 namespace carrying over to Apple Silicon — **that carry-over is an assumption, not an
