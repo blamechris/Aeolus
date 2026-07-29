@@ -22,7 +22,7 @@ firmware.
 | Target | What it is | Rules |
 |---|---|---|
 | `SMCCore` | IOKit connection, key enumeration, type codec | Read API `public`; write API `package`. Widening that is a safety review. |
-| `FanKit` | Models, curve engine, profiles | Pure. No IOKit, no I/O. Keep it exhaustively testable. |
+| `FanKit` | Models, curve engine, profiles, sensor catalog | Pure, with two named exceptions: reading the catalog file, and `sysctlbyname` for hardware identity. No IOKit. Keep it exhaustively testable. |
 | `AeolusXPC` | The `@objc` protocol and DTOs | This *is* the privilege boundary. |
 | `AeolusHelper` | Root daemon | The only writer. Highest review bar in the repo. |
 | `fanctl` | CLI client | Read commands work with no helper and no signing. |

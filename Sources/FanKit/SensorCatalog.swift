@@ -74,6 +74,25 @@ public struct CatalogMatch: Sendable, Hashable, Codable {
     }
 }
 
+extension CatalogMatch {
+    /// The case-insensitive, order-independent `chipFamily` restriction this match
+    /// declares, with `nil` normalizing to the empty set exactly like `[]` does.
+    ///
+    /// This is the one normalization both `CatalogLoader.merge`'s override identity and
+    /// `CatalogMatcher`'s specificity resolution use — see either call site for why array
+    /// order, `nil` vs. `[]`, and case must all compare equal here: a hand-edited
+    /// `chipFamily: ["M4 Max"]` and a bundled `chipFamily: ["m4 max"]` mean the same
+    /// scope, not two different ones.
+    var normalizedChipFamily: Set<String> { Self.normalized(chipFamily) }
+
+    /// Same normalization as `normalizedChipFamily`, for `modelIdentifier`.
+    var normalizedModelIdentifier: Set<String> { Self.normalized(modelIdentifier) }
+
+    private static func normalized(_ values: [String]?) -> Set<String> {
+        Set((values ?? []).map { $0.lowercased() })
+    }
+}
+
 /// What kind of thing a labelled sensor measures.
 ///
 /// Carries an `unknown` case rather than failing to decode, for the same reason
