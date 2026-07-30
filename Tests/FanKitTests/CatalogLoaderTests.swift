@@ -11,10 +11,10 @@ import Testing
 struct CatalogBundledLoadTests {
 
     /// Exercises the real production entry point against the real, committed
-    /// `Resources/catalog/catalog.json` — currently `{"schemaVersion": 1, "entries": []}`
-    /// per #44 (seeding is a separate issue). This is the "decodes from the bundled
-    /// resource" acceptance criterion, proven against the actual shipped file rather
-    /// than a stand-in.
+    /// `Resources/catalog/catalog.json` — seeded by #44 with the fan keys, `TR0Z`, and the
+    /// three battery-adjacent keys documented in `docs/SMC-RESEARCH.md`. This is the
+    /// "decodes from the bundled resource" acceptance criterion, proven against the actual
+    /// shipped file rather than a stand-in.
     ///
     /// - Important: This test is *why* `CatalogLoader.supportedSchemaVersion`'s
     ///   reject-don't-guess policy (see its doc comment) is safe rather than reckless. If
@@ -25,13 +25,31 @@ struct CatalogBundledLoadTests {
     ///   every user. Do not weaken `warnings.isEmpty` here without understanding that
     ///   this is the thing standing between "reject on mismatch" and "silently blind on
     ///   mismatch".
-    @Test("The real bundled catalog decodes with no warnings")
+    @Test("The real bundled catalog decodes with the seeded entries, no warnings")
     func realBundledCatalogDecodes() {
         let outcome = CatalogLoader.loadBundled()
 
         #expect(outcome.catalog.schemaVersion == SensorCatalog.currentSchemaVersion)
-        #expect(outcome.catalog.entries.isEmpty)
         #expect(outcome.warnings.isEmpty)
+
+        // The exact #44 seed set — see Resources/catalog/catalog.json. A drift here (a
+        // key added or removed without updating this test) is exactly the kind of
+        // silent catalog change this test exists to catch.
+        let expectedKeys: Set<String> = [
+            "F0Ac", "F1Ac", "F0Mn", "F1Mn", "F0Mx", "F1Mx", "F0Tg", "F1Tg", "F0Md", "F1Md",
+            "TR0Z", "TB0T", "TB1T", "TB2T",
+        ]
+        #expect(Set(outcome.catalog.entries.map(\.key)) == expectedKeys)
+
+        // `catalog.schema.json` cannot express "a `verified` entry must cite a source" —
+        // `.github/workflows/catalog-validate.yml` enforces it in CI against the raw
+        // JSON. This proves the same rule against the decoded model, so a regression
+        // here fails `swift test` too, not only a CI-only script.
+        for entry in outcome.catalog.entries where entry.confidence == .verified {
+            #expect(
+                !(entry.source ?? "").isEmpty,
+                "verified entry \(entry.key) must cite a source")
+        }
     }
 
     /// A bundle that doesn't contain the resource at all — simulating a stripped or

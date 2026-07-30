@@ -16,7 +16,10 @@ body:
         codes into something a person can read.
 
         You can also open a pull request against `Resources/catalog/catalog.json`
-        directly if you prefer.
+        directly if you prefer. Either way, read
+        [docs/CATALOG.md](https://github.com/blamechris/Aeolus/blob/main/docs/CATALOG.md)
+        first — it covers how to scope an entry, what each confidence level means, what
+        counts as a source, and why the raw key is always shown alongside any label.
 
   - type: input
     id: model-identifier
