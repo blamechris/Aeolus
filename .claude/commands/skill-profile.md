@@ -93,4 +93,4 @@ State: the sections written, which installed skills got a `Customizations` secti
 - **`profileHash`.** `/skill` records the profile's hash in `.claude/skills.lock`; `skill outdated` flags skills tailored against an older profile, so refreshing the profile and running `skill update` re-tailors them. Updating the profile is how you push a convention change out to every installed skill.
 - **Idempotent.** Re-running reproduces the same profile from the same repo state; it only changes when the repo does.
 
-<!-- skill-templates: skill-profile 8bc2550 2026-07-25 -->
+<!-- skill-templates: skill-profile ea888eb 2026-07-30 -->

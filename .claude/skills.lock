@@ -2,16 +2,16 @@
   "registry": "blamechris/skill-templates",
   "skills": {
     "agent-review": {
-      "hash": "a10ef75",
-      "installed": "2026-07-25",
+      "hash": "5c35725",
+      "installed": "2026-07-30",
       "profileHash": "d0531c0",
       "targets": [
         "claude"
       ]
     },
-    "batch-merge": {
-      "hash": "8c8e472",
-      "installed": "2026-07-27",
+    "catchup": {
+      "hash": "3f7f775",
+      "installed": "2026-07-30",
       "profileHash": "d0531c0",
       "targets": [
         "claude"
@@ -65,9 +65,9 @@
         "claude"
       ]
     },
-    "full-review": {
-      "hash": "1e5962e",
-      "installed": "2026-07-27",
+    "learn": {
+      "hash": "df2de5e",
+      "installed": "2026-07-30",
       "profileHash": "d0531c0",
       "targets": [
         "claude"
@@ -89,57 +89,33 @@
         "claude"
       ]
     },
-    "prime-directive": {
-      "hash": "d318c59",
-      "installed": "2026-07-27",
-      "profileHash": "d0531c0",
-      "targets": [
-        "claude"
-      ]
-    },
-    "project-audit": {
-      "hash": "aae4d65",
-      "installed": "2026-07-27",
+    "session-lifecycle": {
+      "hash": "f7bc0db",
+      "installed": "2026-07-30",
       "profileHash": "d0531c0",
       "targets": [
         "claude"
       ]
     },
     "skill": {
-      "hash": "f937026",
-      "installed": "2026-07-25",
+      "hash": "7b4d37f",
+      "installed": "2026-07-30",
       "profileHash": "d0531c0",
       "targets": [
         "claude"
       ]
     },
     "skill-profile": {
-      "hash": "8bc2550",
-      "installed": "2026-07-25",
-      "profileHash": "d0531c0",
-      "targets": [
-        "claude"
-      ]
-    },
-    "tackle-issues": {
-      "hash": "d3cd6f5",
-      "installed": "2026-07-27",
+      "hash": "ea888eb",
+      "installed": "2026-07-30",
       "profileHash": "d0531c0",
       "targets": [
         "claude"
       ]
     },
     "tiered-delegation": {
-      "hash": "01903fb",
-      "installed": "2026-07-25",
-      "profileHash": "d0531c0",
-      "targets": [
-        "claude"
-      ]
-    },
-    "unattended-merge": {
-      "hash": "d3cd6f5",
-      "installed": "2026-07-27",
+      "hash": "a9ed830",
+      "installed": "2026-07-30",
       "profileHash": "d0531c0",
       "targets": [
         "claude"
@@ -147,7 +123,7 @@
     },
     "visual-brief": {
       "hash": "a85c799",
-      "installed": "2026-07-27",
+      "installed": "2026-07-30",
       "profileHash": "d0531c0",
       "targets": [
         "claude"

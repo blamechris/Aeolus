@@ -202,4 +202,4 @@ Component cheatsheet:
 - When a flex row needs rich body text, wrap it: `<div class="row"><div class="ic">
   …</div><div>…all the prose…</div></div>` — two flex children, not twenty.
 
-<!-- skill-templates: visual-brief a85c799 2026-07-27 -->
+<!-- skill-templates: visual-brief a85c799 2026-07-30 -->
