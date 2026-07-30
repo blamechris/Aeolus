@@ -134,5 +134,16 @@ let package = Package(
             dependencies: ["SMCCore", "FanKit", "AeolusXPC"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        // Exercises AeolusUI's polling data layer (E7.1): fan/sensor enumeration, the
+        // unavailable-vs-zero and non-finite-value guards, and the refresh loop, against
+        // fake SensorProviders/clocks via @testable import — the same "no hardware needed
+        // for the bulk of the suite, hardware-gated smoke tests for the rest" split
+        // fanctlTests uses. FanKit is needed directly, not just transitively via AeolusUI,
+        // for HardwareIdentity/catalog fixtures in the label-source tests.
+        .testTarget(
+            name: "AeolusUITests",
+            dependencies: ["AeolusUI", "SMCCore", "FanKit"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
     ]
 )
