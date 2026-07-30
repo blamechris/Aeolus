@@ -115,7 +115,10 @@ let package = Package(
         // Tests/SMCCoreTests/DevelopmentMachine.swift.
         .testTarget(
             name: "fanctlTests",
-            dependencies: ["fanctl", "SMCCore"],
+            // FanKit is needed directly (not just transitively via fanctl) so tests can
+            // build SensorCatalog/CatalogEntry/HardwareIdentity fixtures for
+            // CatalogSensorLookup — see CatalogSensorLookupTests.swift.
+            dependencies: ["fanctl", "SMCCore", "FanKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
