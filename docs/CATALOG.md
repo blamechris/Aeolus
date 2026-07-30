@@ -172,8 +172,9 @@ not wait on a full macOS build. It does two things:
    something (an empty `chipFamily`/`modelIdentifier` array, or a blank string inside one,
    is rejected rather than silently read as "applies everywhere").
 2. Checks that every `confidence: "verified"` entry cites a non-empty `source` — a rule
-   the schema itself cannot express, because "required if some other field has a specific
-   value" is not something JSON Schema states directly for this shape.
+   the schema deliberately does not enforce (JSON Schema's `if`/`then` could express a
+   "required when some other field has a specific value" condition; this project just
+   keeps that check in the CI script instead of the schema).
 
 You can run the same two checks locally with the same `jsonschema` package CI uses
 (`pip install "jsonschema>=4.21"`); the workflow file itself is the exact script.

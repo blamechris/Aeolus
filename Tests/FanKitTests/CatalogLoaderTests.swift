@@ -34,17 +34,23 @@ struct CatalogBundledLoadTests {
 
         // The exact #44 seed set — see Resources/catalog/catalog.json. A drift here (a
         // key added or removed without updating this test) is exactly the kind of
-        // silent catalog change this test exists to catch.
+        // silent catalog change this test exists to catch. The count check alongside the
+        // set comparison matters: a Set collapses duplicates, so two entries accidentally
+        // sharing a key would still equal expectedKeys as a set while silently doubling
+        // the catalog's actual entry count.
         let expectedKeys: Set<String> = [
             "F0Ac", "F1Ac", "F0Mn", "F1Mn", "F0Mx", "F1Mx", "F0Tg", "F1Tg", "F0Md", "F1Md",
             "TR0Z", "TB0T", "TB1T", "TB2T",
         ]
         #expect(Set(outcome.catalog.entries.map(\.key)) == expectedKeys)
+        #expect(outcome.catalog.entries.count == expectedKeys.count)
 
-        // `catalog.schema.json` cannot express "a `verified` entry must cite a source" —
-        // `.github/workflows/catalog-validate.yml` enforces it in CI against the raw
-        // JSON. This proves the same rule against the decoded model, so a regression
-        // here fails `swift test` too, not only a CI-only script.
+        // `catalog.schema.json` does not enforce "a `verified` entry must cite a
+        // source" — JSON Schema's `if`/`then` could express it, but this schema
+        // deliberately does not, and `.github/workflows/catalog-validate.yml` enforces
+        // it in CI instead, against the raw JSON. This proves the same rule against the
+        // decoded model, so a regression here fails `swift test` too, not only a
+        // CI-only script.
         for entry in outcome.catalog.entries where entry.confidence == .verified {
             #expect(
                 !(entry.source ?? "").isEmpty,
