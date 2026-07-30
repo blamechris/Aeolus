@@ -83,9 +83,11 @@ public struct HardwareIdentity: Sendable, Hashable {
     /// treated the same as an absent one: `CatalogMatcher.matchesModelIdentifier(in:)` and
     /// `matchesChipFamily(in:)` only special-case `nil` as "matches no restriction", so an
     /// empty string reaching `HardwareIdentity` would otherwise match any catalog entry
-    /// naming `[""]`. `catalog.schema.json`'s `minItems: 1` keeps `[""]` from being a valid
-    /// entry to author in the first place; this is the other half — never letting an empty
-    /// *value* reach the comparison at all, regardless of what the catalog contains.
+    /// naming `[""]`. `catalog.schema.json` rejects that entry at authoring time via
+    /// `minItems: 1` on the array **and** `minLength: 1` on its items — `minItems` alone
+    /// would not, because it counts items rather than inspecting them. This is the other
+    /// half: never letting an empty *value* reach the comparison at all, regardless of what
+    /// a catalog that never passed the schema might contain.
     private static func sysctlString(_ name: String) -> String? {
         var size = 0
         guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return nil }

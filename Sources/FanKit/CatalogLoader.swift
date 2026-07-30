@@ -268,6 +268,36 @@ public enum CatalogLoader {
             if entry.label.isEmpty {
                 return "entries[\(index)]: label must not be empty"
             }
+            // A user override is never checked against `catalog.schema.json` — only the
+            // bundled catalog is, by `catalog-validate.yml`. So the schema's `minItems: 1`
+            // and `minLength: 1` on `match` do nothing on this path, and an override
+            // carrying `"chipFamily": []` would normalise to "no restriction" and apply to
+            // *every* machine at whatever confidence it declared. Enforce the same two
+            // rules here so the schema and the loader agree on what a valid entry is.
+            if let match = entry.match, let violation = matchViolation(match, atEntry: index) {
+                return violation
+            }
+        }
+        return nil
+    }
+
+    /// The `match` half of `firstSchemaViolation`: a declared restriction must actually
+    /// restrict. An empty array, or one holding only blank strings, is an authoring mistake
+    /// that would otherwise read as "applies everywhere" — the opposite of what was written.
+    private static func matchViolation(_ match: CatalogMatch, atEntry index: Int) -> String? {
+        for (field, values) in [
+            ("chipFamily", match.chipFamily),
+            ("modelIdentifier", match.modelIdentifier),
+        ] {
+            guard let values else { continue }
+            if values.isEmpty {
+                return
+                    "entries[\(index)]: match.\(field) must name at least one value; "
+                    + "omit the field entirely for an entry that applies everywhere"
+            }
+            if values.contains(where: { $0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+                return "entries[\(index)]: match.\(field) must not contain a blank value"
+            }
         }
         return nil
     }
