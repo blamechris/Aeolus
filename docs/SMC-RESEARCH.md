@@ -502,7 +502,13 @@ draft of this document did, and it would have led an implementer to make `ui16`/
 unconditionally little-endian — which decodes `#KEY` as 957,153,280 instead of 3385 and
 breaks key enumeration outright.
 
-### Sleep/wake and the read connection — open question, not exercised (issue #58)
+### Sleep/wake and the read connection — open question, not exercised (issue #68)
+
+> **Tracked as [#68](https://github.com/blamechris/Aeolus/issues/68)**, which is open and carries
+> `needs-hardware`. It also collects two other unknowns that the same single lid-close would retire:
+> "Sleep resets the force key" above (marked *To verify (E4)*), and `SMCConnection.close()`'s own note
+> that staleness after a wake is "unverified either way". If you are reading this because something
+> broke after a wake, start there.
 
 `SMCSensorProvider` opens exactly one `SMCConnection` and holds it for the lifetime of the
 process. `SMCConnection.open()` is idempotent purely on whether `connection != 0` — once it

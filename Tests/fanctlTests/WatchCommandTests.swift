@@ -210,6 +210,36 @@ struct WatchCommandStreamingTests {
         #expect(captured[1].contains("1800 RPM"))
     }
 
+    /// `Tick.unavailable` was the one scripted variant with no test, which made it the one
+    /// member of the "succeeds N ticks then fails" family left unproven. Review of #66 flagged it.
+    ///
+    /// - Important: this is **not** a model of the sleep/wake case (#68).
+    ///   `SMCSensorProvider.isAvailable` is `SMCConnection.isHardwareAvailable()`, which only checks
+    ///   that the `AppleSMC` IOService exists — so across a wake holding a stale `io_connect_t` it
+    ///   would keep reporting `true`. Nobody should read this test as evidence about sleep/wake.
+    @Test("The SMC disappearing mid-session ends the loop with noSMC, not an endless render")
+    func providerBecomesUnavailableMidSession() async {
+        let provider = ScriptedSensorProvider(ticks: [
+            .success(Self.fan(actual: 1712)),
+            .unavailable,
+        ])
+        var captured: [String] = []
+        // count: 5 — more ticks than the script survives, so a regression that kept rendering past
+        // the disappearance would show up as a wrong final captured.count.
+        let options = WatchCommand.Options(interval: 0, count: 5, json: false, isTerminal: false)
+
+        await #expect(throws: FanctlError.noSMC) {
+            try await WatchCommand.run(
+                provider: provider, options: options, clock: FakeWatchClock(),
+                output: { captured.append($0) })
+        }
+
+        // The tick before the disappearance already reached the terminal; losing the SMC ends the
+        // session rather than retroactively un-rendering output.
+        #expect(captured.count == 1)
+        #expect(captured[0].contains("1712 RPM"))
+    }
+
     @Test("A NaN mid-stream renders as unavailable on that tick, and the stream stays alive")
     func nanMidStreamStaysAlive() async throws {
         let provider = ScriptedSensorProvider(ticks: [

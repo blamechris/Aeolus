@@ -96,12 +96,27 @@ actor ScriptedSensorProvider: SensorProvider {
         }
     }
 
-    /// Not exercised by `WatchCommand` (see `ListCommand.fetch`'s own documentation on why
-    /// `watch` and `list` both use `read(keys:)` exclusively, never `readAll()`), but still
-    /// answered from the current tick's stubs rather than left to trap, in case some future
-    /// caller does reach it through the `SensorProvider` existential.
+    /// Not exercised by `WatchCommand` — see the type documentation on `enum WatchCommand` and
+    /// `enum ListCommand` for why both use `read(keys:)` exclusively and never `readAll()` — but
+    /// answered from the current tick rather than left to trap, in case a future caller reaches it
+    /// through the `SensorProvider` existential.
+    ///
+    /// - Important: **A tick scripted to fail fails here too.** An earlier version returned
+    ///   `keyedResults.values.compactMap { try? $0.get() }`, which on a `.readFailure` tick — whose
+    ///   `keyedResults` is empty — returned an empty array *successfully*. A future test scripting a
+    ///   failure on tick 3 and driving a path that reaches `readAll()` (`SensorsCommand.fetch` is
+    ///   exactly such a caller) would have received a successful empty enumeration, so the assertion
+    ///   under test would never see the failure and the test would pass while proving nothing. That
+    ///   is the "test that cannot reach the failure it claims to cover" shape, planted in a double
+    ///   other tests will build on. It now throws whatever the tick scripts, and surfaces a per-key
+    ///   error rather than discarding it with `try?`.
     func readAll() async throws -> [SensorReading] {
-        current.keyedResults.values.compactMap { try? $0.get() }
+        let tick = current
+        if let readKeysError = tick.readKeysError { throw readKeysError }
+        guard tick.isAvailable else { throw SMCError.connectionFailed(kernReturn: 0) }
+        // Sorted so the return value is deterministic; dictionary order would make any caller that
+        // depends on sequence intermittently flaky.
+        return try tick.keyedResults.sorted { $0.key < $1.key }.map { try $0.value.get() }
     }
 
     func read(keys: [String]) async throws -> [SensorReadOutcome] {
