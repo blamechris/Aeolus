@@ -80,14 +80,32 @@ struct WatchCommandLoopTests {
     @Test("A cancelled sleep between ticks is a clean stop, not a thrown error")
     func cancellationBetweenTicksIsCleanStop() async throws {
         var captured: [String] = []
+        let clock = FakeWatchClock(cancelAfterSleeps: 1)
         let options = WatchCommand.Options(interval: 0, count: nil, json: false, isTerminal: false)
         try await WatchCommand.run(
             provider: Self.provider(), options: options,
-            clock: FakeWatchClock(cancelAfterSleeps: 1), output: { captured.append($0) })
+            clock: clock, output: { captured.append($0) })
 
         // One tick renders before the loop asks the clock to sleep and is told to stop —
         // no partial output, no thrown CancellationError reaching the caller.
         #expect(captured.count == 1)
+        // The cancelling sleep still counted as a call — `cancelAfterSleeps` fires on the
+        // call it names, not silently one call earlier or later.
+        #expect(await clock.sleepCount == 1)
+    }
+
+    @Test("The loop sleeps once in every gap between ticks, and never once more after the last")
+    func sleepsBetweenEveryTickNeverAfterTheLast() async throws {
+        let clock = FakeWatchClock()
+        let options = WatchCommand.Options(interval: 0, count: 4, json: false, isTerminal: false)
+        try await WatchCommand.run(
+            provider: Self.provider(), options: options, clock: clock, output: { _ in })
+
+        // Four ticks have three gaps between them. `WatchCommand.run` returns as soon as
+        // the fourth tick's own count check succeeds, before ever calling
+        // `clock.sleep(seconds:)` again — see its own documentation on why the last tick
+        // must never pay for a wait nothing is going to read.
+        #expect(await clock.sleepCount == 3)
     }
 
     @Test("A fetch failure ends the command with the same clear error `list` would raise")
@@ -145,6 +163,127 @@ struct WatchCommandLoopTests {
             as? NSDictionary
 
         #expect(watchObject == listObject)
+    }
+}
+
+/// Tests that need the provider's answer to actually differ between ticks —
+/// `FakeSensorProvider`'s fixed `let` fixtures cannot represent any of these, which is
+/// exactly why `ScriptedSensorProvider` exists. See issue #58.
+@Suite("fanctl watch — streaming across ticks")
+struct WatchCommandStreamingTests {
+
+    private static func fan(actual: Double) -> [String: Result<SensorReading, SensorReadFailure>] {
+        [
+            "FNum": .success(.fake(key: "FNum", value: 1)),
+            "F0Ac": .success(.fake(key: "F0Ac", value: actual, kind: .rpm)),
+            "F0Mn": .success(.fake(key: "F0Mn", value: 1200, kind: .rpm)),
+            "F0Mx": .success(.fake(key: "F0Mx", value: 5312, kind: .rpm)),
+        ]
+    }
+
+    @Test("A fetch that fails after several successful ticks ends the session, not just that tick")
+    func fetchSucceedsThenFailsMidSession() async {
+        let provider = ScriptedSensorProvider(ticks: [
+            .success(Self.fan(actual: 1712)),
+            .success(Self.fan(actual: 1800)),
+            .readFailure(FakeProviderError(description: "firmware went dark mid-session")),
+        ])
+        var captured: [String] = []
+        // count: 5 — comfortably more ticks than the script actually survives, so a
+        // regression that let the loop run past the failure (rather than ending the
+        // session on it) would still show up as a wrong final captured.count below.
+        let options = WatchCommand.Options(interval: 0, count: 5, json: false, isTerminal: false)
+
+        await #expect(
+            throws: FanctlError.connectionFailed(
+                context: "read FNum", reason: "firmware went dark mid-session")
+        ) {
+            try await WatchCommand.run(
+                provider: provider, options: options, clock: FakeWatchClock(),
+                output: { captured.append($0) })
+        }
+
+        // The two ticks before the failure already reached the terminal — a fetch failure
+        // ends the session, it does not retroactively un-render output already produced.
+        #expect(captured.count == 2)
+        #expect(captured[0].contains("1712 RPM"))
+        #expect(captured[1].contains("1800 RPM"))
+    }
+
+    /// `Tick.unavailable` was the one scripted variant with no test, which made it the one
+    /// member of the "succeeds N ticks then fails" family left unproven. Review of #66 flagged it.
+    ///
+    /// - Important: this is **not** a model of the sleep/wake case (#68).
+    ///   `SMCSensorProvider.isAvailable` is `SMCConnection.isHardwareAvailable()`, which only checks
+    ///   that the `AppleSMC` IOService exists — so across a wake holding a stale `io_connect_t` it
+    ///   would keep reporting `true`. Nobody should read this test as evidence about sleep/wake.
+    @Test("The SMC disappearing mid-session ends the loop with noSMC, not an endless render")
+    func providerBecomesUnavailableMidSession() async {
+        let provider = ScriptedSensorProvider(ticks: [
+            .success(Self.fan(actual: 1712)),
+            .unavailable,
+        ])
+        var captured: [String] = []
+        // count: 5 — more ticks than the script survives, so a regression that kept rendering past
+        // the disappearance would show up as a wrong final captured.count.
+        let options = WatchCommand.Options(interval: 0, count: 5, json: false, isTerminal: false)
+
+        await #expect(throws: FanctlError.noSMC) {
+            try await WatchCommand.run(
+                provider: provider, options: options, clock: FakeWatchClock(),
+                output: { captured.append($0) })
+        }
+
+        // The tick before the disappearance already reached the terminal; losing the SMC ends the
+        // session rather than retroactively un-rendering output.
+        #expect(captured.count == 1)
+        #expect(captured[0].contains("1712 RPM"))
+    }
+
+    @Test("A NaN mid-stream renders as unavailable on that tick, and the stream stays alive")
+    func nanMidStreamStaysAlive() async throws {
+        let provider = ScriptedSensorProvider(ticks: [
+            .success(Self.fan(actual: 1712)),
+            .success(Self.fan(actual: .nan)),
+            .success(Self.fan(actual: 1690)),
+        ])
+        var captured: [String] = []
+        let options = WatchCommand.Options(interval: 0, count: 3, json: false, isTerminal: false)
+        try await WatchCommand.run(
+            provider: provider, options: options, clock: FakeWatchClock(),
+            output: { captured.append($0) })
+
+        // All three ticks rendered — sanitising the NaN into a failure never ended the
+        // loop, and the tick after it is a normal reading again.
+        #expect(captured.count == 3)
+        #expect(captured[0].contains("1712 RPM"))
+        #expect(captured[1].contains("unavailable (decoded to a non-finite value (NaN)"))
+        #expect(!captured[1].contains("1712 RPM"))
+        #expect(captured[2].contains("1690 RPM"))
+    }
+
+    @Test("A value that changes between ticks is reflected in each tick's own output, never stale")
+    func changingValueUpdatesEachTick() async throws {
+        let provider = ScriptedSensorProvider(ticks: [
+            .success(Self.fan(actual: 1712)),
+            .success(Self.fan(actual: 1899)),
+            .success(Self.fan(actual: 2044)),
+        ])
+        var captured: [String] = []
+        let options = WatchCommand.Options(interval: 0, count: 3, json: true, isTerminal: false)
+        try await WatchCommand.run(
+            provider: provider, options: options, clock: FakeWatchClock(),
+            output: { captured.append($0) })
+
+        #expect(captured.count == 3)
+        let actualValues = try captured.map { line -> Double in
+            let data = try #require(line.data(using: .utf8))
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let fans = try #require(object["fans"] as? [[String: Any]])
+            let actualRPM = try #require(fans.first?["actualRPM"] as? [String: Any])
+            return try #require(actualRPM["value"] as? Double)
+        }
+        #expect(actualValues == [1712, 1899, 2044])
     }
 }
 
