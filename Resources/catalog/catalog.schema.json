@@ -34,12 +34,16 @@
           "additionalProperties": false,
           "properties": {
             "chipFamily": {
+              "description": "The marketing chip name a machine is scoped to, e.g. 'M1 Pro'. On Apple Silicon this is machdep.cpu.brand_string with the 'Apple ' prefix stripped (see HardwareIdentity.chipFamily(fromBrandString:)) — write exactly that stripped string, e.g. 'Apple M4 Max' becomes 'M4 Max'. On Intel, machdep.cpu.brand_string is the CPU's own verbose marketing string (e.g. 'Intel(R) Core(TM) i9-9880H CPU @ 2.30GHz', with runs of extra internal spaces on some parts) and HardwareIdentity returns it verbatim aside from trimming leading/trailing whitespace — internal spacing is preserved exactly. No normalised Intel convention has been verified against real hardware, so do not transcribe a hardware report's 'Chip or processor' field here — a hand-typed value like 'Intel Core i9-9880H' will never equal the raw brand string and the entry will silently match no Intel Mac. Scope Intel entries with modelIdentifier only until someone confirms the exact brand_string text on real Intel hardware and that convention is documented here.",
               "type": "array",
+              "minItems": 1,
               "items": { "type": "string" },
               "examples": [["M1", "M1 Pro", "M1 Max"]]
             },
             "modelIdentifier": {
+              "description": "Exact hw.model values this entry is scoped to, e.g. 'Mac16,5'. Case-insensitive at match time, but write it as system_profiler or `sysctl hw.model` reports it.",
               "type": "array",
+              "minItems": 1,
               "items": { "type": "string" },
               "examples": [["Mac16,5", "MacBookPro18,3"]]
             }
