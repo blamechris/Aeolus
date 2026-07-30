@@ -13,9 +13,9 @@ import Foundation
 ///   identifying the machine itself. See `Tests/SMCCoreTests/DevelopmentMachine.swift` for
 ///   the test-only precedent this generalises from.
 public struct HardwareIdentity: Sendable, Hashable {
-    /// e.g. `"Mac16,5"`, read from `hw.model`. `nil` if the sysctl could not be read, for
-    /// any reason — `CatalogMatcher` treats that the same as "matches no
-    /// `modelIdentifier` restriction" rather than crashing: an unreadable sysctl must
+    /// e.g. `"Mac16,5"`, read from `hw.model`. `nil` if the sysctl could not be read, or
+    /// read as blank, for any reason — `CatalogMatcher` treats that the same as "matches
+    /// no `modelIdentifier` restriction" rather than crashing: an unreadable sysctl must
     /// degrade to unlabelled sensors, not a crash in a library `AeolusHelper` also links.
     public let modelIdentifier: String?
 
@@ -40,9 +40,10 @@ public struct HardwareIdentity: Sendable, Hashable {
     /// against. It belongs here rather than behind a protocol a client injects because
     /// every consumer of `CatalogMatcher` needs the same answer to "what machine is
     /// this", and the SMC read core, the CLI, and the app would otherwise each need their
-    /// own copy of it — exactly the duplication `Tests/SMCCoreTests/DevelopmentMachine.swift`
-    /// and `Tests/fanctlTests/DevelopmentMachine.swift` already warn against for the
-    /// test-only version of this same check.
+    /// own copy of it. `Tests/fanctlTests` used to keep a second, test-only copy of this
+    /// same sysctl read (`Tests/SMCCoreTests/DevelopmentMachine.swift` still does, because
+    /// `SMCCore` does not depend on `FanKit`) — `fanctlTests` now calls this directly
+    /// instead, which is exactly the consolidation this paragraph argues for.
     ///
     /// Everything else in this file, and all of `CatalogMatcher`, is a pure function of
     /// whatever `HardwareIdentity` a caller supplies — deliberately, so matching itself
@@ -76,6 +77,17 @@ public struct HardwareIdentity: Sendable, Hashable {
         return String(brandString.dropFirst(applePrefix.count))
     }
 
+    /// Reads a sysctl string, or `nil` if it is unavailable **or blank**.
+    ///
+    /// A present-but-empty sysctl (whitespace only, or a genuinely zero-length string) is
+    /// treated the same as an absent one: `CatalogMatcher.matchesModelIdentifier(in:)` and
+    /// `matchesChipFamily(in:)` only special-case `nil` as "matches no restriction", so an
+    /// empty string reaching `HardwareIdentity` would otherwise match any catalog entry
+    /// naming `[""]`. `catalog.schema.json` rejects that entry at authoring time via
+    /// `minItems: 1` on the array **and** `minLength: 1` on its items — `minItems` alone
+    /// would not, because it counts items rather than inspecting them. This is the other
+    /// half: never letting an empty *value* reach the comparison at all, regardless of what
+    /// a catalog that never passed the schema might contain.
     private static func sysctlString(_ name: String) -> String? {
         var size = 0
         guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return nil }
@@ -87,7 +99,9 @@ public struct HardwareIdentity: Sendable, Hashable {
         // the first null byte before decoding rather than using the deprecated
         // String(cString:) overload.
         let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
-        return String(decoding: bytes, as: UTF8.self)
+        let value = String(decoding: bytes, as: UTF8.self).trimmingCharacters(
+            in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 }
 

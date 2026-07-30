@@ -4,7 +4,10 @@
   "title": "Aeolus sensor catalog",
   "description": "Maps raw SMC keys to human-readable labels, scoped by chip family and Mac model. The catalog only decorates: sensor discovery is dynamic, and a machine with no catalog entries at all still shows every sensor it has, unlabelled and fully usable. Validated in CI on every pull request.",
   "type": "object",
-  "required": ["schemaVersion", "entries"],
+  "required": [
+    "schemaVersion",
+    "entries"
+  ],
   "additionalProperties": false,
   "properties": {
     "schemaVersion": {
@@ -13,13 +16,20 @@
     },
     "entries": {
       "type": "array",
-      "items": { "$ref": "#/$defs/entry" }
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
     }
   },
   "$defs": {
     "entry": {
       "type": "object",
-      "required": ["key", "label", "category", "confidence"],
+      "required": [
+        "key",
+        "label",
+        "category",
+        "confidence"
+      ],
       "additionalProperties": false,
       "properties": {
         "key": {
@@ -29,19 +39,40 @@
           "maxLength": 4
         },
         "match": {
-          "description": "Restricts this entry to specific hardware. An entry with no match applies everywhere, which should be rare — most keys mean different things on different chips.",
+          "description": "Restricts this entry to specific hardware. An entry with no match applies everywhere, which should be rare \u2014 most keys mean different things on different chips.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
             "chipFamily": {
+              "description": "The marketing chip name a machine is scoped to, e.g. 'M1 Pro'. On Apple Silicon this is machdep.cpu.brand_string with the 'Apple ' prefix stripped (see HardwareIdentity.chipFamily(fromBrandString:)) \u2014 write exactly that stripped string, e.g. 'Apple M4 Max' becomes 'M4 Max'. On Intel, machdep.cpu.brand_string is the CPU's own verbose marketing string (e.g. 'Intel(R) Core(TM) i9-9880H CPU @ 2.30GHz', with runs of extra internal spaces on some parts) and HardwareIdentity returns it verbatim aside from trimming leading/trailing whitespace \u2014 internal spacing is preserved exactly. No normalised Intel convention has been verified against real hardware, so do not transcribe a hardware report's 'Chip or processor' field here \u2014 a hand-typed value like 'Intel Core i9-9880H' will never equal the raw brand string and the entry will silently match no Intel Mac. Scope Intel entries with modelIdentifier only until someone confirms the exact brand_string text on real Intel hardware and that convention is documented here.",
               "type": "array",
-              "items": { "type": "string" },
-              "examples": [["M1", "M1 Pro", "M1 Max"]]
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "examples": [
+                [
+                  "M1",
+                  "M1 Pro",
+                  "M1 Max"
+                ]
+              ]
             },
             "modelIdentifier": {
+              "description": "Exact hw.model values this entry is scoped to, e.g. 'Mac16,5'. Case-insensitive at match time, but write it as system_profiler or `sysctl hw.model` reports it.",
               "type": "array",
-              "items": { "type": "string" },
-              "examples": [["Mac16,5", "MacBookPro18,3"]]
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "examples": [
+                [
+                  "Mac16,5",
+                  "MacBookPro18,3"
+                ]
+              ]
             }
           }
         },
@@ -52,15 +83,30 @@
         },
         "category": {
           "type": "string",
-          "enum": ["cpu", "gpu", "memory", "storage", "battery", "power", "ambient", "display", "fan", "other"]
+          "enum": [
+            "cpu",
+            "gpu",
+            "memory",
+            "storage",
+            "battery",
+            "power",
+            "ambient",
+            "display",
+            "fan",
+            "other"
+          ]
         },
         "confidence": {
           "description": "How much this label should be trusted. Shown in the UI. 'verified' means someone confirmed the mapping against observed behaviour on that hardware; 'guess' is displayed as a guess so a wrong label cannot quietly mislead someone into a bad fan curve.",
           "type": "string",
-          "enum": ["verified", "community", "guess"]
+          "enum": [
+            "verified",
+            "community",
+            "guess"
+          ]
         },
         "source": {
-          "description": "Where the mapping came from — an issue number, a pull request, or a citation. Required in practice for 'verified'.",
+          "description": "Where the mapping came from \u2014 an issue number, a pull request, or a citation. Required in practice for 'verified'.",
           "type": "string"
         }
       }

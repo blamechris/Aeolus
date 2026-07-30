@@ -111,11 +111,12 @@ let package = Package(
         // SensorProviders and pure formatting/classification logic (row models, error
         // descriptions, table/JSON rendering) via @testable import, so the bulk of the
         // suite needs no open SMC connection at all. The handful of assertions that do
-        // touch real hardware follow the isDevelopmentMachine() gating pattern from
-        // Tests/SMCCoreTests/DevelopmentMachine.swift.
+        // touch real hardware gate on HardwareIdentity.current(), the same check
+        // Tests/SMCCoreTests/DevelopmentMachine.swift performs — fanctl already depends on
+        // FanKit, so there is no reason for a second, test-only sysctl reader here.
         .testTarget(
             name: "fanctlTests",
-            dependencies: ["fanctl", "SMCCore"],
+            dependencies: ["fanctl", "SMCCore", "FanKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(

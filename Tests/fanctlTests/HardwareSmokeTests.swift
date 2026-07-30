@@ -1,16 +1,23 @@
+import FanKit
 import Testing
 
 @testable import SMCCore
 @testable import fanctl
 
-/// End-to-end sanity against the real SMC. Gated on `isDevelopmentMachine()`, not just
-/// `SMCConnection.isHardwareAvailable()`: `list`'s fan-count assertion below is a fact
-/// about *this* machine (`Mac16,5` has at least one fan), not "any Mac with an SMC" — a
-/// fanless MacBook Air would fail it honestly, not because anything is broken. Same split
-/// `Tests/SMCCoreTests/DevelopmentMachine.swift` documents.
+/// End-to-end sanity against the real SMC. Gated on `HardwareIdentity.current()` matching
+/// this project's sole verified machine, not just `SMCConnection.isHardwareAvailable()`:
+/// `list`'s fan-count assertion below is a fact about *this* machine (`Mac16,5` has at
+/// least one fan), not "any Mac with an SMC" — a fanless MacBook Air would fail it
+/// honestly, not because anything is broken. Same split
+/// `Tests/SMCCoreTests/DevelopmentMachine.swift` documents, reusing the production
+/// `HardwareIdentity.current()` reader `FanKit` already exposes rather than a second
+/// test-only sysctl reader — `fanctl` depends on `FanKit`, so nothing stops this from
+/// calling it directly.
 @Suite(
     "fanctl — real hardware",
-    .enabled(if: SMCConnection.isHardwareAvailable() && isDevelopmentMachine())
+    .enabled(
+        if: SMCConnection.isHardwareAvailable()
+            && HardwareIdentity.current().modelIdentifier == "Mac16,5")
 )
 struct HardwareSmokeTests {
 
