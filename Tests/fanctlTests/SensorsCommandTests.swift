@@ -1,3 +1,4 @@
+import FanKit
 import Foundation
 import Testing
 
@@ -27,6 +28,7 @@ struct SensorsCommandFetchTests {
         let entry = try #require(result.entries.first)
         #expect(entry.key == "Tp09")
         #expect(entry.label == nil)
+        #expect(entry.category == nil)
         #expect(entry.confidence == nil)
         #expect(entry.value == 42.5)
         #expect(entry.error == nil)
@@ -39,7 +41,8 @@ struct SensorsCommandFetchTests {
             allReadings: [.fake(key: "Tp09", value: 42.5, kind: .temperatureCelsius)])
         let catalog = FakeSensorCatalogLookup(
             labels: [
-                "Tp09": SensorCatalogLabel(text: "CPU Efficiency Cluster", confidence: .community)
+                "Tp09": SensorCatalogLabel(
+                    text: "CPU Efficiency Cluster", category: .cpu, confidence: .community)
             ]
         )
 
@@ -49,6 +52,7 @@ struct SensorsCommandFetchTests {
         let entry = try #require(result.entries.first)
         #expect(entry.key == "Tp09")
         #expect(entry.label == "CPU Efficiency Cluster")
+        #expect(entry.category == .cpu)
         #expect(entry.confidence == .community)
     }
 
@@ -58,7 +62,8 @@ struct SensorsCommandFetchTests {
             allReadings: [.fake(key: "Tp09", value: 42.5, kind: .temperatureCelsius)])
         let catalog = FakeSensorCatalogLookup(
             labels: [
-                "Tp09": SensorCatalogLabel(text: "CPU Efficiency Cluster", confidence: .verified)
+                "Tp09": SensorCatalogLabel(
+                    text: "CPU Efficiency Cluster", category: .cpu, confidence: .verified)
             ]
         )
 
@@ -68,7 +73,66 @@ struct SensorsCommandFetchTests {
         let entry = try #require(result.entries.first)
         #expect(entry.key == "Tp09")
         #expect(entry.label == nil)
+        #expect(entry.category == nil)
         #expect(entry.confidence == nil)
+    }
+
+    @Test("fetch decorates through the real CatalogSensorLookup, end to end, not just a fake")
+    func fetchDecoratesThroughRealCatalogSensorLookup() async throws {
+        let catalog = SensorCatalog(
+            schemaVersion: 1,
+            entries: [
+                CatalogEntry(
+                    key: "Tp09", match: CatalogMatch(modelIdentifier: ["Mac16,5"]),
+                    label: "CPU Efficiency Cluster", category: .cpu, confidence: .verified)
+            ])
+        let hardware = HardwareIdentity(modelIdentifier: "Mac16,5", chipFamily: "M4 Max")
+        let lookup = CatalogSensorLookup(catalog: catalog, hardware: hardware)
+        let provider = FakeSensorProvider(
+            allReadings: [
+                .fake(key: "Tp09", value: 42.5, kind: .temperatureCelsius),
+                .fake(key: "F0Ac", value: 1712, kind: .rpm),
+            ])
+
+        let result = try await SensorsCommand.fetch(
+            provider: provider, catalog: lookup, rawKeys: false)
+
+        let labelled = try #require(result.entries.first { $0.key == "Tp09" })
+        #expect(labelled.label == "CPU Efficiency Cluster")
+        #expect(labelled.category == .cpu)
+        #expect(labelled.confidence == .verified)
+
+        // A key the catalog never mentions still renders fully, unlabelled.
+        let unmatched = try #require(result.entries.first { $0.key == "F0Ac" })
+        #expect(unmatched.label == nil)
+        #expect(unmatched.category == nil)
+        #expect(unmatched.confidence == nil)
+        #expect(unmatched.value == 1712)
+    }
+
+    @Test("A catalog entry scoped to a different model never decorates this machine's reading")
+    func fetchHonoursHardwareMismatchThroughRealCatalogSensorLookup() async throws {
+        let catalog = SensorCatalog(
+            schemaVersion: 1,
+            entries: [
+                CatalogEntry(
+                    key: "Tp09", match: CatalogMatch(modelIdentifier: ["MacBookAir10,1"]),
+                    label: "CPU cluster (M1 Air)", category: .cpu, confidence: .verified)
+            ])
+        let thisMachine = HardwareIdentity(modelIdentifier: "Mac16,5", chipFamily: "M4 Max")
+        let lookup = CatalogSensorLookup(catalog: catalog, hardware: thisMachine)
+        let provider = FakeSensorProvider(
+            allReadings: [.fake(key: "Tp09", value: 42.5, kind: .temperatureCelsius)])
+
+        let result = try await SensorsCommand.fetch(
+            provider: provider, catalog: lookup, rawKeys: false)
+
+        let entry = try #require(result.entries.first)
+        #expect(entry.key == "Tp09")
+        #expect(entry.label == nil)
+        #expect(entry.category == nil)
+        #expect(entry.confidence == nil)
+        #expect(entry.value == 42.5)
     }
 
     @Test("Entries are sorted by key for stable, skimmable output")
@@ -192,10 +256,11 @@ struct SensorsCommandRenderTests {
             capturedAt: Self.fixedDate,
             entries: [
                 SensorsCommand.Entry(
-                    key: "F0Ac", label: nil, confidence: nil, value: 1712, error: nil, unit: .rpm),
+                    key: "F0Ac", label: nil, category: nil, confidence: nil, value: 1712,
+                    error: nil, unit: .rpm),
                 SensorsCommand.Entry(
-                    key: "Tp09", label: "CPU Efficiency Cluster", confidence: .community,
-                    value: 42.5, error: nil, unit: .celsius),
+                    key: "Tp09", label: "CPU Efficiency Cluster", category: .cpu,
+                    confidence: .community, value: 42.5, error: nil, unit: .celsius),
             ],
             keysDeclared: 3385)
 
@@ -210,6 +275,7 @@ struct SensorsCommandRenderTests {
               "sensorCount" : 2,
               "sensors" : [
                 {
+                  "category" : null,
                   "error" : null,
                   "key" : "F0Ac",
                   "label" : null,
@@ -218,6 +284,7 @@ struct SensorsCommandRenderTests {
                   "value" : 1712
                 },
                 {
+                  "category" : "cpu",
                   "error" : null,
                   "key" : "Tp09",
                   "label" : "CPU Efficiency Cluster",
@@ -249,8 +316,8 @@ struct SensorsCommandRenderTests {
             capturedAt: Self.fixedDate,
             entries: [
                 SensorsCommand.Entry(
-                    key: "Tp09", label: nil, confidence: nil, value: 42.5, error: nil,
-                    unit: .celsius)
+                    key: "Tp09", label: nil, category: nil, confidence: nil, value: 42.5,
+                    error: nil, unit: .celsius)
             ],
             keysDeclared: nil)
 
