@@ -502,6 +502,64 @@ draft of this document did, and it would have led an implementer to make `ui16`/
 unconditionally little-endian — which decodes `#KEY` as 957,153,280 instead of 3385 and
 breaks key enumeration outright.
 
+### Sleep/wake and the read connection — open question, not exercised (issue #58)
+
+`SMCSensorProvider` opens exactly one `SMCConnection` and holds it for the lifetime of the
+process. `SMCConnection.open()` is idempotent purely on whether `connection != 0` — once it
+has succeeded, every later call is a guaranteed no-op, regardless of whether the underlying
+`io_connect_t` the kernel handed back is still valid. There is no reconnect path anywhere in
+this project, and nothing observes sleep or wake at all (`AeolusHelperMain.swift` names
+`IORegisterForSystemPower` as future E5 scaffolding, not something implemented yet). Whether
+an `io_connect_t` obtained from `IOServiceOpen` against the `AppleSMC` service survives a
+sleep/wake cycle is exactly the fact this session was asked to establish, and it was **not**
+established here.
+
+**Why not:** the only way to observe this honestly is to start `fanctl watch`, physically
+close the lid, wake the machine, and read what happened — a lid-close is a physical action
+this session has no way to perform. The one available proxy, forcing a whole-machine sleep
+with `pmset sleepnow`, was deliberately not attempted instead of being used as a stand-in:
+this development machine may be running other work concurrently in sibling worktrees at the
+time of any given session, and a forced system-wide suspend would interrupt all of it to
+produce a result that is not even confidently the same code path a lid-close exercises
+(`pmset sleepnow` and the lid switch both trigger system sleep, but this project has no
+observation confirming they are indistinguishable to `AppleSMC`'s IOKit connection
+specifically). Guessing the answer and coding to it would be worse than leaving it open:
+CLAUDE.md's rule against fabricating an observation applies exactly as much to a plausible
+substitute as to an invented one.
+
+**What to actually do:** run `fanctl watch` in a terminal, close the lid, wait, wake it, and
+record which of these happens, verbatim:
+
+- Reads continue normally with no interruption — the connection (or at least its
+  behaviour) survives sleep/wake on this machine, this macOS build.
+- A read fails outright with a specific `kern_return_t` — record it. If that failure
+  reaches `readFanCount` (an `FNum` read), `WatchCommand` exits with
+  `FanctlError.connectionFailed`, a clear message, non-zero status — an honest failure, not
+  a silent one. If it only ever hits a per-fan key (`F0Ac`/`Mn`/`Mx`), every tick renders
+  that fan `unavailable (...)` forever, because nothing currently re-opens or invalidates
+  the connection on its own — this is the "silently unavailable forever" outcome the issue
+  calls out as the one wrong answer, and it would already be happening today, just not
+  proven to.
+- Reads hang rather than failing — a third outcome worth recording explicitly, since it
+  changes the fix: a bounded timeout would be needed before a reconnect attempt could even
+  be tried.
+
+Once one of those is confirmed, the actual decision — reconnect transparently inside
+`SMCSensorProvider`/`SMCConnection`, or fail loudly with a message that tells the user to
+restart `fanctl watch` — can be made from evidence instead of a guess. No such change is
+made in this PR.
+
+**This bears far more on `AeolusHelper` than on `fanctl`.** A `watch` session is one process
+a user restarts if it exits; the helper holds its own `SMCConnection` indefinitely, across
+every sleep/wake cycle a laptop goes through for as long as it is running, and serves every
+client (the app, `fanctl`, the control loop, the safety supervisor) from that one connection.
+If it does not survive sleep/wake, the helper needs its own answer to this question — most
+likely a reconnect, given how central continuous operation is to what it does — before E5's
+safety supervisor can be trusted to keep reading actual fan state correctly across a laptop's
+entire uptime. That is out of this issue's and this document's scope (`AeolusHelper` is not
+touched here), but it is the reason this question is worth closing rather than leaving
+indefinitely open once real hardware access to actually close a lid is available.
+
 ---
 
 ## Sources
