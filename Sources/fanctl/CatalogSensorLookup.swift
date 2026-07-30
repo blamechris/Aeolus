@@ -38,11 +38,18 @@ struct CatalogSensorLookup: SensorCatalogLookup {
     /// Resolves every key `catalog` can decorate on `hardware`, once, up front.
     init(catalog: SensorCatalog, hardware: HardwareIdentity, warnings: [CatalogLoadWarning] = []) {
         // Only the *set* of keys the catalog mentions is walked here — one
-        // `decoration(forKey:on:)` call per unique key, not per reading. That call
-        // internally scans just the entries sharing that key (never the readings this
-        // lookup will later be asked about), so this constructor's cost tracks the
-        // catalog's size, never the number of sensors a particular machine happens to
-        // expose.
+        // `decoration(forKey:on:)` call per unique key, not per reading. That is the
+        // property that matters: the ~2900 readings a machine exposes never multiply the
+        // catalog, and `label(for:)` afterwards is a single dictionary lookup.
+        //
+        // Be precise about what this does *not* claim. `CatalogMatcher.decoration` filters
+        // `catalog.entries` by key on each call rather than indexing by key, so this loop
+        // is O(uniqueKeys × entries) in the catalog's size — not linear. That is tens of
+        // milliseconds once #44 seeds a few thousand entries, against `readAll()`'s ~4.5 s,
+        // so it is not worth optimising here. It *would* be worth fixing inside
+        // `CatalogMatcher`, where a keyed index would serve every caller; doing it here
+        // instead would move hardware scoping out of the matcher, which is the one thing
+        // this adapter must not do.
         var resolved: [String: CatalogDecoration] = [:]
         for key in Set(catalog.entries.map(\.key)) {
             guard let decoration = catalog.decoration(forKey: key, on: hardware) else { continue }
