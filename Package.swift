@@ -116,6 +116,9 @@ let package = Package(
         // FanKit, so there is no reason for a second, test-only sysctl reader here.
         .testTarget(
             name: "fanctlTests",
+            // FanKit is also needed directly, not just transitively via fanctl, so tests
+            // can build SensorCatalog/CatalogEntry/HardwareIdentity fixtures for
+            // CatalogSensorLookup — see CatalogSensorLookupTests.swift.
             dependencies: ["fanctl", "SMCCore", "FanKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

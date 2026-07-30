@@ -1,3 +1,4 @@
+import FanKit
 import Foundation
 import SMCCore
 
@@ -22,13 +23,16 @@ enum SensorsCommand {
     /// `label`, `labelConfidence`, `value`, `unit`) deliberately, so this JSON does not
     /// have to change meaning once a helper-backed path exists — even though this
     /// command reads straight from `SensorProvider` and never touches XPC itself. `key`
-    /// is always present; `label`/`confidence` are `nil` together, never one without the
-    /// other — an unlabelled sensor is a normal result, not a degraded one. `value` is
+    /// is always present; `label`/`category`/`confidence` are `nil` together, never one
+    /// without the others — an unlabelled sensor is a normal result, not a degraded one.
+    /// `category` is not part of `AeolusXPC.SensorSample` today, but is carried here
+    /// because a raw catalog match always has one — see `SensorCatalogLabel`. `value` is
     /// `nil` exactly when `error` is non-`nil`, same contract as
     /// `ListCommand.KeyedValue` — see `sanitize(_:)`.
     struct Entry: Equatable {
         let key: String
         let label: String?
+        let category: SensorCategoryLabel?
         let confidence: SensorLabelConfidence?
         let value: Double?
         let error: String?
@@ -73,6 +77,7 @@ enum SensorsCommand {
                 return Entry(
                     key: reading.key,
                     label: match?.text,
+                    category: match?.category,
                     confidence: match?.confidence,
                     value: value,
                     error: error,
@@ -135,15 +140,16 @@ extension SensorsCommand {
     struct SensorJSON: Codable {
         let key: String
         let label: String?
+        let category: String?
         let labelConfidence: String?
         let value: Double?
         let error: String?
         let unit: String
 
         // Hand-written for the same reason as ListCommand.KeyedValueJSON: the
-        // synthesised conformance omits "label"/"labelConfidence"/"value"/"error"
-        // entirely when nil (encodeIfPresent), which would make every entry's key set
-        // depend on whether it happened to be labelled or decoded cleanly. With
+        // synthesised conformance omits "label"/"category"/"labelConfidence"/"value"/
+        // "error" entirely when nil (encodeIfPresent), which would make every entry's
+        // key set depend on whether it happened to be labelled or decoded cleanly. With
         // thousands of entries in a full `sensors --json` dump, a uniform shape —
         // `null` standing in for "no catalog match" or "did not decode" — matters more
         // here than almost anywhere else in this CLI. CodingKeys itself lives as a
@@ -152,6 +158,7 @@ extension SensorsCommand {
             var container = encoder.container(keyedBy: SensorCodingKeys.self)
             try container.encode(key, forKey: .key)
             try container.encode(label, forKey: .label)
+            try container.encode(category, forKey: .category)
             try container.encode(labelConfidence, forKey: .labelConfidence)
             try container.encode(value, forKey: .value)
             try container.encode(error, forKey: .error)
@@ -160,7 +167,7 @@ extension SensorsCommand {
     }
 
     private enum SensorCodingKeys: String, CodingKey {
-        case key, label, labelConfidence, value, error, unit
+        case key, label, category, labelConfidence, value, error, unit
     }
 
     struct JSONOutput: Codable {
@@ -191,6 +198,7 @@ extension SensorsCommand {
                 SensorJSON(
                     key: entry.key,
                     label: entry.label,
+                    category: entry.category?.rawValue,
                     labelConfidence: entry.confidence?.rawValue,
                     value: entry.value,
                     error: entry.error,
@@ -206,11 +214,12 @@ extension SensorsCommand {
             return "No sensors found."
         }
 
-        let headers = ["KEY", "LABEL", "CONFIDENCE", "VALUE", "UNIT"]
+        let headers = ["KEY", "LABEL", "CATEGORY", "CONFIDENCE", "VALUE", "UNIT"]
         let rows = result.entries.map { entry in
             [
                 entry.key,
                 entry.label ?? "-",
+                entry.category?.rawValue ?? "-",
                 entry.confidence?.rawValue ?? "-",
                 rendered(entry),
                 entry.unit.rawValue,
@@ -230,8 +239,17 @@ extension SensorsCommand {
 // MARK: - Command wiring
 
 extension Fanctl.Sensors {
+    /// Loads the real, hardware-scoped catalog (`CatalogSensorLookup`) in place of
+    /// `NoSensorCatalog` — the seam #56 wires in. Any catalog-load warning is written to
+    /// stderr here, at the real-environment entry point, rather than threaded through
+    /// `run(provider:catalog:output:)`'s injectable signature below: that function stays a
+    /// pure function of whatever `SensorCatalogLookup` a caller supplies, and
+    /// `NoSensorCatalog`/`FakeSensorCatalogLookup` (used throughout `fanctlTests`) have no
+    /// warnings to report in the first place.
     func run() async throws {
-        try await run(provider: SMCSensorProvider(), catalog: NoSensorCatalog())
+        let catalog = CatalogSensorLookup.loadDefault()
+        reportCatalogWarnings(catalog.warnings)
+        try await run(provider: SMCSensorProvider(), catalog: catalog)
     }
 
     /// Provider-, catalog-, and output-injectable so `fanctlTests` can exercise this
@@ -251,5 +269,16 @@ extension Fanctl.Sensors {
         } else {
             output(SensorsCommand.renderTable(result))
         }
+    }
+}
+
+/// Writes each catalog-load warning to stderr, one per line. A warning here is diagnostic
+/// context for whoever is running `fanctl sensors` — a stale override, a broken build —
+/// never a reason `SensorsCommand.fetch` returns fewer entries: see
+/// `CatalogSensorLookup.warnings`'s documentation.
+private func reportCatalogWarnings(_ warnings: [CatalogLoadWarning]) {
+    for warning in warnings {
+        FileHandle.standardError.write(
+            Data("fanctl: warning: \(warning.readableDescription)\n".utf8))
     }
 }
