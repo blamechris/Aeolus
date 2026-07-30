@@ -131,7 +131,7 @@ project is arranged around it.
 The lowest-friction way to help is a **sensor catalog entry**: telling us that `Tp09` is
 the efficiency-core cluster on your particular Mac. That is a JSON edit, it needs no
 build, and it is the thing that makes this software readable rather than a wall of
-four-character codes.
+four-character codes. See [docs/CATALOG.md](docs/CATALOG.md) for how.
 
 ## Licence
 

@@ -248,6 +248,13 @@ to three decimals is strong confirmation. Confidence: high on the format, upgrad
 "plausible" to "confirmed" by the IOHID cross-check; medium on the sensor *name* — worth one
 confirming pass under thermal load, where the values should move together.
 
+**The `TG0B`/`TB0T` match above is evidence for the `ioft` format, not for a battery
+meaning.** Neither `TG0B` nor `TB0T` had an established meaning going into that comparison,
+so two anonymous keys agreeing with each other confirms only that they read the same
+physical sensor — not what that sensor *is*. See "TB0T/TB1T/TB2T versus the real gas gauge
+(`AppleSmartBattery`)" below, where an earlier version of this document over-read this
+match as battery corroboration that was never actually run.
+
 ### Fan topology and the `Ftst` key
 
 Two fans, `F0` and `F1`. Every fan key present on this machine:
@@ -269,6 +276,20 @@ a write and belongs to E4 — it only confirms the precondition holds.
 `{fds` is absent, so there is **no fan descriptor struct to read names from** on this
 machine. Fan naming on Apple Silicon needs another source; this is direct input into E6
 (sensor catalog).
+
+**Confirmed responding under load, not just idle.** The idle snapshot above already showed
+`F0Ac` (1343.07) tracking below `F0Tg`'s eventual target. Watched over a session as the
+machine warmed under sustained load, `F0Tg` rose from 1350 to 2195 RPM and `F0Ac` tracked
+it, rising from 1343 to 2166 RPM — target and actual moving together rather than
+independently. That is the "watched that sensor respond" bar `docs/CATALOG.md` sets for
+`verified`; the RPM-valued fan keys' basis is no longer a single idle read.
+
+**`F0Md`/`F1Md` remain the weakest of the ten.** Reading `0x00` while `thermalmonitord`
+holds both fans in automatic control is consistent with the reported "mode key, 0 =
+automatic" convention above (see "The M3+ manual-control rejection"), but nothing has
+forced either key to a different value and watched the fans respond to it — that write
+belongs to E4, not yet attempted. The catalog reflects this honestly:
+`confidence: community`, not `verified`, until a write actually exercises the mode key.
 
 ### The attribute byte — bit `0x80` is "readable", necessary but not sufficient
 
@@ -487,6 +508,61 @@ ever contradicts this.
 This answer is scoped to `Mac16,5`, one snapshot, macOS 26.5.2. It is not generalised to
 Intel or M1/M2 hardware, or to any other machine.
 
+### TB0T/TB1T/TB2T versus the real gas gauge (`AppleSmartBattery`) — not confirmed as battery temperature
+
+The seed catalog (#44) originally cited this document for `TB0T`/`TB1T`/`TB2T` as
+"battery-adjacent, corroborated against IOHID's `gas gauge battery`." **That corroboration
+was never actually run, and does not appear anywhere above.** `gas gauge battery` is named
+only once, in the list of 21 distinct IOHID sensors two paragraphs up; the three
+value-level correspondences this document actually itemises are `PMU tcal` = `TR0Z`, `PMU
+tdev7` vs. `TS0P`, and `PMU tdev5` vs. `TaRT` — none of them a `TB*T` key. Neither `TB1T`
+nor `TB2T` is named anywhere else in this document. The only recorded `TB0T` fact (in the
+`flt` table near the top) is that it matched `TG0B` — evidence for the `ioft` format, not
+for a battery meaning (see the note there).
+
+This section runs the comparison that citation implied but never happened: `TB0T`/`TB1T`/
+`TB2T` against `AppleSmartBattery`, the IOKit service backed by the battery's own gas
+gauge IC — a measurement path independent of both the SMC and `IOHIDEventSystemClient`.
+
+| Key | Source | Value |
+|---|---|---|
+| `TB0T` | SMC, `flt` | 33.9000 °C |
+| `TB2T` | SMC, `flt` | 33.9000 °C |
+| `TG0B` | SMC, `ioft` (unlabelled) | 34.0000 °C |
+| `TB1T` | SMC, `flt` | 31.3000 °C |
+| `TG1B` | SMC, `ioft` (unlabelled) | 31.3000 °C |
+| `AppleSmartBattery` `Temperature` | IOKit, the gas gauge IC's own reading | 30.70 °C |
+| `AppleSmartBattery` `VirtualTemperature` | IOKit, a distinct, apparently derived quantity | 33.79 °C |
+
+All read on the same machine, the same session:
+
+- **`TB0T` and `TB2T` read identically** (33.9000 °C). Whether this is one physical sensor
+  exposed under two keys or two sensors that happen to agree is not established.
+- `TB0T`/`TB2T` sit 0.1 °C from the unlabelled `ioft` key `TG0B`; `TB1T` reads **identical
+  to four decimal places** with the unlabelled `ioft` key `TG1B`. That is real internal
+  consistency between two SMC encodings of what looks like the same underlying reading —
+  but `TG0B`/`TG1B`'s own meaning is itself unestablished (see the `ioft` finding above),
+  so agreeing with an anonymous key does not, by itself, confirm a battery meaning for
+  either side.
+- **`AppleSmartBattery`'s `Temperature`** — the property backed by the gas gauge IC itself
+  — is 30.70 °C: **3.2 °C from `TB0T`/`TB2T`**, and 0.6 °C from `TB1T`. Both gaps are well
+  outside the 0.15 °C bar this document uses elsewhere (the IOHID cross-check above) before
+  calling two readings the same physical sensor. There is only one `AppleSmartBattery`
+  temperature reading on a machine with one battery, so it cannot be "the" gas gauge value
+  behind three keys that disagree with each other and with it.
+- `VirtualTemperature` (33.79 °C) happens to land within 0.11 °C of `TB0T`/`TB2T`, but sits
+  2.49 °C from `TB1T`, and `VirtualTemperature` is itself a distinct, apparently computed
+  quantity — nothing here establishes what it is derived from. A near-miss against an
+  uncharacterised value is not evidence for a battery meaning either, and it does not
+  explain `TB1T`.
+
+**Conclusion: `TB0T`/`TB1T`/`TB2T` remain battery-adjacent by key name only.** They track
+each other and the unlabelled `TG0B`/`TG1B` `ioft` keys closely — a real, reproducible
+observation about this machine's SMC — but the one comparison against an actual, named gas
+gauge misses by an order of magnitude more than this document's own corroboration bar, and
+no single `AppleSmartBattery` quantity accounts for all three keys at once. The catalog
+reflects this: `confidence: guess`, not `verified`, for all three.
+
 ### Untestable on this hardware
 
 `fpe2`, `fp78`, `sp78`, and `{fds` were not exercised by any observation in this document,
@@ -501,6 +577,70 @@ the Intel type set, not big-endian decoding as such. Conflating the two is what 
 draft of this document did, and it would have led an implementer to make `ui16`/`ui32`
 unconditionally little-endian — which decodes `#KEY` as 957,153,280 instead of 3385 and
 breaks key enumeration outright.
+
+### Sleep/wake and the read connection — open question, not exercised (issue #68)
+
+> **Tracked as [#68](https://github.com/blamechris/Aeolus/issues/68)**, which is open and carries
+> `needs-hardware`. It also collects two other unknowns that the same single lid-close would retire:
+> "Sleep resets the force key" above (marked *To verify (E4)*), and `SMCConnection.close()`'s own note
+> that staleness after a wake is "unverified either way". If you are reading this because something
+> broke after a wake, start there.
+
+`SMCSensorProvider` opens exactly one `SMCConnection` and holds it for the lifetime of the
+process. `SMCConnection.open()` is idempotent purely on whether `connection != 0` — once it
+has succeeded, every later call is a guaranteed no-op, regardless of whether the underlying
+`io_connect_t` the kernel handed back is still valid. There is no reconnect path anywhere in
+this project, and nothing observes sleep or wake at all (`AeolusHelperMain.swift` names
+`IORegisterForSystemPower` as future E5 scaffolding, not something implemented yet). Whether
+an `io_connect_t` obtained from `IOServiceOpen` against the `AppleSMC` service survives a
+sleep/wake cycle is exactly the fact this session was asked to establish, and it was **not**
+established here.
+
+**Why not:** the only way to observe this honestly is to start `fanctl watch`, physically
+close the lid, wake the machine, and read what happened — a lid-close is a physical action
+this session has no way to perform. The one available proxy, forcing a whole-machine sleep
+with `pmset sleepnow`, was deliberately not attempted instead of being used as a stand-in:
+this development machine may be running other work concurrently in sibling worktrees at the
+time of any given session, and a forced system-wide suspend would interrupt all of it to
+produce a result that is not even confidently the same code path a lid-close exercises
+(`pmset sleepnow` and the lid switch both trigger system sleep, but this project has no
+observation confirming they are indistinguishable to `AppleSMC`'s IOKit connection
+specifically). Guessing the answer and coding to it would be worse than leaving it open:
+CLAUDE.md's rule against fabricating an observation applies exactly as much to a plausible
+substitute as to an invented one.
+
+**What to actually do:** run `fanctl watch` in a terminal, close the lid, wait, wake it, and
+record which of these happens, verbatim:
+
+- Reads continue normally with no interruption — the connection (or at least its
+  behaviour) survives sleep/wake on this machine, this macOS build.
+- A read fails outright with a specific `kern_return_t` — record it. If that failure
+  reaches `readFanCount` (an `FNum` read), `WatchCommand` exits with
+  `FanctlError.connectionFailed`, a clear message, non-zero status — an honest failure, not
+  a silent one. If it only ever hits a per-fan key (`F0Ac`/`Mn`/`Mx`), every tick renders
+  that fan `unavailable (...)` forever, because nothing currently re-opens or invalidates
+  the connection on its own — this is the "silently unavailable forever" outcome the issue
+  calls out as the one wrong answer, and it would already be happening today, just not
+  proven to.
+- Reads hang rather than failing — a third outcome worth recording explicitly, since it
+  changes the fix: a bounded timeout would be needed before a reconnect attempt could even
+  be tried.
+
+Once one of those is confirmed, the actual decision — reconnect transparently inside
+`SMCSensorProvider`/`SMCConnection`, or fail loudly with a message that tells the user to
+restart `fanctl watch` — can be made from evidence instead of a guess. No such change is
+made in this PR.
+
+**This bears far more on `AeolusHelper` than on `fanctl`.** A `watch` session is one process
+a user restarts if it exits; the helper holds its own `SMCConnection` indefinitely, across
+every sleep/wake cycle a laptop goes through for as long as it is running, and serves every
+client (the app, `fanctl`, the control loop, the safety supervisor) from that one connection.
+If it does not survive sleep/wake, the helper needs its own answer to this question — most
+likely a reconnect, given how central continuous operation is to what it does — before E5's
+safety supervisor can be trusted to keep reading actual fan state correctly across a laptop's
+entire uptime. That is out of this issue's and this document's scope (`AeolusHelper` is not
+touched here), but it is the reason this question is worth closing rather than leaving
+indefinitely open once real hardware access to actually close a lid is available.
 
 ---
 

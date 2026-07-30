@@ -40,4 +40,11 @@ actor FakeWatchClock: WatchClock {
             throw CancellationError()
         }
     }
+
+    /// How many times `sleep(seconds:)` has actually been called so far — the count
+    /// `WatchCommandLoopTests` asserts on to prove the refresh loop sleeps between every
+    /// pair of ticks (`count - 1` calls total, for a bounded run) and, just as importantly,
+    /// that it does *not* sleep once more after the final tick renders. Previously tracked
+    /// but never read by any test.
+    var sleepCount: Int { sleepCallCount }
 }

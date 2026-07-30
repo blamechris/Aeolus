@@ -101,7 +101,9 @@ authoritative source for it — only what people observe on the machines they ow
 - is the single highest-value thing you can do for other people with your Mac
 
 Use the [sensor catalog issue template](.github/ISSUE_TEMPLATE/sensor-catalog.yml) or open
-a PR against the JSON directly.
+a PR against the JSON directly. **[docs/CATALOG.md](docs/CATALOG.md) is the full guide** —
+read it before your first entry; the three rules below are the summary, not the whole
+story.
 
 Three rules for catalog entries:
 
@@ -109,9 +111,12 @@ Three rules for catalog entries:
    specific component and watched that specific sensor respond. `community` means it is
    the consensus. `guess` means it looks right. A guess labelled as a guess is useful; a
    guess labelled `verified` can lead someone to build a fan curve on the wrong sensor.
+   Where you genuinely do not know, add no entry at all — an absent entry is the honest
+   state.
 2. **Scope it.** Include the chip family or model identifier your entry applies to. Keys
    mean different things on different silicon.
-3. **Say where it came from.** An issue number, a PR, or a citation.
+3. **Say where it came from.** An issue number, a PR, or a citation. Required in practice
+   for `verified` — CI rejects a `verified` entry with no source.
 
 ## Reporting hardware
 
