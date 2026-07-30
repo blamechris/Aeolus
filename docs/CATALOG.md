@@ -23,12 +23,14 @@ only in a way that displays something misleading, which is exactly what the conf
 levels below exist to prevent.
 
 **The raw key is always shown alongside the label, everywhere, with no exception.**
-`fanctl sensors` prints both columns; nothing in the app hides the key once a label
-exists. A label is a convenience layered on top of the key, never a replacement for it —
-see `CatalogDecoration` in `Sources/FanKit/CatalogDecoration.swift`, which does not even
-have an API that resolves anything *from* a label. If you are adding UI that shows a
-catalog label, showing the label without the key next to it is a defect, not a style
-choice.
+`fanctl sensors` prints both columns today. The app does not read the catalog yet —
+`SensorListView` in `Sources/Aeolus/AeolusApp.swift` is a `TODO(E7)` placeholder with no
+catalog reference at all — so this guarantee applies to `fanctl` in practice until E7
+(#61–#64) lands the app's own sensor UI. A label is a convenience layered on top of the
+key, never a replacement for it — see `CatalogDecoration` in
+`Sources/FanKit/CatalogDecoration.swift`, which does not even have an API that resolves
+anything *from* a label. If you are adding UI that shows a catalog label, showing the
+label without the key next to it is a defect, not a style choice.
 
 ## Anatomy of one entry
 
@@ -63,10 +65,12 @@ Most SMC keys mean different things on different chips, so most entries should d
 `match`. Two axes, and you can use either or both:
 
 - **`modelIdentifier`** — exact `hw.model` values, e.g. `["Mac16,5"]`. Run
-  `system_profiler SPHardwareDataType | grep 'Model Identifier'` to get yours, or read it
-  straight out of a `fanctl sensors --json` dump if you have one. This is the more
-  specific axis: an entry naming your exact model wins over a family-wide guess for the
-  same key.
+  `sysctl -n hw.model`, or `system_profiler SPHardwareDataType | grep 'Model Identifier'`,
+  to get yours. `fanctl sensors --json` does not carry this — its verified top-level
+  fields are `capturedAt`, `keysDeclared`, `keysSkipped`, `provider`, `sensorCount`, and
+  `sensors`, none of which is a model identifier — so read it with `sysctl` or
+  `system_profiler`, not out of a sensors dump. This is the more specific axis: an entry
+  naming your exact model wins over a family-wide guess for the same key.
 - **`chipFamily`** — the marketing chip name, e.g. `["M4 Max"]`. On Apple Silicon this is
   `machdep.cpu.brand_string` with the `"Apple "` prefix stripped, so `"Apple M4 Max"`
   becomes `"M4 Max"` — write it exactly that way.
@@ -96,13 +100,19 @@ know**.
   respond, or you have two independent measurements agreeing on the same physical sensor
   closely enough that coincidence is not a plausible explanation. This is a high bar on
   purpose. `Resources/catalog/catalog.json`'s current `verified` entries are exactly this:
-  the fan keys (semantics confirmed by the RPM values themselves), `TR0Z` (an `ioft` decode
-  cross-checked byte-for-byte against an independent `IOHIDEventSystemClient` reading of
-  the same physical sensor, agreeing to three decimal places), and the `TB0T`/`TB1T`/`TB2T`
-  battery-adjacent keys.
+  the eight RPM-valued fan keys (`F0Ac`/`F1Ac`, `F0Mn`/`F1Mn`, `F0Mx`/`F1Mx`, `F0Tg`/`F1Tg`
+  — semantics confirmed by the values themselves, and by target and actual moving together
+  as the machine warmed under load), and `TR0Z` (an `ioft` decode cross-checked
+  byte-for-byte against an independent `IOHIDEventSystemClient` reading of the same
+  physical sensor, agreeing to three decimal places).
 - **`community`** — this is the reported consensus, or it matches what other public
   sources say, but nobody working on this project has independently confirmed it on
-  hardware they own.
+  hardware they own. `F0Md`/`F1Md` (the mode keys) sit here: the reported "0 = automatic"
+  convention matches what this project reads, but nothing has forced a write and watched
+  the fans respond — see `docs/SMC-RESEARCH.md`. `TB0T`/`TB1T`/`TB2T` sit at `guess`
+  instead — see below and `docs/SMC-RESEARCH.md`'s "TB0T/TB1T/TB2T versus the real gas
+  gauge" section for why a battery meaning was never actually confirmed for them, despite
+  an earlier version of this document claiming otherwise.
 - **`guess`** — it looks right, based on the key's name, its position near other known
   keys, or a hunch. Still worth recording — a labelled guess is a lead for the next
   person — but it is displayed as a guess, deliberately, so it cannot quietly pass as
@@ -182,8 +192,20 @@ You can run the same two checks locally with the same `jsonschema` package CI us
 ## A personal override, without a pull request
 
 If you would rather keep a mapping to yourself, or you are testing something you are not
-ready to publish, `fanctl` and the app both read
+ready to publish, `fanctl` reads
 `~/Library/Application Support/Aeolus/catalog.json` in the same shape as the bundled file
-and layer it on top — your entries win over the bundled ones for the same key. This is a
-personal file, not something this project ships or reviews; the guidance above about
-confidence and sources still matters if you plan to open a pull request from it later.
+and layers it on top. (The app does not read either catalog yet — see the note at the top
+of this document; this is a `fanctl`-only mechanism until E7 lands.) This is a personal
+file, not something this project ships or reviews; the guidance above about confidence and
+sources still matters if you plan to open a pull request from it later.
+
+**An override entry replaces a bundled one only when both `key` and `match` are the same**
+(see "Scoping: `match`" above and `CatalogLoader.merge`'s documentation in
+`Sources/FanKit/CatalogLoader.swift`) — a *different* `match` is additive, not a
+replacement, and `CatalogMatcher` ranks `modelIdentifier` above an unrestricted entry
+regardless of which file it came from. So an override entry for `TB0T` with no `match` at
+all does **not** win over this catalog's `Mac16,5`-scoped `TB0T` entry; the scoped one is
+more specific and wins every time, even though it lives in the bundled file. **To actually
+override a bundled entry, copy its `match` verbatim** — same `modelIdentifier`/
+`chipFamily` values, same shape — so the two are the same slot rather than two entries
+competing at different specificity tiers.
