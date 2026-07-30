@@ -262,6 +262,31 @@ struct CatalogMatcherNormalizationTests {
         #expect(CatalogMatcher.specificity(of: nil, on: anyMachine) == .unrestricted)
     }
 
+    /// The fourth of the four `nil`/`{}`/`[]`/populated forms `match`'s two fields can
+    /// take — `catalog.schema.json`'s `minItems: 1` (added alongside this test) keeps a
+    /// contributor from *authoring* `"chipFamily": []` in the bundled or an override
+    /// catalog, but nothing stops it at the Swift level: `CatalogEntry`'s initializer takes
+    /// any `[String]?`. This pins down what happens if one reaches `CatalogMatcher`
+    /// anyway — explicit empty arrays for both fields normalize to the empty set exactly
+    /// like `nil` does, so the entry is unrestricted, not unmatchable.
+    @Test("Explicit empty arrays for both match fields are unrestricted, not unmatchable")
+    func explicitEmptyArraysAreUnrestricted() {
+        let catalog = SensorCatalog(
+            schemaVersion: 1,
+            entries: [
+                CatalogEntry(
+                    key: "Tp09", match: CatalogMatch(chipFamily: [], modelIdentifier: []),
+                    label: "CPU cluster", category: .cpu, confidence: .guess)
+            ])
+        let anyMachine = HardwareIdentity(modelIdentifier: "MacBookAir10,1", chipFamily: "M1")
+
+        #expect(catalog.decoration(forKey: "Tp09", on: anyMachine)?.label == "CPU cluster")
+        #expect(
+            CatalogMatcher.specificity(
+                of: CatalogMatch(chipFamily: [], modelIdentifier: []), on: anyMachine)
+                == .unrestricted)
+    }
+
     @Test("An unreadable model identifier (nil) matches no modelIdentifier restriction")
     func nilModelIdentifierMatchesNothing() {
         let catalog = SensorCatalog(

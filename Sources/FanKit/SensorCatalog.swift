@@ -11,6 +11,15 @@ public struct SensorCatalog: Sendable, Hashable, Codable {
     /// The schema version this catalog was written against. See
     /// `CatalogLoader.supportedSchemaVersion` for how a mismatch is handled.
     public let schemaVersion: Int
+
+    /// - Warning: **Unfiltered by hardware.** This is every entry the catalog carries for
+    ///   every machine it has ever been scoped for — not what applies here. Iterating this
+    ///   directly (`ForEach(catalog.entries)`, a scan for a label) will happily render an
+    ///   M1-scoped guess on an M4 Max, or the reverse. Resolve through
+    ///   `decoration(forKey:on:)` (or `CatalogMatcher.decoration(forKey:in:on:)`) for a
+    ///   specific key on a specific `HardwareIdentity` before displaying anything from
+    ///   this array. This property exists for loading, merging, and testing the catalog
+    ///   itself, not for driving UI.
     public let entries: [CatalogEntry]
 
     /// The newest `schemaVersion` this build of Aeolus understands. Keep in sync with
