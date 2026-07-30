@@ -89,8 +89,24 @@
         "claude"
       ]
     },
+    "prime-directive": {
+      "hash": "8196307",
+      "installed": "2026-07-30",
+      "profileHash": "d0531c0",
+      "targets": [
+        "claude"
+      ]
+    },
+    "project-audit": {
+      "hash": "8196307",
+      "installed": "2026-07-30",
+      "profileHash": "d0531c0",
+      "targets": [
+        "claude"
+      ]
+    },
     "session-lifecycle": {
-      "hash": "f7bc0db",
+      "hash": "8196307",
       "installed": "2026-07-30",
       "profileHash": "d0531c0",
       "targets": [
@@ -113,8 +129,16 @@
         "claude"
       ]
     },
+    "tackle-issues": {
+      "hash": "8196307",
+      "installed": "2026-07-30",
+      "profileHash": "d0531c0",
+      "targets": [
+        "claude"
+      ]
+    },
     "tiered-delegation": {
-      "hash": "a9ed830",
+      "hash": "8196307",
       "installed": "2026-07-30",
       "profileHash": "d0531c0",
       "targets": [

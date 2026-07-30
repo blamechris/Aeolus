@@ -61,4 +61,4 @@ The canonical rules live in `~/.claude/CLAUDE.md` under **"Follow-on protocol"**
 
 Installing `session-lifecycle` should be followed by installing any missing components in the same pass — the bundle head without its components is a checklist that can't execute.
 
-<!-- skill-templates: session-lifecycle f7bc0db 2026-07-30 -->
+<!-- skill-templates: session-lifecycle 8196307 2026-07-30 -->
