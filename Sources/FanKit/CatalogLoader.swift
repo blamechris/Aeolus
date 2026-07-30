@@ -148,14 +148,23 @@ public enum CatalogLoader {
     ///   alongside the bundled entries for that key rather than replacing any of them.
     /// - An override with a key the bundled catalog never mentions is simply added.
     ///
-    /// The result lists override entries **before** surviving bundled entries. For
-    /// entries with genuinely different scopes, order carries no meaning — a downstream
-    /// resolver picks by matching hardware, not position — but it means that if
-    /// normalization above ever still lets a near-miss through as two entries instead of
-    /// one, a first-match resolver reads the user's explicit override rather than the
-    /// shipped guess. Override-first can never make a correct merge wrong; it can only
-    /// make a residual near-miss fail safe instead of failing silently in the user's
-    /// disfavour.
+    /// The result lists override entries **before** surviving bundled entries, and that
+    /// ordering is load-bearing, not cosmetic: `CatalogMatcher` breaks a same-tier tie
+    /// between two entries for the same key by taking whichever one appears first in
+    /// `catalog.entries`. Two entries with genuinely different scopes commonly still both
+    /// match the *same* machine at the *same* specificity tier — the ordinary case is a
+    /// bundled `modelIdentifier: ["Mac16,5", "Mac16,6"]` narrowed by a user override
+    /// `modelIdentifier: ["Mac16,5"]`. Those are different `OverrideSlot`s (different
+    /// normalized sets), so both survive this merge — and on a Mac16,5, both are ranked
+    /// `.modelIdentifier` by `CatalogMatcher`. The override wins there **only** because
+    /// this function emitted it first; nothing about "more specific" is encoded in the
+    /// data itself, because `CatalogMatch` doesn't express subset relationships between
+    /// two populated lists. Reordering this output — even for something as innocuous as a
+    /// stable diff — silently hands that tie back to the bundled guess. Override-first can
+    /// never make a correct merge wrong; for entries whose scopes don't overlap at all, it
+    /// is inert. But for the overlapping case above, it is the entire mechanism by which a
+    /// user's hand-written override is honoured over a shipped guess for the same
+    /// machine.
     ///
     /// The merged catalog's `schemaVersion` is the bundled catalog's — the override has
     /// already been validated against `supportedSchemaVersion` by the time entries reach
