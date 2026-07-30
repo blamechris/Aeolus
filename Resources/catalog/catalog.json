@@ -1,4 +1,117 @@
 {
   "schemaVersion": 1,
-  "entries": []
+  "entries": [
+    {
+      "key": "F0Ac",
+      "match": { "modelIdentifier": ["Mac16,5"] },
+      "label": "Fan 0 Actual Speed",
+      "category": "fan",
+      "confidence": "verified",
+      "source": "docs/SMC-RESEARCH.md § Fan topology and the Ftst key"
+    },
+    {
+      "key": "F1Ac",
+      "match": { "modelIdentifier": ["Mac16,5"] },
+      "label": "Fan 1 Actual Speed",
+      "category": "fan",
+      "confidence": "verified",
+      "source": "docs/SMC-RESEARCH.md § Fan topology and the Ftst key"
+    },
+    {
+      "key": "F0Mn",
+      "match": { "modelIdentifier": ["Mac16,5"] },
+      "label": "Fan 0 Minimum Speed",
+      "category": "fan",
+      "confidence": "verified",
+      "source": "docs/SMC-RESEARCH.md § Fan topology and the Ftst key"
+    },
+    {
+      "key": "F1Mn",
+      "match": { "modelIdentifier": ["Mac16,5"] },
+      "label": "Fan 1 Minimum Speed",
+      "category": "fan",
+      "confidence": "verified",
+      "source": "docs/SMC-RESEARCH.md § Fan topology and the Ftst key"
+    },
+    {
+      "key": "F0Mx",
+      "match": { "modelIdentifier": ["Mac16,5"] },
+      "label": "Fan 0 Maximum Speed",
+      "category": "fan",
+      "confidence": "verified",
+      "source": "docs/SMC-RESEARCH.md § Fan topology and the Ftst key"
+    },
+    {
+      "key": "F1Mx",
+      "match": { "modelIdentifier": ["Mac16,5"] },
+      "label": "Fan 1 Maximum Speed",
+      "category": "fan",
+      "confidence": "verified",
+      "source": "docs/SMC-RESEARCH.md § Fan topology and the Ftst key"
+    },
+    {
+      "key": "F0Tg",
+      "match": { "modelIdentifier": ["Mac16,5"] },
+      "label": "Fan 0 Target Speed",
+      "category": "fan",
+      "confidence": "verified",
+      "source": "docs/SMC-RESEARCH.md § Fan topology and the Ftst key"
+    },
+    {
+      "key": "F1Tg",
+      "match": { "modelIdentifier": ["Mac16,5"] },
+      "label": "Fan 1 Target Speed",
+      "category": "fan",
+      "confidence": "verified",
+      "source": "docs/SMC-RESEARCH.md § Fan topology and the Ftst key"
+    },
+    {
+      "key": "F0Md",
+      "match": { "modelIdentifier": ["Mac16,5"] },
+      "label": "Fan 0 Mode",
+      "category": "fan",
+      "confidence": "community",
+      "source": "docs/SMC-RESEARCH.md § Fan topology and the Ftst key — reads 0x00 while thermalmonitord holds automatic control, matching the reported \"0 = automatic\" mode-key convention, but not yet confirmed by a write (E4)"
+    },
+    {
+      "key": "F1Md",
+      "match": { "modelIdentifier": ["Mac16,5"] },
+      "label": "Fan 1 Mode",
+      "category": "fan",
+      "confidence": "community",
+      "source": "docs/SMC-RESEARCH.md § Fan topology and the Ftst key — reads 0x00 while thermalmonitord holds automatic control, matching the reported \"0 = automatic\" mode-key convention, but not yet confirmed by a write (E4)"
+    },
+    {
+      "key": "TR0Z",
+      "match": { "modelIdentifier": ["Mac16,5"] },
+      "label": "PMU Calibration Temperature (tcal)",
+      "category": "power",
+      "confidence": "verified",
+      "source": "docs/SMC-RESEARCH.md § `ioft` decodes as little-endian 48.16 fixed point — decodes to 51.850, matching IOHIDEventSystemClient's independently-reported `PMU tcal` at 51.850"
+    },
+    {
+      "key": "TB0T",
+      "match": { "modelIdentifier": ["Mac16,5"] },
+      "label": "Battery Temperature (Sensor 0)",
+      "category": "battery",
+      "confidence": "guess",
+      "source": "docs/SMC-RESEARCH.md § TB0T/TB1T/TB2T versus the real gas gauge (AppleSmartBattery) — battery-adjacent by key name and tracks the unlabelled `ioft` key TG0B closely, but 3.2°C from AppleSmartBattery's own gas-gauge reading, exceeding this project's 0.15°C corroboration bar; not confirmed as battery temperature"
+    },
+    {
+      "key": "TB1T",
+      "match": { "modelIdentifier": ["Mac16,5"] },
+      "label": "Battery Temperature (Sensor 1)",
+      "category": "battery",
+      "confidence": "guess",
+      "source": "docs/SMC-RESEARCH.md § TB0T/TB1T/TB2T versus the real gas gauge (AppleSmartBattery) — battery-adjacent by key name and identical to the unlabelled `ioft` key TG1B to four decimal places, but 0.6°C from AppleSmartBattery's own gas-gauge reading, exceeding this project's 0.15°C corroboration bar; not confirmed as battery temperature"
+    },
+    {
+      "key": "TB2T",
+      "match": { "modelIdentifier": ["Mac16,5"] },
+      "label": "Battery Temperature (Sensor 2)",
+      "category": "battery",
+      "confidence": "guess",
+      "source": "docs/SMC-RESEARCH.md § TB0T/TB1T/TB2T versus the real gas gauge (AppleSmartBattery) — battery-adjacent by key name and reads identically to TB0T, but 3.2°C from AppleSmartBattery's own gas-gauge reading, exceeding this project's 0.15°C corroboration bar; not confirmed as battery temperature"
+    }
+  ]
 }
