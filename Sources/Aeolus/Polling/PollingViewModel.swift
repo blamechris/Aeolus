@@ -105,19 +105,24 @@ public final class PollingViewModel: ObservableObject {
     ///
     /// The owning view is responsible for calling `stop()` (typically from `.onDisappear`
     /// or an equivalent lifecycle hook) once this view model is no longer shown: the loop
-    /// holds only a `weak` reference to `self` between ticks, so it cannot itself keep
-    /// this instance alive past its last strong reference, but it also will not stop
-    /// polling on its own — an explicit `stop()` is what releases the underlying
-    /// `SensorProvider` connection and ends the SMC traffic.
+    /// captures `self` only weakly, and only for the span of each `tick()` call — `clock`
+    /// and `refreshInterval` are captured by value below, independently of `self`, so
+    /// nothing about the wait between ticks requires `self` to still exist. That means the
+    /// loop cannot itself keep this instance alive past its last external strong
+    /// reference, but it also will not stop polling on its own once started — an explicit
+    /// `stop()` is what releases the underlying `SensorProvider` connection and ends the
+    /// SMC traffic for good.
     public func start() {
         guard loopTask == nil else { return }
+        let clock = clock
+        let interval = refreshInterval
         loopTask = Task { [weak self] in
-            while true {
-                guard let self, !Task.isCancelled else { return }
+            while !Task.isCancelled {
+                guard let self else { return }
                 await self.tick()
-                guard !Task.isCancelled else { return }
+                if Task.isCancelled { return }
                 do {
-                    try await self.clock.sleep(seconds: self.refreshInterval)
+                    try await clock.sleep(seconds: interval)
                 } catch {
                     // CancellationError, or any other error a test double's clock might
                     // raise to simulate one — either way, a clean stop, not a crash.
