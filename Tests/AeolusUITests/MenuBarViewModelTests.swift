@@ -108,6 +108,37 @@ struct MenuBarViewModelTests {
         #expect(viewModel.readouts.first?.reading.value == nil)
     }
 
+    @Test("The full-stack default selection never surfaces #KEY/AC-B-shaped meta keys")
+    func defaultSelectionNeverSurfacesMetaKeysEndToEnd() async {
+        // Reproduces, through the whole PollingViewModel -> MenuBarViewModel pipeline,
+        // exactly what was observed on real hardware: with no catalog matches, #KEY and
+        // AC-B are the first two non-fan keys discovery order would otherwise offer, and
+        // neither is a measurement — see MenuBarReadoutSelection's documentation.
+        let provider = FakeSensorProvider(
+            allReadings: [
+                .fake(key: "F0Ac", value: 1712, kind: .rpm),
+                .fake(key: "#KEY", value: 3385, kind: .unknown),
+                .fake(key: "AC-B", value: -1, kind: .unknown),
+            ],
+            keyedResults: [
+                "FNum": .success(.fake(key: "FNum", value: 1)),
+                "F0Ac": .success(.fake(key: "F0Ac", value: 1712, kind: .rpm)),
+                "F0Mn": .success(.fake(key: "F0Mn", value: 1200, kind: .rpm)),
+                "F0Mx": .success(.fake(key: "F0Mx", value: 5312, kind: .rpm)),
+                "#KEY": .success(.fake(key: "#KEY", value: 3385, kind: .unknown)),
+                "AC-B": .success(.fake(key: "AC-B", value: -1, kind: .unknown)),
+            ])
+        let polling = PollingViewModel(provider: provider, clock: FakePollingClock())
+        let viewModel = MenuBarViewModel(polling: polling)
+
+        await polling.tick()
+
+        let keys = viewModel.readouts.map(\.key)
+        #expect(keys.contains("F0Ac"))
+        #expect(!keys.contains("#KEY"))
+        #expect(!keys.contains("AC-B"))
+    }
+
     @Test("start()/stop() forward to the underlying PollingViewModel's own loop")
     func startAndStopForwardToPolling() async {
         let clock = FakePollingClock(cancelAfterSleeps: 2)

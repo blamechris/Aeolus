@@ -16,11 +16,18 @@ struct MenuBarReadoutSelectionTests {
             maximum: .value(key: "F\(index)Mx", 5312))
     }
 
+    /// `kind` defaults to `.temperatureCelsius`, not `.unknown`: most of these tests are
+    /// about ordinary sensor candidates, and a real `kind` is what lets a candidate reach
+    /// the unlabelled fallback at all after this type's kind filter — see
+    /// `MenuBarReadoutSelection`'s "labelled is trusted" documentation. Tests that
+    /// specifically exercise the `#KEY`/`AC-B`-shaped exclusion pass `kind: .unknown`
+    /// explicitly at the call site, so the intent is never implicit.
     private static func sensor(
-        key: String, decoration: CatalogDecoration? = nil
+        key: String, kind: SensorReading.Kind = .temperatureCelsius,
+        decoration: CatalogDecoration? = nil
     ) -> SensorPollingReading {
         SensorPollingReading(
-            key: key, kind: .unknown, sample: .value(key: key, 42), decoration: decoration)
+            key: key, kind: kind, sample: .value(key: key, 42), decoration: decoration)
     }
 
     @Test("Every fan gets its own .fan-sourced default readout")
@@ -63,8 +70,11 @@ struct MenuBarReadoutSelectionTests {
         // SensorPoller.discover(provider:) enumerates every key readAll() reports,
         // including fan keys — see MenuBarReadout's own documentation for why the same
         // raw key can appear in both lists. The default must not double up on the same
-        // physical fan under two different sources.
-        let sensors = [Self.sensor(key: "F0Ac"), Self.sensor(key: "Tp09")]
+        // physical fan under two different sources. F0Ac is given a real (.rpm) kind
+        // here, same as SMCSensorProvider.kind(for:) would actually classify it — this
+        // test isolates the fan-key exclusion from the separate kind-filter behaviour
+        // covered elsewhere in this suite.
+        let sensors = [Self.sensor(key: "F0Ac", kind: .rpm), Self.sensor(key: "Tp09")]
         let selection = MenuBarReadoutSelection.defaultSelection(
             fans: [Self.fan(index: 0)], sensors: sensors)
 
@@ -87,5 +97,58 @@ struct MenuBarReadoutSelectionTests {
         #expect(
             selection.filter { $0.source == .sensor }.count
                 == MenuBarReadoutSelection.maximumDefaultSensors)
+    }
+
+    // MARK: - The #KEY / AC-B regression
+
+    @Test("An unlabelled, kind-.unknown candidate is never chosen as a default")
+    func unknownKindCandidatesAreExcludedFromTheUnlabelledFallback() {
+        // The exact bug this guards: on real hardware with no catalog source wired in,
+        // the first two non-fan keys SensorPoller.discover(provider:) reports are #KEY
+        // (the SMC's own declared key count, 3385 on this project's development
+        // hardware) and AC-B (an internal sentinel, -1) — neither a measurement, both
+        // classified .unknown by SMCSensorProvider.kind(for:) because nothing about
+        // their names matches the fan-key convention that kind classification trusts.
+        let sensors = [
+            Self.sensor(key: "#KEY", kind: .unknown),
+            Self.sensor(key: "AC-B", kind: .unknown),
+            Self.sensor(key: "Tp09", kind: .temperatureCelsius),
+        ]
+        let selection = MenuBarReadoutSelection.defaultSelection(fans: [], sensors: sensors)
+
+        let sensorKeys = selection.filter { $0.source == .sensor }.map(\.key)
+        #expect(!sensorKeys.contains("#KEY"))
+        #expect(!sensorKeys.contains("AC-B"))
+        #expect(sensorKeys == ["Tp09"])
+    }
+
+    @Test("Only kind-.unknown, unlabelled candidates produces an empty sensor default")
+    func onlyUnknownKindCandidatesProducesAnEmptySensorDefault() {
+        let sensors = [
+            Self.sensor(key: "#KEY", kind: .unknown),
+            Self.sensor(key: "AC-B", kind: .unknown),
+            Self.sensor(key: "AC-C", kind: .unknown),
+        ]
+        let selection = MenuBarReadoutSelection.defaultSelection(
+            fans: [Self.fan(index: 0)], sensors: sensors)
+
+        // Still one .fan readout — only the sensor half of the default is empty.
+        #expect(selection.filter { $0.source == .fan }.count == 1)
+        #expect(selection.filter { $0.source == .sensor }.isEmpty)
+    }
+
+    @Test("A catalog-labelled candidate is chosen even if its own kind is .unknown")
+    func labelledUnknownKindCandidateIsStillChosen() {
+        // Trusting the catalog regardless of kind is deliberate: F0Md (fan mode) is a
+        // real, catalog-labelled key whose kind is .unknown under
+        // SMCSensorProvider.kind(for:) (only Ac/Tg/Mn/Mx match the fan-suffix
+        // convention) — a human curated this entry via E6, so it is not held to the
+        // same "prove it" bar as an unlabelled key.
+        let decoration = CatalogDecoration(
+            key: "F0Md", label: "Fan 0 Mode", category: .fan, confidence: .verified)
+        let sensors = [Self.sensor(key: "F0Md", kind: .unknown, decoration: decoration)]
+        let selection = MenuBarReadoutSelection.defaultSelection(fans: [], sensors: sensors)
+
+        #expect(selection.filter { $0.source == .sensor }.map(\.key) == ["F0Md"])
     }
 }

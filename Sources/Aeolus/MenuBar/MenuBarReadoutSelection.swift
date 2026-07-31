@@ -1,3 +1,5 @@
+import SMCCore
+
 /// Computes a sensible default set of `MenuBarReadout`s from what a poll actually found on
 /// this machine.
 ///
@@ -12,7 +14,22 @@
 /// (there are rarely more than a handful, and a fan's own current speed is unambiguously
 /// worth surfacing without a picker), plus up to `maximumDefaultSensors` non-fan sensors,
 /// preferring catalog-labelled ones — three words of menu bar space are more useful with a
-/// name than without — and falling back to discovery order when none are labelled.
+/// name than without.
+///
+/// ## A labelled sensor is trusted; an unlabelled one must prove it is a measurement
+///
+/// When nothing is labelled, the fallback is **not** "first N in discovery order." Measured
+/// directly on this project's development hardware: with no catalog source wired in, the
+/// first two non-fan keys `SensorPoller.discover(provider:)` reports are `#KEY` (3385 —
+/// the SMC's own declared key count) and `AC-B` (-1 — an internal sentinel), neither of
+/// which is a sensor at all. `SMCSensorProvider.kind(for:)` is deliberately conservative —
+/// it classifies only the fan-key naming convention, so every SMC key that is not a
+/// catalog-labelled sensor and not a fan reading defaults to `.unknown` — but that
+/// conservatism is exactly what makes `kind` a safe, honest filter here: a key this
+/// project cannot vouch for as a real physical measurement is never shown as one by
+/// default. On hardware with no matching catalog entries at all (a normal, fully-supported
+/// state per E6's design), this fallback is legitimately empty rather than showing
+/// whatever the enumeration order happens to put first.
 ///
 /// This is exactly the seam `#64`'s real selector plugs into: once a user has made a
 /// choice, `MenuBarViewModel` is constructed with that `[MenuBarReadout]` directly and
@@ -26,9 +43,9 @@ enum MenuBarReadoutSelection {
     ///   - fans: `PollingViewModel.fans` at the moment a default is needed.
     ///   - sensors: `PollingViewModel.sensors` at the same moment.
     /// - Returns: One `.fan` readout per fan, plus up to `maximumDefaultSensors` `.sensor`
-    ///   readouts. Never empty just because nothing is labelled yet — an unlabelled sensor
-    ///   is a normal, fully-functional result throughout this codebase, not a reason to
-    ///   show nothing.
+    ///   readouts. Can legitimately be just the fan readouts — see this type's own
+    ///   documentation on why an unlabelled, kind-`.unknown` key is never defaulted to
+    ///   rather than shown empty.
     static func defaultSelection(
         fans: [FanPollingReading], sensors: [SensorPollingReading]
     ) -> [MenuBarReadout] {
@@ -40,7 +57,13 @@ enum MenuBarReadoutSelection {
         let fanKeys = Set(fans.flatMap { [$0.actual.key, $0.minimum.key, $0.maximum.key] })
         let candidates = sensors.filter { !fanKeys.contains($0.key) }
         let labelled = candidates.filter { $0.decoration != nil }
-        let chosen = (labelled.isEmpty ? candidates : labelled).prefix(maximumDefaultSensors)
+        // Trust a catalog label regardless of `kind` — a human curated it via E6. Absent
+        // one, only a key whose `kind` this project can actually vouch for as a physical
+        // measurement is eligible; see this type's "labelled is trusted" documentation
+        // for the #KEY/AC-B finding this specifically guards against.
+        let unlabelledFallback = candidates.filter { $0.decoration == nil && $0.kind != .unknown }
+        let chosen = (labelled.isEmpty ? unlabelledFallback : labelled)
+            .prefix(maximumDefaultSensors)
         readouts.append(contentsOf: chosen.map { MenuBarReadout(key: $0.key, source: .sensor) })
 
         return readouts
