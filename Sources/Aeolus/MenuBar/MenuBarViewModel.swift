@@ -51,14 +51,22 @@ public final class MenuBarViewModel: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
 
     /// - Parameters:
-    ///   - polling: Defaults to a real `SMCSensorProvider`-backed instance; a test injects
-    ///     one built from a fake `SensorProvider`/`PollingClock`, exactly like
+    ///   - polling: Defaults to a real `SMCSensorProvider`-backed instance with the real
+    ///     catalog (`CatalogSensorLabelSource.loadDefault()`) wired in as its label
+    ///     source — matching `#62`'s `MainView` exactly, and not `PollingViewModel`'s own
+    ///     `NoSensorLabels()` default: `MenuBarReadoutSelection.defaultSelection`
+    ///     specifically prefers catalog-labelled sensors, so a menu bar that never saw a
+    ///     label would never demonstrate what that preference is for, and would fall back
+    ///     to the kind-`.unknown`-filtered pool documented on that type far more often
+    ///     than a real catalog-equipped run needs to. A test injects a `PollingViewModel`
+    ///     built from a fake `SensorProvider`/`PollingClock`, exactly like
     ///     `PollingViewModel`'s own tests do.
     ///   - selection: An explicit readout selection — e.g. one `#64` previously persisted
     ///     and is restoring. `nil` (the default) means "compute a sensible default from
     ///     the first successful poll," per `MenuBarReadoutSelection`.
     public init(
-        polling: PollingViewModel = PollingViewModel(),
+        polling: PollingViewModel = PollingViewModel(
+            labelSource: CatalogSensorLabelSource.loadDefault()),
         selection: [MenuBarReadout]? = nil
     ) {
         self.polling = polling
