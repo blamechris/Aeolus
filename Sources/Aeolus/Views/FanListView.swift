@@ -22,8 +22,13 @@ struct FanListView: View {
             if viewModel.fans.isEmpty {
                 emptyState
             } else {
-                List(viewModel.fans.map(FanRowModel.init)) { row in
-                    FanRowView(row: row)
+                // Lists FanPollingReading directly — it is already Identifiable on the
+                // fan index — and builds FanRowModel per row inside the closure, rather
+                // than mapping the whole array on every render: that would allocate a
+                // fresh [FanRowModel] on every refresh tick even for rows SwiftUI's own
+                // diffing would otherwise skip re-evaluating.
+                List(viewModel.fans) { reading in
+                    FanRowView(row: FanRowModel(reading: reading))
                 }
                 .listStyle(.inset)
             }

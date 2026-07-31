@@ -22,8 +22,12 @@ struct SensorListView: View {
                 emptyState
             } else {
                 columnHeader
-                List(viewModel.sensors.map(SensorRowModel.init)) { row in
-                    SensorRowView(row: row)
+                // Lists SensorPollingReading directly — it is already Identifiable on
+                // its stable key — and builds SensorRowModel per row inside the
+                // closure, rather than mapping the whole array on every render: see
+                // FanListView's identical note.
+                List(viewModel.sensors) { reading in
+                    SensorRowView(row: SensorRowModel(reading: reading))
                 }
                 .listStyle(.inset)
             }
