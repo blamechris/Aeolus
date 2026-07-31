@@ -15,6 +15,7 @@ struct FanctlErrorTests {
             .noSMC,
             .connectionFailed(context: "read FNum", reason: "boom"),
             .implausibleFanCount("9000000"),
+            .keyNotFound(key: "ZZZZ", declaredCount: 3385),
             .jsonEncodingFailed(reason: "boom"),
         ]
         for error in cases {
@@ -22,6 +23,14 @@ struct FanctlErrorTests {
             #expect(description != nil)
             #expect(!(description ?? "").isEmpty)
         }
+    }
+
+    @Test("keyNotFound names the key and how many keys were actually searched")
+    func keyNotFoundNamesKeyAndCount() {
+        let error = FanctlError.keyNotFound(key: "ZZZZ", declaredCount: 3385)
+        let description = error.errorDescription ?? ""
+        #expect(description.contains("ZZZZ"))
+        #expect(description.contains("3385"))
     }
 
     @Test("noSMC names the actual problem, not an IOKit code")

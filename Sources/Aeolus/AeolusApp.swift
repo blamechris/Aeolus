@@ -54,39 +54,36 @@ public struct AeolusApp: App {
     }
 }
 
-/// The two-pane main window: fans on the left, sensors on the right.
+/// The two-pane main window: fans on the left, sensors on the right — both bound to the
+/// same `PollingViewModel`, so they always reflect the same refresh tick.
+///
+/// This view owns the view model's lifecycle: `start()` on appear, `stop()` on disappear
+/// per that method's own documentation, so no SMC traffic continues once the window is
+/// gone. The label source is the real catalog (`CatalogSensorLabelSource.loadDefault()`)
+/// rather than `PollingViewModel`'s own `NoSensorLabels()` default — E6's catalog is
+/// seeded for this project's development hardware, and a window that never showed a
+/// label would not demonstrate what #62 is actually for. A machine with no matching
+/// catalog entries still works fully unlabelled either way — see `SensorLabelSource`.
 struct MainView: View {
+    @StateObject private var viewModel = PollingViewModel(
+        labelSource: CatalogSensorLabelSource.loadDefault())
+
     var body: some View {
-        HSplitView {
-            FanListView()
-            SensorListView()
+        VStack(spacing: 0) {
+            // Hardcoded false under Monitor today — see
+            // `PollingViewModel.isThermalEmergencyActive`'s documentation — but the
+            // rendering path exists unconditionally so a real emergency never needs a
+            // first-ever UI change to be shown honestly.
+            if viewModel.isThermalEmergencyActive {
+                ThermalEmergencyBanner()
+            }
+            HSplitView {
+                FanListView(viewModel: viewModel)
+                SensorListView(viewModel: viewModel)
+            }
         }
         .frame(minWidth: 720, minHeight: 420)
-    }
-}
-
-struct FanListView: View {
-    // TODO(E7): bind to the helper snapshot stream.
-    var body: some View {
-        VStack {
-            Text("Fans")
-                .font(.headline)
-            Spacer()
-        }
-        .frame(minWidth: 320)
-        .padding()
-    }
-}
-
-struct SensorListView: View {
-    // TODO(E7): sensor table with raw key always visible and confidence badges.
-    var body: some View {
-        VStack {
-            Text("Sensors")
-                .font(.headline)
-            Spacer()
-        }
-        .frame(minWidth: 320)
-        .padding()
+        .onAppear { viewModel.start() }
+        .onDisappear { viewModel.stop() }
     }
 }

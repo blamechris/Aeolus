@@ -1,18 +1,38 @@
 import Foundation
 
-/// Errors this CLI's own commands raise. Every case renders a specific, actionable
-/// message through `errorDescription` — swift-argument-parser prints exactly that string
-/// (prefixed with `Error: `) and exits non-zero, so nobody running `fanctl` at a terminal
-/// or in a headless SSH session ever sees a bare `nil`, an `SMCError` case name, or a
-/// stack trace.
+/// The one error type every `fanctl` read command (`list`, `sensors`, `watch`, `dump`)
+/// throws for a runtime failure — never a bare `throw someLibraryError`, and never a
+/// second, differently-shaped type per command. `watch` reuses `ListCommand.fetch`
+/// directly, so it already speaks this type without its own cases; `dump` used to throw
+/// its own `DumpRuntimeError` with an independently-written message format, which made
+/// the same underlying failure (an SMC connection that will not open, a key this
+/// machine's table does not contain) read differently depending on which command hit it.
+/// Folding it in here means one place decides what "actionable" means for this CLI.
+///
+/// Every case renders a specific, actionable message through `errorDescription` —
+/// swift-argument-parser prints exactly that string (prefixed with `Error: `) and exits
+/// with code 1, no usage block, so nobody running `fanctl` at a terminal or in a headless
+/// SSH session ever sees a bare `nil`, a raw `SMCError`/`SensorReadFailure` case name, or
+/// a stack trace. Conforming to `LocalizedError` (rather than a plain `Error`) is what
+/// gets that "no usage block" behaviour: swift-argument-parser reserves the
+/// usage-block-plus-exit-64 (`EX_USAGE`) treatment for `ValidationError`, which is
+/// deliberately never thrown here — a runtime SMC failure has nothing to do with how the
+/// command was invoked, and a usage block below the message would wrongly imply the user
+/// typed something wrong. A malformed argument (`dump --key toolong`, a non-positive
+/// `watch --interval`) stays a `ValidationError`, thrown at each command's own parse-time
+/// `validate()` or argument check — this type is exclusively for failures discovered
+/// after parsing succeeded.
 enum FanctlError: Error, LocalizedError, Equatable {
     /// `SensorProvider.isAvailable` reported `false`: no `AppleSMC` IOService on this
     /// machine at all. Expected on CI's macOS VMs and on any non-Mac host.
     case noSMC
 
-    /// A read that should have succeeded — because `isAvailable` already reported
-    /// `true` — failed anyway. `context` names what was being attempted (e.g. "read
-    /// FNum", "enumerate sensors"); `reason` is the underlying error's own description,
+    /// A read, or the SMC connection/enumeration setup itself, that should have
+    /// succeeded failed anyway — because `isAvailable` already reported `true` (`list`,
+    /// `sensors`), or because opening a fresh `SMCConnection` or reading `#KEY` failed
+    /// outright (`dump`, which has no `isAvailable` gate to check first). `context`
+    /// names what was being attempted (e.g. "read FNum", "enumerate sensors", "open a
+    /// connection to the SMC"); `reason` is the underlying error's own description,
     /// carried for diagnostics only.
     case connectionFailed(context: String, reason: String)
 
@@ -25,6 +45,15 @@ enum FanctlError: Error, LocalizedError, Equatable {
     /// `Infinity`, or a magnitude that overflows `Int` outright — is often not
     /// representable as one.
     case implausibleFanCount(String)
+
+    /// `fanctl dump --key` named exactly four well-formed ASCII characters — the format
+    /// itself is validated before any hardware I/O, as a `ValidationError`, by
+    /// `keyFilterFormatError(_:)` — but this machine's own key table simply does not
+    /// contain it. A fact about the hardware discovered only after the index walk
+    /// completed, not a usage mistake, so this is a runtime error, not a
+    /// `ValidationError`. `errorDescription` defers to `keyFilterNotFoundMessage(key:
+    /// declaredCount:)` so there is exactly one place that composes this message.
+    case keyNotFound(key: String, declaredCount: Int)
 
     /// Encoding `--json` output failed. This CLI does have custom `Encodable`
     /// conformances (`ListCommand.KeyedValueJSON`, `SensorsCommand.SensorJSON`), and the
@@ -53,6 +82,8 @@ enum FanctlError: Error, LocalizedError, Equatable {
                 a real fan count. This looks like a decode fault, not actual hardware — \
                 refusing to enumerate that many fans.
                 """
+        case .keyNotFound(let key, let declaredCount):
+            return keyFilterNotFoundMessage(key: key, declaredCount: declaredCount)
         case .jsonEncodingFailed(let reason):
             return "Could not encode --json output: \(reason)"
         }
