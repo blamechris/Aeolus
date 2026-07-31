@@ -93,7 +93,9 @@ body:
       label: Full sensor dump
       description: |
         Optional but very helpful: `fanctl sensors --json --raw-keys`. It captures keys
-        you have not named yet, which is useful to whoever looks at this Mac next.
+        you have not named yet, which is useful to whoever looks at this Mac next. Shape
+        documented in
+        [docs/CLI.md](https://github.com/blamechris/Aeolus/blob/main/docs/CLI.md#fanctl-sensors---json).
       render: json
 
   - type: textarea

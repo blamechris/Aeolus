@@ -334,6 +334,39 @@ struct SensorsCommandRenderTests {
             providerIdentifier: "smc", capturedAt: Self.fixedDate, entries: [], keysDeclared: nil)
         #expect(SensorsCommand.renderTable(result) == "No sensors found.")
     }
+
+    /// Pins the table's column *positions*, not just their presence: a `.contains`
+    /// check alone would still pass if `category`/`confidence` were ever swapped in the
+    /// row builder, since both are plain strings in one `[String]` row. Splitting on
+    /// whitespace and comparing by column index (safe here — no cell value has a space)
+    /// catches a confidence value rendered under CATEGORY, or vice versa.
+    @Test("The labelled row's CATEGORY and CONFIDENCE cells land under their own headers")
+    func categoryAndConfidenceCellsAlignWithTheirHeaders() throws {
+        let result = SensorsCommand.Result(
+            providerIdentifier: "smc",
+            capturedAt: Self.fixedDate,
+            entries: [
+                SensorsCommand.Entry(
+                    key: "Tp09", label: "CPUCluster", category: .cpu, confidence: .verified,
+                    value: 42.5, error: nil, unit: .celsius)
+            ],
+            keysDeclared: nil)
+
+        let table = SensorsCommand.renderTable(result)
+        let lines = table.split(separator: "\n", omittingEmptySubsequences: false)
+        #expect(lines.count == 2)
+
+        let headerColumns = lines[0].split(separator: " ", omittingEmptySubsequences: true)
+        let dataColumns = lines[1].split(separator: " ", omittingEmptySubsequences: true)
+        #expect(headerColumns.count == dataColumns.count)
+
+        let categoryIndex = try #require(headerColumns.firstIndex(of: "CATEGORY"))
+        let confidenceIndex = try #require(headerColumns.firstIndex(of: "CONFIDENCE"))
+        #expect(categoryIndex != confidenceIndex)
+
+        #expect(dataColumns[categoryIndex] == "cpu")
+        #expect(dataColumns[confidenceIndex] == "verified")
+    }
 }
 
 @Suite("fanctl sensors — command wiring")

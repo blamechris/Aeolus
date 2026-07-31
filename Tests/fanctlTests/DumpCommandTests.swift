@@ -180,17 +180,40 @@ struct DumpErrorDescriptionTests {
     }
 }
 
-/// `DumpRuntimeError` and `--key`'s own pure helpers — the fix for using `ValidationError`
-/// (usage block, exit 64) for a runtime SMC failure that has nothing to do with how the
-/// command was invoked, and for making the "paste one row" workflow ADR 0004 asks for
-/// actually followable.
+/// `FanctlError`'s dump-specific cases and `--key`'s own pure helpers — the fix for using
+/// `ValidationError` (usage block, exit 64) for a runtime SMC failure that has nothing to
+/// do with how the command was invoked, and for making the "paste one row" workflow ADR
+/// 0004 asks for actually followable.
 @Suite("fanctl dump — runtime errors and --key filtering")
 struct DumpRuntimeErrorAndKeyFilterTests {
 
-    @Test("DumpRuntimeError's errorDescription is exactly its message, nothing added")
-    func runtimeErrorDescriptionIsExact() {
-        let error = DumpRuntimeError(message: "could not open a connection")
-        #expect(error.errorDescription == "could not open a connection")
+    @Test("A key-not-found failure surfaces through FanctlError, not a bespoke dump-only type")
+    func keyNotFoundGoesThroughFanctlError() {
+        let error = FanctlError.keyNotFound(key: "ZZZZ", declaredCount: 3385)
+        // Composed by keyFilterNotFoundMessage(key:declaredCount:) — pinned here so a
+        // future edit to either side cannot drift the two apart silently.
+        let expected = keyFilterNotFoundMessage(key: "ZZZZ", declaredCount: 3385)
+        #expect(error.errorDescription == expected)
+        #expect(error.errorDescription?.contains("ZZZZ") == true)
+        #expect(error.errorDescription?.contains("3385") == true)
+    }
+
+    @Test("A connection-open failure reads as a plain, actionable message, not a raw error dump")
+    func connectionOpenFailureIsActionable() {
+        let error = FanctlError.connectionFailed(
+            context: "open a connection to the SMC", reason: "kIOReturnNotOpen")
+        #expect(
+            error.errorDescription
+                == "Could not open a connection to the SMC: kIOReturnNotOpen")
+    }
+
+    @Test("A #KEY read failure names what was being attempted, matching list/sensors' phrasing")
+    func keyCountReadFailureMatchesSharedPhrasing() {
+        let error = FanctlError.connectionFailed(
+            context: "read #KEY, this machine's declared key count", reason: "boom")
+        #expect(
+            error.errorDescription
+                == "Could not read #KEY, this machine's declared key count: boom")
     }
 
     @Test("keyFilterFormatError accepts exactly four ASCII characters")
