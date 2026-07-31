@@ -1,3 +1,4 @@
+import AeolusXPC
 import ArgumentParser
 
 /// `fanctl` — the command-line client.
@@ -8,6 +9,34 @@ import ArgumentParser
 /// take out the same lease.
 @main
 struct Fanctl: AsyncParsableCommand {
+    /// This build's own version — independent of `AeolusXPCVersion.current`. A
+    /// Homebrew-installed `fanctl` and a Sparkle-updated `Aeolus.app` routinely sit at
+    /// different tool versions while still speaking the same (or a compatible) XPC
+    /// protocol version, so the two numbers are never conflated into one string that
+    /// hides which one changed.
+    static let toolVersion = "0.0.0-dev"
+
+    /// `--version`'s full text — swift-argument-parser prints exactly this string,
+    /// verbatim, and nothing else.
+    ///
+    /// Deliberately phrased as "this build supports", never "negotiated": reading
+    /// `AeolusXPCVersion.current` is a compile-time fact baked into this binary, not a
+    /// live XPC round trip. `fanctl`'s read commands (`list`/`sensors`/`watch`/`dump`)
+    /// connect to nothing, and `--version` itself connects to nothing either — it cannot
+    /// know what any installed helper actually accepts. ADR 0005 makes the helper enforce
+    /// a real `hello` handshake that negotiates a version at connect time; wording this
+    /// string as though it already proved that would let someone reasonably believe
+    /// `--version` already confirms this build can talk to whatever helper is installed,
+    /// which it does not.
+    static var versionDescription: String {
+        """
+        fanctl \(toolVersion)
+        XPC protocol \(AeolusXPCVersion.current) (protocol version this build supports; \
+        not a negotiated connection — see docs/ADR/0005-xpc-authorisation.md for the \
+        helper's own connect-time handshake)
+        """
+    }
+
     static let configuration = CommandConfiguration(
         commandName: "fanctl",
         abstract: "Monitor and control Mac fan speeds.",
@@ -19,7 +48,7 @@ struct Fanctl: AsyncParsableCommand {
             Manual control is always held under a lease: if fanctl exits or is killed, \
             the helper returns the fans to automatic.
             """,
-        version: "0.0.0-dev",
+        version: versionDescription,
         subcommands: [List.self, Sensors.self, Watch.self, Reset.self, Dump.self]
     )
 }

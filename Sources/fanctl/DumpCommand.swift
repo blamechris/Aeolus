@@ -51,18 +51,17 @@ extension Fanctl {
             do {
                 try await connection.open()
             } catch {
-                throw DumpRuntimeError(
-                    message: "Could not open a connection to the SMC: "
-                        + describeDumpError(error))
+                throw FanctlError.connectionFailed(
+                    context: "open a connection to the SMC", reason: describeDumpError(error))
             }
 
             let declaredCount: Int
             do {
                 declaredCount = try await connection.keyCount()
             } catch {
-                throw DumpRuntimeError(
-                    message: "Could not read #KEY, this machine's declared key count: "
-                        + describeDumpError(error))
+                throw FanctlError.connectionFailed(
+                    context: "read #KEY, this machine's declared key count",
+                    reason: describeDumpError(error))
             }
 
             let generation = await connection.interfaceGeneration
@@ -79,9 +78,7 @@ extension Fanctl {
             if let key {
                 entries = filterEntries(entries, byKey: key)
                 guard !entries.isEmpty else {
-                    throw DumpRuntimeError(
-                        message: keyFilterNotFoundMessage(
-                            key: key, declaredCount: declaredCount))
+                    throw FanctlError.keyNotFound(key: key, declaredCount: declaredCount)
                 }
             }
 
@@ -148,25 +145,24 @@ extension Fanctl {
 
 // MARK: - Errors
 
-/// A runtime failure talking to the SMC — deliberately not `ValidationError`.
-/// `ValidationError` prints a usage/help block and exits with `ExitCode.validationFailure`
-/// (64), which is correct for a malformed argument and wrong here: opening the SMC
-/// connection or reading `#KEY` can fail for reasons that have nothing to do with how the
-/// command was invoked, and a usage block below the message wrongly implies the user
-/// typed something wrong. Conforming to `LocalizedError` (rather than a plain `Error`)
-/// makes `errorDescription` the only text ArgumentParser prints — a clean message, exit
-/// code 1, no usage block — which also makes a runtime failure trivially distinguishable
-/// from a usage mistake for automation consuming `--json`.
-struct DumpRuntimeError: Error, LocalizedError, Equatable {
-    let message: String
-    var errorDescription: String? { message }
-}
+/// Both runtime failures below — a connection that will not open, a well-formed `--key`
+/// this machine's table does not contain — are deliberately thrown as `FanctlError`, not
+/// `ValidationError`. `ValidationError` prints a usage/help block and exits with
+/// `ExitCode.validationFailure` (64), which is correct for a malformed argument and wrong
+/// here: opening the SMC connection or reading `#KEY` can fail for reasons that have
+/// nothing to do with how the command was invoked, and a usage block below the message
+/// wrongly implies the user typed something wrong. `FanctlError` conforms to
+/// `LocalizedError`, which makes `errorDescription` the only text ArgumentParser prints —
+/// a clean message, exit code 1, no usage block — which also makes a runtime failure
+/// trivially distinguishable from a usage mistake for automation consuming `--json`. See
+/// `FanctlError.swift`'s own documentation for why this is the one error type every
+/// `fanctl` read command shares, `dump` included.
 
 /// Validates `--key`'s format before any hardware I/O: exactly four ASCII characters,
 /// matching `SMCKey`'s own constructor. Returns a ready-to-throw message, or `nil` if the
 /// format is fine. Pure, so it is directly unit-testable without a connection — unlike
 /// the runtime failures above, a malformed `--key` genuinely is a usage mistake, so the
-/// caller throws this as a `ValidationError`, not a `DumpRuntimeError`.
+/// caller throws this as a `ValidationError`, not `FanctlError`.
 func keyFilterFormatError(_ key: String) -> String? {
     guard SMCKey(key) == nil else { return nil }
     return "--key must be exactly four ASCII characters (e.g. VP3b); got '\(key)' "
@@ -175,7 +171,8 @@ func keyFilterFormatError(_ key: String) -> String? {
 
 /// The message for a well-formed `--key` that this machine's key table simply does not
 /// contain — a fact about the hardware, not a usage mistake, so the caller throws this as
-/// a `DumpRuntimeError`.
+/// `FanctlError.keyNotFound`, which defers its own `errorDescription` to this function so
+/// there is exactly one place that composes the text.
 func keyFilterNotFoundMessage(key: String, declaredCount: Int) -> String {
     "No key '\(key)' found among the \(declaredCount) keys this machine's index table "
         + "exposes."

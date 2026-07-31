@@ -55,7 +55,8 @@ contributors are held to.
 - Profiles that activate on AC/battery, lid state, external display, or a running process
 - History, charts, and CSV/JSON export — not just what the temperature is right now
 - Throttle detection, so you can answer "am I actually being throttled?"
-- `fanctl`, a first-class CLI for scripting, SSH, and headless Mac minis
+- `fanctl`, a first-class CLI for scripting, SSH, and headless Mac minis — see
+  [docs/CLI.md](docs/CLI.md) for the command reference and `--json` shapes
 - An optional localhost metrics endpoint for homelab dashboards, off by default
 - A hardware compatibility matrix that says "untested" when something is untested
 

@@ -118,8 +118,11 @@ let package = Package(
             name: "fanctlTests",
             // FanKit is also needed directly, not just transitively via fanctl, so tests
             // can build SensorCatalog/CatalogEntry/HardwareIdentity fixtures for
-            // CatalogSensorLookup — see CatalogSensorLookupTests.swift.
-            dependencies: ["fanctl", "SMCCore", "FanKit"],
+            // CatalogSensorLookup — see CatalogSensorLookupTests.swift. AeolusXPC is
+            // needed directly, not just transitively via fanctl, so
+            // FanctlCommandTests.swift can reference AeolusXPCVersion.current without
+            // Swift's non-transitive imports standing in the way.
+            dependencies: ["fanctl", "SMCCore", "FanKit", "AeolusXPC"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
