@@ -120,7 +120,9 @@ body:
     id: fan-list
     attributes:
       label: Fan list
-      description: "Paste the output of `fanctl list --json`."
+      description: |
+        Paste the output of `fanctl list --json`. Shape documented in
+        [docs/CLI.md](https://github.com/blamechris/Aeolus/blob/main/docs/CLI.md#fanctl-list---json).
       render: json
 
   - type: textarea
@@ -130,7 +132,8 @@ body:
       description: |
         Paste the output of `fanctl sensors --json`. This is what fills in the sensor
         catalog for other people with your Mac, so it is worth including even if
-        everything works.
+        everything works. Shape documented in
+        [docs/CLI.md](https://github.com/blamechris/Aeolus/blob/main/docs/CLI.md#fanctl-sensors---json).
       render: json
 
   - type: textarea
