@@ -111,6 +111,27 @@ struct MenuBarReadoutTests {
         #expect(fanReadout != sensorReadout)
     }
 
+    @Test(
+        "Resolving the same key as both .fan and .sensor keeps distinct ForEach identity"
+    )
+    func resolvedReadoutsWithSameKeyStayDistinctByIdentity() {
+        // A selection naming "F0Ac" once as .fan and once as .sensor is unusual but
+        // legal — nothing rejects it at construction. Before this fix,
+        // ResolvedMenuBarReadout.id was `key` alone, so SwiftUI's
+        // ForEach(viewModel.readouts) would have seen two rows claiming the same
+        // identity.
+        let fan = Self.fan(index: 0)
+        let sensor = Self.sensor(key: "F0Ac")
+
+        let fanResolved = MenuBarReadout(key: "F0Ac", source: .fan)
+            .resolve(fans: [fan], sensors: [sensor])
+        let sensorResolved = MenuBarReadout(key: "F0Ac", source: .sensor)
+            .resolve(fans: [fan], sensors: [sensor])
+
+        #expect(fanResolved.key == sensorResolved.key)
+        #expect(fanResolved.id != sensorResolved.id)
+    }
+
     // MARK: - Persistence shape
 
     @Test("MenuBarReadout round-trips through JSON — the shape #64 persists")

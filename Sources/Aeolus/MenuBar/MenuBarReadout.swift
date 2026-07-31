@@ -66,6 +66,9 @@ public struct ResolvedMenuBarReadout: Sendable, Hashable, Identifiable {
     /// `reading` is `.unavailable` (including when nothing in the current poll matched
     /// this readout at all — see `MenuBarReadout.resolve(fans:sensors:)`).
     public let key: String
+    /// Which `MenuBarReadout` this was resolved from. Carried through (not just `key`)
+    /// so `id` stays unique — see this property's own note on `id` below.
+    public let source: MenuBarReadout.Source
     /// The catalog or fan-poll label for `key`, if any. `nil` is a normal result — an
     /// unrecognised or unlabelled sensor still resolves fully, just without a friendly
     /// name.
@@ -78,16 +81,23 @@ public struct ResolvedMenuBarReadout: Sendable, Hashable, Identifiable {
     /// `MenuBarReadout.resolve(fans:sensors:)` always fills it in for `.fan` sources.
     public let fanControlState: FanControlState?
 
-    public var id: String { key }
+    /// Mirrors `MenuBarReadout.id`: `key` alone is not unique, because a selection may
+    /// legitimately include the same raw key once as `.fan` and once as `.sensor` — see
+    /// `MenuBarReadout`'s documentation on why `source` exists. Without `source` folded
+    /// in here too, `ForEach(viewModel.readouts)` over such a selection would see two
+    /// rows claiming the same identity.
+    public var id: String { "\(source.rawValue):\(key)" }
 
     public init(
         key: String,
+        source: MenuBarReadout.Source,
         label: String?,
         kind: SensorReading.Kind,
         reading: KeyedReading,
         fanControlState: FanControlState? = nil
     ) {
         self.key = key
+        self.source = source
         self.label = label
         self.kind = kind
         self.reading = reading
@@ -125,24 +135,25 @@ extension MenuBarReadout {
         case .fan:
             guard let fan = fans.first(where: { $0.actual.key == key }) else {
                 return ResolvedMenuBarReadout(
-                    key: key, label: nil, kind: .rpm,
+                    key: key, source: source, label: nil, kind: .rpm,
                     reading: .unavailable(key: key, reason: "no fan reports this key right now"),
                     fanControlState: nil)
             }
             return ResolvedMenuBarReadout(
-                key: key, label: fan.displayName, kind: .rpm, reading: fan.actual,
+                key: key, source: source, label: fan.displayName, kind: .rpm,
+                reading: fan.actual,
                 fanControlState: FanControlState(
                     mode: fan.mode, isReclaimedBySystem: fan.isReclaimedBySystem))
         case .sensor:
             guard let sensor = sensors.first(where: { $0.key == key }) else {
                 return ResolvedMenuBarReadout(
-                    key: key, label: nil, kind: .unknown,
+                    key: key, source: source, label: nil, kind: .unknown,
                     reading: .unavailable(
                         key: key, reason: "no sensor reports this key right now"),
                     fanControlState: nil)
             }
             return ResolvedMenuBarReadout(
-                key: key, label: sensor.decoration?.label, kind: sensor.kind,
+                key: key, source: source, label: sensor.decoration?.label, kind: sensor.kind,
                 reading: sensor.sample, fanControlState: nil)
         }
     }
