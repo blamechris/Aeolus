@@ -17,6 +17,8 @@ import SwiftUI
 ///   type is compiled as a plain library under `swift build` so CI type-checks the views
 ///   without needing an app bundle.
 public struct AeolusApp: App {
+    @StateObject private var menuBarViewModel = MenuBarViewModel()
+
     public init() {}
 
     public var body: some Scene {
@@ -24,7 +26,31 @@ public struct AeolusApp: App {
             MainView()
         }
 
-        // TODO(E7): MenuBarExtra with multiple simultaneous readouts and sparklines.
+        // `MenuBarExtra` with multiple simultaneous readouts (`MenuBarLabelView`) and a
+        // detail dropdown (`MenuBarContentView`) — see `MenuBar/` for the readout model
+        // and view model.
+        //
+        // - Note: `MenuBarExtra` itself, `.menuBarExtraStyle(.window)`, and the
+        //   `content:label:` initializer used here are all macOS 13+, matching this
+        //   project's deployment floor — nothing in this Scene needed raising it.
+        //   `MenuBarExtra(isInserted:content:label:)` was deliberately *not* used,
+        //   despite existing since macOS 13.0 in the installed SDK (contrary to this
+        //   project's working assumption that it needed a macOS 14 gate — see this PR's
+        //   description for the SDK evidence): it is a documented source of real bugs on
+        //   Ventura (`isInserted` bindings driven by `@AppStorage`/`@Published`
+        //   triggering "Publishing changes from within view updates" loops, fixed only in
+        //   Sonoma), and `SceneBuilder` — unlike `ViewBuilder` — has no `buildEither`, so
+        //   there is no way to branch between the `isInserted:` and plain initializers
+        //   for two different OS versions in one `Scene` body regardless. The
+        //   macOS-14-only refinement this epic's acceptance criteria ask to be gated
+        //   lives instead in `MenuBarContentView`, in the view layer, where `#available`
+        //   branching is fully supported.
+        MenuBarExtra {
+            MenuBarContentView(viewModel: menuBarViewModel)
+        } label: {
+            MenuBarLabelView(viewModel: menuBarViewModel)
+        }
+        .menuBarExtraStyle(.window)
     }
 }
 
