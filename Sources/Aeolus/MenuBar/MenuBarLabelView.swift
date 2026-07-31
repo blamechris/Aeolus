@@ -20,11 +20,11 @@ struct MenuBarLabelView: View {
     }
 
     /// Every currently-selected readout's formatted value, in selection order, separated
-    /// by two spaces — sharing `ReadingFormatting` with `MenuBarContentView` and (once
-    /// landed) the main window, so the same key never shows two different values at the
-    /// same moment. An unavailable reading renders as
-    /// `ReadingFormatting.unavailablePlaceholder`, never as `0` or a blank space that
-    /// could be mistaken for one.
+    /// by two spaces — through the same `Views/ReadingFormatting.text(for:unit:)` `#62`'s
+    /// main window renders every fan/sensor row with, so the same key never shows two
+    /// different values at the same moment. An unavailable reading renders as
+    /// `"unavailable (<reason>)"`, never as `0` or a blank space that could be mistaken
+    /// for one — see `ReadingFormatting.text(for:unit:)`'s own documentation.
     private var labelText: String {
         guard !viewModel.readouts.isEmpty else {
             switch viewModel.phase {
@@ -38,7 +38,7 @@ struct MenuBarLabelView: View {
         }
         return
             viewModel.readouts
-            .map { ReadingFormatting.displayText(for: $0.reading, kind: $0.kind) }
+            .map { ReadingFormatting.text(for: $0.reading, unit: $0.unit) }
             .joined(separator: "  ")
     }
 

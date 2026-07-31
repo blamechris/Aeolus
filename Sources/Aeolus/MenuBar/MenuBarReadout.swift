@@ -15,7 +15,7 @@ import SMCCore
 ///
 /// ## Selection is keyed on `key`, never on a label
 ///
-/// `MenuBarViewModel.resolve(against:)` looks a readout up by `key` alone — never by
+/// `MenuBarReadout.resolve(fans:sensors:)` looks a readout up by `key` alone — never by
 /// `FanPollingReading.displayName` or `CatalogDecoration.label`. Per `CLAUDE.md`: a wrong
 /// label must never be able to quietly mislead someone into showing the wrong sensor. A
 /// saved selection surviving a catalog update that relabels (or unlabels) the same key is
@@ -87,6 +87,22 @@ public struct ResolvedMenuBarReadout: Sendable, Hashable, Identifiable {
     /// in here too, `ForEach(viewModel.readouts)` over such a selection would see two
     /// rows claiming the same identity.
     public var id: String { "\(source.rawValue):\(key)" }
+
+    /// The unit suffix `kind` implies, for `Views/ReadingFormatting.text(for:unit:)` —
+    /// identical mapping to `#62`'s `SensorRowModel.unit(for:)`, so the same key renders
+    /// with the same unit in both the menu bar and the main window. `nil` for `.unknown`,
+    /// which is deliberately not guessed at: see `SMCSensorProvider.kind(for:)`.
+    public var unit: String? {
+        switch kind {
+        case .temperatureCelsius: return "°C"
+        case .rpm: return "RPM"
+        case .watts: return "W"
+        case .volts: return "V"
+        case .amps: return "A"
+        case .percent: return "%"
+        case .unknown: return nil
+        }
+    }
 
     public init(
         key: String,

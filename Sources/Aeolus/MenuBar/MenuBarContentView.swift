@@ -121,7 +121,7 @@ private struct MenuBarReadoutRow: View {
                     .help("System reclaimed control of this fan")
             }
 
-            Text(ReadingFormatting.displayText(for: readout.reading, kind: readout.kind))
+            Text(ReadingFormatting.text(for: readout.reading, unit: readout.unit))
                 .fontDesign(.monospaced)
         }
     }
