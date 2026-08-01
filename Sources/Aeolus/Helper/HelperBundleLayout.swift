@@ -10,13 +10,20 @@ import Foundation
 /// pins exactly one build — and `SMAppService` daemon registration is not a supported
 /// path for it. See `docs/ADR/0005-xpc-authorisation.md`.
 ///
-/// The obvious way to enforce that in code is `#if MONITOR_ONLY`. That condition is set
-/// in `project.yml` on the *Xcode app target*, while this file compiles as part of the
-/// `AeolusUI` SwiftPM library — and whether a project-level
+/// The obvious way to enforce that in code is `#if MONITOR_ONLY`. It does not work, and
+/// the reason is recorded here so nobody reaches for it a second time.
+///
+/// Such a condition is set in `project.yml` on the *Xcode app target*, while this file
+/// compiles as part of the `AeolusUI` SwiftPM library — and whether a project-level
 /// `SWIFT_ACTIVE_COMPILATION_CONDITIONS` reaches a package target is an Xcode
-/// implementation detail rather than a contract. A safety property resting on one is a
-/// safety property that can invert silently on a toolchain update, and the failure would
-/// be an app offering to install a root daemon it does not contain.
+/// implementation detail rather than a contract. **Measured**, with `MONITOR_ONLY` set on
+/// `Monitor Debug` and a `#if MONITOR_ONLY` probe compiled into this target: the condition
+/// is *not visible* here. A flag-based implementation would therefore have taken its
+/// `#else` — helper-exists — branch in precisely the build that ships no helper, which is
+/// an app offering to install a root daemon it does not contain.
+///
+/// `MONITOR_ONLY` has since been removed from `project.yml`: nothing read it, and a flag
+/// that silently fails to arrive is worse than no flag.
 ///
 /// Asking the bundle cannot invert that way: if `Contents/MacOS/AeolusHelper` and
 /// `Contents/Library/LaunchDaemons/…plist` are not both on disk, this build has no

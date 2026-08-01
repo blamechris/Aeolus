@@ -50,9 +50,8 @@ settings:
     ENABLE_HARDENED_RUNTIME: YES
     MARKETING_VERSION: "0.0.0"
     CURRENT_PROJECT_VERSION: "1"
-    CODE_SIGN_STYLE: Manual
   configs:
-    # Two things are set per-configuration here, and the signing pair is set on the
+    # Two things are set per-configuration here, and the signing trio is set on the
     # Monitor configurations *only* — deliberately.
     #
     # A project-level build setting outranks the project's base configuration file, so a
@@ -63,20 +62,39 @@ settings:
     # because it can read no Team ID from its own signature — so the failure would look
     # like "registration is impossible on this project" rather than like a build setting.
     #
-    # Leaving the Full configurations unset here lets Signing.xcconfig supply both.
+    # CODE_SIGN_STYLE is here for the same reason and not one line above it. Left in
+    # `base` it outranked Signing.xcconfig identically: with CODE_SIGN_STYLE = Automatic
+    # written into a real Signing.xcconfig, -showBuildSettings still resolved Manual for
+    # Full Debug and Full Release, on both the Aeolus and AeolusHelper targets, which made
+    # the setting Signing.xcconfig.example advertises inert. A maintainer asking for
+    # Automatic to have a development provisioning profile selected would have got Manual,
+    # no profile, and a signing failure — the same misdiagnosis one setting over.
+    #
+    # Monitor needs Manual: ad-hoc signing ("-") with no team is not something Automatic
+    # can express. Leaving the Full configurations unset here lets Signing.xcconfig supply
+    # all three.
     #
     # AEOLUS_EMBEDS_HELPER drives the app target's embed script. It is read there as
     # ${AEOLUS_EMBEDS_HELPER:-NO}, so a configuration that forgets to set it embeds
     # nothing: the default answer to "should this build ship a root daemon" is no.
+    #
+    # There is deliberately no MONITOR_ONLY compilation condition. It used to be set on
+    # the Monitor configurations and nothing read it — and it could not have worked:
+    # measured, a `#if MONITOR_ONLY` probe compiled into the AeolusUI package target
+    # reports the condition *not visible* under Monitor Debug, so a flag-based check would
+    # have taken its helper-exists branch in exactly the build that has no helper. The
+    # bundle is asked at runtime instead; see Sources/Aeolus/Helper/HelperBundleLayout.swift.
     Monitor Debug:
-      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG MONITOR_ONLY
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
       AEOLUS_EMBEDS_HELPER: NO
       CODE_SIGN_IDENTITY: "-"
+      CODE_SIGN_STYLE: Manual
       DEVELOPMENT_TEAM: ""
     Monitor Release:
-      SWIFT_ACTIVE_COMPILATION_CONDITIONS: MONITOR_ONLY
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
       AEOLUS_EMBEDS_HELPER: NO
       CODE_SIGN_IDENTITY: "-"
+      CODE_SIGN_STYLE: Manual
       DEVELOPMENT_TEAM: ""
     Full Debug:
       SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
@@ -170,6 +188,16 @@ targets:
         basedOnDependencyAnalysis: false
         script: |
           set -euo pipefail
+
+          # `set -u` catches an *unset* variable, not an empty one, and the Monitor branch
+          # below runs `rm -rf` on paths derived from these two. With both empty, that
+          # target is /Library/LaunchDaemons — the system's. No case is known where Xcode
+          # leaves either empty, and this runs as the user so it would fail on permissions
+          # rather than succeed, but a destructive path should not rely on either of those.
+          if [ -z "${TARGET_BUILD_DIR:-}" ] || [ -z "${CONTENTS_FOLDER_PATH:-}" ]; then
+              echo "error: TARGET_BUILD_DIR or CONTENTS_FOLDER_PATH is empty; refusing to touch the filesystem"
+              exit 1
+          fi
 
           CONTENTS="${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}"
           HELPER_DESTINATION="${CONTENTS}/MacOS/AeolusHelper"
