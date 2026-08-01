@@ -1,9 +1,16 @@
 # ADR 0005 — XPC client authorisation and boundary versioning
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-08-01)
 - **Date:** 2026-07-29
 - **Deciders:** Project maintainer, on architect review
 - **Supersedes:** —
+- **Extended by:** [ADR 0006](0006-single-smc-reader.md)
+
+Accepted once three PRs implementing it had merged (#79 the contract, #80 the authorisation module,
+#81 the lifecycle) **and** its central untested assumption had been settled by experiment: the
+`setCodeSigningRequirement` row below moved from "documented, behaviour untested" to verified on this
+machine. Accepting it before that would have ratified a design resting on an API nobody had watched
+work.
 
 ## Context
 
