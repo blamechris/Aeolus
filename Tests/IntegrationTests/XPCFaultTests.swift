@@ -155,7 +155,7 @@ struct XPCFaultTests {
     func entirelyUnprintableTextStillRenders() throws {
         let fault = AeolusXPCFault.unknown(code: "\u{0}\u{202E}\n", detail: nil)
         let description = try #require(fault.errorDescription)
-        #expect(description.contains("unprintable"))
+        #expect(description.contains(FaultText.unprintableMarker))
     }
 
     /// A helper that sent a megabyte of detail must not put a megabyte into a log line.
@@ -164,7 +164,7 @@ struct XPCFaultTests {
         let long = String(repeating: "a", count: 10_000)
         let fault = AeolusXPCFault.malformedPayload(detail: long)
         let description = try #require(fault.errorDescription)
-        #expect(description.count < maxRenderedFaultTextLength + 200)
+        #expect(description.count < FaultText.maxRenderedLength + 200)
         #expect(description.contains("…"))
     }
 

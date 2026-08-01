@@ -67,9 +67,24 @@ public struct SensorSample: Sendable, Hashable, Codable {
 }
 
 /// A client's request for manual control.
+///
+/// Every field is hostile input until `AeolusXPCValidation` has passed it, and every
+/// field is required on the wire — the initialiser's Swift-side defaults are a
+/// convenience for constructing one in code, not a promise that the helper will fill in
+/// what a payload omits.
 public struct LeaseRequest: Sendable, Hashable, Codable {
+    /// Identifies the holder for display and diagnostics, e.g. `Aeolus.app`, `fanctl`.
+    ///
+    /// The most exposed string in the protocol: chosen by the client, stored by a root
+    /// daemon, and rendered verbatim into a UI row and a `log show` line. Checked by
+    /// `AeolusXPCValidation.validateHolderDescription(_:)`, which refuses rather than
+    /// repairs.
     public let holderDescription: String
+    /// The fans this lease covers. Must be non-empty, free of repeats, and a subset of
+    /// the fans the helper enumerated.
     public let fanIndices: [Int]
+    /// How long the lease lasts without a renewal. Must be inside
+    /// `AeolusXPCValidation.leaseTTLRange`.
     public let timeToLive: TimeInterval
     /// Asks the helper to keep renewing after the client exits. Still a lease.
     public let isSelfRenewing: Bool

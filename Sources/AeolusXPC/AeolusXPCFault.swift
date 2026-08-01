@@ -78,6 +78,10 @@ public enum AeolusXPCFault: Error, Sendable, Hashable {
 
     /// A code this build does not recognise, from a newer helper. Render it generically;
     /// never treat it as a success.
+    ///
+    /// This is a decode product, not something to construct by hand. Building it with a
+    /// code this build *does* know produces a value that encodes and decodes back to the
+    /// known case instead of to itself.
     case unknown(code: String, detail: String?)
 }
 
@@ -228,12 +232,13 @@ extension AeolusXPCFault: LocalizedError {
                 \(helperRange.current). Update whichever of Aeolus.app or fanctl is older.
                 """
         case .malformedPayload(let detail):
-            return "The helper refused a malformed request: \(displayable(detail))."
+            return "The helper refused a malformed request: \(FaultText.displayable(detail))."
         case .invalidParameter(let name, let detail):
-            return "The helper refused the value of \(displayable(name)): \(displayable(detail))."
+            let field = FaultText.displayable(name)
+            return "The helper refused the value of \(field): \(FaultText.displayable(detail))."
         case .manualControlUnavailable(let reason):
             return """
-                Manual fan control is not available (\(displayable(reason.wireValue))).
+                Manual fan control is not available (\(FaultText.displayable(reason.wireValue))).
                 """
         case .leaseExpired:
             return """
@@ -260,41 +265,48 @@ extension AeolusXPCFault: LocalizedError {
         case .boundsImplausible(let fanIndex, let detail):
             return """
                 Fan \(fanIndex) cannot be controlled: its firmware speed bounds are not \
-                usable (\(displayable(detail))).
+                usable (\(FaultText.displayable(detail))).
                 """
         case .unknown(let code, let detail):
-            let suffix = detail.map { " (\(displayable($0)))" } ?? ""
+            let suffix = detail.map { " (\(FaultText.displayable($0)))" } ?? ""
             return """
                 The helper refused this request with a reason this build does not \
-                recognise: \(displayable(code))\(suffix). The helper is probably newer \
+                recognise: \(FaultText.displayable(code))\(suffix). The helper is probably newer \
                 than this client.
                 """
         }
     }
 }
 
-/// Longest run of helper-supplied free text this client will render.
-///
-/// Not a validation limit — nothing is refused for exceeding it. It bounds one log line
-/// and one UI label, which is all `errorDescription` is for.
-let maxRenderedFaultTextLength = 200
+/// Rendering rules for the free text a fault carries across the boundary.
+enum FaultText {
 
-/// Makes free text from the far side of the boundary safe to put in a log line or a UI
-/// label, without discarding the fact that something arrived.
-///
-/// Control and format characters go, because those are what turn one log line into two
-/// (`\n`) or reverse the reading order of the rest of it (U+202E). An empty or
-/// entirely-unprintable string renders as a marker rather than as nothing at all, so a
-/// reader can tell "the helper said something unprintable" from "the helper said
-/// nothing".
-func displayable(_ text: String, limit: Int = maxRenderedFaultTextLength) -> String {
-    let stripped = String(
-        text.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
-    )
-    let trimmed = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return "unprintable" }
-    guard trimmed.count > limit else { return trimmed }
-    return String(trimmed.prefix(limit)) + "…"
+    /// Longest run of helper-supplied free text this client will render.
+    ///
+    /// Not a validation limit — nothing is refused for exceeding it. It bounds one log
+    /// line and one UI label, which is all `errorDescription` is for.
+    static let maxRenderedLength = 200
+
+    /// Shown in place of text that survived stripping with nothing left.
+    static let unprintableMarker = "unprintable"
+
+    /// Makes free text from the far side of the boundary safe to put in a log line or a
+    /// UI label, without discarding the fact that something arrived.
+    ///
+    /// Control and format characters go, because those are what turn one log line into
+    /// two (`\n`) or reverse the reading order of the rest of it (U+202E). An empty or
+    /// entirely-unprintable string renders as a marker rather than as nothing at all, so
+    /// a reader can tell "the helper said something unprintable" from "the helper said
+    /// nothing".
+    static func displayable(_ text: String, limit: Int = maxRenderedLength) -> String {
+        let stripped = String(
+            text.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
+        )
+        let trimmed = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return unprintableMarker }
+        guard trimmed.count > limit else { return trimmed }
+        return String(trimmed.prefix(limit)) + "…"
+    }
 }
 
 extension AeolusXPCFault {
