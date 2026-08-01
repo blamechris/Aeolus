@@ -190,7 +190,7 @@ optional DTO fields within a version, plus the capability set, provide the flexi
 
 | Assumption | Basis | If it fails |
 |---|---|---|
-| `setCodeSigningRequirement` behaves as documented on macOS 26.x | Verified present in the SDK at `macos(13.0)`; behaviour untested | Fall back to hand-rolled audit-token checking behind the same delegate seam |
+| `setCodeSigningRequirement` behaves as documented on macOS 26.x | **Verified by experiment on `Mac16,5` / macOS 26.5.2 (25F84)** — see the #72 log below | Fall back to hand-rolled audit-token checking behind the same delegate seam |
 | Same API behaves correctly on macOS 13–15 | Documented-available; **untestable here** | Ships the same "documented, untested" status as the Intel path; the compatibility matrix must say so |
 | `SMAppService.daemon` registration works from a **Developer ID**-signed `Full Debug` build | Unverified | The shipping path itself does not work; E2 needs a different registration mechanism, not a workaround |
 | `SMAppService.daemon` registration works from an **Apple Development**-signed build | Unverified | Local iteration falls back to a manually `launchctl`-bootstrapped helper — a dev-workflow cost, not a design change |
@@ -237,6 +237,46 @@ writes to stderr and exits non-zero by design, and the plist carries no `RunAtLo
 `KeepAlive`, so launchd starts it only when something connects to the mach service. The
 question these rows ask is whether `SMAppService` accepts and registers the job, not
 whether the daemon does anything once started — it does not, until #72.
+
+**Verification log — 2026-08-01 (#72). `setCodeSigningRequirement` is enforced.** Measured on
+`Mac16,5` / macOS 26.5.2 (25F84) with an anonymous in-process `NSXPCListener`, so both peers carried
+the same signature and the requirement was the only variable:
+
+| Requirement applied to the connection | Client outcome |
+|---|---|
+| none | reply delivered |
+| the binary's own designated requirement | reply delivered |
+| `anchor apple` | **no reply** — connection invalidated |
+| `identifier "com.example.definitely.not.us"` | **no reply** — connection invalidated |
+
+The mechanism holds on this OS. The hand-rolled audit-token fallback is not needed here, and the
+alternatives section stands unchanged as the contingency for an OS where this stops being true.
+**Scoped to one machine and one OS version**, per `CLAUDE.md`: macOS 13–15 remain documented-untested
+and the row above says so.
+
+Three properties of the API matter to E2.3 and were not obvious from the ADR as written:
+
+1. **It returns `Void`, and a malformed requirement throws.** `NSXPCConnection.h` says so, and the
+   behaviour is worse than it sounds: the exception is an uncatchable `NSInvalidArgumentException`
+   raised **inside `listener(_:shouldAcceptNewConnection:)`**, on a libxpc event thread. Confirmed —
+   SIGABRT, exit 134. For a launchd on-demand root daemon that means aborting on *every* connection
+   attempt, which is a denial of service triggered by a bad string rather than by an attacker.
+   `ClientAuthorisationBuilder.seal` pre-compiling the text with `SecRequirementCreateWithString`
+   before it can ever reach libxpc is therefore **load-bearing, not defensive**, and the fail-closed
+   row "never pass an uncompiled string onward" is the thing preventing it. Nothing may construct a
+   requirement string at the listener; `AuthorisedClientRequirement` has no public initialiser
+   precisely so that this cannot be worked around.
+
+2. **Enforcement is per-message, not at accept time.** `shouldAcceptNewConnection` returns `true` for
+   a peer that will never be permitted to send anything. Accepting a connection is therefore *not*
+   evidence that a client was authorised, and no log line or metric may say that it is — that would
+   be rule 6's shape applied to the boundary's own diagnostics.
+
+3. **The listener side does observe the refusal.** The connection's `invalidationHandler` fires and
+   the message never reaches the exported object. So a refusal is loggable — but an invalidation with
+   no message ever delivered is *consistent with* a requirement refusal rather than *proof* of one; a
+   client that connected and disconnected before its first message looks identical. E2.3's logging
+   says the weaker true thing.
 
 Nothing in this design depends on `docs/SMC-RESEARCH.md`'s reported-but-unverified section. E2 touches
 no write, no `Ftst`, no unlock sequence — deliberately, because the boundary must not encode Apple
