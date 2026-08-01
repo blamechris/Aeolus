@@ -178,14 +178,37 @@ struct XPCContractTests {
 
     // MARK: - The shape of the protocol itself
 
-    private func selectorNames(required: Bool) -> Set<String> {
+    /// Every message the boundary carries, spelled the way the Objective-C runtime spells
+    /// it.
+    ///
+    /// Full selectors, not Swift base names, because the base name is not the message:
+    /// `apply(settings:leaseID:reply:)` and `apply(settings:leaseID:ignoringLimits:reply:)`
+    /// share a base name and are different messages, and only the selector tells them
+    /// apart.
+    private static let allowedSelectors: Set<String> = [
+        "acquireLeaseWithRequest:reply:",
+        "applyWithSettings:leaseID:reply:",
+        "helloWithRequest:reply:",
+        "releaseLeaseWithId:reply:",
+        "renewLeaseWithId:reply:",
+        "restoreAllToAutomaticWithReply:",
+        "snapshotWithReply:",
+    ]
+
+    /// The selectors in one of the runtime's four method quadrants.
+    ///
+    /// `protocol_copyMethodDescriptionList` reports exactly one quadrant per call —
+    /// required or optional, crossed with instance or class — so a helper that hardcodes
+    /// either flag is a guard with doors left open behind it. Both are parameters here,
+    /// and every quadrant is looked at.
+    private func selectorNames(required: Bool, instance: Bool) -> Set<String> {
         let proto: Protocol = AeolusXPCProtocol.self
         var count: UInt32 = 0
         guard
             let descriptions = protocol_copyMethodDescriptionList(
                 proto,
                 required,
-                true,
+                instance,
                 &count
             )
         else { return [] }
@@ -198,36 +221,71 @@ struct XPCContractTests {
         return names
     }
 
+    /// Everything the protocol declares, however it was declared: all four quadrants
+    /// unioned, so nothing hides in the one a narrower query never asks about.
+    private func allSelectorNames() -> Set<String> {
+        var names: Set<String> = []
+        for required in [true, false] {
+            for instance in [true, false] {
+                names.formUnion(selectorNames(required: required, instance: instance))
+            }
+        }
+        return names
+    }
+
     /// `CLAUDE.md` rule 5 says a message that defeats a safety mechanism may never be
     /// *added*. That makes its absence a property of the design, and a property is
-    /// testable: this asserts the exact set of messages the boundary carries, so adding
-    /// one — a generic key write, an "advanced mode", a ceiling override — fails here
-    /// before anyone has to notice it in review.
+    /// testable.
+    ///
+    /// **This is the guard.** It is set equality against the full selectors, over every
+    /// quadrant, which is what makes it hold: it fails on a message added — a generic key
+    /// write, an "advanced mode", a ceiling override — and equally on one removed,
+    /// renamed, moved to a class method, made optional, or re-parameterised. That last
+    /// case is why the count-plus-prefix pair this replaced was not enough: giving `apply`
+    /// an `ignoringLimits:` argument leaves the count at seven and the base name intact
+    /// while changing what the boundary can be asked to do.
     @Test("The protocol declares exactly the messages the boundary is allowed to carry")
     func protocolDeclaresExactlyTheAllowedMessages() {
-        let names = selectorNames(required: true)
-        #expect(names.count == 7, "the boundary grew or lost a message: \(names.sorted())")
+        let declared = allSelectorNames()
+        #expect(
+            declared == Self.allowedSelectors,
+            """
+            the boundary's message set changed: \
+            added \(declared.subtracting(Self.allowedSelectors).sorted()), \
+            removed \(Self.allowedSelectors.subtracting(declared).sorted())
+            """
+        )
+    }
 
-        let expected = [
-            "hello",
-            "snapshot",
-            "acquireLease",
-            "renewLease",
-            "releaseLease",
-            "apply",
-            "restoreAllToAutomatic",
-        ]
-        for message in expected {
-            #expect(
-                names.contains { $0.hasPrefix(message) },
-                "the boundary no longer declares \(message)"
-            )
-        }
+    /// Required instance methods are the only quadrant this contract uses, and the other
+    /// three are asserted empty rather than assumed so.
+    ///
+    /// An optional method would mean "a helper may or may not implement this", which on a
+    /// privilege boundary means a client cannot know what it is talking to. A class method
+    /// would be a message that never appears in an instance-method query at all — which is
+    /// how a message hides from a guard that reads one quadrant and calls it the protocol.
+    @Test("The protocol declares nothing outside the required-instance quadrant")
+    func protocolUsesOnlyTheRequiredInstanceQuadrant() {
+        #expect(selectorNames(required: true, instance: true) == Self.allowedSelectors)
+        #expect(selectorNames(required: true, instance: false).isEmpty, "a class method appeared")
+        #expect(
+            selectorNames(required: false, instance: true).isEmpty,
+            "an optional method appeared"
+        )
+        #expect(selectorNames(required: false, instance: false).isEmpty)
     }
 
     /// A generic "write key K with bytes B" would make the helper a root SMC proxy and
     /// reduce every safety mechanism below it to decoration. It does not exist, and
     /// neither does anything that widens bounds or waives a limit.
+    ///
+    /// **A readability tripwire, not the guard.** The exact-set test above is what holds
+    /// the line, and it does so whatever a new message is called. This one only catches an
+    /// offender that names itself — a `writeKey`, an `enableAdvancedMode` — and nothing
+    /// obliges a careless addition to do that: `apply(settings:leaseID:ignoringLimits:)`
+    /// matches no fragment here. It stays because the list names the shapes this boundary
+    /// has decided it will never have, so a reviewer whose diff trips it learns why in one
+    /// word. It must never be read as sufficient on its own.
     @Test("No message on the boundary is write-shaped or limit-waiving")
     func noWriteShapedMessageExists() {
         let forbidden = [
@@ -235,7 +293,7 @@ struct XPCContractTests {
             "unlock", "bypass", "disable", "override", "ceiling", "advanced",
             "force", "unsafe", "unclamp",
         ]
-        for name in selectorNames(required: true) {
+        for name in allSelectorNames() {
             let lowered = name.lowercased()
             for fragment in forbidden {
                 #expect(
@@ -244,12 +302,5 @@ struct XPCContractTests {
                 )
             }
         }
-    }
-
-    /// An optional method would mean "a helper may or may not implement this", which on
-    /// a privilege boundary means a client cannot know what it is talking to.
-    @Test("The protocol has no optional methods")
-    func protocolHasNoOptionalMethods() {
-        #expect(selectorNames(required: false).isEmpty)
     }
 }
