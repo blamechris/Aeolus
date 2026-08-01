@@ -35,14 +35,27 @@ number, negotiated at connect time. Protocol changes are called out explicitly b
   request validation refuses rather than repairs, lease identifiers included. The
   protocol version stays at **1**: nothing implements or calls this contract yet, so no
   contract has ever shipped.
-- **XPC protocol, still version 1** — the helper's first implementation landed and the
-  contract did not move under it. One fault code was added, `helperFailed`, for the
-  condition the vocabulary could not previously express: the helper could not read the
-  machine. Adding a case to a forward-tolerantly decoded vocabulary is additive by the
-  documented bump policy, and a peer that predates it decodes the value generically. Reply
-  blocks are now declared `@Sendable`, which is an annotation rather than a message: the
-  selectors, the wire format, and the message set are unchanged. **The pre-ship window that
-  allowed v1 to be reshaped closes here** — from now on the bump policy binds without
-  exception.
+- **XPC protocol, still version 1 — and the last shape v1 will ever take.** The helper's
+  first implementation landed, and the contract *did* move under it, in the one window where
+  moving it is free.
+  - **`FanState` was reshaped, breakingly.** The embedded `Fan` and the non-optional
+    `actualRPM` are **gone**; `index`, `firmwareName`, and three `FanReading` fields
+    replace them, each carrying either a measured value or the reason there is none.
+    Removing required fields and changing the type of others is a **breaking** change by
+    the documented bump policy, not an additive one, and it is legal here only because
+    nothing has ever shipped that speaks v1. It was forced by the first real producer of a
+    `SystemSnapshot`: a fan whose `F<n>Mx` did not read left the old shape with three
+    options and all three were defects — drop the fan, serve a fabricated `0`, or fail the
+    whole snapshot over one key.
+  - **`helperFailed` was added to the fault vocabulary**, for the condition it could not
+    previously express: the helper could not read the machine. That one *is* additive — a
+    peer predating it decodes the value generically — and it is what an unencodable reply
+    or a dead connection is now reported as, rather than blaming the client's payload.
+  - Reply blocks are now declared `@Sendable`, an annotation rather than a message. The
+    message set is unchanged and still carries exactly seven.
+
+  **The pre-ship window that allowed v1 to be reshaped closes here.** The `FanState`
+  reshape is the last change it permits. From now on the bump policy binds without
+  exception: a change of that shape is version 2 and a migration.
 
 [Unreleased]: https://github.com/blamechris/Aeolus/commits/main
