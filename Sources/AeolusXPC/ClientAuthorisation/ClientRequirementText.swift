@@ -123,16 +123,19 @@ enum ClientRequirementText {
         return .success(teamIdentifier)
     }
 
-    /// Builds the requirement text for a validated Team ID.
+    /// Builds the requirement text, validating the Team ID on the way through.
     ///
-    /// Returns `nil` for a Team ID that fails `validate(teamIdentifier:)`. There is no
-    /// overload that skips validation, because "build a requirement from whatever you
-    /// have" is the call a tired reader would make at 2am.
-    static func build(teamIdentifier: String, variant: ClientRequirementVariant) -> String? {
-        guard case .success(let team) = validate(teamIdentifier: teamIdentifier) else {
-            return nil
+    /// Validation is inside this function rather than beside it so there is no unvalidated
+    /// path to a requirement string at all. There is deliberately no overload that skips
+    /// it, because "build a requirement from whatever you have" is the call a tired reader
+    /// would make at 2am.
+    static func build(
+        teamIdentifier: String,
+        variant: ClientRequirementVariant
+    ) -> Result<String, TeamIdentifierRejection> {
+        validate(teamIdentifier: teamIdentifier).map { team in
+            clauses(teamIdentifier: team, variant: variant).joined(separator: " and ")
         }
-        return clauses(teamIdentifier: team, variant: variant).joined(separator: " and ")
     }
 
     /// The clauses, in the order they appear in ADR 0005. Every clause narrows; none

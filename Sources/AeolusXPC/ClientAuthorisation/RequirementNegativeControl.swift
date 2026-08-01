@@ -40,7 +40,13 @@ struct RequirementNegativeControl: Sendable {
             return .probeUnavailable(creationStatus)
         }
 
-        let validity = SecStaticCodeCheckValidity(probe, [], requirement)
+        // `.noNetworkAccess` is what makes "bounded and local" true rather than merely
+        // intended: without it, validation may reach the network for revocation and
+        // notarization checks, and a root daemon's startup would then depend on the
+        // machine having working DNS. It also makes the result deterministic on CI. It can
+        // only make validation stricter, so it cannot turn a rejection into an admission —
+        // measured at well under a millisecond against /bin/ls.
+        let validity = SecStaticCodeCheckValidity(probe, .noNetworkAccess, requirement)
         // Any non-success status means the probe failed the requirement, which is the
         // outcome we want. Only an outright success is a problem — and it is treated as
         // one regardless of which requirement was passed in, so this cannot be made to

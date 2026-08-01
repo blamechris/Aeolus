@@ -29,9 +29,7 @@ enum ClientAuthorisationFixtures {
     ]
 
     static func compiledRequirement(variant: ClientRequirementVariant) throws -> SecRequirement {
-        let text = try #require(
-            ClientRequirementText.build(teamIdentifier: team, variant: variant)
-        )
+        let text = try ClientRequirementText.build(teamIdentifier: team, variant: variant).get()
         return try compile(text)
     }
 
@@ -46,7 +44,10 @@ enum ClientAuthorisationFixtures {
         var code: SecStaticCode?
         let status = SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &code)
         guard status == errSecSuccess, let code else { return false }
-        return SecStaticCodeCheckValidity(code, [], requirement) == errSecSuccess
+        // Same `.noNetworkAccess` as RequirementNegativeControl, for the same reason: a
+        // test that can reach the network is a test that can fail for reasons unrelated to
+        // what it asserts.
+        return SecStaticCodeCheckValidity(code, .noNetworkAccess, requirement) == errSecSuccess
     }
 }
 

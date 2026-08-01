@@ -33,11 +33,21 @@ enum HelperSigningIdentity {
             return .inspectionFailed(copyStatus)
         }
 
-        // SecCodeRef and SecStaticCodeRef are the same underlying object in the Security
-        // framework — the C headers document a SecCodeRef as usable wherever a
-        // SecStaticCodeRef is required — but the Swift overlay imports them as unrelated
-        // types, so the bridge has to be spelled out. There is no allocation or ownership
-        // transfer here; both sides are the same retained CFType.
+        // SecCodeRef and SecStaticCodeRef are the same C type. CSCommon.h declares them as
+        //
+        //     typedef struct __SecCode *SecCodeRef;
+        //     typedef struct __SecCode const *SecStaticCodeRef;
+        //
+        // — one struct, differing only in constness — and the header documents a SecCodeRef
+        // as usable wherever a SecStaticCodeRef is required. Swift imports them as two
+        // unrelated classes, so the identity has to be restated. No allocation, no
+        // ownership transfer: both sides are the same retained CFType.
+        //
+        // The alternative that avoids the cast is SecCodeCopyPath followed by
+        // SecStaticCodeCreateWithPath, and it is worse here: it would read the binary on
+        // disk rather than the running image, putting a time-of-check gap in exactly the
+        // value the requirement is pinned to. A cast documented by the header beats a
+        // supported API that answers a subtly different question.
         let staticCode = unsafeBitCast(selfCode, to: SecStaticCode.self)
 
         var information: CFDictionary?
@@ -46,10 +56,16 @@ enum HelperSigningIdentity {
             SecCSFlags(rawValue: kSecCSSigningInformation),
             &information
         )
-        guard informationStatus == errSecSuccess,
-            let attributes = information as? [String: Any]
-        else {
+        guard informationStatus == errSecSuccess else {
             return .inspectionFailed(informationStatus)
+        }
+        guard let attributes = information as? [String: Any] else {
+            // Success with a dictionary we cannot read. Reported as a failure to inspect,
+            // not as "no Team ID": we did not establish that there is no Team ID, we
+            // failed to look, and the fault log should say which. `errSecSuccess` is
+            // deliberately not the status carried here — "failed with OSStatus 0" is the
+            // kind of log line that sends a reader down the wrong path.
+            return .inspectionFailed(errSecCSInternalError)
         }
 
         guard

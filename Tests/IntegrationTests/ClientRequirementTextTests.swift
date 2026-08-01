@@ -25,9 +25,9 @@ struct ClientRequirementTextTests {
             and (identifier "com.blamechris.Aeolus" or identifier "com.blamechris.fanctl") \
             and !entitlement["com.apple.security.get-task-allow"]
             """
-        let built = try #require(
-            ClientRequirementText.build(teamIdentifier: Self.team, variant: .release)
-        )
+        let built = try ClientRequirementText.build(
+            teamIdentifier: Self.team, variant: .release
+        ).get()
         #expect(built == expected)
     }
 
@@ -42,20 +42,20 @@ struct ClientRequirementTextTests {
             and certificate leaf[subject.OU] = "ABCDE12345" \
             and (identifier "com.blamechris.Aeolus" or identifier "com.blamechris.fanctl")
             """
-        let built = try #require(
-            ClientRequirementText.build(teamIdentifier: Self.team, variant: .debug)
-        )
+        let built = try ClientRequirementText.build(
+            teamIdentifier: Self.team, variant: .debug
+        ).get()
         #expect(built == expected)
     }
 
     @Test("Release excludes get-task-allow clients; Debug tolerates them")
     func onlyReleaseExcludesDebuggableClients() throws {
-        let release = try #require(
-            ClientRequirementText.build(teamIdentifier: Self.team, variant: .release)
-        )
-        let debug = try #require(
-            ClientRequirementText.build(teamIdentifier: Self.team, variant: .debug)
-        )
+        let release = try ClientRequirementText.build(
+            teamIdentifier: Self.team, variant: .release
+        ).get()
+        let debug = try ClientRequirementText.build(
+            teamIdentifier: Self.team, variant: .debug
+        ).get()
         let clause = "!entitlement[\"\(ClientRequirementText.debuggableEntitlement)\"]"
         #expect(release.contains(clause))
         #expect(!debug.contains(ClientRequirementText.debuggableEntitlement))
@@ -63,9 +63,9 @@ struct ClientRequirementTextTests {
 
     @Test("The Release requirement contains no Apple Development certificate OID")
     func releaseAdmitsNoDevelopmentChain() throws {
-        let release = try #require(
-            ClientRequirementText.build(teamIdentifier: Self.team, variant: .release)
-        )
+        let release = try ClientRequirementText.build(
+            teamIdentifier: Self.team, variant: .release
+        ).get()
         // Apple Development leaf and the WWDR intermediate that signs it. Their presence
         // in a Release requirement would mean a shipped helper accepts locally-built
         // clients — the exact failure the Debug/Release split exists to prevent.
@@ -81,9 +81,9 @@ struct ClientRequirementTextTests {
         arguments: ClientAuthorisationFixtures.variants
     )
     func everyVariantPinsTeamAndIdentifiers(variant: ClientRequirementVariant) throws {
-        let text = try #require(
-            ClientRequirementText.build(teamIdentifier: Self.team, variant: variant)
-        )
+        let text = try ClientRequirementText.build(
+            teamIdentifier: Self.team, variant: variant
+        ).get()
         #expect(text.contains("certificate leaf[subject.OU] = \"ABCDE12345\""))
         #expect(text.contains("identifier \"com.blamechris.Aeolus\""))
         #expect(text.contains("identifier \"com.blamechris.fanctl\""))
@@ -95,12 +95,12 @@ struct ClientRequirementTextTests {
         arguments: ClientAuthorisationFixtures.variants
     )
     func teamIdentifierIsLoadBearing(variant: ClientRequirementVariant) throws {
-        let ours = try #require(
-            ClientRequirementText.build(teamIdentifier: "ABCDE12345", variant: variant)
-        )
-        let theirs = try #require(
-            ClientRequirementText.build(teamIdentifier: "ZZZZZ99999", variant: variant)
-        )
+        let ours = try ClientRequirementText.build(
+            teamIdentifier: "ABCDE12345", variant: variant
+        ).get()
+        let theirs = try ClientRequirementText.build(
+            teamIdentifier: "ZZZZZ99999", variant: variant
+        ).get()
         #expect(ours != theirs)
         #expect(!ours.contains("ZZZZZ99999"))
     }
@@ -110,9 +110,9 @@ struct ClientRequirementTextTests {
         arguments: ClientAuthorisationFixtures.variants
     )
     func everyVariantCompiles(variant: ClientRequirementVariant) throws {
-        let text = try #require(
-            ClientRequirementText.build(teamIdentifier: Self.team, variant: variant)
-        )
+        let text = try ClientRequirementText.build(
+            teamIdentifier: Self.team, variant: variant
+        ).get()
         var requirement: SecRequirement?
         let status = SecRequirementCreateWithString(text as CFString, [], &requirement)
         #expect(status == errSecSuccess)
@@ -180,7 +180,7 @@ struct TeamIdentifierValidationTests {
         // something other than what the module documents.
         for variant in ClientAuthorisationFixtures.variants {
             let built = ClientRequirementText.build(teamIdentifier: candidate, variant: variant)
-            #expect(built == nil)
+            #expect(built == .failure(.unacceptableCharacters))
         }
     }
 }

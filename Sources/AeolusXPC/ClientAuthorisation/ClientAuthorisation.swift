@@ -105,19 +105,11 @@ enum ClientAuthorisationBuilder {
         case .inspectionFailed(let status): return .refuseAll(.selfInspectionFailed(status))
         }
 
-        switch ClientRequirementText.validate(teamIdentifier: team) {
+        let text: String
+        switch ClientRequirementText.build(teamIdentifier: team, variant: variant) {
+        case .success(let value): text = value
         case .failure(let rejection):
             return .refuseAll(.teamIdentifierNotWellFormed(rejection))
-        case .success:
-            break
-        }
-
-        guard let text = ClientRequirementText.build(teamIdentifier: team, variant: variant)
-        else {
-            // Unreachable while `build` and `validate` agree on what a usable Team ID is.
-            // Kept as a refusal rather than a `fatalError` because a root daemon that
-            // crashes on a policy question is worse than one that obeys nobody.
-            return .refuseAll(.teamIdentifierNotWellFormed(.unacceptableCharacters))
         }
 
         return seal(
