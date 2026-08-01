@@ -4,27 +4,6 @@ import Testing
 
 @testable import AeolusXPC
 
-/// Returns the fault a body threw, or `nil` if it threw something else or nothing.
-private func fault(from body: () throws -> Void) -> AeolusXPCFault? {
-    do {
-        try body()
-        return nil
-    } catch let fault as AeolusXPCFault {
-        return fault
-    } catch {
-        return nil
-    }
-}
-
-/// The name of the parameter a body's refusal blamed, or `nil` if it did not refuse or
-/// refused for some other reason. Asserting on the *name* is what makes these tests able
-/// to fail: "something threw" passes just as happily when an unrelated earlier guard
-/// fires, which is how a check ends up looking tested while never being reached.
-private func refusedParameter(_ body: () throws -> Void) -> String? {
-    guard case .invalidParameter(let name, _)? = fault(from: body) else { return nil }
-    return name
-}
-
 /// These are the checks that stand between a hostile payload and a root daemon, so the
 /// suite is deliberately weighted towards refusals rather than acceptances: the
 /// interesting failure is never "a valid request was rejected", it is "an invalid one was
@@ -167,13 +146,24 @@ struct XPCValidationTests {
     /// NaN compares false against everything, so a bare range test rejects it by
     /// accident. Checked deliberately, because "rejected for the wrong reason" is one
     /// refactor away from "not rejected".
+    ///
+    /// The *detail* is asserted, not merely the parameter name. Both guards in
+    /// `validateTimeToLive` blame `timeToLive`, so a name-only assertion stays green with
+    /// the finiteness guard deleted — the range check catches these values anyway, for the
+    /// accidental reason the guard exists to replace. Asserting that the refusal says
+    /// "finite" is what makes deleting the guard fail here.
     @Test(
-        "A non-finite TTL is refused",
+        "A non-finite TTL is refused for being non-finite, not by accident",
         arguments: [Double.nan, .infinity, -.infinity, .signalingNaN]
     )
     func nonFiniteTTLIsRefused(_ ttl: TimeInterval) {
         #expect(
             refusedParameter({ try AeolusXPCValidation.validateTimeToLive(ttl) }) == "timeToLive")
+        #expect(
+            refusedDetail({ try AeolusXPCValidation.validateTimeToLive(ttl) })?
+                .contains("finite") == true,
+            "refused, but not by the finiteness guard"
+        )
     }
 
     @Test("An out-of-range TTL is refused through the full decode-and-validate path")
@@ -205,9 +195,14 @@ struct XPCValidationTests {
         #expect(refused == "fanIndices")
     }
 
+    /// `[0, 1, 2]` is not a fifth spelling of the others. It is the superset case: a
+    /// reversed subset test — `enumeratedFanIndices.isSubset(of: Set(indices))` — still
+    /// refuses every other argument here and accepts this one. It pins the direction of
+    /// the comparison against a machine that actually has fans, so the guard does not rest
+    /// on `noFansMeansNoLease`'s degenerate empty set alone.
     @Test(
         "A fan index this machine did not enumerate is refused",
-        arguments: [[2], [0, 2], [-1], [Int.max]]
+        arguments: [[2], [0, 2], [0, 1, 2], [-1], [Int.max]]
     )
     func unenumeratedFanIndexIsRefused(_ indices: [Int]) {
         let refused = refusedParameter({
@@ -310,84 +305,5 @@ struct XPCValidationTests {
             _ = try AeolusXPCValidation.leaseRequest(from: payload, enumeratedFanIndices: fans)
         })
         #expect(refused == "holderDescription")
-    }
-}
-
-/// The handshake is the gate every other message sits behind, so its refusals are the
-/// ones that decide whether an unnegotiated client can proceed at all.
-@Suite("XPC handshake validation")
-struct XPCHandshakeValidationTests {
-
-    @Test("A hello inside the helper's range is accepted")
-    func compatibleHelloIsAccepted() throws {
-        let request = HelloRequest(
-            clientProtocolVersion: AeolusXPCVersion.current,
-            clientDescription: "fanctl 0.1.0"
-        )
-        let payload = try AeolusXPCCoding.encoder().encode(request)
-        #expect(try AeolusXPCValidation.helloRequest(from: payload) == request)
-    }
-
-    @Test("A hello outside the helper's range is refused with both sides' numbers")
-    func incompatibleHelloIsRefused() throws {
-        let helperRange = ProtocolVersionRange(minimumSupported: 2, current: 4)
-        let request = HelloRequest(clientProtocolVersion: 1, clientDescription: "fanctl")
-        let thrown = try #require(
-            fault(from: {
-                try AeolusXPCValidation.validate(request, helperRange: helperRange)
-            })
-        )
-        #expect(thrown == .versionMismatch(clientVersion: 1, helperRange: helperRange))
-    }
-
-    @Test("A hello from a client newer than the helper is refused")
-    func newerClientIsRefused() {
-        let request = HelloRequest(
-            clientProtocolVersion: AeolusXPCVersion.current + 1,
-            clientDescription: "Aeolus.app"
-        )
-        let thrown = fault(from: { try AeolusXPCValidation.validate(request) })
-        #expect(thrown?.wireCode == "versionMismatch")
-    }
-
-    @Test("A hello with a hostile client description is refused")
-    func hostileClientDescriptionIsRefused() {
-        let request = HelloRequest(
-            clientProtocolVersion: AeolusXPCVersion.current,
-            clientDescription: "Aeolus.app\u{0}"
-        )
-        #expect(
-            refusedParameter({ try AeolusXPCValidation.validate(request) }) == "clientDescription")
-    }
-
-    /// The description is judged before the version. A client that is both out of range
-    /// and misbehaved is told about the misbehaviour, because updating fixes the version
-    /// and would leave the bug in place.
-    @Test("A hello that is both out of range and misbehaved reports the misbehaviour")
-    func descriptionIsCheckedBeforeVersion() {
-        let request = HelloRequest(
-            clientProtocolVersion: 99,
-            clientDescription: "Aeolus.app\n"
-        )
-        #expect(
-            refusedParameter({ try AeolusXPCValidation.validate(request) }) == "clientDescription")
-    }
-
-    @Test("Undecodable hello JSON is refused as a malformed payload")
-    func undecodableHelloIsRefused() {
-        let thrown = fault(from: {
-            _ = try AeolusXPCValidation.decodeHelloRequest(from: Data("{".utf8))
-        })
-        #expect(thrown?.wireCode == "malformedPayload")
-    }
-
-    @Test("A hello missing its version is refused rather than defaulted")
-    func helloWithoutVersionIsRefused() {
-        let thrown = fault(from: {
-            _ = try AeolusXPCValidation.decodeHelloRequest(
-                from: Data(#"{"clientDescription":"fanctl"}"#.utf8)
-            )
-        })
-        #expect(thrown?.wireCode == "malformedPayload")
     }
 }
