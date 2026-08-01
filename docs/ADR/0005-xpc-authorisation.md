@@ -194,6 +194,32 @@ optional DTO fields within a version, plus the capability set, provide the flexi
 | Same API behaves correctly on macOS 13–15 | Documented-available; **untestable here** | Ships the same "documented, untested" status as the Intel path; the compatibility matrix must say so |
 | `SMAppService.daemon` registration works from a Development-signed Debug build | Unverified | Local iteration falls back to a manually `launchctl`-bootstrapped helper — a dev-workflow cost, not a design change |
 
+**Verification log — 2026-07-31 (#73).** The last row above remains **unverified, and the
+reason is now known precisely.** The development machine has no signing identity
+configured for this project at all: `Configs/Signing.xcconfig` is absent, and a `Full`
+build asked to sign with `Apple Development` stops at *"Signing for 'Aeolus' requires a
+development team."* No Development-signed or Developer ID-signed build can be produced
+here, so `SMAppService.daemon` registration cannot be attempted — the question is blocked
+on a certificate rather than answered.
+
+Two things were established while finding that out. First, the embedding itself is
+correct: a `Full` build compiles, embeds the helper at `Contents/MacOS/AeolusHelper` and
+its job description at `Contents/Library/LaunchDaemons/`, and stops exactly at code
+signing with a clear error naming both the app and the helper. Second — and this is the
+part worth recording — **the registration question could not have been answered before
+#73 regardless of certificates.** `project.yml` set `CODE_SIGN_IDENTITY: "-"` and
+`DEVELOPMENT_TEAM: ""` as project-level build settings, which outrank the project's base
+configuration file, so `Configs/Signing.xcconfig` was being silently overridden and every
+`Full` build would have come out ad-hoc signed no matter what certificate was installed.
+An ad-hoc helper is exactly the "no Team ID in its own signature → refuse all clients"
+row of the failure table above, so the symptom would have looked like a broken design
+rather than a build setting. Those two settings now apply to the `Monitor` configurations
+only.
+
+Resolving the open question needs one thing: a `Configs/Signing.xcconfig` with a real Team
+ID and Developer ID, then a `Full Debug` build, `register()`, and a note of what
+`SMAppService.Status` reports afterwards.
+
 Nothing in this design depends on `docs/SMC-RESEARCH.md`'s reported-but-unverified section. E2 touches
 no write, no `Ftst`, no unlock sequence — deliberately, because the boundary must not encode Apple
 Silicon hypotheses. The only E4-adjacent commitments are fault codes and availability reasons, which

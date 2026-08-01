@@ -83,9 +83,33 @@ xcodegen generate
 Then use the **Aeolus (Full)** scheme. `Configs/Signing.xcconfig` is gitignored; never
 commit it, and never commit a Team ID.
 
+Without that file the `Full` scheme fails immediately, before compiling anything, with
+`Unable to open base configuration reference file`. With it but without a matching
+certificate, it compiles and embeds everything and then stops at code signing with
+`No "Developer ID Application" signing certificate … was found`. Both are the intended
+outcomes: there is no configuration in which `Full` quietly produces an ad-hoc-signed
+helper, because an ad-hoc-signed root daemon is one `SMAppService` will not register and
+one that would refuse every client anyway — it can read no Team ID from its own signature.
+
 After first launch you must approve the background item in **System Settings → General →
 Login Items & Extensions**. `SMAppService` cannot prompt for this, so if you skip it the
-app appears broken rather than unapproved.
+app appears broken rather than unapproved. The app's own footer says so while it is
+pending, and offers to open that settings pane.
+
+**Registering from a Development-signed Debug build is still unverified.** Nobody has yet
+run it on a machine with a signing identity — see the assumptions table in
+[docs/ADR/0005-xpc-authorisation.md](docs/ADR/0005-xpc-authorisation.md). If it turns out
+Apple Development certificates are not accepted for daemon registration, local iteration
+falls back to bootstrapping the helper by hand:
+
+```bash
+sudo launchctl bootstrap system /Applications/Aeolus.app/Contents/Library/LaunchDaemons/com.blamechris.Aeolus.Helper.plist
+sudo launchctl bootout system/com.blamechris.Aeolus.Helper   # when you are done
+```
+
+That is a development-workflow cost, not a design change: shipped builds are Developer ID
+signed and register through `SMAppService` either way. If you do try it, please report
+what happened — a clear negative is as useful as a success.
 
 ## The best first contribution: a sensor catalog entry
 
