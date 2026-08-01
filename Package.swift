@@ -137,6 +137,23 @@ let package = Package(
             dependencies: ["SMCCore", "FanKit", "AeolusXPC"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        // Exercises the privilege boundary from the helper's side (E2.3): the handshake
+        // gate, the FanAuthority seam, and ReadOnlyFanAuthority's snapshot shape. Depends
+        // on the *executable* target, which SwiftPM supports on macOS and which is what
+        // keeps every line of the helper inside Sources/AeolusHelper — where CLAUDE.md's
+        // review rule and this repository's two helper-only SwiftLint rules
+        // (no_unchecked_sendable_in_helper, no_silent_write_failure) both apply. Splitting
+        // the helper into a library to make it testable would have moved the highest-
+        // review-bar code in the project out from under both.
+        //
+        // The listener tests drive a real NSXPCListener.anonymous() in process, so the
+        // gate is exercised over a real connection rather than by calling the actor
+        // directly — and they run on CI, which has no signing identity and no SMC.
+        .testTarget(
+            name: "AeolusHelperTests",
+            dependencies: ["AeolusHelper", "SMCCore", "FanKit", "AeolusXPC"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
         // Exercises AeolusUI's polling data layer (E7.1): fan/sensor enumeration, the
         // unavailable-vs-zero and non-finite-value guards, and the refresh loop, against
         // fake SensorProviders/clocks via @testable import — the same "no hardware needed
