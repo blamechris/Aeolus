@@ -13,6 +13,27 @@
   not point at the cause. Client authorisation is done in code, by checking the
   connecting process's code-signing requirement — see docs/SECURITY-adjacent notes in
   SECURITY.md and epic E2.
+
+  ## On-demand launch only, and why there is no RunAtLoad or KeepAlive
+
+  MachServices is the entire launch policy: launchd starts the helper when a client
+  connects to the mach service, and at no other time. That is all E2 needs.
+
+  Sources/AeolusHelper/AeolusHelperMain.swift is still a scaffold — it writes to stderr
+  and exits non-zero, deliberately, so that a do-nothing process never holds root. Under
+  KeepAlive = { SuccessfulExit = false } launchd restarts a job "in the inverse
+  condition", i.e. whenever it exits non-zero, and launchd.plist(5) notes that key also
+  implies RunAtLoad. Together those turn the scaffold's refusal into a root process
+  started at approval time and at every boot, exiting 1, and restarted on launchd's
+  throttle indefinitely — while SMAppService.Status reports .enabled throughout, so the
+  app would say "Helper installed and enabled" about a daemon that cannot run at all.
+  A refusal to run is only a refusal if nothing restarts it.
+
+  TODO(#72): revisit boot-launch and restart policy when the helper becomes a real daemon
+  with an NSXPCListener. Decide it against the self-renewing-lease semantics E5 actually
+  implements — whether a lease is meant to survive a reboot, and what a crash while one is
+  held should do — rather than assuming a daemon wants to be kept alive. Every key added
+  here starts a root process, so this is a safety decision and not a convenience one.
 -->
 <plist version="1.0">
 <dict>
@@ -26,17 +47,6 @@
 	<dict>
 		<key>com.blamechris.Aeolus.Helper</key>
 		<true/>
-	</dict>
-
-	<!-- launchd starts the helper on demand when a client connects to the mach
-	     service, and again at boot so a self-renewing lease survives a restart. -->
-	<key>RunAtLoad</key>
-	<true/>
-
-	<key>KeepAlive</key>
-	<dict>
-		<key>SuccessfulExit</key>
-		<false/>
 	</dict>
 
 	<key>ProcessType</key>

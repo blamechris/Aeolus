@@ -81,8 +81,34 @@ jobs:
             -scheme "Aeolus (Monitor)" \
             -configuration "Monitor Debug" \
             -destination "platform=macOS" \
+            -derivedDataPath DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             build
+
+      # "The helper is absent from Monitor" is called a safety property in project.yml,
+      # and until now nothing checked it: the embed script's Monitor branch asserts
+      # nothing, so a configuration that gained AEOLUS_EMBEDS_HELPER: YES, or a Copy Files
+      # phase substituted for the script, would keep CI green while the build every
+      # contributor runs shipped a root daemon and its launchd job description.
+      #
+      # The property matters because a Monitor build is ad-hoc signed. An ad-hoc-signed
+      # root daemon can express no stable client code-signing requirement, so it is a
+      # daemon nothing could safely authorise — see docs/ADR/0005-xpc-authorisation.md.
+      - name: Assert the Monitor bundle ships no helper
+        run: |
+          set -euo pipefail
+          APP="DerivedData/Build/Products/Monitor Debug/Aeolus.app"
+          test -d "${APP}" || { echo "error: no app bundle at ${APP}"; exit 1; }
+
+          if [ -e "${APP}/Contents/MacOS/AeolusHelper" ]; then
+              echo "error: the Monitor bundle contains the privileged helper"
+              exit 1
+          fi
+          if [ -d "${APP}/Contents/Library" ]; then
+              echo "error: the Monitor bundle contains Contents/Library (launchd job descriptions live there)"
+              ls -R "${APP}/Contents/Library"
+              exit 1
+          fi
 
   lint:
     name: Lint and format

@@ -142,10 +142,12 @@ let package = Package(
         // fake SensorProviders/clocks via @testable import — the same "no hardware needed
         // for the bulk of the suite, hardware-gated smoke tests for the rest" split
         // fanctlTests uses. FanKit is needed directly, not just transitively via AeolusUI,
-        // for HardwareIdentity/catalog fixtures in the label-source tests.
+        // for HardwareIdentity/catalog fixtures in the label-source tests. AeolusXPC
+        // likewise, so LaunchDaemonPlistTests can check the launchd plist's Label against
+        // AeolusXPCService.machServiceName rather than against a second copy of the string.
         .testTarget(
             name: "AeolusUITests",
-            dependencies: ["AeolusUI", "SMCCore", "FanKit"],
+            dependencies: ["AeolusUI", "SMCCore", "FanKit", "AeolusXPC"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]

@@ -7,9 +7,10 @@ Configs/Signing.xcconfig
 AuthKey_*.p8
 
 # ---- XcodeGen ----
-# Both of these are generated from project.yml. Edit project.yml, not them.
+# All of these are generated from project.yml. Edit project.yml, not them.
 Aeolus.xcodeproj/
 Configs/Aeolus-Info.plist
+Configs/AeolusHelper-Info.plist
 *.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
 
 # ---- Xcode ----
