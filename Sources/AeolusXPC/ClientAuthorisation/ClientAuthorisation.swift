@@ -31,7 +31,27 @@ import os
 /// manual `Mac16,5` checklist, whose load-bearing item is "an ad-hoc-built client is
 /// refused by the installed helper". A green CI run says the builder is correct. It does
 /// not say the boundary holds.
-package enum ClientAuthorisation {
+///
+/// ## Why this is `public` and not `package`
+///
+/// It was `package` when written, which is the access level its one caller wants — and
+/// which does not work in the build that ships it. The Xcode `AeolusHelper` target
+/// compiles `Sources/AeolusHelper` as a native target that merely *depends on* the
+/// `AeolusXPC` product, so it is not in the package Swift computes `package` visibility
+/// against. Measured on this tree: a `Full`/`Monitor` `xcodebuild` of the helper target
+/// against a `package` declaration fails with "cannot find 'ClientAuthorisation' in
+/// scope", while `swift build` succeeds — a failure only ever visible in the Xcode build,
+/// which is the only build that produces a signed helper. `SWIFT_PACKAGE_NAME` would
+/// paper over it, but the name SwiftPM passes is derived from the checkout directory
+/// (`repo_migration_planning_8a924f` in a worktree, `Aeolus` in a clone), so pinning it
+/// would work on one machine and not another.
+///
+/// Widening costs nothing that `package` was buying. `resolveForRunningProcess()` takes
+/// no arguments, so no caller can select a variant, supply a Team ID, or substitute the
+/// negative control; `AuthorisedClientRequirement` still has no initialiser reachable from
+/// outside this file's neighbour, so no caller can forge one. The worst a new caller can
+/// do is read a decision it did not make.
+public enum ClientAuthorisation {
 
     private static let log = Logger(
         subsystem: "dev.aeolus.AeolusXPC",
@@ -48,7 +68,7 @@ package enum ClientAuthorisation {
     ///
     /// Intended to be called once at startup and the result held; it does file I/O for the
     /// negative control and should not be on a per-connection path.
-    package static func resolveForRunningProcess() -> ClientAuthorisationOutcome {
+    public static func resolveForRunningProcess() -> ClientAuthorisationOutcome {
         let outcome = ClientAuthorisationBuilder.build(
             inspection: HelperSigningIdentity.inspect(),
             variant: .forRunningProcess,
