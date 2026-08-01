@@ -79,9 +79,10 @@ public enum AeolusXPCFault: Error, Sendable, Hashable {
     /// A code this build does not recognise, from a newer helper. Render it generically;
     /// never treat it as a success.
     ///
-    /// This is a decode product, not something to construct by hand. Building it with a
-    /// code this build *does* know produces a value that encodes and decodes back to the
-    /// known case instead of to itself.
+    /// A decode product, not something to construct by hand: built with a code this build
+    /// *does* know, it never round-trips to itself. `.unknown(code: "leaseExpired")`
+    /// decodes back as `.leaseExpired`; `.unknown(code: "versionMismatch")` encodes without
+    /// the fields that code requires and **throws** on decode. Neither is what was built.
     case unknown(code: String, detail: String?)
 }
 
@@ -281,11 +282,20 @@ extension AeolusXPCFault: LocalizedError {
 /// Rendering rules for the free text a fault carries across the boundary.
 enum FaultText {
 
-    /// Longest run of helper-supplied free text this client will render.
+    /// Longest run of helper-supplied free text this client will render, in characters.
     ///
     /// Not a validation limit — nothing is refused for exceeding it. It bounds one log
     /// line and one UI label, which is all `errorDescription` is for.
     static let maxRenderedLength = 200
+
+    /// The same bound, in UTF-8 bytes.
+    ///
+    /// A character cap alone does not bound a log line: one grapheme cluster can carry an
+    /// unbounded run of combining marks, so 200 *characters* can be hundreds of kilobytes.
+    /// Exactly the defect `AeolusXPCValidation.maxHolderDescriptionUTF8Bytes` exists for,
+    /// at the same 4:1 ratio, applied to the rendering side. Not reachable from client
+    /// input today — this text comes from the helper — so it is depth, not a live hole.
+    static let maxRenderedUTF8Bytes = maxRenderedLength * 4
 
     /// Shown in place of text that survived stripping with nothing left.
     static let unprintableMarker = "unprintable"
@@ -298,14 +308,37 @@ enum FaultText {
     /// entirely-unprintable string renders as a marker rather than as nothing at all, so
     /// a reader can tell "the helper said something unprintable" from "the helper said
     /// nothing".
-    static func displayable(_ text: String, limit: Int = maxRenderedLength) -> String {
+    ///
+    /// Both caps apply. Text over either renders truncated with an ellipsis; text so dense
+    /// that not one character fits inside the byte cap renders as the marker.
+    static func displayable(
+        _ text: String,
+        limit: Int = maxRenderedLength,
+        byteLimit: Int = maxRenderedUTF8Bytes
+    ) -> String {
         let stripped = String(
             text.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
         )
         let trimmed = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return unprintableMarker }
-        guard trimmed.count > limit else { return trimmed }
-        return String(trimmed.prefix(limit)) + "…"
+        guard trimmed.count > limit || trimmed.utf8.count > byteLimit else { return trimmed }
+        let cut = truncated(trimmed, characters: limit, bytes: byteLimit)
+        guard !cut.isEmpty else { return unprintableMarker }
+        return cut + "…"
+    }
+
+    /// Applies both caps at once, cutting on a `Character` boundary so the result is never
+    /// a half-formed grapheme cluster and never a split scalar.
+    private static func truncated(_ text: String, characters: Int, bytes: Int) -> String {
+        var result = ""
+        var byteCount = 0
+        for character in text.prefix(characters) {
+            let width = String(character).utf8.count
+            guard byteCount + width <= bytes else { break }
+            result.append(character)
+            byteCount += width
+        }
+        return result
     }
 }
 

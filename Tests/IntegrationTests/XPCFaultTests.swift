@@ -168,6 +168,44 @@ struct XPCFaultTests {
         #expect(description.contains("…"))
     }
 
+    /// A character cap alone does not bound a log line: one grapheme cluster can carry an
+    /// unbounded run of combining marks, so text comfortably inside 200 *characters* is
+    /// still hundreds of kilobytes. Both caps have to hold — the same defect, and the same
+    /// fix, as `maxHolderDescriptionUTF8Bytes` one file over.
+    @Test("Rendered free text is bounded in bytes, not only in characters")
+    func renderedTextIsBoundedInBytes() throws {
+        let cluster = "a" + String(repeating: "\u{0301}", count: 200)
+        let byteHeavy = String(repeating: cluster, count: 300)
+        #expect(byteHeavy.utf8.count > FaultText.maxRenderedUTF8Bytes)
+
+        let fault = AeolusXPCFault.malformedPayload(detail: byteHeavy)
+        let description = try #require(fault.errorDescription)
+        #expect(description.utf8.count < FaultText.maxRenderedUTF8Bytes + 200)
+        #expect(description.contains("…"))
+    }
+
+    /// The degenerate end of the same case: a single cluster too dense for even one
+    /// character to fit inside the byte cap. It renders as the marker rather than as an
+    /// ellipsis with nothing before it, which is the statement the marker always makes —
+    /// the helper said something this client cannot show you.
+    @Test("A single grapheme too large to render falls back to the marker")
+    func oversizeSingleGraphemeRendersMarker() throws {
+        let oneHugeCluster = "a" + String(repeating: "\u{0301}", count: 2_000)
+        #expect(oneHugeCluster.count == 1)
+        #expect(oneHugeCluster.utf8.count > FaultText.maxRenderedUTF8Bytes)
+
+        let fault = AeolusXPCFault.malformedPayload(detail: oneHugeCluster)
+        let description = try #require(fault.errorDescription)
+        #expect(description.contains(FaultText.unprintableMarker))
+    }
+
+    /// The caps must not fire on text that is inside both of them.
+    @Test("Text inside both caps renders unchanged")
+    func textInsideBothCapsIsUnchanged() {
+        let detail = "field 'timeToLive' has the wrong type"
+        #expect(FaultText.displayable(detail) == detail)
+    }
+
     /// `NSXPCConnection` flattens a Swift error to an `NSError` and discards its
     /// associated values, so this bridge is the only reason the vocabulary survives the
     /// trip at all.
