@@ -36,13 +36,25 @@ enum PayloadReply: Sendable {
     /// empty payload would be the `(nil, nil)` defect wearing a different shape, and
     /// throwing past the reply block would leave the client waiting on an answer that
     /// never comes.
+    ///
+    /// `.helperFailed` and not `.malformedPayload`, because the two name different
+    /// culprits. `malformedPayload` is documented as "a payload did not decode, or was
+    /// missing a required field" — a statement about what the *client* sent, and
+    /// `snapshot(reply:)` carries no payload at all. The value that failed to encode was
+    /// built here, out of what this machine's firmware reported, so the client is the one
+    /// party to the exchange that cannot be at fault. A user told their request was
+    /// malformed would file a bug against the wrong half of the system, which is the same
+    /// mistake in the other direction as the `.unknown` this vocabulary already rejected
+    /// for making a hardware fault look like version skew.
     static func encoding(_ value: some Encodable) -> PayloadReply {
         do {
             return .payload(try AeolusXPCCoding.encoder().encode(value))
         } catch {
             // The detail names the failure, never the value: this text reaches a log line.
+            // A fixed string rather than the underlying `EncodingError`, whose description
+            // quotes the offending value and the coding path that reached it.
             return .refusal(
-                .malformedPayload(detail: "the helper could not encode its own reply"))
+                .helperFailed(detail: "the helper could not encode its own reply"))
         }
     }
 }
