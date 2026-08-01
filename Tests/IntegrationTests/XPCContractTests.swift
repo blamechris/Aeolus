@@ -21,7 +21,8 @@ struct XPCContractTests {
                     actualRPM: 1800,
                     targetRPM: 2000,
                     mode: .manualFixed,
-                    isReclaimedBySystem: false
+                    isReclaimedBySystem: false,
+                    manualControlAvailability: .available
                 )
             ],
             sensors: [
@@ -45,6 +46,34 @@ struct XPCContractTests {
         let decoded = try AeolusXPCCoding.decoder().decode(SystemSnapshot.self, from: data)
 
         #expect(decoded == snapshot)
+    }
+
+    /// E2's own answer for every fan: the boundary exists, the thing behind it does not,
+    /// and the snapshot says so rather than offering control that would go nowhere.
+    @Test("A snapshot can report that no fan is controllable at all")
+    func snapshotCanReportNoWritePath() throws {
+        let snapshot = SystemSnapshot(
+            fans: [
+                FanState(
+                    fan: Fan(index: 0, minimumRPM: 1200, maximumRPM: 5400, firmwareName: nil),
+                    actualRPM: 1800,
+                    targetRPM: nil,
+                    mode: .automatic,
+                    isReclaimedBySystem: false,
+                    manualControlAvailability: .unavailable(.writePathNotBuilt)
+                )
+            ],
+            sensors: [],
+            activeLease: nil,
+            isThermalEmergencyActive: false,
+            capturedAt: Date(timeIntervalSince1970: 1_000_000)
+        )
+
+        let data = try AeolusXPCCoding.encoder().encode(snapshot)
+        let decoded = try AeolusXPCCoding.decoder().decode(SystemSnapshot.self, from: data)
+
+        #expect(decoded.fans[0].manualControlAvailability == .unavailable(.writePathNotBuilt))
+        #expect(decoded.activeLease == nil)
     }
 
     /// A stale client against a newer helper must fail loudly, not degrade silently.
