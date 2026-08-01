@@ -50,20 +50,58 @@ settings:
     ENABLE_HARDENED_RUNTIME: YES
     MARKETING_VERSION: "0.0.0"
     CURRENT_PROJECT_VERSION: "1"
-    # Overridden per-configuration below; the Monitor default is what a contributor
-    # with no certificate gets.
-    CODE_SIGN_IDENTITY: "-"
-    CODE_SIGN_STYLE: Manual
-    DEVELOPMENT_TEAM: ""
   configs:
+    # Two things are set per-configuration here, and the signing trio is set on the
+    # Monitor configurations *only* — deliberately.
+    #
+    # A project-level build setting outranks the project's base configuration file, so a
+    # CODE_SIGN_IDENTITY of "-" written here in `base` would silently override whatever
+    # Configs/Signing.xcconfig says, and every Full build would come out ad-hoc signed no
+    # matter what certificate the maintainer holds. An ad-hoc-signed helper is one
+    # SMAppService will not register and one that, per ADR 0005, refuses every client
+    # because it can read no Team ID from its own signature — so the failure would look
+    # like "registration is impossible on this project" rather than like a build setting.
+    #
+    # CODE_SIGN_STYLE is here for the same reason and not one line above it. Left in
+    # `base` it outranked Signing.xcconfig identically: with CODE_SIGN_STYLE = Automatic
+    # written into a real Signing.xcconfig, -showBuildSettings still resolved Manual for
+    # Full Debug and Full Release, on both the Aeolus and AeolusHelper targets, which made
+    # the setting Signing.xcconfig.example advertises inert. A maintainer asking for
+    # Automatic to have a development provisioning profile selected would have got Manual,
+    # no profile, and a signing failure — the same misdiagnosis one setting over.
+    #
+    # Monitor needs Manual: ad-hoc signing ("-") with no team is not something Automatic
+    # can express. Leaving the Full configurations unset here lets Signing.xcconfig supply
+    # all three.
+    #
+    # AEOLUS_EMBEDS_HELPER drives the app target's embed script. It is read there as
+    # ${AEOLUS_EMBEDS_HELPER:-NO}, so a configuration that forgets to set it embeds
+    # nothing: the default answer to "should this build ship a root daemon" is no.
+    #
+    # There is deliberately no MONITOR_ONLY compilation condition. It used to be set on
+    # the Monitor configurations and nothing read it — and it could not have worked:
+    # measured, a `#if MONITOR_ONLY` probe compiled into the AeolusUI package target
+    # reports the condition *not visible* under Monitor Debug, so a flag-based check would
+    # have taken its helper-exists branch in exactly the build that has no helper. The
+    # bundle is asked at runtime instead; see Sources/Aeolus/Helper/HelperBundleLayout.swift.
     Monitor Debug:
-      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG MONITOR_ONLY
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+      AEOLUS_EMBEDS_HELPER: NO
+      CODE_SIGN_IDENTITY: "-"
+      CODE_SIGN_STYLE: Manual
+      DEVELOPMENT_TEAM: ""
     Monitor Release:
-      SWIFT_ACTIVE_COMPILATION_CONDITIONS: MONITOR_ONLY
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
+      AEOLUS_EMBEDS_HELPER: NO
+      CODE_SIGN_IDENTITY: "-"
+      CODE_SIGN_STYLE: Manual
+      DEVELOPMENT_TEAM: ""
     Full Debug:
       SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+      AEOLUS_EMBEDS_HELPER: YES
     Full Release:
       SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
+      AEOLUS_EMBEDS_HELPER: YES
 
 # Signing.xcconfig is gitignored and absent on contributor machines and on CI. It is
 # included only by the Full configurations, so its absence cannot break a Monitor build.
@@ -99,9 +137,19 @@ targets:
         product: FanKit
       - package: AeolusPackage
         product: AeolusXPC
-      # The helper is embedded in the Full configurations only. E2 wires the copy
-      # phases; until then the Monitor build is the only one that produces a runnable
-      # app, which is the correct state of affairs while the write path does not exist.
+      # Builds the helper before the app, so the embed script below always has a finished
+      # binary to copy. Deliberately neither linked nor embedded by Xcode: embedding is
+      # done by that script, because a Copy Files phase cannot be made conditional on the
+      # configuration and the helper must not appear in a Monitor bundle.
+      #
+      # This does mean the Monitor scheme *compiles* the helper — exactly as `swift build`
+      # already does on every contributor's machine and on CI. What Monitor never does is
+      # ship it or register it: the bundle it produces contains no helper and no launchd
+      # description, and `HelperBundleLayout` reports that at runtime by asking the bundle
+      # rather than by trusting a compile-time flag.
+      - target: AeolusHelper
+        link: false
+        embed: false
     info:
       path: Configs/Aeolus-Info.plist
       properties:
@@ -123,6 +171,125 @@ targets:
           CODE_SIGN_ENTITLEMENTS: Configs/Aeolus.entitlements
         Full Release:
           CODE_SIGN_ENTITLEMENTS: Configs/Aeolus.entitlements
+    postBuildScripts:
+      # Embeds the privileged helper — Full configurations only.
+      #
+      # A script rather than a Copy Files phase because Xcode copy phases cannot be made
+      # conditional on the configuration, and "the helper is absent from Monitor" is a
+      # safety property rather than a preference: an ad-hoc-signed root daemon cannot
+      # express a stable client code-signing requirement, so a Monitor bundle that
+      # contained one would be a daemon nothing could safely authorise. See
+      # docs/ADR/0005-xpc-authorisation.md.
+      #
+      # Runs after every other build phase and before the app's own code signing, so the
+      # helper — already signed by its own target, with its own entitlements — is sealed
+      # into the app's signature as nested code.
+      - name: Embed privileged helper (Full only)
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+
+          # `set -u` catches an *unset* variable, not an empty one, and the Monitor branch
+          # below runs `rm -rf` on paths derived from these two. With both empty, that
+          # target is /Library/LaunchDaemons — the system's. No case is known where Xcode
+          # leaves either empty, and this runs as the user so it would fail on permissions
+          # rather than succeed, but a destructive path should not rely on either of those.
+          if [ -z "${TARGET_BUILD_DIR:-}" ] || [ -z "${CONTENTS_FOLDER_PATH:-}" ]; then
+              echo "error: TARGET_BUILD_DIR or CONTENTS_FOLDER_PATH is empty; refusing to touch the filesystem"
+              exit 1
+          fi
+
+          CONTENTS="${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}"
+          HELPER_DESTINATION="${CONTENTS}/MacOS/AeolusHelper"
+          DAEMONS_DESTINATION="${CONTENTS}/Library/LaunchDaemons"
+          PLIST_NAME="com.blamechris.Aeolus.Helper.plist"
+
+          if [ "${AEOLUS_EMBEDS_HELPER:-NO}" != "YES" ]; then
+              # Monitor, or any configuration that did not explicitly opt in. The removals
+              # are not paranoia: DerivedData is shared between schemes, so a Full build
+              # followed by a Monitor build would otherwise leave a root daemon and its
+              # launchd description inside a bundle that is supposed to contain neither.
+              rm -f "${HELPER_DESTINATION}"
+              rm -rf "${DAEMONS_DESTINATION}"
+              # Leaves no empty Contents/Library behind either: a directory that only ever
+              # exists to hold launch daemons should not sit in a bundle that ships none.
+              rmdir "${CONTENTS}/Library" 2>/dev/null || true
+              exit 0
+          fi
+
+          HELPER_SOURCE="${BUILT_PRODUCTS_DIR}/AeolusHelper"
+          PLIST_SOURCE="${SRCROOT}/Configs/LaunchDaemons/${PLIST_NAME}"
+
+          if [ ! -f "${HELPER_SOURCE}" ]; then
+              echo "error: helper executable not found at ${HELPER_SOURCE}"
+              exit 1
+          fi
+          if [ ! -f "${PLIST_SOURCE}" ]; then
+              echo "error: launchd plist not found at ${PLIST_SOURCE}"
+              exit 1
+          fi
+
+          # launchd resolves BundleProgram against the app bundle. If it ever stops naming
+          # where this script puts the helper, the daemon registers and then never starts
+          # — a failure that surfaces on a user's machine rather than here. Fail the build
+          # instead. Tests/AeolusUITests/LaunchDaemonPlistTests.swift asserts the same
+          # agreement from the Swift side.
+          BUNDLE_PROGRAM=$(/usr/libexec/PlistBuddy -c "Print :BundleProgram" "${PLIST_SOURCE}")
+          if [ "${BUNDLE_PROGRAM}" != "Contents/MacOS/AeolusHelper" ]; then
+              echo "error: BundleProgram is '${BUNDLE_PROGRAM}' but the helper is embedded at Contents/MacOS/AeolusHelper"
+              exit 1
+          fi
+
+          mkdir -p "${DAEMONS_DESTINATION}"
+          /usr/bin/ditto "${HELPER_SOURCE}" "${HELPER_DESTINATION}"
+          /usr/bin/ditto "${PLIST_SOURCE}" "${DAEMONS_DESTINATION}/${PLIST_NAME}"
+
+  # The root launch daemon, as an Xcode target so it can be signed with its own
+  # entitlements and embedded in the app bundle. The same sources build under
+  # `swift build` as an SPM executable; this target exists for the one thing SPM cannot
+  # do, which is produce a signed binary inside a signed app.
+  #
+  # SMAppService requires the app and its embedded daemon to share a Team ID from a real
+  # Developer ID certificate. Both get theirs from Configs/Signing.xcconfig, which is
+  # gitignored and applied to the Full configurations only — so nothing here can leak a
+  # Team ID into the repository, and its absence cannot break a Monitor build.
+  AeolusHelper:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Sources/AeolusHelper
+    dependencies:
+      - package: AeolusPackage
+        product: SMCCore
+      - package: AeolusPackage
+        product: FanKit
+      - package: AeolusPackage
+        product: AeolusXPC
+    # A command-line tool has nowhere to put an Info.plist except inside its own binary.
+    # It is there for one reason: it fixes the helper's code-signing identifier, which is
+    # what a client pins when it sets its side of the XPC code-signing requirement. Left
+    # to codesign's default the identifier would be derived from the file name, which is
+    # a weaker thing to depend on than an explicit bundle identifier.
+    info:
+      path: Configs/AeolusHelper-Info.plist
+      properties:
+        CFBundleIdentifier: com.blamechris.Aeolus.Helper
+        CFBundleName: AeolusHelper
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+    settings:
+      base:
+        PRODUCT_NAME: AeolusHelper
+        PRODUCT_BUNDLE_IDENTIFIER: com.blamechris.Aeolus.Helper
+        CREATE_INFOPLIST_SECTION_IN_BINARY: YES
+        # The helper's only home is inside Aeolus.app. It is never installed to a path of
+        # its own, and must not be swept into an archive as a standalone product.
+        SKIP_INSTALL: YES
+      configs:
+        Full Debug:
+          CODE_SIGN_ENTITLEMENTS: Configs/AeolusHelper.entitlements
+        Full Release:
+          CODE_SIGN_ENTITLEMENTS: Configs/AeolusHelper.entitlements
 
 schemes:
   Aeolus (Monitor):

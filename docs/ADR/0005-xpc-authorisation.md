@@ -192,7 +192,51 @@ optional DTO fields within a version, plus the capability set, provide the flexi
 |---|---|---|
 | `setCodeSigningRequirement` behaves as documented on macOS 26.x | Verified present in the SDK at `macos(13.0)`; behaviour untested | Fall back to hand-rolled audit-token checking behind the same delegate seam |
 | Same API behaves correctly on macOS 13–15 | Documented-available; **untestable here** | Ships the same "documented, untested" status as the Intel path; the compatibility matrix must say so |
-| `SMAppService.daemon` registration works from a Development-signed Debug build | Unverified | Local iteration falls back to a manually `launchctl`-bootstrapped helper — a dev-workflow cost, not a design change |
+| `SMAppService.daemon` registration works from a **Developer ID**-signed `Full Debug` build | Unverified | The shipping path itself does not work; E2 needs a different registration mechanism, not a workaround |
+| `SMAppService.daemon` registration works from an **Apple Development**-signed build | Unverified | Local iteration falls back to a manually `launchctl`-bootstrapped helper — a dev-workflow cost, not a design change |
+
+Those last two were one row until #81's review pointed out they name different certificates
+and have different consequences. A Developer ID failure is a design problem; an Apple
+Development failure is a workflow problem, and `CONTRIBUTING.md`'s manual `launchctl`
+fallback exists for the second row specifically — for contributors who hold an Apple
+Development certificate and no Developer ID. Verifying one says nothing about the other.
+
+**Verification log — 2026-07-31 (#73).** The last two rows above remain **unverified, and
+the reason is now known precisely.** The development machine has no signing identity
+configured for this project at all: `Configs/Signing.xcconfig` is absent, and a `Full`
+build asked to sign with `Apple Development` stops at *"Signing for 'Aeolus' requires a
+development team."* No Development-signed or Developer ID-signed build can be produced
+here, so `SMAppService.daemon` registration cannot be attempted — the question is blocked
+on a certificate rather than answered.
+
+Two things were established while finding that out. First, the embedding itself is
+correct: a `Full` build compiles, embeds the helper at `Contents/MacOS/AeolusHelper` and
+its job description at `Contents/Library/LaunchDaemons/`, and stops exactly at code
+signing with a clear error naming both the app and the helper. Second — and this is the
+part worth recording — **the registration question could not have been answered before
+#73 regardless of certificates.** `project.yml` set `CODE_SIGN_IDENTITY: "-"` and
+`DEVELOPMENT_TEAM: ""` as project-level build settings, which outrank the project's base
+configuration file, so `Configs/Signing.xcconfig` was being silently overridden and every
+`Full` build would have come out ad-hoc signed no matter what certificate was installed.
+An ad-hoc helper is exactly the "no Team ID in its own signature → refuse all clients"
+row of the failure table above, so the symptom would have looked like a broken design
+rather than a build setting. Those two settings now apply to the `Monitor` configurations
+only.
+
+Resolving the **Developer ID** row needs one thing: a `Configs/Signing.xcconfig` with a
+real Team ID and `CODE_SIGN_IDENTITY = Developer ID Application`, then a `Full Debug`
+build, `register()`, and a note of what `SMAppService.Status` reports afterwards.
+
+The **Apple Development** row needs a second run of the same steps with
+`CODE_SIGN_IDENTITY = Apple Development` — a different certificate, and therefore a
+separate result. Do not mark it verified off the Developer ID run.
+
+One thing to expect on either run, so it is not mistaken for a failure: registration
+currently installs a job description for a scaffold. `Sources/AeolusHelper/AeolusHelperMain.swift`
+writes to stderr and exits non-zero by design, and the plist carries no `RunAtLoad` and no
+`KeepAlive`, so launchd starts it only when something connects to the mach service. The
+question these rows ask is whether `SMAppService` accepts and registers the job, not
+whether the daemon does anything once started — it does not, until #72.
 
 Nothing in this design depends on `docs/SMC-RESEARCH.md`'s reported-but-unverified section. E2 touches
 no write, no `Ftst`, no unlock sequence — deliberately, because the boundary must not encode Apple
