@@ -81,6 +81,24 @@ struct LaunchDaemonPlistTests {
         #expect(plist["ProgramArguments"] == nil)
     }
 
+    @Test("The daemon is launched on demand and never kept alive")
+    func noBootLaunchOrRestartPolicy() throws {
+        let plist = try loadPlist()
+        // `KeepAlive = { SuccessfulExit = false }` restarts a job in the *inverse*
+        // condition — whenever it exits non-zero — and launchd.plist(5) records that the
+        // key also implies `RunAtLoad`. The helper is still a scaffold that exits
+        // non-zero on purpose, so those two keys would convert its refusal to run into a
+        // root process restarted on launchd's throttle forever, at approval time and at
+        // every boot, while `SMAppService.Status` reported `.enabled` the whole time.
+        //
+        // `MachServices` alone gives on-demand launch, which is all E2 needs. When #72
+        // makes this a real daemon, a restart policy has to be argued for against the
+        // lease semantics E5 implements — and re-adding either key has to be a decision
+        // someone takes deliberately, which means failing here first.
+        #expect(plist["RunAtLoad"] == nil)
+        #expect(plist["KeepAlive"] == nil)
+    }
+
     @Test("RECOVERY.md's manual escape names the label this daemon actually registers")
     func recoveryDocumentBootsOutTheRightLabel() throws {
         // docs/RECOVERY.md promises `sudo launchctl bootout system/<label>` as the escape
