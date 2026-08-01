@@ -226,6 +226,18 @@ are community reports rather than anything verified here.
 `Monitor` builds everything except the write path: no helper, no entitlements, ad-hoc
 signable. `Full` embeds and registers the privileged helper and requires a Developer ID.
 
+`Full` puts the helper at `Contents/MacOS/AeolusHelper` and its launchd job description at
+`Contents/Library/LaunchDaemons/com.blamechris.Aeolus.Helper.plist`, and registers it with
+`SMAppService.daemon(plistName:)`. The job description names the helper by a
+**bundle-relative** `BundleProgram`, never an absolute path, which is what makes deleting
+the app equivalent to removing the daemon.
+
+`Monitor` contains neither file. The app decides what it may do about a helper by
+**looking in its own bundle at runtime** rather than by consulting a compile-time flag —
+see `HelperBundleLayout`. A build with no helper in it never asks `SMAppService` anything,
+and says "no privileged helper in this build" rather than "the helper is not running",
+which would imply one exists.
+
 CI builds `Monitor` on every pull request. It cannot do more — GitHub's macOS runners are
 virtual machines with no SMC, so they can build, lint, test, sign, and notarise, but they
 cannot validate that a single fan write does what it claims. Hardware verification is

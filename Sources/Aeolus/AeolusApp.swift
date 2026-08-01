@@ -64,9 +64,16 @@ public struct AeolusApp: App {
 /// seeded for this project's development hardware, and a window that never showed a
 /// label would not demonstrate what #62 is actually for. A machine with no matching
 /// catalog entries still works fully unlabelled either way — see `SensorLabelSource`.
+///
+/// The footer states where the privileged helper stands. It is rendered in every build,
+/// including `Monitor`, where the honest answer is that this build ships no helper at all
+/// — see `HelperStatusDisplay`. A window that said nothing at all about the helper would
+/// leave "can this app change my fans?" to be inferred, and inference is what `CLAUDE.md`
+/// rule 6 exists to prevent.
 struct MainView: View {
     @StateObject private var viewModel = PollingViewModel(
         labelSource: CatalogSensorLabelSource.loadDefault())
+    @StateObject private var helperController = HelperLifecycleController()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -81,6 +88,8 @@ struct MainView: View {
                 FanListView(viewModel: viewModel)
                 SensorListView(viewModel: viewModel)
             }
+            Divider()
+            HelperStatusView(controller: helperController)
         }
         .frame(minWidth: 720, minHeight: 420)
         .onAppear { viewModel.start() }

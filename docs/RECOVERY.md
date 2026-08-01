@@ -74,8 +74,14 @@ sudo launchctl list | grep -i aeolus
 
 ## 5. Remove Aeolus entirely
 
-Because the helper ships inside the app bundle, deleting the app deregisters the daemon —
-there is no orphaned root process left behind.
+The helper ships inside the app bundle, and its launchd job description points at
+`Contents/MacOS/AeolusHelper` inside that bundle rather than at any path elsewhere on
+disk. Deleting the app therefore takes the daemon's program with it: there is nothing left
+for launchd to start.
+
+The `bootout` line below is not redundant with that. It stops the daemon that is running
+*now*, before the bundle it came from disappears, rather than leaving you to trust that
+macOS notices.
 
 ```bash
 osascript -e 'tell application "Aeolus" to quit'
