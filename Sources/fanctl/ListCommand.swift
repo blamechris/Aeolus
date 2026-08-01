@@ -18,10 +18,13 @@ import SMCCore
 /// alongside it, in both the table and the JSON.
 enum ListCommand {
     /// The largest `FNum` value this project trusts as a real fan count, rather than a
-    /// decode fault. No Mac this project has documented evidence of comes close to this;
-    /// it exists purely so a corrupted read cannot turn into an unbounded enumeration —
-    /// the same defence `SMCConnection.maxPlausibleKeyCount` applies to `#KEY`.
-    static let maxPlausibleFanCount = 64
+    /// decode fault.
+    ///
+    /// Reads `SMCCore`'s shared constant rather than restating the number. This and
+    /// `AeolusUI`'s `FanPoller.maxPlausibleFanCount` were two independent `64`s with
+    /// nothing enforcing that they agreed; both now read one — see
+    /// `SMCFanEnumeration.maxPlausibleFanCount` for the defence itself.
+    static let maxPlausibleFanCount = SMCFanEnumeration.maxPlausibleFanCount
 
     struct Result: Equatable {
         let fanCount: Int
