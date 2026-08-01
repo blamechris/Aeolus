@@ -19,7 +19,8 @@ number, negotiated at connect time. Protocol changes are called out explicitly b
   implementation. `hello` replaces `protocolVersion(reply:)` so the helper enforces
   version negotiation rather than asking the client to; the fault vocabulary and
   `FanState.manualControlAvailability` are complete and decode forward-tolerantly;
-  request validation refuses rather than repairs. The protocol version stays at **1**:
-  nothing implements or calls this contract yet, so no contract has ever shipped.
+  request validation refuses rather than repairs, lease identifiers included. The
+  protocol version stays at **1**: nothing implements or calls this contract yet, so no
+  contract has ever shipped.
 
 [Unreleased]: https://github.com/blamechris/Aeolus/commits/main

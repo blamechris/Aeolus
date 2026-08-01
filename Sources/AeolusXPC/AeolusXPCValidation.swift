@@ -64,6 +64,13 @@ public enum AeolusXPCValidation {
     /// Longest `HelloRequest.clientDescription` the helper accepts, in UTF-8 bytes.
     public static let maxClientDescriptionUTF8Bytes = maxHolderDescriptionUTF8Bytes
 
+    /// The exact length of a lease ID, in UTF-8 bytes.
+    ///
+    /// `UUID.uuidString` is 36 ASCII characters — 32 hex digits and four hyphens — so this
+    /// is an equality, not a maximum. A lease ID has one legal shape and every other
+    /// length is a different kind of thing wearing its name.
+    public static let leaseIDLength = 36
+
     // MARK: - Lease requests
 
     /// Decodes and validates a `LeaseRequest` that arrived over the boundary.
@@ -190,6 +197,42 @@ public enum AeolusXPCValidation {
             maxLength: maxHolderDescriptionLength,
             maxUTF8Bytes: maxHolderDescriptionUTF8Bytes
         )
+    }
+
+    // MARK: - Lease identifiers
+
+    /// Checks a lease ID a client presented.
+    ///
+    /// `Lease.id` is a `UUID`, but it crosses the boundary as a `String`, because that is
+    /// what an `@objc` method signature can carry. That widens the type from 128 bits to
+    /// anything a client can put in a string, and the helper then logs what it refused —
+    /// identifier, team, and reason, per
+    /// [ADR 0005](../../docs/ADR/0005-xpc-authorisation.md) — which puts a client-chosen
+    /// string on a root daemon's log line. That is the same pair of harms
+    /// `holderDescription` is already guarded against: a newline forges a second log
+    /// entry, and an unbounded string is an unbounded write.
+    ///
+    /// Narrowing back to a UUID closes both at once. Refused, never repaired: an ID that
+    /// is not a UUID names no lease this helper ever issued, so there is nothing to repair
+    /// it into.
+    ///
+    /// - Parameter id: The lease ID the client presented.
+    /// - Throws: `AeolusXPCFault.invalidParameter` named `leaseID`.
+    public static func validateLeaseID(_ id: String) throws {
+        // The length is checked before the parse, and is not redundant with it.
+        // `UUID(uuidString:)` accepts a trailing NUL — "…-426614174000\0" parses, and
+        // returns the same UUID as the string without it. NUL is exactly what
+        // `validateDescription` refuses a display string for: anything reading the value
+        // as C truncates at it, so an ID carrying one is not the ID it will later be
+        // compared or logged as. The parse alone is therefore not a narrowing back to 128
+        // bits; the length is what makes it one. It also bounds the input in bytes before
+        // any parsing happens at all.
+        guard id.utf8.count == leaseIDLength, UUID(uuidString: id) != nil else {
+            throw AeolusXPCFault.invalidParameter(
+                name: "leaseID",
+                detail: "must be a UUID in canonical \(leaseIDLength)-character form"
+            )
+        }
     }
 
     // MARK: - Handshake
