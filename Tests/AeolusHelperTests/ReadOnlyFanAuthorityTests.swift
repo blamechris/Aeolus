@@ -181,6 +181,50 @@ struct ReadOnlyFanAuthorityTests {
         #expect(snapshot.sensors.allSatisfy { $0.value != 0 })
     }
 
+    /// Two assertions, and **the encode is the point** — the omission is only how it is
+    /// achieved.
+    ///
+    /// That a non-finite sample is absent from `sensors` is the mild half. The half worth a
+    /// test is that the snapshot still *encodes*: `AeolusXPCCoding.encoder()` is a bare
+    /// `JSONEncoder`, so `nonConformingFloatEncodingStrategy` is `.throw`, and one
+    /// `±.infinity` or `.nan` reaching `SensorSample.value` makes `PayloadReply.encoding`
+    /// throw. The key set is discovered once and cached, so that is not one bad snapshot —
+    /// it is every snapshot until the process exits, and it takes 2928 healthy sensors and
+    /// both fans with it.
+    ///
+    /// Reachable on real hardware, not contrived: `SMCValue.scalar()` applies no finiteness
+    /// guard, and `SMCFanEnumeration.checked` exists because a byte-swapped `flt` decodes to
+    /// exactly this on an otherwise-successful read. The families where the resolver is
+    /// least proven are Intel and M1/M2 — the two shipped `untested`.
+    @Test("A non-finite sensor is omitted, and the snapshot it would have poisoned encodes")
+    func nonFiniteSensorIsOmittedAndTheSnapshotStillEncodes() async throws {
+        let provider = fanProvider(
+            fanCount: 1,
+            extraKeys: [
+                "TC0P": .reading("TC0P", 44.5, kind: .temperatureCelsius),
+                "Th0x": .reading("Th0x", .infinity, kind: .temperatureCelsius),
+                "Th0y": .reading("Th0y", -.infinity, kind: .temperatureCelsius),
+                "Th0z": .reading("Th0z", .nan, kind: .temperatureCelsius),
+            ],
+            allReadings: [
+                .fake(key: "TC0P", value: 44.5, kind: .temperatureCelsius),
+                .fake(key: "Th0x", value: .infinity, kind: .temperatureCelsius),
+                .fake(key: "Th0y", value: -.infinity, kind: .temperatureCelsius),
+                .fake(key: "Th0z", value: .nan, kind: .temperatureCelsius),
+            ])
+
+        let snapshot = try await authority(provider: provider).snapshot()
+
+        #expect(snapshot.sensors.map(\.key) == ["TC0P"])
+        #expect(snapshot.sensors.allSatisfy { $0.value.isFinite })
+
+        // The assertion this test exists for.
+        let data = try AeolusXPCCoding.encoder().encode(snapshot)
+        let decoded = try AeolusXPCCoding.decoder().decode(SystemSnapshot.self, from: data)
+        #expect(decoded == snapshot)
+        #expect(!snapshot.fans.isEmpty, "the fans one bad sensor key would have taken with it")
+    }
+
     /// A sensor set that could not be read is a degraded snapshot, not a failed one. The
     /// fans are the part a client cannot do without.
     @Test("A failed sensor refresh still yields the fans")

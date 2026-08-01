@@ -200,8 +200,22 @@ actor ReadOnlyFanAuthority: FanAuthority {
         // fabricated-zero defect this project has stamped out three times already.
         // Omission loses the fact that the key exists; a fabricated 0 °C would lose the
         // truth. Only one of those is recoverable.
+        //
+        // A read that *succeeded* and decoded to a non-finite `Double` is omitted by the
+        // same rule, and that clause is the load-bearing one. `SMCValue.scalar()` applies
+        // no finiteness guard, so a byte-swapped `flt` or `ioft` can decode to
+        // `±.infinity` or `.nan` on an otherwise-successful read — the case
+        // `SMCFanEnumeration.checked` already refuses for the three fan keys, which this
+        // path meets across ~500x more keys than that one does. Carrying one here would
+        // not merely be a wrong number: `AeolusXPCCoding.encoder()` is a bare
+        // `JSONEncoder`, so its `nonConformingFloatEncodingStrategy` is `.throw`, and the
+        // key set is discovered once and cached for the life of the process. One such key
+        // would therefore fail the encode of *every* snapshot from then until exit, taking
+        // the other 2928 sensors and both fans with it — and under ADR 0006 the app has
+        // stopped its own polling, so the user sees nothing rather than one bad row.
         return outcomes.compactMap { outcome in
-            guard case .success(let reading) = outcome.result else { return nil }
+            guard case .success(let reading) = outcome.result, reading.value.isFinite
+            else { return nil }
             return SensorSample(
                 key: reading.key,
                 label: nil,
