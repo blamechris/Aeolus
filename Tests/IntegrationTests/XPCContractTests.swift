@@ -106,6 +106,11 @@ struct XPCContractTests {
 
     /// A range that makes no sense means the peer or the wire is not what this code
     /// thinks it is, and "I do not understand you" reads as silence, not as agreement.
+    ///
+    /// This asserts the behaviour, not the guard inside `accepts`: deleting that guard
+    /// leaves this test passing, because an inverted range already satisfies neither
+    /// bound. Said plainly here so nobody later reads a green suite as evidence the
+    /// guard is load-bearing — see the comment on `accepts` for why it stays anyway.
     @Test("An inverted version range accepts nothing at all")
     func invertedRangeAcceptsNothing() {
         let inverted = ProtocolVersionRange(minimumSupported: 4, current: 2)

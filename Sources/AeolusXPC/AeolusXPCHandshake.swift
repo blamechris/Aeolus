@@ -30,6 +30,13 @@ public struct ProtocolVersionRange: Sendable, Hashable, Codable {
     /// code thinks it is, and the safe reading of "I do not understand you" is silence,
     /// not agreement.
     public func accepts(clientVersion: Int) -> Bool {
+        // Redundant with the comparison below, and deliberately kept. An inverted range
+        // already satisfies neither bound, so this guard cannot change an answer today —
+        // it is here because the obvious "simplification" of the line under it is
+        // `(minimumSupported...current).contains(clientVersion)`, and constructing that
+        // `ClosedRange` from an inverted pair traps. A trap inside a root daemon is not a
+        // refactor this code should be one edit away from. Stated rather than implied,
+        // because a guard that looks load-bearing and is not is its own kind of defect.
         guard isWellFormed else { return false }
         return clientVersion >= minimumSupported && clientVersion <= current
     }
