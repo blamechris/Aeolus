@@ -78,24 +78,35 @@ struct HelperHardwareTests {
     ///
     /// The payload is measured here too, because the byte count arguably decides whether the
     /// subset-request capability is required more clearly than the half-second does:
-    /// **~138 KB** of JSON for 2929 samples — 137,764 to 138,307 bytes across measured runs,
-    /// the last digits moving with how many significant figures the readings themselves
-    /// print to — so roughly 138 KB/s crossing the boundary at 1 Hz. Printed rather than asserted,
-    /// for the same reason the sensor count is: a figure that drifts with the machine is a
-    /// measurement, not a budget.
+    /// **~138 KB** of JSON for 2929 samples, so roughly 138 KB/s crossing the boundary at
+    /// 1 Hz. Six runs on this machine have landed between 137,750 and 138,402 bytes, the last
+    /// digits moving with how many significant figures the readings themselves print to.
+    /// Treat that as provenance, not a bound: a narrower range was quoted here until a run
+    /// fell below it. Printed rather than asserted, for the same reason the sensor count is:
+    /// a figure that drifts with the machine is a measurement, not a budget.
     ///
     /// ## What the two-second threshold actually buys, stated honestly
     ///
-    /// It is a **regression tripwire, not a budget**, and its margin is narrower than an
-    /// earlier version of this comment claimed. Measured on this machine, a warm snapshot
-    /// costs **0.50–0.60 s**, so two seconds is about **3.4x** it — not the order of
-    /// magnitude previously written here. The mutant it exists to kill, `readAll()` creeping
-    /// back onto every snapshot, costs **2.46 s** against a warm key cache, which clears the
-    /// threshold by only **23%**.
+    /// It is a **coarse regression tripwire, and it does not kill the mutation it was
+    /// written for.** Measured on this machine, a warm snapshot costs **roughly half a
+    /// second** — six runs have ranged from 0.48 s to 0.60 s — so two seconds is only about
+    /// **3x to 4x** it, not the order of magnitude an earlier version of this comment
+    /// claimed.
     ///
-    /// That margin is kept deliberately and the threshold is **not** to be loosened: raising
-    /// it toward the cold cost is what would let the mutation survive. If this ever goes
-    /// flaky, the finding is that the snapshot got slower, which is the thing worth knowing.
+    /// The mutation it names — `readAll()` back on every snapshot, reproduced by making
+    /// `readSensors()` ignore its cached key set — **survives**. Three runs put `warmest` at
+    /// 1.216 s to 1.221 s, well inside the threshold, and `warmest < cold` holds too because
+    /// the mutant's first snapshot still pays discovery on top of the re-read. The **2.46 s**
+    /// figure once quoted here as the mutant's cost is the mutant's *first* snapshot, which
+    /// includes discovery; the assertion is on `warmest`, so that number was never the one
+    /// the threshold is compared against.
+    /// [#97](https://github.com/blamechris/Aeolus/issues/97) tracks making this assertion
+    /// structural — counting `readAll()` calls — rather than timed.
+    ///
+    /// The threshold is still **not** to be loosened, since raising it toward the cold cost
+    /// gives up what little it does catch; it just must not be read as proof that discovery
+    /// cannot return to the hot path. If this ever goes flaky, the finding is that the
+    /// snapshot got slower, which is the thing worth knowing.
     @Test("Discovery stays off the snapshot path")
     func warmSnapshotIsCheap() async throws {
         let authority = ReadOnlyFanAuthority(provider: SMCSensorProvider(), log: Self.log)

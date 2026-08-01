@@ -86,9 +86,12 @@ end up disagreeing about when "now" was.
   snapshot costs **~0.5 s** and carries 2929 samples. At 1 Hz that is half of every second spent in a
   root daemon reading firmware, plus a payload of that size crossing the boundary every tick.
 
-  **That payload is ~138 KB** — 137,764 to 138,307 bytes of JSON across measured runs, the last
-  digits moving with how many significant figures the readings print to — so **~138 KB/s** across the
-  XPC boundary at 1 Hz, sustained for as long as the app is open. That number is arguably what
+  **That payload is ~138 KB**, so **~138 KB/s** across the XPC boundary at 1 Hz, sustained for as
+  long as the app is open. Six runs on this machine have landed between 137,750 and 138,402 bytes of
+  JSON, the last digits moving with how many significant figures the readings print to. Those are the
+  values seen so far and not a bound — nothing asserts on them, and the run that produced 137,750 fell
+  outside a narrower range quoted here previously. The approximate figure is the durable claim; the
+  span is provenance for it. That number is arguably what
   settles the subset-request question, more than the 0.5 s does: half a second of a root daemon's
   time is a cost, but 138 KB/s of it is a client asking for 2929 values to render a window that shows
   a few dozen.
