@@ -55,14 +55,21 @@ struct NegotiatedClient: Sendable, Hashable {
 /// deliver a message it already had in hand and then the kernel tears the port down because
 /// the client was `SIGKILL`ed.
 ///
-/// Without this gate, invalidation winning the race is the dangerous outcome rather than
-/// the harmless one. E5's authority would release everything held by this `ConnectionID` —
-/// nothing, yet — and *then* be handed an `acquireLease` bound to that same, already-dead
-/// `ConnectionID`. The connection-death teardown for that lease has already run and will
-/// never run again, leaving the TTL alone to recover the fans.
+/// The outcome it exists to prevent: E5's authority releases everything held by this
+/// `ConnectionID` — nothing, yet — and is *then* handed an `acquireLease` bound to that
+/// same, already-dead `ConnectionID`, whose connection-death teardown has already run and
+/// will never run again, leaving the TTL alone to recover the fans.
 /// [ADR 0005](../../docs/ADR/0005-xpc-authorisation.md) requires the two teardown paths to
-/// share no code path and says both must fail before the fans stay pinned; one of them
-/// being silently pre-empted is that guarantee quietly becoming one path.
+/// share no code path and both to fail before the fans stay pinned; one being silently
+/// pre-empted is that guarantee quietly becoming one path.
+///
+/// **The gate covers arrival, not flight**, and is defence in depth rather than a guarantee.
+/// A message that has not started when `invalidate()` runs is refused; one already past that
+/// check is not, because this type is an `actor` and so reentrant across `await` —
+/// `acquireLease` reads `hasInvalidated`, suspends, `invalidate()` runs during that suspension,
+/// and the message resumes and registers its lease anyway. Observed, not theorised. Closing it
+/// belongs to the authority, which must record invalidated `ConnectionID`s and re-check
+/// liveness after its last suspension point: [#95](https://github.com/blamechris/Aeolus/issues/95).
 ///
 /// The gate lives here, in E2's listener code, for the same reason
 /// `connectionDidInvalidate` is wired here in E2: so that E5 does not have to edit this
@@ -263,7 +270,11 @@ actor HelperConnectionSession {
     /// version exemption exists to prevent, arriving through a different door — and the
     /// dying connection is precisely the case where the fans most need putting back. ADR
     /// 0005 requires the panic path to carry the fewest preconditions of anything in the
-    /// protocol; "the connection is still alive" is a precondition.
+    /// protocol; "the connection is still alive" is a precondition. The exemption holds only
+    /// while this message's contract stays **global** — every fan automatic, every lease
+    /// dropped — which makes `connection` attribution alone and both post-invalidation
+    /// orderings converge on the safe state; if E5 ever has it consult per-`ConnectionID`
+    /// state, it needs revisiting, per [#95](https://github.com/blamechris/Aeolus/issues/95).
     ///
     /// The reply may well be undeliverable by the time this returns, because the port it
     /// would travel on is what died. That is accepted: what matters here is the **effect**,
@@ -315,9 +326,11 @@ actor HelperConnectionSession {
     /// `nil` while this connection is alive; the refusal once it is not.
     ///
     /// **This is the teardown gate.** Every message except `restoreAllToAutomatic` calls it
-    /// first, so nothing reaches the authority under a `ConnectionID` whose
-    /// `connectionDidInvalidate` has already been delivered. See this type's documentation
-    /// for the race it closes and `restoreAllToAutomatic()` for why that one is exempt.
+    /// before doing anything else, so a message that *arrives* after
+    /// `connectionDidInvalidate` never reaches the authority. One already **in flight** is
+    /// not covered — a synchronous check before a suspension point, on a reentrant actor —
+    /// so this is defence in depth, not a guarantee. See this type's documentation,
+    /// [#95](https://github.com/blamechris/Aeolus/issues/95), and `restoreAllToAutomatic()`.
     private func invalidationRefusal(message: String) -> PayloadReply? {
         guard hasInvalidated else { return nil }
         return refuse(Self.connectionInvalidated, message: message)

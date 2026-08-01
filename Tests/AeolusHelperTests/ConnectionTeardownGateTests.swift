@@ -5,8 +5,17 @@ import Testing
 
 @testable import AeolusHelper
 
-/// The teardown gate: once `invalidate()` has crossed the seam, no further message reaches
-/// the authority — with one deliberate exception.
+/// The teardown gate: once `invalidate()` has crossed the seam, a message that *arrives*
+/// after it is refused rather than dispatched — with one deliberate exception.
+///
+/// **That is narrower than "no further message reaches the authority", deliberately.** A
+/// message already in flight when invalidation lands is not covered:
+/// `HelperConnectionSession` is an actor, the gate is a synchronous check before the `await`
+/// that dispatches, and invalidation can run on the actor during that suspension. The gate
+/// closes one of the two interleavings and is defence in depth rather than a guarantee; the
+/// other has to be closed at the authority, which is
+/// [#95](https://github.com/blamechris/Aeolus/issues/95). Every test below pins the covered
+/// interleaving, and none of them asserts the other.
 ///
 /// ## What is being tested, and why the refusal is not it
 ///
@@ -22,8 +31,9 @@ import Testing
 /// gate closes — a message task and the invalidation task enqueueing on the actor in
 /// unspecified order — cannot be *reliably* provoked through a real `NSXPCConnection`,
 /// because whether libxpc delivers the message before the port dies is not under a test's
-/// control. Calling `invalidate()` first pins the interleaving that matters, which is the
-/// one where invalidation wins.
+/// control. Calling `invalidate()` first pins the interleaving the gate **handles**:
+/// invalidation arriving before the message starts. The other one — invalidation landing
+/// while a message is mid-`await` — is not what the gate covers and is not pinned here.
 @Suite("The teardown gate")
 struct ConnectionTeardownGateTests {
 
