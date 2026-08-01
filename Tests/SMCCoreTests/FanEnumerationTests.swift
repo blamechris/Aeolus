@@ -1,54 +1,6 @@
 import SMCCore
 import Testing
 
-/// One fan's three readings, as a fixture. A named type rather than a tuple so the call
-/// sites below read as `.init(actual:minimum:maximum:)` and cannot silently transpose two
-/// of the three.
-private struct FanFixture {
-    let actual: Double
-    let minimum: Double
-    let maximum: Double
-
-    init(actual: Double, minimum: Double = 1350, maximum: Double = 5777) {
-        self.actual = actual
-        self.minimum = minimum
-        self.maximum = maximum
-    }
-}
-
-/// Builds the canned outcome table for a machine reporting `fanCount` fans, each of them
-/// reading the given actual/minimum/maximum. Keys not produced here answer `.unknownKey`
-/// from the fake, which is what a machine that does not expose them would report.
-private func machine(
-    fanCount: Double,
-    fans: [FanFixture] = []
-) -> [String: Result<SensorReading, SensorReadFailure>] {
-    var table: [String: Result<SensorReading, SensorReadFailure>] = [
-        SMCFanEnumeration.fanCountKey: .rpm(SMCFanEnumeration.fanCountKey, fanCount)
-    ]
-    for (index, fan) in fans.enumerated() {
-        table[SMCFanEnumeration.actualKey(forFan: index)] =
-            .rpm(SMCFanEnumeration.actualKey(forFan: index), fan.actual)
-        table[SMCFanEnumeration.minimumKey(forFan: index)] =
-            .rpm(SMCFanEnumeration.minimumKey(forFan: index), fan.minimum)
-        table[SMCFanEnumeration.maximumKey(forFan: index)] =
-            .rpm(SMCFanEnumeration.maximumKey(forFan: index), fan.maximum)
-    }
-    return table
-}
-
-/// The value of a fan's key, or `nil` when it is unavailable. Used only to assert on what
-/// enumeration surfaced; production code switches on the outcome rather than flattening it.
-private func value(_ outcome: SensorReadOutcome) -> Double? {
-    guard case .success(let reading) = outcome.result else { return nil }
-    return reading.value
-}
-
-private func failure(_ outcome: SensorReadOutcome) -> SensorReadFailure? {
-    guard case .failure(let failure) = outcome.result else { return nil }
-    return failure
-}
-
 @Suite("SMC fan enumeration")
 struct SMCFanEnumerationTests {
 
@@ -329,31 +281,48 @@ struct SMCFanEnumerationTests {
     func ceilingIsOneSharedConstant() {
         #expect(SMCFanEnumeration.maxPlausibleFanCount == 64)
     }
-}
 
-/// Assertions that are facts about *this* machine rather than about "a Mac with an SMC" —
-/// see `DevelopmentMachine.swift` for why they skip rather than fail elsewhere.
-@Suite(
-    "SMC fan enumeration, Mac16,5-specific facts",
-    .enabled(if: SMCConnection.isHardwareAvailable() && isDevelopmentMachine())
-)
-struct SMCFanEnumerationMac165Tests {
+    /// The key convention runs out at index 9 and the ceiling does not, so a machine
+    /// declaring ten or more fans enumerates fans it can say nothing about.
+    ///
+    /// `F10Ac` is five characters and `SMCKey` requires exactly four, so the key cannot be
+    /// formed at all. `SensorReadFailure.unknownKey` is the right outcome and says so in
+    /// its own documentation — it covers "not well-formed for this provider's key space"
+    /// as well as "absent" — so this is honest rather than a fabricated reading. It is
+    /// pinned here because it was documented in a comment and asserted nowhere, and a
+    /// documented behaviour with no test is the thing that rots first.
+    ///
+    /// No Mac this project has evidence of comes close to ten fans, so the behaviour is
+    /// recorded rather than changed: narrowing the ceiling to 10 would refuse such a
+    /// machine outright as "implausible", which is a different and less true claim than
+    /// "this fan exists and nothing here can address it".
+    @Test("A fan past the addressable key range enumerates as unreadable, not as zero")
+    func fanBeyondAddressableIndexIsUnreadable() async throws {
+        // Fans 0-9 are stubbed; fan 10's keys are deliberately absent, because a
+        // five-character key is unrepresentable and no stub could be reached even if one
+        // were written.
+        let provider = FakeSensorProvider(
+            keyedResults: machine(
+                fanCount: 11,
+                fans: Array(repeating: FanFixture(actual: 1800), count: 10)))
 
-    @Test("Enumeration finds this machine's two fans against the real SMC")
-    func enumeratesRealFans() async throws {
-        let enumeration = try await SMCFanEnumeration.enumerate(provider: SMCSensorProvider())
+        let enumeration = try await SMCFanEnumeration.enumerate(provider: provider)
 
-        #expect(enumeration.fanCount == 2)
-        #expect(enumeration.enumeratedFanIndices == [0, 1])
+        #expect(enumeration.fanCount == 11)
+        // The fan is present rather than silently dropped — hiding hardware the firmware
+        // declared would be the worse of the two dishonesty modes.
+        #expect(enumeration.enumeratedFanIndices.contains(10))
 
-        for fan in enumeration.fans {
-            let actual = try #require(value(fan.actual), "F\(fan.index)Ac did not read")
-            // docs/RECOVERY.md: 0 RPM is normal on many Macs when cool or idle, and F0Ac has
-            // been observed below the declared F0Mn floor on this very machine. The only
-            // things worth asserting about an observation are that it is finite and not
-            // negative — never that it respects a bound the firmware itself does not.
-            #expect(actual.isFinite)
-            #expect(actual >= 0)
+        let addressable = try #require(enumeration.fans.first { $0.index == 9 })
+        #expect(value(addressable.actual) == 1800)
+
+        let unaddressable = try #require(enumeration.fans.first { $0.index == 10 })
+        for outcome in [unaddressable.actual, unaddressable.minimum, unaddressable.maximum] {
+            // Specifically unknownKey, and specifically not a reading: the distinction is
+            // what tells a bug reporter their fan was never asked about, rather than asked
+            // about and found silent.
+            #expect(value(outcome) == nil)
+            #expect(failure(outcome) == .unknownKey(outcome.key))
         }
     }
 }
