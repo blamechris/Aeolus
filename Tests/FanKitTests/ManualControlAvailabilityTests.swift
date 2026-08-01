@@ -102,8 +102,10 @@ struct ManualControlAvailabilityTests {
     @Test("FanState carries manual control availability across the wire")
     func fanStateCarriesAvailability() throws {
         let state = FanState(
-            fan: Fan(index: 0, minimumRPM: 1200, maximumRPM: 5400, firmwareName: nil),
-            actualRPM: 1800,
+            index: 0,
+            actualRPM: .measured(1800),
+            minimumRPM: .measured(1200),
+            maximumRPM: .measured(5400),
             targetRPM: nil,
             mode: .automatic,
             isReclaimedBySystem: false,
@@ -122,11 +124,149 @@ struct ManualControlAvailabilityTests {
     @Test("A FanState payload omitting manual control availability does not decode")
     func fanStateWithoutAvailabilityThrows() {
         let json = """
-            {"fan":{"index":0,"minimumRPM":1200,"maximumRPM":5400},"actualRPM":1800,\
-            "mode":"automatic","isReclaimedBySystem":false}
+            {"index":0,"actualRPM":{"value":1800},"minimumRPM":{"value":1200},\
+            "maximumRPM":{"value":5400},"mode":"automatic","isReclaimedBySystem":false}
             """
         #expect(throws: DecodingError.self) {
             try JSONDecoder().decode(FanState.self, from: Data(json.utf8))
+        }
+    }
+
+    /// The reshape that made this type able to describe a partially-readable fan is only
+    /// worth anything if the honest state actually survives the wire. A machine that
+    /// reports `F0Mn` but not `F0Mx` is the case `FanPoller` was written to tolerate and
+    /// the case the old wire shape could not express at all.
+    @Test("A fan whose maximum did not read still crosses the wire, and says so")
+    func partiallyReadableFanRoundTrips() throws {
+        let state = FanState(
+            index: 0,
+            actualRPM: .measured(1343.07),
+            minimumRPM: .measured(1350),
+            maximumRPM: .unavailable(reason: "F0Mx: key not present on this machine"),
+            targetRPM: nil,
+            mode: .automatic,
+            isReclaimedBySystem: false,
+            manualControlAvailability: .unavailable(.boundsImplausible)
+        )
+
+        let decoded = try JSONDecoder().decode(
+            FanState.self, from: try JSONEncoder().encode(state))
+
+        #expect(decoded == state)
+        // The measured value is below the declared minimum and is carried unchanged:
+        // 1343.07 against F0Mn 1350 is the reading this project actually observed, and
+        // clamping it would be inventing data about hardware.
+        #expect(decoded.actualRPM.value == 1343.07)
+        #expect(decoded.maximumRPM.value == nil)
+        // And the control model is unobtainable, so nothing can clamp into an envelope
+        // that was never read.
+        #expect(decoded.fan == nil)
+    }
+
+    /// A fan with both bounds measured yields the control model; that is the only way to
+    /// get one, which is what keeps `clamp` from ever seeing an invented envelope.
+    @Test("The control model exists only when both bounds were really measured")
+    func controlModelRequiresBothBounds() {
+        func state(minimum: FanReading, maximum: FanReading) -> FanState {
+            FanState(
+                index: 2,
+                firmwareName: "Exhaust",
+                actualRPM: .measured(2000),
+                minimumRPM: minimum,
+                maximumRPM: maximum,
+                targetRPM: nil,
+                mode: .automatic,
+                isReclaimedBySystem: false,
+                manualControlAvailability: .unavailable(.writePathNotBuilt)
+            )
+        }
+        let missing = FanReading.unavailable(reason: "not present")
+
+        #expect(state(minimum: .measured(1200), maximum: .measured(5400)).fan != nil)
+        #expect(state(minimum: missing, maximum: .measured(5400)).fan == nil)
+        #expect(state(minimum: .measured(1200), maximum: missing).fan == nil)
+        #expect(state(minimum: missing, maximum: missing).fan == nil)
+
+        let fan = state(minimum: .measured(1200), maximum: .measured(5400)).fan
+        #expect(fan?.index == 2)
+        #expect(fan?.firmwareName == "Exhaust")
+        #expect(fan?.clamp(0) == 1200)
+    }
+}
+
+/// `FanReading` is the type that stops a failed read from being reported as `0`, so its
+/// refusals are the behaviour under test rather than an implementation detail.
+@Suite("Fan reading availability")
+struct FanReadingTests {
+
+    @Test("A reading carries a value or a reason, never both and never neither")
+    func mutuallyExclusiveOnTheWire() {
+        let both = #"{"value":1800,"unavailableReason":"read failed"}"#
+        let neither = "{}"
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(FanReading.self, from: Data(both.utf8))
+        }
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(FanReading.self, from: Data(neither.utf8))
+        }
+    }
+
+    /// An overflowing literal is refused — but by `JSONDecoder`, before `FanReading` sees
+    /// anything.
+    ///
+    /// Recorded as its own test precisely so it is not mistaken for coverage of the
+    /// finiteness guard below. It was written as that coverage, and it is not: deleting
+    /// `FanReading`'s `isFinite` check left this green, because Foundation rejects a
+    /// `Double` overflow first. A test that passes for a reason other than the one in its
+    /// name is the failure mode this repository keeps finding, and it does not stop being
+    /// one when the assertion happens to be true.
+    @Test("An overflowing literal is refused by the JSON decoder", arguments: ["1e999", "-1e999"])
+    func overflowingLiteralRefusedByFoundation(_ literal: String) {
+        let json = #"{"value":\#(literal)}"#
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(FanReading.self, from: Data(json.utf8))
+        }
+    }
+
+    /// The finiteness guard itself, exercised by a decoder that *will* hand `FanReading` a
+    /// non-finite `Double`.
+    ///
+    /// `AeolusXPCCoding.decoder()` does not set `nonConformingFloatDecodingStrategy`, so
+    /// the default `.throw` means a non-finite value cannot reach this type over the real
+    /// wire today — the guard is defence in depth, and saying so is more useful than
+    /// implying it is load-bearing. It is tested anyway, because the change that would
+    /// make it reachable is a one-line convenience nobody would think of as a safety
+    /// change, and an infinite RPM rendered in a UI is indistinguishable from a broken
+    /// app.
+    @Test(
+        "A non-finite value is refused even by a decoder that admits one",
+        arguments: ["inf", "-inf", "nan"]
+    )
+    func nonFiniteValueRefusedByFanReading(_ marker: String) {
+        let decoder = JSONDecoder()
+        decoder.nonConformingFloatDecodingStrategy = .convertFromString(
+            positiveInfinity: "inf",
+            negativeInfinity: "-inf",
+            nan: "nan"
+        )
+        let json = #"{"value":"\#(marker)"}"#
+
+        // Proves the premise rather than assuming it: this decoder really does produce a
+        // non-finite Double, so reaching FanReading's guard is not hypothetical.
+        let bare = try? decoder.decode(Double.self, from: Data(#""\#(marker)""#.utf8))
+        #expect(bare?.isFinite == false)
+
+        #expect(throws: DecodingError.self) {
+            try decoder.decode(FanReading.self, from: Data(json.utf8))
+        }
+    }
+
+    @Test("Both shapes survive a round trip")
+    func bothShapesRoundTrip() throws {
+        for reading: FanReading in [.measured(1343.07), .unavailable(reason: "no such key")] {
+            let decoded = try JSONDecoder().decode(
+                FanReading.self, from: try JSONEncoder().encode(reading))
+            #expect(decoded == reading)
         }
     }
 }

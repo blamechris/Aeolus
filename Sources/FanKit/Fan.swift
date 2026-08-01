@@ -151,10 +151,143 @@ extension ManualControlAvailability: Codable {
     }
 }
 
+/// One per-fan RPM reading, or the reason it could not be produced — never a bare `0`
+/// standing in for either.
+///
+/// ## Why this exists, and why it had to exist before #72 shipped
+///
+/// `FanPoller` is deliberately written so that a machine reporting `F0Mn` but not `F0Mx`
+/// still enumerates that fan, with the missing key marked unavailable and every other
+/// value rendering normally. The wire shape could not express that. `FanState` embedded a
+/// `Fan`, whose `minimumRPM`/`maximumRPM` are non-optional, and carried a non-optional
+/// `actualRPM` — so the first producer of a `SystemSnapshot` meeting a partially-readable
+/// fan had exactly three options, and all of them are defects: omit the fan (hides
+/// hardware that is right there), serve `0` (the fabricated-zero mode this project has
+/// stamped out in three separate places, and which reads to a user as "this fan has
+/// stopped"), or fail the entire snapshot over one bad key.
+///
+/// `AeolusXPCVersion`'s bump policy binds from the first *shipped* implementation, so this
+/// reshape was free up to #72 and a version bump plus a migration afterwards.
+///
+/// An enum rather than two optional fields, matching the choice `AeolusUI`'s
+/// `KeyedReading.Availability` already made for the same problem: it makes "a value and a
+/// reason are mutually exclusive" a fact the type system enforces rather than a convention
+/// every call site has to be trusted to honour. `(nil, nil)` and `(value, reason)` are both
+/// unrepresentable.
+///
+/// The reason is **free-form diagnostic text and is never parsed.** Vocabulary that gates
+/// behaviour is structured — that is `ManualControlAvailability`'s job, and a client
+/// deciding what it may do consults that, not this string.
+public enum FanReading: Sendable, Hashable {
+    /// A value was read and decoded to a finite `Double`. **Never clamped, floored, or
+    /// adjusted** from what the hardware reported. `F0Ac` was measured at 1343.07 against
+    /// a declared `F0Mn` of 1350 on this project's development machine: a reading below
+    /// the declared minimum is a legitimate observation, not a fault. Clamping governs
+    /// targets — `Fan.clamp(_:)`, on the write path — and never observations.
+    case measured(Double)
+
+    /// The key is absent on this machine, the read failed, or it decoded to something
+    /// unusable including a non-finite `Double`.
+    case unavailable(reason: String)
+
+    /// The finite `Double`, or `nil` when unavailable.
+    ///
+    /// For call sites that only need "is there a number here". Anything that *renders*
+    /// should switch on the case instead, so it still has "why is it missing" available at
+    /// the point that has to say so.
+    public var value: Double? {
+        if case .measured(let value) = self { return value }
+        return nil
+    }
+}
+
+extension FanReading: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case value
+        case unavailableReason
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .measured(let value):
+            try container.encode(value, forKey: .value)
+        case .unavailable(let reason):
+            try container.encode(reason, forKey: .unavailableReason)
+        }
+    }
+
+    /// Decoding refuses anything that is not exactly one of the two shapes.
+    ///
+    /// Both fields present is a peer disagreeing with itself about whether it has a
+    /// reading; neither present is the `(nil, nil)` shape `AeolusXPCProtocol` calls a
+    /// protocol violation rather than an empty success. A value that is present but not
+    /// finite is refused here rather than carried, because `Double`'s JSON round trip
+    /// admits values `FanReading.measured` promises never to hold.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let value = try container.decodeIfPresent(Double.self, forKey: .value)
+        let reason = try container.decodeIfPresent(String.self, forKey: .unavailableReason)
+        switch (value, reason) {
+        case (let value?, nil):
+            guard value.isFinite else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .value,
+                    in: container,
+                    debugDescription: "a fan reading must be finite, got \(value)"
+                )
+            }
+            self = .measured(value)
+        case (nil, let reason?):
+            self = .unavailable(reason: reason)
+        case (nil, nil):
+            throw DecodingError.dataCorruptedError(
+                forKey: .value,
+                in: container,
+                debugDescription:
+                    "a fan reading carries either a value or a reason it is unavailable, "
+                    + "and this carries neither"
+            )
+        case (.some, .some):
+            throw DecodingError.dataCorruptedError(
+                forKey: .value,
+                in: container,
+                debugDescription:
+                    "a fan reading carries either a value or a reason it is unavailable, "
+                    + "and this carries both"
+            )
+        }
+    }
+}
+
 /// A fan's state at one instant, as reported by the helper.
+///
+/// ## Why this does not embed a `Fan`
+///
+/// `Fan` is the *control* model: its bounds are non-optional and `clamp(_:)` depends on
+/// them, which is how "never 0 RPM" and "never widen firmware bounds" end up enforced by
+/// the type system rather than by vigilance. That strictness is correct and must stay.
+///
+/// This is the *report* model, and it has to be able to describe a fan whose bounds could
+/// not be read. Embedding the strict type in the tolerant one forced a fabricated value at
+/// exactly the moment honesty mattered. They are now separate, which additionally stops a
+/// future change to `Fan` from silently becoming a protocol bump.
+///
+/// `fan` reconstructs the control model, and returns `nil` unless both bounds were really
+/// measured — so it is not possible to obtain something with a `clamp(_:)` on it without
+/// the firmware envelope that `clamp` is supposed to enforce.
 public struct FanState: Sendable, Hashable, Codable {
-    public let fan: Fan
-    public let actualRPM: Double
+    public let index: Int
+    /// A firmware-supplied name where one exists (`{fds` descriptor), otherwise `nil`.
+    /// Never invented — an unnamed fan is shown as "Fan 1", not as a guess.
+    public let firmwareName: String?
+    public let actualRPM: FanReading
+    public let minimumRPM: FanReading
+    public let maximumRPM: FanReading
+    /// The speed the helper is currently asking for, or `nil` when it is asking for
+    /// nothing. Distinct from an unavailable reading: "no target is set" is an answer,
+    /// "the target could not be read" is not, and conflating them would let a fan under
+    /// nobody's control render identically to one whose state is unknown.
     public let targetRPM: Double?
     public let mode: FanControlMode
     /// `true` when the helper asked for manual control but the system has taken the fan
@@ -169,16 +302,43 @@ public struct FanState: Sendable, Hashable, Codable {
     /// behalf.
     public let manualControlAvailability: ManualControlAvailability
 
+    /// The control model for this fan, or `nil` when the firmware envelope is not fully
+    /// known.
+    ///
+    /// The `nil` is load-bearing rather than defensive: `Fan` is the only type carrying
+    /// `clamp(_:)`, and a fan whose `F<n>Mn` or `F<n>Mx` did not read has no envelope to
+    /// clamp into. Returning one anyway would mean inventing a bound, and an invented
+    /// bound on the write path is how a fan ends up driven outside what the firmware
+    /// declared. A caller that wants to control a fan must handle the `nil`; a caller that
+    /// only wants to display one never needs this.
+    public var fan: Fan? {
+        guard let minimum = minimumRPM.value, let maximum = maximumRPM.value else {
+            return nil
+        }
+        return Fan(
+            index: index,
+            minimumRPM: minimum,
+            maximumRPM: maximum,
+            firmwareName: firmwareName
+        )
+    }
+
     public init(
-        fan: Fan,
-        actualRPM: Double,
+        index: Int,
+        firmwareName: String? = nil,
+        actualRPM: FanReading,
+        minimumRPM: FanReading,
+        maximumRPM: FanReading,
         targetRPM: Double?,
         mode: FanControlMode,
         isReclaimedBySystem: Bool,
         manualControlAvailability: ManualControlAvailability
     ) {
-        self.fan = fan
+        self.index = index
+        self.firmwareName = firmwareName
         self.actualRPM = actualRPM
+        self.minimumRPM = minimumRPM
+        self.maximumRPM = maximumRPM
         self.targetRPM = targetRPM
         self.mode = mode
         self.isReclaimedBySystem = isReclaimedBySystem
