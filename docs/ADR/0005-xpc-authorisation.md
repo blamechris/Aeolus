@@ -190,8 +190,22 @@ optional DTO fields within a version, plus the capability set, provide the flexi
 5. The one deliberate fail-*safe*-not-closed: `restoreAllToAutomatic` stays reachable pre-handshake.
    Residual exposure is an authorised same-team client resetting fans it did not lease — an annoyance
    bounded by the auth gate, traded for a panic path with minimal preconditions.
-6. Every accept and refuse is logged with identifier, team, and reason under a dedicated category, so
-   "did the boundary refuse?" is answerable from `log show` on a user's machine.
+6. Every accept and refuse is logged under a dedicated category, so "did the boundary refuse?" is
+   answerable from `log show` on a user's machine — **but not with an identifier and a team, and this
+   row said otherwise until #72 implemented it.** Two measured properties of
+   `setCodeSigningRequirement` (see the 2026-08-01 verification log below) make that unimplementable.
+   Enforcement is per *message*, so accepting a connection verifies nothing about the peer and no log
+   line may claim it does; and libxpc drops a requirement-refused peer without reporting who it was,
+   so a refusal is visible only as an invalidation with no message ever delivered — which is
+   indistinguishable from a client that disconnected before its first message.
+
+   What the boundary logs instead: the connection's `ConnectionID` and that the requirement was
+   applied (no identity claim); at handshake, the negotiated version and the client's own
+   *self-described* name, explicitly labelled as validated-not-verified; and at invalidation, the
+   handshake state and the messages-delivered count, with zero naming both possibilities and
+   preferring neither. Refusals are logged at info level, because a refused foreign binary is the
+   mechanism working; fault level stays for the refuse-all rows, where the helper itself is broken.
+   Saying the weaker true thing is rule 6 applied to the boundary's own diagnostics.
 
 ## Assumptions and what would invalidate them
 
@@ -283,7 +297,17 @@ Three properties of the API matter to E2.3 and were not obvious from the ADR as 
    the message never reaches the exported object. So a refusal is loggable — but an invalidation with
    no message ever delivered is *consistent with* a requirement refusal rather than *proof* of one; a
    client that connected and disconnected before its first message looks identical. E2.3's logging
-   says the weaker true thing.
+   says the weaker true thing, and fail-closed row 6 above was amended to match.
+
+**What #72 could not verify, and nothing on CI ever will.** Mutation testing of E2.3 deleted the
+`setCodeSigningRequirement` call from `SealedRequirementAdmission` and the full suite stayed green.
+That mutation is a **known survivor, left in deliberately**: killing it needs a Developer ID
+signature and a foreign-signed client process, which exist on no CI runner and on exactly one
+machine. It is E2.5's manual `Mac16,5` checklist item — "an ad-hoc-built client is refused by the
+installed helper" — and it is the reason that item is load-bearing rather than ceremonial. Every
+listener test in the tree drives an admission policy declared in the *test target* that applies no
+requirement at all, precisely so no production wiring can select one; a green suite says the gate and
+the seam are correct, and says nothing whatever about the requirement.
 
 Nothing in this design depends on `docs/SMC-RESEARCH.md`'s reported-but-unverified section. E2 touches
 no write, no `Ftst`, no unlock sequence — deliberately, because the boundary must not encode Apple

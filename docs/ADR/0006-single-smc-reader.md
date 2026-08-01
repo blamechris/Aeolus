@@ -79,9 +79,19 @@ end up disagreeing about when "now" was.
   cost of the decision and it is a real one.
 - **The E7 direct stack is retained forever** — `Monitor` requires it — so this ADR costs no code. It
   is a source-selection policy, not a deletion.
-- **Snapshot cost at 1 Hz is accepted** per [ARCHITECTURE.md](../ARCHITECTURE.md)'s wire-format
-  trade. If a full sensor set proves heavy, the remedy is an additive subset-request capability
-  within v1 — **never** a second continuous reader.
+- **Snapshot cost at 1 Hz was accepted** per [ARCHITECTURE.md](../ARCHITECTURE.md)'s wire-format
+  trade — and #72 has now measured it, so the acceptance should be re-read with the number in hand.
+  On `Mac16,5` / macOS 26.5.2 the machine exposes **2929 readable sensor keys**. Discovery costs
+  2.2 s against a warm SMC key cache and 5.9 s against a cold one, and is correctly paid once. A warm
+  snapshot costs **~0.5 s** and carries 2929 samples. At 1 Hz that is half of every second spent in a
+  root daemon reading firmware, plus a payload of that size crossing the boundary every tick.
+
+  This does not reverse the decision: the argument for it is rule 6 and rule 7 consistency, not
+  cost. It does mean **"a full sensor set proves heavy" is now settled rather than hypothetical**, and
+  the remedy this ADR already names — an additive subset-request capability within v1, **never** a
+  second continuous reader — should be treated as required work for the app-side client rather than a
+  contingency. `Tests/AeolusHelperTests/HelperHardwareTests` re-measures the figure on every hardware
+  run so it cannot drift unnoticed.
 - The app-side client and source switching are **not** built in #72. #72 builds the helper side only;
   this ADR is recorded now because it shapes #72's snapshot semantics (pull-based, `capturedAt`
   stamped, cheap at 1 Hz).
