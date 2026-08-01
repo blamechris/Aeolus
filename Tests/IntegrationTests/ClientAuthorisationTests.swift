@@ -54,6 +54,58 @@ struct RequirementNegativeControlTests {
             return
         }
     }
+
+    /// The failure that is *not* a missing file: a probe the Security framework opens
+    /// happily and then declines to evaluate. `SecStaticCodeCheckValidity` returns
+    /// `errSecCSUnsigned` without ever consulting the requirement, so an unsigned probe
+    /// says nothing at all about whether the requirement discriminates.
+    ///
+    /// This is driven with `anchor apple` on purpose. That is the module's canonical broken
+    /// requirement — the one `brokenRequirementIsCaught` proves the control catches — so if
+    /// "the probe could not be evaluated" is ever folded back into "the probe was rejected",
+    /// this test shows the control reporting a pass for a requirement that admits every
+    /// binary Apple ships.
+    @Test("A probe that cannot be evaluated is inconclusive, not a rejection")
+    func unsignedProbeIsInconclusive() throws {
+        let fixture = try UnsignedBinaryFixture.make()
+        defer { fixture.remove() }
+
+        let control = RequirementNegativeControl(probePath: fixture.path)
+        let broken = try ClientAuthorisationFixtures.compile("anchor apple")
+        #expect(control.evaluate(broken) == .probeUnavailable(errSecCSUnsigned))
+
+        // And the same for a requirement that is not broken: the distinction is a property
+        // of the probe, not of what it was checked against.
+        let real = try ClientAuthorisationFixtures.compiledRequirement(variant: .release)
+        #expect(control.evaluate(real) == .probeUnavailable(errSecCSUnsigned))
+    }
+
+    /// A genuine rejection is `errSecCSReqFailed` and nothing else. Pinned because the whole
+    /// correctness of `evaluate` rests on that status meaning what it is taken to mean: if
+    /// the framework ever reported a plain requirement mismatch some other way, the control
+    /// would start refusing every startup, and it should be this test that says so rather
+    /// than a helper that will not talk to anybody.
+    @Test(
+        "A real rejection is a requirement failure, not some other error",
+        arguments: ClientAuthorisationFixtures.variants
+    )
+    func rejectionIsAGenuineRequirementFailure(variant: ClientRequirementVariant) throws {
+        let requirement = try ClientAuthorisationFixtures.compiledRequirement(variant: variant)
+        let status = ClientAuthorisationFixtures.checkValidity(
+            requirement,
+            RequirementNegativeControl.systemProbePath
+        )
+        #expect(status == errSecCSReqFailed)
+    }
+
+    /// `.noNetworkAccess` is not decoration. Without it a root daemon's startup can depend
+    /// on the machine resolving DNS for revocation and notarization checks, which is the
+    /// difference between "bounded and local" and "bounded and local when the network is
+    /// up". Nothing else in the suite fails if it is deleted, so this does.
+    @Test("Validation is pinned to no network access")
+    func validationDoesNotReachTheNetwork() {
+        #expect(RequirementNegativeControl.validationFlags.contains(.noNetworkAccess))
+    }
 }
 
 /// The fail-closed table from ADR 0005, one test per row, driven end to end through the
@@ -188,6 +240,25 @@ struct ClientAuthorisationBuilderTests {
             Issue.record("Expected .negativeControlUnavailable, got \(outcome)")
             return
         }
+    }
+
+    /// The other way the control comes back inconclusive: a probe that exists and is
+    /// readable but carries no signature. Asserted through the builder as well as at the
+    /// control, because the property that matters is not "evaluate returns a third case" —
+    /// it is that the third case ends the startup path in refuse-all rather than being
+    /// waved through as a rejection.
+    @Test("A probe that cannot be evaluated refuses every connection")
+    func inconclusiveNegativeControlRefusesAll() throws {
+        let fixture = try UnsignedBinaryFixture.make()
+        defer { fixture.remove() }
+
+        let outcome = ClientAuthorisationBuilder.build(
+            inspection: .teamIdentifier(Self.team),
+            variant: .release,
+            negativeControl: RequirementNegativeControl(probePath: fixture.path)
+        )
+        #expect(outcome == .refuseAll(.negativeControlUnavailable(errSecCSUnsigned)))
+        #expect(!outcome.permitsAnyConnection)
     }
 
     @Test(

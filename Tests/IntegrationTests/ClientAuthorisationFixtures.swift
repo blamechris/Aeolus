@@ -41,13 +41,56 @@ enum ClientAuthorisationFixtures {
     }
 
     static func satisfies(_ requirement: SecRequirement, _ path: String) -> Bool {
+        checkValidity(requirement, path) == errSecSuccess
+    }
+
+    /// The raw status, for the tests that care *which* failure it was — the distinction
+    /// `RequirementNegativeControl` now turns on.
+    static func checkValidity(_ requirement: SecRequirement, _ path: String) -> OSStatus {
         var code: SecStaticCode?
         let status = SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &code)
-        guard status == errSecSuccess, let code else { return false }
-        // Same `.noNetworkAccess` as RequirementNegativeControl, for the same reason: a
-        // test that can reach the network is a test that can fail for reasons unrelated to
-        // what it asserts.
-        return SecStaticCodeCheckValidity(code, .noNetworkAccess, requirement) == errSecSuccess
+        guard status == errSecSuccess, let code else { return status }
+        // The same flags RequirementNegativeControl uses, taken from it rather than
+        // restated, for the same reason it names them: a test that can reach the network is
+        // a test that can fail for reasons unrelated to what it asserts.
+        let flags = RequirementNegativeControl.validationFlags
+        return SecStaticCodeCheckValidity(code, flags, requirement)
+    }
+}
+
+/// A copy of an Apple binary with its signature stripped off.
+///
+/// The point of this fixture is that it is a file the Security framework can open and then
+/// refuses to evaluate — `SecStaticCodeCreateWithPath` succeeds, and
+/// `SecStaticCodeCheckValidity` fails with `errSecCSUnsigned` before the requirement is
+/// consulted at all. That is a different failure from a probe that is simply missing, and
+/// it is the one that used to be indistinguishable from "the requirement rejected it".
+///
+/// Built at test time with `codesign --remove-signature`, which needs no signing identity
+/// and so works on CI. Nothing executes it; it is only ever read.
+struct UnsignedBinaryFixture {
+    let directory: URL
+    /// A real Mach-O with no code signature.
+    let path: String
+
+    static func make() throws -> UnsignedBinaryFixture {
+        let manager = FileManager.default
+        let directory = manager.temporaryDirectory
+            .appendingPathComponent("aeolus-unsigned-probe-\(UUID().uuidString)")
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let binary = directory.appendingPathComponent("unsigned")
+        try manager.copyItem(
+            at: URL(fileURLWithPath: RequirementNegativeControl.systemProbePath),
+            to: binary
+        )
+        try AdHocSignedFixtures.codesign(["--remove-signature", binary.path])
+
+        return UnsignedBinaryFixture(directory: directory, path: binary.path)
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: directory)
     }
 }
 
@@ -100,7 +143,8 @@ struct AdHocSignedFixtures {
         try? FileManager.default.removeItem(at: directory)
     }
 
-    private static func codesign(_ arguments: [String]) throws {
+    /// Shared with `UnsignedBinaryFixture`, which strips a signature with the same tool.
+    static func codesign(_ arguments: [String]) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
         process.arguments = arguments
