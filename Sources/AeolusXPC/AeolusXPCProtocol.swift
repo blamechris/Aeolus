@@ -50,11 +50,55 @@ import Foundation
 /// - **Connection death releases immediately.** The invalidation handler for a
 ///   lease-holding connection restores those fans at once, covering crash, `SIGKILL`, and
 ///   logout within milliseconds, because the kernel tears the mach port down regardless of
-///   how the process died.
+///   how the process died. This describes the *default* lease — see self-renewal below.
 /// - **The TTL is an independent backstop**, for the case where invalidation never fires.
 ///   Either mechanism alone suffices; both must fail for the fans to stay pinned; **they
 ///   share no code path.** An implementation that expires leases *from* the invalidation
 ///   handler has one mechanism wearing two names.
+///
+/// ### Self-renewing leases
+///
+/// `LeaseRequest.isSelfRenewing` asks for the one lease that **survives connection
+/// death**, which is why the two rules above are written as the default rather than as
+/// every lease. It is not an exception to the lease model and it is not a setting:
+/// `CLAUDE.md` rule 2 settles this — "persist across quit" is a *helper-renewed lease*.
+/// On invalidation the helper becomes the holder and inherits the obligation the client
+/// was discharging, which is to keep proving the lease should still be held. It does not
+/// inherit permission to stop proving it.
+///
+/// Its teardowns are therefore an explicit `releaseLease`, the safety supervisor (thermal
+/// override, reclamation, implausible bounds), and a helper-side liveness policy.
+/// Connection invalidation is not one of them.
+///
+/// **E5 owns that liveness policy** — what the helper checks, how often, and what makes it
+/// let go. Nothing here presumes its shape, and no mechanism for it is invented here. E2
+/// implements no part of self-renewal at all: `ReadOnlyFanAuthority` refuses every lease
+/// acquisition (ADR 0005), so the field crosses the boundary and is validated, and there
+/// is no code path that can yet exercise it.
+///
+/// ## What a reply block promises — and what it does not
+///
+/// Two reply shapes cross this boundary, and both carry the same contract.
+///
+/// - `(Data?, Error?) -> Void` — **exactly one of the two is non-nil.** A payload means
+///   success; an error means refusal. `(nil, nil)` is a protocol violation, not an empty
+///   success, and a client that reads it as one has invented an answer the helper never
+///   gave.
+/// - `(Error?) -> Void` — `nil` means the request succeeded; non-nil is the refusal.
+///
+/// **A reply block may never be invoked at all.** When the connection itself fails — the
+/// helper is not installed, crashed, or was killed mid-request — `NSXPCConnection` routes
+/// to the error handler given to `remoteObjectProxyWithErrorHandler(_:)` and the block
+/// passed with the message is simply dropped. A client that writes its failure path only
+/// inside the reply block therefore has no failure path for the case that matters most.
+/// "No reply" is a failure and must be rendered as one: leaving the last known fan state
+/// on screen would claim control that nothing is honouring, which `CLAUDE.md` rule 6
+/// forbids. Use `remoteObjectProxyWithErrorHandler(_:)`, never bare `remoteObjectProxy`.
+///
+/// `AeolusXPCFault.init?(nsError:)` returning `nil` says "this error did not come from
+/// Aeolus's boundary" — a transport failure, a Cocoa error. That is still a failure, and
+/// never "no problem". It is the "the helper never answered" case, which a client
+/// distinguishes from a refusal and must not distinguish from a success.
 ///
 /// - Note: `@objc` and reply blocks are required by `NSXPCConnection`; this is one of the
 ///   few places in the codebase that is not idiomatic Swift concurrency. Structured
@@ -96,16 +140,23 @@ import Foundation
     /// and after expiry — an expired lease is re-acquired, never resurrected, because
     /// resurrection would let a client that stopped proving it was alive carry on as
     /// though it never had.
+    ///
+    /// `id` is a `Lease.id` — a `UUID` on both sides, a bare `String` only because that is
+    /// what an `@objc` signature carries. Check it with
+    /// `AeolusXPCValidation.validateLeaseID(_:)` before it reaches a lookup or a log line.
     func renewLease(id: String, reply: @escaping (Data?, Error?) -> Void)
 
     /// Voluntarily releases a lease and returns the affected fans to automatic.
+    ///
+    /// `id` is checked with `AeolusXPCValidation.validateLeaseID(_:)`, as for `renewLease`.
     func releaseLease(id: String, reply: @escaping (Error?) -> Void)
 
     /// Applies fan settings under an active lease.
     ///
     /// - Parameters:
     ///   - settings: JSON-encoded `[FanSetting]`.
-    ///   - leaseID: The lease authorising the change. An expired or unknown lease is a
+    ///   - leaseID: The lease authorising the change, checked with
+    ///     `AeolusXPCValidation.validateLeaseID(_:)`. An expired or unknown lease is a
     ///     refusal, never a silently accepted no-op.
     ///   - reply: Receives the failure, or `nil` on success.
     func apply(settings: Data, leaseID: String, reply: @escaping (Error?) -> Void)
@@ -146,6 +197,13 @@ import Foundation
 /// - Adding, removing, or renaming a **required** DTO field, or changing its type.
 /// - Changing what an existing message *means*, even with an unchanged signature.
 /// - Adding, removing, or renaming a method on `AeolusXPCProtocol`.
+///
+/// The policy binds from the first **shipped** implementation, which is why #70 reshaped
+/// v1 without bumping it: replacing `protocolVersion(reply:)` with `hello(request:reply:)`
+/// is a method removed and a method added, and ``current`` stays at 1 because no helper
+/// had ever implemented this protocol and no client had ever spoken it. There was no
+/// installed peer for a bump to protect. From #72 onward that is no longer true, and the
+/// list above is binding without exception.
 ///
 /// Raising ``minimumSupported`` orphans installed clients and is a **release-notes
 /// event**, not a routine change: a user whose `fanctl` stops talking to their helper is
