@@ -40,10 +40,33 @@ struct NegotiatedClient: Sendable, Hashable {
 ///
 /// ## The order of checks, and why it is this order
 ///
-/// Every gated message does: count the message, check the handshake, validate the payload,
-/// then dispatch. The handshake check comes before validation deliberately — a client that
-/// has not introduced itself gets one answer, `handshakeRequired`, and learns nothing about
-/// how the helper parses payloads until it has.
+/// Every gated message does: count the message, check that the connection is still alive,
+/// check the handshake, validate the payload, then dispatch. The handshake check comes
+/// before validation deliberately — a client that has not introduced itself gets one
+/// answer, `handshakeRequired`, and learns nothing about how the helper parses payloads
+/// until it has. The liveness check comes before *both*, because a dead connection's
+/// message has no business being judged on its merits at all.
+///
+/// ## Why a dead connection is a gate and not bookkeeping
+///
+/// `HelperXPCService` hops every message through a `Task {}`, and `invalidationHandler`
+/// spawns a detached one, so a message task and the invalidation task enqueue on this actor
+/// in unspecified order. That is a real interleaving, not a theoretical one: libxpc can
+/// deliver a message it already had in hand and then the kernel tears the port down because
+/// the client was `SIGKILL`ed.
+///
+/// Without this gate, invalidation winning the race is the dangerous outcome rather than
+/// the harmless one. E5's authority would release everything held by this `ConnectionID` —
+/// nothing, yet — and *then* be handed an `acquireLease` bound to that same, already-dead
+/// `ConnectionID`. The connection-death teardown for that lease has already run and will
+/// never run again, leaving the TTL alone to recover the fans.
+/// [ADR 0005](../../docs/ADR/0005-xpc-authorisation.md) requires the two teardown paths to
+/// share no code path and says both must fail before the fans stay pinned; one of them
+/// being silently pre-empted is that guarantee quietly becoming one path.
+///
+/// The gate lives here, in E2's listener code, for the same reason
+/// `connectionDidInvalidate` is wired here in E2: so that E5 does not have to edit this
+/// file to implement half of a safety mechanism.
 actor HelperConnectionSession {
 
     let id: ConnectionID
@@ -85,6 +108,7 @@ actor HelperConnectionSession {
     /// never repair, applied to the connection's own state rather than to a field.
     func hello(payload: Data) async -> PayloadReply {
         deliveredMessages += 1
+        if let refusal = invalidationRefusal(message: "hello") { return refusal }
 
         guard negotiated == nil else {
             return refuse(
@@ -122,6 +146,7 @@ actor HelperConnectionSession {
 
     func snapshot() async -> PayloadReply {
         deliveredMessages += 1
+        if let refusal = invalidationRefusal(message: "snapshot") { return refusal }
         if let refusal = handshakeRefusal(message: "snapshot") { return refusal }
 
         do {
@@ -139,6 +164,7 @@ actor HelperConnectionSession {
     /// time-of-check/time-of-use gap on the one input deciding which fans a lease covers.
     func acquireLease(payload: Data) async -> PayloadReply {
         deliveredMessages += 1
+        if let refusal = invalidationRefusal(message: "acquireLease") { return refusal }
         if let refusal = handshakeRefusal(message: "acquireLease") { return refusal }
 
         let request: LeaseRequest
@@ -160,6 +186,7 @@ actor HelperConnectionSession {
 
     func renewLease(id rawLeaseID: String) async -> PayloadReply {
         deliveredMessages += 1
+        if let refusal = invalidationRefusal(message: "renewLease") { return refusal }
         if let refusal = handshakeRefusal(message: "renewLease") { return refusal }
 
         let leaseID: UUID
@@ -178,6 +205,9 @@ actor HelperConnectionSession {
 
     func releaseLease(id rawLeaseID: String) async -> AcknowledgementReply {
         deliveredMessages += 1
+        if let refusal = invalidationAcknowledgementRefusal(message: "releaseLease") {
+            return refusal
+        }
         if let refusal = handshakeAcknowledgementRefusal(message: "releaseLease") {
             return refusal
         }
@@ -194,6 +224,7 @@ actor HelperConnectionSession {
 
     func apply(settings payload: Data, leaseID rawLeaseID: String) async -> AcknowledgementReply {
         deliveredMessages += 1
+        if let refusal = invalidationAcknowledgementRefusal(message: "apply") { return refusal }
         if let refusal = handshakeAcknowledgementRefusal(message: "apply") { return refusal }
 
         do {
@@ -211,13 +242,32 @@ actor HelperConnectionSession {
 
     // MARK: - The panic path
 
-    /// Exempt from the handshake gate, and never from the authorisation gate.
+    /// Exempt from the handshake gate **and from the teardown gate**, and never from the
+    /// authorisation gate.
     ///
     /// Its only expressible effect is the safe state, so a version fence that stopped a
     /// panicked user's older `fanctl` from restoring automatic control would be a safety
     /// mechanism defeating safety. The message still arrives only on a connection libxpc
     /// admitted against the code-signing requirement — the exemption is from *versioning*,
     /// not from *authorisation*, and those are different gates in different layers.
+    ///
+    /// ## Why the teardown gate exempts it too, deliberately
+    ///
+    /// Every other message is refused once `invalidate()` has run, because a message that
+    /// lost the race to a dying connection must not reach the authority and be attributed
+    /// to a `ConnectionID` whose teardown has already happened. This one is let through
+    /// anyway, and the asymmetry is a decision rather than an oversight.
+    ///
+    /// It restores the safe state and can express nothing else. Refusing to return fans to
+    /// automatic control *because the connection is dying* would be the same defect the
+    /// version exemption exists to prevent, arriving through a different door — and the
+    /// dying connection is precisely the case where the fans most need putting back. ADR
+    /// 0005 requires the panic path to carry the fewest preconditions of anything in the
+    /// protocol; "the connection is still alive" is a precondition.
+    ///
+    /// The reply may well be undeliverable by the time this returns, because the port it
+    /// would travel on is what died. That is accepted: what matters here is the **effect**,
+    /// not the acknowledgement. Reaching the authority is the whole of the job.
     func restoreAllToAutomatic() async -> AcknowledgementReply {
         deliveredMessages += 1
         do {
@@ -261,6 +311,42 @@ actor HelperConnectionSession {
         guard negotiated == nil else { return nil }
         return refuse(.handshakeRequired, message: message)
     }
+
+    /// `nil` while this connection is alive; the refusal once it is not.
+    ///
+    /// **This is the teardown gate.** Every message except `restoreAllToAutomatic` calls it
+    /// first, so nothing reaches the authority under a `ConnectionID` whose
+    /// `connectionDidInvalidate` has already been delivered. See this type's documentation
+    /// for the race it closes and `restoreAllToAutomatic()` for why that one is exempt.
+    private func invalidationRefusal(message: String) -> PayloadReply? {
+        guard hasInvalidated else { return nil }
+        return refuse(Self.connectionInvalidated, message: message)
+    }
+
+    /// The same gate for the acknowledgement-shaped messages, split for the same reason
+    /// `handshakeAcknowledgementRefusal` is split from `handshakeRefusal`.
+    private func invalidationAcknowledgementRefusal(message: String) -> AcknowledgementReply? {
+        guard hasInvalidated else { return nil }
+        return acknowledgeRefusal(Self.connectionInvalidated, message: message)
+    }
+
+    /// What a message that lost the race to its own connection's death is answered with.
+    ///
+    /// `.helperFailed` is the vocabulary's stated home for "the helper could not carry out
+    /// the request, for a reason no other code here names", and no other code names this
+    /// one. Each alternative asserts something false: `handshakeRequired` would tell a
+    /// client that had handshaken that it had not, `malformedPayload` and
+    /// `invalidParameter` blame a client whose payload was fine, and `.unknown` renders as
+    /// "the helper is probably newer than this client".
+    ///
+    /// No new case was added for it, though the bump policy would allow one. The reply
+    /// travels on a port that has already gone, so in practice nothing decodes this and the
+    /// precision would buy a client nothing; the value of naming it at all is the log line
+    /// `refuse` writes on the way past.
+    ///
+    /// The detail is fixed text and describes the connection, never anything a client sent.
+    private static let connectionInvalidated = AeolusXPCFault.helperFailed(
+        detail: "the connection has been invalidated")
 
     /// The same gate for the acknowledgement-shaped messages. Two functions rather than
     /// one generic, because the two reply shapes are different contracts and a single
