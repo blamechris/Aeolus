@@ -104,10 +104,16 @@ public enum ClientAuthorisationOutcome: Sendable, Hashable {
     /// Refuse every connection, and say why in the log.
     case refuseAll(ClientAuthorisationRefusal)
 
-    /// Convenience for assertions and for logging. Never use this in place of the switch:
-    /// a caller that treats `false` as "carry on without a requirement" has inverted the
-    /// entire point.
-    public var permitsAnyConnection: Bool {
+    /// `true` when this outcome will let connections through *under a requirement*, `false`
+    /// when it refuses every one.
+    ///
+    /// **`internal`, and it should stay that way.** The name reads dangerously close to its
+    /// own inverse — `if outcome.permitsAnyConnection` scans as "we are wide open" when it
+    /// means "a requirement was established" — and nothing in `Sources/` uses it or should.
+    /// Callers switch, which is the only form that yields the requirement itself. This
+    /// exists for the assertions in `Tests/IntegrationTests/ClientAuthorisationTests`,
+    /// which reach it through `@testable`, and for a log line.
+    var permitsAnyConnection: Bool {
         switch self {
         case .enforce: return true
         case .refuseAll: return false
