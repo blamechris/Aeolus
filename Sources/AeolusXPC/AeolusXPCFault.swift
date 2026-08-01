@@ -76,6 +76,34 @@ public enum AeolusXPCFault: Error, Sendable, Hashable {
     /// envelope to clamp into and no safe speed to honour.
     case boundsImplausible(fanIndex: Int, detail: String)
 
+    /// The helper could not carry out the request, for a reason no other code here names.
+    ///
+    /// Added in #72 rather than #70, and the reason is worth recording: E2.3 is the first
+    /// code in the project that can *reach* a failure of this kind, and the vocabulary
+    /// written in #70 had no way to say it. `snapshot` reads real hardware, and the SMC
+    /// can refuse — no `AppleSMC` service, an unreadable `FNum`, a fan count that decoded
+    /// to something implausible. Every other code here would have been a false statement
+    /// about what happened, and `.unknown` would have told the user "the helper is
+    /// probably newer than this client", which is wrong, unactionable, and would have made
+    /// a hardware fault look like a version skew.
+    ///
+    /// It doubles as the backstop for an error crossing the boundary that is not an
+    /// `AeolusXPCFault` at all — which is a helper bug, and still has to reach the client
+    /// as a refusal rather than as silence.
+    ///
+    /// **Not a substitute for a precise code.** A refusal this vocabulary *can* name must
+    /// use that name; E5 adds cases for the conditions it learns to refuse for, exactly as
+    /// the bump policy allows. This is what is left when nothing fits.
+    ///
+    /// Additive within v1 by `AeolusXPCVersion`'s own bump policy: a peer that predates
+    /// this case decodes it to `.unknown(raw)` and renders it generically, which is
+    /// precisely what forward tolerance was built for.
+    ///
+    /// `detail` is helper-authored — an SMC error's own description — not client input, so
+    /// unlike every other detail in this vocabulary it may quote what it saw. There is no
+    /// client-chosen string anywhere near it to steer a log line with.
+    case helperFailed(detail: String)
+
     /// A code this build does not recognise, from a newer helper. Render it generically;
     /// never treat it as a success.
     ///
@@ -104,6 +132,7 @@ extension AeolusXPCFault {
         case thermalEmergencyActive
         case reclaimedBySystem
         case boundsImplausible
+        case helperFailed
     }
 
     /// The string this fault travels as.
@@ -121,6 +150,7 @@ extension AeolusXPCFault {
         case .thermalEmergencyActive: return KnownCode.thermalEmergencyActive.rawValue
         case .reclaimedBySystem: return KnownCode.reclaimedBySystem.rawValue
         case .boundsImplausible: return KnownCode.boundsImplausible.rawValue
+        case .helperFailed: return KnownCode.helperFailed.rawValue
         case .unknown(let code, _): return code
         }
     }
@@ -160,6 +190,8 @@ extension AeolusXPCFault: Codable {
             try container.encode(reason.wireValue, forKey: .reason)
         case .boundsImplausible(let fanIndex, let detail):
             try container.encode(fanIndex, forKey: .fanIndex)
+            try container.encode(detail, forKey: .detail)
+        case .helperFailed(let detail):
             try container.encode(detail, forKey: .detail)
         case .unknown(_, let detail):
             try container.encodeIfPresent(detail, forKey: .detail)
@@ -211,6 +243,9 @@ extension AeolusXPCFault: Codable {
                 fanIndex: try container.decode(Int.self, forKey: .fanIndex),
                 detail: try container.decode(String.self, forKey: .detail)
             )
+        case .helperFailed:
+            self = .helperFailed(
+                detail: try container.decode(String.self, forKey: .detail))
         }
     }
 }
@@ -268,6 +303,11 @@ extension AeolusXPCFault: LocalizedError {
                 Fan \(fanIndex) cannot be controlled: its firmware speed bounds are not \
                 usable (\(FaultText.displayable(detail))).
                 """
+        case .helperFailed(let detail):
+            return """
+                The helper could not carry out this request: \
+                \(FaultText.displayable(detail)).
+                """
         case .unknown(let code, let detail):
             let suffix = detail.map { " (\(FaultText.displayable($0)))" } ?? ""
             return """
@@ -276,69 +316,6 @@ extension AeolusXPCFault: LocalizedError {
                 than this client.
                 """
         }
-    }
-}
-
-/// Rendering rules for the free text a fault carries across the boundary.
-enum FaultText {
-
-    /// Longest run of helper-supplied free text this client will render, in characters.
-    ///
-    /// Not a validation limit — nothing is refused for exceeding it. It bounds one log
-    /// line and one UI label, which is all `errorDescription` is for.
-    static let maxRenderedLength = 200
-
-    /// The same bound, in UTF-8 bytes.
-    ///
-    /// A character cap alone does not bound a log line: one grapheme cluster can carry an
-    /// unbounded run of combining marks, so 200 *characters* can be hundreds of kilobytes.
-    /// Exactly the defect `AeolusXPCValidation.maxHolderDescriptionUTF8Bytes` exists for,
-    /// at the same 4:1 ratio, applied to the rendering side. Not reachable from client
-    /// input today — this text comes from the helper — so it is depth, not a live hole.
-    static let maxRenderedUTF8Bytes = maxRenderedLength * 4
-
-    /// Shown in place of text that survived stripping with nothing left.
-    static let unprintableMarker = "unprintable"
-
-    /// Makes free text from the far side of the boundary safe to put in a log line or a
-    /// UI label, without discarding the fact that something arrived.
-    ///
-    /// Control and format characters go, because those are what turn one log line into
-    /// two (`\n`) or reverse the reading order of the rest of it (U+202E). An empty or
-    /// entirely-unprintable string renders as a marker rather than as nothing at all, so
-    /// a reader can tell "the helper said something unprintable" from "the helper said
-    /// nothing".
-    ///
-    /// Both caps apply. Text over either renders truncated with an ellipsis; text so dense
-    /// that not one character fits inside the byte cap renders as the marker.
-    static func displayable(
-        _ text: String,
-        limit: Int = maxRenderedLength,
-        byteLimit: Int = maxRenderedUTF8Bytes
-    ) -> String {
-        let stripped = String(
-            text.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
-        )
-        let trimmed = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return unprintableMarker }
-        guard trimmed.count > limit || trimmed.utf8.count > byteLimit else { return trimmed }
-        let cut = truncated(trimmed, characters: limit, bytes: byteLimit)
-        guard !cut.isEmpty else { return unprintableMarker }
-        return cut + "…"
-    }
-
-    /// Applies both caps at once, cutting on a `Character` boundary so the result is never
-    /// a half-formed grapheme cluster and never a split scalar.
-    private static func truncated(_ text: String, characters: Int, bytes: Int) -> String {
-        var result = ""
-        var byteCount = 0
-        for character in text.prefix(characters) {
-            let width = String(character).utf8.count
-            guard byteCount + width <= bytes else { break }
-            result.append(character)
-            byteCount += width
-        }
-        return result
     }
 }
 
