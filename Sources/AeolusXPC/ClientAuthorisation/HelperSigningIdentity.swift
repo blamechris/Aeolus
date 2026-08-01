@@ -33,22 +33,24 @@ enum HelperSigningIdentity {
             return .inspectionFailed(copyStatus)
         }
 
-        // SecCodeRef and SecStaticCodeRef are the same C type. CSCommon.h declares them as
+        // SecCodeCopySigningInformation wants a SecStaticCodeRef. Passing the SecCodeRef
+        // straight in would work — CSCommon.h says a SecCodeRef supplied where a
+        // SecStaticCodeRef is expected "performs an implicit SecCodeCopyStaticCode call and
+        // operates on the result" — but Swift imports the two as unrelated classes, so
+        // saying so would take an unsafeBitCast. This is that same implicit call, made
+        // explicitly, through the API that exists for it.
         //
-        //     typedef struct __SecCode *SecCodeRef;
-        //     typedef struct __SecCode const *SecStaticCodeRef;
-        //
-        // — one struct, differing only in constness — and the header documents a SecCodeRef
-        // as usable wherever a SecStaticCodeRef is required. Swift imports them as two
-        // unrelated classes, so the identity has to be restated. No allocation, no
-        // ownership transfer: both sides are the same retained CFType.
-        //
-        // The alternative that avoids the cast is SecCodeCopyPath followed by
-        // SecStaticCodeCreateWithPath, and it is worse here: it would read the binary on
-        // disk rather than the running image, putting a time-of-check gap in exactly the
-        // value the requirement is pinned to. A cast documented by the header beats a
-        // supported API that answers a subtly different question.
-        let staticCode = unsafeBitCast(selfCode, to: SecStaticCode.self)
+        // It buys no TOCTOU protection and does not claim to: the implicit conversion and
+        // this explicit one are the same operation, and SecCodeCopySigningInformation's own
+        // documentation notes that for Code objects some of the returned information comes
+        // from disk regardless. Measured both ways in one process: identical status,
+        // identical dictionaries. What it buys is one fewer unsafeBitCast in code that runs
+        // as root.
+        var staticCode: SecStaticCode?
+        let staticStatus = SecCodeCopyStaticCode(selfCode, [], &staticCode)
+        guard staticStatus == errSecSuccess, let staticCode else {
+            return .inspectionFailed(staticStatus)
+        }
 
         var information: CFDictionary?
         let informationStatus = SecCodeCopySigningInformation(
