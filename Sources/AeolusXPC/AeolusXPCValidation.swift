@@ -199,6 +199,33 @@ public enum AeolusXPCValidation {
         )
     }
 
+    // MARK: - Fan settings
+
+    /// Decodes the `[FanSetting]` payload of an `apply` message.
+    ///
+    /// The sibling of `decodeLeaseRequest(from:)` and `decodeHelloRequest(from:)`, and
+    /// here rather than in the helper for the reason all three are here: `malformedDetail`
+    /// is what keeps a decoding failure from quoting the client's own bytes back into a
+    /// root daemon's log line, and a fourth decoder written somewhere else would be a
+    /// fourth chance to forget that.
+    ///
+    /// There is deliberately no `validate(_: [FanSetting])` beside it. What makes a
+    /// setting acceptable — the fan exists, its bounds are plausible, the requested speed
+    /// clamps into the firmware envelope — is hardware state, so it belongs to whatever
+    /// owns the enumeration and the clamp, not to a pure function over the payload. E2
+    /// has no write path for it to be acceptable *to*; E5 owns that check.
+    ///
+    /// - Parameter payload: The JSON the client sent.
+    /// - Returns: The decoded settings, in the order the client sent them.
+    /// - Throws: `AeolusXPCFault.malformedPayload`.
+    public static func decodeFanSettings(from payload: Data) throws -> [FanSetting] {
+        do {
+            return try AeolusXPCCoding.decoder().decode([FanSetting].self, from: payload)
+        } catch {
+            throw AeolusXPCFault.malformedPayload(detail: malformedDetail(for: error))
+        }
+    }
+
     // MARK: - Lease identifiers
 
     /// Checks a lease ID a client presented.
@@ -235,78 +262,13 @@ public enum AeolusXPCValidation {
         }
     }
 
-    // MARK: - Handshake
-
-    /// Decodes and validates a `HelloRequest` that arrived over the boundary.
-    ///
-    /// - Parameters:
-    ///   - payload: The JSON the client sent.
-    ///   - helperRange: The versions this helper speaks.
-    /// - Returns: The request, when every check passed.
-    /// - Throws: `AeolusXPCFault.malformedPayload`,
-    ///   `AeolusXPCFault.invalidParameter`, or `AeolusXPCFault.versionMismatch`.
-    public static func helloRequest(
-        from payload: Data,
-        helperRange: ProtocolVersionRange = AeolusXPCVersion.supportedRange
-    ) throws -> HelloRequest {
-        let request = try decodeHelloRequest(from: payload)
-        try validate(request, helperRange: helperRange)
-        return request
-    }
-
-    /// Decodes a `HelloRequest` without validating it.
-    ///
-    /// - Parameter payload: The JSON the client sent.
-    /// - Returns: The decoded request.
-    /// - Throws: `AeolusXPCFault.malformedPayload`.
-    public static func decodeHelloRequest(from payload: Data) throws -> HelloRequest {
-        do {
-            return try AeolusXPCCoding.decoder().decode(HelloRequest.self, from: payload)
-        } catch {
-            throw AeolusXPCFault.malformedPayload(detail: malformedDetail(for: error))
-        }
-    }
-
-    /// Checks an already-decoded `HelloRequest`.
-    ///
-    /// The description is checked before the version, so a client that is both
-    /// out-of-range and misbehaved is told about the misbehaviour: a version mismatch is
-    /// fixed by updating, and reporting it first would hide a bug the update will not
-    /// fix.
-    ///
-    /// - Parameters:
-    ///   - request: The decoded request.
-    ///   - helperRange: The versions this helper speaks.
-    /// - Throws: `AeolusXPCFault.invalidParameter` or `AeolusXPCFault.versionMismatch`.
-    public static func validate(
-        _ request: HelloRequest,
-        helperRange: ProtocolVersionRange = AeolusXPCVersion.supportedRange
-    ) throws {
-        try validateClientDescription(request.clientDescription)
-        guard helperRange.accepts(clientVersion: request.clientProtocolVersion) else {
-            throw AeolusXPCFault.versionMismatch(
-                clientVersion: request.clientProtocolVersion,
-                helperRange: helperRange
-            )
-        }
-    }
-
-    /// Checks a `HelloRequest.clientDescription`.
-    ///
-    /// - Parameter description: The client-supplied client name.
-    /// - Throws: `AeolusXPCFault.invalidParameter` named `clientDescription`.
-    public static func validateClientDescription(_ description: String) throws {
-        try validateDescription(
-            description,
-            name: "clientDescription",
-            maxLength: maxClientDescriptionLength,
-            maxUTF8Bytes: maxClientDescriptionUTF8Bytes
-        )
-    }
-
     // MARK: - Shared
 
     /// The one place a client-supplied display string is judged.
+    ///
+    /// Module-internal rather than `private` only because the handshake half of this type
+    /// lives in `AeolusXPCHandshakeValidation.swift` and calls it. Still one place, still
+    /// unreachable from outside `AeolusXPC`.
     ///
     /// These strings are the project's clearest case of hostile input: chosen entirely by
     /// the client, stored by a root daemon, and rendered verbatim into a UI row and a
@@ -318,7 +280,7 @@ public enum AeolusXPCValidation {
     /// display a name the client did not choose as though it had, which is a quiet
     /// misidentification of who is holding the fans — and a client sending a control
     /// character has a bug worth surfacing rather than absorbing.
-    private static func validateDescription(
+    static func validateDescription(
         _ description: String,
         name: String,
         maxLength: Int,
@@ -360,10 +322,12 @@ public enum AeolusXPCValidation {
 
     /// Describes a decoding failure without quoting the payload back.
     ///
+    /// Module-internal for the same reason as `validateDescription` above.
+    ///
     /// `DecodingError`'s own description embeds the offending value, which is
     /// client-chosen data on its way to a helper log line. The coding path is enough for
     /// a developer and is drawn from this project's own key names, not the client's.
-    private static func malformedDetail(for error: Error) -> String {
+    static func malformedDetail(for error: Error) -> String {
         guard let decodingError = error as? DecodingError else {
             return "could not be decoded"
         }
