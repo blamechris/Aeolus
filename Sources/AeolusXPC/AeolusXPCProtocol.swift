@@ -100,6 +100,19 @@ import Foundation
 /// never "no problem". It is the "the helper never answered" case, which a client
 /// distinguishes from a refusal and must not distinguish from a success.
 ///
+/// ## Why every reply block is `@Sendable`
+///
+/// It is the one thing a reply block is *for*: libxpc invokes it from its own event
+/// threads, and a helper answering a message it had to go and read hardware for cannot
+/// answer on the thread the message arrived on. Saying so on the contract rather than at
+/// each implementation is the difference between a checked fact and a claim. Without it,
+/// an implementation that hands the block to a `Task` — which every asynchronous one must
+/// — needs an `@unchecked Sendable` box or a `nonisolated(unsafe)` local, and `CLAUDE.md`
+/// rule 10 is explicit that in this codebase those are claims requiring review rather than
+/// ways to silence the compiler. The annotation is invisible to the Objective-C runtime:
+/// the selectors are unchanged, the wire format is unchanged, and
+/// `XPCContractTests.protocolDeclaresExactlyTheAllowedMessages` is what proves it.
+///
 /// - Note: `@objc` and reply blocks are required by `NSXPCConnection`; this is one of the
 ///   few places in the codebase that is not idiomatic Swift concurrency. Structured
 ///   payloads cross as JSON-encoded `Data` (see `AeolusXPCPayload`) so the wire format is
@@ -120,10 +133,10 @@ import Foundation
     ///   - request: JSON-encoded `HelloRequest`.
     ///   - reply: Receives a JSON-encoded `HelloReply` on success, or the refusal —
     ///     `AeolusXPCFault.versionMismatch`, carrying both sides' ranges.
-    func hello(request: Data, reply: @escaping (Data?, Error?) -> Void)
+    func hello(request: Data, reply: @escaping @Sendable (Data?, Error?) -> Void)
 
     /// Returns a JSON-encoded `SystemSnapshot`: every fan, every sensor, current lease.
-    func snapshot(reply: @escaping (Data?, Error?) -> Void)
+    func snapshot(reply: @escaping @Sendable (Data?, Error?) -> Void)
 
     /// Requests manual control of one or more fans.
     ///
@@ -131,7 +144,7 @@ import Foundation
     ///   - request: JSON-encoded `LeaseRequest`. Validated by the helper with
     ///     `AeolusXPCValidation`, which refuses rather than repairs.
     ///   - reply: Receives a JSON-encoded `Lease` on success, or the refusal.
-    func acquireLease(request: Data, reply: @escaping (Data?, Error?) -> Void)
+    func acquireLease(request: Data, reply: @escaping @Sendable (Data?, Error?) -> Void)
 
     /// Renews an existing lease. Clients must call this on their heartbeat interval or
     /// the helper will restore all fans to automatic.
@@ -144,12 +157,12 @@ import Foundation
     /// `id` is a `Lease.id` — a `UUID` on both sides, a bare `String` only because that is
     /// what an `@objc` signature carries. Check it with
     /// `AeolusXPCValidation.validateLeaseID(_:)` before it reaches a lookup or a log line.
-    func renewLease(id: String, reply: @escaping (Data?, Error?) -> Void)
+    func renewLease(id: String, reply: @escaping @Sendable (Data?, Error?) -> Void)
 
     /// Voluntarily releases a lease and returns the affected fans to automatic.
     ///
     /// `id` is checked with `AeolusXPCValidation.validateLeaseID(_:)`, as for `renewLease`.
-    func releaseLease(id: String, reply: @escaping (Error?) -> Void)
+    func releaseLease(id: String, reply: @escaping @Sendable (Error?) -> Void)
 
     /// Applies fan settings under an active lease.
     ///
@@ -159,7 +172,7 @@ import Foundation
     ///     `AeolusXPCValidation.validateLeaseID(_:)`. An expired or unknown lease is a
     ///     refusal, never a silently accepted no-op.
     ///   - reply: Receives the failure, or `nil` on success.
-    func apply(settings: Data, leaseID: String, reply: @escaping (Error?) -> Void)
+    func apply(settings: Data, leaseID: String, reply: @escaping @Sendable (Error?) -> Void)
 
     /// The panic path. Restores every fan to automatic, clears the Apple Silicon force
     /// key, and drops all leases. Must succeed even when the helper's state is
@@ -171,7 +184,7 @@ import Foundation
     /// restoring automatic control would be a safety mechanism defeating safety. The
     /// panic path carries the fewest preconditions of anything in this protocol, by
     /// design.
-    func restoreAllToAutomatic(reply: @escaping (Error?) -> Void)
+    func restoreAllToAutomatic(reply: @escaping @Sendable (Error?) -> Void)
 }
 
 /// Version of the XPC contract itself, negotiated at connect time.
