@@ -45,7 +45,14 @@ struct WritePathAbsenceTests {
         let pattern = try NSRegularExpression(
             pattern: #"selector[A-Za-z]*\s*:\s*UInt8\s*=\s*(\d+)"#)
 
-        for file in try Self.swiftFiles() {
+        // Without this, a `sourcesRoot` that resolved wrongly would enumerate nothing, the
+        // loop below would make zero assertions, and the strongest safety property in the
+        // project would be asserted by a green test that checked no files at all. Its
+        // sibling `helperNeverCallsWrite` has always had the equivalent line.
+        let files = try Self.swiftFiles()
+        #expect(!files.isEmpty, "the project's sources were not found")
+
+        for file in files {
             let text = try String(contentsOf: file, encoding: .utf8)
             let range = NSRange(text.startIndex..<text.endIndex, in: text)
             for match in pattern.matches(in: text, range: range) {

@@ -21,6 +21,53 @@ struct UnenforcedAdmission: ConnectionAdmission {
     }
 }
 
+/// Records what the connection looked like at the instant `admit` was called.
+///
+/// **Why the ordering needs a spy to be testable at all.** `HelperListenerDelegate` applies
+/// the code-signing requirement before it configures the connection and before it resumes
+/// it, and that ordering is an acceptance criterion. Moving `admission.admit(connection)`
+/// below `connection.resume()` leaves every other test in this target green: by the time a
+/// client's message arrives the connection is fully wired either way, so the window a
+/// reorder opens — a connection resumed before it carries a requirement — is invisible from
+/// outside.
+///
+/// It is visible from *inside* `admit`, where `exportedObject`, `exportedInterface` and
+/// `invalidationHandler` are all still `nil` and only there. Those three are what the
+/// configuration block sets, so a call that has slipped past it is caught.
+///
+/// `@unchecked Sendable` over an `NSLock` for the same reason `PendingReply` is one: `admit`
+/// runs synchronously on a libxpc event thread, and the test reads the result from another.
+final class AdmissionOrderSpy: ConnectionAdmission, @unchecked Sendable {
+
+    /// What one `admit` call saw. All three `false` is the correct answer.
+    struct Observation: Sendable, Hashable {
+        let hadExportedObject: Bool
+        let hadExportedInterface: Bool
+        let hadInvalidationHandler: Bool
+    }
+
+    private let lock = NSLock()
+    private var recorded: [Observation] = []
+
+    func admit(_ connection: NSXPCConnection) -> AdmissionDecision {
+        let observation = Observation(
+            hadExportedObject: connection.exportedObject != nil,
+            hadExportedInterface: connection.exportedInterface != nil,
+            hadInvalidationHandler: connection.invalidationHandler != nil
+        )
+        lock.lock()
+        recorded.append(observation)
+        lock.unlock()
+        return .admitted(teamIdentifier: "TESTONLY")
+    }
+
+    var observations: [Observation] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+}
+
 /// A real `NSXPCListener` and a real client connection to it, in this process.
 ///
 /// The gate, the seam, the reply-block invariant, and the invalidation handler are all

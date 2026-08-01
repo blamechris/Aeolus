@@ -157,6 +157,41 @@ struct AnonymousListenerTests {
         #expect(await authority.calls.isEmpty)
     }
 
+    // MARK: - Ordering
+
+    /// **"The requirement is applied before `resume()`" had no test.** It is an acceptance
+    /// criterion of the listener work and, until this, moving `admission.admit(connection)`
+    /// below the configuration block and the `resume()` broke nothing in the suite — every
+    /// other test here observes a connection that is already fully wired, so it cannot tell
+    /// which order it got that way in.
+    ///
+    /// The window a reorder opens is a connection resumed, and therefore live, before it
+    /// carries a code-signing requirement. `AdmissionOrderSpy` looks from inside `admit`,
+    /// where the three things the configuration block sets are still `nil`.
+    @Test("The admission decision is taken before the connection is configured or resumed")
+    func admissionPrecedesConfiguration() async throws {
+        let spy = AdmissionOrderSpy()
+        let harness = AnonymousListenerHarness(
+            authority: RecordingFanAuthority(), admission: spy)
+
+        // Force the connection to be established: NSXPCConnection is lazy, and one nothing
+        // was ever sent on may never reach the listener at all. The refusal this earns is
+        // beside the point.
+        _ = await harness.payloadMessage { proxy, reply in
+            proxy.snapshot(reply: reply)
+        }
+
+        #expect(
+            spy.observations == [
+                AdmissionOrderSpy.Observation(
+                    hadExportedObject: false,
+                    hadExportedInterface: false,
+                    hadInvalidationHandler: false)
+            ],
+            "the requirement must be applied before the connection is configured or resumed"
+        )
+    }
+
     // MARK: - Teardown
 
     /// **The assertion the seam exists for.** ADR 0005 makes connection death one of the
