@@ -96,11 +96,12 @@ Login Items & Extensions**. `SMAppService` cannot prompt for this, so if you ski
 app appears broken rather than unapproved. The app's own footer says so while it is
 pending, and offers to open that settings pane.
 
-**Registering from a Development-signed Debug build is still unverified.** Nobody has yet
-run it on a machine with a signing identity — see the assumptions table in
-[docs/ADR/0005-xpc-authorisation.md](docs/ADR/0005-xpc-authorisation.md). If it turns out
-Apple Development certificates are not accepted for daemon registration, local iteration
-falls back to bootstrapping the helper by hand:
+**Registering from an Apple Development-signed build is still unverified**, and so is
+registering from a Developer ID-signed one. Nobody has yet run either on a machine with a
+signing identity — they are two separate rows in the assumptions table in
+[docs/ADR/0005-xpc-authorisation.md](docs/ADR/0005-xpc-authorisation.md), because they name
+different certificates. If it turns out Apple Development certificates are not accepted for
+daemon registration, local iteration falls back to bootstrapping the helper by hand:
 
 ```bash
 sudo launchctl bootstrap system /Applications/Aeolus.app/Contents/Library/LaunchDaemons/com.blamechris.Aeolus.Helper.plist
