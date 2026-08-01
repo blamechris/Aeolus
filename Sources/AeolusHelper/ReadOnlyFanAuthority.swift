@@ -54,7 +54,8 @@ import SMCCore
 /// which pays for discovery, costs 2.2 s against a warm SMC key cache and 5.9 s against a
 /// cold one; every snapshot after it costs **~0.5 s**. Keeping discovery off the hot path
 /// is therefore doing its job — and half a second per second is still a great deal of a
-/// root daemon's time, plus a 2929-sample payload crossing the boundary every tick.
+/// root daemon's time, plus a 2929-sample payload of **~138 KB** crossing the boundary every
+/// tick.
 /// ADR 0006's "snapshot cost at 1 Hz is accepted" was written before anyone measured it;
 /// the remedy it names, and the only one it permits, is an additive subset-request
 /// capability within v1 — never a second continuous reader. Not built in #72, which has no

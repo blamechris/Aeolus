@@ -86,6 +86,13 @@ end up disagreeing about when "now" was.
   snapshot costs **~0.5 s** and carries 2929 samples. At 1 Hz that is half of every second spent in a
   root daemon reading firmware, plus a payload of that size crossing the boundary every tick.
 
+  **That payload is ~138 KB** — 137,764 to 138,307 bytes of JSON across measured runs, the last
+  digits moving with how many significant figures the readings print to — so **~138 KB/s** across the
+  XPC boundary at 1 Hz, sustained for as long as the app is open. That number is arguably what
+  settles the subset-request question, more than the 0.5 s does: half a second of a root daemon's
+  time is a cost, but 138 KB/s of it is a client asking for 2929 values to render a window that shows
+  a few dozen.
+
   This does not reverse the decision: the argument for it is rule 6 and rule 7 consistency, not
   cost. It does mean **"a full sensor set proves heavy" is now settled rather than hypothetical**, and
   the remedy this ADR already names — an additive subset-request capability within v1, **never** a

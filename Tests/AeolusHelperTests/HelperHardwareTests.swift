@@ -76,10 +76,26 @@ struct HelperHardwareTests {
     /// builds the helper side, and the app-side client that would ask for a subset is not
     /// in it.
     ///
-    /// The assertion is therefore a **regression tripwire, not a budget**. Two seconds
-    /// sits an order of magnitude above the warm cost and well below the cold one, so it
-    /// fails on the realistic regression — `readAll()` creeping back onto every
-    /// snapshot — without failing because a machine was busy.
+    /// The payload is measured here too, because the byte count arguably decides whether the
+    /// subset-request capability is required more clearly than the half-second does:
+    /// **~138 KB** of JSON for 2929 samples — 137,764 to 138,307 bytes across measured runs,
+    /// the last digits moving with how many significant figures the readings themselves
+    /// print to — so roughly 138 KB/s crossing the boundary at 1 Hz. Printed rather than asserted,
+    /// for the same reason the sensor count is: a figure that drifts with the machine is a
+    /// measurement, not a budget.
+    ///
+    /// ## What the two-second threshold actually buys, stated honestly
+    ///
+    /// It is a **regression tripwire, not a budget**, and its margin is narrower than an
+    /// earlier version of this comment claimed. Measured on this machine, a warm snapshot
+    /// costs **0.50–0.60 s**, so two seconds is about **3.4x** it — not the order of
+    /// magnitude previously written here. The mutant it exists to kill, `readAll()` creeping
+    /// back onto every snapshot, costs **2.46 s** against a warm key cache, which clears the
+    /// threshold by only **23%**.
+    ///
+    /// That margin is kept deliberately and the threshold is **not** to be loosened: raising
+    /// it toward the cold cost is what would let the mutation survive. If this ever goes
+    /// flaky, the finding is that the snapshot got slower, which is the thing worth knowing.
     @Test("Discovery stays off the snapshot path")
     func warmSnapshotIsCheap() async throws {
         let authority = ReadOnlyFanAuthority(provider: SMCSensorProvider(), log: Self.log)
@@ -96,11 +112,14 @@ struct HelperHardwareTests {
             #expect(!snapshot.fans.isEmpty)
         }
 
+        let encoded = try AeolusXPCCoding.encoder().encode(first)
+
         print(
             """
             snapshot cost on \(HardwareIdentity.current().modelIdentifier ?? "unknown"): \
             \(first.sensors.count) sensors; first (with discovery) \(cold); \
-            warmest of three subsequent \(warmest)
+            warmest of three subsequent \(warmest); \
+            encoded payload \(encoded.count) bytes, which is the per-tick wire cost at 1 Hz
             """
         )
         #expect(warmest < .seconds(2))
