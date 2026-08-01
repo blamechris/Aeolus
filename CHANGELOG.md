@@ -14,4 +14,13 @@ number, negotiated at connect time. Protocol changes are called out explicitly b
 - Repository bootstrap: build manifests, CI skeleton, documentation set, contribution
   templates, and the epic board. No functional code yet.
 
+### Changed
+- **XPC protocol, version 1** — the boundary contract took its shape ahead of any
+  implementation. `hello` replaces `protocolVersion(reply:)` so the helper enforces
+  version negotiation rather than asking the client to; the fault vocabulary and
+  `FanState.manualControlAvailability` are complete and decode forward-tolerantly;
+  request validation refuses rather than repairs, lease identifiers included. The
+  protocol version stays at **1**: nothing implements or calls this contract yet, so no
+  contract has ever shipped.
+
 [Unreleased]: https://github.com/blamechris/Aeolus/commits/main
