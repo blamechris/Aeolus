@@ -56,6 +56,16 @@ jobs:
       - name: Test
         run: swift test --skip-build
 
+      # Not redundant with the step above. Some behaviour is selected by `#if DEBUG` and is
+      # therefore invisible to a Debug-only test run — notably
+      # ClientRequirementVariant.forRunningProcess, where the failure being guarded is a
+      # Release helper shipping the relaxed development client requirement. The test that
+      # catches it mirrors the same `#if`, so it can only assert the dangerous arm when the
+      # suite itself is built Release. `-enable-testing` is what keeps `@testable import`
+      # working in a Release build.
+      - name: Test (release configuration)
+        run: swift test -c release -Xswiftc -enable-testing
+
   monitor-app:
     name: Monitor app build
     runs-on: macos-latest

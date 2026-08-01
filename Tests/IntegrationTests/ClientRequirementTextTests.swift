@@ -121,9 +121,14 @@ struct ClientRequirementTextTests {
 
     @Test("The running process never selects the relaxed variant in a Release build")
     func variantIsAPropertyOfTheBuild() {
-        // Mirrors the compile-time selection deliberately: `swift test` only ever builds
-        // Debug, so the Release arm is not reachable here. What this pins down is that the
-        // selection has no runtime input at all — no argument, no environment, no config.
+        // Mirrors the compile-time selection deliberately, which means each arm asserts
+        // only in the configuration that compiled it. Both are reached on CI: the Debug arm
+        // by `swift test`, the Release arm by the `swift test -c release -Xswiftc
+        // -enable-testing` step. Run under Release, this is the test that fails if
+        // `forRunningProcess` is ever edited to return `.debug` unconditionally — the
+        // mutation a Debug-only run is structurally unable to see. What it pins down in
+        // both is that the selection has no runtime input at all: no argument, no
+        // environment, no config.
         #if DEBUG
         #expect(ClientRequirementVariant.forRunningProcess == .debug)
         #expect(ClientRequirementVariant.forRunningProcess.isRelaxedForDevelopment)

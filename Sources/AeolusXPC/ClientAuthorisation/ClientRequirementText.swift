@@ -38,9 +38,15 @@ enum ClientRequirementVariant: Sendable, Hashable, CaseIterable {
     /// there is no runtime state to consult, and the branch that would return `.debug`
     /// does not exist in the binary.
     ///
-    /// The Release arm cannot be exercised by `swift test`, which always builds Debug.
-    /// It is verified on `Mac16,5` by E2.5's checklist item "an ad-hoc-built client is
-    /// refused by the installed helper".
+    /// Both arms are exercised on CI. A plain `swift test` builds Debug and takes the
+    /// `.debug` branch; a second CI step runs
+    /// `swift test -c release -Xswiftc -enable-testing` and takes the `.release` one. That
+    /// second step is what catches this property being edited to return `.debug`
+    /// unconditionally — a Release helper shipping the relaxed development requirement,
+    /// which a Debug-only test run cannot see because the test mirrors the same `#if`.
+    /// What neither can establish is that the resulting text admits the right binaries;
+    /// that is E2.5's checklist item "an ad-hoc-built client is refused by the installed
+    /// helper", on `Mac16,5`.
     static var forRunningProcess: ClientRequirementVariant {
         #if DEBUG
         return .debug
