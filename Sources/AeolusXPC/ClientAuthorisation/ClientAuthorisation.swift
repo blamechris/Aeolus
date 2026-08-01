@@ -50,7 +50,7 @@ package enum ClientAuthorisation {
     /// negative control and should not be on a per-connection path.
     package static func resolveForRunningProcess() -> ClientAuthorisationOutcome {
         let outcome = ClientAuthorisationBuilder.build(
-            inspection: HelperSigningIdentity.system.inspect(),
+            inspection: HelperSigningIdentity.inspect(),
             variant: .forRunningProcess,
             negativeControl: .system
         )

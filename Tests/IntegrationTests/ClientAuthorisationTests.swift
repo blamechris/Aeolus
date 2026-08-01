@@ -214,7 +214,7 @@ struct ClientAuthorisationHostTests {
     /// being silently skipped.
     @Test("The production entry point agrees with whatever this host actually is")
     func productionEntryPointMatchesTheHost() {
-        let inspection = HelperSigningIdentity.system.inspect()
+        let inspection = HelperSigningIdentity.inspect()
         let outcome = ClientAuthorisation.resolveForRunningProcess()
 
         switch inspection {

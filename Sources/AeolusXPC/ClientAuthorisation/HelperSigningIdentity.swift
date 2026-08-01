@@ -14,29 +14,19 @@ enum SelfSigningInspection: Sendable, Hashable {
 
 /// Reads the Team ID out of the running process's own signature.
 ///
-/// This is the one impure input to the whole module, which is why it is a value with a
-/// swappable closure rather than a free function: every test in `ClientAuthorisationTests`
-/// that needs a Team ID injects one, and the single test that exercises the real reader
-/// asserts on whatever the host honestly is.
+/// This is the one impure input to the whole module. It carries no injection seam of its
+/// own on purpose: `ClientAuthorisationBuilder.build` takes a `SelfSigningInspection` as a
+/// parameter, so every test drives the interesting cases by argument, and a second way to
+/// substitute a Team ID would be a second thing that could be substituted in production.
 ///
-/// Under `swift test` the host is always ad-hoc signed, so the real reader returns
-/// `.noTeamIdentifier` on CI and on the maintainer's machine alike. That is not a gap in
-/// the tests — it is the fail-closed row "helper is ad-hoc signed" being exercised by the
-/// test runner itself, for free, on every CI run.
-struct HelperSigningIdentity: Sendable {
-    private let read: @Sendable () -> SelfSigningInspection
+/// Under `swift test` the host is always ad-hoc signed, so this returns `.noTeamIdentifier`
+/// on CI and on the maintainer's machine alike. That is not a gap in the tests — it is the
+/// fail-closed row "the helper is ad-hoc signed" being exercised by the test runner itself,
+/// for free, on every CI run.
+enum HelperSigningIdentity {
 
-    init(read: @escaping @Sendable () -> SelfSigningInspection) {
-        self.read = read
-    }
-
-    func inspect() -> SelfSigningInspection { read() }
-
-    /// The real reader: `SecCodeCopySelf` → `SecCodeCopySigningInformation` →
-    /// `kSecCodeInfoTeamIdentifier`.
-    static let system = HelperSigningIdentity(read: readSystemSigningInformation)
-
-    private static func readSystemSigningInformation() -> SelfSigningInspection {
+    /// `SecCodeCopySelf` → `SecCodeCopySigningInformation` → `kSecCodeInfoTeamIdentifier`.
+    static func inspect() -> SelfSigningInspection {
         var selfCode: SecCode?
         let copyStatus = SecCodeCopySelf([], &selfCode)
         guard copyStatus == errSecSuccess, let selfCode else {
