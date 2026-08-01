@@ -221,8 +221,14 @@ struct XPCContractTests {
         return names
     }
 
-    /// Everything the protocol declares, however it was declared: all four quadrants
-    /// unioned, so nothing hides in the one a narrower query never asks about.
+    /// Everything this protocol declares *directly*, however it was declared: all four
+    /// quadrants unioned, so nothing hides in the one a narrower query never asks about.
+    ///
+    /// Directly is a real limit, not a hedge. `protocol_copyMethodDescriptionList` reports
+    /// only the methods declared on the protocol object it is handed, and does not walk
+    /// `protocol_copyProtocolList`. A message inherited from an adopted protocol is
+    /// therefore absent from all four quadrants while still crossing the wire, so
+    /// inheritance is refused separately — see `protocolInheritsNothing`.
     private func allSelectorNames() -> Set<String> {
         var names: Set<String> = []
         for required in [true, false] {
@@ -233,17 +239,35 @@ struct XPCContractTests {
         return names
     }
 
+    /// The protocols this one adopts, by name. Required to be none — `protocolInheritsNothing`
+    /// says why.
+    ///
+    /// The runtime returns `NULL` with a zero count when a protocol adopts nothing, which is
+    /// the expected case here; when it does not, the array is the caller's to `free`.
+    private func inheritedProtocolNames() -> [String] {
+        let proto: Protocol = AeolusXPCProtocol.self
+        var count: UInt32 = 0
+        guard let adopted = protocol_copyProtocolList(proto, &count) else { return [] }
+        defer { free(UnsafeMutableRawPointer(adopted)) }
+        return (0..<Int(count)).map { NSStringFromProtocol(adopted[$0]) }
+    }
+
     /// `CLAUDE.md` rule 5 says a message that defeats a safety mechanism may never be
     /// *added*. That makes its absence a property of the design, and a property is
     /// testable.
     ///
-    /// **This is the guard.** It is set equality against the full selectors, over every
-    /// quadrant, which is what makes it hold: it fails on a message added — a generic key
-    /// write, an "advanced mode", a ceiling override — and equally on one removed,
-    /// renamed, moved to a class method, made optional, or re-parameterised. That last
-    /// case is why the count-plus-prefix pair this replaced was not enough: giving `apply`
-    /// an `ignoringLimits:` argument leaves the count at seven and the base name intact
-    /// while changing what the boundary can be asked to do.
+    /// **This is the guard — together with `protocolInheritsNothing`, which it depends on.**
+    /// It is set equality against the full selectors of every method declared *directly* on
+    /// this protocol, over every quadrant, which is what makes it hold: it fails on a message
+    /// added — a generic key write, an "advanced mode", a ceiling override — and equally on
+    /// one removed, renamed, moved to a class method, made optional, or re-parameterised.
+    /// That last case is why the count-plus-prefix pair this replaced was not enough: giving
+    /// `apply` an `ignoringLimits:` argument leaves the count at seven and the base name
+    /// intact while changing what the boundary can be asked to do.
+    ///
+    /// What it cannot see by itself is a message the protocol *inherits*, because nothing it
+    /// calls walks the adopted-protocol list. That half of the property is held below, by
+    /// asserting there is no adopted-protocol list to walk.
     @Test("The protocol declares exactly the messages the boundary is allowed to carry")
     func protocolDeclaresExactlyTheAllowedMessages() {
         let declared = allSelectorNames()
@@ -253,6 +277,34 @@ struct XPCContractTests {
             the boundary's message set changed: \
             added \(declared.subtracting(Self.allowedSelectors).sorted()), \
             removed \(Self.allowedSelectors.subtracting(declared).sorted())
+            """
+        )
+    }
+
+    /// The guard above enumerates only what `AeolusXPCProtocol` declares itself, and an
+    /// inherited message is both absent from that enumeration and on the wire regardless:
+    /// `NSXPCInterface(with:)` vends an adopted protocol's selectors exactly like the
+    /// protocol's own, and a helper serving that interface answers them. Writing
+    /// `AeolusXPCProtocol: SomeOtherProtocol` would add messages to the privilege boundary
+    /// while leaving every selector assertion in this file green — which is why the quadrant
+    /// pair is the wrong axis on its own. A message does not have to hide in a quadrant a
+    /// query forgets to ask about; it can sit in a different protocol object entirely.
+    ///
+    /// Refusing inheritance outright closes that, and is the stricter of the two available
+    /// fixes. Unioning the adopted protocols' selectors into `allSelectorNames` would also
+    /// make the guard honest, but it would leave the boundary free to acquire a supertype
+    /// silently. This way it cannot acquire one without someone editing this test on
+    /// purpose, which is the review that rule 5 actually wants.
+    @Test("The boundary protocol inherits no other protocol")
+    func protocolInheritsNothing() {
+        let adopted = inheritedProtocolNames().sorted()
+        #expect(
+            adopted.isEmpty,
+            """
+            the boundary now adopts \(adopted): an inherited message crosses the wire like a \
+            declared one, but `protocol_copyMethodDescriptionList` never reports it, so the \
+            exact-set guard above cannot see it. Drop the inheritance, or union the adopted \
+            protocols' selectors into `allSelectorNames` before relaxing this.
             """
         )
     }

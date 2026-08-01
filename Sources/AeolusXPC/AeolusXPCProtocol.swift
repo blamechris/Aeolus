@@ -72,9 +72,9 @@ import Foundation
 ///
 /// **E5 owns that liveness policy** — what the helper checks, how often, and what makes it
 /// let go. Nothing here presumes its shape, and no mechanism for it is invented here. E2
-/// implements no part of self-renewal at all: `ReadOnlyFanAuthority` refuses every lease
-/// acquisition (ADR 0005), so the field crosses the boundary and is validated, and there
-/// is no code path that can yet exercise it.
+/// implements no part of self-renewal at all: nothing implements this protocol yet, so the
+/// field crosses the boundary and is validated, and there is no code path that can yet
+/// exercise it.
 ///
 /// ## What a reply block promises — and what it does not
 ///
