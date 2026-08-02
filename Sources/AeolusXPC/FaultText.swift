@@ -42,6 +42,14 @@ enum FaultText {
         limit: Int = maxRenderedLength,
         byteLimit: Int = maxRenderedUTF8Bytes
     ) -> String {
+        // `CharacterSet.controlCharacters` is Unicode categories Cc **and Cf**, so this one
+        // predicate removes the bidi and formatting scalars as well as the C0/C1 controls —
+        // U+202E RIGHT-TO-LEFT OVERRIDE, U+2066 LEFT-TO-RIGHT ISOLATE, U+200B ZERO WIDTH
+        // SPACE and U+00AD SOFT HYPHEN are all members, verified on this platform. Spelled
+        // out because the name says "control" and reads as though it means Cc alone: a
+        // reviewer has already read it that way and reported the bidi overrides as
+        // unstripped. `renderingStripsControlCharacters` covers U+202E and U+200F among its
+        // arguments and is what would fail if any of that stopped being true.
         let stripped = String(
             text.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
         )
