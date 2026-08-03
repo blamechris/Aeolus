@@ -17,27 +17,65 @@ import SMCCore
 // in the GUI, quitting or crashing the GUI would leave the fans pinned wherever they were
 // last set. The helper is always the authority on fan state.
 //
-// TODO(E2): NSXPCListener on the mach service, client code-requirement checking,
-//           SMAppService lifecycle.
 // TODO(E5): Lease supervisor, thermal emergency override, sleep/wake handling via
-//           IORegisterForSystemPower, reclamation watchdog, restore-on-exit paths.
+//           IORegisterForSystemPower, reclamation watchdog, restore-on-exit paths. All of
+//           it goes behind FanAuthority, replacing ReadOnlyFanAuthority. Nothing in the
+//           listener, the admission policy, the handshake gate, or the contract changes.
 
+/// The helper's entry point: resolve who this daemon will obey, stand up the listener,
+/// and wait.
+///
+/// ## What this build can and cannot do
+///
+/// It serves `snapshot` from real hardware and refuses everything that would need a write.
+/// `SMCConnection.write(_:to:)` is still `package`-scoped and still throws, and no write
+/// selector exists anywhere in `Sources/` — the read selectors are 5, 8, and 9. **E2's
+/// strongest safety property is structural: it cannot fail open into a write, because
+/// there is no write to fail into.** Adding one "ready for E5" would spend that property
+/// for nothing.
+///
+/// ## Refusing every client is a running state, not a crash
+///
+/// When `ClientAuthorisation` cannot establish who to obey — an ad-hoc-signed helper, a
+/// requirement that would not compile, a negative control that fired — the listener still
+/// comes up and refuses each connection with a logged reason. Exiting instead would leave
+/// launchd restarting a daemon on every connection attempt and a user with nothing in
+/// `log show` to explain why Aeolus does nothing.
 @main
 enum AeolusHelperMain {
+
+    /// Advertised in `HelloReply.helperBuild`. Display-grade: never parsed to decide
+    /// behaviour, because that would be a second version vocabulary competing with
+    /// `helperProtocolRange`.
+    static let build = "0.0.0 (E2)"
+
     static func main() {
-        FileHandle.standardError.write(
-            Data(
-                """
-                AeolusHelper is not implemented yet.
+        let log = HelperLog()
 
-                This binary is a scaffold. Registering it as a launch daemon would give a \
-                do-nothing process root privileges, so it refuses to run instead.
+        // Resolved once, at startup, and held: it does file I/O for the negative control
+        // and must not be on a per-connection path.
+        let authorisation = ClientAuthorisation.resolveForRunningProcess()
 
-                Protocol version: \(AeolusXPCVersion.current)
-                Mach service:     \(AeolusXPCService.machServiceName)
+        let authority = ReadOnlyFanAuthority(provider: SMCSensorProvider(), log: log)
+        let delegate = HelperListenerDelegate(
+            authorisation: authorisation,
+            authority: authority,
+            helperBuild: build,
+            log: log
+        )
 
-                """.utf8
-            ))
-        exit(EXIT_FAILURE)
+        let listener = NSXPCListener(machServiceName: AeolusXPCService.machServiceName)
+        // NSXPCListener holds its delegate weakly. `delegate` is a local of a function
+        // that never returns, which is what keeps it alive; a `listener.delegate = ...`
+        // with a temporary on the right-hand side would deallocate it immediately and
+        // every connection would be accepted with no delegate to configure it.
+        listener.delegate = delegate
+        listener.resume()
+
+        log.listening(machServiceName: AeolusXPCService.machServiceName, build: build)
+
+        // Never returns. The listener runs on libdispatch, so the main thread's only job
+        // from here is to not exit.
+        dispatchMain()
     }
 }

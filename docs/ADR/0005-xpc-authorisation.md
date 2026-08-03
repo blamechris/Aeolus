@@ -1,9 +1,16 @@
 # ADR 0005 — XPC client authorisation and boundary versioning
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-08-01)
 - **Date:** 2026-07-29
 - **Deciders:** Project maintainer, on architect review
 - **Supersedes:** —
+- **Extended by:** [ADR 0006](0006-single-smc-reader.md)
+
+Accepted once three PRs implementing it had merged (#79 the contract, #80 the authorisation module,
+#81 the lifecycle) **and** its central untested assumption had been settled by experiment: the
+`setCodeSigningRequirement` row below moved from "documented, behaviour untested" to verified on this
+machine. Accepting it before that would have ratified a design resting on an API nobody had watched
+work.
 
 ## Context
 
@@ -183,14 +190,28 @@ optional DTO fields within a version, plus the capability set, provide the flexi
 5. The one deliberate fail-*safe*-not-closed: `restoreAllToAutomatic` stays reachable pre-handshake.
    Residual exposure is an authorised same-team client resetting fans it did not lease — an annoyance
    bounded by the auth gate, traded for a panic path with minimal preconditions.
-6. Every accept and refuse is logged with identifier, team, and reason under a dedicated category, so
-   "did the boundary refuse?" is answerable from `log show` on a user's machine.
+6. Every accept and refuse is logged under a dedicated category, so "did the boundary refuse?" is
+   answerable from `log show` on a user's machine — **but not with an identifier and a team, and this
+   row said otherwise until #72 implemented it.** Two measured properties of
+   `setCodeSigningRequirement` (see the 2026-08-01 verification log below) make that unimplementable.
+   Enforcement is per *message*, so accepting a connection verifies nothing about the peer and no log
+   line may claim it does; and libxpc drops a requirement-refused peer without reporting who it was,
+   so a refusal is visible only as an invalidation with no message ever delivered — which is
+   indistinguishable from a client that disconnected before its first message.
+
+   What the boundary logs instead: the connection's `ConnectionID` and that the requirement was
+   applied (no identity claim); at handshake, the negotiated version and the client's own
+   *self-described* name, explicitly labelled as validated-not-verified; and at invalidation, the
+   handshake state and the messages-delivered count, with zero naming both possibilities and
+   preferring neither. Refusals are logged at info level, because a refused foreign binary is the
+   mechanism working; fault level stays for the refuse-all rows, where the helper itself is broken.
+   Saying the weaker true thing is rule 6 applied to the boundary's own diagnostics.
 
 ## Assumptions and what would invalidate them
 
 | Assumption | Basis | If it fails |
 |---|---|---|
-| `setCodeSigningRequirement` behaves as documented on macOS 26.x | Verified present in the SDK at `macos(13.0)`; behaviour untested | Fall back to hand-rolled audit-token checking behind the same delegate seam |
+| `setCodeSigningRequirement` behaves as documented on macOS 26.x | **Verified by experiment on `Mac16,5` / macOS 26.5.2 (25F84)** — see the #72 log below | Fall back to hand-rolled audit-token checking behind the same delegate seam |
 | Same API behaves correctly on macOS 13–15 | Documented-available; **untestable here** | Ships the same "documented, untested" status as the Intel path; the compatibility matrix must say so |
 | `SMAppService.daemon` registration works from a **Developer ID**-signed `Full Debug` build | Unverified | The shipping path itself does not work; E2 needs a different registration mechanism, not a workaround |
 | `SMAppService.daemon` registration works from an **Apple Development**-signed build | Unverified | Local iteration falls back to a manually `launchctl`-bootstrapped helper — a dev-workflow cost, not a design change |
@@ -237,6 +258,56 @@ writes to stderr and exits non-zero by design, and the plist carries no `RunAtLo
 `KeepAlive`, so launchd starts it only when something connects to the mach service. The
 question these rows ask is whether `SMAppService` accepts and registers the job, not
 whether the daemon does anything once started — it does not, until #72.
+
+**Verification log — 2026-08-01 (#72). `setCodeSigningRequirement` is enforced.** Measured on
+`Mac16,5` / macOS 26.5.2 (25F84) with an anonymous in-process `NSXPCListener`, so both peers carried
+the same signature and the requirement was the only variable:
+
+| Requirement applied to the connection | Client outcome |
+|---|---|
+| none | reply delivered |
+| the binary's own designated requirement | reply delivered |
+| `anchor apple` | **no reply** — connection invalidated |
+| `identifier "com.example.definitely.not.us"` | **no reply** — connection invalidated |
+
+The mechanism holds on this OS. The hand-rolled audit-token fallback is not needed here, and the
+alternatives section stands unchanged as the contingency for an OS where this stops being true.
+**Scoped to one machine and one OS version**, per `CLAUDE.md`: macOS 13–15 remain documented-untested
+and the row above says so.
+
+Three properties of the API matter to E2.3 and were not obvious from the ADR as written:
+
+1. **It returns `Void`, and a malformed requirement throws.** `NSXPCConnection.h` says so, and the
+   behaviour is worse than it sounds: the exception is an uncatchable `NSInvalidArgumentException`
+   raised **inside `listener(_:shouldAcceptNewConnection:)`**, on a libxpc event thread. Confirmed —
+   SIGABRT, exit 134. For a launchd on-demand root daemon that means aborting on *every* connection
+   attempt, which is a denial of service triggered by a bad string rather than by an attacker.
+   `ClientAuthorisationBuilder.seal` pre-compiling the text with `SecRequirementCreateWithString`
+   before it can ever reach libxpc is therefore **load-bearing, not defensive**, and the fail-closed
+   row "never pass an uncompiled string onward" is the thing preventing it. Nothing may construct a
+   requirement string at the listener; `AuthorisedClientRequirement` has no public initialiser
+   precisely so that this cannot be worked around.
+
+2. **Enforcement is per-message, not at accept time.** `shouldAcceptNewConnection` returns `true` for
+   a peer that will never be permitted to send anything. Accepting a connection is therefore *not*
+   evidence that a client was authorised, and no log line or metric may say that it is — that would
+   be rule 6's shape applied to the boundary's own diagnostics.
+
+3. **The listener side does observe the refusal.** The connection's `invalidationHandler` fires and
+   the message never reaches the exported object. So a refusal is loggable — but an invalidation with
+   no message ever delivered is *consistent with* a requirement refusal rather than *proof* of one; a
+   client that connected and disconnected before its first message looks identical. E2.3's logging
+   says the weaker true thing, and fail-closed row 6 above was amended to match.
+
+**What #72 could not verify, and nothing on CI ever will.** Mutation testing of E2.3 deleted the
+`setCodeSigningRequirement` call from `SealedRequirementAdmission` and the full suite stayed green.
+That mutation is a **known survivor, left in deliberately**: killing it needs a Developer ID
+signature and a foreign-signed client process, which exist on no CI runner and on exactly one
+machine. It is E2.5's manual `Mac16,5` checklist item — "an ad-hoc-built client is refused by the
+installed helper" — and it is the reason that item is load-bearing rather than ceremonial. Every
+listener test in the tree drives an admission policy declared in the *test target* that applies no
+requirement at all, precisely so no production wiring can select one; a green suite says the gate and
+the seam are correct, and says nothing whatever about the requirement.
 
 Nothing in this design depends on `docs/SMC-RESEARCH.md`'s reported-but-unverified section. E2 touches
 no write, no `Ftst`, no unlock sequence — deliberately, because the boundary must not encode Apple

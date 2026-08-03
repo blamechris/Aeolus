@@ -31,6 +31,7 @@ struct XPCFaultTests {
         .thermalEmergencyActive,
         .reclaimedBySystem,
         .boundsImplausible(fanIndex: 1, detail: "F1Mn exceeds F1Mx"),
+        .helperFailed(detail: "no AppleSMC service on this machine"),
         .unknown(code: "somethingNewer", detail: "with a detail"),
         .unknown(code: "somethingNewer", detail: nil),
     ]
@@ -94,6 +95,7 @@ struct XPCFaultTests {
             #"{"code":"invalidParameter","name":"timeToLive"}"#,
             #"{"code":"manualControlUnavailable"}"#,
             #"{"code":"boundsImplausible","fanIndex":0}"#,
+            #"{"code":"helperFailed"}"#,
         ]
     )
     func knownCodeMissingFieldsThrows(_ json: String) {
@@ -137,6 +139,7 @@ struct XPCFaultTests {
             .malformedPayload(detail: "detail\(hostile)injected"),
             .invalidParameter(name: "field\(hostile)x", detail: "detail\(hostile)y"),
             .boundsImplausible(fanIndex: 0, detail: "detail\(hostile)y"),
+            .helperFailed(detail: "detail\(hostile)y"),
             .manualControlUnavailable(reason: .unknown("reason\(hostile)z")),
         ]
         for fault in faults {
@@ -268,6 +271,7 @@ struct XPCFaultTests {
                 "thermalEmergencyActive",
                 "reclaimedBySystem",
                 "boundsImplausible",
+                "helperFailed",
                 "somethingNewer",
             ]
         )

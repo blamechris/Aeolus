@@ -3,8 +3,8 @@ import Foundation
 /// A requirement string that has been built, compiled, and survived the negative control.
 ///
 /// The type exists so that "I have a requirement to enforce" is a thing the type system
-/// can express and the caller cannot fake. There is no public or package initialiser and
-/// no way to construct one from a bare string: the only producer is
+/// can express and the caller cannot fake. There is no initialiser reachable from outside
+/// this file and no way to construct one from a bare string: the only producer is
 /// `ClientAuthorisationBuilder`, and it produces one only after
 /// `SecRequirementCreateWithString` accepted the text *and* the text refused a foreign
 /// Apple-signed binary. A caller holding one of these therefore knows more than "somebody
@@ -14,19 +14,31 @@ import Foundation
 /// `NSXPCConnection.setCodeSigningRequirement(_:)` takes a string and compiles it inside
 /// libxpc. Compiling it here first is validation, not the enforcement path: it is how the
 /// fail-closed row "never pass an uncompiled string onward" is honoured.
-package struct AuthorisedClientRequirement: Sendable, Hashable {
+///
+/// That row is load-bearing rather than tidy, and #72 measured why. A malformed
+/// requirement makes `setCodeSigningRequirement` raise an uncatchable
+/// `NSInvalidArgumentException` **inside `listener(_:shouldAcceptNewConnection:)`**, on a
+/// libxpc event thread: SIGABRT, exit 134. In a launchd on-demand root daemon that is an
+/// abort on every connection attempt — a denial of service caused by a bad string rather
+/// than by an attacker. See [ADR 0005](../../../docs/ADR/0005-xpc-authorisation.md)'s
+/// verification log.
+public struct AuthorisedClientRequirement: Sendable, Hashable {
     /// The requirement, ready for `NSXPCConnection.setCodeSigningRequirement(_:)`.
-    package let text: String
+    ///
+    /// **The only string that may ever reach that call.** Nothing may build, concatenate,
+    /// or default a requirement at the listener; see the type's documentation for what a
+    /// malformed one does to a root daemon.
+    public let text: String
 
     /// The Team ID the requirement pins, for logging. Read from the helper's own
     /// signature, never from a client or a config file.
-    package let teamIdentifier: String
+    public let teamIdentifier: String
 
     /// True when this build's requirement admits Development-signed and debuggable
     /// clients. Always false in a Release build — see `ClientRequirementVariant`.
-    package let isRelaxedForDevelopment: Bool
+    public let isRelaxedForDevelopment: Bool
 
-    /// Deliberately not `package`: see the type's documentation.
+    /// Deliberately not `public`: see the type's documentation.
     fileprivate init(text: String, teamIdentifier: String, isRelaxedForDevelopment: Bool) {
         self.text = text
         self.teamIdentifier = teamIdentifier
@@ -51,7 +63,7 @@ package struct AuthorisedClientRequirement: Sendable, Hashable {
 ///
 /// Every case is terminal. None of them degrades into a weaker requirement, because a
 /// weaker requirement is the failure mode this module exists to prevent.
-package enum ClientAuthorisationRefusal: Sendable, Hashable {
+public enum ClientAuthorisationRefusal: Sendable, Hashable {
     /// The helper's own signature carries no Team ID: it is ad-hoc signed or unsigned, so
     /// "signed by whoever signed me" names nobody. An accidentally ad-hoc-signed helper is
     /// inert by construction rather than by vigilance.
@@ -85,17 +97,23 @@ package enum ClientAuthorisationRefusal: Sendable, Hashable {
 /// Two cases, no third, and no optional to forget to unwrap: a caller must switch, and the
 /// only branch that yields a requirement yields one that has already been validated.
 /// Refusal is what is left when acceptance was not explicitly earned.
-package enum ClientAuthorisationOutcome: Sendable, Hashable {
+public enum ClientAuthorisationOutcome: Sendable, Hashable {
     /// Enforce this requirement on every connection before resuming it.
     case enforce(AuthorisedClientRequirement)
 
     /// Refuse every connection, and say why in the log.
     case refuseAll(ClientAuthorisationRefusal)
 
-    /// Convenience for assertions and for logging. Never use this in place of the switch:
-    /// a caller that treats `false` as "carry on without a requirement" has inverted the
-    /// entire point.
-    package var permitsAnyConnection: Bool {
+    /// `true` when this outcome will let connections through *under a requirement*, `false`
+    /// when it refuses every one.
+    ///
+    /// **`internal`, and it should stay that way.** The name reads dangerously close to its
+    /// own inverse — `if outcome.permitsAnyConnection` scans as "we are wide open" when it
+    /// means "a requirement was established" — and nothing in `Sources/` uses it or should.
+    /// Callers switch, which is the only form that yields the requirement itself. This
+    /// exists for the assertions in `Tests/IntegrationTests/ClientAuthorisationTests`,
+    /// which reach it through `@testable`, and for a log line.
+    var permitsAnyConnection: Bool {
         switch self {
         case .enforce: return true
         case .refuseAll: return false
@@ -104,7 +122,7 @@ package enum ClientAuthorisationOutcome: Sendable, Hashable {
 }
 
 extension ClientAuthorisationRefusal: CustomStringConvertible {
-    package var description: String {
+    public var description: String {
         switch self {
         case .helperHasNoTeamIdentifier:
             return

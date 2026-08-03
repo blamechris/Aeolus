@@ -19,8 +19,10 @@ struct XPCContractTests {
         let snapshot = SystemSnapshot(
             fans: [
                 FanState(
-                    fan: Fan(index: 0, minimumRPM: 1200, maximumRPM: 5400, firmwareName: nil),
-                    actualRPM: 1800,
+                    index: 0,
+                    actualRPM: .measured(1800),
+                    minimumRPM: .measured(1200),
+                    maximumRPM: .measured(5400),
                     targetRPM: 2000,
                     mode: .manualFixed,
                     isReclaimedBySystem: false,
@@ -57,8 +59,10 @@ struct XPCContractTests {
         let snapshot = SystemSnapshot(
             fans: [
                 FanState(
-                    fan: Fan(index: 0, minimumRPM: 1200, maximumRPM: 5400, firmwareName: nil),
-                    actualRPM: 1800,
+                    index: 0,
+                    actualRPM: .measured(1800),
+                    minimumRPM: .measured(1200),
+                    maximumRPM: .measured(5400),
                     targetRPM: nil,
                     mode: .automatic,
                     isReclaimedBySystem: false,

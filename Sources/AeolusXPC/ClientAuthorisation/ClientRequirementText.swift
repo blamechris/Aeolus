@@ -66,9 +66,10 @@ enum ClientRequirementVariant: Sendable, Hashable, CaseIterable {
 
 /// Why a Team ID was refused as a requirement input.
 ///
-/// `package` rather than nested-and-internal only so `ClientAuthorisationRefusal` can
-/// carry it into the helper's fault log; nothing outside this module produces one.
-package enum TeamIdentifierRejection: Sendable, Hashable, Error {
+/// Visible outside this module only so `ClientAuthorisationRefusal` can carry it into the
+/// helper's fault log; nothing outside this module produces one. It follows that enum's
+/// access level for the reason recorded on `ClientAuthorisation`.
+public enum TeamIdentifierRejection: Sendable, Hashable, Error {
     case empty
     case unacceptableCharacters
     case tooLong
