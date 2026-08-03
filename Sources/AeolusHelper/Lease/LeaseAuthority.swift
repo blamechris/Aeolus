@@ -1,0 +1,309 @@
+import AeolusXPC
+import FanKit
+import Foundation
+
+/// The lease core: the table, the two teardown paths, and the ledger of dead connections.
+///
+/// ## Where this sits
+///
+/// Behind `FanAuthority`, not on it. Every method below carries a `FanAuthority` signature
+/// verbatim, so the helper's control plane composes it with one-line forwards, but this
+/// type owns no hardware and produces no `SystemSnapshot`: it cannot enumerate a fan, read a
+/// sensor, or write a value. It asks `FanEnumerating` which fans exist and tells
+/// `FanRestoring` to put them back, and those are the only two things it needs of the
+/// machine.
+///
+/// That split is what keeps E5.1 fully testable with no hardware and no mock SMC, and it is
+/// why this file contains no write of any kind — `SMCConnection.write` is still
+/// `package`-scoped and still throws, and no write selector exists anywhere in `Sources/`.
+///
+/// ## One lease at a time, and why the contract settles it
+///
+/// `FanAuthority.snapshot()` takes **no `ConnectionID`**, and `SystemSnapshot.activeLease`
+/// is a single optional `Lease`. So the lease a snapshot reports is a global fact, identical
+/// for every client, and there is exactly one slot for it. Two simultaneous leases — even
+/// over disjoint fans — would be unreportable: one of them would be invisible to every
+/// client including its own holder, and a client that cannot see who holds the fans cannot
+/// tell "nothing is holding this" from "somebody else is". That is `CLAUDE.md` rule 6
+/// arriving one step earlier than usual.
+///
+/// The wire shape is frozen at v1 and shipped, so the choice is between refusing the second
+/// lease and misreporting it. This refuses it, with
+/// `.manualControlUnavailable(reason: .leaseHeldByAnotherClient)`.
+///
+/// ## Strict concurrency
+///
+/// An actor, with every piece of mutable state — the table and the tombstones — inside it,
+/// and both are value types so no reference escapes. There is no `@unchecked` conformance
+/// anywhere here and none is needed; `CLAUDE.md` rule 10 and this repository's
+/// `no_unchecked_sendable_in_helper` rule would both treat one as a claim requiring review.
+///
+/// **Reentrancy is the hazard here, not data races.** An actor is reentrant across `await`,
+/// so every method is written as: suspend for whatever it needs, then decide in one
+/// straight-line region containing no `await`. Those regions are marked in the source. The
+/// register step in `acquireLease` is the one that matters —
+/// [#95](https://github.com/blamechris/Aeolus/issues/95) is precisely what happens when a
+/// liveness check and the registration it guards are separated by a suspension point.
+actor LeaseAuthority {
+
+    private let clock: any MonotonicClock
+    private let wallClock: @Sendable () -> Date
+    private let enumeration: any FanEnumerating
+    private let restorer: any FanRestoring
+    private let log: LeaseLog
+
+    private var table = LeaseTable()
+    private var tombstones: ConnectionTombstones
+
+    init(
+        enumeration: some FanEnumerating,
+        restorer: some FanRestoring,
+        clock: some MonotonicClock = SystemMonotonicClock(),
+        wallClock: @escaping @Sendable () -> Date = Date.init,
+        tombstoneCapacity: Int = ConnectionTombstones.defaultCapacity,
+        log: LeaseLog = LeaseLog()
+    ) {
+        self.enumeration = enumeration
+        self.restorer = restorer
+        self.clock = clock
+        self.wallClock = wallClock
+        self.tombstones = ConnectionTombstones(capacity: tombstoneCapacity)
+        self.log = log
+    }
+
+    // MARK: - Acquisition
+
+    /// Grants manual control of the requested fans, or refuses.
+    ///
+    /// The order of the steps is the design, so it is worth reading as one:
+    ///
+    /// 1. **Self-renewal is refused first**, before any work is done for a request that
+    ///    cannot be granted whatever the machine says.
+    /// 2. The TTL is re-validated here although the listener already checked it. Sharing
+    ///    `AeolusXPCValidation` is not the same as the listener doing the checking
+    ///    (`CLAUDE.md` rule 7), and this method is reachable from the control plane as well
+    ///    as from a message.
+    /// 3. The suspension points: enumerating the machine's fans, then sweeping anything
+    ///    already lapsed — so the single-lease check below is made against live leases only,
+    ///    and a previous lease's fans are back on automatic before new ones are taken.
+    /// 4. **The liveness check, after the last suspension point and immediately before
+    ///    registering.** Everything from there to the `insert` is straight-line: the actor
+    ///    cannot be re-entered between the check and the act it guards.
+    ///
+    /// **There is deliberately no earlier liveness check.** One would cost a hardware round
+    /// trip less in a case `HelperConnectionSession`'s teardown gate already refuses, and it
+    /// would buy that with a real hazard: a test could stay green on the early refusal while
+    /// the guarded region below was unprotected, which is exactly how a guard survives being
+    /// deleted. One check, in the only place a check means anything.
+    func acquireLease(
+        _ request: LeaseRequest,
+        from connection: ConnectionID
+    ) async throws -> Lease {
+        guard !request.isSelfRenewing else {
+            log.refusedSelfRenewal(connection)
+            throw AeolusXPCFault.manualControlUnavailable(reason: .selfRenewalNotBuilt)
+        }
+        try AeolusXPCValidation.validateTimeToLive(request.timeToLive)
+
+        let enumerated = try await enumeration.enumeratedFanIndices()
+        await expireLapsedLeases()
+
+        // ---- No `await` below this line. Adding one reopens #95. ----
+        try AeolusXPCValidation.validateFanIndices(
+            request.fanIndices, enumeratedFanIndices: enumerated)
+        try refuseIfInvalidated(connection)
+        guard table.isEmpty else {
+            log.refusedConcurrentLease(connection)
+            throw AeolusXPCFault.manualControlUnavailable(reason: .leaseHeldByAnotherClient)
+        }
+
+        let entry = LeaseRecord(
+            id: UUID(),
+            connection: connection,
+            holderDescription: request.holderDescription,
+            fanIndices: Set(request.fanIndices),
+            timeToLive: request.timeToLive,
+            deadline: clock.now.advanced(by: .seconds(request.timeToLive)),
+            expiresAt: wallClock().addingTimeInterval(request.timeToLive)
+        )
+        table.insert(entry)
+        log.granted(
+            connection,
+            holder: entry.holderDescription,
+            fans: entry.fanIndices,
+            timeToLive: entry.timeToLive
+        )
+        return entry.asLease()
+    }
+
+    // MARK: - Renewal and voluntary release
+
+    /// Extends a lease this connection holds, or refuses.
+    ///
+    /// Synchronous from the lookup to the write-back — there is no `await` in the body at
+    /// all — so a renewal cannot interleave with a teardown halfway through.
+    ///
+    /// An expired lease is **re-acquired, never resurrected**, per `AeolusXPCProtocol`: a
+    /// client that stopped proving it was alive does not get to carry on as though it never
+    /// had. `.leaseExpired` rather than `.leaseUnknown`, because the two are different facts
+    /// and only one of them tells the client what to do next.
+    func renewLease(id: UUID, from connection: ConnectionID) throws -> Lease {
+        var entry = try heldLease(id: id, from: connection)
+        entry.deadline = clock.now.advanced(by: .seconds(entry.timeToLive))
+        entry.expiresAt = wallClock().addingTimeInterval(entry.timeToLive)
+        table.insert(entry)
+        log.renewed(connection, timeToLive: entry.timeToLive)
+        return entry.asLease()
+    }
+
+    /// Drops a lease this connection holds and returns its fans to automatic.
+    func releaseLease(id: UUID, from connection: ConnectionID) async throws {
+        let entry = try heldLease(id: id, from: connection)
+        table.remove(id: entry.id)
+        await restore(entry.fanIndices, because: .leaseReleased)
+    }
+
+    /// The live lease `connection` holds under `id`, or the refusal.
+    ///
+    /// **Synchronous, and that is the point.** It is what the control plane's `apply` calls
+    /// to authorise a write, and [#95](https://github.com/blamechris/Aeolus/issues/95) asks
+    /// for the same reasoning to be applied to every method given per-connection state. A
+    /// check that can suspend before the act it authorises is not a check — so this one
+    /// cannot suspend.
+    ///
+    /// It does **not** sweep a lapsed lease it finds. Refusing the client and restoring the
+    /// fans are different jobs: this refuses, and `LeaseExpirySupervisor` restores, on its
+    /// own schedule and without being triggered from here.
+    ///
+    /// - Note: A caller outside this actor still awaits the hop to reach it, so "authorised"
+    ///   and "written" are separated by a suspension the lease core cannot close from here.
+    ///   The control plane closes it by keeping the check and the write in one isolated
+    ///   region, or by re-checking after the write and restoring if the lease has gone.
+    func heldLease(id: UUID, from connection: ConnectionID) throws -> LeaseRecord {
+        guard let entry = table.entry(id: id) else { throw AeolusXPCFault.leaseUnknown }
+        // Ownership is judged before expiry: a lease bound to another connection is not
+        // this client's business at all, and whether it has lapsed is not a fact this
+        // client is entitled to learn.
+        guard entry.connection == connection else {
+            throw AeolusXPCFault.leaseNotHeldByThisConnection
+        }
+        guard !entry.hasLapsed(asOf: clock.now) else { throw AeolusXPCFault.leaseExpired }
+        return entry
+    }
+
+    // MARK: - Teardown path 1 of 2: the TTL
+
+    /// Expires every lapsed lease and restores its fans.
+    ///
+    /// **Takes no instant.** A caller cannot supply one, so no caller can supply a
+    /// wall-clock-derived one — ADR 0005's monotonic rule made inexpressible rather than
+    /// merely documented, which is the argument `AeolusXPCProtocol` makes for the messages
+    /// it does not have.
+    ///
+    /// **Nothing on the connection-invalidation path calls this, and it calls nothing on
+    /// that path.** That is the independence ADR 0005 requires: *"Either mechanism alone
+    /// suffices; both must fail for the fans to stay pinned; they share no code path."* The
+    /// one thing the two paths do share is their terminal action, and that is deliberate —
+    /// ADR 0007's keystone is that restore-to-automatic is a single bounds-free verb every
+    /// safety mechanism ends in.
+    ///
+    /// Entries are removed **before** the restore is awaited, so a call interleaving during
+    /// the restore finds an empty table and can neither restore the same fans twice nor hand
+    /// out a lease over fans still being released.
+    func expireLapsedLeases() async {
+        let lapsed = table.removeLapsed(asOf: clock.now)
+        for entry in lapsed {
+            await restore(entry.fanIndices, because: .leaseExpired)
+        }
+    }
+
+    /// When the earliest outstanding lease lapses, or `nil` when none is outstanding. What
+    /// `LeaseExpirySupervisor` sleeps until.
+    func nextExpiryDeadline() -> ContinuousClock.Instant? { table.earliestDeadline }
+
+    // MARK: - Teardown path 2 of 2: connection death
+
+    /// A connection died: crash, `SIGKILL`, logout, or an orderly disconnect.
+    ///
+    /// **The tombstone is recorded first, before anything can suspend.** Recording it after
+    /// the restore would leave a window in which an `acquireLease` already in flight
+    /// resumes, finds no tombstone, and binds a lease to this very connection — #95,
+    /// reintroduced by statement order rather than by a missing guard.
+    ///
+    /// Removing the entries is synchronous too, for the same reason `expireLapsedLeases`
+    /// removes before it restores.
+    ///
+    /// Not throwing and returning nothing, per `FanAuthority`: the connection this concerns
+    /// is already gone, so there is nobody a failure could be reported to.
+    func connectionDidInvalidate(_ connection: ConnectionID) async {
+        if let evicted = tombstones.record(connection) {
+            log.evictedTombstone(evicted, capacity: tombstones.count)
+        }
+        let released = table.removeAll(heldBy: connection)
+
+        for entry in released {
+            await restore(entry.fanIndices, because: .connectionInvalidated)
+        }
+    }
+
+    // MARK: - The panic path
+
+    /// Drops every lease and restores every fan they covered.
+    ///
+    /// The lease core's half of `restoreAllToAutomatic`. The control plane additionally
+    /// restores every enumerated fan, because that message's contract is global rather than
+    /// lease-scoped.
+    ///
+    /// **Consults no per-`ConnectionID` state**, which is the precondition
+    /// `HelperConnectionSession` documents for exempting that message from its teardown
+    /// gate: `connection` is attribution only, so both post-invalidation orderings converge
+    /// on the same safe state. Making this consult per-connection state would invalidate the
+    /// exemption and needs revisiting alongside it —
+    /// [#95](https://github.com/blamechris/Aeolus/issues/95).
+    func releaseEveryLease() async {
+        let dropped = table.removeAll()
+        for entry in dropped {
+            await restore(entry.fanIndices, because: .allLeasesDropped)
+        }
+    }
+
+    // MARK: - State, for the control plane and for tests
+
+    /// The lease a snapshot reports, sweeping anything lapsed first so a snapshot never
+    /// shows a lease that has already stopped holding the fans.
+    func activeLease() async -> Lease? {
+        await expireLapsedLeases()
+        return table.all.first?.asLease()
+    }
+
+    var leaseCount: Int { table.count }
+    var tombstoneCount: Int { tombstones.count }
+
+    func holdsTombstone(for connection: ConnectionID) -> Bool {
+        tombstones.contains(connection)
+    }
+
+    // MARK: - Guards
+
+    /// The refusal a message gets when its own connection died while it was in flight.
+    ///
+    /// Deliberately worded differently from `HelperConnectionSession`'s teardown refusal.
+    /// The two guards cover different interleavings — that one covers arrival, this one
+    /// covers flight — and a log that cannot tell them apart cannot tell an operator which
+    /// half of the mechanism fired. `.helperFailed` for the reason the session picked it:
+    /// nothing else in the vocabulary describes this without asserting something false about
+    /// the client.
+    private static let invalidatedInFlight = AeolusXPCFault.helperFailed(
+        detail: "the connection was invalidated while this request was in flight")
+
+    private func refuseIfInvalidated(_ connection: ConnectionID) throws {
+        guard tombstones.contains(connection) else { return }
+        log.refusedInFlightBinding(connection)
+        throw Self.invalidatedInFlight
+    }
+
+    private func restore(_ fans: Set<Int>, because cause: FanRestoreCause) async {
+        log.restored(fans: fans, because: cause)
+        await restorer.restoreToAutomatic(fans: fans, because: cause)
+    }
+}

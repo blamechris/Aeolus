@@ -16,7 +16,21 @@ public struct Lease: Sendable, Hashable, Codable {
     public let id: UUID
     /// Identifies the holder for display and diagnostics, e.g. `Aeolus.app`, `fanctl`.
     public let holderDescription: String
-    /// When the lease lapses if not renewed.
+    /// When the lease lapses if not renewed — **display-grade, and nothing enforces it.**
+    ///
+    /// A wall-clock `Date`, so it moves when NTP steps the clock or a user sets it back.
+    /// [ADR 0005](../../docs/ADR/0005-xpc-authorisation.md) therefore puts enforcement on
+    /// `ContinuousClock` inside the helper, where a clock jump cannot extend a lease and
+    /// time asleep counts against the TTL. This field exists to be rendered — "expires in
+    /// about 20 seconds" — and for no other purpose.
+    ///
+    /// This type deliberately offers **no `isExpired(at: Date)`**. It had one; it was
+    /// removed rather than documented, because a wall-clock expiry predicate sitting on
+    /// the lease type is not a hazard anyone reads a comment about — it is the obvious
+    /// thing to reach for when writing a supervisor, and reaching for it is the exact bug
+    /// ADR 0005 wrote its rule to prevent. An absence is a stronger guarantee than a
+    /// warning, for the same reason `AeolusXPCProtocol` prefers a message that cannot be
+    /// expressed to one that is refused.
     public let expiresAt: Date
     /// How long each renewal extends the lease.
     public let timeToLive: TimeInterval
@@ -41,10 +55,6 @@ public struct Lease: Sendable, Hashable, Codable {
         self.expiresAt = expiresAt
         self.timeToLive = timeToLive
         self.isSelfRenewing = isSelfRenewing
-    }
-
-    public func isExpired(at instant: Date) -> Bool {
-        instant >= expiresAt
     }
 }
 

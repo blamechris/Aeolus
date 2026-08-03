@@ -45,17 +45,27 @@ struct ThermalCeilingTests {
 @Suite("Lease expiry")
 struct LeaseTests {
 
-    @Test("A lease is live before its expiry and dead after it")
-    func expiresOnSchedule() {
-        let start = Date(timeIntervalSince1970: 1_000_000)
+    /// `expiresAt` is carried and rendered; it is not judged.
+    ///
+    /// This suite used to assert `Lease.isExpired(at: Date)` against a wall clock, which
+    /// made the DTO look like the place expiry is decided. It is not, and the method is
+    /// gone: [ADR 0005](../../docs/ADR/0005-xpc-authorisation.md) puts enforcement on
+    /// `ContinuousClock` inside the helper, where `LeaseAuthority` and
+    /// `LeaseExpirySupervisor` now hold it and where the tests that matter live. What is
+    /// left to check here is that the display value survives the wire intact.
+    @Test("The display expiry survives a round trip unchanged")
+    func expiryRoundTrips() throws {
         let lease = Lease(
             holderDescription: "test",
-            expiresAt: start.addingTimeInterval(30)
+            expiresAt: Date(timeIntervalSince1970: 1_000_030)
         )
 
-        #expect(lease.isExpired(at: start) == false)
-        #expect(lease.isExpired(at: start.addingTimeInterval(29)) == false)
-        #expect(lease.isExpired(at: start.addingTimeInterval(30)) == true)
+        let decoded = try JSONDecoder().decode(
+            Lease.self, from: try JSONEncoder().encode(lease))
+
+        #expect(decoded == lease)
+        #expect(decoded.expiresAt == Date(timeIntervalSince1970: 1_000_030))
+        #expect(decoded.isSelfRenewing == false)
     }
 
     /// Two missed heartbeats must still leave room for a third attempt before control is

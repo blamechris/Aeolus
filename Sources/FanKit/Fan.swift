@@ -76,6 +76,21 @@ public enum ManualControlAvailability: Sendable, Hashable {
         case boundsImplausible
         /// The system has taken this fan back and is not currently yielding it.
         case reclaimedBySystem
+        /// Another client holds the manual-control lease.
+        ///
+        /// A lease is bound to the connection that acquired it, and the wire reports one
+        /// `SystemSnapshot.activeLease` for the whole machine, so control is held by at
+        /// most one client at a time. This is what the others are told — the honest
+        /// answer to "why can't I take this fan", distinct from "nothing here can be
+        /// controlled at all".
+        case leaseHeldByAnotherClient
+        /// A self-renewing lease was asked for and this build does not implement one.
+        ///
+        /// Self-renewal's entire safety story is helper restart plus startup
+        /// reconciliation, which is not hardware-verified yet, so the helper refuses
+        /// rather than granting a lease whose backstop has never been watched to work.
+        /// See [ADR 0007](../../docs/ADR/0007-safety-composition.md).
+        case selfRenewalNotBuilt
         /// A reason this build does not recognise, carried verbatim so a newer helper
         /// can explain itself to an older client without a protocol bump. Render it
         /// generically; never treat it as equivalent to `available`.
@@ -87,6 +102,8 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case .writePathNotBuilt: return "writePathNotBuilt"
             case .boundsImplausible: return "boundsImplausible"
             case .reclaimedBySystem: return "reclaimedBySystem"
+            case .leaseHeldByAnotherClient: return "leaseHeldByAnotherClient"
+            case .selfRenewalNotBuilt: return "selfRenewalNotBuilt"
             case .unknown(let raw): return raw
             }
         }
@@ -99,6 +116,8 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case Reason.writePathNotBuilt.wireValue: self = .writePathNotBuilt
             case Reason.boundsImplausible.wireValue: self = .boundsImplausible
             case Reason.reclaimedBySystem.wireValue: self = .reclaimedBySystem
+            case Reason.leaseHeldByAnotherClient.wireValue: self = .leaseHeldByAnotherClient
+            case Reason.selfRenewalNotBuilt.wireValue: self = .selfRenewalNotBuilt
             default: self = .unknown(wireValue)
             }
         }
