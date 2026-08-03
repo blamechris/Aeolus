@@ -5,6 +5,10 @@ import Foundation
 /// `minimumRPM` and `maximumRPM` come from the hardware at runtime (`F0Mn` / `F0Mx`) and
 /// are the only bounds that matter. A configuration file may narrow them; it may never
 /// widen them, and it may never be trusted over the firmware. See `docs/SAFETY.md`.
+///
+/// This type describes what firmware *declared*, garbage included, and so carries no
+/// clamp: a declaration is not yet an envelope. `controlEnvelope` is the judgement, and
+/// `FanControlEnvelope` is the only type that can turn a request into a speed to write.
 public struct Fan: Sendable, Hashable, Codable, Identifiable {
     public let index: Int
     public let minimumRPM: Double
@@ -22,13 +26,17 @@ public struct Fan: Sendable, Hashable, Codable, Identifiable {
         self.firmwareName = firmwareName
     }
 
-    /// Clamps a requested speed into this fan's hardware envelope.
+    /// This fan's commandable envelope, or the reason its declared bounds were refused.
     ///
-    /// Zero RPM is not reachable through this method and must not be reachable through
-    /// any other: stopping a fan entirely is never something a user curve is allowed to
-    /// ask for.
-    public func clamp(_ requestedRPM: Double) -> Double {
-        min(max(requestedRPM, minimumRPM), maximumRPM)
+    /// The gate is `FanControlEnvelope.validating(declaredMinimumRPM:declaredMaximumRPM:)`
+    /// and this is simply that call spelled on the model, so no caller has to remember
+    /// which of `minimumRPM`/`maximumRPM` goes where. A failure means manual control of
+    /// this fan is `.unavailable(.boundsImplausible)`; see `FanBoundsImplausibility`.
+    public var controlEnvelope: Result<FanControlEnvelope, FanBoundsImplausibility> {
+        FanControlEnvelope.validating(
+            declaredMinimumRPM: minimumRPM,
+            declaredMaximumRPM: maximumRPM
+        )
     }
 }
 
@@ -183,7 +191,8 @@ public enum FanReading: Sendable, Hashable {
     /// adjusted** from what the hardware reported. `F0Ac` was measured at 1343.07 against
     /// a declared `F0Mn` of 1350 on this project's development machine: a reading below
     /// the declared minimum is a legitimate observation, not a fault. Clamping governs
-    /// targets — `Fan.clamp(_:)`, on the write path — and never observations.
+    /// targets — `FanControlEnvelope.target(for:)`, on the write path — and never
+    /// observations.
     case measured(Double)
 
     /// The key is absent on this machine, the read failed, or it decoded to something
@@ -264,8 +273,8 @@ extension FanReading: Codable {
 ///
 /// ## Why this does not embed a `Fan`
 ///
-/// `Fan` is the *control* model: its bounds are non-optional and `clamp(_:)` depends on
-/// them, which is how "never 0 RPM" and "never widen firmware bounds" end up enforced by
+/// `Fan` is the *control* model: its bounds are non-optional and `controlEnvelope` depends
+/// on them, which is how "never 0 RPM" and "never widen firmware bounds" end up enforced by
 /// the type system rather than by vigilance. That strictness is correct and must stay.
 ///
 /// This is the *report* model, and it has to be able to describe a fan whose bounds could
@@ -274,8 +283,9 @@ extension FanReading: Codable {
 /// future change to `Fan` from silently becoming a protocol bump.
 ///
 /// `fan` reconstructs the control model, and returns `nil` unless both bounds were really
-/// measured — so it is not possible to obtain something with a `clamp(_:)` on it without
-/// the firmware envelope that `clamp` is supposed to enforce.
+/// measured — so it is not possible to reach the gate without the firmware bounds the gate
+/// is supposed to judge. `controlEnvelope` folds the two steps together and is what a
+/// caller that wants to *command* the fan should use.
 public struct FanState: Sendable, Hashable, Codable {
     public let index: Int
     /// A firmware-supplied name where one exists (`{fds` descriptor), otherwise `nil`.
@@ -302,15 +312,15 @@ public struct FanState: Sendable, Hashable, Codable {
     /// behalf.
     public let manualControlAvailability: ManualControlAvailability
 
-    /// The control model for this fan, or `nil` when the firmware envelope is not fully
+    /// The control model for this fan, or `nil` when the firmware bounds are not fully
     /// known.
     ///
     /// The `nil` is load-bearing rather than defensive: `Fan` is the only type carrying
-    /// `clamp(_:)`, and a fan whose `F<n>Mn` or `F<n>Mx` did not read has no envelope to
-    /// clamp into. Returning one anyway would mean inventing a bound, and an invented
-    /// bound on the write path is how a fan ends up driven outside what the firmware
-    /// declared. A caller that wants to control a fan must handle the `nil`; a caller that
-    /// only wants to display one never needs this.
+    /// `controlEnvelope`, and a fan whose `F<n>Mn` or `F<n>Mx` did not read has no bounds
+    /// to judge. Returning one anyway would mean inventing a bound, and an invented bound
+    /// on the write path is how a fan ends up driven outside what the firmware declared. A
+    /// caller that wants to control a fan must handle the `nil`; a caller that only wants
+    /// to display one never needs this.
     public var fan: Fan? {
         guard let minimum = minimumRPM.value, let maximum = maximumRPM.value else {
             return nil
@@ -321,6 +331,19 @@ public struct FanState: Sendable, Hashable, Codable {
             maximumRPM: maximum,
             firmwareName: firmwareName
         )
+    }
+
+    /// This fan's commandable envelope, or the reason there is none.
+    ///
+    /// One call for the question a would-be writer actually has, folding together the two
+    /// ways a fan can have no envelope: a bound that never read (`.notMeasured`) and bounds
+    /// that read but cannot be trusted. They are different conditions with the same
+    /// consequence — no target may be produced, and manual control is
+    /// `.unavailable(.boundsImplausible)` — and offering them as one answer is what stops a
+    /// caller handling only the half it happened to think of.
+    public var controlEnvelope: Result<FanControlEnvelope, FanBoundsImplausibility> {
+        guard let fan else { return .failure(.notMeasured) }
+        return fan.controlEnvelope
     }
 
     public init(

@@ -54,12 +54,25 @@ public struct Lease: Sendable, Hashable, Codable {
 /// These are compiled in and **tunable downward only**. A configuration file that asks to
 /// raise them is rejected, not honoured — the point of a safety limit no user can defeat
 /// is that no user can defeat it.
+///
+/// The same downward-only rule governs `FanSafetyLimits.effectiveRampRPMPerSecond(
+/// requested:)`, and for the same reason: both are compiled-in limits that a settings
+/// payload crossing the privilege boundary is allowed to tighten and nothing else.
 public enum ThermalCeiling {
     public static let cpuCelsius: Double = 95
     public static let storageCelsius: Double = 90
 
     /// Returns the effective ceiling, rejecting any attempt to raise the default.
+    ///
+    /// A non-finite request falls back to the compiled default rather than being honoured,
+    /// and that guard is load-bearing rather than tidy. `min(_:_:)` alone returns NaN when
+    /// handed one — every comparison with NaN is false — and a NaN ceiling silently
+    /// *disables* the thermal override, because `temperature > ceiling` is then false at
+    /// every temperature. A configuration that could turn the emergency off is precisely
+    /// what `docs/SAFETY.md` says cannot exist. The fallback direction can never raise the
+    /// ceiling, so the downward-only rule still holds by construction.
     public static func effective(requested: Double, default defaultCeiling: Double) -> Double {
-        min(requested, defaultCeiling)
+        guard requested.isFinite else { return defaultCeiling }
+        return min(requested, defaultCeiling)
     }
 }

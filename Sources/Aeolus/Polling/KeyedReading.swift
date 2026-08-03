@@ -10,8 +10,8 @@ import SMCCore
 /// development hardware — a reading below the declared minimum is a legitimate
 /// observation, not a fault, and it is carried through as `.value(1343.07)` exactly like
 /// any other successful read. Nothing in this type clamps a reading into `[minimum,
-/// maximum]`; only `FanKit.Fan.clamp(_:)`, on the write path this epic does not touch,
-/// is allowed to do that. A read that fails, is refused, or does not decode is
+/// maximum]`; only `FanKit.FanControlEnvelope.target(for:)`, on the write path this epic
+/// does not touch, is allowed to do that. A read that fails, is refused, or does not decode is
 /// `.unavailable`, never `.value(0)` — the fabricated-zero failure mode that reads to a
 /// user as "this fan has stopped."
 ///

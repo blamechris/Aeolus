@@ -269,6 +269,14 @@ actor ReadOnlyFanAuthority: FanAuthority {
             targetRPM: nil,
             mode: .automatic,
             isReclaimedBySystem: false,
+            // `.writePathNotBuilt` regardless of what this fan's bounds look like, and
+            // deliberately so. E5's bounds gate — `FanKit.FanControlEnvelope.validating(
+            // declaredMinimumRPM:declaredMaximumRPM:)`, whose failures map to
+            // `.boundsImplausible` — is not consulted here, because a build-level fact
+            // outranks a per-fan one: no fan in this build can be controlled, so reporting
+            // `.boundsImplausible` on one would imply that better bounds would grant
+            // control, which is false of every fan this executable serves. The gate plugs
+            // in at this line in the epic that also brings the write path it guards.
             manualControlAvailability: .unavailable(.writePathNotBuilt)
         )
     }
