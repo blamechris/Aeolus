@@ -31,6 +31,26 @@ import Foundation
 /// died has no port. An implementation that cannot complete the write must log it and keep
 /// trying — surfacing it to a caller that can do nothing with it would be a failure
 /// dressed as a decision.
+///
+/// ## Its relationship to `FanControlPlane`
+///
+/// These two protocols name the same verb and landed in the same wave from different
+/// sub-issues (#99 and #100), so the relationship is written down here rather than left to
+/// be inferred: **`FanControlPlane` is the provider, `FanRestoring` is the role the lease
+/// core depends on.** The lease core needs one operation, not a control plane, and asking
+/// for only what it uses is what keeps it testable against a recording double.
+///
+/// They differ in one deliberate way. `FanControlPlane.restoreToAutomatic(_:)` **throws**,
+/// because a firmware write genuinely can fail and a control plane that hid that would be
+/// lying. This one does not, for the reason above. Bridging them is therefore not a
+/// signature adjustment — it is the decision about **who owns a restore that failed**, and
+/// the answer cannot be "nobody", because ADR 0007's keystone makes restore the terminal
+/// action every other mechanism falls back to.
+///
+/// **#102 owns that adapter**, and owns it explicitly: it catches, logs at fault level, and
+/// keeps retrying. What it must never do is swallow the error to satisfy this signature —
+/// a `try?` here would convert "the fans are still pinned" into "the teardown completed",
+/// which is the exact inversion this whole subsystem exists to prevent.
 protocol FanRestoring: Sendable {
 
     /// Returns `fans` to the system's own thermal management.
