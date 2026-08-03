@@ -10,9 +10,12 @@ Every mechanism below exists to make some version of that impossible. None of th
 disabled by configuration, and none of them are addressable over XPC — there is no message
 that turns off the lease or raises a ceiling, because those messages do not exist.
 
-**Implementation status: none of this is built yet.** It is tracked as epic E5, and E5
-blocks the write-path epics E3 and E4. No code that writes to the SMC merges before the
-safety subsystem exists and is tested.
+**Implementation status: partial, and deliberately ahead of the write path.** The pure
+constraint layer — § 2's clamp, its bounds gate, and § 3's and § 8's downward-only limits —
+is built and tested in `FanKit`. The mechanisms that need a running helper are not: the
+lease, the supervisor, sleep/wake, reclamation, and every restore path. All of it is
+tracked as epic E5, and E5 blocks the write-path epics E3 and E4. No code that writes to
+the SMC merges before the safety subsystem exists and is tested.
 
 ---
 
@@ -41,7 +44,8 @@ the fans to automatic.
 
 ## 2. Hardware clamps
 
-Every target speed is clamped to `[F0Mn, F0Mx]` as read from the firmware at runtime.
+Every target speed is clamped to **`[max(F0Mn, 100), F0Mx]`**, using bounds read from the
+firmware at runtime.
 
 - **The firmware's bounds win.** A configuration file may narrow the usable range; it may
   never widen it, and it is never trusted over what the hardware reports.
@@ -49,10 +53,67 @@ Every target speed is clamped to `[F0Mn, F0Mx]` as read from the firmware at run
   through a malformed config, not through the CLI. Stopping a fan entirely is not
   something this software will do.
 
-Clamping happens in the helper, after values cross the privilege boundary. Client-side
-validation is a courtesy to the user; this is the actual control.
+### Why the floor is not simply `F0Mn`
 
-*Tested by:* `FanKit` unit tests including zero, negative, and above-maximum requests.
+Clamping to `[F0Mn, F0Mx]` alone does **not** deliver the second rule, and this document
+said it did until #101. [RECOVERY.md](RECOVERY.md) records that a fan reading 0 RPM at idle
+is normal on many Macs, so firmware may legitimately declare a minimum of zero — and a
+clamp whose floor is that declaration then permits commanding a stop. The floor is
+therefore `max(F0Mn, FanSafetyLimits.minimumManualRPM)`, with a compiled-in constant of
+**100 RPM** that no configuration can lower.
+
+100 separates "a fan turning slowly" from "a fan stopped", and is far below every minimum
+real hardware declares — `Mac16,5` declares 1350 — so on machines that declare a sane
+minimum the constant is inert and `F0Mn` governs. Being non-zero is the load-bearing
+property; the figure itself is a judgement.
+
+### Clamping governs targets, never observations
+
+`F0Ac` was measured at **1343.07 against a declared `F0Mn` of 1350** on this project's
+development machine. A reading below the declared minimum is a legitimate observation, not
+a fault: it is reported exactly as read. Nothing in the read path compares a measured speed
+against the declared bounds or nudges one toward the other, and no test may assume it does.
+
+### Bounds are checked before they are trusted (#37)
+
+Rule 4 assumes the decoded bounds are *real*. `F<n>Mn`/`F<n>Mx` are `flt` keys and a
+byte-swapped `flt` is typically a denormal (≈ 0) or ~1e14, so **no single codec error may
+silently become a clamp ceiling**. Before manual control is offered for a fan, its bounds
+must pass a plausibility gate:
+
+| Check | Why |
+|---|---|
+| Both bounds finite | `SMCValue.scalar()` applies no finiteness guard, so a NaN or infinity can reach the model on an otherwise-successful read |
+| `F<n>Mn >= 0` | A negative speed is not a measurement of anything a fan can do |
+| `F<n>Mn < F<n>Mx` | An inverted or single-point range has nothing to clamp into |
+| `F<n>Mx >= 100` | A fan whose whole range sits below the floor has no speed honouring both the 0-RPM rule and the firmware maximum |
+| `F<n>Mx <= 20,000` | Rejects the denormal and ~1e14 shapes of a byte-order fault, with wide margin over real hardware |
+
+A fan that fails any of them is reported
+`manualControlAvailability: .unavailable(.boundsImplausible)` — distinct from "no helper"
+and from "no such fan" — and **no target write of any kind may be produced for it, ever**.
+Inventing a maximum to write against would push a fabricated number through the exact path
+rule 4 exists to guard; see [ADR 0007](ADR/0007-safety-composition.md). The only action such
+a fan is subject to is the bounds-free mode verb, restore-to-automatic, which needs no
+envelope. Automatic control is untouched throughout: the system keeps managing the fan as it
+already was.
+
+A declared minimum of zero is **not** a plausibility failure. It is a machine whose fans
+stop when idle, which Aeolus must work on rather than refuse; the floor above handles it.
+
+This is defence in depth, not a substitute for correct decoding — it catches a *class* of
+error rather than a specific bug, which is what makes it worth keeping even once the codec
+is trusted.
+
+Clamping and the gate both happen in the helper, after values cross the privilege boundary.
+Client-side validation is a courtesy to the user; this is the actual control. The types
+enforce it: only a fan whose bounds passed the gate yields a `FanControlEnvelope`, and an
+envelope is the only thing that can produce a speed to write.
+
+*Tested by:* `FanKit` unit tests including zero, negative, above-maximum, non-finite, and
+the declared-minimum-of-zero case; a rejection test per gate check, using synthetic bounds
+and no hardware; and a test asserting an observation below the declared minimum passes
+through unclamped.
 
 ## 3. Thermal emergency override
 
@@ -64,6 +125,15 @@ automatic, and notifies the user.
 rejected rather than honoured. A safety limit the user can defeat is not a safety limit,
 and the notification exists so that the override is never silent — a user whose machine
 suddenly gets loud deserves to know why.
+
+A value that is not a temperature at all — NaN, an infinity — falls back to the compiled
+ceiling rather than being honoured. `min(requested, ceiling)` alone returns NaN when handed
+one, because every comparison with NaN is false, and a NaN ceiling *disables* the override
+instead of tightening it: `temperature > ceiling` is then false at every temperature. That
+is a configuration turning a safety mechanism off, which this document says cannot exist.
+
+The same downward-only rule governs the ramp cap in § 8, which is client data carried
+inside a settings payload, and it is applied helper-side after the payload crosses.
 
 User curves cannot override this. It is checked after curve evaluation, not before.
 
@@ -132,8 +202,7 @@ manual hardware check.
 
 ## 8. Rate limiting and hysteresis
 
-Ramp rate is capped — 200 RPM/s by default — and curves apply hysteresis on falling
-temperatures.
+Ramp rate is capped — 200 RPM/s — and curves apply hysteresis on falling temperatures.
 
 Without these, a curve with a steep segment near a threshold oscillates: the fan speeds
 up, the temperature drops below the point, the fan slows, the temperature rises. The
@@ -141,8 +210,22 @@ result is audible, irritating, and hard on bearings. Multi-point curves make it 
 likely rather than less, which is why both are part of the curve model rather than
 optional refinements.
 
+**The cap is tunable downward only**, by § 3's rule rather than by analogy with it.
+`FanCurve.maximumRampRPMPerSecond` is client data that crosses the privilege boundary
+inside a settings payload: a configuration may ask the fans to move more gently than the
+compiled cap, and may never ask them to move more abruptly. The clamp is applied where the
+curve is *decoded*, so it binds a payload arriving over XPC and not only a curve
+constructed in Swift — a rule that holds everywhere except across the privilege boundary is
+not a rule. A request that is not a rate at all — zero, negative, or NaN — falls back to the
+compiled cap.
+
+Ramp limiting shapes the control loop's output **only, and never delays a safety-actor
+write**: the thermal override in § 3 is not rate-limited by a comfort mechanism. See
+[ADR 0007](ADR/0007-safety-composition.md).
+
 *Tested by:* `FanKit` unit tests driving a temperature series across a curve boundary and
-asserting no oscillation and no ramp faster than the cap.
+asserting no oscillation and no ramp faster than the cap; unit tests asserting that neither
+a Swift-constructed nor a JSON-decoded curve can hold a rate above the cap.
 
 ---
 

@@ -33,18 +33,63 @@ public struct FanCurve: Sendable, Hashable, Codable {
     public let hysteresisCelsius: Double
     /// Maximum change in target speed per second. Protects both the user's ears and the
     /// fan bearings.
+    ///
+    /// **Never above `FanSafetyLimits.maximumRampRPMPerSecond`, whatever was asked for.**
+    /// This field is client data that crosses the privilege boundary inside a settings
+    /// payload, so `docs/SAFETY.md` § 3's downward-only rule governs it exactly as it
+    /// governs a thermal ceiling: a configuration may ask the fans to move more gently
+    /// than the compiled cap, never more abruptly. Both initialisers clamp, so the stored
+    /// value cannot hold an out-of-range rate no matter how the curve was built —
+    /// including a hostile JSON payload decoded helper-side, which is where the clamp has
+    /// to bite (`CLAUDE.md` rule 7).
     public let maximumRampRPMPerSecond: Double
 
     public init(
         points: [Point],
         source: SensorGroup,
         hysteresisCelsius: Double = 2.0,
-        maximumRampRPMPerSecond: Double = 200
+        maximumRampRPMPerSecond: Double = FanSafetyLimits.maximumRampRPMPerSecond
     ) {
         self.points = points.sorted()
         self.source = source
         self.hysteresisCelsius = hysteresisCelsius
-        self.maximumRampRPMPerSecond = maximumRampRPMPerSecond
+        self.maximumRampRPMPerSecond = FanSafetyLimits.effectiveRampRPMPerSecond(
+            requested: maximumRampRPMPerSecond)
+    }
+}
+
+extension FanCurve {
+
+    /// Explicit rather than synthesised, so `init(from:)` below has keys to decode
+    /// against. The wire shape is unchanged: the same four fields, all of them required.
+    private enum CodingKeys: String, CodingKey {
+        case points
+        case source
+        case hysteresisCelsius
+        case maximumRampRPMPerSecond
+    }
+
+    /// Decoding applies the same clamp and the same sort as the memberwise initialiser.
+    ///
+    /// A synthesised `init(from:)` assigns the stored properties directly, which would
+    /// have made the guarantees on `points` and `maximumRampRPMPerSecond` true of curves
+    /// built in Swift and false of curves that arrived as JSON — and JSON is the only way
+    /// one ever reaches the helper. A rule that holds everywhere except across the
+    /// privilege boundary is not a rule.
+    ///
+    /// Every field stays required. `FanCurve`'s Swift-side defaults are a convenience for
+    /// constructing one in code; a payload that omits a field is a client that did not say
+    /// what it wanted, and the helper should not decide that for it — the same reasoning
+    /// `AeolusXPCValidation.decodeLeaseRequest(from:)` records for `LeaseRequest`.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            points: try container.decode([Point].self, forKey: .points),
+            source: try container.decode(SensorGroup.self, forKey: .source),
+            hysteresisCelsius: try container.decode(Double.self, forKey: .hysteresisCelsius),
+            maximumRampRPMPerSecond: try container.decode(
+                Double.self, forKey: .maximumRampRPMPerSecond)
+        )
     }
 }
 
