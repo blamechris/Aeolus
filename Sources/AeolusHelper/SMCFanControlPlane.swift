@@ -42,6 +42,13 @@ struct SMCFanControlPlane: FanControlPlane {
 
     // MARK: - Reads
 
+    /// - Note: The reading's `SensorReading.Kind` is deliberately not checked against
+    ///   `.temperatureCelsius`. `SMCSensorProvider` classifies conservatively — only the
+    ///   fan-key naming convention counts as known, so every `T*` key reports `.unknown` —
+    ///   and a gate on the kind would therefore refuse every temperature key on the machine.
+    ///   That a key belongs in the critical set is #102's curated, in-code judgement, and it
+    ///   is the only judgement available: nothing in the firmware declares a key's physical
+    ///   unit.
     func readCriticalTemperatures(_ keys: [SMCKey]) async throws -> CriticalTemperatureReport {
         let outcomes = try await readSubset(keys, context: "critical temperatures")
 
@@ -82,6 +89,21 @@ struct SMCFanControlPlane: FanControlPlane {
         return FanEnvelope(index: index, minimumRPM: minimum, maximumRPM: maximum)
     }
 
+    /// Reads the mode from `F<n>Md` alone, which is the Apple Silicon half of the answer.
+    ///
+    /// Intel expresses the same fact as bit *n* of the `FS!` bitmask, and M3-or-newer Apple
+    /// Silicon carries a machine-wide `Ftst` force flag alongside the per-fan mode. Both are
+    /// **conformer-internal**: `FirmwareFanMode` is one bit per fan on every architecture,
+    /// so E4 and the Intel path each add a branch here and change nothing above. That is
+    /// `CLAUDE.md` rule 9 — one code path keyed on what the SMC declares, never on
+    /// `uname -m` — applied to the seam rather than asserted about it.
+    ///
+    /// `Ftst` is deliberately not read here. It is a *write-side* key: set as part of the
+    /// M3+ unlock sequence and cleared as part of a restore, per `SMCKey.forceTest` and
+    /// [ADR 0007](../../docs/ADR/0007-safety-composition.md)'s keystone. It says nothing
+    /// about whether any particular fan is in manual, and its meaning is a community report
+    /// this project has not yet verified on hardware (`docs/SMC-RESEARCH.md`). Reading it
+    /// here would encode an E4 hypothesis into the seam E4 is gated on.
     func readControlState(ofFan index: Int) async throws -> FanControlState {
         guard let modeKey = SMCKey.fanMode(index), let targetKey = SMCKey.fanTargetRPM(index)
         else {
