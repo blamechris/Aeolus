@@ -94,6 +94,23 @@ struct LeaseContractTests {
         #expect(await restorer.restores.isEmpty)
     }
 
+    /// Ownership is judged before expiry, so a stranger learns that the lease is not theirs
+    /// and nothing else. Whether somebody else's lease has lapsed is not a fact this client
+    /// is entitled to, and the two refusals are distinguishable by anyone watching.
+    @Test("A stranger presenting a lapsed lease is told it is not theirs, not that it lapsed")
+    func ownershipIsJudgedBeforeExpiry() async throws {
+        let clock = TestClock()
+        let authority = LeaseFixture.authority(clock: clock)
+        let lease = try await authority.acquireLease(
+            LeaseFixture.request(timeToLive: 30), from: ConnectionID())
+
+        clock.advance(by: .seconds(31))
+
+        await #expect(throws: AeolusXPCFault.leaseNotHeldByThisConnection) {
+            _ = try await authority.heldLease(id: lease.id, from: ConnectionID())
+        }
+    }
+
     /// The refusal must not quietly renew the lease on the way past. A stranger extending
     /// somebody else's lease would be the "refused but acted on anyway" shape, which a
     /// thrown error alone cannot rule out.

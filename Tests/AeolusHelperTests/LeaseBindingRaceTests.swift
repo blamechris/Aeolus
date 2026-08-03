@@ -182,15 +182,44 @@ struct LeaseBindingRaceTests {
 @Suite("Connection tombstones")
 struct ConnectionTombstoneTests {
 
-    @Test("Recording the same connection twice does not grow the set")
+    /// A duplicate must not take a second place in the eviction order either. A set that
+    /// merely de-duplicated its membership would still shed one live tombstone early for
+    /// every duplicate it had ever been handed, and shedding a tombstone is what reopens
+    /// #95's race — so this checks the ordering, not only the count.
+    @Test("Recording the same connection twice grows neither the set nor the eviction order")
     func recordingIsIdempotent() {
-        var tombstones = ConnectionTombstones(capacity: 4)
-        let connection = ConnectionID()
+        var tombstones = ConnectionTombstones(capacity: 3)
+        let first = ConnectionID()
+        let others = (0..<3).map { _ in ConnectionID() }
 
-        #expect(tombstones.record(connection) == nil)
-        #expect(tombstones.record(connection) == nil)
+        #expect(tombstones.record(first) == nil)
+        #expect(tombstones.record(first) == nil)
         #expect(tombstones.count == 1)
-        #expect(tombstones.contains(connection))
+        #expect(tombstones.contains(first))
+
+        #expect(tombstones.record(others[0]) == nil)
+        #expect(tombstones.record(others[1]) == nil)
+        #expect(tombstones.count == 3)
+
+        // The fourth distinct connection evicts the first, once.
+        #expect(tombstones.record(others[2]) == first)
+        #expect(tombstones.count == 3)
+        #expect(tombstones.contains(first) == false)
+        for other in others {
+            #expect(tombstones.contains(other))
+        }
+
+        // And the eviction after that takes the next-oldest *live* tombstone. This step is
+        // what actually catches a duplicated eviction slot: without it, a set that appended
+        // the duplicate still passes everything above, and only reveals itself one eviction
+        // later by shedding a stale entry, keeping a live one, and growing past its cap.
+        let fifth = ConnectionID()
+        #expect(tombstones.record(fifth) == others[0])
+        #expect(tombstones.count == 3)
+        #expect(tombstones.contains(others[0]) == false)
+        #expect(tombstones.contains(others[1]))
+        #expect(tombstones.contains(others[2]))
+        #expect(tombstones.contains(fifth))
     }
 
     /// The bound is the whole point: unbounded, a scripted client reconnecting once a second
