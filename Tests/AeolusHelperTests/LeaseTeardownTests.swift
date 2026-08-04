@@ -258,3 +258,59 @@ struct LeaseHandbackWindowTests {
         await dying.value
     }
 }
+
+/// The property that makes the handback interlock work is *where* its guard sits, not that
+/// it exists — and `LeaseHandbackWindowTests` above cannot tell the two apart, because all
+/// three of its cases open the window before calling `acquireLease`.
+///
+/// Hoisting the guard above `enumeratedFanIndices()` leaves every one of them green while
+/// the window reopens. `LeaseAuthority`'s own documentation warns about exactly this shape
+/// for the #95 liveness check — "a test could stay green on the early refusal while the
+/// guarded region below was unprotected, which is exactly how a guard survives being
+/// deleted" — so the new guard gets the same treatment the old one has.
+@Suite("The handback guard sits after the last suspension point")
+struct LeaseHandbackGuardPlacementTests {
+
+    /// The interleaving a hoisted guard admits: the acquirer suspends in the hardware round
+    /// trip *before* the fan is being released, so an early check sees a clear fan and waves
+    /// it through. The teardown then starts while the acquirer is parked, and the acquirer
+    /// resumes into a `table.isEmpty` that is true precisely because the lease it would have
+    /// conflicted with has just been torn down.
+    @Test("A handback that begins while the acquirer is suspended still refuses it")
+    func handbackStartingDuringEnumerationStillRefuses() async throws {
+        let gate = ScriptedFanEnumeration.Gate()
+        // First call ungated so the holder can take its lease; the second parks the
+        // acquirer inside the enumeration, which is the suspension the guard must follow.
+        let enumeration = ScriptedFanEnumeration(indices: [0, 1], gates: [nil, gate])
+        let restoreEntered = AsyncSignal()
+        let restoreRelease = AsyncSignal()
+        let restorer = RecordingFanRestorer(entered: restoreEntered, release: restoreRelease)
+        let authority = LeaseFixture.authority(enumeration: enumeration, restorer: restorer)
+
+        let holder = ConnectionID()
+        _ = try await authority.acquireLease(LeaseFixture.request(fans: [0]), from: holder)
+
+        // The acquirer starts and parks inside the enumeration, before any handback exists.
+        let newcomer = ConnectionID()
+        let acquiring = Task {
+            try await authority.acquireLease(LeaseFixture.request(fans: [0]), from: newcomer)
+        }
+        await gate.entered.wait()
+
+        // Only now does fan 0 start being handed back.
+        let dying = Task { await authority.connectionDidInvalidate(holder) }
+        await restoreEntered.wait()
+
+        // Let the acquirer resume into an empty table and a fan mid-handback.
+        await gate.release.signal()
+
+        let refusal = await #expect(throws: AeolusXPCFault.self) { try await acquiring.value }
+        #expect(refusal == .manualControlUnavailable(reason: .releaseInProgress))
+        // The assertion that distinguishes "refused" from "refused and registered anyway".
+        #expect(await authority.leaseCount == 0)
+
+        await restoreRelease.signal()
+        await dying.value
+    }
+
+}

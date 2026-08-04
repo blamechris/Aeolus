@@ -128,14 +128,19 @@ actor LeaseAuthority {
         try AeolusXPCValidation.validateFanIndices(
             request.fanIndices, enumeratedFanIndices: enumerated)
         try refuseIfInvalidated(connection)
+        // The durable refusal is checked first, deliberately. Both can apply at once — a
+        // dying holder's fan is mid-handback while a second client legitimately holds
+        // another — and `.releaseInProgress` documents itself as "retry in a moment". A
+        // client told that, when the real answer is "somebody else holds the fans and will
+        // for as long as they live", retries into a different refusal forever.
+        guard table.isEmpty else {
+            log.refusedConcurrentLease(connection)
+            throw AeolusXPCFault.manualControlUnavailable(reason: .leaseHeldByAnotherClient)
+        }
         let midHandback = request.fanIndices.filter { releasing[$0] != nil }
         guard midHandback.isEmpty else {
             log.refusedMidHandback(connection, fans: Set(midHandback))
             throw AeolusXPCFault.manualControlUnavailable(reason: .releaseInProgress)
-        }
-        guard table.isEmpty else {
-            log.refusedConcurrentLease(connection)
-            throw AeolusXPCFault.manualControlUnavailable(reason: .leaseHeldByAnotherClient)
         }
 
         let entry = LeaseRecord(
@@ -341,6 +346,16 @@ actor LeaseAuthority {
     /// `acquireLease` can see the window from inside the actor. Counted rather than a `Set`
     /// so two overlapping restores of the same fan — a teardown and the panic path — cannot
     /// have the first to finish clear a flag the second still needs.
+    ///
+    /// - Note: **That overlap is unreachable in this build, and the count is therefore not
+    ///   load-bearing today.** `guard table.isEmpty` holds the table to a single entry, and
+    ///   every teardown path removes its entry synchronously before restoring, so whichever
+    ///   path removes first is the only one that restores. Replacing the count with set
+    ///   membership passes the whole suite. It is written this way because the overlap
+    ///   becomes reachable the moment either of those two facts changes — E5.3's control
+    ///   plane issuing a restore outside lease teardown, or the table holding more than one
+    ///   lease — and both are cheaper to be already correct for than to retrofit. Recorded
+    ///   rather than implied, so nobody simplifies it believing a test is watching.
     private func restore(_ fans: Set<Int>, because cause: FanRestoreCause) async {
         log.restored(fans: fans, because: cause)
         for fan in fans { releasing[fan, default: 0] += 1 }

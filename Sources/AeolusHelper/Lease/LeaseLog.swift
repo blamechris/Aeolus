@@ -97,7 +97,10 @@ struct LeaseLog: Sendable {
     /// apart from the ones that do not. A client seeing this repeatedly is watching a
     /// restore that never completes, which is a different and much worse fault.
     func refusedMidHandback(_ connection: ConnectionID, fans: Set<Int>) {
-        log.info(
+        // `.notice` rather than `.info`, for the reason the doc comment above gives: `.info`
+        // is not persisted by default, so the repeated-refusal evidence would not be there
+        // when someone went looking for it. Same argument that promoted `refusedInFlightBinding`.
+        log.notice(
             """
             Connection \(connection.logDescription, privacy: .public) asked for fans \
             \(fans.sorted().map(String.init).joined(separator: ", "), privacy: .public) \

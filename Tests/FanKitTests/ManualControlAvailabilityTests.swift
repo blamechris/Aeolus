@@ -30,6 +30,7 @@ struct ManualControlAvailabilityTests {
             .unavailable(.reclaimedBySystem),
             .unavailable(.leaseHeldByAnotherClient),
             .unavailable(.selfRenewalNotBuilt),
+            .unavailable(.releaseInProgress),
             .unavailable(.unknown("somethingFromAFutureHelper")),
         ]
     )
@@ -81,6 +82,7 @@ struct ManualControlAvailabilityTests {
             .reclaimedBySystem,
             .leaseHeldByAnotherClient,
             .selfRenewalNotBuilt,
+            .releaseInProgress,
         ]
     )
     func knownWireValuesResolveToKnownCases(_ reason: ManualControlAvailability.Reason) {
@@ -104,6 +106,9 @@ struct ManualControlAvailabilityTests {
         #expect(
             ManualControlAvailability.Reason.selfRenewalNotBuilt.wireValue
                 == "selfRenewalNotBuilt")
+        #expect(
+            ManualControlAvailability.Reason.releaseInProgress.wireValue
+                == "releaseInProgress")
         #expect(ManualControlAvailability.Reason.unknown("xyz").wireValue == "xyz")
     }
 
