@@ -75,7 +75,7 @@ struct ReadOnlyFanAuthorityTests {
         #expect(fan.minimumRPM == .measured(1_200))
         #expect(fan.maximumRPM == .unavailable(reason: "F0Mx is not present on this machine"))
         // No firmware envelope, so no control model — the `nil` that stops a caller
-        // obtaining a `clamp(_:)` without the bounds `clamp` is supposed to enforce.
+        // obtaining a `FanControlEnvelope` without the bounds a clamp is supposed to enforce.
         #expect(fan.fan == nil)
     }
 

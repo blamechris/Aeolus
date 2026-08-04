@@ -166,7 +166,7 @@ user renders video for two hours, thermal damage. The lease makes that impossibl
 
 ## 4. Safety subsystem (non-negotiable, cannot be disabled by config)
 
-1. **Hardware clamps.** Every target is clamped to `[F0Mn, F0Mx]` read from the firmware at
+1. **Hardware clamps.** Every target is clamped to `[max(F0Mn, 100), F0Mx]` read from the firmware at
    runtime. Never allow 0 RPM. Never trust a config file's bounds over the firmware's.
 2. **Thermal emergency override.** The helper samples critical sensors every cycle. Above a
    compiled-in ceiling (default 95 °C CPU / 90 °C SSD, tunable *downward* only), it forces

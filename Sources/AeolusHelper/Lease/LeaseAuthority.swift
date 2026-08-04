@@ -104,6 +104,12 @@ actor LeaseAuthority {
             throw AeolusXPCFault.manualControlUnavailable(reason: .selfRenewalNotBuilt)
         }
         try AeolusXPCValidation.validateTimeToLive(request.timeToLive)
+        // Re-checked here for the same reason as the TTL above, and it is the field that
+        // needs it more: `holderDescription` is client-chosen text that reaches a root
+        // daemon's log at `privacy: .public`. A caller arriving from the control plane
+        // rather than from a message would otherwise put newlines and bidi overrides into
+        // `log show` — the exact harm `validateHolderDescription` exists to prevent.
+        try AeolusXPCValidation.validateHolderDescription(request.holderDescription)
 
         let enumerated = try await enumeration.enumeratedFanIndices()
         await expireLapsedLeases()

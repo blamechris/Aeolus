@@ -553,8 +553,15 @@ public actor SMCConnection {
     /// Writes raw bytes to a key.
     ///
     /// - Important: Requires root. Every caller must be inside `AeolusHelper`, and every
-    ///   fan-speed write must already have been clamped to the firmware's own
-    ///   `[F0Mn, F0Mx]` bounds and rate-limited. See E5.
+    ///   fan-speed write must already have been clamped and rate-limited. See E5.
+    ///
+    ///   The clamp is **not** `[F0Mn, F0Mx]`, and this comment said it was until E5 wave 1
+    ///   corrected it. Firmware may declare `F0Mn = 0` — fans stopping at idle is normal on
+    ///   many Macs — so clamping to the declared minimum permits commanding a stop, which
+    ///   `CLAUDE.md` rule 3 forbids on every path. The commandable range is
+    ///   `[max(F0Mn, minimumManualRPM), F0Mx]`, and the only type that produces a value in
+    ///   it is `FanKit.FanControlEnvelope`. Anything reaching this function should have come
+    ///   from there.
     package func write(_ bytes: [UInt8], to key: SMCKey) throws {
         throw SMCError.notPermitted
     }
