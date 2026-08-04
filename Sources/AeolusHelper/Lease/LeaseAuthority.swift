@@ -55,6 +55,16 @@ actor LeaseAuthority {
     private var table = LeaseTable()
     private var tombstones: ConnectionTombstones
 
+    /// Fans whose restore-to-automatic write is in flight right now, counted rather than
+    /// set-membership because the panic path can overlap a teardown on the same fan.
+    ///
+    /// Removing a lease from the table and completing its restore are not the same instant,
+    /// and the actor is reentrant across the `await` between them. Without this, an emptied
+    /// table is exactly what lets the next `acquireLease` through — the table being empty is
+    /// the *condition* it checks — so a client could take a lease over a fan whose handback
+    /// is still on the wire.
+    private var releasing: [Int: Int] = [:]
+
     init(
         enumeration: some FanEnumerating,
         restorer: some FanRestoring,
@@ -118,6 +128,11 @@ actor LeaseAuthority {
         try AeolusXPCValidation.validateFanIndices(
             request.fanIndices, enumeratedFanIndices: enumerated)
         try refuseIfInvalidated(connection)
+        let midHandback = request.fanIndices.filter { releasing[$0] != nil }
+        guard midHandback.isEmpty else {
+            log.refusedMidHandback(connection, fans: Set(midHandback))
+            throw AeolusXPCFault.manualControlUnavailable(reason: .releaseInProgress)
+        }
         guard table.isEmpty else {
             log.refusedConcurrentLease(connection)
             throw AeolusXPCFault.manualControlUnavailable(reason: .leaseHeldByAnotherClient)
@@ -319,8 +334,22 @@ actor LeaseAuthority {
         throw Self.invalidatedInFlight
     }
 
+    /// The one place a restore is issued, and therefore the one place the handback window
+    /// can be held open.
+    ///
+    /// `releasing` is incremented before the suspension and decremented after it, so
+    /// `acquireLease` can see the window from inside the actor. Counted rather than a `Set`
+    /// so two overlapping restores of the same fan — a teardown and the panic path — cannot
+    /// have the first to finish clear a flag the second still needs.
     private func restore(_ fans: Set<Int>, because cause: FanRestoreCause) async {
         log.restored(fans: fans, because: cause)
+        for fan in fans { releasing[fan, default: 0] += 1 }
+        defer {
+            for fan in fans {
+                guard let outstanding = releasing[fan] else { continue }
+                releasing[fan] = outstanding > 1 ? outstanding - 1 : nil
+            }
+        }
         await restorer.restoreToAutomatic(fans: fans, because: cause)
     }
 }

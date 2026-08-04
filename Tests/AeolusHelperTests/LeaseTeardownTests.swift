@@ -160,3 +160,101 @@ struct LeaseReleaseTests {
         #expect(await restorer.causes == [.allLeasesDropped])
     }
 }
+
+/// The handback window: a lease's entry leaves the table synchronously, but its restore
+/// completes an `await` later, and the actor is reentrant across that gap.
+///
+/// Reported independently by two reviewers of #107, which is why it is closed here rather
+/// than deferred to E5.3 — the interlock needs nothing from the control plane, and a core
+/// that ships with a known rule-6 window is a worse foundation than one that does not.
+@Suite("The handback window")
+struct LeaseHandbackWindowTests {
+
+    /// The interleaving stated as the failure it produces, not as the mechanism: while fan
+    /// 0's restore is still on the wire, a lease over fan 0 must not be granted. If it were,
+    /// the new holder would write a target and the in-flight restore would land on top of
+    /// it, leaving a live lease over a fan nothing is honouring.
+    @Test("A lease is refused over a fan whose handback is still in flight")
+    func leaseRefusedWhileRestoreInFlight() async throws {
+        let entered = AsyncSignal()
+        let release = AsyncSignal()
+        let restorer = RecordingFanRestorer(entered: entered, release: release)
+        let authority = LeaseFixture.authority(restorer: restorer)
+
+        let holder = ConnectionID()
+        _ = try await authority.acquireLease(LeaseFixture.request(fans: [0]), from: holder)
+
+        // Park the teardown inside the restore, which is exactly where the window is.
+        let dying = Task { await authority.connectionDidInvalidate(holder) }
+        await entered.wait()
+
+        // The table is already empty here — that is the condition `acquireLease` checks, and
+        // why an emptied table alone cannot close this.
+        #expect(await authority.leaseCount == 0)
+
+        let refusal = await #expect(throws: AeolusXPCFault.self) {
+            _ = try await authority.acquireLease(
+                LeaseFixture.request(fans: [0]), from: ConnectionID())
+        }
+        #expect(refusal == .manualControlUnavailable(reason: .releaseInProgress))
+        // Asserted as well as the fault: a guard that refuses *and* registers returns an
+        // identical error.
+        #expect(await authority.leaseCount == 0)
+
+        await release.signal()
+        await dying.value
+    }
+
+    /// The window closes. A refusal that never lifted would be a fan permanently
+    /// unleasable — the interlock failing safe in the direction that still breaks the app.
+    @Test("Once the handback completes the fan is leasable again")
+    func fanIsLeasableOnceRestoreCompletes() async throws {
+        let entered = AsyncSignal()
+        let release = AsyncSignal()
+        let restorer = RecordingFanRestorer(entered: entered, release: release)
+        let authority = LeaseFixture.authority(restorer: restorer)
+
+        let holder = ConnectionID()
+        _ = try await authority.acquireLease(LeaseFixture.request(fans: [0]), from: holder)
+        let dying = Task { await authority.connectionDidInvalidate(holder) }
+        await entered.wait()
+        await release.signal()
+        await dying.value
+
+        let lease = try await authority.acquireLease(
+            LeaseFixture.request(fans: [0]), from: ConnectionID())
+
+        #expect(lease.isSelfRenewing == false)
+        #expect(await authority.leaseCount == 1)
+    }
+
+    /// A fan not being handed back is not blocked by one that is: the interlock is per-fan
+    /// and must not become a whole-machine lock by accident.
+    ///
+    /// This test was first written asserting a *refusal*, on the assumption that the
+    /// one-lease-at-a-time guard would catch it — and it failed, correctly. At this instant
+    /// there is no lease to conflict with: the dying holder's entry is removed synchronously
+    /// before the restore suspends, which is the whole reason the handback window exists.
+    /// Granting fan 1 here is right, and the interlock's job is to be narrower than the
+    /// window, not wider.
+    @Test("A different fan is grantable while another fan's handback is in flight")
+    func unrelatedFanIsNotBlockedByTheHandback() async throws {
+        let entered = AsyncSignal()
+        let release = AsyncSignal()
+        let restorer = RecordingFanRestorer(entered: entered, release: release)
+        let authority = LeaseFixture.authority(restorer: restorer)
+
+        let holder = ConnectionID()
+        _ = try await authority.acquireLease(LeaseFixture.request(fans: [0]), from: holder)
+        let dying = Task { await authority.connectionDidInvalidate(holder) }
+        await entered.wait()
+
+        let lease = try await authority.acquireLease(
+            LeaseFixture.request(fans: [1]), from: ConnectionID())
+        #expect(lease.holderDescription.isEmpty == false)
+        #expect(await authority.leaseCount == 1)
+
+        await release.signal()
+        await dying.value
+    }
+}

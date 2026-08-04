@@ -99,6 +99,15 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// rather than granting a lease whose backstop has never been watched to work.
         /// See [ADR 0007](../../docs/ADR/0007-safety-composition.md).
         case selfRenewalNotBuilt
+        /// The fan is mid-handback: a previous lease has ended and the restore-to-automatic
+        /// write for this fan has not completed yet.
+        ///
+        /// Transient, and the only reason here that is. Granting during the window would
+        /// hand a client a lease over a fan that is about to be returned to the system
+        /// underneath it — the client writes a target, the in-flight restore lands, and the
+        /// client holds a live lease over a fan nothing is honouring. Refusing for a few
+        /// milliseconds is the honest answer; a client may simply retry.
+        case releaseInProgress
         /// A reason this build does not recognise, carried verbatim so a newer helper
         /// can explain itself to an older client without a protocol bump. Render it
         /// generically; never treat it as equivalent to `available`.
@@ -112,6 +121,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case .reclaimedBySystem: return "reclaimedBySystem"
             case .leaseHeldByAnotherClient: return "leaseHeldByAnotherClient"
             case .selfRenewalNotBuilt: return "selfRenewalNotBuilt"
+            case .releaseInProgress: return "releaseInProgress"
             case .unknown(let raw): return raw
             }
         }
@@ -126,6 +136,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case Reason.reclaimedBySystem.wireValue: self = .reclaimedBySystem
             case Reason.leaseHeldByAnotherClient.wireValue: self = .leaseHeldByAnotherClient
             case Reason.selfRenewalNotBuilt.wireValue: self = .selfRenewalNotBuilt
+            case Reason.releaseInProgress.wireValue: self = .releaseInProgress
             default: self = .unknown(wireValue)
             }
         }

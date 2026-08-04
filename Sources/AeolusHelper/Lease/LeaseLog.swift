@@ -93,6 +93,20 @@ struct LeaseLog: Sendable {
         )
     }
 
+    /// A refusal that resolves itself in milliseconds, so it is worth being able to tell
+    /// apart from the ones that do not. A client seeing this repeatedly is watching a
+    /// restore that never completes, which is a different and much worse fault.
+    func refusedMidHandback(_ connection: ConnectionID, fans: Set<Int>) {
+        log.info(
+            """
+            Connection \(connection.logDescription, privacy: .public) asked for fans \
+            \(fans.sorted().map(String.init).joined(separator: ", "), privacy: .public) \
+            while their restore to automatic is still in flight. Refused: a lease granted \
+            now would be overwritten by that restore.
+            """
+        )
+    }
+
     /// A tombstone was dropped to keep the set bounded.
     ///
     /// Logged at `notice` because it is the moment #95's race reopens for one
