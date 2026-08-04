@@ -28,6 +28,9 @@ struct ManualControlAvailabilityTests {
             .unavailable(.writePathNotBuilt),
             .unavailable(.boundsImplausible),
             .unavailable(.reclaimedBySystem),
+            .unavailable(.leaseHeldByAnotherClient),
+            .unavailable(.selfRenewalNotBuilt),
+            .unavailable(.releaseInProgress),
             .unavailable(.unknown("somethingFromAFutureHelper")),
         ]
     )
@@ -77,6 +80,9 @@ struct ManualControlAvailabilityTests {
             ManualControlAvailability.Reason.writePathNotBuilt,
             .boundsImplausible,
             .reclaimedBySystem,
+            .leaseHeldByAnotherClient,
+            .selfRenewalNotBuilt,
+            .releaseInProgress,
         ]
     )
     func knownWireValuesResolveToKnownCases(_ reason: ManualControlAvailability.Reason) {
@@ -94,6 +100,15 @@ struct ManualControlAvailabilityTests {
         #expect(ManualControlAvailability.Reason.writePathNotBuilt.wireValue == "writePathNotBuilt")
         #expect(ManualControlAvailability.Reason.boundsImplausible.wireValue == "boundsImplausible")
         #expect(ManualControlAvailability.Reason.reclaimedBySystem.wireValue == "reclaimedBySystem")
+        #expect(
+            ManualControlAvailability.Reason.leaseHeldByAnotherClient.wireValue
+                == "leaseHeldByAnotherClient")
+        #expect(
+            ManualControlAvailability.Reason.selfRenewalNotBuilt.wireValue
+                == "selfRenewalNotBuilt")
+        #expect(
+            ManualControlAvailability.Reason.releaseInProgress.wireValue
+                == "releaseInProgress")
         #expect(ManualControlAvailability.Reason.unknown("xyz").wireValue == "xyz")
     }
 
@@ -164,9 +179,9 @@ struct ManualControlAvailabilityTests {
     }
 
     /// A fan with both bounds measured yields the control model; that is the only way to
-    /// get one, which is what keeps `clamp` from ever seeing an invented envelope.
+    /// get one, which is what keeps the clamp from ever seeing an invented envelope.
     @Test("The control model exists only when both bounds were really measured")
-    func controlModelRequiresBothBounds() {
+    func controlModelRequiresBothBounds() throws {
         func state(minimum: FanReading, maximum: FanReading) -> FanState {
             FanState(
                 index: 2,
@@ -190,7 +205,7 @@ struct ManualControlAvailabilityTests {
         let fan = state(minimum: .measured(1200), maximum: .measured(5400)).fan
         #expect(fan?.index == 2)
         #expect(fan?.firmwareName == "Exhaust")
-        #expect(fan?.clamp(0) == 1200)
+        #expect(try fan?.controlEnvelope.get().target(for: 0).rpm == 1200)
     }
 }
 

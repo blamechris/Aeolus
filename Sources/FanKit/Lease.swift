@@ -16,7 +16,21 @@ public struct Lease: Sendable, Hashable, Codable {
     public let id: UUID
     /// Identifies the holder for display and diagnostics, e.g. `Aeolus.app`, `fanctl`.
     public let holderDescription: String
-    /// When the lease lapses if not renewed.
+    /// When the lease lapses if not renewed — **display-grade, and nothing enforces it.**
+    ///
+    /// A wall-clock `Date`, so it moves when NTP steps the clock or a user sets it back.
+    /// [ADR 0005](../../docs/ADR/0005-xpc-authorisation.md) therefore puts enforcement on
+    /// `ContinuousClock` inside the helper, where a clock jump cannot extend a lease and
+    /// time asleep counts against the TTL. This field exists to be rendered — "expires in
+    /// about 20 seconds" — and for no other purpose.
+    ///
+    /// This type deliberately offers **no `isExpired(at: Date)`**. It had one; it was
+    /// removed rather than documented, because a wall-clock expiry predicate sitting on
+    /// the lease type is not a hazard anyone reads a comment about — it is the obvious
+    /// thing to reach for when writing a supervisor, and reaching for it is the exact bug
+    /// ADR 0005 wrote its rule to prevent. An absence is a stronger guarantee than a
+    /// warning, for the same reason `AeolusXPCProtocol` prefers a message that cannot be
+    /// expressed to one that is refused.
     public let expiresAt: Date
     /// How long each renewal extends the lease.
     public let timeToLive: TimeInterval
@@ -42,10 +56,6 @@ public struct Lease: Sendable, Hashable, Codable {
         self.timeToLive = timeToLive
         self.isSelfRenewing = isSelfRenewing
     }
-
-    public func isExpired(at instant: Date) -> Bool {
-        instant >= expiresAt
-    }
 }
 
 /// Ceilings above which the helper overrides any user configuration, forces the affected
@@ -54,12 +64,25 @@ public struct Lease: Sendable, Hashable, Codable {
 /// These are compiled in and **tunable downward only**. A configuration file that asks to
 /// raise them is rejected, not honoured — the point of a safety limit no user can defeat
 /// is that no user can defeat it.
+///
+/// The same downward-only rule governs `FanSafetyLimits.effectiveRampRPMPerSecond(
+/// requested:)`, and for the same reason: both are compiled-in limits that a settings
+/// payload crossing the privilege boundary is allowed to tighten and nothing else.
 public enum ThermalCeiling {
     public static let cpuCelsius: Double = 95
     public static let storageCelsius: Double = 90
 
     /// Returns the effective ceiling, rejecting any attempt to raise the default.
+    ///
+    /// A non-finite request falls back to the compiled default rather than being honoured,
+    /// and that guard is load-bearing rather than tidy. `min(_:_:)` alone returns NaN when
+    /// handed one — every comparison with NaN is false — and a NaN ceiling silently
+    /// *disables* the thermal override, because `temperature > ceiling` is then false at
+    /// every temperature. A configuration that could turn the emergency off is precisely
+    /// what `docs/SAFETY.md` says cannot exist. The fallback direction can never raise the
+    /// ceiling, so the downward-only rule still holds by construction.
     public static func effective(requested: Double, default defaultCeiling: Double) -> Double {
-        min(requested, defaultCeiling)
+        guard requested.isFinite else { return defaultCeiling }
+        return min(requested, defaultCeiling)
     }
 }

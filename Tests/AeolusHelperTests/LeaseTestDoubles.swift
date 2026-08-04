@@ -1,0 +1,284 @@
+import AeolusXPC
+import FanKit
+import Foundation
+
+@testable import AeolusHelper
+
+// MARK: - Synchronisation
+
+/// A one-shot latch: `wait()` returns once `signal()` has happened, in either order.
+///
+/// The order-insensitivity is what makes the interleaving tests deterministic rather than
+/// merely likely. A test that had to signal *after* the waiter arrived would be racing the
+/// scheduler to set up a race, which is how a concurrency test ends up green for reasons
+/// nobody chose.
+actor AsyncSignal {
+
+    private var isSignalled = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func signal() {
+        guard !isSignalled else { return }
+        isSignalled = true
+        let pending = waiters
+        waiters = []
+        for waiter in pending { waiter.resume() }
+    }
+
+    func wait() async {
+        guard !isSignalled else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+}
+
+// MARK: - Clocks
+
+/// A `MonotonicClock` whose hands the test moves.
+///
+/// It deals in real `ContinuousClock.Instant` values, so the arithmetic under test — the
+/// `advanced(by:)` and the `>=` that decide expiry — is the arithmetic that ships. What the
+/// double controls is *what time it is*, never *what kind of time it is*: there is no way
+/// to make production code compare a `Date` here, which is the point of `MonotonicClock`
+/// pinning the instant type.
+///
+/// `sleep(until:)` is virtual — it jumps the clock to the deadline and returns without any
+/// real time passing — so `LeaseExpirySupervisor.run` can be driven through many passes
+/// instantly. After `sleepBudget` sleeps it throws `CancellationError`, which is the loop's
+/// only exit, so a test can await the real loop to completion instead of cancelling a task
+/// and hoping.
+final class TestClock: MonotonicClock, @unchecked Sendable {
+
+    private let lock = NSLock()
+    private var instant: ContinuousClock.Instant
+    private var remainingSleeps: Int
+    private var recordedSleeps: [ContinuousClock.Instant] = []
+
+    init(start: ContinuousClock.Instant = ContinuousClock.now, sleepBudget: Int = .max) {
+        instant = start
+        remainingSleeps = sleepBudget
+    }
+
+    var now: ContinuousClock.Instant {
+        lock.withLock { instant }
+    }
+
+    /// Every deadline `sleep(until:)` was asked for, in order.
+    var sleeps: [ContinuousClock.Instant] {
+        lock.withLock { recordedSleeps }
+    }
+
+    func advance(by duration: Duration) {
+        lock.withLock { instant = instant.advanced(by: duration) }
+    }
+
+    func sleep(until deadline: ContinuousClock.Instant) async throws {
+        let exhausted: Bool = lock.withLock {
+            recordedSleeps.append(deadline)
+            if deadline > instant { instant = deadline }
+            guard remainingSleeps > 0 else { return true }
+            remainingSleeps -= 1
+            return false
+        }
+        // Yield unconditionally, so a loop driven by this clock still gives other tasks a
+        // chance to run — a virtual clock that never suspends would serialise a test that
+        // is about concurrency.
+        await Task.yield()
+        if exhausted { throw CancellationError() }
+    }
+}
+
+/// A wall clock the test can jump forwards or backwards, to prove that doing so changes
+/// nothing about when a lease expires.
+final class TestWallClock: @unchecked Sendable {
+
+    private let lock = NSLock()
+    private var date: Date
+
+    init(_ date: Date = Date(timeIntervalSince1970: 1_000_000)) {
+        self.date = date
+    }
+
+    var provider: @Sendable () -> Date {
+        { [self] in lock.withLock { date } }
+    }
+
+    var current: Date { lock.withLock { date } }
+
+    /// An NTP step, or a user setting the clock. Negative jumps backwards.
+    func jump(by interval: TimeInterval) {
+        lock.withLock { date = date.addingTimeInterval(interval) }
+    }
+}
+
+// MARK: - Seams
+
+/// The fan enumeration, with optional gates so a test can hold `acquireLease` at its
+/// suspension point.
+///
+/// `gates` is consumed one entry per call: `nil` passes straight through, a `Gate` signals
+/// that the call has arrived and then waits to be released. That is what makes
+/// [#95](https://github.com/blamechris/Aeolus/issues/95)'s interleaving reproducible — the
+/// authority is genuinely suspended inside `acquireLease` while the invalidation runs, which
+/// is the one thing `ReadOnlyFanAuthority` could never do.
+actor ScriptedFanEnumeration: FanEnumerating {
+
+    struct Gate: Sendable {
+        let entered = AsyncSignal()
+        let release = AsyncSignal()
+    }
+
+    private let indices: Set<Int>
+    private let failure: (any Error)?
+    private var gates: [Gate?]
+    private(set) var callCount = 0
+
+    init(indices: Set<Int> = [0, 1], gates: [Gate?] = [], failure: (any Error)? = nil) {
+        self.indices = indices
+        self.gates = gates
+        self.failure = failure
+    }
+
+    func enumeratedFanIndices() async throws -> Set<Int> {
+        callCount += 1
+        let gate = gates.isEmpty ? nil : gates.removeFirst()
+        if let gate {
+            await gate.entered.signal()
+            await gate.release.wait()
+        }
+        if let failure { throw failure }
+        return indices
+    }
+}
+
+/// Records every restore, and can be made to suspend inside one.
+///
+/// The recorded `cause` is what makes "the two teardown paths are independent" checkable
+/// rather than assertable: a test can pin *which* mechanism put the fans back, not merely
+/// that something did.
+actor RecordingFanRestorer: FanRestoring {
+
+    struct Restore: Sendable, Hashable {
+        let fans: Set<Int>
+        let cause: FanRestoreCause
+    }
+
+    private(set) var restores: [Restore] = []
+
+    private let entered: AsyncSignal?
+    private let release: AsyncSignal?
+
+    init(entered: AsyncSignal? = nil, release: AsyncSignal? = nil) {
+        self.entered = entered
+        self.release = release
+    }
+
+    func restoreToAutomatic(fans: Set<Int>, because cause: FanRestoreCause) async {
+        restores.append(Restore(fans: fans, cause: cause))
+        if let entered { await entered.signal() }
+        if let release { await release.wait() }
+    }
+
+    var causes: [FanRestoreCause] { restores.map(\.cause) }
+    var restoredFans: [Set<Int>] { restores.map(\.fans) }
+}
+
+// MARK: - The seam
+
+/// `LeaseAuthority` composed into the frozen `FanAuthority` protocol.
+///
+/// It lives in the test target rather than in `Sources/` on purpose. E5.1 ships the lease
+/// core; the production `FanAuthority` that owns `snapshot`, the write path and this
+/// composition is the helper's control plane, which arrives with the write path. Wiring one
+/// here would be claiming manual control the build cannot honour — a lease a client can
+/// acquire that controls nothing is a lie about control, which is `CLAUDE.md` rule 6 and
+/// exactly what `ReadOnlyFanAuthority` refuses to do.
+///
+/// What it *is* for: driving the lease core through the **shipped**
+/// `HelperConnectionSession`, so #95's interleaving is exercised against the real listener
+/// half rather than a paraphrase of it. Every method is a one-line forward, which is also
+/// the cheapest available evidence that the seam E2 froze is sufficient for E5 without
+/// changing it.
+struct LeaseFanAuthority: FanAuthority {
+
+    let lease: LeaseAuthority
+
+    func snapshot() async throws -> SystemSnapshot {
+        SystemSnapshot(
+            fans: [],
+            sensors: [],
+            activeLease: await lease.activeLease(),
+            isThermalEmergencyActive: false,
+            capturedAt: Date(timeIntervalSince1970: 1_000_000)
+        )
+    }
+
+    func acquireLease(
+        _ request: LeaseRequest, from connection: ConnectionID
+    ) async throws -> Lease {
+        try await lease.acquireLease(request, from: connection)
+    }
+
+    func renewLease(id: UUID, from connection: ConnectionID) async throws -> Lease {
+        try await lease.renewLease(id: id, from: connection)
+    }
+
+    func releaseLease(id: UUID, from connection: ConnectionID) async throws {
+        try await lease.releaseLease(id: id, from: connection)
+    }
+
+    /// Authorises, and then refuses: there is no write path in this build, and a stubbed
+    /// success would be the lie the refusal exists to prevent.
+    func apply(
+        _ settings: [FanSetting], leaseID: UUID, from connection: ConnectionID
+    ) async throws {
+        _ = try await lease.heldLease(id: leaseID, from: connection)
+        throw AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
+    }
+
+    func restoreAllToAutomatic(from connection: ConnectionID) async throws {
+        await lease.releaseEveryLease()
+    }
+
+    func connectionDidInvalidate(_ connection: ConnectionID) async {
+        await lease.connectionDidInvalidate(connection)
+    }
+}
+
+// MARK: - Fixtures
+
+enum LeaseFixture {
+
+    static let log = LeaseLog(subsystem: "dev.aeolus.AeolusHelperTests", category: "Lease")
+
+    static func request(
+        fans: [Int] = [0],
+        timeToLive: TimeInterval = Lease.defaultTimeToLive,
+        isSelfRenewing: Bool = false,
+        holder: String = "test client"
+    ) -> LeaseRequest {
+        LeaseRequest(
+            holderDescription: holder,
+            fanIndices: fans,
+            timeToLive: timeToLive,
+            isSelfRenewing: isSelfRenewing
+        )
+    }
+
+    /// An authority wired to doubles, with the clock and wall clock the caller controls.
+    static func authority(
+        enumeration: ScriptedFanEnumeration = ScriptedFanEnumeration(),
+        restorer: RecordingFanRestorer = RecordingFanRestorer(),
+        clock: TestClock = TestClock(),
+        wallClock: TestWallClock = TestWallClock(),
+        tombstoneCapacity: Int = ConnectionTombstones.defaultCapacity
+    ) -> LeaseAuthority {
+        LeaseAuthority(
+            enumeration: enumeration,
+            restorer: restorer,
+            clock: clock,
+            wallClock: wallClock.provider,
+            tombstoneCapacity: tombstoneCapacity,
+            log: log
+        )
+    }
+}

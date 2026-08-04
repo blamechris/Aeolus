@@ -26,6 +26,33 @@ number, negotiated at connect time. Protocol changes are called out explicitly b
   uncontrollable. There is no SMC write path in this build, and a lease that controlled
   nothing would be a lie about control. `fanctl reset --all`'s message succeeds as a
   truthful no-op, so the panic path is wired and tested from the day the boundary exists.
+- **Fan bounds are checked before they are trusted.** `F<n>Mn`/`F<n>Mx` pass a
+  plausibility gate — finite, non-negative, ascending, and inside a 100–20,000 RPM
+  envelope — before a fan can be controlled at all. A fan that fails it is reported
+  `manualControlAvailability: .unavailable(.boundsImplausible)`, distinct from "no helper"
+  and from "no such fan", and **no target can be produced for it by any route**: only a
+  fan that passed the gate yields a `FanControlEnvelope`, and an envelope is the only
+  thing that can make a speed to write. No protocol change — E2 wrote that vocabulary in
+  advance for exactly this.
+
+### Fixed
+- **The 0-RPM ban was vacuous on hardware declaring a minimum of zero.** Clamping a target
+  into `[F<n>Mn, F<n>Mx]` — what `docs/SAFETY.md` § 2 specified — permits commanding a stop
+  on any Mac whose firmware declares a zero minimum, which `docs/RECOVERY.md` says is normal
+  for fans that stop at idle. The floor is now `max(F<n>Mn, 100)`, with the 100 compiled in
+  and unreachable by configuration. Observations are untouched by this and by everything
+  near it: a measured 1343.07 against a declared minimum of 1350 is a real reading and is
+  reported as read.
+- **A NaN target passed through the clamp unchanged**, because every comparison with NaN is
+  false and so neither half of `min(max(_:_:)_:)` fired. It now resolves to the floor.
+- **A NaN thermal ceiling silently disabled the thermal override** rather than tightening
+  it: `min(requested, ceiling)` returns NaN, and `temperature > NaN` is false at every
+  temperature. A ceiling that is not a temperature now falls back to the compiled default.
+- **A curve's ramp cap was not enforced on the values that actually cross the privilege
+  boundary.** `FanCurve.maximumRampRPMPerSecond` is client data inside a settings payload
+  and is now clamped to the compiled 200 RPM/s cap when the curve is *decoded*, not only
+  when one is built in Swift. Decoding also sorts the curve's points, which the synthesised
+  decoder did not, despite the property documenting itself as kept sorted.
 
 ### Changed
 - **XPC protocol, version 1** — the boundary contract took its shape ahead of any
