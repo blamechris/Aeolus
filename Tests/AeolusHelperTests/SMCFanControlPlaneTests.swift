@@ -196,9 +196,11 @@ struct SMCFanControlPlaneTests {
 
     // MARK: - Envelope
 
-    /// Reported exactly as declared. Whether an envelope is plausible is #101's judgement,
-    /// and a gate that refuses to lease a fan with a declared minimum of zero has to be
-    /// handed that zero in order to refuse it.
+    /// Reported exactly as declared: this seam does not correct, round or omit a
+    /// declaration it dislikes, because plausibility is `FanControlEnvelope.validating`'s
+    /// judgement and it cannot judge what it is not shown. Note that a declared minimum of
+    /// zero is then *accepted* — the floor is what keeps zero uncommandable — while
+    /// inverted bounds are refused.
     @Test("An implausible envelope is reported as declared, not corrected or refused here")
     func anImplausibleEnvelopeIsReportedAsDeclared() async throws {
         let envelope = try await Self.plane([

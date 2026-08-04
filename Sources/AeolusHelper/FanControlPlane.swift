@@ -63,10 +63,19 @@ protocol FanControlPlane: Sendable {
 
     /// Reads one fan's firmware-declared envelope, `F<n>Mn` and `F<n>Mx`.
     ///
-    /// Reported exactly as declared. Whether an envelope is *plausible* is #101's
-    /// judgement, not this seam's: a declared minimum of zero is a real thing some firmware
-    /// says, and the gate that refuses to lease such a fan needs to see the declaration in
-    /// order to refuse it.
+    /// Reported exactly as declared. Whether an envelope is *plausible* is
+    /// `FanControlEnvelope.validating(...)`'s judgement, not this seam's, and this seam must
+    /// not pre-empt it by rounding, flooring or omitting a declaration it dislikes.
+    ///
+    /// - Important: **A declared minimum of zero is accepted, not refused.** Some firmware
+    ///   really does say it — `docs/RECOVERY.md` records that fans stopping at idle is
+    ///   normal on many Macs — so refusing to lease such a fan would deny manual control on
+    ///   legitimate hardware. What keeps `CLAUDE.md` rule 3 true there is the *floor*:
+    ///   targets clamp to `[max(F0Mn, minimumManualRPM), F0Mx]`, so zero is uncommandable
+    ///   whatever the firmware declares. The plausibility gate binds the **maximum**
+    ///   instead. This paragraph exists because an earlier draft of this comment said the
+    ///   opposite, and an implementer honouring it would have added a `> 0` refusal and
+    ///   regressed every Mac whose fans idle at rest.
     func readEnvelope(ofFan index: Int) async throws -> FanEnvelope
 
     /// Reads one fan's control state: `F<n>Md` and the `F<n>Tg` read-back.

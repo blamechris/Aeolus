@@ -208,8 +208,19 @@ actor LeaseAuthority {
     /// safety mechanism ends in.
     ///
     /// Entries are removed **before** the restore is awaited, so a call interleaving during
-    /// the restore finds an empty table and can neither restore the same fans twice nor hand
-    /// out a lease over fans still being released.
+    /// the restore finds an empty table and cannot restore the same fans twice.
+    ///
+    /// - Warning: That is the whole of what it buys, and the empty table cuts both ways. An
+    ///   emptied table is exactly what makes `acquireLease`'s liveness check pass, so a new
+    ///   lease **can** be granted over a fan whose restore is still parked inside
+    ///   `FanRestoring`. Demonstrated against this code, not theorised. It is harmless today
+    ///   because `FanRestoring` has no conformer and nothing writes — but once #102 wires
+    ///   the control plane, the losing order is: A's connection dies, A's restore is
+    ///   enqueued, B acquires and writes a target, A's restore lands and returns the fan to
+    ///   automatic. B then holds a live lease over a fan nothing is honouring, which is
+    ///   `CLAUDE.md` rule 6 arriving through a door this comment used to claim was shut.
+    ///   **#102 owns the interlock**, and the reclamation watchdog is a backstop for it
+    ///   rather than a substitute.
     func expireLapsedLeases() async {
         let lapsed = table.removeLapsed(asOf: clock.now)
         for entry in lapsed {

@@ -140,8 +140,11 @@ actor ScriptedControlPlane: FanControlPlane {
         static let nominal = FanCondition()
 
         /// A fan whose firmware declares a minimum of zero — real on some Macs, and the
-        /// case that makes `SAFETY.md` §2's clamp vacuous against `CLAUDE.md` rule 3. #101
-        /// is the gate that has to see this and refuse it.
+        /// case that makes a bare `[F0Mn, F0Mx]` clamp vacuous against `CLAUDE.md` rule 3.
+        /// It is **accepted, not refused**: what makes zero uncommandable is the floor in
+        /// `FanControlEnvelope`, not a gate that would deny manual control on every Mac
+        /// whose fans idle at rest. Contrast `invertedBounds` below, which really is
+        /// refused.
         static let zeroMinimum = FanCondition(minimumRPM: 0)
 
         /// A fan whose declared envelope is inverted. #37's plausibility gate, which has to

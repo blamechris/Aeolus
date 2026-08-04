@@ -79,6 +79,43 @@ struct ReadOnlyFanAuthorityTests {
         #expect(fan.fan == nil)
     }
 
+    /// Clamping governs targets, never observations — asserted at the **producer**, because
+    /// asserting it on a `FanState` literal cannot fail.
+    ///
+    /// `F0Ac` was measured at **1343.07 against a declared `F0Mn` of 1350** on this
+    /// project's own machine, so a reading below the declared minimum is a legitimate
+    /// observation and not a fault. The version of this claim that lived in
+    /// `FanClampTests` built a `FanState` by hand and round-tripped it through JSON: every
+    /// type between the construction and the assertion is a pure carrier with no clamping
+    /// code in it, so the assertion could not fail for the reason in its title. Adding a
+    /// "correct the reading up to the declared minimum" floor to `readFans` left the whole
+    /// suite green.
+    ///
+    /// This drives the real producer with a reading below the real minimum, so that floor
+    /// now turns it red.
+    @Test("A reading below the declared minimum reaches the client uncorrected")
+    func readingBelowDeclaredMinimumIsNotFloored() async throws {
+        let provider = fanProvider(
+            fanCount: 1,
+            extraKeys: [
+                SMCFanEnumeration.actualKey(forFan: 0): .reading(
+                    SMCFanEnumeration.actualKey(forFan: 0), 1_343.07),
+                SMCFanEnumeration.minimumKey(forFan: 0): .reading(
+                    SMCFanEnumeration.minimumKey(forFan: 0), 1_350),
+            ])
+
+        let snapshot = try await authority(provider: provider).snapshot()
+        let fan = try #require(snapshot.fans.first)
+
+        #expect(fan.actualRPM == .measured(1_343.07))
+        #expect(fan.minimumRPM == .measured(1_350))
+        // Stated as the relationship rather than the number, so the test still means what
+        // it says if the fixture changes: the observation is below the floor and stays there.
+        let actual = try #require(fan.actualRPM.value)
+        let minimum = try #require(fan.minimumRPM.value)
+        #expect(actual < minimum)
+    }
+
     @Test("A snapshot survives the wire format the client will decode it from")
     func snapshotRoundTrips() async throws {
         let provider = fanProvider(
