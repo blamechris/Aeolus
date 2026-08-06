@@ -32,9 +32,20 @@ possible.
 | Built by CI on every PR | Yes | No — maintainer tags only |
 
 **`Monitor` is not a stub.** It is the whole application minus the write path: the
-two-pane window, the menu bar, every sensor reading, the charts, the history, the sensor
-catalog, preferences, and the CLI's read commands. If you are working on any of that —
-and most of the open work is — you never need a certificate.
+two-pane window, the menu bar readouts, every sensor reading, the sensor catalog, and the
+CLI's read commands. If you are working on any of that — and most of the open work is —
+you never need a certificate.
+
+## Orientation
+
+Two documents explain how the project fits together, and both are worth skimming before
+your first change:
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the target graph and the privilege
+  boundary: which target owns what, why the root helper is the only writer, and why the
+  control loop lives there.
+- [docs/DESIGN.md](docs/DESIGN.md) — the full design: the hard problems, the safety
+  model, feature scope, and the epic-by-epic plan the issue board follows.
 
 ## Getting set up
 
