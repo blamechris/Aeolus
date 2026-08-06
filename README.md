@@ -13,8 +13,9 @@ control half is in development, gated behind the safety subsystem — see the
 [roadmap](#roadmap).
 
 > **Status: monitoring works; fan control does not exist yet.** There is no release and no
-> binary. The `Monitor` build reads real sensors on real hardware — that is the only thing
-> that works. Nothing writes to a fan: the privileged helper exists and can be installed
+> binary. The `Monitor` build and `fanctl`'s read commands read real sensors on real
+> hardware — reading is the only thing that works. Nothing writes to a fan: the privileged
+> helper exists and can be installed
 > in `Full` builds, but it is read-only — its write path refuses by design, and a tripwire
 > test ([`WritePathAbsenceTests`](Tests/AeolusHelperTests/WritePathAbsenceTests.swift))
 > asserts against the source tree that no write path exists. The
