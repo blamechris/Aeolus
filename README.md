@@ -8,9 +8,10 @@ on Apple Silicon and Intel, from the menu bar or from the command line.
 
 > **Status: not usable yet.** There is no release and no binary. The `Monitor` build reads
 > real sensors on real hardware — that is the only thing that works. Nothing writes to a
-> fan: no privileged helper is installed, and no write path exists on Intel or Apple
-> Silicon. The [issue board](https://github.com/blamechris/Aeolus/issues) is the honest
-> picture of where things stand.
+> fan: the privileged helper exists and can be installed in `Full` builds, but it is
+> read-only — its write path refuses by design, and no fan-write path exists on Intel or
+> Apple Silicon. The [issue board](https://github.com/blamechris/Aeolus/issues) is the
+> honest picture of where things stand.
 
 ---
 
