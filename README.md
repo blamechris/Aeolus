@@ -6,11 +6,12 @@ Aeolus watches your Mac's temperature sensors and, when you ask it to, takes ove
 fans — a fixed speed, or a curve that follows whichever sensors you care about. It works
 on Apple Silicon and Intel, from the menu bar or from the command line.
 
-> **Status: not usable yet.** This repository currently contains its design, its plan,
-> and a set of target skeletons that compile and do nothing. There is no release, no
-> binary, and no working feature. Nothing reads a sensor and nothing writes to a fan.
-> The [issue board](https://github.com/blamechris/Aeolus/issues) is the honest picture of
-> where things stand.
+> **Status: not usable yet.** There is no release and no binary. The `Monitor` build reads
+> real sensors on real hardware — that is the only thing that works. Nothing writes to a
+> fan: the privileged helper exists and can be installed in `Full` builds, but it is
+> read-only — its write path refuses by design, and no fan-write path exists on Intel or
+> Apple Silicon. The [issue board](https://github.com/blamechris/Aeolus/issues) is the
+> honest picture of where things stand.
 
 ---
 
