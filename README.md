@@ -150,8 +150,9 @@ Filing these as bugs will get you a polite link back here:
 
 ## Safety
 
-Fan control software can damage hardware. Aeolus is built so that the obvious way to
-cause that damage is unavailable:
+Fan control software can damage hardware. Fan control has not shipped yet — nothing
+writes to a fan today — but Aeolus is designed so that when the write path ships, the
+obvious way to cause that damage is unavailable:
 
 - **Manual control is a lease, not a setting.** Whatever holds the fans has to keep
   saying so. If the app crashes, hangs, or is killed, the fans go back to automatic
