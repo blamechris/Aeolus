@@ -334,6 +334,63 @@ struct SensorsCommandRenderTests {
             providerIdentifier: "smc", capturedAt: Self.fixedDate, entries: [], keysDeclared: nil)
         #expect(SensorsCommand.renderTable(result) == "No sensors found.")
     }
+
+    /// Every other table test above only checks `table.contains(...)` — true whether
+    /// `category`/`confidence` land under their own headers or under each other's, since
+    /// "cpu" and "verified" would each still appear *somewhere* in the row either way.
+    /// This pins actual column position: swap `entry.category` and `entry.confidence` at
+    /// the call site inside `renderTable`'s row-building and every `.contains` assertion
+    /// in this file still passes, while a user reads a confidence value under CATEGORY.
+    @Test("The header names every column in order; CATEGORY/CONFIDENCE are not swapped")
+    func headerAndCategoryConfidenceColumnsAreNotSwapped() throws {
+        let result = SensorsCommand.Result(
+            providerIdentifier: "smc",
+            capturedAt: Self.fixedDate,
+            entries: [
+                SensorsCommand.Entry(
+                    key: "Tp09", label: "CPUCluster", category: .cpu, confidence: .verified,
+                    value: 42.5, error: nil, unit: .celsius)
+            ],
+            keysDeclared: nil)
+
+        let table = SensorsCommand.renderTable(result)
+        let lines = table.split(separator: "\n", omittingEmptySubsequences: false)
+        let header = Self.columns(ofLine: String(lines[0]))
+        let row = Self.columns(ofLine: String(lines[1]))
+
+        #expect(header == ["KEY", "LABEL", "CATEGORY", "CONFIDENCE", "VALUE", "UNIT"])
+        let categoryColumn = try #require(header.firstIndex(of: "CATEGORY"))
+        let confidenceColumn = try #require(header.firstIndex(of: "CONFIDENCE"))
+        #expect(row[categoryColumn] == "cpu")
+        #expect(row[confidenceColumn] == "verified")
+    }
+
+    /// Splits one line of `Table.render`'s output back into cells. `Table` joins cells
+    /// with exactly two spaces and pads with single spaces on top of that (see
+    /// `Table.swift`), so any run of two-or-more consecutive spaces is always a column
+    /// boundary, never text inside a cell — true as long as no cell's own text contains
+    /// a literal double space, which none of this file's fixtures do. A single space
+    /// (e.g. inside a real label like "CPU Efficiency Cluster") passes straight through.
+    private static func columns(ofLine line: String) -> [String] {
+        var cells: [String] = []
+        var current = ""
+        var index = line.startIndex
+        while index < line.endIndex {
+            let next = line.index(after: index)
+            if line[index] == " ", next < line.endIndex, line[next] == " " {
+                cells.append(current)
+                current = ""
+                while index < line.endIndex, line[index] == " " {
+                    index = line.index(after: index)
+                }
+                continue
+            }
+            current.append(line[index])
+            index = next
+        }
+        cells.append(current)
+        return cells
+    }
 }
 
 @Suite("fanctl sensors — command wiring")

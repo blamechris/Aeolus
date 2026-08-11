@@ -1,19 +1,31 @@
 import Foundation
 
-/// Errors this CLI's own commands raise. Every case renders a specific, actionable
-/// message through `errorDescription` — swift-argument-parser prints exactly that string
-/// (prefixed with `Error: `) and exits non-zero, so nobody running `fanctl` at a terminal
-/// or in a headless SSH session ever sees a bare `nil`, an `SMCError` case name, or a
-/// stack trace.
+/// Errors this CLI's own commands raise — `list`, `sensors`, `watch`, and `dump` share
+/// this one type rather than each defining its own, so the same underlying failure is
+/// never described three different ways depending on which command hit it. Every case
+/// renders a specific, actionable message through `errorDescription` — swift-argument-
+/// parser prints exactly that string (prefixed with `Error: `) and exits non-zero, so
+/// nobody running `fanctl` at a terminal or in a headless SSH session ever sees a bare
+/// `nil`, an `SMCError` case name, or a stack trace.
+///
+/// This is deliberately separate from `ValidationError` (swift-argument-parser's own
+/// type, still used directly by `Fanctl.Watch.validate()` and `Fanctl.Dump.validate()`
+/// for a malformed argument): a usage mistake and a runtime I/O failure are different
+/// categories of problem — one is about how the command was invoked, the other about
+/// what happened once it ran — and `ValidationError` prints a usage block that would be
+/// actively misleading attached to, say, a firmware rejection.
 enum FanctlError: Error, LocalizedError, Equatable {
     /// `SensorProvider.isAvailable` reported `false`: no `AppleSMC` IOService on this
     /// machine at all. Expected on CI's macOS VMs and on any non-Mac host.
     case noSMC
 
-    /// A read that should have succeeded — because `isAvailable` already reported
-    /// `true` — failed anyway. `context` names what was being attempted (e.g. "read
-    /// FNum", "enumerate sensors"); `reason` is the underlying error's own description,
-    /// carried for diagnostics only.
+    /// A runtime SMC I/O failure with a labelled context. Covers two shapes: `list`/
+    /// `sensors` reach this only after `isAvailable` already reported `true` (so this
+    /// means a read that should have succeeded failed anyway), while `dump` reaches it
+    /// opening a raw `SMCConnection` directly, before availability is known at all —
+    /// `context` names what was being attempted either way (e.g. "read FNum",
+    /// "enumerate sensors", "open a connection to the SMC"); `reason` is the underlying
+    /// error's own description, carried for diagnostics only.
     case connectionFailed(context: String, reason: String)
 
     /// `FNum` decoded to a value this project does not trust as a real fan count —
@@ -37,6 +49,13 @@ enum FanctlError: Error, LocalizedError, Equatable {
     /// if that contract is ever violated by a call site that skips sanitisation.
     case jsonEncodingFailed(reason: String)
 
+    /// `fanctl dump --key` named a well-formed, four-character key that simply is not
+    /// among the `declaredCount` keys this machine's own index table walk produced — a
+    /// fact about the hardware, not a usage mistake (the format itself is validated
+    /// separately, before any hardware I/O — see `Fanctl.Dump.validate()`), so this is a
+    /// runtime `FanctlError`, not a `ValidationError`.
+    case keyNotFound(key: String, declaredCount: Int)
+
     var errorDescription: String? {
         switch self {
         case .noSMC:
@@ -55,6 +74,10 @@ enum FanctlError: Error, LocalizedError, Equatable {
                 """
         case .jsonEncodingFailed(let reason):
             return "Could not encode --json output: \(reason)"
+        case .keyNotFound(let key, let declaredCount):
+            return
+                "No key '\(key)' found among the \(declaredCount) keys this machine's "
+                + "index table exposes."
         }
     }
 }

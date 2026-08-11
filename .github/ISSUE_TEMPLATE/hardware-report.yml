@@ -120,7 +120,9 @@ body:
     id: fan-list
     attributes:
       label: Fan list
-      description: "Paste the output of `fanctl list --json`."
+      description: |
+        Paste the output of `fanctl list --json`. Field shape:
+        [docs/CLI.md](https://github.com/blamechris/Aeolus/blob/main/docs/CLI.md#fanctl-list-json).
       render: json
 
   - type: textarea
@@ -130,7 +132,8 @@ body:
       description: |
         Paste the output of `fanctl sensors --json`. This is what fills in the sensor
         catalog for other people with your Mac, so it is worth including even if
-        everything works.
+        everything works. Field shape:
+        [docs/CLI.md](https://github.com/blamechris/Aeolus/blob/main/docs/CLI.md#fanctl-sensors-json).
       render: json
 
   - type: textarea
@@ -158,7 +161,8 @@ body:
 
         Paste that output below. If your machine has no `VP3b` key, say so here instead —
         please don't paste the unfiltered `fanctl dump --json`; at over half a megabyte on
-        `Mac16,5`, it is far past what a GitHub issue body accepts.
+        `Mac16,5`, it is far past what a GitHub issue body accepts. `--json` field shape:
+        [docs/CLI.md](https://github.com/blamechris/Aeolus/blob/main/docs/CLI.md#fanctl-dump-json).
       render: json
 
   - type: textarea

@@ -236,4 +236,6 @@ manual and always will be.
 - [SAFETY.md](SAFETY.md) — the safety subsystem and how each mechanism is tested
 - [SMC-RESEARCH.md](SMC-RESEARCH.md) — observed SMC behaviour and cited sources
 - [RECOVERY.md](RECOVERY.md) — recovering a machine whose fans are stuck
+- [CLI.md](CLI.md) — `fanctl`'s `--version`, shell completions, error format, and the
+  `--json` shape for `list`/`sensors`/`watch`/`dump`
 - [ADR/](ADR/) — decisions and the alternatives that were rejected

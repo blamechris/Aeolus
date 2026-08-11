@@ -180,18 +180,15 @@ struct DumpErrorDescriptionTests {
     }
 }
 
-/// `DumpRuntimeError` and `--key`'s own pure helpers — the fix for using `ValidationError`
-/// (usage block, exit 64) for a runtime SMC failure that has nothing to do with how the
-/// command was invoked, and for making the "paste one row" workflow ADR 0004 asks for
-/// actually followable.
-@Suite("fanctl dump — runtime errors and --key filtering")
-struct DumpRuntimeErrorAndKeyFilterTests {
-
-    @Test("DumpRuntimeError's errorDescription is exactly its message, nothing added")
-    func runtimeErrorDescriptionIsExact() {
-        let error = DumpRuntimeError(message: "could not open a connection")
-        #expect(error.errorDescription == "could not open a connection")
-    }
+/// `--key`'s own pure format helper, plus `FanctlError.keyNotFound` — the fix for using
+/// `ValidationError` (usage block, exit 64) for a runtime SMC failure that has nothing to
+/// do with how the command was invoked, and for making the "paste one row" workflow ADR
+/// 0004 asks for actually followable. `dump` used to raise its own ad hoc
+/// `DumpRuntimeError` for exactly this; it now shares `FanctlError` with `list`/`sensors`/
+/// `watch` — see `FanctlErrorTests.swift` for that type's own coverage, including
+/// `.keyNotFound`.
+@Suite("fanctl dump — --key filtering")
+struct DumpKeyFilterTests {
 
     @Test("keyFilterFormatError accepts exactly four ASCII characters")
     func formatErrorAcceptsFourCharacters() {
@@ -208,11 +205,16 @@ struct DumpRuntimeErrorAndKeyFilterTests {
         #expect(tooLong?.contains("VP3bb") == true)
     }
 
-    @Test("keyFilterNotFoundMessage names the key and the declared count")
-    func notFoundMessageIsSpecific() {
-        let message = keyFilterNotFoundMessage(key: "ZZZZ", declaredCount: 3385)
-        #expect(message.contains("ZZZZ"))
-        #expect(message.contains("3385"))
+    @Test("--key of the wrong length is rejected before any hardware I/O, like --interval")
+    func malformedKeyRejectedAtParseTime() {
+        #expect(throws: (any Error).self) {
+            try Fanctl.Dump.parse(["--key", "VP3"])
+        }
+    }
+
+    @Test("A well-formed --key is accepted at parse time")
+    func wellFormedKeyAcceptedAtParseTime() throws {
+        _ = try Fanctl.Dump.parse(["--key", "VP3b"])
     }
 
     @Test("filterEntries with a nil key returns every entry unfiltered")
@@ -479,17 +481,21 @@ struct DumpFormatterTests {
         #expect(row["error"] == nil || row["error"] is NSNull)
     }
 
-    @Test("JSON output omits the crossCheck object when it could not be computed")
+    /// `Report` and `DumpEntry` both rely on `Codable`'s synthesised conformance rather
+    /// than a hand-written `encode(to:)` (unlike `ListCommand.KeyedValueJSON`/
+    /// `SensorsCommand.SensorJSON` — see their own documentation for why those two write
+    /// it by hand). The synthesised conformance calls `encodeIfPresent` for every
+    /// `Optional` property, which *omits* the key entirely rather than encoding `null` —
+    /// the opposite convention from those two per-entry types, and worth pinning
+    /// precisely rather than accepting either shape, which is what this test used to do.
+    @Test("JSON output omits the crossCheck key entirely, not as null, when unavailable")
     func jsonOmitsCrossCheckWhenUnavailable() throws {
         let json = try DumpFormatter.renderJSON(
             entries: [Self.vp3bEntry], generation: .modern, declaredKeyCount: 1, crossCheck: nil)
-        let data = Data(json.utf8)
-        let object = try #require(
-            try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(object["crossCheck"] == nil || object["crossCheck"] is NSNull)
+        #expect(!json.contains("crossCheck"))
     }
 
-    @Test("JSON output for a failed row omits bytes and reports the failure")
+    @Test("JSON output for a failed row omits bytes/byteOrder entirely and reports the failure")
     func jsonReportsFailuresRatherThanOmittingThem() throws {
         let json = try DumpFormatter.renderJSON(
             entries: [Self.unreadableEntry], generation: .modern, declaredKeyCount: 1,
@@ -501,7 +507,9 @@ struct DumpFormatterTests {
         let row = try #require(entries.first)
 
         #expect(row["key"] as? String == "AC-E")
-        #expect(row["bytes"] == nil || row["bytes"] is NSNull)
+        // Omitted entirely, not present as null — see this suite's doc comment above.
+        #expect(row["bytes"] == nil)
+        #expect(row["byteOrder"] == nil)
         let error = try #require(row["error"] as? String)
         #expect(error.contains("unreadable"))
     }

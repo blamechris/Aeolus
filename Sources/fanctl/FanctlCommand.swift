@@ -1,3 +1,4 @@
+import AeolusXPC
 import ArgumentParser
 
 /// `fanctl` — the command-line client.
@@ -8,6 +9,23 @@ import ArgumentParser
 /// take out the same lease.
 @main
 struct Fanctl: AsyncParsableCommand {
+    /// `fanctl`'s own release version, independent of `AeolusXPCVersion.current`: a
+    /// Homebrew-installed `fanctl` and a Sparkle-updated `Aeolus.app`/helper routinely
+    /// disagree on this number without disagreeing on the wire protocol they speak.
+    static let toolVersion = "0.0.0-dev"
+
+    /// What `--version` prints.
+    ///
+    /// `AeolusXPCVersion.current` is read here as the plain `public` compile-time
+    /// constant it is documented to be (see that enum) — nothing here opens a
+    /// connection, and nothing negotiates with a running helper. `fanctl`'s own read
+    /// commands (`list`, `sensors`, `watch`, `dump`) never talk to a helper at all, so
+    /// this is phrased as "protocol version this build supports," never as anything
+    /// implying a live, negotiated session with anything actually running.
+    static var versionDescription: String {
+        "fanctl \(toolVersion) (protocol version \(AeolusXPCVersion.current) this build supports)"
+    }
+
     static let configuration = CommandConfiguration(
         commandName: "fanctl",
         abstract: "Monitor and control Mac fan speeds.",
@@ -19,7 +37,7 @@ struct Fanctl: AsyncParsableCommand {
             Manual control is always held under a lease: if fanctl exits or is killed, \
             the helper returns the fans to automatic.
             """,
-        version: "0.0.0-dev",
+        version: versionDescription,
         subcommands: [List.self, Sensors.self, Watch.self, Reset.self, Dump.self]
     )
 }
