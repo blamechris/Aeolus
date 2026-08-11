@@ -159,38 +159,69 @@ struct WriteAuthorisationTests {
     /// initialiser would have been *public API* reachable from every client module.
     ///
     /// `private` members are unreachable from another file however the extension is written.
+    ///
+    /// **Both halves are load-bearing, and the count is what keeps this test honest.** A
+    /// first version of this scan collected only lines containing `let`, so a stored `var`
+    /// was invisible to it — and an internal stored `var` is worse than an internal `let`,
+    /// because it does not merely let another file forge a permit, it lets one *re-point an
+    /// already-minted, legitimately-read permit at a different fan*. A second gap sat beside
+    /// it: nothing inspected the initialisers, so deleting `fileprivate` — making the mint
+    /// `internal` and callable from every file in the module with an arbitrary index — left
+    /// the whole suite green. Both are asserted now, and the expected count means a new
+    /// member of any kind has to be acknowledged here rather than merely spelled carefully.
     @Test(
-        "Every stored property on an authorisation type is private, so no other file can forge one",
+        "An authorisation type's stored properties are private and its initialisers fileprivate",
         arguments: [
-            ("FanWriteAuthorisation.swift", "CommandableFan"),
-            ("FanWriteAuthorisation.swift", "AuthorisedFanTarget"),
-            ("FanControlEnvelope.swift", "FanTargetRPM"),
+            ("FanWriteAuthorisation.swift", "CommandableFan", 2),
+            ("FanWriteAuthorisation.swift", "AuthorisedFanTarget", 2),
+            ("FanControlEnvelope.swift", "FanTargetRPM", 1),
         ])
-    func everyAuthorisationStoredPropertyIsPrivate(file: String, type: String) throws {
-        let url = try #require(
-            SeamScanner.swiftFiles().first { $0.lastPathComponent == file },
-            "\(file) is not in the source tree")
-        let source = try String(contentsOf: url, encoding: .utf8)
-
-        let declaration = try #require(
-            source.range(
-                of: #"struct \#(type)[^{]*\{[\s\S]*?\n\}"#, options: .regularExpression),
-            "\(type) was not found in \(file)")
-
-        let stored = source[declaration]
+    func anAuthorisationTypeCannotBeMintedElsewhere(
+        file: String, type: String, expectedStoredProperties: Int
+    ) throws {
+        let body = try SeamScanner.structBody(of: type, in: file)
+        let lines =
+            body
             .split(separator: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { $0.hasPrefix("let ") || $0.contains(" let ") }
-            .filter { !$0.hasPrefix("//") && !$0.hasPrefix("///") }
+            .filter { !$0.hasPrefix("//") }
 
-        #expect(!stored.isEmpty, "\(type) has no stored properties — this scan found nothing")
+        // A computed property carries its accessor on the same line — `var rpm: Double {
+        // clampedRPM }` — so the brace is what tells the two apart. Everything without one
+        // is storage, whether it is spelled `let` or `var`.
+        let stored = lines.filter {
+            ($0.contains("let ") || $0.contains("var ")) && !$0.contains("{")
+        }
+
+        #expect(
+            stored.count == expectedStoredProperties,
+            """
+            \(type) has \(stored.count) stored properties, expected \
+            \(expectedStoredProperties): \(stored). Adding one is a decision about who can \
+            mint a permit — acknowledge it here.
+            """
+        )
         for property in stored {
             #expect(
-                property.hasPrefix("private let "),
+                property.hasPrefix("private "),
                 """
                 \(type) declares `\(property)`. A non-private stored property can be \
-                assigned by an initialiser in an extension in any other file of the same \
-                module, which forges a permit — see ADR 0008.
+                assigned by an initialiser declared in an extension in any other file of \
+                the same module, which forges a permit — see ADR 0008.
+                """
+            )
+        }
+
+        let initialisers = lines.filter { $0.contains("init(") }
+        #expect(!initialisers.isEmpty, "\(type) declares no initialiser — this scan found none")
+        for initialiser in initialisers {
+            #expect(
+                initialiser.hasPrefix("fileprivate init("),
+                """
+                \(type) declares `\(initialiser)`. Without `fileprivate` the mint is \
+                internal and every file in the module can issue a permit for any fan. \
+                `private` would be wrong in the other direction — `FanEnvelope.commandable` \
+                is an extension on a different type and could no longer call it.
                 """
             )
         }
@@ -205,37 +236,44 @@ struct WriteAuthorisationTests {
     /// verb "just for the unlock sequence", at which point everything above still compiles,
     /// still passes, and an ungoverned path exists beside the governed one.
     ///
-    /// The assertion both write-verb tripwires share: **the permit is the only parameter.**
+    /// The assertion both write-verb tripwires share: **the permit is the sole parameter, in
+    /// type position.**
     ///
-    /// A first draft blacklisted `: Double` on the target verb and `: Int` on the engage
-    /// verb, and a reviewer showed both halves were the wrong way round.
-    /// `commandTarget(_ target: AuthorisedFanTarget, ofFan index: Int)` — the *literal*
-    /// signature ADR 0008 exists to make unrepresentable — passed the target tripwire green,
-    /// because the dangerous companion parameter there was never the speed. The permit
-    /// already carries the speed; what must not ride alongside it is the index.
+    /// Two drafts of this were wrong, in instructive ways. The first blacklisted `: Double`
+    /// on the target verb and `: Int` on the engage verb — the wrong way round on both, since
+    /// the permit already carries the speed and what must not ride beside it is the index; so
+    /// `commandTarget(_ target: AuthorisedFanTarget, ofFan index: Int)`, the *literal*
+    /// signature ADR 0008 exists to make unrepresentable, passed green.
     ///
-    /// So this does not enumerate types anyone thought of. A matched write verb takes one
-    /// parameter, it names a permit, and there is nothing else in the parentheses. A
-    /// companion parameter of *any* type fails.
+    /// The second required a permit name somewhere in the declaration and no comma. A
+    /// substring test over the whole declaration reads argument labels and sibling type names
+    /// too, so both of these passed:
+    ///
+    /// ```swift
+    /// func engageManualControlForUnlock(ofCommandableFan index: Int) async throws
+    /// func commandTargetPair(_ pair: AuthorisedFanTargetPair) async throws
+    /// ```
+    ///
+    /// The first names no permit at all — only its *label* contains the word. The second
+    /// takes a freely-constructible type whose name merely starts with the permit's.
+    ///
+    /// So the parameter clause is now parsed rather than searched: exactly one parameter,
+    /// and the text after its single colon must equal the permit exactly. That rejects a
+    /// companion parameter of any type, a label that impersonates a type, and a type whose
+    /// name is a prefix or suffix of a permit's.
     private func expectPermitIsTheOnlyParameter(
         _ declaration: SeamScanner.Declaration, naming permit: String
     ) {
-        #expect(
-            declaration.text.contains(permit),
+        let complaint = """
+            \(declaration.file) declares `\(declaration.text)`. A write verb takes exactly \
+            one parameter and its type is \(permit) — see ADR 0008. A value passed beside a \
+            permit is a value that can disagree with it, and a label is not a type.
             """
-            \(declaration.file) declares `\(declaration.text)`, which is ungated. A write \
-            verb takes a \(permit) or it does not exist — see ADR 0008.
-            """
-        )
-        let parameters = declaration.text.drop(while: { $0 != "(" })
-        #expect(
-            !parameters.contains(","),
-            """
-            \(declaration.file) declares `\(declaration.text)`, which carries a parameter \
-            beside the permit. A value passed beside a permit is a value that can disagree \
-            with it — ADR 0008 removes the parameter rather than discouraging it.
-            """
-        )
+        let parts = declaration.parameters.split(separator: ":", omittingEmptySubsequences: false)
+
+        #expect(parts.count == 2, "\(complaint)")
+        guard parts.count == 2 else { return }
+        #expect(parts[1].trimmingCharacters(in: .whitespaces) == permit, "\(complaint)")
     }
 
     /// Matched by name *family* rather than the single name `commandTarget` — a scan bound to

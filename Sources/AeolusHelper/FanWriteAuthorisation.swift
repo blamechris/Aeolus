@@ -4,13 +4,26 @@ import FanKit
 // that only make sense together, which is why they share a file — see
 // docs/ADR/0008-write-authorisation.md for the decision and its named residual holes.
 //
-// A `fileprivate` initialiser alone does NOT make a mint singular, and an earlier version of
-// this file claimed it did. Swift's "an initialiser in an extension must delegate" rule is
-// cross-*module*, not cross-*file*: any other file in this module can declare an extension
-// initialiser and assign `internal` stored properties directly, forging a permit without
-// going near `FanEnvelope.commandable`. That is why every stored property below is `private`
-// and read back through a computed accessor — `private` on a type member is unreachable from
-// another file whatever the extension does, which is what actually closes it.
+// The lock has two halves and BOTH are load-bearing. Neither is redundant, and a draft of
+// this comment implied one of them was, which is the kind of sentence that gets a guard
+// deleted by someone tidying up.
+//
+//  1. Every initialiser is `fileprivate`. Without it the mint is `internal` and any file in
+//     the module can issue a permit for an arbitrary index with arbitrary bounds. `private`
+//     would be wrong in the other direction — `FanEnvelope.commandable` is an extension on a
+//     different type, and could no longer call it.
+//  2. Every stored property is `private`, read back through a computed accessor. Without
+//     that, half 1 is bypassable: Swift's "an initialiser in an extension must delegate" rule
+//     is cross-*module*, not cross-*file*, so another file in this module could declare an
+//     extension initialiser and assign `internal` stored properties directly — forging a
+//     permit without ever calling the mint. `private` members are unreachable from another
+//     file however the extension is written. A stored `var` would be worse still: it would
+//     let another file re-point an already-minted, legitimately-read permit at a different
+//     fan, which is the cross-fan defect this whole file exists to close.
+//
+// `WriteAuthorisationTests.anAuthorisationTypeCannotBeMintedElsewhere` asserts both halves
+// and the expected number of stored properties, because no runtime test can see an access
+// level and every one of these was live at some point in this PR's review.
 
 /// A fan that may be commanded: its index and its gated envelope, from the same read.
 ///
@@ -113,8 +126,9 @@ extension FanEnvelope {
     ///
     /// **The only place a permit is minted.** It runs `FanKit`'s gate on the bounds this
     /// value actually carries and stamps the result with the index this value actually
-    /// carries; it invents neither. What makes it the only place is the `private` stored
-    /// properties above rather than the `fileprivate` initialisers — see this file's header.
+    /// carries; it invents neither. What makes it the only place is the `fileprivate`
+    /// initialisers *and* the `private` stored properties together — see this file's header,
+    /// which explains why removing either one opens a different route.
     ///
     /// A test that wants a permit builds a `FanEnvelope` and comes through here, which is
     /// the honest shape: faking a firmware reading looks like faking a firmware reading.
