@@ -1,3 +1,4 @@
+import FanKit
 import SMCCore
 
 /// The production `FanControlPlane`: real reads, and writes that refuse.
@@ -143,7 +144,7 @@ struct SMCFanControlPlane: FanControlPlane {
     }
 
     @discardableResult
-    func commandTarget(_ rpm: Double, ofFan index: Int) async throws -> CommandedTarget {
+    func commandTarget(_ target: FanTargetRPM, ofFan index: Int) async throws -> CommandedTarget {
         throw FanControlPlaneError.controlPathNotBuilt
     }
 

@@ -1,3 +1,4 @@
+import FanKit
 import SMCCore
 
 /// The E5/hardware seam: everything E5 needs of the firmware, and nothing else.
@@ -108,11 +109,29 @@ protocol FanControlPlane: Sendable {
 
     /// Commands a target speed, `F<n>Tg`.
     ///
-    /// `rpm` must already be clamped into the fan's envelope and above the manual floor —
-    /// the seam writes what it is given. Clamping lives in #101, above this, so that one
-    /// place owns it and this one cannot silently disagree with it.
+    /// The parameter is a `FanTargetRPM` rather than a `Double`, and that is the whole of
+    /// this signature's safety argument. `FanTargetRPM` has no public initialiser and no
+    /// `Codable` conformance: the only way to obtain one is
+    /// `FanControlEnvelope.target(for:)`, so a value of that type is *evidence* that a
+    /// firmware envelope was read, survived #37's plausibility gate, and clamped the
+    /// request into `[max(F<n>Mn, minimumManualRPM), F<n>Mx]`. A caller holding a raw
+    /// number — a curve point decoded from a client payload, an arithmetic result mid-ramp,
+    /// a NaN — cannot reach this method at all without going through that gate first.
+    ///
+    /// The earlier shape took a `Double` and said in prose that it "must already be
+    /// clamped". That is the arrangement #108 was filed against: `CLAUDE.md` rules 3 and 4
+    /// were held by a doc comment, and `FanTargetRPM`'s own documentation claimed a
+    /// property — *"a write path that takes a `FanTargetRPM` cannot be handed a raw
+    /// `Double` that skipped the clamp"* — that no write path in the repository actually
+    /// had. Convention is not a control; the type is.
+    ///
+    /// A fan whose declared bounds were refused therefore gets no target write of any kind,
+    /// because there is no envelope to produce a `FanTargetRPM` from. That is
+    /// [ADR 0007](../../docs/ADR/0007-safety-composition.md)'s ruling on the ungoverned case
+    /// made structural rather than remembered. The only action such a fan is subject to is
+    /// `restoreToAutomatic(_:)`, which needs no target.
     @discardableResult
-    func commandTarget(_ rpm: Double, ofFan index: Int) async throws -> CommandedTarget
+    func commandTarget(_ target: FanTargetRPM, ofFan index: Int) async throws -> CommandedTarget
 }
 
 // MARK: - Scope
@@ -183,6 +202,17 @@ enum FanTargetReadback: Sendable, Hashable {
 /// records the fan slewing toward `F<n>Tg` rather than stepping — so a watchdog comparing a
 /// read-back against the *goal* would read its own ramp as reclamation. This is the other
 /// number.
+///
+/// `rpm` is a plain `Double` while `commandTarget(_:ofFan:)`'s parameter is a
+/// `FanTargetRPM`, and the asymmetry is deliberate. A `FanTargetRPM` is an authorisation —
+/// evidence that a clamp happened — and this type is a *record of what happened*, compared
+/// numerically against a `FanTargetReadback` that is also a plain number. Carrying the
+/// authorisation back out would put a permission token inside an observation, which is the
+/// line `FanControlEnvelope` already draws in "targets only, never observations". It would
+/// also make a re-assert after reclamation free: a watchdog holding a remembered
+/// `FanTargetRPM` could re-command without re-reading the envelope. Requiring it to obtain
+/// a fresh envelope is the correct cost, because a re-assert against bounds nobody has
+/// re-established is exactly the ungoverned write rule 4 forbids.
 struct CommandedTarget: Sendable, Hashable {
     let fanIndex: Int
     let rpm: Double

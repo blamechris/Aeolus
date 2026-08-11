@@ -1,3 +1,4 @@
+import FanKit
 import SMCCore
 
 @testable import AeolusHelper
@@ -283,16 +284,16 @@ actor ScriptedControlPlane: FanControlPlane {
     }
 
     @discardableResult
-    func commandTarget(_ rpm: Double, ofFan index: Int) async throws -> CommandedTarget {
-        attempts.append(.commandTarget(fan: index, rpm: rpm))
+    func commandTarget(_ target: FanTargetRPM, ofFan index: Int) async throws -> CommandedTarget {
+        attempts.append(.commandTarget(fan: index, rpm: target.rpm))
         _ = try condition(ofFan: index)
         try applyWrite { fans in
-            fans[index]?.targetRPM = rpm
+            fans[index]?.targetRPM = target.rpm
         }
         // Returned even when the firmware discarded it. The command was issued, and the
         // number the watchdog compares a later read-back against is what was commanded,
         // not what the fan ended up holding — otherwise reversion would be invisible.
-        return CommandedTarget(fanIndex: index, rpm: rpm)
+        return CommandedTarget(fanIndex: index, rpm: target.rpm)
     }
 
     // MARK: - Shared rules
@@ -320,6 +321,42 @@ actor ScriptedControlPlane: FanControlPlane {
             throw FanControlPlaneError.fanNotAddressable(index: index)
         }
         return fan
+    }
+}
+
+/// The envelopes a test commands targets against.
+///
+/// There is deliberately **no helper here that turns a `Double` into a `FanTargetRPM`
+/// directly.** That helper is the obvious convenience to reach for, and writing it would
+/// undo the entire point of #108: `FanTargetRPM`'s guarantee is that the only way to obtain
+/// one is `FanControlEnvelope.target(for:)`, and a test-target back door would hand every
+/// future suite an unclamped write path while the production signature looked safe. Tests
+/// clamp through a real envelope for the same reason production does.
+extension FanControlEnvelope {
+
+    /// `Mac16,5`'s measured envelope, 1350–5777 — the same figures
+    /// `ScriptedControlPlane.FanCondition.nominal` declares, so a target clamped through
+    /// this one is a target the mock's default fan could really hold.
+    ///
+    /// Traps rather than returning an optional, like `smcKey(_:)` below: the only way it can
+    /// fail is an authoring mistake in this file, and threading an optional through every
+    /// fixture would obscure what each test asserts.
+    static let nominal: FanControlEnvelope = validated(minimum: 1_350, maximum: 5_777)
+
+    /// A fan whose firmware declares a minimum of zero. `lowestCommandableRPM` is then
+    /// `FanSafetyLimits.minimumManualRPM`, not zero, which is the case `CLAUDE.md` rule 3
+    /// exists for.
+    static let zeroMinimum: FanControlEnvelope = validated(minimum: 0, maximum: 5_777)
+
+    private static func validated(minimum: Double, maximum: Double) -> FanControlEnvelope {
+        let judged = FanControlEnvelope.validating(
+            declaredMinimumRPM: minimum, declaredMaximumRPM: maximum)
+        switch judged {
+        case .success(let envelope):
+            return envelope
+        case .failure(let reason):
+            preconditionFailure("\(minimum)–\(maximum) is not a usable test envelope: \(reason)")
+        }
     }
 }
 

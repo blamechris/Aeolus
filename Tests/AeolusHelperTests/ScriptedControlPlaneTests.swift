@@ -1,3 +1,4 @@
+import FanKit
 import SMCCore
 import Testing
 
@@ -30,7 +31,8 @@ struct ScriptedControlPlaneTests {
             try await plane.engageManualControl(ofFan: 0)
         }
         await #expect(throws: FanControlPlaneError.self) {
-            _ = try await plane.commandTarget(4_200, ofFan: 0)
+            _ = try await plane.commandTarget(
+                FanControlEnvelope.nominal.target(for: 4_200), ofFan: 0)
         }
 
         let state = try await plane.readControlState(ofFan: 0)
@@ -53,7 +55,8 @@ struct ScriptedControlPlaneTests {
             fans: [0: .init(mode: .manual, targetRPM: 1_800)],
             stages: [.init(writes: .reverted)])
 
-        let commanded = try await plane.commandTarget(4_200, ofFan: 0)
+        let commanded = try await plane.commandTarget(
+            FanControlEnvelope.nominal.target(for: 4_200), ofFan: 0)
         let state = try await plane.readControlState(ofFan: 0)
 
         #expect(commanded == CommandedTarget(fanIndex: 0, rpm: 4_200))
@@ -273,7 +276,10 @@ struct ScriptedControlPlaneTests {
         await #expect(throws: absent) { try await plane.readControlState(ofFan: 3) }
         await #expect(throws: absent) { try await plane.readEnvelope(ofFan: 3) }
         await #expect(throws: absent) { try await plane.engageManualControl(ofFan: 3) }
-        await #expect(throws: absent) { _ = try await plane.commandTarget(2_400, ofFan: 3) }
+        await #expect(throws: absent) {
+            _ = try await plane.commandTarget(
+                FanControlEnvelope.nominal.target(for: 2_400), ofFan: 3)
+        }
         await #expect(throws: absent) { try await plane.restoreToAutomatic(.fan(3)) }
     }
 
@@ -313,7 +319,7 @@ struct ScriptedControlPlaneTests {
         let plane = ScriptedControlPlane(fans: [0: .nominal], stages: [.nominal()])
 
         try await plane.engageManualControl(ofFan: 0)
-        _ = try await plane.commandTarget(4_200, ofFan: 0)
+        _ = try await plane.commandTarget(FanControlEnvelope.nominal.target(for: 4_200), ofFan: 0)
 
         let state = try await plane.readControlState(ofFan: 0)
         #expect(state.mode == .manual)
@@ -330,7 +336,7 @@ struct ScriptedControlPlaneTests {
             stages: [.nominal(temperatures: ["TC0P": 55]), .nominal(temperatures: ["TC0P": 97])])
 
         try await plane.engageManualControl(ofFan: 0)
-        _ = try await plane.commandTarget(4_200, ofFan: 0)
+        _ = try await plane.commandTarget(FanControlEnvelope.nominal.target(for: 4_200), ofFan: 0)
         await plane.advance()
 
         let state = try await plane.readControlState(ofFan: 0)
