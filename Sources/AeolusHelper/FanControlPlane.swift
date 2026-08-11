@@ -1,4 +1,3 @@
-import FanKit
 import SMCCore
 
 /// The E5/hardware seam: everything E5 needs of the firmware, and nothing else.

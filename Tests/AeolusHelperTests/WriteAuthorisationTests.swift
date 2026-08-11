@@ -43,6 +43,7 @@ struct WriteAuthorisationTests {
             ScriptedControlPlane.FanCondition.undecodableBounds,
             ScriptedControlPlane.FanCondition(minimumRPM: 10, maximumRPM: 40),
             ScriptedControlPlane.FanCondition(minimumRPM: 1_350, maximumRPM: 90_000),
+            ScriptedControlPlane.FanCondition(minimumRPM: -500, maximumRPM: 5_777),
         ])
     func anImplausibleDeclarationIsRefusedAPermit(
         condition: ScriptedControlPlane.FanCondition
@@ -137,6 +138,64 @@ struct WriteAuthorisationTests {
         #expect(!(CommandableFan.self is any Decodable.Type))
     }
 
+    /// The mint is singular only because every stored property is `private`, and that is not
+    /// something a runtime test can see — so it is asserted against the source, like every
+    /// other structural claim in this repository.
+    ///
+    /// The hazard is specific and was live until review found it. A `fileprivate`
+    /// initialiser confines the *initialiser*; Swift's "an initialiser in an extension must
+    /// delegate" rule is cross-**module**, not cross-**file**. So while the stored properties
+    /// were `let index: Int` and friends, any other file in the module could add
+    ///
+    /// ```swift
+    /// extension CommandableFan {
+    ///     init(forgedIndex: Int, envelope: FanControlEnvelope) { … }
+    /// }
+    /// ```
+    ///
+    /// and forge a permit for any fan without going near `FanEnvelope.commandable` — which
+    /// reinstates the cross-fan defect this whole PR exists to close. It compiled. In `FanKit`
+    /// the same shape was worse: `FanTargetRPM.rpm` was `public let`, so the forged
+    /// initialiser would have been *public API* reachable from every client module.
+    ///
+    /// `private` members are unreachable from another file however the extension is written.
+    @Test(
+        "Every stored property on an authorisation type is private, so no other file can forge one",
+        arguments: [
+            ("FanWriteAuthorisation.swift", "CommandableFan"),
+            ("FanWriteAuthorisation.swift", "AuthorisedFanTarget"),
+            ("FanControlEnvelope.swift", "FanTargetRPM"),
+        ])
+    func everyAuthorisationStoredPropertyIsPrivate(file: String, type: String) throws {
+        let url = try #require(
+            SeamScanner.swiftFiles().first { $0.lastPathComponent == file },
+            "\(file) is not in the source tree")
+        let source = try String(contentsOf: url, encoding: .utf8)
+
+        let declaration = try #require(
+            source.range(
+                of: #"struct \#(type)[^{]*\{[\s\S]*?\n\}"#, options: .regularExpression),
+            "\(type) was not found in \(file)")
+
+        let stored = source[declaration]
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix("let ") || $0.contains(" let ") }
+            .filter { !$0.hasPrefix("//") && !$0.hasPrefix("///") }
+
+        #expect(!stored.isEmpty, "\(type) has no stored properties — this scan found nothing")
+        for property in stored {
+            #expect(
+                property.hasPrefix("private let "),
+                """
+                \(type) declares `\(property)`. A non-private stored property can be \
+                assigned by an initialiser in an extension in any other file of the same \
+                module, which forges a permit — see ADR 0008.
+                """
+            )
+        }
+    }
+
     // MARK: - The signatures that make the above true
 
     /// A source tripwire on the seam's declarations, in `WritePathAbsenceTests`' style.
@@ -146,20 +205,58 @@ struct WriteAuthorisationTests {
     /// verb "just for the unlock sequence", at which point everything above still compiles,
     /// still passes, and an ungoverned path exists beside the governed one.
     ///
-    /// Matched by *shape* rather than by the single name `commandTarget`: a name-bound scan
-    /// was the first draft of this test, and `commandTargetForUnlock` walks straight past it.
+    /// The assertion both write-verb tripwires share: **the permit is the only parameter.**
     ///
-    /// `async throws` is part of the pattern, and it is what separates a write verb from a
-    /// producer. `FanControlEnvelope.target(for:)` and `CommandableFan.target(for:)` are also
-    /// target-named functions taking a `Double`, and they are the two functions that are
-    /// *supposed* to — they mint the authorisation rather than consume it. Without that
-    /// clause this test fails on the very machinery it exists to protect. The limitation it
-    /// buys, stated plainly as `WritePathAbsenceTests` states its own: a synchronous write
-    /// verb would escape. Nothing that talks to the SMC on this seam is synchronous.
-    @Test("Every fan-target write verb in Sources takes an authorisation, never a bare number")
+    /// A first draft blacklisted `: Double` on the target verb and `: Int` on the engage
+    /// verb, and a reviewer showed both halves were the wrong way round.
+    /// `commandTarget(_ target: AuthorisedFanTarget, ofFan index: Int)` — the *literal*
+    /// signature ADR 0008 exists to make unrepresentable — passed the target tripwire green,
+    /// because the dangerous companion parameter there was never the speed. The permit
+    /// already carries the speed; what must not ride alongside it is the index.
+    ///
+    /// So this does not enumerate types anyone thought of. A matched write verb takes one
+    /// parameter, it names a permit, and there is nothing else in the parentheses. A
+    /// companion parameter of *any* type fails.
+    private func expectPermitIsTheOnlyParameter(
+        _ declaration: SeamScanner.Declaration, naming permit: String
+    ) {
+        #expect(
+            declaration.text.contains(permit),
+            """
+            \(declaration.file) declares `\(declaration.text)`, which is ungated. A write \
+            verb takes a \(permit) or it does not exist — see ADR 0008.
+            """
+        )
+        let parameters = declaration.text.drop(while: { $0 != "(" })
+        #expect(
+            !parameters.contains(","),
+            """
+            \(declaration.file) declares `\(declaration.text)`, which carries a parameter \
+            beside the permit. A value passed beside a permit is a value that can disagree \
+            with it — ADR 0008 removes the parameter rather than discouraging it.
+            """
+        )
+    }
+
+    /// Matched by name *family* rather than the single name `commandTarget` — a scan bound to
+    /// that one name was the first draft, and `commandTargetForUnlock` walks straight past it.
+    /// The honest statement of what this covers, since the previous version of this comment
+    /// claimed "by shape" and named only the smallest of its limitations:
+    ///
+    /// - It sees `func` declarations whose name contains `target`/`Target`, plus the sibling
+    ///   scans below for `engage` and `restore`. **A verb named outside those three stems is
+    ///   invisible to all three**, so `setFanSpeed` would escape. Closing that needs an
+    ///   allowlist scan over every `async` function in the helper, which is #120.
+    /// - The effects clause is `async` with `throws` optional. It is what separates a write
+    ///   verb from a *producer*: `FanControlEnvelope.target(for:)` and
+    ///   `CommandableFan.target(for:)` are also target-named functions taking a `Double`, and
+    ///   they are the two that are supposed to. A synchronous write verb escapes, and that is
+    ///   not contrived — `SMCConnection.write(_:to:)` is synchronous, so an E3/E4 wrapper
+    ///   plausibly would be.
+    /// - `[^)]*` cannot span a nested `)`, so a verb with a closure parameter is invisible.
+    @Test("Every fan-target write verb in Sources takes a permit and nothing else")
     func everyTargetWriteVerbTakesAnAuthorisation() throws {
-        let declarations = try SeamScanner.declarations(
-            matching: #"func\s+\w*[Tt]arget\w*\s*\([^)]*\)\s*async\s+throws"#)
+        let declarations = try SeamScanner.writeVerbs(named: #"\w*[Tt]arget\w*"#)
 
         #expect(
             declarations.count >= 2,
@@ -168,39 +265,21 @@ struct WriteAuthorisationTests {
             found \(declarations.count) — this tripwire is not looking at the seam
             """
         )
-
         for declaration in declarations {
-            #expect(
-                declaration.text.contains("AuthorisedFanTarget"),
-                """
-                \(declaration.file) declares `\(declaration.text)`. A fan target crosses \
-                this seam as an AuthorisedFanTarget or it does not cross it — see ADR 0008.
-                """
-            )
-            // Containment alone would pass a verb taking BOTH an authorisation and a bare
-            // number, which is the convenience overload this tripwire exists to catch.
-            #expect(
-                !declaration.text.contains(": Double"),
-                "\(declaration.file) declares `\(declaration.text)`, which takes a bare number"
-            )
+            expectPermitIsTheOnlyParameter(declaration, naming: "AuthorisedFanTarget")
         }
     }
 
-    /// The mode verb, gated the same way. `SAFETY.md` §2's "the only action such a fan is
-    /// subject to is restore-to-automatic" is false the moment this one takes an index.
-    @Test("Every manual-engage verb in Sources takes a permit, never an index")
+    /// The mode verb, gated the same way and by the same assertion, so the two cannot drift
+    /// apart again. `SAFETY.md` §2's "the only action such a fan is subject to is
+    /// restore-to-automatic" is false the moment this one takes anything but a permit.
+    @Test("Every manual-engage verb in Sources takes a permit and nothing else")
     func everyEngageVerbTakesAPermit() throws {
-        let declarations = try SeamScanner.declarations(
-            matching: #"func\s+engage\w*\s*\([^)]*\)\s*async\s+throws"#)
+        let declarations = try SeamScanner.writeVerbs(named: #"engage\w*"#)
 
         #expect(declarations.count >= 2, "found \(declarations.count) engage declarations")
         for declaration in declarations {
-            #expect(
-                declaration.text.contains("CommandableFan"),
-                "\(declaration.file) declares `\(declaration.text)`, which is ungated")
-            #expect(
-                !declaration.text.contains(": Int"),
-                "\(declaration.file) declares `\(declaration.text)`, which takes an index")
+            expectPermitIsTheOnlyParameter(declaration, naming: "CommandableFan")
         }
     }
 
@@ -210,18 +289,34 @@ struct WriteAuthorisationTests {
     /// restore-to-automatic must never depend on trusted data: no bounds, no clamp, no
     /// reading, no lease. **A permit is trusted data.** The gate spreading to this verb would
     /// make the terminal action unavailable in precisely the case it exists for — the helper
-    /// that cannot read — so the emptiness of this signature is load-bearing, and is asserted
-    /// rather than assumed. Every other test in this file pushes in the direction of more
-    /// gating; this is the one that says where it stops.
+    /// that cannot read — so the emptiness of these signatures is load-bearing, and is
+    /// asserted rather than assumed. Every other test in this file pushes toward more gating;
+    /// this is the one that says where it stops.
+    ///
+    /// The floor is **named declarations, not a count.** A bare `>= 2` was satisfied by
+    /// `FanAuthority.restoreAllToAutomatic(from:)` and its read-only conformer, so both of the
+    /// seam's own restore verbs could have stopped matching while the count still passed and
+    /// the loop asserted nothing. And `throws` is optional here for a specific reason:
+    /// `FanRestoring.restoreToAutomatic(fans:because:)` is deliberately non-throwing — it is
+    /// the declaration `LeaseAuthority` actually calls — and an `async throws` pattern put the
+    /// keystone seam outside the scan entirely.
     @Test("No restore verb in Sources takes an authorisation of any kind")
     func theRestoreVerbTakesNoAuthorisation() throws {
         let declarations = try SeamScanner.declarations(
-            matching: #"func\s+restore\w*\s*\([^)]*\)\s*async\s+throws"#)
+            matching: #"func\s+restore\w*\s*\([^)]*\)\s*async(\s+throws)?"#)
         let permits = [
             "CommandableFan", "AuthorisedFanTarget", "FanTargetRPM", "FanControlEnvelope",
         ]
 
-        #expect(declarations.count >= 2, "found \(declarations.count) restore declarations")
+        // Both keystone declarations must be in the scan, by their payload types: the plane's
+        // scope-only verb and the lease core's non-throwing one.
+        #expect(
+            declarations.contains { $0.text.contains("FanRestoreScope") },
+            "the plane's restore verb is not in this scan")
+        #expect(
+            declarations.contains { $0.text.contains("FanRestoreCause") },
+            "FanRestoring's non-throwing restore verb is not in this scan")
+
         for declaration in declarations {
             for permit in permits {
                 #expect(
@@ -234,62 +329,21 @@ struct WriteAuthorisationTests {
             }
         }
     }
-}
 
-/// Scans `Sources` for function declarations, so a signature can be asserted as a property of
-/// the source tree rather than of a call site.
-///
-/// Extracted rather than copied. `WritePathAbsenceTests` had the enumerator and the
-/// comment-stripping filter first, and a second verbatim copy of a scanner that must agree
-/// with the original is exactly the duplication this repository's style spells out once.
-enum SeamScanner {
+    /// The realistic way a permit reaches the keystone without appearing in a signature: not
+    /// a parameter, but a field on the payload the signature already takes.
+    @Test("The restore scope carries no authorisation either")
+    func theRestoreScopeCarriesNoAuthorisation() throws {
+        let scope = try #require(
+            SeamScanner.swiftFiles().first { $0.lastPathComponent == "FanControlPlane.swift" })
+        let text = try String(contentsOf: scope, encoding: .utf8)
+        let declaration = try #require(
+            text.range(of: #"enum FanRestoreScope[^}]*\}"#, options: .regularExpression))
 
-    struct Declaration {
-        let file: String
-        let text: String
-    }
-
-    static var sourcesRoot: URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()  // Tests/AeolusHelperTests
-            .deletingLastPathComponent()  // Tests
-            .deletingLastPathComponent()  // repository root
-            .appendingPathComponent("Sources")
-    }
-
-    static func swiftFiles() throws -> [URL] {
-        let enumerator = try #require(
-            FileManager.default.enumerator(at: sourcesRoot, includingPropertiesForKeys: nil))
-        let files = enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
-        #expect(!files.isEmpty, "the project's sources were not found")
-        return files
-    }
-
-    /// Every declaration under `Sources` matching `pattern`, with its parameter list.
-    ///
-    /// Comment lines are dropped first, for the reason `WritePathAbsenceTests` records: the
-    /// prose describing a forbidden signature is not that signature, and a tripwire that
-    /// fires on the sentence explaining the rule is a tripwire nobody keeps. The trade is
-    /// that a declaration inside a block comment is invisible — contrived, where an added
-    /// verb is not.
-    static func declarations(matching pattern: String) throws -> [Declaration] {
-        let expression = try NSRegularExpression(pattern: pattern)
-        var found: [Declaration] = []
-
-        for file in try swiftFiles() {
-            let code = try String(contentsOf: file, encoding: .utf8)
-                .split(separator: "\n", omittingEmptySubsequences: false)
-                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
-                .joined(separator: "\n")
-            let range = NSRange(code.startIndex..<code.endIndex, in: code)
-            for match in expression.matches(in: code, range: range) {
-                guard let matched = Range(match.range, in: code) else { continue }
-                found.append(
-                    Declaration(
-                        file: file.lastPathComponent,
-                        text: String(code[matched]).replacingOccurrences(of: "\n", with: " ")))
-            }
+        for permit in ["CommandableFan", "AuthorisedFanTarget", "FanTargetRPM"] {
+            #expect(
+                !text[declaration].contains(permit),
+                "FanRestoreScope carries a \(permit) — ADR 0007's keystone, by the back door")
         }
-        return found
     }
 }

@@ -205,12 +205,23 @@ public enum FanBoundsImplausibility: Error, Sendable, Hashable, CustomStringConv
 /// a public initialiser taking an arbitrary number.
 public struct FanTargetRPM: Sendable, Hashable {
 
+    /// Stored `private`, not `public let`, and that is what makes the sentence above true.
+    ///
+    /// A `fileprivate` initialiser alone does not close the type: Swift's "an initialiser in
+    /// an extension must delegate" rule is cross-*module*, so any other file **inside
+    /// `FanKit`** could declare an extension initialiser assigning a `public let` directly —
+    /// and because the property is public, the forged initialiser would be public API,
+    /// reachable from every client module. `private` here is unreachable from another file
+    /// however the extension is written, which is the difference between a guarantee and a
+    /// convention. `WriteAuthorisationTests` asserts it.
+    private let clampedRPM: Double
+
     /// The speed to command, always finite and always inside the envelope that produced
     /// it.
-    public let rpm: Double
+    public var rpm: Double { clampedRPM }
 
     fileprivate init(clamped rpm: Double) {
-        self.rpm = rpm
+        self.clampedRPM = rpm
     }
 }
 

@@ -1,11 +1,16 @@
 import FanKit
 
-/// The permit that stands between a firmware read and a firmware write.
-///
-/// Three declarations that only make sense together, and that is why they share a file:
-/// both permit types have `fileprivate` initialisers, so `FanEnvelope.commandable` below is
-/// the only mint anywhere in `Sources`, and moving any one of them elsewhere would open a
-/// second route. See [ADR 0008](../../docs/ADR/0008-write-authorisation.md).
+// The permit that stands between a firmware read and a firmware write. Three declarations
+// that only make sense together, which is why they share a file — see
+// docs/ADR/0008-write-authorisation.md for the decision and its named residual holes.
+//
+// A `fileprivate` initialiser alone does NOT make a mint singular, and an earlier version of
+// this file claimed it did. Swift's "an initialiser in an extension must delegate" rule is
+// cross-*module*, not cross-*file*: any other file in this module can declare an extension
+// initialiser and assign `internal` stored properties directly, forging a permit without
+// going near `FanEnvelope.commandable`. That is why every stored property below is `private`
+// and read back through a computed accessor — `private` on a type member is unreachable from
+// another file whatever the extension does, which is what actually closes it.
 
 /// A fan that may be commanded: its index and its gated envelope, from the same read.
 ///
@@ -29,15 +34,18 @@ import FanKit
 /// wire because it is not there to conform.
 struct CommandableFan: Sendable, Hashable {
 
+    private let storedIndex: Int
+    private let storedEnvelope: FanControlEnvelope
+
     /// The fan index, taken from the `FanEnvelope` the plane read — never from a parameter.
-    let index: Int
+    var index: Int { storedIndex }
 
     /// The bounds that read declared, once they had passed #37's plausibility gate.
-    let envelope: FanControlEnvelope
+    var envelope: FanControlEnvelope { storedEnvelope }
 
     fileprivate init(index: Int, envelope: FanControlEnvelope) {
-        self.index = index
-        self.envelope = envelope
+        self.storedIndex = index
+        self.storedEnvelope = envelope
     }
 
     /// Clamps a requested speed into this fan's envelope and stamps it with this fan.
@@ -81,18 +89,21 @@ struct CommandableFan: Sendable, Hashable {
 ///   believed and unverified. Verifying it belongs in E4 bring-up (`docs/SMC-RESEARCH.md`).
 struct AuthorisedFanTarget: Sendable, Hashable {
 
+    private let storedFanIndex: Int
+    private let storedTarget: FanTargetRPM
+
     /// The fan this speed was authorised for.
-    let fanIndex: Int
+    var fanIndex: Int { storedFanIndex }
 
     /// The clamped speed. `FanKit`'s evidence that a validated envelope produced it.
-    let target: FanTargetRPM
+    var target: FanTargetRPM { storedTarget }
 
     /// The speed to put on the wire.
-    var rpm: Double { target.rpm }
+    var rpm: Double { storedTarget.rpm }
 
     fileprivate init(fanIndex: Int, target: FanTargetRPM) {
-        self.fanIndex = fanIndex
-        self.target = target
+        self.storedFanIndex = fanIndex
+        self.storedTarget = target
     }
 }
 
@@ -102,11 +113,11 @@ extension FanEnvelope {
     ///
     /// **The only place a permit is minted.** It runs `FanKit`'s gate on the bounds this
     /// value actually carries and stamps the result with the index this value actually
-    /// carries; it invents neither. Both permit types have `fileprivate` initialisers, so
-    /// within `Sources` there is no second route — and `@testable` does not widen
-    /// `fileprivate`, so there is no second route from the test target either. A test that
-    /// wants a permit builds a `FanEnvelope`, which is the honest shape: faking a firmware
-    /// reading looks like faking a firmware reading.
+    /// carries; it invents neither. What makes it the only place is the `private` stored
+    /// properties above rather than the `fileprivate` initialisers — see this file's header.
+    ///
+    /// A test that wants a permit builds a `FanEnvelope` and comes through here, which is
+    /// the honest shape: faking a firmware reading looks like faking a firmware reading.
     var commandable: Result<CommandableFan, FanBoundsImplausibility> {
         FanControlEnvelope.validating(
             declaredMinimumRPM: minimumRPM,

@@ -112,11 +112,19 @@ enforce it in two halves, and the split matters — see
 
 - **The arithmetic**, in `FanKit`: only a fan whose bounds passed the gate yields a
   `FanControlEnvelope`, and an envelope is the only thing that can produce a *speed*.
-- **The identity**, in the helper: only a `FanEnvelope` the plane actually read yields a
-  permit, and a permit is the only thing that can produce a *write*. `FanControlEnvelope`
-  carries no fan index and `FanKit` never touches firmware, so "these bounds belong to fan
-  *n*" is a fact only the read establishes. Both write verbs — engage and command — take a
-  permit; restore-to-automatic takes none, and must never acquire one.
+- **The identity**, in the helper: only a `FanEnvelope` yields a permit, and a permit is the
+  only thing that can produce a *write*. `FanControlEnvelope` carries no fan index and
+  `FanKit` never touches firmware, so "these bounds belong to fan *n*" is a fact only a read
+  establishes — and a permit binds the index and the bounds that came out of the *same*
+  `FanEnvelope`, so the fan written to and the envelope clamped into cannot disagree. Both
+  write verbs — engage and command — take a permit; restore-to-automatic takes none, and must
+  never acquire one.
+
+  What that does **not** deliver, stated here because the normative document is the wrong
+  place to imply more than the code holds: a permit is not proof the bounds came from
+  firmware. `FanEnvelope`'s initialiser is internal, so a fabricated one is possible inside
+  the helper — a review red flag rather than a compiler error. See
+  [ADR 0008](ADR/0008-write-authorisation.md), which names that hole and one other.
 
 *Tested by:* `FanKit` unit tests including zero, negative, above-maximum, non-finite, and
 the declared-minimum-of-zero case; a rejection test per gate check, using synthetic bounds

@@ -19,22 +19,11 @@ import Testing
 @Suite("No write path exists in this tree")
 struct WritePathAbsenceTests {
 
-    private static var sourcesRoot: URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()  // Tests/AeolusHelperTests
-            .deletingLastPathComponent()  // Tests
-            .deletingLastPathComponent()  // repository root
-            .appendingPathComponent("Sources")
-    }
-
+    /// The enumerator lives in `SeamScanner` now, so this suite and
+    /// `WriteAuthorisationTests` cannot disagree about which files count as the source tree.
+    /// It also carries the non-empty guard that used to be on only one of the two tests here.
     private static func swiftFiles() throws -> [URL] {
-        let enumerator = try #require(
-            FileManager.default.enumerator(
-                at: sourcesRoot,
-                includingPropertiesForKeys: nil
-            )
-        )
-        return enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+        try SeamScanner.swiftFiles()
     }
 
     /// The SMC's read selectors are 5 (`READ_BYTES`), 8 (`READ_INDEX`) and 9

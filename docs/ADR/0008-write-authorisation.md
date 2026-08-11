@@ -44,11 +44,16 @@ result.**
   (index + `FanControlEnvelope`), by running `FanKit`'s `validating(...)` on the bounds it
   actually read and stamping the index it actually read.
 - `CommandableFan.target(for:)` mints an `AuthorisedFanTarget` (index + `FanTargetRPM`).
-- Both permit types are `AeolusHelper`-internal with `fileprivate` initialisers, so the only
-  mint inside `Sources` is that gate. `@testable` does not widen `fileprivate`, so the test
-  target has no second route either: a test that wants to command a fan builds a
-  `FanEnvelope`, which is the honest shape — faking a firmware reading looks like faking a
-  firmware reading.
+- Both permit types are `AeolusHelper`-internal, and **every stored property is `private`**
+  with an internal computed accessor, so that gate is the only mint inside `Sources`. The
+  `fileprivate` initialisers alone would not deliver that, and an earlier draft of this ADR
+  said they would: Swift's "an initialiser in an extension must delegate" rule is
+  cross-*module*, not cross-*file*, so any other file in the module could otherwise declare
+  an extension initialiser and assign the stored properties directly. `private` members are
+  unreachable from another file however the extension is written. `FanTargetRPM` in `FanKit`
+  is fixed the same way and for a sharper reason — its `rpm` was `public let`, so a forged
+  initialiser there would have been *public API*. A test that wants to command a fan builds a
+  `FanEnvelope`, which is the honest shape: faking a firmware reading looks like faking one.
 - `engageManualControl(of: CommandableFan)` and `commandTarget(_: AuthorisedFanTarget)` drop
   their index parameters entirely. An index passed *beside* a target is an index that can
   disagree with it; removing the parameter is what makes the mismatch unrepresentable rather

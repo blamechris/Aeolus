@@ -1,4 +1,3 @@
-import FanKit
 import SMCCore
 
 /// The production `FanControlPlane`: real reads, and writes that refuse.
