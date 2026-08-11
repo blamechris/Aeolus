@@ -275,16 +275,17 @@ actor ScriptedControlPlane: FanControlPlane {
         }
     }
 
-    func engageManualControl(ofFan index: Int) async throws {
-        attempts.append(.engageManualControl(fan: index))
-        _ = try condition(ofFan: index)
+    func engageManualControl(of fan: CommandableFan) async throws {
+        attempts.append(.engageManualControl(fan: fan.index))
+        _ = try condition(ofFan: fan.index)
         try applyWrite { fans in
-            fans[index]?.mode = .manual
+            fans[fan.index]?.mode = .manual
         }
     }
 
     @discardableResult
-    func commandTarget(_ target: FanTargetRPM, ofFan index: Int) async throws -> CommandedTarget {
+    func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
+        let index = target.fanIndex
         attempts.append(.commandTarget(fan: index, rpm: target.rpm))
         _ = try condition(ofFan: index)
         try applyWrite { fans in
@@ -324,40 +325,34 @@ actor ScriptedControlPlane: FanControlPlane {
     }
 }
 
-/// The envelopes a test commands targets against.
+/// The write permit for one of a scripted machine's own fans.
 ///
-/// There is deliberately **no helper here that turns a `Double` into a `FanTargetRPM`
-/// directly.** That helper is the obvious convenience to reach for, and writing it would
-/// undo the entire point of #108: `FanTargetRPM`'s guarantee is that the only way to obtain
-/// one is `FanControlEnvelope.target(for:)`, and a test-target back door would hand every
-/// future suite an unclamped write path while the production signature looked safe. Tests
-/// clamp through a real envelope for the same reason production does.
-extension FanControlEnvelope {
-
-    /// `Mac16,5`'s measured envelope, 1350–5777 — the same figures
-    /// `ScriptedControlPlane.FanCondition.nominal` declares, so a target clamped through
-    /// this one is a target the mock's default fan could really hold.
-    ///
-    /// Traps rather than returning an optional, like `smcKey(_:)` below: the only way it can
-    /// fail is an authoring mistake in this file, and threading an optional through every
-    /// fixture would obscure what each test asserts.
-    static let nominal: FanControlEnvelope = validated(minimum: 1_350, maximum: 5_777)
-
-    /// A fan whose firmware declares a minimum of zero. `lowestCommandableRPM` is then
-    /// `FanSafetyLimits.minimumManualRPM`, not zero, which is the case `CLAUDE.md` rule 3
-    /// exists for.
-    static let zeroMinimum: FanControlEnvelope = validated(minimum: 0, maximum: 5_777)
-
-    private static func validated(minimum: Double, maximum: Double) -> FanControlEnvelope {
-        let judged = FanControlEnvelope.validating(
-            declaredMinimumRPM: minimum, declaredMaximumRPM: maximum)
-        switch judged {
-        case .success(let envelope):
-            return envelope
-        case .failure(let reason):
-            preconditionFailure("\(minimum)–\(maximum) is not a usable test envelope: \(reason)")
-        }
-    }
+/// **Derived from the mock's `FanCondition`, never from figures restated in a test.** An
+/// earlier draft declared `FanControlEnvelope.nominal = validated(1_350, 5_777)` beside
+/// `FanCondition.nominal`'s own `1_350`/`5_777`, which put the development machine's
+/// envelope in two hand-maintained places with nothing enforcing that they agree — the
+/// precise hazard `FanSafetyLimits` documents itself as avoiding. Changing the mock fan's
+/// declared minimum now changes the permit clamped against it, because there is one number.
+///
+/// It also lives in a free function rather than in an `extension FanControlEnvelope`. A
+/// test-target extension on a `FanKit` type silently shadows a same-named member added
+/// later on the `FanKit` side — no ambiguity error and no warning — so every helper test
+/// would go on using the stale figures while the library's own moved.
+///
+/// Building a `FanEnvelope` by hand is the honest shape and is the *only* route: both permit
+/// types have `fileprivate` initialisers, and `@testable` does not widen `fileprivate`. A
+/// test that wants to command a fan has to fake a firmware reading, and it looks like it.
+///
+/// - Throws: `FanBoundsImplausibility` when the condition's declared bounds fail #37's gate
+///   — which is exactly what a test asserting "this fan cannot be commanded" wants to catch.
+func commandableFan(
+    _ index: Int, declaring condition: ScriptedControlPlane.FanCondition
+) throws -> CommandableFan {
+    try FanEnvelope(
+        index: index,
+        minimumRPM: condition.minimumRPM,
+        maximumRPM: condition.maximumRPM
+    ).commandable.get()
 }
 
 /// A four-character SMC key written out in a test, where a typo can only be a typo.

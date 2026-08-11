@@ -107,13 +107,23 @@ is trusted.
 
 Clamping and the gate both happen in the helper, after values cross the privilege boundary.
 Client-side validation is a courtesy to the user; this is the actual control. The types
-enforce it: only a fan whose bounds passed the gate yields a `FanControlEnvelope`, and an
-envelope is the only thing that can produce a speed to write.
+enforce it in two halves, and the split matters — see
+[ADR 0008](ADR/0008-write-authorisation.md):
+
+- **The arithmetic**, in `FanKit`: only a fan whose bounds passed the gate yields a
+  `FanControlEnvelope`, and an envelope is the only thing that can produce a *speed*.
+- **The identity**, in the helper: only a `FanEnvelope` the plane actually read yields a
+  permit, and a permit is the only thing that can produce a *write*. `FanControlEnvelope`
+  carries no fan index and `FanKit` never touches firmware, so "these bounds belong to fan
+  *n*" is a fact only the read establishes. Both write verbs — engage and command — take a
+  permit; restore-to-automatic takes none, and must never acquire one.
 
 *Tested by:* `FanKit` unit tests including zero, negative, above-maximum, non-finite, and
 the declared-minimum-of-zero case; a rejection test per gate check, using synthetic bounds
-and no hardware; and a test asserting an observation below the declared minimum passes
-through unclamped.
+and no hardware; a test asserting an observation below the declared minimum passes through
+unclamped; and, on the helper side, a permit refused for every implausible declaration,
+granted for a legitimate zero minimum, and source tripwires asserting that both write verbs
+take a permit and that the restore verb takes none.
 
 ## 3. Thermal emergency override
 

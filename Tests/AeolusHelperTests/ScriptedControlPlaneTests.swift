@@ -16,6 +16,17 @@ struct ScriptedControlPlaneTests {
     private static let cpuKey = smcKey("TC0P")
     private static let gpuKey = smcKey("TG0P")
 
+    /// The write permit for fan 0 of a machine whose fan 0 is `FanCondition.nominal`.
+    ///
+    /// Every scenario below that writes uses this, so the bounds a target is clamped into
+    /// and the bounds the mock fan declares are the same numbers by construction rather than
+    /// by two authors agreeing. Force-tried because a nominal fan's declared envelope failing
+    /// #37's gate would be a defect in the fixture, not a case worth threading an optional
+    /// through every test for.
+    private var nominalFan: CommandableFan {
+        get throws { try commandableFan(0, declaring: .nominal) }
+    }
+
     // MARK: - The firmware refuses
 
     /// `SAFETY.md` has no row for "the write was refused", and it needs one: on Apple
@@ -28,11 +39,10 @@ struct ScriptedControlPlaneTests {
             stages: [.init(writes: .refused(reason: "firmware answered 0x82"))])
 
         await #expect(throws: FanControlPlaneError.self) {
-            try await plane.engageManualControl(ofFan: 0)
+            try await plane.engageManualControl(of: nominalFan)
         }
         await #expect(throws: FanControlPlaneError.self) {
-            _ = try await plane.commandTarget(
-                FanControlEnvelope.nominal.target(for: 4_200), ofFan: 0)
+            _ = try await plane.commandTarget(nominalFan.target(for: 4_200))
         }
 
         let state = try await plane.readControlState(ofFan: 0)
@@ -55,8 +65,7 @@ struct ScriptedControlPlaneTests {
             fans: [0: .init(mode: .manual, targetRPM: 1_800)],
             stages: [.init(writes: .reverted)])
 
-        let commanded = try await plane.commandTarget(
-            FanControlEnvelope.nominal.target(for: 4_200), ofFan: 0)
+        let commanded = try await plane.commandTarget(nominalFan.target(for: 4_200))
         let state = try await plane.readControlState(ofFan: 0)
 
         #expect(commanded == CommandedTarget(fanIndex: 0, rpm: 4_200))
@@ -268,17 +277,23 @@ struct ScriptedControlPlaneTests {
     ///
     /// Every operation naming a fan the machine does not have is refused, including the
     /// restore verb — a restore of a fan that does not exist is not a restore that worked.
+    ///
+    /// The two write verbs are reached through a permit for fan 3, which a test can mint
+    /// because `FanEnvelope`'s initialiser is internal. That is ADR 0008's named residual
+    /// hole standing in for the case it exists to cover: a permit whose bounds are real but
+    /// whose fan is not. The plane still refuses, because a permit authorises a write — it
+    /// does not assert the fan exists.
     @Test("A fan the machine does not have is refused by every operation, never defaulted")
     func anUnscriptedFanIsRefusedEverywhere() async throws {
         let plane = ScriptedControlPlane(fans: [0: .nominal], stages: [.nominal()])
         let absent = FanControlPlaneError.fanNotAddressable(index: 3)
+        let phantom = try commandableFan(3, declaring: .nominal)
 
         await #expect(throws: absent) { try await plane.readControlState(ofFan: 3) }
         await #expect(throws: absent) { try await plane.readEnvelope(ofFan: 3) }
-        await #expect(throws: absent) { try await plane.engageManualControl(ofFan: 3) }
+        await #expect(throws: absent) { try await plane.engageManualControl(of: phantom) }
         await #expect(throws: absent) {
-            _ = try await plane.commandTarget(
-                FanControlEnvelope.nominal.target(for: 2_400), ofFan: 3)
+            _ = try await plane.commandTarget(phantom.target(for: 2_400))
         }
         await #expect(throws: absent) { try await plane.restoreToAutomatic(.fan(3)) }
     }
@@ -295,7 +310,7 @@ struct ScriptedControlPlaneTests {
             stages: [.init(writes: .refused(reason: "firmware answered 0x82"))])
 
         await #expect(throws: FanControlPlaneError.self) {
-            try await plane.engageManualControl(ofFan: 0)
+            try await plane.engageManualControl(of: nominalFan)
         }
         await #expect(throws: FanControlPlaneError.self) {
             try await plane.restoreToAutomatic(.everyFan)
@@ -318,8 +333,8 @@ struct ScriptedControlPlaneTests {
     func aHonouredWriteLands() async throws {
         let plane = ScriptedControlPlane(fans: [0: .nominal], stages: [.nominal()])
 
-        try await plane.engageManualControl(ofFan: 0)
-        _ = try await plane.commandTarget(FanControlEnvelope.nominal.target(for: 4_200), ofFan: 0)
+        try await plane.engageManualControl(of: nominalFan)
+        _ = try await plane.commandTarget(nominalFan.target(for: 4_200))
 
         let state = try await plane.readControlState(ofFan: 0)
         #expect(state.mode == .manual)
@@ -335,8 +350,8 @@ struct ScriptedControlPlaneTests {
             fans: [0: .nominal],
             stages: [.nominal(temperatures: ["TC0P": 55]), .nominal(temperatures: ["TC0P": 97])])
 
-        try await plane.engageManualControl(ofFan: 0)
-        _ = try await plane.commandTarget(FanControlEnvelope.nominal.target(for: 4_200), ofFan: 0)
+        try await plane.engageManualControl(of: nominalFan)
+        _ = try await plane.commandTarget(nominalFan.target(for: 4_200))
         await plane.advance()
 
         let state = try await plane.readControlState(ofFan: 0)

@@ -105,33 +105,29 @@ protocol FanControlPlane: Sendable {
     /// the platform needs. The opposite direction to `restoreToAutomatic(_:)`, and
     /// deliberately not the same operation — this one is allowed to fail and be refused,
     /// where the restore verb is the one that has to work.
-    func engageManualControl(ofFan index: Int) async throws
+    ///
+    /// It takes a `CommandableFan` rather than an index, so that a fan whose declared
+    /// bounds the plausibility gate refused cannot be taken off automatic control at all.
+    /// That is `docs/SAFETY.md` §2's closing rule — *"the only action such a fan is subject
+    /// to is the bounds-free mode verb, restore-to-automatic"* — made structural. Engaging
+    /// such a fan is the worst reachable state: off Apple's management, and holding a speed
+    /// Aeolus may never lawfully command, because there is no envelope to clamp one into.
+    func engageManualControl(of fan: CommandableFan) async throws
 
     /// Commands a target speed, `F<n>Tg`.
     ///
-    /// The parameter is a `FanTargetRPM` rather than a `Double`, and that is the whole of
-    /// this signature's safety argument. `FanTargetRPM` has no public initialiser and no
-    /// `Codable` conformance: the only way to obtain one is
-    /// `FanControlEnvelope.target(for:)`, so a value of that type is *evidence* that a
-    /// firmware envelope was read, survived #37's plausibility gate, and clamped the
-    /// request into `[max(F<n>Mn, minimumManualRPM), F<n>Mx]`. A caller holding a raw
-    /// number — a curve point decoded from a client payload, an arithmetic result mid-ramp,
-    /// a NaN — cannot reach this method at all without going through that gate first.
+    /// The parameter carries both the speed and the fan, because they are one fact. See
+    /// `AuthorisedFanTarget` for exactly what possessing one proves and — as importantly —
+    /// what it does not.
     ///
-    /// The earlier shape took a `Double` and said in prose that it "must already be
-    /// clamped". That is the arrangement #108 was filed against: `CLAUDE.md` rules 3 and 4
-    /// were held by a doc comment, and `FanTargetRPM`'s own documentation claimed a
-    /// property — *"a write path that takes a `FanTargetRPM` cannot be handed a raw
-    /// `Double` that skipped the clamp"* — that no write path in the repository actually
-    /// had. Convention is not a control; the type is.
-    ///
-    /// A fan whose declared bounds were refused therefore gets no target write of any kind,
-    /// because there is no envelope to produce a `FanTargetRPM` from. That is
-    /// [ADR 0007](../../docs/ADR/0007-safety-composition.md)'s ruling on the ungoverned case
-    /// made structural rather than remembered. The only action such a fan is subject to is
-    /// `restoreToAutomatic(_:)`, which needs no target.
+    /// There is deliberately **no `ofFan:` parameter**. An index passed beside the target
+    /// is an index that can disagree with the bounds the target was clamped into, and the
+    /// first version of this signature had exactly that shape: it took a `FanTargetRPM`
+    /// plus a separate index, so a target clamped through fan 0's envelope could be
+    /// commanded to fan 1 whose declared maximum was lower. Removing the parameter is what
+    /// makes the mismatch unrepresentable rather than merely discouraged.
     @discardableResult
-    func commandTarget(_ target: FanTargetRPM, ofFan index: Int) async throws -> CommandedTarget
+    func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget
 }
 
 // MARK: - Scope
@@ -203,16 +199,24 @@ enum FanTargetReadback: Sendable, Hashable {
 /// read-back against the *goal* would read its own ramp as reclamation. This is the other
 /// number.
 ///
-/// `rpm` is a plain `Double` while `commandTarget(_:ofFan:)`'s parameter is a
-/// `FanTargetRPM`, and the asymmetry is deliberate. A `FanTargetRPM` is an authorisation —
-/// evidence that a clamp happened — and this type is a *record of what happened*, compared
-/// numerically against a `FanTargetReadback` that is also a plain number. Carrying the
-/// authorisation back out would put a permission token inside an observation, which is the
-/// line `FanControlEnvelope` already draws in "targets only, never observations". It would
-/// also make a re-assert after reclamation free: a watchdog holding a remembered
-/// `FanTargetRPM` could re-command without re-reading the envelope. Requiring it to obtain
-/// a fresh envelope is the correct cost, because a re-assert against bounds nobody has
-/// re-established is exactly the ungoverned write rule 4 forbids.
+/// `rpm` is a plain `Double` while `commandTarget(_:)` takes an `AuthorisedFanTarget`, and
+/// the asymmetry is deliberate. This is a *record of what happened*, compared numerically
+/// against a `FanTargetReadback` that is also a plain number, and it lands in logs and test
+/// fixtures. Embedding the permit would make any past command mint future writes without
+/// ever touching the read side again — provenance decaying to "an envelope was read once,
+/// ever", inside the one type whose job is to be a passive observation.
+///
+/// The rejected argument for embedding it is that #102's bounded re-assert after
+/// reclamation would then be total. [ADR 0007](../../docs/ADR/0007-safety-composition.md)
+/// already settles that: the action required to be total is *restore*, which needs no
+/// bounds and no read at all. The re-assert branch is explicitly fallible, bounded by an
+/// attempt budget, floored by "restore and report", and never runs while any temperature is
+/// above ceiling. A re-assert that cannot obtain an envelope should restore, not command.
+///
+/// - Important: this withholds a free re-assert from the *observation record*; it does not
+///   prevent the commanding actor from retaining its own `AuthorisedFanTarget`, since
+///   permits do not expire. Freshness before a re-assert is therefore policy held by
+///   review, not by the type. Saying otherwise is what an earlier draft of this comment did.
 struct CommandedTarget: Sendable, Hashable {
     let fanIndex: Int
     let rpm: Double
