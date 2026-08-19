@@ -10,15 +10,16 @@ Every mechanism below exists to make some version of that impossible. None of th
 disabled by configuration, and none of them are addressable over XPC — there is no message
 that turns off the lease or raises a ceiling, because those messages do not exist.
 
-**Implementation status: partial, and deliberately ahead of the write path.** Two layers
-are built, in two different targets. The pure constraint layer — § 2's clamp, its bounds
-gate, and § 3's and § 8's downward-only limits — is in `Sources/FanKit`. § 1's lease — the
-table, monotonic expiry, tombstones and the teardown paths — is in
-`Sources/AeolusHelper/Lease`, driven against a scripted mock control plane. Not built:
-§ 3's override, § 5's watchdog, § 4's power notifications, § 6's signal teardown and startup
-reconciliation, and § 7's body. All of it is tracked as epic E5, and E5 blocks the
-write-path epics E3 and E4. No code that writes to the SMC merges before the safety
-subsystem exists and is tested.
+**Implementation status: partial, and deliberately ahead of the write path.** Three layers
+are built. The pure constraint layer — § 2's clamp, its bounds gate, and § 3's and § 8's
+downward-only limits — is in `Sources/FanKit`. § 2's write authorisation, the permit binding
+a fan index to the bounds a read established, is in
+`Sources/AeolusHelper/FanWriteAuthorisation.swift` (ADR 0008). § 1's lease — the table,
+monotonic expiry, tombstones and the teardown paths — is in `Sources/AeolusHelper/Lease`,
+driven against in-memory doubles. Not built: § 3's override, § 5's watchdog, § 4's power
+notifications, § 6's signal teardown and startup reconciliation, and § 7's body. All of it
+is tracked as epic E5, and E5 blocks the write-path epics E3 and E4. No code that writes to
+the SMC merges before the safety subsystem exists and is tested.
 
 **How to read the *Tested by:* lines.** A bare *Tested by:* is a claim that those tests
 exist and pass today. Where a mechanism is not built, the line reads
@@ -29,9 +30,13 @@ suite as it stands, so a bare line here is now a statement about tests that are 
 
 **Where this document and [ADR 0007](ADR/0007-safety-composition.md) disagreed, ADR 0007
 won.** Design review before E5 found that the eight mechanisms below do not compose as
-written, and re-decided three of them. This document was amended to match in #119; the
-paragraphs that changed say so, in place, rather than quietly reading as though they had
-always said it.
+written. ADR 0007 re-decided § 4's wake semantics, § 6's crash path, and § 8's standing
+relative to § 3. **§ 5's primary signal is #102's ruling, not the ADR's** — worth being
+exact about, in a document whose whole subject this round is not stating things more
+strongly than the source does. This document was amended to match in #119; the paragraphs
+that changed say so, in place, rather than quietly reading as though they had always said
+it. ADR 0007 is still `Proposed`, as are ADR 0006 and ADR 0008 — the latter implemented and
+merged — so that field lags practice here rather than signalling doubt.
 
 ---
 
@@ -59,13 +64,22 @@ self-renewing leases in E5 v1: persist-across-quit ships as a follow-on, once re
 reconciliation (§ 6) are hardware-verified, because that pair *is* its entire safety story
 and shipping it first would assert the guarantee rather than hold it. One consequence is
 worth stating because the rest of this document leans on it — with no helper-renewed lease,
-**the TTL backstops every mechanism here**, and self-renewal is the one configuration where
-it does not.
+**the TTL backstops every mechanism here for as long as the helper is alive**, which is what
+makes bounded tombstone eviction safe in #95's fix; enabling self-renewal has to revisit that
+eviction in the same change. Two conditions sit outside the backstop, and both are covered
+elsewhere rather than by the lease: helper death, where nothing is counting the TTL at all
+and § 6's reconciliation is the only cover, and possibly sleep, per § 4's clock caveat.
+
+The launchd job named in the paragraph above is itself part of what must be verified, not
+something that exists: `KeepAlive` and `RunAtLoad` are absent from the plist today. § 6 says
+what is scheduled to put them back — #86 holds that gap open and #103 closes it.
 
 *Tested by:* unit tests on expiry arithmetic, including a wall clock moved in either
-direction and a monotonic jump (`LeaseExpiryTests`); tests against the scripted mock control
-plane covering connection death, an invalidation that never arrives at all, and a repeated
-one (`LeaseTeardownTests`).
+direction and a monotonic jump (`LeaseExpiryTests`); tests against a recording restorer
+double covering connection death, an invalidation that never arrives at all, and a repeated
+one (`LeaseTeardownTests`). Not against the scripted mock control plane — that is what § 3's,
+§ 5's and § 6's pending lines will be driven through, and naming it here would have claimed
+a fidelity these tests do not have.
 
 *Tested by (pending #104):* a manual hardware check that `kill -9` on the app returns the
 fans to automatic. It cannot run until a write path exists to put them anywhere else, which
@@ -212,8 +226,10 @@ opposite until #119 — "re-acquire, and re-run the Apple Silicon unlock sequenc
 optional — and that is a *write* the helper would perform unbidden, racing firmware that
 resets `Ftst` across the sleep cycle for control it had just given up. A client that still
 wants the fans asks for them again, through the ordinary acquisition path: the same
-authorisation check, the same bounds gate, the same clamps, a fresh lease, and the unlock
-sequence re-run as part of granting it. Whether a client re-acquires automatically on wake
+authorisation check, the same bounds gate, the same clamps, and a fresh lease. Exactly where
+the unlock re-runs is E4's to settle — `Ftst` is machine-wide rather than per-fan — and all
+that matters here is that the helper does not re-run it unprompted. Whether a client
+re-acquires automatically on wake
 or waits for the user is a client-side product decision; either way it is not a helper-side
 write. That is what keeps "never claim control you do not have" a structural property rather
 than a matter of re-assertion winning a race against the firmware. See
@@ -236,12 +252,19 @@ persistent divergence means the system has taken the fans back despite our reque
 
 **Actual RPM against target is a secondary signal, and only with a dwell time.** This
 section named it the primary one until #119. As a primary signal it specifies the exact
-defect the watchdog exists to avoid: `F<n>Ac` legitimately lags `F<n>Tg` —
-[SMC-RESEARCH.md](SMC-RESEARCH.md) records the fan slewing toward its target rather than
-stepping to it — so an actual-versus-target watchdog reads every ramp as a reclamation,
+defect the watchdog exists to avoid: `F<n>Ac` legitimately lags `F<n>Tg`, so an
+actual-versus-target watchdog reads every ramp as a reclamation,
 including the full-scale ramp § 3 performs during a thermal emergency, which is the one
 moment it must not fire. A watchdog that reads another safety mechanism's work as an attack
 on it is worse than no watchdog.
+
+The evidence for the lag is thinner than the ruling needs, and that is an argument *for* the
+ruling rather than against it. [SMC-RESEARCH.md](SMC-RESEARCH.md) records `F0Tg` and `F0Ac`
+climbing together under a slow warm-up — 1350 → 2195 against 1343 → 2166, about 1% apart —
+which shows the two are coupled, not that a commanded step is followed gradually. No write
+has ever been performed on this machine, so no step response has been observed at all. A
+primary signal that depends on fan dynamics would be resting on that; written-target versus
+read-back target does not depend on them, which is the point.
 
 **Being unable to read is divergence too.** Nothing here covers "the helper cannot see" — a
 stale `io_connect_t` after wake (#68), a persistent read failure, an empty critical-sensor

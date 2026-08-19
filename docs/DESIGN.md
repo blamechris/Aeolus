@@ -177,7 +177,8 @@ user renders video for two hours, thermal damage. The lease makes that impossibl
    context (`IORegisterForSystemPower`). Release control before sleep — that half is
    load-bearing, with the continuous-clock TTL as the backstop. **The helper does not
    re-assert on wake**; a client that still wants the fans re-acquires deliberately, through
-   the ordinary path, and the `Ftst` unlock is re-run as part of granting it.
+   the ordinary path, and the `Ftst` unlock is re-run by the write path rather than by a
+   wake handler.
 5. **Reclamation watchdog.** Compare the target written against the target read back —
    **not** actual vs. target, which lags legitimately during a ramp and would misread the
    thermal override in item 2 as a reclamation. Actual vs. target is secondary, with a
@@ -196,9 +197,11 @@ user renders video for two hours, thermal damage. The lease makes that impossibl
 Every one of these gets a test. The lease and the emergency override get **integration**
 tests against a mock SMC, plus a manual hardware test checklist.
 
-Items 4, 5 and 6 above were re-decided by [ADR 0007](ADR/0007-safety-composition.md) after
-design review found the eight mechanisms do not compose as first written.
-[SAFETY.md](SAFETY.md) is normative and carries the reasoning; this list is the summary.
+Items 4 and 6 above, and item 8's standing relative to item 2, were re-decided by
+[ADR 0007](ADR/0007-safety-composition.md) after design review found the eight mechanisms do
+not compose as first written. Item 5's primary-signal ruling is **#102's**, not the ADR's;
+ADR 0007 supplies only its never-fight-above-ceiling half. [SAFETY.md](SAFETY.md) is
+normative and carries the reasoning; this list is the summary.
 
 ---
 
