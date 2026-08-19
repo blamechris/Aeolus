@@ -172,7 +172,7 @@ user renders video for two hours, thermal damage. The lease makes that impossibl
    compiled-in ceiling (default 95 °C CPU / 90 °C SSD, tunable *downward* only), it forces
    that fan to maximum, then hands back to automatic, and surfaces a notification. User
    curves cannot override this.
-3. **Lease expiry → restore to auto** (§3).
+3. **Lease expiry → restore to auto** (§ 3 above, and `SAFETY.md` § 1).
 4. **Sleep/wake supervision.** Register for system power notifications in the helper's own
    context (`IORegisterForSystemPower`). Release control before sleep — that half is
    load-bearing, with the continuous-clock TTL as the backstop. **The helper does not
