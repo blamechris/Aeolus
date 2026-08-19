@@ -177,29 +177,51 @@ public enum FanBoundsImplausibility: Error, Sendable, Hashable, CustomStringConv
 /// A speed Aeolus is willing to command, and the only shape one comes in.
 ///
 /// There is no public initialiser and no `Codable` conformance, both deliberately: the
-/// single way to obtain one is `FanControlEnvelope.target(for:)`, which means a value of
-/// this type is *evidence* that a firmware envelope existed and that the request was
-/// clamped into it. A write path that takes a `FanTargetRPM` cannot be handed a raw
-/// `Double` that skipped the clamp, and cannot be handed a target for a fan whose bounds
-/// were refused — because no envelope exists to produce one from.
+/// single way to obtain one is `FanControlEnvelope.target(for:)`. A value of this type is
+/// therefore *evidence of the arithmetic* — that some validated envelope clamped this
+/// request, so the number is finite, is not zero, and lies inside that envelope's
+/// commandable range. A write path typed on `FanTargetRPM` cannot be handed a raw `Double`
+/// that skipped the clamp.
 ///
-/// That is the structural form of [ADR 0007](../../docs/ADR/0007-safety-composition.md)'s
-/// ruling on the ungoverned case: a fan with no trustworthy envelope gets **no target write
-/// of any kind, ever**. Inventing a maximum to write against would push a fabricated number
-/// through the exact path rule 4 exists to guard. The only action such a fan is subject to
-/// is the bounds-free mode verb — restore-to-automatic — which needs no target and so
-/// appears nowhere in this file.
+/// ## What it does not prove, and where that half lives
 ///
-/// Adding `Codable` here would undo all of it: a synthesised `init(from:)` is a public
-/// initialiser taking an arbitrary number.
+/// **It does not say which fan the speed belongs to.** This type carries no fan identity and
+/// neither does `FanControlEnvelope`, so "clamped through *this* fan's bounds" is not
+/// something either of them can express. An earlier version of this comment claimed
+/// otherwise — that a `FanTargetRPM` "cannot be handed a target for a fan whose bounds were
+/// refused" — and it was false: any other fan's envelope produces one, as does a pair of
+/// literals, since `validating(...)` is public and `FanKit` never touches firmware.
+///
+/// `FanKit` is pure by charter and cannot close that gap: an index reaching it would be a
+/// caller's claim with nothing able to check it. The identity half is therefore
+/// `AeolusHelper`'s, stamped from the plane's own read — see
+/// [ADR 0008](../../docs/ADR/0008-write-authorisation.md) and `AuthorisedFanTarget`, which
+/// wraps this type rather than restating it, so there is one clamp in the project. The
+/// ungoverned-case ruling in [ADR 0007](../../docs/ADR/0007-safety-composition.md) — a fan
+/// with no trustworthy envelope gets **no target write of any kind, ever** — is delivered
+/// there, by a permit that cannot be minted for such a fan.
+///
+/// Adding `Codable` here would undo even the arithmetic half: a synthesised `init(from:)` is
+/// a public initialiser taking an arbitrary number.
 public struct FanTargetRPM: Sendable, Hashable {
+
+    /// Stored `private`, not `public let`, and that is what makes the sentence above true.
+    ///
+    /// A `fileprivate` initialiser alone does not close the type: Swift's "an initialiser in
+    /// an extension must delegate" rule is cross-*module*, so any other file **inside
+    /// `FanKit`** could declare an extension initialiser assigning a `public let` directly —
+    /// and because the property is public, the forged initialiser would be public API,
+    /// reachable from every client module. `private` here is unreachable from another file
+    /// however the extension is written, which is the difference between a guarantee and a
+    /// convention. `WriteAuthorisationTests` asserts it.
+    private let clampedRPM: Double
 
     /// The speed to command, always finite and always inside the envelope that produced
     /// it.
-    public let rpm: Double
+    public var rpm: Double { clampedRPM }
 
     fileprivate init(clamped rpm: Double) {
-        self.rpm = rpm
+        self.clampedRPM = rpm
     }
 }
 

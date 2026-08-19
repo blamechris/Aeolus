@@ -1,3 +1,4 @@
+import FanKit
 import SMCCore
 import Testing
 
@@ -55,10 +56,11 @@ struct SMCFanControlPlaneTests {
         let plane = Self.plane([:])
 
         await #expect(throws: FanControlPlaneError.controlPathNotBuilt) {
-            try await plane.engageManualControl(ofFan: 0)
+            try await plane.engageManualControl(of: commandableFan(0, declaring: .nominal))
         }
         await #expect(throws: FanControlPlaneError.controlPathNotBuilt) {
-            _ = try await plane.commandTarget(2_400, ofFan: 0)
+            _ = try await plane.commandTarget(
+                commandableFan(0, declaring: .nominal).target(for: 2_400))
         }
         await #expect(throws: FanControlPlaneError.controlPathNotBuilt) {
             try await plane.restoreToAutomatic(.fan(0))

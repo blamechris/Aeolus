@@ -4,7 +4,7 @@ import SMCCore
 ///
 /// ## The write side is modelled and unimplemented, deliberately
 ///
-/// `engageManualControl(ofFan:)`, `commandTarget(_:ofFan:)` and `restoreToAutomatic(_:)`
+/// `engageManualControl(of:)`, `commandTarget(_:)` and `restoreToAutomatic(_:)`
 /// all throw `FanControlPlaneError.controlPathNotBuilt`. That is not a stub waiting to be
 /// filled in by whoever gets here next — it is the ordering `CLAUDE.md` rule 1 mandates.
 /// E5 is the epic that gates E3 and E4, so it may not pre-empt them: `SMCConnection.write`
@@ -138,12 +138,12 @@ struct SMCFanControlPlane: FanControlPlane {
         throw FanControlPlaneError.controlPathNotBuilt
     }
 
-    func engageManualControl(ofFan index: Int) async throws {
+    func engageManualControl(of fan: CommandableFan) async throws {
         throw FanControlPlaneError.controlPathNotBuilt
     }
 
     @discardableResult
-    func commandTarget(_ rpm: Double, ofFan index: Int) async throws -> CommandedTarget {
+    func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
         throw FanControlPlaneError.controlPathNotBuilt
     }
 
