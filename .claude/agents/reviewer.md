@@ -43,8 +43,12 @@ Work through all of these on any change to the helper or the write path:
    detected and surfaced?
 7. **Concurrency.** Any `@unchecked Sendable`, any shared mutable state, any actor
    reentrancy that could interleave a safety check with a write?
-8. **Restore paths.** Signal handler, `atexit`, `SIGTERM`, sleep notification — all
-   present and all actually reachable?
+8. **Restore paths.** `SIGTERM`/`SIGINT`/`SIGHUP` via `DispatchSourceSignal`, orderly
+   teardown, the sleep notification, and startup reconciliation — all present and all
+   actually reachable? Crash signals get **no in-process restore**: a handler calling into
+   IOKit is undefined behaviour, and an `atexit` that anything is load-bearing on is a
+   finding. Does anything re-assert manual control on wake? That is a helper-side write
+   ADR 0007 forbids.
 9. **Type handling.** Does encoding key on the SMC's declared type rather than on the
    architecture?
 10. **Scope.** Did the change widen `SMCCore`'s write API from `package` to `public`? That
