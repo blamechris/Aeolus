@@ -66,9 +66,9 @@ direction and a monotonic jump (`LeaseExpiryTests`); tests against the scripted 
 plane covering connection death, an invalidation that never arrives at all, and a repeated
 one (`LeaseTeardownTests`).
 
-*Tested by (pending [#104](https://github.com/blamechris/Aeolus/issues/104)):* a manual hardware check that `kill -9` on the app
-returns the fans to automatic. It cannot run until a write path exists to put them anywhere
-else, which is the ordering rule at the top of this document, not an omission.
+*Tested by (pending #104):* a manual hardware check that `kill -9` on the app returns the
+fans to automatic. It cannot run until a write path exists to put them anywhere else, which
+is the ordering rule at the top of this document, not an omission.
 
 ## 2. Hardware clamps
 
@@ -187,8 +187,8 @@ User curves cannot override this. It is checked after curve evaluation, not befo
 NaN or an infinity falls back to the compiled ceiling rather than disabling the mechanism
 (`ThermalCeilingTests`).
 
-*Tested by (pending [#102](https://github.com/blamechris/Aeolus/issues/102)):* integration tests driving a mock SMC past each ceiling
-and asserting the override engages, notifies, and releases. The ceiling constants and the
+*Tested by (pending #102):* integration tests driving a mock SMC past each ceiling and
+asserting the override engages, notifies, and releases. The ceiling constants and the
 downward-only rule are built; the override that consumes them is not.
 
 ## 4. Sleep and wake supervision
@@ -219,13 +219,13 @@ than a matter of re-assertion winning a race against the firmware. See
 [ADR 0007](ADR/0007-safety-composition.md).
 
 The stale-connection question — whether `io_connect_t` survives sleep/wake at all — is open
-([#68](https://github.com/blamechris/Aeolus/issues/68)), and reconnect-or-release is the
-answer either way: a helper that cannot read after wake is the blindness case in § 5.
+(#68), and reconnect-or-release is the answer either way: a helper that cannot read after
+wake is the blindness case in § 5.
 
-*Tested by (pending [#103](https://github.com/blamechris/Aeolus/issues/103)):* integration
-tests simulating the notification sequence, asserting a restore before sleep and **no write
-at all** on wake; a manual hardware check that closing the lid returns the fans to automatic
-and that reopening it leaves them there until a client asks again.
+*Tested by (pending #103):* integration tests simulating the notification sequence,
+asserting a restore before sleep and **no write at all** on wake; a manual hardware check
+that closing the lid returns the fans to automatic and that reopening it leaves them there
+until a client asks again.
 
 ## 5. Reclamation watchdog
 
@@ -243,11 +243,11 @@ moment it must not fire. A watchdog that reads another safety mechanism's work a
 on it is worse than no watchdog.
 
 **Being unable to read is divergence too.** Nothing here covers "the helper cannot see" — a
-stale `io_connect_t` after wake ([#68](https://github.com/blamechris/Aeolus/issues/68)), a
-persistent read failure, an empty critical-sensor set — and each of them blinds this section
-and § 3 while a lease keeps the fans pinned. Persistent read failure is therefore treated as
-divergence: attempt a reconnect, then restore automatic and report. § 3 having working
-telemetry is a precondition of § 1 granting a lease at all.
+stale `io_connect_t` after wake (#68), a persistent read failure, an empty critical-sensor
+set — and each of them blinds this section and § 3 while a lease keeps the fans pinned.
+Persistent read failure is therefore treated as divergence: attempt a reconnect, then
+restore automatic and report. § 3 having working telemetry is a precondition of § 1 granting
+a lease at all.
 
 When divergence is confirmed the helper either re-asserts control or falls back to automatic
 — and either way **tells the user**. It never continues reporting a target speed the
@@ -262,9 +262,9 @@ temperature is above ceiling.
 This is a correctness rule as much as a safety one. A UI that lies about fan state is
 worse than a UI that reports an error, because the user acts on it.
 
-*Tested by (pending [#102](https://github.com/blamechris/Aeolus/issues/102)):* integration
-tests where the mock SMC reverts a written value. `ScriptedControlPlane` can express that
-today — `WriteBehaviour.reverted` — but there is no watchdog yet to drive with it.
+*Tested by (pending #102):* integration tests where the mock SMC reverts a written value.
+`ScriptedControlPlane` can express that today — `WriteBehaviour.reverted` — but there is no
+watchdog yet to drive with it.
 
 ## 6. Restore on everything
 
@@ -276,11 +276,11 @@ handler plus `atexit`" — and that one is undefined behaviour on the path it wa
 - **Orderly signals** — `SIGTERM`, `SIGINT`, `SIGHUP`, which is how launchd shuts the helper
   down. `DispatchSourceSignal` with the signal itself ignored, so the handler body runs in
   normal execution context and not in signal context. Full restore, then `exit(0)`.
-- **Orderly exits** — explicit teardown. `atexit` may stay as a cheap belt, since it too runs
-  in normal context, but nothing may be load-bearing on it.
+- **Orderly exits** — explicit teardown. `atexit` may stay as a cheap belt, since it too
+  runs in normal context, but nothing may be load-bearing on it.
 - **Crash signals** — **no in-process restore at all.** `IOConnectCallStructMethod` is not
   async-signal-safe, and a crash is exactly when heap and lock state are unknown. A signal
-  handler that calls into IOKit is undefined behaviour on the single path it exists to serve.
+  handler that calls into IOKit is undefined behaviour on the one path it exists to serve.
 
 **Crash coverage is restart plus reconciliation**, uniformly, for every way the helper can
 die — including the ones no handler could ever reach: `SIGKILL`, a kernel panic, a power
@@ -295,10 +295,9 @@ persisting across a *reboot*, which nobody has verified cannot happen. See
 **Restart is not configured yet.** `KeepAlive` and `RunAtLoad` were removed from the launch
 daemon plist in #81 because they would have restarted a scaffold that always exits non-zero.
 ADR 0007 reinstates them **in the same change that ships reconciliation, never before** —
-[#103](https://github.com/blamechris/Aeolus/issues/103) — because a restart policy without
-reconciliation restarts a helper that then serves without checking what the SMC still holds.
-Until that lands, the paragraph above describes a decision rather than a mechanism, which is
-what [#86](https://github.com/blamechris/Aeolus/issues/86) exists to hold open.
+#103 — because a restart policy without reconciliation restarts a helper that then serves
+without checking what the SMC still holds. Until that lands, the paragraph above describes a
+decision rather than a mechanism, which is what #86 exists to hold open.
 
 The guarantee to match is Macs Fan Control's: quitting always returns the fans to Apple's
 control. Anything less and users are right not to trust the software.
@@ -310,9 +309,9 @@ handles a crashed, killed, or hung app — `SIGKILL`, a kernel panic, a power lo
 enforcer is the casualty: the TTL is not counted by anything, the watchdog is not watching,
 and the SMC keeps the last value written. Only a restart can notice.
 
-*Tested by (pending [#103](https://github.com/blamechris/Aeolus/issues/103)):* integration
-tests per exit path, including a helper restarted with a fan left in manual and no lease; a
-manual hardware checklist covering quit, kill, logout, and restart.
+*Tested by (pending #103):* integration tests per exit path, including a helper restarted
+with a fan left in manual and no lease; a manual hardware checklist covering quit, kill,
+logout, and restart.
 
 ## 7. Panic path
 
@@ -326,12 +325,12 @@ command is safe to run at any time, from anywhere, including over SSH.
 [RECOVERY.md](RECOVERY.md) documents the procedure for when even that is unavailable,
 including SMC reset key combinations by Mac family.
 
-*Tested by (pending [#104](https://github.com/blamechris/Aeolus/issues/104)):* integration tests invoked against a deliberately
-corrupted helper state; a manual hardware check. `fanctl reset --all` parses and is wired
-into the command tree today, but its body exits with `Not implemented yet — see epic E10b`:
-the XPC call behind it is [#15](https://github.com/blamechris/Aeolus/issues/15) and the hardening is #104. Until both land, § 7
-describes the panic path rather than providing one — which matters more than the other
-pending lines here, because this is the section the others fall back to.
+*Tested by (pending #104):* integration tests invoked against a deliberately corrupted
+helper state; a manual hardware check. `fanctl reset --all` parses and is wired into the
+command tree today, but its body exits with `Not implemented yet — see epic E10b`: the XPC
+call behind it is #15 and the hardening is #104. Until both land, § 7 describes the panic
+path rather than providing one — which matters more than the other pending lines here,
+because this is the section the others fall back to.
 
 ## 8. Rate limiting and hysteresis
 
@@ -358,21 +357,18 @@ write**: the thermal override in § 3 is not rate-limited by a comfort mechanism
 
 **What exists is the constraint on the number, not a governor.** #101 shipped the
 downward-only clamp, and nothing consumes the result: no code rate-limits a write, and
-hysteresis has no evaluator — both are E8b
-([#17](https://github.com/blamechris/Aeolus/issues/17)), as `FanCurve`'s own doc comment
-says. So § 8 today bounds a value a curve may carry and shapes no output, and the precedence
-ruling above ("never delays a safety-actor write") is a rule about a mechanism that is not
-yet there to break it. Which epic *should* own the governor is open —
-[#121](https://github.com/blamechris/Aeolus/issues/121): E5's checklist claims it, E8a is
-told to reuse it, and only E8b schedules it.
+hysteresis has no evaluator — both are E8b (#17), as `FanCurve`'s own doc comment says. So
+§ 8 today bounds a value a curve may carry and shapes no output, and the precedence ruling
+above ("never delays a safety-actor write") is a rule about a mechanism that is not yet
+there to break it. Which epic *should* own the governor is open — #121: E5's checklist
+claims it, E8a is told to reuse it, and only E8b schedules it.
 
 *Tested by:* unit tests asserting that neither a Swift-constructed nor a JSON-decoded curve
 can hold a rate above the cap — `DownwardOnlyLimitTests`.
 
-*Tested by (pending [#17](https://github.com/blamechris/Aeolus/issues/17)):* `FanKit` unit
-tests driving a temperature series across a curve boundary and asserting no oscillation and
-no ramp faster than the cap. This line was unqualified until #119; there is nothing to drive
-a series through yet.
+*Tested by (pending #17):* `FanKit` unit tests driving a temperature series across a curve
+boundary and asserting no oscillation and no ramp faster than the cap. This line was
+unqualified until #119; there is nothing to drive a series through yet.
 
 ---
 
