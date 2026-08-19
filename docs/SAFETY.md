@@ -12,10 +12,25 @@ that turns off the lease or raises a ceiling, because those messages do not exis
 
 **Implementation status: partial, and deliberately ahead of the write path.** The pure
 constraint layer — § 2's clamp, its bounds gate, and § 3's and § 8's downward-only limits —
-is built and tested in `FanKit`. The mechanisms that need a running helper are not: the
-lease, the supervisor, sleep/wake, reclamation, and every restore path. All of it is
-tracked as epic E5, and E5 blocks the write-path epics E3 and E4. No code that writes to
-the SMC merges before the safety subsystem exists and is tested.
+is built and tested in `FanKit`. So is § 1's lease: the table, monotonic expiry, tombstones
+and the teardown paths are in `AeolusHelper/Lease`, driven against a scripted mock control
+plane. Not built: § 3's override, § 5's watchdog, § 4's power notifications, § 6's signal
+teardown and startup reconciliation, and § 7's body. All of it is tracked as epic E5, and E5
+blocks the write-path epics E3 and E4. No code that writes to the SMC merges before the
+safety subsystem exists and is tested.
+
+**How to read the *Tested by:* lines.** A bare *Tested by:* is a claim that those tests
+exist and pass today. Where a mechanism is not built, the line reads
+***Tested by (pending #N):*** and names the issue that will satisfy it. The distinction is
+load-bearing: a coverage claim naming a test that does not exist is worse than no line at
+all, because it retires the question. #119 split every one of the eight sections against the
+suite as it stands, so a bare line here is now a statement about tests that are in it.
+
+**Where this document and [ADR 0007](ADR/0007-safety-composition.md) disagreed, ADR 0007
+won.** Design review before E5 found that the eight mechanisms below do not compose as
+written, and re-decided three of them. This document was amended to match in #119; the
+paragraphs that changed say so, in place, rather than quietly reading as though they had
+always said it.
 
 ---
 
@@ -38,9 +53,22 @@ user's behalf, kept alive by the helper's own launchd job. The failure mode abov
 prevented in that mode too — what keeps the fans under control is a live supervised
 process, not a value written to disk.
 
-*Tested by:* unit tests on expiry arithmetic; integration tests against a mock SMC
-covering crash, kill, and hang; a manual hardware check that `kill -9` on the app returns
-the fans to automatic.
+**It is also not in the first release.** [ADR 0007](ADR/0007-safety-composition.md) refuses
+self-renewing leases in E5 v1: persist-across-quit ships as a follow-on, once restart and
+reconciliation (§ 6) are hardware-verified, because that pair *is* its entire safety story
+and shipping it first would assert the guarantee rather than hold it. One consequence is
+worth stating because the rest of this document leans on it — with no helper-renewed lease,
+**the TTL backstops every mechanism here**, and self-renewal is the one configuration where
+it does not.
+
+*Tested by:* unit tests on expiry arithmetic, including a wall clock moved in either
+direction and a monotonic jump (`LeaseExpiryTests`); tests against the scripted mock control
+plane covering connection death, an invalidation that never arrives at all, and a repeated
+one (`LeaseTeardownTests`).
+
+*Tested by (pending [#104](https://github.com/blamechris/Aeolus/issues/104)):* a manual hardware check that `kill -9` on the app
+returns the fans to automatic. It cannot run until a write path exists to put them anywhere
+else, which is the ordering rule at the top of this document, not an omission.
 
 ## 2. Hardware clamps
 
@@ -155,9 +183,13 @@ inside a settings payload, and it is applied helper-side after the payload cross
 
 User curves cannot override this. It is checked after curve evaluation, not before.
 
-*Tested by:* integration tests driving a mock SMC past each ceiling and asserting the
-override engages, notifies, and releases; unit tests asserting that raising a ceiling is
-rejected.
+*Tested by:* unit tests asserting that a request to raise a ceiling is rejected, and that a
+NaN or an infinity falls back to the compiled ceiling rather than disabling the mechanism
+(`ThermalCeilingTests`).
+
+*Tested by (pending [#102](https://github.com/blamechris/Aeolus/issues/102)):* integration tests driving a mock SMC past each ceiling
+and asserting the override engages, notifies, and releases. The ceiling constants and the
+downward-only rule are built; the override that consumes them is not.
 
 ## 4. Sleep and wake supervision
 
@@ -165,43 +197,122 @@ The helper registers for system power notifications through `IORegisterForSystem
 in the helper's own context, not the app's, because the app may not be running.
 
 - Before sleep: release control and restore automatic mode.
-- After wake: re-acquire, and re-run the Apple Silicon unlock sequence.
+- After wake: **nothing.** The helper does not re-assert.
 
-The re-run is not optional. Firmware resets `Ftst` across a sleep cycle and the system
-reclaims the fans. Without this, manual control silently stops working the first time the
-lid closes, while the UI carries on displaying a target speed nothing is honouring.
+**Release-before-sleep is the load-bearing half**; the continuous-clock TTL is the backstop,
+for a sleep that arrives without a completed notification round trip. Whether
+`ContinuousClock` advances across sleep is unverified on this machine and unverifiable
+without sleeping it — if it does not, the backstop degrades to "the lease survives with its
+remaining TTL", which bounds post-wake exposure rather than eliminating it, and makes
+release-before-sleep matter more, not less.
 
-*Tested by:* integration tests simulating the notification sequence; a manual hardware
-check that closing and reopening the lid preserves manual control.
+**The helper never silently re-asserts manual control on wake.** This section instructed the
+opposite until #119 — "re-acquire, and re-run the Apple Silicon unlock sequence", called not
+optional — and that is a *write* the helper would perform unbidden, racing firmware that
+resets `Ftst` across the sleep cycle for control it had just given up. A client that still
+wants the fans asks for them again, through the ordinary acquisition path: the same
+authorisation check, the same bounds gate, the same clamps, a fresh lease, and the unlock
+sequence re-run as part of granting it. Whether a client re-acquires automatically on wake
+or waits for the user is a client-side product decision; either way it is not a helper-side
+write. That is what keeps "never claim control you do not have" a structural property rather
+than a matter of re-assertion winning a race against the firmware. See
+[ADR 0007](ADR/0007-safety-composition.md).
+
+The stale-connection question — whether `io_connect_t` survives sleep/wake at all — is open
+([#68](https://github.com/blamechris/Aeolus/issues/68)), and reconnect-or-release is the
+answer either way: a helper that cannot read after wake is the blindness case in § 5.
+
+*Tested by (pending [#103](https://github.com/blamechris/Aeolus/issues/103)):* integration
+tests simulating the notification sequence, asserting a restore before sleep and **no write
+at all** on wake; a manual hardware check that closing the lid returns the fans to automatic
+and that reopening it leaves them there until a client asks again.
 
 ## 5. Reclamation watchdog
 
-The helper compares actual RPM against target every cycle. A persistent divergence means
-the system has taken the fans back despite our request.
+**The primary signal is the target we wrote against the target the SMC reads back** —
+`F<n>Tg` no longer holding what was put there, or the mode key no longer reading manual. A
+persistent divergence means the system has taken the fans back despite our request.
 
-When that happens the helper either re-asserts control or falls back to automatic — and
-either way **tells the user**. It never continues reporting a target speed the hardware is
-ignoring.
+**Actual RPM against target is a secondary signal, and only with a dwell time.** This
+section named it the primary one until #119. As a primary signal it specifies the exact
+defect the watchdog exists to avoid: `F<n>Ac` legitimately lags `F<n>Tg` —
+[SMC-RESEARCH.md](SMC-RESEARCH.md) records the fan slewing toward its target rather than
+stepping to it — so an actual-versus-target watchdog reads every ramp as a reclamation,
+including the full-scale ramp § 3 performs during a thermal emergency, which is the one
+moment it must not fire. A watchdog that reads another safety mechanism's work as an attack
+on it is worse than no watchdog.
+
+**Being unable to read is divergence too.** Nothing here covers "the helper cannot see" — a
+stale `io_connect_t` after wake ([#68](https://github.com/blamechris/Aeolus/issues/68)), a
+persistent read failure, an empty critical-sensor set — and each of them blinds this section
+and § 3 while a lease keeps the fans pinned. Persistent read failure is therefore treated as
+divergence: attempt a reconnect, then restore automatic and report. § 3 having working
+telemetry is a precondition of § 1 granting a lease at all.
+
+When divergence is confirmed the helper either re-asserts control or falls back to automatic
+— and either way **tells the user**. It never continues reporting a target speed the
+hardware is ignoring.
+
+**The re-assert branch exists only below § 3's ceiling**, with a bounded attempt budget,
+after which it falls back and reports. Reclamation during a thermal emergency means a more
+competent authority — one that can also throttle the SoC, which Aeolus never can — reached
+the same destination first. Aeolus does not fight the system for the fans while any
+temperature is above ceiling.
 
 This is a correctness rule as much as a safety one. A UI that lies about fan state is
 worse than a UI that reports an error, because the user acts on it.
 
-*Tested by:* integration tests where the mock SMC reverts a written value.
+*Tested by (pending [#102](https://github.com/blamechris/Aeolus/issues/102)):* integration
+tests where the mock SMC reverts a written value. `ScriptedControlPlane` can express that
+today — `WriteBehaviour.reverted` — but there is no watchdog yet to drive with it.
 
 ## 6. Restore on everything
 
 Automatic control is restored on every exit path: app quit, helper `SIGTERM`, logout,
-shutdown, uninstall, and crash — the last via a signal handler plus `atexit`.
+shutdown, uninstall, and crash. **Three mechanisms cover them, and which one covers which is
+the whole content of this section.** It named a single mechanism until #119 — "a signal
+handler plus `atexit`" — and that one is undefined behaviour on the path it was written for.
+
+- **Orderly signals** — `SIGTERM`, `SIGINT`, `SIGHUP`, which is how launchd shuts the helper
+  down. `DispatchSourceSignal` with the signal itself ignored, so the handler body runs in
+  normal execution context and not in signal context. Full restore, then `exit(0)`.
+- **Orderly exits** — explicit teardown. `atexit` may stay as a cheap belt, since it too runs
+  in normal context, but nothing may be load-bearing on it.
+- **Crash signals** — **no in-process restore at all.** `IOConnectCallStructMethod` is not
+  async-signal-safe, and a crash is exactly when heap and lock state are unknown. A signal
+  handler that calls into IOKit is undefined behaviour on the single path it exists to serve.
+
+**Crash coverage is restart plus reconciliation**, uniformly, for every way the helper can
+die — including the ones no handler could ever reach: `SIGKILL`, a kernel panic, a power
+loss. On every start, before serving anything, the helper reads fan mode state and restores
+to automatic any fan found in manual with no live lease. Lease state is in-memory only and
+deliberately so: a lease that survives its enforcer's death is a setting wearing a lease's
+name, and § 1's guarantee is a live supervised process, not a value written to disk.
+Reconciliation is that sentence made mechanical, and at boot it also covers manual mode
+persisting across a *reboot*, which nobody has verified cannot happen. See
+[ADR 0007](ADR/0007-safety-composition.md).
+
+**Restart is not configured yet.** `KeepAlive` and `RunAtLoad` were removed from the launch
+daemon plist in #81 because they would have restarted a scaffold that always exits non-zero.
+ADR 0007 reinstates them **in the same change that ships reconciliation, never before** —
+[#103](https://github.com/blamechris/Aeolus/issues/103) — because a restart policy without
+reconciliation restarts a helper that then serves without checking what the SMC still holds.
+Until that lands, the paragraph above describes a decision rather than a mechanism, which is
+what [#86](https://github.com/blamechris/Aeolus/issues/86) exists to hold open.
 
 The guarantee to match is Macs Fan Control's: quitting always returns the fans to Apple's
 control. Anything less and users are right not to trust the software.
 
-Note that the lease (§1) already covers the cases a signal handler cannot — `SIGKILL`,
-a kernel panic, a power loss. The handlers make the common cases fast and clean; the lease
-is what makes the guarantee hold.
+**The lease covers *client* death; reconciliation covers *helper* death.** Conflating the
+two processes is what let this section claim a signal handler was the answer. § 1's lease
+handles a crashed, killed, or hung app — `SIGKILL`, a kernel panic, a power loss on the
+*client* side — because the enforcer outlives it. When the helper is the one that dies, the
+enforcer is the casualty: the TTL is not counted by anything, the watchdog is not watching,
+and the SMC keeps the last value written. Only a restart can notice.
 
-*Tested by:* integration tests per exit path; a manual hardware checklist covering quit,
-kill, logout, and restart.
+*Tested by (pending [#103](https://github.com/blamechris/Aeolus/issues/103)):* integration
+tests per exit path, including a helper restarted with a fan left in manual and no lease; a
+manual hardware checklist covering quit, kill, logout, and restart.
 
 ## 7. Panic path
 
@@ -215,8 +326,12 @@ command is safe to run at any time, from anywhere, including over SSH.
 [RECOVERY.md](RECOVERY.md) documents the procedure for when even that is unavailable,
 including SMC reset key combinations by Mac family.
 
-*Tested by:* integration tests invoked against a deliberately corrupted helper state; a
-manual hardware check.
+*Tested by (pending [#104](https://github.com/blamechris/Aeolus/issues/104)):* integration tests invoked against a deliberately
+corrupted helper state; a manual hardware check. `fanctl reset --all` parses and is wired
+into the command tree today, but its body exits with `Not implemented yet — see epic E10b`:
+the XPC call behind it is [#15](https://github.com/blamechris/Aeolus/issues/15) and the hardening is #104. Until both land, § 7
+describes the panic path rather than providing one — which matters more than the other
+pending lines here, because this is the section the others fall back to.
 
 ## 8. Rate limiting and hysteresis
 
@@ -241,9 +356,23 @@ Ramp limiting shapes the control loop's output **only, and never delays a safety
 write**: the thermal override in § 3 is not rate-limited by a comfort mechanism. See
 [ADR 0007](ADR/0007-safety-composition.md).
 
-*Tested by:* `FanKit` unit tests driving a temperature series across a curve boundary and
-asserting no oscillation and no ramp faster than the cap; unit tests asserting that neither
-a Swift-constructed nor a JSON-decoded curve can hold a rate above the cap.
+**What exists is the constraint on the number, not a governor.** #101 shipped the
+downward-only clamp, and nothing consumes the result: no code rate-limits a write, and
+hysteresis has no evaluator — both are E8b
+([#17](https://github.com/blamechris/Aeolus/issues/17)), as `FanCurve`'s own doc comment
+says. So § 8 today bounds a value a curve may carry and shapes no output, and the precedence
+ruling above ("never delays a safety-actor write") is a rule about a mechanism that is not
+yet there to break it. Which epic *should* own the governor is open —
+[#121](https://github.com/blamechris/Aeolus/issues/121): E5's checklist claims it, E8a is
+told to reuse it, and only E8b schedules it.
+
+*Tested by:* unit tests asserting that neither a Swift-constructed nor a JSON-decoded curve
+can hold a rate above the cap — `DownwardOnlyLimitTests`.
+
+*Tested by (pending [#17](https://github.com/blamechris/Aeolus/issues/17)):* `FanKit` unit
+tests driving a temperature series across a curve boundary and asserting no oscillation and
+no ramp faster than the cap. This line was unqualified until #119; there is nothing to drive
+a series through yet.
 
 ---
 
