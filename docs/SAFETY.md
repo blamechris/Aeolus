@@ -10,18 +10,19 @@ Every mechanism below exists to make some version of that impossible. None of th
 disabled by configuration, and none of them are addressable over XPC — there is no message
 that turns off the lease or raises a ceiling, because those messages do not exist.
 
-**Implementation status: partial, and deliberately ahead of the write path.** The pure
-constraint layer — § 2's clamp, its bounds gate, and § 3's and § 8's downward-only limits —
-is built and tested in `FanKit`. So is § 1's lease: the table, monotonic expiry, tombstones
-and the teardown paths are in `AeolusHelper/Lease`, driven against a scripted mock control
-plane. Not built: § 3's override, § 5's watchdog, § 4's power notifications, § 6's signal
-teardown and startup reconciliation, and § 7's body. All of it is tracked as epic E5, and E5
-blocks the write-path epics E3 and E4. No code that writes to the SMC merges before the
-safety subsystem exists and is tested.
+**Implementation status: partial, and deliberately ahead of the write path.** Two layers
+are built, in two different targets. The pure constraint layer — § 2's clamp, its bounds
+gate, and § 3's and § 8's downward-only limits — is in `Sources/FanKit`. § 1's lease — the
+table, monotonic expiry, tombstones and the teardown paths — is in
+`Sources/AeolusHelper/Lease`, driven against a scripted mock control plane. Not built:
+§ 3's override, § 5's watchdog, § 4's power notifications, § 6's signal teardown and startup
+reconciliation, and § 7's body. All of it is tracked as epic E5, and E5 blocks the
+write-path epics E3 and E4. No code that writes to the SMC merges before the safety
+subsystem exists and is tested.
 
 **How to read the *Tested by:* lines.** A bare *Tested by:* is a claim that those tests
 exist and pass today. Where a mechanism is not built, the line reads
-***Tested by (pending #N):*** and names the issue that will satisfy it. The distinction is
+*Tested by (pending #N):* and names the issue that will satisfy it. The distinction is
 load-bearing: a coverage claim naming a test that does not exist is worse than no line at
 all, because it retires the question. #119 split every one of the eight sections against the
 suite as it stands, so a bare line here is now a statement about tests that are in it.
