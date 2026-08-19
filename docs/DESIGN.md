@@ -173,15 +173,21 @@ user renders video for two hours, thermal damage. The lease makes that impossibl
    that fan to maximum, then hands back to automatic, and surfaces a notification. User
    curves cannot override this.
 3. **Lease expiry → restore to auto** (§3).
-4. **Sleep/wake supervision.** Register for `NSWorkspace.willSleepNotification` /
-   `didWakeNotification` in the helper's context (`IORegisterForSystemPower`). Release
-   control before sleep; re-acquire and re-run the `Ftst` unlock after wake, since firmware
-   resets it.
-5. **Reclamation watchdog.** Poll actual vs. target RPM. If the system has silently reclaimed
-   the fans, either re-assert or fall back to auto and tell the user — never lie about state.
-6. **Restore-on-everything.** App quit, helper `SIGTERM`, logout, shutdown, uninstall, crash
-   (install a signal handler + `atexit`). Match Macs Fan Control's guarantee that quitting
-   always returns fans to Apple's control.
+4. **Sleep/wake supervision.** Register for system power notifications in the helper's own
+   context (`IORegisterForSystemPower`). Release control before sleep — that half is
+   load-bearing, with the continuous-clock TTL as the backstop. **The helper does not
+   re-assert on wake**; a client that still wants the fans re-acquires deliberately, through
+   the ordinary path, and the `Ftst` unlock is re-run as part of granting it.
+5. **Reclamation watchdog.** Compare the target written against the target read back —
+   **not** actual vs. target, which lags legitimately during a ramp and would misread the
+   thermal override in item 2 as a reclamation. Actual vs. target is secondary, with a
+   dwell time. Inability to read is divergence too. On divergence, re-assert (only below
+   item 2's ceiling) or fall back to auto — and tell the user; never lie about state.
+6. **Restore-on-everything.** App quit, helper `SIGTERM`, logout, shutdown, uninstall, crash.
+   Orderly signals via `DispatchSourceSignal` so the handler runs in normal execution
+   context; **no in-process restore on a crash signal** — IOKit is not async-signal-safe —
+   with crash coverage being helper restart plus startup reconciliation, uniformly. Match
+   Macs Fan Control's guarantee that quitting always returns fans to Apple's control.
 7. **Panic path.** `fanctl reset --all` and a documented recovery procedure (including SMC
    reset key combos per Mac family) that works even if the app is unlaunchable.
 8. **Rate limiting.** Cap ramp rate (default 200 RPM/s) and enforce hysteresis so a curve
@@ -189,6 +195,10 @@ user renders video for two hours, thermal damage. The lease makes that impossibl
 
 Every one of these gets a test. The lease and the emergency override get **integration**
 tests against a mock SMC, plus a manual hardware test checklist.
+
+Items 4, 5 and 6 above were re-decided by [ADR 0007](ADR/0007-safety-composition.md) after
+design review found the eight mechanisms do not compose as first written.
+[SAFETY.md](SAFETY.md) is normative and carries the reasoning; this list is the summary.
 
 ---
 
