@@ -68,6 +68,7 @@ extension SMCKey {
 
     /// Diagnostic / force key. On Apple Silicon M3 and newer, writing `1` here is what
     /// persuades the thermal manager to yield the fans; firmware resets it across sleep,
-    /// which is why the helper must re-run the unlock sequence on wake. See E4.
+    /// so the unlock is re-run whenever manual control is granted — never by the helper
+    /// re-asserting on wake, which ADR 0007 forbids. See E4.
     public static let forceTest = known("Ftst")
 }

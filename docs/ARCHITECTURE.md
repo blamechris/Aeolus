@@ -213,9 +213,17 @@ The sequence that reportedly works:
 6. On release, restore automatic mode **and** clear `Ftst`.
 
 The critical follow-on: **sleep and wake reset `Ftst` in firmware**, and the system takes
-the fans back. Without a supervision loop that detects reclamation and re-runs the unlock,
-manual control silently stops working the first time the lid closes — and the UI keeps
-showing a target speed nothing is honouring.
+the fans back. That is not a licence for the helper to re-assert on wake:
+[ADR 0007](ADR/0007-safety-composition.md) rules that it must not, because an unbidden write
+racing the firmware for control the helper has just released is the "claims control it does
+not have" failure wearing a fix's clothes.
+
+What the helper owes here is detection and honesty. The reclamation watchdog notices, the
+snapshot reports it, and a client that still wants the fans re-acquires deliberately —
+re-running the unlock through the ordinary grant path. Without that, manual control silently
+stops working the first time the lid closes while the UI carries on showing a target speed
+nothing is honouring, which is the same failure by a different route. See
+[SAFETY.md](SAFETY.md) § 4 and § 5.
 
 This is the highest-risk area of the project. It is treated as a research task with a
 written findings document (`SMC-RESEARCH.md`), not as a coding task, and the numbers above
