@@ -30,7 +30,7 @@ Two capabilities are tracked separately, because they fail independently:
 
 | Model identifier | Chip | macOS | Monitoring | Control |
 |---|---|---|---|---|
-| `Mac16,5` (MacBook Pro) | M4 Max | 26.5.2 | `untested` | `untested` |
+| `Mac16,5` (MacBook Pro) | M4 Max | 26.6.2 | `untested` | `untested` |
 
 Listed as untested rather than verified: this is the machine development happens on, but
 neither capability exists yet, so there is nothing to have verified. It will move to

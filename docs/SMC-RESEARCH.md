@@ -24,7 +24,11 @@ The machine available to this project:
 
 | Model identifier | Chip | macOS | Notes |
 |---|---|---|---|
-| `Mac16,5` | Apple M4 Max (12P/4E, 64 GB) | 26.5.2 (25F84) | Sole development machine |
+| `Mac16,5` | Apple M4 Max (12P/4E, 64 GB) | 26.6.2 (25G83) | Sole development machine |
+
+The machine ran 26.5.2 (25F84) for the 2026-07-25 session and 26.6.2 (25G83) for the
+2026-08-20 one. Each observation below is scoped to the build it was taken on, and says so;
+this row is the machine as it stands now.
 
 That is one Mac, from the M3-and-newer generation. It means:
 
@@ -589,17 +593,27 @@ differently, and picking the wrong class breaks the override in opposite directi
 | Class | Keys | Idle | 12-way load | 45 s after load |
 |---|---|---|---|---|
 | **Die / package cluster** | `TPD0`–`TPD9`, `TPDa`–`TPDf`, `TPDX`, `TRD0`–`TRD9`, `TRDa`–`TRDf`, `TRDX` (34) | 41.48 – 44.80 | 53.17 – 56.07 | 55.85 – 62.40 |
-| **Per-core, apparently** | `Tp0*` (45 numeric) | **exactly 40.00**, every one | 95.69 – 111.14 | 70.80 – 107.27 |
-| **Frozen constants** | `Tf06` 98.484375, `Tf46` 98.203125, `Tf16`/`Tf26` 76.00, `Tf36` 79.703125 | — | **byte-identical** | **byte-identical** |
+| **Per-core, apparently** | `Tp0*` (45 numeric) | **exactly 40.00**, every one | 74.43 – 111.14 | 70.80 – 107.27 |
+| **Frozen constants** | `Tf06` 98.484375, `Tf46` 98.203125, `Tf16`/`Tf26` 76.00, `Tf36` 79.703125 | — | **identical** | **identical** |
 
-Across all 368 `T*` keys, **38 did not move at all** between idle and full load, and the
-maximum over the whole population went 98.48 → 112.03 °C.
+Across all 368 `T*` keys, **34 were bit-for-bit unchanged** between idle and full load, and
+the maximum over the whole population went 98.48 → 112.03 °C. A further four — `TD00`,
+`TD02`, `TD04`, `TVA0` — moved by less than 0.005 °C, which is why an earlier draft of this
+paragraph said 38: it counted rows whose delta *rounded* to `+0.00` in a two-decimal working
+file rather than keys whose value was identical. The distinction matters here precisely
+because the argument below turns on values that do not change **at all**.
+
+"Identical" in the table above means identical to the last digit the SMC decoded. These
+captures are `fanctl sensors --json` output, which carries decoded scalars and no raw bytes,
+so they cannot support a claim about the bytes themselves — only about every value the decode
+produced. An earlier draft said "byte-identical", which is a claim this method cannot make.
 
 **Finding 1 — the frozen keys are not sensors.** `Tf06` reads 98.484375 on an idle machine
 with both fans stopped, and reads *exactly* the same value under a twelve-way load that
-takes the die cluster up 12 °C and spins the fans to 3400 RPM. A quantity that does not
-respond to a 12 °C change in the die it supposedly sits on is not a measurement of that
-die. Whatever `Tf*6` is — a trip point, a calibration constant, a limit register — a
+takes the die cluster up 12 °C and spins the fans from a standstill to 2372/2551 RPM — and
+the same value again in the third sample, with the fans at 3433/3683 RPM and the die 18 °C
+above where it started. A quantity that does not respond to any of that is not a measurement
+of the die it supposedly sits on. Whatever `Tf*6` is — a trip point, a calibration constant, a limit register — a
 max-over-all-`T*` critical set would sit at 98.48 °C permanently, above § 3's 95 °C CPU
 ceiling, **on a machine doing nothing**. That is the permanent-latch failure this project
 predicted from the 113.83 °C figure, now pinned to specific keys and demonstrated to be
@@ -607,10 +621,19 @@ load-invariant rather than merely high.
 
 **Finding 2 — and this is the one that was not predicted — filtering to keys that *do*
 track load is still not enough.** The `Tp0*` cluster tracks load beautifully: pinned at
-exactly 40.00 at idle, then 95.69–111.14 °C under an ordinary all-core busy loop. Those are
-real, responsive silicon temperatures. They are also **above § 3's 95 °C CPU ceiling during
-a routine `swift build`**, with the system's own thermal management perfectly content — fans
-at 2372/2551 RPM against a declared maximum of 5777, i.e. nowhere near distress.
+exactly 40.00 at idle, then 74.43–111.14 °C under the twelve-way busy loop. Those are real,
+responsive silicon temperatures. **Twenty-seven of the forty-five go above § 3's 95 °C CPU
+ceiling** — while the system's own thermal management stays perfectly content, fans at
+2372/2551 RPM against a declared maximum of 5777, i.e. nowhere near distress.
+
+Two numbers in that sentence were wrong in an earlier draft and are worth naming, because
+both errors flattered the argument. The band was given as 95.69–111.14: 95.69 is `Tp0H`, the
+*lowest key that happens to exceed the ceiling*, so the figure offered as evidence for the
+exclusion had been derived by first assuming the conclusion. And the load was described as
+"a routine `swift build`", which no capture in this session was taken during — the load was
+the synthetic busy loop named in the method above. The conclusion survives both corrections,
+since 27 keys over the ceiling is more than enough to break the override, but evidence that
+cannot be re-run is not evidence.
 
 Apple Silicon cores are designed to run there. A critical set built from `Tp0*` would fire
 the thermal emergency, revoke the user's lease, and slam the fans to maximum every time
