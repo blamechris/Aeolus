@@ -164,6 +164,26 @@ extension ScriptedControlPlane.Stage {
         return .nominal(temperatures: readings)
     }
 
+    /// A stage where only some curated keys answer at all, and those that do read `celsius`.
+    ///
+    /// **Degraded, not blind** — the distinction #124 built `CriticalSensorSet` around. A
+    /// key absent from a stage's dictionary is one the firmware does not answer, so this is
+    /// the machine that has lost sensors while keeping enough to produce a report. It is the
+    /// state § 3's release path had no test for, and the one where releasing on `max()` of
+    /// the survivors is indistinguishable from the machine cooling down.
+    ///
+    /// - Parameters:
+    ///   - answering: how many of the curated keys report.
+    ///   - celsius: what each of those reads.
+    /// - Returns: a stage whose report is partial rather than empty.
+    static func partial(answering: Int, at celsius: Double) -> Self {
+        var readings: [String: Double] = [:]
+        for key in CriticalSensorSet.mac16x5.keys.prefix(answering) {
+            readings[key.rawValue] = celsius
+        }
+        return .nominal(temperatures: readings)
+    }
+
     /// A stage where the machine reads `celsius` everywhere and the firmware honours writes.
     static func at(_ celsius: Double) -> ScriptedControlPlane.Stage {
         .nominal(temperatures: temperatures(celsius))

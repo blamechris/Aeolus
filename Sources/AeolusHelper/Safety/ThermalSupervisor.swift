@@ -44,17 +44,20 @@ actor ThermalSupervisor<Plane: FanControlPlane> {
     private let emergency: ThermalEmergency<Plane>
     private let clock: any MonotonicClock
     private let interval: Duration
+    private let log: SafetyLog
 
     private var task: Task<Void, Never>?
 
     init(
         emergency: ThermalEmergency<Plane>,
         clock: some MonotonicClock = SystemMonotonicClock(),
-        interval: Duration = ThermalSupervisor.defaultInterval
+        interval: Duration = ThermalSupervisor.defaultInterval,
+        log: SafetyLog = SafetyLog()
     ) {
         self.emergency = emergency
         self.clock = clock
         self.interval = interval
+        self.log = log
     }
 
     /// Starts the loop. Idempotent.
@@ -72,8 +75,9 @@ actor ThermalSupervisor<Plane: FanControlPlane> {
         let emergency = self.emergency
         let clock = self.clock
         let interval = self.interval
+        let log = self.log
         task = Task.detached {
-            await Self.run(emergency: emergency, clock: clock, interval: interval)
+            await Self.run(emergency: emergency, clock: clock, interval: interval, log: log)
         }
         return true
     }
@@ -87,6 +91,16 @@ actor ThermalSupervisor<Plane: FanControlPlane> {
     /// out would hand the fans back to a client on a machine nobody has read since it was
     /// above its ceiling — the failure asymmetry's second branch, reached through a
     /// lifecycle event instead of a bad reading.
+    ///
+    /// **The consequence, stated rather than left to be discovered.**
+    /// `ThermalEmergency.cycle()` is the only caller of `ThermalEmergencyLatch.release()`
+    /// anywhere in `Sources/`, so stopping while latched leaves § 3 engaged for the life of
+    /// the process: `acquireLease` refuses `.thermalEmergencyActive` forever and every
+    /// snapshot reports an emergency that is no longer happening. That is the right trade —
+    /// refusing manual control is safe, releasing blind is not — but it is a trade, and the
+    /// loop now says so at `.fault` on its way out.
+    /// [#103](https://github.com/blamechris/Aeolus/issues/103) owns the restart policy that
+    /// makes it recoverable.
     func stop() {
         task?.cancel()
         task = nil
@@ -102,7 +116,10 @@ actor ThermalSupervisor<Plane: FanControlPlane> {
     /// sleep — handled explicitly rather than with `try?`, which this repository's
     /// `no_silent_write_failure` rule refuses outright in the helper.
     static func run(
-        emergency: ThermalEmergency<Plane>, clock: some MonotonicClock, interval: Duration
+        emergency: ThermalEmergency<Plane>,
+        clock: some MonotonicClock,
+        interval: Duration,
+        log: SafetyLog = SafetyLog()
     ) async {
         while !Task.isCancelled {
             await emergency.cycle()
@@ -115,5 +132,9 @@ actor ThermalSupervisor<Plane: FanControlPlane> {
                 break
             }
         }
+        // `LeaseExpirySupervisor` ends the same way, for the reason it gives: a safety
+        // enforcer that went quiet without saying so would be the worst silent failure in
+        // the project. It is more true here — see `stop()`.
+        log.thermalSupervisorStopped(whileLatched: await emergency.isHolding)
     }
 }

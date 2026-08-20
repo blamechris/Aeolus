@@ -108,6 +108,88 @@ struct ThermalEmergencyReportingTests {
         #expect(notices.contains { $0.contains("single write, bypassing the ramp governor") })
     }
 
+    // MARK: - The blind path does not shout at 1 Hz
+
+    /// **A supervisor at 1 Hz that logs every blind cycle emits ~86,400 lines a day.**
+    ///
+    /// `DegradationMemo` collapses the *partial* read, but it lives inside
+    /// `CuratedCriticalTemperatures` and is only reached after a successful gate, so it
+    /// cannot see this path at all. That matters more than an edge case: an unrecognised
+    /// Mac resolves to the empty curated set, whose read throws every cycle **forever**, and
+    /// `CriticalSensorSet` documents that as the intended steady state for every unmeasured
+    /// machine. The latched variant is `.fault`, which would bury `thermalEmergencyEngaged`
+    /// — the one line that matters.
+    ///
+    /// Delete `lastCycleWasUnreadable`'s guard in `cycleSawNothing(_:)` and this goes red.
+    @Test("A run of unreadable cycles logs once, not once per cycle")
+    func theBlindPathLogsTheTransitionNotTheState() async throws {
+        let machine = ThermalMachine(stages: [.blind()])
+
+        for _ in 0..<10 { await machine.emergency.cycle() }
+
+        #expect(machine.safetyLog.lines.count == 1)
+        #expect(machine.safetyLog.lines.first?.contains("could not read") == true)
+    }
+
+    /// The closing half: a reader who saw the supervisor go quiet must see it come back,
+    /// or a cleared fault reads as still current.
+    @Test("Telemetry coming back is logged once")
+    func recoveryIsLogged() async throws {
+        let machine = ThermalMachine(stages: [.blind(), .at(44)])
+        await machine.emergency.cycle()
+        await machine.emergency.cycle()
+        await machine.plane.advance()
+
+        await machine.emergency.cycle()
+        await machine.emergency.cycle()
+
+        #expect(machine.safetyLog.lines.count == 2)
+        #expect(machine.safetyLog.lines.last?.contains("recovered") == true)
+    }
+
+    /// § 3's loop is the **only** caller of `ThermalEmergencyLatch.release()` in `Sources/`,
+    /// so stopping it while latched strands the latch for the life of the process:
+    /// `acquireLease` refuses forever and every snapshot reports an emergency that is not
+    /// happening. `stop()` is still right not to clear it — releasing on a machine nobody
+    /// has read since it was above its ceiling is worse — so the answer is to say so.
+    ///
+    /// `LeaseExpirySupervisor` logs its own stop for the reason it gives: "a lease enforcer
+    /// that went quiet without saying so would be the worst silent failure in the project".
+    @Test("A supervisor that stops while latched says so, at fault level")
+    func aSupervisorStoppingWhileLatchedSaysSo() async throws {
+        let machine = ThermalMachine(stages: [.at(97)])
+        await machine.emergency.cycle()
+        #expect(await machine.latch.isActive)
+
+        await ThermalSupervisor.run(
+            emergency: machine.emergency,
+            clock: TestClock(sleepBudget: 1),
+            interval: .seconds(1),
+            log: SafetyLog(recording: { [safetyLog = machine.safetyLog] in safetyLog.append($0, $1)
+            })
+        )
+
+        #expect(machine.safetyLog.faults.contains { $0.contains("while § 3 was latched") })
+    }
+
+    /// The counterpart: stopping with nothing latched is a `.notice`, not a fault. A
+    /// subsystem that shouts on every ordinary shutdown trains the reader to ignore it.
+    @Test("A supervisor that stops with no emergency logs at notice")
+    func aSupervisorStoppingCleanlyIsNotAFault() async {
+        let machine = ThermalMachine(stages: [.at(44)])
+
+        await ThermalSupervisor.run(
+            emergency: machine.emergency,
+            clock: TestClock(sleepBudget: 1),
+            interval: .seconds(1),
+            log: SafetyLog(recording: { [safetyLog = machine.safetyLog] in safetyLog.append($0, $1)
+            })
+        )
+
+        #expect(machine.safetyLog.faults.isEmpty)
+        #expect(machine.safetyLog.lines.contains { $0.contains("supervisor stopped") })
+    }
+
     // MARK: - The contract does not move
 
     /// Every refusal § 3 raises is a fault case E2 already shipped. ADR 0007 promised no

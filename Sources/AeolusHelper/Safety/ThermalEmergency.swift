@@ -1,4 +1,5 @@
 import FanKit
+import SMCCore
 
 /// `docs/SAFETY.md` § 3, and the precedence engine's first consumer.
 ///
@@ -53,6 +54,15 @@ import FanKit
 /// running gets no visual notification: the machine getting loud is the physical signal,
 /// and the next `fanctl` invocation reports. The as-built rewrite of `SAFETY.md` belongs to
 /// [#104](https://github.com/blamechris/Aeolus/issues/104).
+///
+/// - Note: this file is over SwiftLint's 400-line warning, as `LeaseAuthority.swift` and
+///   `Fan.swift` already are. Splitting it means either moving the write sequence into an
+///   extension in another file — which does not compile without widening the actor's
+///   `private` state to the whole module, and that state is exactly what makes
+///   `fire(_:from:)`'s reentrancy reasoning checkable — or cutting doc comments that are
+///   load-bearing. [#128](https://github.com/blamechris/Aeolus/issues/128) owns the split,
+///   and splitting a safety-critical file in the change that adds the safety mechanism is
+///   the wrong order.
 actor ThermalEmergency<Plane: FanControlPlane> {
 
     private let telemetry: any CriticalTemperatureSensing
@@ -75,6 +85,42 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// than recomputed at each comparison — a margin subtracted in two places is a margin
     /// that can disagree with itself.
     nonisolated let releaseThresholdCelsius: Double
+
+    /// The curated keys that answered on the cycle that engaged the latch.
+    ///
+    /// **The latch does not let go on a view that has shrunk since it fired.** `cycle()`
+    /// releases on `max(...)` over whatever answered, and it used to ask nothing about what
+    /// did *not* — so losing the hot keys and keeping the cool ones read as "the machine
+    /// cooled down". That is not hypothetical on this hardware:
+    /// `CriticalSensorSet` records the curated cluster spanning 55.85–62.40 °C at peak heat
+    /// soak, a ~6.5 °C spread, against a 5 °C `releaseHysteresisCelsius`. So a cluster whose
+    /// spread exceeds the margin is the **measured** case, and the failure is concrete —
+    /// hottest die key at 95.5 °C, coolest at 89 °C, hot half silent, latch releases,
+    /// `acquireLease` stops refusing, and the client that was revoked retries into the same
+    /// overheating workload. Exactly the loop the refusal exists to prevent.
+    ///
+    /// Comparing against the engaging cycle's key set rather than requiring a *complete*
+    /// read is deliberate. `CriticalSensorSet`'s whole justification for a compiled-in key
+    /// list is that a key this firmware never exposes is not a failure, so demanding
+    /// `unreadableKeys.isEmpty` would strand the latch forever on any machine that
+    /// permanently lacks one of the 34 — permanent refusal of manual control, which is
+    /// `CLAUDE.md` rule 6 reached from the safe-looking direction. A key absent at engage
+    /// time is absent from this set and cannot block the release; a key that *was* answering
+    /// and has since gone quiet can, and should.
+    private var keysAnsweringAtEngage: Set<SMCKey> = []
+
+    /// Whether the previous cycle failed to read anything at all.
+    ///
+    /// Collapses the blind path to one line per transition. `DegradationMemo` sits inside
+    /// `CuratedCriticalTemperatures` and is only reached *after* a successful gate, so it
+    /// cannot see this path — and a supervisor at 1 Hz that logged every blind cycle would
+    /// emit ~86,400 lines a day, one variant of them at `.fault`, burying
+    /// `thermalEmergencyEngaged`. That is #124's forward constraint applied to the lines
+    /// this type added rather than only to the one it inherited: an unrecognised Mac
+    /// resolves to the empty curated set, whose read throws **every cycle, forever**, and
+    /// that is the documented steady state for every unmeasured machine rather than an edge
+    /// case.
+    private var lastCycleWasUnreadable = false
 
     /// The permit for every fan currently off Apple's thermal management.
     ///
@@ -172,16 +218,34 @@ actor ThermalEmergency<Plane: FanControlPlane> {
             return
         }
 
+        if lastCycleWasUnreadable {
+            lastCycleWasUnreadable = false
+            log.thermalEmergencyTelemetryRecovered(answered: report.readings.count)
+        }
+
         guard await latch.isActive else {
-            if hottest.celsius > ceilingCelsius { await fire(hottest) }
+            if hottest.celsius > ceilingCelsius { await fire(hottest, from: report) }
             return
         }
 
-        // Latched. The first question is whether to let go, and it is asked against a
-        // *fresh* reading — a latch tested against the reading that engaged it would never
-        // release.
+        // Latched. Before asking whether it is cool enough to let go, ask whether this
+        // cycle can still see everything it could see when it fired. A shrinking view reads
+        // exactly like a cooling machine, and only one of those is safe to act on — see
+        // `keysAnsweringAtEngage`.
+        let answeringNow = Set(report.readings.map(\.key))
+        guard keysAnsweringAtEngage.isSubset(of: answeringNow) else {
+            log.thermalEmergencyHeldThroughDegradedCycle(
+                missing: keysAnsweringAtEngage.subtracting(answeringNow).count,
+                atEngage: keysAnsweringAtEngage.count)
+            await takeBackAnythingEngagedSinceFiring()
+            return
+        }
+
+        // Asked against a *fresh* reading — a latch tested against the reading that engaged
+        // it would never release.
         if hottest.celsius <= releaseThresholdCelsius {
             if await latch.release() {
+                keysAnsweringAtEngage = []
                 log.thermalEmergencyReleased(
                     hottest: hottest, threshold: releaseThresholdCelsius)
             }
@@ -253,7 +317,9 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// component each. Firing every fan under manual control is therefore the honest
     /// reading of "the affected fan", and it is the over-firing direction, which this
     /// mechanism resolves toward by design.
-    private func fire(_ hottest: CriticalTemperature) async {
+    private func fire(
+        _ hottest: CriticalTemperature, from report: CriticalTemperatureReport
+    ) async {
         // `engage(by:)` reports whether it engaged a latch that was **clear**, and that
         // answer is decided inside the latch actor — so exactly one caller can get `true`
         // however many cycles are in flight. Guarding on it here is what keeps this method
@@ -291,6 +357,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         // `true`. `LeaseAuthority.restore(_:because:)` carries the same admission about its
         // `releasing` count, for the same reason and in the same words.
         guard await latch.engage(by: hottest) else { return }
+        keysAnsweringAtEngage = Set(report.readings.map(\.key))
         log.thermalEmergencyEngaged(
             hottest: hottest, ceiling: ceilingCelsius, fansHeld: engagedFans.count)
 
@@ -339,10 +406,21 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// [#126](https://github.com/blamechris/Aeolus/issues/126); until then this is the line
     /// that makes the condition visible rather than silent.
     private func cycleSawNothing(_ detail: String) async {
+        let wasAlreadyUnreadable = lastCycleWasUnreadable
+        lastCycleWasUnreadable = true
+        // Log the transition, not the state. See `lastCycleWasUnreadable`.
+        guard !wasAlreadyUnreadable else { return }
+
         if await latch.isActive {
             log.thermalEmergencyHeldThroughUnreadableCycle(detail: detail)
         } else {
             log.thermalEmergencyCycleUnreadable(detail: detail)
         }
+    }
+
+    /// Whether § 3 is currently holding, for a supervisor that needs to say so on its way
+    /// out. Reads the latch rather than caching it.
+    var isHolding: Bool {
+        get async { await latch.isActive }
     }
 }

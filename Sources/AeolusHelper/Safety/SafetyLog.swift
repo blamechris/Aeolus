@@ -188,6 +188,64 @@ struct SafetyLog: Sendable {
         )
     }
 
+    /// The latch was held because this cycle could see less than the cycle that engaged it.
+    ///
+    /// `.fault`, because it means § 3 is holding on a machine it can no longer fully see —
+    /// and because the alternative to holding is releasing on a view that shrank, which
+    /// reads exactly like a machine that cooled down.
+    func thermalEmergencyHeldThroughDegradedCycle(missing: Int, atEngage: Int) {
+        emit(
+            .fault,
+            """
+            Thermal emergency latch held: \(missing) of the \(atEngage) curated keys that \
+            were answering when it fired have gone silent. A shrinking view of the machine \
+            is not evidence that it cooled down, so the latch does not let go on one.
+            """
+        )
+    }
+
+    /// Telemetry came back after a run of cycles that could read nothing.
+    ///
+    /// The closing half of the blind path's transition logging. Without it a reader sees a
+    /// supervisor go quiet and never sees it recover, which reads as a fault still current
+    /// however long ago it cleared.
+    func thermalEmergencyTelemetryRecovered(answered: Int) {
+        emit(
+            .notice,
+            """
+            Thermal emergency telemetry recovered: \(answered) curated key(s) answering \
+            again after a run of unreadable cycles.
+            """
+        )
+    }
+
+    /// § 3's supervisor stopped.
+    ///
+    /// `LeaseExpirySupervisor` logs its own stop because "a lease enforcer that went quiet
+    /// without saying so would be the worst silent failure in the project". The same is
+    /// true here and more so: `ThermalEmergency.cycle()` is the **only** caller of
+    /// `ThermalEmergencyLatch.release()` anywhere in `Sources/`, so a loop that stops while
+    /// latched leaves the latch engaged for the life of the process — `acquireLease`
+    /// refusing `.thermalEmergencyActive` forever and every snapshot reporting a thermal
+    /// emergency that is no longer happening, which is `CLAUDE.md` rule 6 reached through a
+    /// lifecycle event. `stop()` deliberately does not clear the latch (releasing § 3 on a
+    /// machine nobody has read since it was above its ceiling is worse), so the answer is to
+    /// say so loudly and let [#103](https://github.com/blamechris/Aeolus/issues/103) own the
+    /// restart.
+    func thermalSupervisorStopped(whileLatched: Bool) {
+        emit(
+            whileLatched ? .fault : .notice,
+            whileLatched
+                ? """
+                Thermal emergency supervisor stopped **while § 3 was latched**. Nothing else \
+                releases the latch, so manual fan control stays refused and the snapshot \
+                keeps reporting an emergency until the helper restarts.
+                """
+                : "Thermal emergency supervisor stopped. Nothing is sampling critical "
+                    + "temperatures until it starts again."
+        )
+    }
+
     /// A cycle produced no reading while the latch was engaged.
     ///
     /// The latch is **held**, not released. Stated in the log because "the override is
