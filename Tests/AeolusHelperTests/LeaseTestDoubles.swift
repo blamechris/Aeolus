@@ -274,6 +274,7 @@ enum LeaseFixture {
         enumeration: ScriptedFanEnumeration = ScriptedFanEnumeration(),
         restorer: RecordingFanRestorer = RecordingFanRestorer(),
         telemetry: any CriticalTemperatureSensing = sightedTelemetry(),
+        thermalEmergency: ThermalEmergencyLatch = ThermalEmergencyLatch(),
         clock: TestClock = TestClock(),
         wallClock: TestWallClock = TestWallClock(),
         tombstoneCapacity: Int = ConnectionTombstones.defaultCapacity
@@ -282,6 +283,7 @@ enum LeaseFixture {
             enumeration: enumeration,
             restorer: restorer,
             telemetry: telemetry,
+            thermalEmergency: thermalEmergency,
             clock: clock,
             wallClock: wallClock.provider,
             tombstoneCapacity: tombstoneCapacity,

@@ -72,6 +72,16 @@ actor LeaseAuthority {
     /// `CriticalTemperatureSensing` for why it is its own role rather than a method on
     /// either of the two above.
     private let telemetry: any CriticalTemperatureSensing
+    /// The one bit that says `docs/SAFETY.md` § 3 is holding. Read at grant time; set by
+    /// `ThermalEmergency`, which this type deliberately holds no reference to — see
+    /// `ThermalEmergencyLatch` for why the latch is its own type.
+    ///
+    /// **Required, with no default**, unlike the other injected collaborators. A defaulted
+    /// `ThermalEmergencyLatch()` compiles silently and yields a private latch that nothing
+    /// will ever engage, which turns `refuseIfThermalEmergencyActive` into a guard that
+    /// cannot fire. `ThermalEmergency` already required its latch; the two types that must
+    /// agree with it did not, and an adversarial review named that as the E3 footgun it is.
+    private let thermalEmergency: ThermalEmergencyLatch
     private let log: LeaseLog
 
     private var table = LeaseTable()
@@ -91,6 +101,7 @@ actor LeaseAuthority {
         enumeration: some FanEnumerating,
         restorer: some FanRestoring,
         telemetry: some CriticalTemperatureSensing,
+        thermalEmergency: ThermalEmergencyLatch,
         clock: some MonotonicClock = SystemMonotonicClock(),
         wallClock: @escaping @Sendable () -> Date = Date.init,
         tombstoneCapacity: Int = ConnectionTombstones.defaultCapacity,
@@ -99,6 +110,7 @@ actor LeaseAuthority {
         self.enumeration = enumeration
         self.restorer = restorer
         self.telemetry = telemetry
+        self.thermalEmergency = thermalEmergency
         self.clock = clock
         self.wallClock = wallClock
         self.tombstones = ConnectionTombstones(capacity: tombstoneCapacity)
@@ -119,11 +131,11 @@ actor LeaseAuthority {
     ///    as from a message.
     /// 3. The suspension points: enumerating the machine's fans, then sweeping anything
     ///    already lapsed — so the single-lease check below is made against live leases only,
-    ///    and a previous lease's fans are back on automatic before new ones are taken — and
-    ///    then proving the helper can still see a temperature at all. The sweep runs
-    ///    **before** that proof deliberately: a lapsed lease's fans go back to automatic
-    ///    whether or not this machine is blind, and a blind machine is the last one on
-    ///    which to skip a restore.
+    ///    and a previous lease's fans are back on automatic before new ones are taken — then
+    ///    refusing if § 3 is latched, and then proving the helper can still see a
+    ///    temperature at all. The sweep runs **before** both of those deliberately: a lapsed
+    ///    lease's fans go back to automatic whether or not this machine is blind and whether
+    ///    or not it is too hot, and neither is a machine on which to skip a restore.
     /// 4. **The liveness check, after the last suspension point and immediately before
     ///    registering.** Everything from there to the `insert` is straight-line: the actor
     ///    cannot be re-entered between the check and the act it guards.
@@ -151,6 +163,7 @@ actor LeaseAuthority {
 
         let enumerated = try await enumeration.enumeratedFanIndices()
         await expireLapsedLeases()
+        try await refuseIfThermalEmergencyActive(connection)
         try await refuseIfBlind(connection)
 
         // ---- No `await` below this line. Adding one reopens #95. ----
@@ -312,6 +325,69 @@ actor LeaseAuthority {
         }
     }
 
+    // MARK: - Teardown path 3 of 3: revocation
+
+    /// Drops every lease covering `fan`, whole, and returns all of their fans to automatic.
+    ///
+    /// `docs/SAFETY.md` § 3's revocation, and the only teardown path here that is not a
+    /// lease *ending*: the TTL, connection death and a voluntary release are all a holder
+    /// running out of claim, while this is a claim being taken from a client that did
+    /// nothing wrong. That is why it carries its own `FanRestoreCause` rather than reusing
+    /// one — an operator reading `log show` must be able to tell "the client went away"
+    /// from "the machine got too hot", and a cause that cannot be named is a mechanism that
+    /// cannot be audited.
+    ///
+    /// **It does not consult the latch, and must not.** `ThermalEmergency` engages the latch
+    /// before it writes and calls this afterwards, so a check here would be the same fact
+    /// asked twice — and the second asking is the one that can be wrong, because it happens
+    /// after two `await`s during which the latch could have been released by a cooler cycle.
+    /// A revocation that quietly declined to run would leave a client holding a lease over
+    /// fans this actor has already handed back, which is `CLAUDE.md` rule 6.
+    ///
+    /// Not throwing and returning nothing, for `connectionDidInvalidate(_:)`'s reason: the
+    /// caller is a safety actor mid-teardown and has no use for a failure it cannot act on.
+    /// Entries are removed synchronously before the restore is awaited, exactly as the other
+    /// paths do it.
+    func revokeLeases(coveringFan fan: Int, because cause: FanRestoreCause) async {
+        let revoked = table.removeAll(covering: fan)
+        for entry in revoked {
+            log.revoked(entry.connection, fans: entry.fanIndices, because: cause)
+            await restore(entry.fanIndices, because: cause)
+        }
+    }
+
+    /// Revokes **every** live lease, whatever fans it covers.
+    ///
+    /// `docs/SAFETY.md` § 3 selects on this rather than on the emergency's own registry of
+    /// engaged fans, and the difference is a defect an adversarial review found rather than
+    /// a preference. A client can hold a live lease **without having engaged manual control
+    /// yet** — acquisition and the first write are separate messages — and such a fan is
+    /// still on automatic, so it appears in no registry of engaged fans. An emergency that
+    /// revoked only what it had bridged would latch, take back nothing, and leave that
+    /// lease live; the client's next write would then engage a fan into an emergency that
+    /// has already fired.
+    ///
+    /// It also closes a window the lease core cannot close from its own side. The latch is
+    /// a *different actor*, so `refuseIfThermalEmergencyActive` reads it across a hop and
+    /// then awaits `refuseIfBlind`'s real 34-key SMC read before the straight-line region
+    /// begins — the emergency can engage during that read, and the grant proceeds. No
+    /// re-check below the marker can fix that, because the hop back is itself a window
+    /// ([#95](https://github.com/blamechris/Aeolus/issues/95) is the same shape). What
+    /// closes it is the emergency taking back whatever it finds, every cycle it holds.
+    ///
+    /// Deliberately **not** shared with `releaseEveryLease()`, which drops the same table
+    /// for § 7's panic verb. They are different actors — levels 1 and 2 — and
+    /// `LeaseTable`'s own selectors are written out for exactly this reason: a shared
+    /// predicate remover is the first step towards one mechanism wearing several names, and
+    /// an operator reading `log show` must be able to tell the panic path from § 3.
+    func revokeEveryLease(because cause: FanRestoreCause) async {
+        let revoked = table.removeAll()
+        for entry in revoked {
+            log.revoked(entry.connection, fans: entry.fanIndices, because: cause)
+            await restore(entry.fanIndices, because: cause)
+        }
+    }
+
     // MARK: - The panic path
 
     /// Drops every lease and restores every fan they covered.
@@ -416,6 +492,34 @@ actor LeaseAuthority {
             log.refusedBlindTelemetry(connection, detail: String(describing: error))
             throw AeolusXPCFault.manualControlUnavailable(reason: .noThermalTelemetry)
         }
+    }
+
+    /// Refuses the grant while `docs/SAFETY.md` § 3 is holding.
+    ///
+    /// **A revoked holder is not silently re-granted.** The emergency revokes the whole
+    /// lease covering a fan it fired on, and the client's ordinary response to losing a
+    /// lease is to acquire another one — so without this, the mechanism would hand the fans
+    /// straight back to the workload that overheated the machine, on a cycle bounded only
+    /// by how fast the client retries. Resuming is a fresh `acquireLease`, and it is
+    /// refused until a fresh reading falls a hysteresis margin below the ceiling.
+    ///
+    /// `.thermalEmergencyActive` already exists in `AeolusXPCFault` — E2 built the
+    /// vocabulary before the mechanism, so this consumes a fault case rather than adding
+    /// one, and `AeolusXPCVersion` does not move.
+    ///
+    /// ## Why it sits above the blindness check
+    ///
+    /// Both are refusals and both are true when both apply, so the question is which fact
+    /// the client is told. This one, for two reasons. It is the more consequential — a
+    /// machine above its thermal ceiling is a worse thing to grant a lease on than a machine
+    /// whose sensors went quiet — and it is the only one of the two that costs no hardware
+    /// round trip, so a latched machine refuses without spending an SMC read it does not
+    /// need. The same reasoning `refuseIfBlind` gives for sitting above the concurrent-lease
+    /// refusal, one step further up.
+    private func refuseIfThermalEmergencyActive(_ connection: ConnectionID) async throws {
+        guard await thermalEmergency.isActive else { return }
+        log.refusedThermalEmergency(connection)
+        throw AeolusXPCFault.thermalEmergencyActive
     }
 
     private func refuseIfInvalidated(_ connection: ConnectionID) throws {

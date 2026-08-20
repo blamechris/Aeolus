@@ -59,6 +59,42 @@ struct LeaseLog: Sendable {
         )
     }
 
+    /// A lease was taken from a client that had done nothing wrong.
+    ///
+    /// `.fault` — the level this type reserves for "a safety mechanism decided the machine
+    /// matters more than the client's claim". `refusedBlindTelemetry` is the other one, and
+    /// an earlier version of this comment called this the only one, which was false. Every
+    /// *other* line here is a client running out of claim; this is the line a user arrives
+    /// with when they ask why their fan settings vanished.
+    func revoked(_ connection: ConnectionID, fans: Set<Int>, because cause: FanRestoreCause) {
+        log.fault(
+            """
+            Connection \(connection.logDescription, privacy: .public) had its lease over \
+            fan(s) \(Self.describe(fans), privacy: .public) revoked whole \
+            (\(Self.describe(cause), privacy: .public)). It was not trimmed to a subset: a \
+            client holding part of a lease it can no longer command would be told it has \
+            control it does not have.
+            """
+        )
+    }
+
+    /// A grant was refused because § 3 is holding.
+    ///
+    /// Separate from `refusedBlindTelemetry` although both mean "not now": one says the
+    /// mechanism cannot see, the other says it has seen something and acted. Collapsing
+    /// them would make it impossible to tell, afterwards, whether a machine that refused
+    /// every lease for a minute was too hot or merely blind.
+    func refusedThermalEmergency(_ connection: ConnectionID) {
+        log.notice(
+            """
+            Connection \(connection.logDescription, privacy: .public) was refused manual \
+            control: the thermal emergency override is latched. A revoked holder is not \
+            silently re-granted — it asks again, and is refused until a fresh reading falls \
+            a hysteresis margin below the ceiling.
+            """
+        )
+    }
+
     /// The in-flight half of #95's fix fired.
     ///
     /// Worth `notice` rather than `info`: it means a client was `SIGKILL`ed or disconnected
@@ -161,6 +197,8 @@ struct LeaseLog: Sendable {
 
     private static func describe(_ cause: FanRestoreCause) -> String {
         switch cause {
+        case .thermalEmergency:
+            return "the thermal emergency override fired — docs/SAFETY.md § 3"
         case .leaseExpired: return "the lease expired — TTL, monotonic clock"
         case .connectionInvalidated: return "the holding connection died"
         case .leaseReleased: return "the client released the lease"

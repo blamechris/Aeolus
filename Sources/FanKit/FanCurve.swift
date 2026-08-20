@@ -7,8 +7,17 @@ import Foundation
 /// the model rather than optional extras. A curve with a steep segment near a threshold
 /// will oscillate audibly without them.
 ///
-/// - Note: Evaluation, hysteresis, and ramp limiting are E8b. The shape is fixed here so
-///   the profile schema and the XPC DTOs can be written against it.
+/// - Note: Evaluation and hysteresis are E8b
+///   ([#17](https://github.com/blamechris/Aeolus/issues/17)). The shape is fixed here so the
+///   profile schema and the XPC DTOs can be written against it.
+/// - Note: **Ramp limiting is not E8b.** This line said it was until #125, which is one of
+///   the three disagreeing owners [#121](https://github.com/blamechris/Aeolus/issues/121)
+///   was filed against. The governor is `RampGovernor`, an E5 mechanism, built in the change
+///   that states ADR 0007's ruling that § 8 never delays a safety-actor write — because a
+///   precedence rule about a mechanism that does not exist cannot be tested. This field is
+///   the rate it is constructed from; E8a
+///   ([#12](https://github.com/blamechris/Aeolus/issues/12)) reuses that governor rather than
+///   reimplementing one.
 public struct FanCurve: Sendable, Hashable, Codable {
     public struct Point: Sendable, Hashable, Codable, Comparable {
         public let temperatureCelsius: Double

@@ -70,6 +70,21 @@ protocol FanRestoring: Sendable {
 /// cannot be audited.
 enum FanRestoreCause: Sendable, Hashable {
 
+    /// `docs/SAFETY.md` § 3 fired: a curated critical temperature went above its ceiling
+    /// while this lease held the fans. Actor level 2.
+    ///
+    /// Like `.allLeasesDropped` — § 7's panic verb, and the one cause that outranks this one
+    /// — it is a lease being **taken** from a client that had done nothing wrong, rather
+    /// than a lease ending, which is what the three below are. An earlier version of this
+    /// comment called it "the highest-precedence cause here", which contradicts the
+    /// precedence order shipped in the same change: `SafetyActorLevel.panicRestore` is 1 and
+    /// this is 2.
+    ///
+    /// `ThermalEmergency` performs its own restore before this revocation reaches the lease
+    /// core, per ADR 0007's keystone; the restore this cause labels is the idempotent second
+    /// one.
+    case thermalEmergency
+
     /// The TTL lapsed. The backstop path, driven by `LeaseExpirySupervisor` against the
     /// monotonic clock, and reachable with no connection event of any kind.
     case leaseExpired

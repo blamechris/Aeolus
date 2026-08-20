@@ -19,10 +19,14 @@ struct ReadOnlyFanAuthorityTests {
     private static let noWritePath = AeolusXPCFault.manualControlUnavailable(
         reason: .writePathNotBuilt)
 
-    private func authority(provider: FakeSensorProvider) -> ReadOnlyFanAuthority {
+    private func authority(
+        provider: FakeSensorProvider,
+        thermalEmergency: ThermalEmergencyLatch = ThermalEmergencyLatch()
+    ) -> ReadOnlyFanAuthority {
         ReadOnlyFanAuthority(
             provider: provider,
             log: Self.log,
+            thermalEmergency: thermalEmergency,
             now: { Date(timeIntervalSince1970: 1_000_000) }
         )
     }

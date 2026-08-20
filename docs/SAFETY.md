@@ -16,10 +16,19 @@ downward-only limits — is in `Sources/FanKit`. § 2's write authorisation, the
 a fan index to the bounds a read established, is in
 `Sources/AeolusHelper/FanWriteAuthorisation.swift` (ADR 0008). § 1's lease — the table,
 monotonic expiry, tombstones and the teardown paths — is in `Sources/AeolusHelper/Lease`,
-driven against in-memory doubles. Not built: § 3's override, § 5's watchdog, § 4's power
-notifications, § 6's signal teardown and startup reconciliation, and § 7's body. All of it
-is tracked as epic E5, and E5 blocks the write-path epics E3 and E4. No code that writes to
-the SMC merges before the safety subsystem exists and is tested.
+driven against in-memory doubles. § 3's override and § 8's ramp governor are in
+`Sources/AeolusHelper/Safety` and `Sources/FanKit/RampGovernor.swift`, with the precedence
+engine that composes them, driven against the scripted SMC. Not built: § 5's watchdog,
+§ 4's power notifications, § 6's signal teardown and startup reconciliation, § 7's body,
+and § 8's hysteresis. All of it is tracked as epic E5, and E5 blocks the write-path epics
+E3 and E4. No code that writes to the SMC merges before the safety subsystem exists and is
+tested.
+
+**Built does not mean running.** Every mechanism below writes through `FanControlPlane`,
+whose production conformer answers `controlPathNotBuilt` until E3 and E4 exist, and the
+helper still serves `ReadOnlyFanAuthority`, which grants no lease at all. So § 3 is a
+complete, tested mechanism with nothing yet to protect — deliberately, because E5 is what
+gates the epics that give it something.
 
 **How to read the *Tested by:* lines.** A bare *Tested by:* is a claim that those tests
 exist and pass today. Where a mechanism is not built, the line reads
@@ -180,7 +189,9 @@ take a permit and that the restore verb takes none.
 
 The helper samples critical sensors every cycle. Above a compiled-in ceiling — 95 °C CPU,
 90 °C storage by default — it forces the affected fan to maximum, then hands back to
-automatic, and notifies the user.
+automatic, revokes any lease that covered it, and reports — on the snapshot and in the log.
+**Not a user notification**: a root daemon cannot post one, and this sentence said it did
+until the mechanism was built. See "what the user is actually told" below.
 
 **"95 °C CPU" means the package, not a core**, and the distinction is not pedantry: on the
 one machine this project has measured, an all-core load put **27 of 45 per-core sensors above
@@ -208,7 +219,7 @@ like a ceiling that is being enforced.
 
 **These ceilings are tunable downward only.** A configuration asking to raise one is
 rejected rather than honoured. A safety limit the user can defeat is not a safety limit,
-and the notification exists so that the override is never silent — a user whose machine
+and the reporting below exists so that the override is never silent — a user whose machine
 suddenly gets loud deserves to know why.
 
 A value that is not a temperature at all — NaN, an infinity — falls back to the compiled
@@ -226,9 +237,29 @@ User curves cannot override this. It is checked after curve evaluation, not befo
 NaN or an infinity falls back to the compiled ceiling rather than disabling the mechanism
 (`ThermalCeilingTests`).
 
-*Tested by (pending #102):* integration tests driving a mock SMC past each ceiling and
-asserting the override engages, notifies, and releases. The ceiling constants and the
-downward-only rule are built; the override that consumes them is not.
+*Tested by:* `ThermalEmergencyTests` drives the scripted SMC to **exactly** the ceiling, to
+the next representable value above it, into the hysteresis band, and to exactly the release
+threshold — boundaries rather than "well above" and "well below" — and asserts that the
+override engages, writes maximum in one step, restores, revokes the whole lease, and
+refuses the next `acquireLease` while latched. `ThermalSupervisorTests` drives the same
+mechanism through its own loop.
+
+**What the user is actually told.** `isThermalEmergencyActive` on the snapshot, which the
+app renders at 1 Hz, and a `.fault` line in the log. That is the whole of it: a root daemon
+cannot post a user notification, so a `fanctl`-held lease with no app running gets no visual
+signal at all — the machine getting loud is the physical one, and the next `fanctl`
+invocation reports.
+
+This section promised a notification in three places until #125 built the mechanism and an
+adversarial review found the promise still standing two paragraphs above its own retraction.
+Both have been corrected in place rather than deleted, because a safety document that
+quietly stops claiming something is indistinguishable from one that never claimed it. The
+as-built rewrite of this document is
+[#104](https://github.com/blamechris/Aeolus/issues/104)'s.
+
+*Tested by (pending #104):* the hardware rows — a real fan actually reaching maximum, and
+the override releasing on a real cool-down — which cannot run until E3 or E4 builds a write
+path.
 
 ## 4. Sleep and wake supervision
 
@@ -403,20 +434,37 @@ Ramp limiting shapes the control loop's output **only, and never delays a safety
 write**: the thermal override in § 3 is not rate-limited by a comfort mechanism. See
 [ADR 0007](ADR/0007-safety-composition.md).
 
-**What exists is the constraint on the number, not a governor.** #101 shipped the
-downward-only clamp, and nothing consumes the result: no code rate-limits a write, and
-hysteresis has no evaluator — both are E8b (#17), as `FanCurve`'s own doc comment says. So
-§ 8 today bounds a value a curve may carry and shapes no output, and the precedence ruling
-above ("never delays a safety-actor write") is a rule about a mechanism that is not yet
-there to break it. Which epic *should* own the governor is open — #121: E5's checklist
-claims it, E8a is told to reuse it, and only E8b schedules it.
+**The ramp governor is built; hysteresis is not.** #121 recorded that three places named
+three different owners for the governor, that #101 had shipped only the constraint on the
+*number* — a curve could not hold a rate above the cap, and nothing consumed the result —
+and that the precedence ruling above was therefore *a rule about a mechanism that did not
+exist to break it*. #125 resolved that as #121's first option: **the governor is an E5
+mechanism**, `FanKit.RampGovernor`, built in the change that states the ruling so the
+exclusion is checkable by mutation rather than asserted. Hysteresis stays with #17 — it is
+a property of evaluating a curve, and there is no curve evaluator yet.
 
-*Tested by:* unit tests asserting that neither a Swift-constructed nor a JSON-decoded curve
-can hold a rate above the cap — `DownwardOnlyLimitTests`.
+The exclusion is **structural, not a runtime check**. Safety actors write through
+`SafetyActorWriter`, which holds no governor and has no property one could be assigned to;
+the control loop writes through `GovernedFanWriter`, the only holder of one. The two share
+no protocol, so no code can be generic over "a writer" and hand a safety actor the governed
+one. `SafetyActorLevel.Ungoverned` carries the five levels that bypass § 8 as a type, and a
+test asserts it is exactly `allCases` minus the control loop — so adding a seventh safety
+actor and forgetting it turns the suite red instead of silently governing a new safety
+mechanism.
+
+*Tested by:* `DownwardOnlyLimitTests` — neither a Swift-constructed nor a JSON-decoded curve
+can hold a rate above the cap. `RampGovernorTests` — the governor caps a step in both
+directions, lands exactly on the goal rather than overshooting, refuses to be made faster
+than the compiled cap, and computes the 22.135-second full-scale ramp ADR 0007 rests its
+refusal on. `ThermalEmergencyTests.theEmergencyReachesMaximumInOneWrite` is the other end of
+that argument — the emergency's bridge is asserted to reach the fan's declared maximum, so
+injecting a governor into the safety writer fails it on the commanded RPM. The stronger half
+is compile-time: `GovernedFanWriter` declares neither of the verbs a safety actor calls, so
+handing one to the emergency does not build.
 
 *Tested by (pending #17):* `FanKit` unit tests driving a temperature series across a curve
-boundary and asserting no oscillation and no ramp faster than the cap. This line was
-unqualified until #119; there is nothing to drive a series through yet.
+boundary and asserting no oscillation. The ramp half of that line is now covered above; the
+hysteresis half still has nothing to drive a series through.
 
 ---
 

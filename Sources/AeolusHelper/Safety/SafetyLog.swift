@@ -22,14 +22,34 @@ import os
 /// documentation says this subsystem must not have.
 struct SafetyLog: Sendable {
 
-    private let emit: @Sendable (String) -> Void
+    /// How loud a line is.
+    ///
+    /// Two levels and no more. `degradedCycle`'s own note already argues the distinction
+    /// that matters — a fault-level line for a routine partial read would train the reader
+    /// to ignore the level that real trouble uses — so the vocabulary is exactly "the
+    /// mechanism is working, with something worth knowing" and "the mechanism fired, or
+    /// could not".
+    enum Level: Sendable, Hashable {
+        /// Persisted by default, unlike `.info`, because the whole value of these lines is
+        /// being there when somebody goes looking afterwards.
+        case notice
+        /// § 3 engaged or released, or a write on its path did not land.
+        case fault
+    }
+
+    private let emit: @Sendable (Level, String) -> Void
 
     init(subsystem: String = "dev.aeolus.AeolusHelper", category: String = "Safety") {
         let logger = Logger(subsystem: subsystem, category: category)
-        emit = { logger.notice("\($0, privacy: .public)") }
+        emit = { level, message in
+            switch level {
+            case .notice: logger.notice("\(message, privacy: .public)")
+            case .fault: logger.fault("\(message, privacy: .public)")
+            }
+        }
     }
 
-    /// A sink a test can read back.
+    /// A sink a test can read back, **including the level**.
     ///
     /// `LeaseLog` has no equivalent and its lines go unasserted, which was tolerable while
     /// the log was commentary. It is not tolerable here: "partial loss is a degraded
@@ -37,7 +57,12 @@ struct SafetyLog: Sendable {
     /// the helper, and a review found that sentence true of nothing — `unreadableKeys` had
     /// no reader anywhere in `Sources/`. A claim that load-bearing needs a test that fails
     /// when it stops being true, and a test cannot read `os_log`.
-    init(recording sink: @escaping @Sendable (String) -> Void) {
+    /// The level is passed through rather than discarded. An earlier version of this
+    /// initialiser was `{ _, message in sink(message) }`, which meant every `.fault` line
+    /// here could be demoted to `.notice` with the whole suite green — the level was a
+    /// claim no test could check, in the type whose own header says a load-bearing claim
+    /// "needs a test that fails when it stops being true".
+    init(recording sink: @escaping @Sendable (Level, String) -> Void) {
         emit = sink
     }
 
@@ -62,12 +87,200 @@ struct SafetyLog: Sendable {
         provenance: String, answered: Int, requested: Int, silent: [SMCKey]
     ) {
         emit(
+            .notice,
             """
             Critical temperature cycle degraded: \(answered) of \(requested) curated keys \
             answered (\(provenance)). Silent: \(Self.describe(silent)). The thermal \
             override is still watching, on fewer sensors than it was built with.
             """
         )
+    }
+
+    /// The degraded set went away: every curated key is answering again.
+    ///
+    /// The other half of "log the transition, not the state". Without it a reader sees a
+    /// machine lose sensors and never sees it get them back, which reads as a fault that
+    /// is still current however long ago it cleared.
+    func degradationCleared(provenance: String, answered: Int) {
+        emit(
+            .notice,
+            """
+            Critical temperature cycle recovered: all \(answered) curated keys are \
+            answering again (\(provenance)).
+            """
+        )
+    }
+
+    // MARK: - docs/SAFETY.md § 3
+
+    /// The override fired.
+    ///
+    /// `.fault`, and this is the line the level exists for: a root daemon has just taken
+    /// the fans from a client that did nothing wrong, because the machine was too hot. If
+    /// one line from this subsystem is ever read, it is this one.
+    func thermalEmergencyEngaged(
+        hottest: CriticalTemperature, ceiling: Double, fansHeld: Int
+    ) {
+        emit(
+            .fault,
+            """
+            Thermal emergency engaged: \(hottest.key.rawValue) read \
+            \(Self.celsius(hottest.celsius)) against a \(Self.celsius(ceiling)) ceiling. \
+            \(fansHeld) fan(s) under manual control go to maximum and then back to \
+            automatic; any lease covering them is revoked and no new lease is granted \
+            while this holds.
+            """
+        )
+    }
+
+    /// The override let go: a fresh reading fell a hysteresis margin below the ceiling.
+    func thermalEmergencyReleased(hottest: CriticalTemperature, threshold: Double) {
+        emit(
+            .fault,
+            """
+            Thermal emergency released: the hottest curated key \
+            (\(hottest.key.rawValue)) read \(Self.celsius(hottest.celsius)), at or below \
+            the \(Self.celsius(threshold)) release threshold. Leases may be granted again.
+            """
+        )
+    }
+
+    /// The bridge write landed: this fan is at its highest commandable speed, in one step.
+    func emergencyCommandedMaximum(fan: Int, rpm: Double) {
+        emit(
+            .notice,
+            """
+            Thermal emergency commanded fan \(fan) to \(Int(rpm.rounded())) RPM in a \
+            single write, bypassing the ramp governor (docs/SAFETY.md § 8, ADR 0007).
+            """
+        )
+    }
+
+    /// A write on the emergency's path did not land.
+    ///
+    /// `detail` is helper-authored — a `FanControlPlaneError`'s own description — never
+    /// client-chosen text, which is what keeps the whole line safe to mark `.public`. The
+    /// same rule the type's header states for `degradedCycle`.
+    func emergencyWriteFailed(verb: String, fan: Int, detail: String) {
+        emit(
+            .fault,
+            """
+            Thermal emergency could not \(verb) fan \(fan): \(detail). The restore verb \
+            is attempted regardless — under-firing is the dangerous direction.
+            """
+        )
+    }
+
+    /// A fan came under manual control while § 3 was already holding.
+    ///
+    /// It should not be reachable in the ordinary case — a latched machine refuses every
+    /// `acquireLease` — so a line here means either a lease raced the grant-time check or a
+    /// client engaged a fan under a lease it already held. Both are worth seeing.
+    func thermalEmergencyTakingBackLateEngagement(fans: [Int]) {
+        emit(
+            .fault,
+            """
+            Thermal emergency taking back fan(s) \
+            \(fans.map(String.init).joined(separator: ", ")) engaged while it was already \
+            holding. They go to maximum and then back to automatic, and every lease is \
+            revoked.
+            """
+        )
+    }
+
+    /// The latch was held because this cycle could see less than the cycle that engaged it.
+    ///
+    /// `.fault`, because it means § 3 is holding on a machine it can no longer fully see —
+    /// and because the alternative to holding is releasing on a view that shrank, which
+    /// reads exactly like a machine that cooled down.
+    func thermalEmergencyHeldThroughDegradedCycle(missing: Int, atEngage: Int) {
+        emit(
+            .fault,
+            """
+            Thermal emergency latch held: \(missing) of the \(atEngage) curated keys that \
+            were answering when it fired have gone silent. A shrinking view of the machine \
+            is not evidence that it cooled down, so the latch does not let go on one.
+            """
+        )
+    }
+
+    /// Telemetry came back after a run of cycles that could read nothing.
+    ///
+    /// The closing half of the blind path's transition logging. Without it a reader sees a
+    /// supervisor go quiet and never sees it recover, which reads as a fault still current
+    /// however long ago it cleared.
+    func thermalEmergencyTelemetryRecovered(answered: Int) {
+        emit(
+            .notice,
+            """
+            Thermal emergency telemetry recovered: \(answered) curated key(s) answering \
+            again after a run of unreadable cycles.
+            """
+        )
+    }
+
+    /// § 3's supervisor stopped.
+    ///
+    /// `LeaseExpirySupervisor` logs its own stop because "a lease enforcer that went quiet
+    /// without saying so would be the worst silent failure in the project". The same is
+    /// true here and more so: `ThermalEmergency.cycle()` is the **only** caller of
+    /// `ThermalEmergencyLatch.release()` anywhere in `Sources/`, so a loop that stops while
+    /// latched leaves the latch engaged for the life of the process — `acquireLease`
+    /// refusing `.thermalEmergencyActive` forever and every snapshot reporting a thermal
+    /// emergency that is no longer happening, which is `CLAUDE.md` rule 6 reached through a
+    /// lifecycle event. `stop()` deliberately does not clear the latch (releasing § 3 on a
+    /// machine nobody has read since it was above its ceiling is worse), so the answer is to
+    /// say so loudly and let [#103](https://github.com/blamechris/Aeolus/issues/103) own the
+    /// restart.
+    func thermalSupervisorStopped(whileLatched: Bool) {
+        emit(
+            whileLatched ? .fault : .notice,
+            whileLatched
+                ? """
+                Thermal emergency supervisor stopped **while § 3 was latched**. Nothing else \
+                releases the latch, so manual fan control stays refused and the snapshot \
+                keeps reporting an emergency until the helper restarts.
+                """
+                : "Thermal emergency supervisor stopped. Nothing is sampling critical "
+                    + "temperatures until it starts again."
+        )
+    }
+
+    /// A cycle produced no reading while the latch was engaged.
+    ///
+    /// The latch is **held**, not released. Stated in the log because "the override is
+    /// still on and we cannot currently see why" is exactly the state an operator would
+    /// otherwise mistake for a stuck mechanism.
+    func thermalEmergencyHeldThroughUnreadableCycle(detail: String) {
+        emit(
+            .fault,
+            """
+            Thermal emergency latch held through an unreadable cycle: \(detail). A cycle \
+            that cannot read is never a reason to release.
+            """
+        )
+    }
+
+    /// A cycle produced no reading while the latch was clear.
+    ///
+    /// Persistent read failure is treated as divergence — restore and report — by the
+    /// reclamation watchdog in
+    /// [#126](https://github.com/blamechris/Aeolus/issues/126), which owns the reconnect
+    /// and the escalation. This line is what makes a single blind cycle visible in the
+    /// meantime rather than silent.
+    func thermalEmergencyCycleUnreadable(detail: String) {
+        emit(
+            .notice,
+            """
+            Thermal emergency cycle could not read a critical temperature: \(detail). The \
+            latch is clear and stays clear; persistent failure is #126's to escalate.
+            """
+        )
+    }
+
+    /// One decimal place, so a log line does not carry a firmware float's full mantissa.
+    private static func celsius(_ value: Double) -> String {
+        String(format: "%.1f °C", value)
     }
 
     /// Caps the key list so one pathological cycle cannot write an unbounded line into a

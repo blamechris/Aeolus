@@ -1,4 +1,5 @@
 import FanKit
+import SMCCore
 
 /// One cycle of the curated critical temperatures, as a role.
 ///
@@ -59,6 +60,10 @@ struct CuratedCriticalTemperatures<Plane: FanControlPlane>: CriticalTemperatureS
     private let set: CriticalSensorSet
     private let log: SafetyLog
 
+    /// Holds the previous cycle's silent set, so an unchanged degradation is logged once
+    /// rather than once per cycle. See `DegradationMemo`.
+    private let memo = DegradationMemo()
+
     init(plane: Plane, set: CriticalSensorSet, log: SafetyLog = SafetyLog()) {
         self.plane = plane
         self.set = set
@@ -74,14 +79,70 @@ struct CuratedCriticalTemperatures<Plane: FanControlPlane>: CriticalTemperatureS
     func readCriticalTemperatures() async throws -> CriticalTemperatureReport {
         let asRead = try await plane.readCriticalTemperatures(set.keys)
         let gated = try CriticalTemperaturePlausibility.gate(asRead)
-        if !gated.unreadableKeys.isEmpty {
+        switch await memo.transition(to: gated.unreadableKeys) {
+        case .degraded:
             log.degradedCycle(
                 provenance: set.provenance,
                 answered: gated.readings.count,
                 requested: set.keys.count,
                 silent: gated.unreadableKeys
             )
+        case .cleared:
+            log.degradationCleared(
+                provenance: set.provenance, answered: gated.readings.count)
+        case nil:
+            break
         }
         return gated
     }
+}
+
+/// Remembers which curated keys were silent last cycle, so only a **change** is logged.
+///
+/// ## Why this exists at all
+///
+/// #124 shipped `SafetyLog.degradedCycle` with one caller, `LeaseAuthority.acquireLease`,
+/// which fires at most once per lease acquisition. #125 adds the second caller, and it is a
+/// supervisor polling on a cycle. As the forward constraint on that issue puts it: *"an
+/// unchanged degraded set logged every tick at 1 Hz is not a log, it is a denial of service
+/// against the reader, and it would bury the one line that matters."* The one line that
+/// matters is `thermalEmergencyEngaged`.
+///
+/// It lives here rather than in the supervisor deliberately. The log call is here, so the
+/// collapse belongs here too — and putting it here fixes it for *every* consumer, including
+/// the grant-time check, rather than for whichever one remembered. Two callers each
+/// remembering their own previous set would be two answers to one question.
+///
+/// A `Set` comparison, not a count: losing one key and gaining another keeps the count
+/// identical while changing what the mechanism can see, and that is a transition a reader
+/// needs.
+///
+/// - Note: state is per instance, so the collapse is only global if the lease core and the
+///   supervisor are handed the **same** `CuratedCriticalTemperatures`. Nothing in
+///   `Sources/` constructs one yet — the composition root still serves
+///   `ReadOnlyFanAuthority`, which grants no lease — so today that sharing exists only in
+///   `ThermalMachine`. Stated in the future tense on purpose: an earlier draft said the
+///   composition root "shares one", which was true of no code, and is the same defect as the
+///   `isThermalEmergencyActive: false` literal this wave is correcting. Whoever wires E3
+///   owns making it true.
+actor DegradationMemo {
+
+    private var silent: Set<SMCKey> = []
+
+    /// What changed since the last cycle, or `nil` when nothing did.
+    func transition(to nowSilent: [SMCKey]) -> DegradationTransition? {
+        let updated = Set(nowSilent)
+        defer { silent = updated }
+        guard updated != silent else { return nil }
+        return updated.isEmpty ? .cleared : .degraded
+    }
+}
+
+/// A change in what the curated set can see. Deliberately not a `Bool`: "recovered" and
+/// "degraded differently" are different lines, and a boolean would collapse them.
+enum DegradationTransition: Sendable, Hashable {
+    /// Keys are silent, and which ones changed since the last cycle.
+    case degraded
+    /// Every curated key is answering again.
+    case cleared
 }

@@ -72,6 +72,29 @@ public enum ThermalCeiling {
     public static let cpuCelsius: Double = 95
     public static let storageCelsius: Double = 90
 
+    /// How far below a ceiling a temperature must fall before § 3's override lets go.
+    ///
+    /// The latch releases at `cpuCelsius - releaseHysteresisCelsius`, never at the ceiling
+    /// itself. Without a margin the override chatters: firing returns the fans to Apple's
+    /// thermal management, which cools the package back across the ceiling, which releases
+    /// the latch, which lets the same lease be re-granted into the same overheating
+    /// workload — an audible cycle, and one that would keep a machine oscillating around
+    /// its worst temperature rather than away from it.
+    ///
+    /// **Why 5 °C.** It has to exceed the ordinary drift of a package temperature so the
+    /// latch does not release on noise, and stay small enough that the fans are not held at
+    /// maximum long after the machine is safe. `docs/SMC-RESEARCH.md` recorded the package
+    /// sensor moving about 6 °C across a whole load-and-soak session on `Mac16,5` — 56 °C
+    /// under a twelve-way busy loop, 62 °C during the heat soak after it stopped — so a
+    /// margin below a couple of degrees would sit inside that band. Five is comfortably
+    /// outside it and still only 5 % of the ceiling.
+    ///
+    /// Compiled in and **not configurable in either direction**, unlike the ceilings above.
+    /// A settings payload may tighten a ceiling; there is no coherent meaning to tightening
+    /// a hysteresis margin, and a payload that could shrink it toward zero would be a
+    /// payload that could reintroduce the chatter this constant exists to prevent.
+    public static let releaseHysteresisCelsius: Double = 5
+
     /// Returns the effective ceiling, rejecting any attempt to raise the default.
     ///
     /// A non-finite request falls back to the compiled default rather than being honoured,

@@ -56,7 +56,14 @@ enum AeolusHelperMain {
         // and must not be on a per-connection path.
         let authorisation = ClientAuthorisation.resolveForRunningProcess()
 
-        let authority = ReadOnlyFanAuthority(provider: SMCSensorProvider(), log: log)
+        // One latch for the whole process. Nothing engages it in this build — no lease can
+        // be granted, so no fan is ever off automatic control — but it is constructed here
+        // rather than defaulted inside the authority so that the day E3's control plane and
+        // `ThermalSupervisor` arrive, the snapshot and the lease core are already reading
+        // the same bit as the mechanism that sets it.
+        let thermalEmergency = ThermalEmergencyLatch()
+        let authority = ReadOnlyFanAuthority(
+            provider: SMCSensorProvider(), log: log, thermalEmergency: thermalEmergency)
         let delegate = HelperListenerDelegate(
             authorisation: authorisation,
             authority: authority,

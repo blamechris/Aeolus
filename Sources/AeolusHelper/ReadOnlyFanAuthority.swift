@@ -67,6 +67,24 @@ actor ReadOnlyFanAuthority: FanAuthority {
     private let log: HelperLog
     private let now: @Sendable () -> Date
 
+    /// `docs/SAFETY.md` § 3's latch, read once per snapshot.
+    ///
+    /// **Read from the mechanism, never written as a literal.** Until #125 this field was
+    /// `false` in the initialiser of `SystemSnapshot` below, with a comment saying E2 has no
+    /// thermal supervisor — true at the time, and the shape that goes quietly wrong the day
+    /// it stops being true. Sourcing it from the latch now means the field moves when the
+    /// mechanism does, and `connectionDidInvalidate(_:)` is already wired the same way and
+    /// for the same reason.
+    ///
+    /// In *this* build the answer is still always `false`, and honestly so: every path that
+    /// would grant a lease refuses, so no fan is ever off automatic control, so
+    /// `ThermalEmergency` has nothing to fire on. What changed is where the answer comes
+    /// from.
+    ///
+    /// **Required, with no default.** A defaulted latch would compile and report a bit
+    /// nothing sets — see `LeaseAuthority`'s field of the same name.
+    private let thermalEmergency: ThermalEmergencyLatch
+
     /// The sensor keys this machine exposes, discovered once. `nil` until the first
     /// successful discovery; a failed discovery leaves it `nil` so the next snapshot tries
     /// again rather than caching a machine with no sensors on it.
@@ -75,10 +93,12 @@ actor ReadOnlyFanAuthority: FanAuthority {
     init(
         provider: some SensorProvider,
         log: HelperLog,
+        thermalEmergency: ThermalEmergencyLatch,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.provider = provider
         self.log = log
+        self.thermalEmergency = thermalEmergency
         self.now = now
     }
 
@@ -87,15 +107,14 @@ actor ReadOnlyFanAuthority: FanAuthority {
     func snapshot() async throws -> SystemSnapshot {
         let fans = try await SMCFanEnumeration.enumerate(provider: provider)
         let sensors = await readSensors()
+        let isThermalEmergencyActive = await thermalEmergency.isActive
 
         return SystemSnapshot(
             fans: fans.fans.map(Self.fanState(for:)),
             sensors: sensors,
             // No lease can exist: every path that would grant one refuses below.
             activeLease: nil,
-            // E2 has no thermal supervisor, so nothing is engaged. This is a statement
-            // about the helper, and it is true of this helper.
-            isThermalEmergencyActive: false,
+            isThermalEmergencyActive: isThermalEmergencyActive,
             capturedAt: now()
         )
     }
