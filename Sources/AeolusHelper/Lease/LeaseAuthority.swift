@@ -50,6 +50,10 @@ actor LeaseAuthority {
     private let wallClock: @Sendable () -> Date
     private let enumeration: any FanEnumerating
     private let restorer: any FanRestoring
+    /// The third — and, by design, last — thing this type needs of the machine. See
+    /// `CriticalTemperatureSensing` for why it is its own role rather than a method on
+    /// either of the two above.
+    private let telemetry: any CriticalTemperatureSensing
     private let log: LeaseLog
 
     private var table = LeaseTable()
@@ -68,6 +72,7 @@ actor LeaseAuthority {
     init(
         enumeration: some FanEnumerating,
         restorer: some FanRestoring,
+        telemetry: some CriticalTemperatureSensing,
         clock: some MonotonicClock = SystemMonotonicClock(),
         wallClock: @escaping @Sendable () -> Date = Date.init,
         tombstoneCapacity: Int = ConnectionTombstones.defaultCapacity,
@@ -75,6 +80,7 @@ actor LeaseAuthority {
     ) {
         self.enumeration = enumeration
         self.restorer = restorer
+        self.telemetry = telemetry
         self.clock = clock
         self.wallClock = wallClock
         self.tombstones = ConnectionTombstones(capacity: tombstoneCapacity)
@@ -95,7 +101,11 @@ actor LeaseAuthority {
     ///    as from a message.
     /// 3. The suspension points: enumerating the machine's fans, then sweeping anything
     ///    already lapsed — so the single-lease check below is made against live leases only,
-    ///    and a previous lease's fans are back on automatic before new ones are taken.
+    ///    and a previous lease's fans are back on automatic before new ones are taken — and
+    ///    then proving the helper can still see a temperature at all. The sweep runs
+    ///    **before** that proof deliberately: a lapsed lease's fans go back to automatic
+    ///    whether or not this machine is blind, and a blind machine is the last one on
+    ///    which to skip a restore.
     /// 4. **The liveness check, after the last suspension point and immediately before
     ///    registering.** Everything from there to the `insert` is straight-line: the actor
     ///    cannot be re-entered between the check and the act it guards.
@@ -123,6 +133,7 @@ actor LeaseAuthority {
 
         let enumerated = try await enumeration.enumeratedFanIndices()
         await expireLapsedLeases()
+        try await refuseIfBlind(connection)
 
         // ---- No `await` below this line. Adding one reopens #95. ----
         try AeolusXPCValidation.validateFanIndices(
@@ -332,6 +343,39 @@ actor LeaseAuthority {
     /// the client.
     private static let invalidatedInFlight = AeolusXPCFault.helperFailed(
         detail: "the connection was invalidated while this request was in flight")
+
+    /// Refuses the grant if the helper cannot currently see a critical temperature.
+    ///
+    /// **`docs/SAFETY.md` § 3 is a precondition of § 1.** A lease is a promise that
+    /// something is watching the fans it pins; a helper that cannot read a temperature is
+    /// not watching anything, and the thermal override, the reclamation watchdog and the
+    /// sleep supervisor are all equally blind. What is left is the TTL, which
+    /// [ADR 0007](../../../docs/ADR/0007-safety-composition.md) accepts as a *backstop*
+    /// and nowhere accepts as the whole mechanism.
+    ///
+    /// ## Why it sits here in the order
+    ///
+    /// It is above the straight-line region because it suspends, and it must be: the read
+    /// is the point. That places it ahead of the concurrent-lease and mid-handback
+    /// refusals, so a client asking during blindness is told about the blindness even when
+    /// another client holds the fans. Both facts are true and this is the one worth
+    /// telling: `leaseHeldByAnotherClient` invites "wait for them to finish", which is
+    /// wrong advice on a machine where nobody can be granted anything.
+    ///
+    /// ## Why it catches everything
+    ///
+    /// Every failure to obtain telemetry is blindness, whatever its type. Enumerating the
+    /// error cases that count would mean a future error case silently defaulting to
+    /// *granted*, and this guard exists precisely to stop a lease being handed out on a
+    /// machine nothing can see.
+    private func refuseIfBlind(_ connection: ConnectionID) async throws {
+        do {
+            _ = try await telemetry.readCriticalTemperatures()
+        } catch {
+            log.refusedBlindTelemetry(connection, detail: String(describing: error))
+            throw AeolusXPCFault.manualControlUnavailable(reason: .noThermalTelemetry)
+        }
+    }
 
     private func refuseIfInvalidated(_ connection: ConnectionID) throws {
         guard tombstones.contains(connection) else { return }
