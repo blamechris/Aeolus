@@ -143,4 +143,24 @@ struct LeaseTable: Sendable {
         }
         return released
     }
+
+    /// Removes every lease covering `fan`, **whole**, and returns them.
+    ///
+    /// `docs/SAFETY.md` § 3's revocation. Whole rather than per-fan: a lease is one claim
+    /// over a set of fans, and trimming an index out of it would leave a client holding a
+    /// lease it believes covers fans it can no longer command — `CLAUDE.md` rule 6, reached
+    /// by bookkeeping instead of by a write. `LeaseRecord.fanIndices` is a `let` for that
+    /// reason, so the trimming shape is not expressible here in the first place.
+    ///
+    /// Written out rather than shared with the two selectors above, for the reason
+    /// `removeLapsed(asOf:)` gives: these are separate mechanisms and a shared predicate
+    /// remover is the first step towards one mechanism wearing several names.
+    mutating func removeAll(covering fan: Int) -> [LeaseRecord] {
+        var revoked: [LeaseRecord] = []
+        for entry in all where entry.fanIndices.contains(fan) {
+            entries.removeValue(forKey: entry.id)
+            revoked.append(entry)
+        }
+        return revoked
+    }
 }
