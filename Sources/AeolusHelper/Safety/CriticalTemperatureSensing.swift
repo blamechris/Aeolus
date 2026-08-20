@@ -117,9 +117,14 @@ struct CuratedCriticalTemperatures<Plane: FanControlPlane>: CriticalTemperatureS
 /// identical while changing what the mechanism can see, and that is a transition a reader
 /// needs.
 ///
-/// - Note: state is per instance. The composition root shares **one**
-///   `CuratedCriticalTemperatures` between the lease core and the supervisor, which is what
-///   makes the collapse global rather than per consumer.
+/// - Note: state is per instance, so the collapse is only global if the lease core and the
+///   supervisor are handed the **same** `CuratedCriticalTemperatures`. Nothing in
+///   `Sources/` constructs one yet — the composition root still serves
+///   `ReadOnlyFanAuthority`, which grants no lease — so today that sharing exists only in
+///   `ThermalMachine`. Stated in the future tense on purpose: an earlier draft said the
+///   composition root "shares one", which was true of no code, and is the same defect as the
+///   `isThermalEmergencyActive: false` literal this wave is correcting. Whoever wires E3
+///   owns making it true.
 actor DegradationMemo {
 
     private var silent: Set<SMCKey> = []

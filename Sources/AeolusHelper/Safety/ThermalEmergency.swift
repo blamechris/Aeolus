@@ -7,8 +7,18 @@ import FanKit
 /// An arbiter with no actors is a declared mechanism nothing calls, and its tests pass
 /// without being able to fail — which is
 /// [#121](https://github.com/blamechris/Aeolus/issues/121)'s shape exactly, and this
-/// repository's most expensive recurring defect. So `SafetyActorLevel`'s ordering is not
-/// merely asserted here; level 2 actually writes.
+/// repository's most expensive recurring defect. So level 2 is a real actor that really
+/// writes, rather than an enum case.
+///
+/// **Be precise about how much that buys, because an earlier draft was not.** What this
+/// type consumes is `SafetyActorLevel.Ungoverned` — the half of the precedence engine that
+/// keeps § 8 away from a safety write, and which the compiler enforces here. It does **not**
+/// consult `SafetyArbiter.ruling(for:incumbent:)`: with one actor implemented there is no
+/// incumbent to be pre-empted by, so the arbiter still has no production caller and
+/// replacing its body with `return .commands` fails only its own tests. That half becomes
+/// load-bearing when the reclamation watchdog
+/// ([#126](https://github.com/blamechris/Aeolus/issues/126)) and sleep/wake
+/// ([#103](https://github.com/blamechris/Aeolus/issues/103)) arrive to contend with it.
 ///
 /// ## The failure asymmetry, which decides every uncertain branch below
 ///
@@ -110,6 +120,20 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     }
 
     /// Forgets a fan that has gone back to Apple's thermal management.
+    ///
+    /// **Nothing calls this yet, and that is an obligation on E3 rather than dead code.**
+    /// `fire(_:)` clears the registry for every fan it takes back, so the registry cannot
+    /// grow without bound today; but a lease released, expired, or torn down by connection
+    /// death restores its fans through `LeaseAuthority` without telling this actor, so a
+    /// stale permit can sit here for a fan that is already automatic. The consequence is
+    /// bounded and in the safe direction — the emergency would bridge a fan that is already
+    /// on Apple's management, which is a redundant write and then a redundant restore, not
+    /// an unsafe state — but it makes `fire(_:)`'s "every fan under manual control" read
+    /// more precisely than the registry can currently deliver.
+    ///
+    /// `LeaseAuthority` deliberately holds no reference to the emergency (see
+    /// `ThermalEmergencyLatch`), so the notification belongs to whoever owns both: E3's
+    /// control plane, at the same point it calls `manualControlEngaged(_:)`.
     func manualControlReleased(fanAt index: Int) {
         engagedFans[index] = nil
     }
@@ -153,7 +177,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
             return
         }
 
-        // Latched. The only question left is whether to let go, and it is asked against a
+        // Latched. The first question is whether to let go, and it is asked against a
         // *fresh* reading — a latch tested against the reading that engaged it would never
         // release.
         if hottest.celsius <= releaseThresholdCelsius {
@@ -161,7 +185,38 @@ actor ThermalEmergency<Plane: FanControlPlane> {
                 log.thermalEmergencyReleased(
                     hottest: hottest, threshold: releaseThresholdCelsius)
             }
+            return
         }
+
+        // Still holding. `fire(_:)` empties the registry as it goes, so anything in it now
+        // came under manual control **after** the emergency fired — a fan whose lease was
+        // granted in the window described on `LeaseAuthority.revokeEveryLease(because:)`,
+        // or one engaged under a lease that raced the latch. Without this the emergency is
+        // one-shot per episode: `fire(_:)` is unreachable while latched, so such a fan
+        // would never be bridged, never restored, and its lease never revoked, with the
+        // machine above its ceiling the whole time.
+        await takeBackAnythingEngagedSinceFiring()
+    }
+
+    /// Bridges and hands back fans that came under manual control while § 3 was already
+    /// holding, and revokes whatever lease covered them.
+    ///
+    /// Idempotent and normally a no-op: while the latch holds, `acquireLease` is refused,
+    /// so in the ordinary case nothing new can be engaged and the registry stays empty.
+    private func takeBackAnythingEngagedSinceFiring() async {
+        guard !engagedFans.isEmpty else {
+            // Still revoke, because a lease can exist without a fan having been engaged
+            // under it yet — that is the case the registry cannot see.
+            await leases.revokeEveryLease(because: .thermalEmergency)
+            return
+        }
+        let engagedSince = engagedFans.values.sorted { $0.index < $1.index }
+        log.thermalEmergencyTakingBackLateEngagement(fans: engagedSince.map(\.index))
+        for fan in engagedSince {
+            await bridgeToMaximumThenRelease(fan)
+            engagedFans[fan.index] = nil
+        }
+        await leases.revokeEveryLease(because: .thermalEmergency)
     }
 
     // MARK: - Firing
@@ -180,12 +235,16 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     ///    `RampGovernor` for the 22-second arithmetic that makes it necessary.
     /// 3. **Restore to automatic.** The destination. Attempted whether or not step 2
     ///    landed.
-    /// 4. **Revoke the whole lease covering each fan** — not per-fan surgery. A lease is a
-    ///    claim over a set of fans, and a client left holding a lease over a *subset* it
-    ///    can no longer command would be told it has control it does not have, which is
-    ///    `CLAUDE.md` rule 6. The restore that revocation triggers is idempotent, and is
-    ///    deliberately the second one: ADR 0007's keystone makes the restore this actor's
-    ///    own terminal action, never something it delegates to the lease core.
+    /// 4. **Revoke every live lease, whole** — not per-fan surgery, and not one revocation
+    ///    per bridged fan. A lease is a claim over a set of fans, and a client left holding
+    ///    a lease over a *subset* it can no longer command would be told it has control it
+    ///    does not have, which is `CLAUDE.md` rule 6. Selecting on the bridged fans instead
+    ///    left a lease alive through an emergency whenever the client had not yet engaged
+    ///    manual control under it; `LeaseAuthority.revokeEveryLease(because:)` records that
+    ///    defect and the grant-time window it also closes. The restore revocation triggers
+    ///    is idempotent, and is deliberately the second one: ADR 0007's keystone makes the
+    ///    restore this actor's own terminal action, never something it delegates to the
+    ///    lease core.
     ///
     /// ## Every fan, not "the affected fan"
     ///
@@ -238,11 +297,13 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         let held = engagedFans.values.sorted { $0.index < $1.index }
         for fan in held {
             await bridgeToMaximumThenRelease(fan)
-        }
-        for fan in held {
-            await leases.revokeLeases(coveringFan: fan.index, because: .thermalEmergency)
             engagedFans[fan.index] = nil
         }
+        // Every lease, not one per bridged fan. A client can hold a live lease without
+        // having engaged manual control under it yet, and such a fan is in no registry —
+        // selecting on `engagedFans` here left exactly that lease alive through an
+        // emergency. See `LeaseAuthority.revokeEveryLease(because:)`.
+        await leases.revokeEveryLease(because: .thermalEmergency)
     }
 
     /// One fan: maximum in a single write, then back to automatic.

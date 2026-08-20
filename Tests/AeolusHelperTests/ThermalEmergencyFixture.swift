@@ -32,6 +32,9 @@ struct ThermalMachine {
     let leases: LeaseAuthority
     let emergency: ThermalEmergency<ScriptedControlPlane>
 
+    /// Everything § 3 said about itself, with levels. Empty unless a test asked for it.
+    let safetyLog = RecordedLog()
+
     /// - Parameters:
     ///   - stages: the scenario. The last stage repeats forever.
     ///   - fans: which fans the machine has, and their firmware state.
@@ -56,7 +59,7 @@ struct ThermalMachine {
             leases: leases,
             latch: latch,
             requestedCeilingCelsius: requestedCeilingCelsius,
-            log: SafetyLog(recording: { _ in })
+            log: SafetyLog(recording: { [safetyLog] in safetyLog.append($0, $1) })
         )
     }
 
@@ -74,6 +77,27 @@ struct ThermalMachine {
                 try commandableFan(index, declaring: condition))
         }
         return lease
+    }
+
+    /// Acquires a lease and **does not** register any permit with the emergency.
+    ///
+    /// The state a client is in between `acquireLease` and its first write: the lease is
+    /// live, and the fan is still on Apple's thermal management, so it appears in no
+    /// registry of engaged fans. `lease(fans:from:)` does both; this does only the first,
+    /// because an emergency that selected on the registry left exactly this lease alive.
+    @discardableResult
+    func acquireWithoutEngaging(
+        fans: [Int] = [0], from connection: ConnectionID = ConnectionID()
+    ) async throws -> Lease {
+        try await leases.acquireLease(LeaseFixture.request(fans: fans), from: connection)
+    }
+
+    /// Registers a permit with the emergency without going through `acquireLease`.
+    ///
+    /// What E3's control plane does at the moment it engages manual control.
+    func engageManualControl(fan index: Int) async throws {
+        let condition = try #require(fanConditions[index])
+        await emergency.manualControlEngaged(try commandableFan(index, declaring: condition))
     }
 
     /// Every call the firmware saw, in order.
@@ -113,6 +137,33 @@ extension ScriptedControlPlane.Stage {
             })
     }
 
+    /// A stage whose curated keys do **not** all read the same thing.
+    ///
+    /// `temperatures(_:)` writes one value into all 34 keys, and every § 3 scenario used it
+    /// — so `max` and `min` over the readings were the same value and
+    /// `ThermalEmergency.cycle()`'s hottest-reading selector could be inverted with the
+    /// whole suite green. An adversarial review found that by mutation; this is what makes
+    /// it findable by a test.
+    ///
+    /// The spread is not arbitrary. `docs/SMC-RESEARCH.md`, quoted in `CriticalSensorSet`,
+    /// measured this die cluster at 53.17–56.07 °C under load and 55.85–62.40 °C at peak —
+    /// an intra-cluster spread of roughly 3–6.5 °C. A wrong selector is therefore not a
+    /// theoretical concern: it would let the latch release while the hottest curated key was
+    /// still several degrees above the ceiling.
+    ///
+    /// - Parameters:
+    ///   - baseline: what most curated keys read.
+    ///   - peak: what `hotKeyCount` of them read instead.
+    ///   - hotKeyCount: how many keys read `peak` rather than `baseline`.
+    /// - Returns: a stage whose curated keys are not all the same temperature.
+    static func field(baseline: Double, peak: Double, hotKeyCount: Int = 1) -> Self {
+        var readings = temperatures(baseline)
+        for key in CriticalSensorSet.mac16x5.keys.prefix(hotKeyCount) {
+            readings[key.rawValue] = peak
+        }
+        return .nominal(temperatures: readings)
+    }
+
     /// A stage where the machine reads `celsius` everywhere and the firmware honours writes.
     static func at(_ celsius: Double) -> ScriptedControlPlane.Stage {
         .nominal(temperatures: temperatures(celsius))
@@ -125,5 +176,18 @@ extension ScriptedControlPlane.Stage {
     ) -> ScriptedControlPlane.Stage {
         ScriptedControlPlane.Stage(
             temperatures: temperatures(celsius), writes: writes)
+    }
+}
+
+extension ScriptedControlPlane.Attempt {
+
+    /// The speed a `.commandTarget` carried, or `nil` for any other call.
+    ///
+    /// Assertions about § 3's bridge are about the **value** written, not merely that a
+    /// write happened — an emergency that issued one write of the wrong speed is the exact
+    /// failure a governed bridge would produce.
+    var commandedRPM: Double? {
+        if case .commandTarget(_, let rpm) = self { return rpm }
+        return nil
     }
 }

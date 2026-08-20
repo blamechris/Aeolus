@@ -77,6 +77,40 @@ struct ThermalSupervisorTests {
         #expect(await machine.leases.leaseCount == 0)
     }
 
+    /// **`stop()` must stop the loop, not just the bookkeeping.**
+    ///
+    /// `startingTwiceRunsOneSupervisor` below asserts `isRunning`, which is a `task != nil`
+    /// flag — deleting `task?.cancel()` outright, or replacing `while !Task.isCancelled`
+    /// with `while true`, left it green. Both were confirmed by mutation. This drives the
+    /// real loop and asserts it stops **cycling**.
+    ///
+    /// Bounded by yields rather than by waiting on the task, deliberately: awaiting a loop
+    /// that no longer honours cancellation would hang, and a regression that shows up as a
+    /// CI timeout instead of a red assertion is the anti-pattern
+    /// [#109](https://github.com/blamechris/Aeolus/issues/109) is open about. With the
+    /// cancellation removed the cycle count keeps climbing across the settle window and this
+    /// fails in milliseconds.
+    @Test("Stopping the supervisor stops the cycling, not just the flag")
+    func stoppingStopsTheCycling() async {
+        let machine = ThermalMachine(stages: [.at(44)])
+        // A budget the loop cannot exhaust, so the only way out is cancellation.
+        let supervisor = ThermalSupervisor(
+            emergency: machine.emergency, clock: TestClock(), interval: .seconds(1))
+
+        await supervisor.start()
+        while await machine.plane.attempts.count < 3 { await Task.yield() }
+        await supervisor.stop()
+
+        // Let any cycle that was already in flight finish.
+        for _ in 0..<200 { await Task.yield() }
+        let settled = await machine.plane.attempts.count
+
+        for _ in 0..<2_000 { await Task.yield() }
+        #expect(
+            await machine.plane.attempts.count == settled,
+            "the loop kept cycling after stop()")
+    }
+
     @Test("Starting twice runs one supervisor, and stopping ends it")
     func startingTwiceRunsOneSupervisor() async {
         let machine = ThermalMachine(stages: [.at(44)])
@@ -94,6 +128,12 @@ struct ThermalSupervisorTests {
     /// Stopping the loop does not release § 3. A supervisor that cleared the latch on its
     /// way out would hand the fans back on a machine nobody has read since it was above its
     /// ceiling — the failure asymmetry reached through a lifecycle event.
+    ///
+    /// **What it proves is narrow, and worth stating.** `ThermalSupervisor` holds no
+    /// reference to the latch, so today the property is structural and no single-line edit
+    /// to this file can break it. This is a tripwire against the two-part change that could:
+    /// giving the supervisor a latch and releasing it in `stop()`. Not coverage of the
+    /// running mechanism — `stoppingStopsTheCycling` above is that.
     @Test("Stopping the supervisor does not clear the latch")
     func stoppingDoesNotClearTheLatch() async throws {
         let machine = ThermalMachine(stages: [.at(97)])

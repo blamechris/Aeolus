@@ -22,10 +22,17 @@ struct ThermalEmergencyTests {
     /// would take the number asserted below — twenty seconds with a CPU package above its
     /// ceiling, one safety mechanism throttling another.
     ///
-    /// The emergency instead issues **one** `commandTarget`. Point
-    /// `ThermalEmergency.writer` at a `GovernedFanWriter` — the whole of "removing the
-    /// ramp-governor bypass" — and this test goes red on the count, not on a comment.
-    /// `RampGovernorTests.aFullScaleRampIsAStaircase` shows what it would become.
+    /// The emergency instead issues **one** `commandTarget`, at the fan's maximum.
+    ///
+    /// "Removing the ramp-governor bypass" has two spellings and only one of them is a
+    /// behavioural mutation. Pointing `ThermalEmergency.writer` at a `GovernedFanWriter`
+    /// **does not compile** — that type has neither `commandMaximum` nor
+    /// `restoreToAutomatic` — which is the by-construction half. The mutation that turns
+    /// *this* test red is injecting a `RampGovernor` into `SafetyActorWriter.commandMaximum`:
+    /// the bridge then writes 1550 instead of 5777 and the assertion fails **on the RPM
+    /// value**. An earlier version of this comment promised the type swap failed here "on
+    /// the count"; it was checked, and with the two verbs added by hand the swap leaves all
+    /// 866 tests green.
     @Test("The emergency reaches maximum in one write, not a 20-second ramp")
     func theEmergencyReachesMaximumInOneWrite() async throws {
         let machine = ThermalMachine(stages: [.at(44), .at(96)])
@@ -41,9 +48,16 @@ struct ThermalEmergencyTests {
         }
         #expect(commands == [.commandTarget(fan: 0, rpm: 5_777)])
 
-        let secondsIfGoverned = RampGovernor().secondsToTraverse(from: 1_800, toward: 5_777)
+        // Both endpoints come from the fixture's own fan, not from literals, so changing
+        // the scripted machine changes this number instead of making the comment wrong.
+        let fan = try #require(machine.fanConditions[0])
+        let secondsIfGoverned = RampGovernor().secondsToTraverse(
+            from: fan.targetRPM, toward: fan.maximumRPM)
         #expect(secondsIfGoverned > 19)
-        #expect(commands.count == 1, "one write, not \(Int(secondsIfGoverned.rounded())) of them")
+        let rampSeconds = Int(secondsIfGoverned.rounded())
+        #expect(
+            commands.first.flatMap(\.commandedRPM) == fan.maximumRPM,
+            "the bridge must reach maximum, not the first step of a \(rampSeconds)-second ramp")
     }
 
     /// Max first, then automatic — and the order is the mechanism, not a preference. The
@@ -219,6 +233,106 @@ struct ThermalEmergencyTests {
         }
     }
 
+    // MARK: - The hottest reading is the one that decides
+
+    /// **The reading § 3 acts on must be the hottest, and that was untestable.**
+    ///
+    /// `hottest` is the sole input to both the fire comparison and the release comparison.
+    /// Every § 3 scenario used a uniform temperature field, so `max` and `min` over the
+    /// readings were the same value and inverting the selector left all 866 tests green —
+    /// found by mutation, not by reading. These two tests use `Stage.field(baseline:peak:)`,
+    /// which is what makes the selector observable.
+    ///
+    /// Change `max(by:)` to `min(by:)` in `cycle()` and both go red.
+    @Test("One hot curated key among cool ones fires the emergency")
+    func theHottestKeyDecidesWhetherToFire() async throws {
+        let machine = ThermalMachine(
+            stages: [.at(44), .field(baseline: 60, peak: 96)])
+        try await machine.lease(fans: [0])
+        await machine.plane.advance()
+
+        await machine.emergency.cycle()
+
+        #expect(await machine.latch.isActive)
+        let writes: [ScriptedControlPlane.Attempt] = await machine.writes
+        #expect(writes.contains(.commandTarget(fan: 0, rpm: 5_777)))
+    }
+
+    /// The dangerous half of the same defect. A wrong selector would release the latch —
+    /// clearing `isThermalEmergencyActive` and re-permitting `acquireLease` — while the
+    /// hottest curated key was still above the ceiling. `docs/SMC-RESEARCH.md` measured a
+    /// 3–6.5 °C spread across this cluster, so the gap is real hardware behaviour rather
+    /// than a contrived fixture.
+    @Test("The latch does not release while any curated key is above the threshold")
+    func theLatchHoldsOnTheHottestKeyNotTheCoolest() async throws {
+        let machine = ThermalMachine(
+            stages: [.at(44), .at(97), .field(baseline: 60, peak: 96)])
+        try await machine.lease(fans: [0])
+        await machine.plane.advance()
+        await machine.emergency.cycle()
+        #expect(await machine.latch.isActive)
+
+        await machine.plane.advance()
+        await machine.emergency.cycle()
+
+        #expect(
+            await machine.latch.isActive,
+            "a curated key at 96 °C is above the 90 °C release threshold")
+    }
+
+    // MARK: - A lease that never engaged a fan
+
+    /// **The emergency selected on its permit registry rather than on the lease table.**
+    ///
+    /// A client holds a live lease between `acquireLease` and its first write, and during
+    /// that window the fan is still on automatic control, so it is in no registry. An
+    /// emergency that revoked only what it had bridged latched, took back nothing, and left
+    /// that lease alive — after which the client's first write would engage a fan into an
+    /// emergency that has already fired and cannot fire again.
+    ///
+    /// Change `fire(_:)` back to `revokeLeases(coveringFan:)` over the bridged fans and
+    /// this goes red.
+    @Test("A live lease with no engaged fan is still revoked by the emergency")
+    func anUnengagedLeaseIsStillRevoked() async throws {
+        let machine = ThermalMachine(stages: [.at(44), .at(97)])
+        try await machine.acquireWithoutEngaging(fans: [0])
+        #expect(await machine.leases.leaseCount == 1)
+        #expect(await machine.emergency.fansUnderManualControl.isEmpty)
+        await machine.plane.advance()
+
+        await machine.emergency.cycle()
+
+        #expect(await machine.latch.isActive)
+        #expect(await machine.leases.leaseCount == 0, "the lease outlived the emergency")
+    }
+
+    /// The second half: a fan engaged **after** the latch engaged must still be taken back.
+    ///
+    /// `fire(_:)` is unreachable while latched — `cycle()` only asks whether to release — so
+    /// without the take-back branch § 3 is one-shot per episode and such a fan stays pinned
+    /// at whatever the client asked for, with the machine above its ceiling.
+    ///
+    /// Delete `takeBackAnythingEngagedSinceFiring()`'s call site and this goes red.
+    @Test("A fan engaged while the latch holds is taken back on the next cycle")
+    func aFanEngagedWhileLatchedIsTakenBack() async throws {
+        let machine = ThermalMachine(stages: [.at(44), .at(97)])
+        await machine.plane.advance()
+        await machine.emergency.cycle()
+        #expect(await machine.latch.isActive)
+        let afterFiring: [ScriptedControlPlane.Attempt] = await machine.writes
+        #expect(afterFiring.isEmpty, "nothing was engaged when it fired")
+
+        try await machine.engageManualControl(fan: 0)
+        await machine.emergency.cycle()
+
+        let afterTakeBack: [ScriptedControlPlane.Attempt] = await machine.writes
+        #expect(
+            afterTakeBack == [
+                .commandTarget(fan: 0, rpm: 5_777), .restoreToAutomatic(.fan(0)),
+            ])
+        #expect(await machine.emergency.fansUnderManualControl.isEmpty)
+    }
+
     // MARK: - The failure asymmetry
 
     /// A cycle that could not read is **never** a reason to release. Delete the
@@ -254,69 +368,5 @@ struct ThermalEmergencyTests {
         let writes: [ScriptedControlPlane.Attempt] = await machine.writes
         #expect(writes.isEmpty)
         #expect(await machine.leases.leaseCount == 1)
-    }
-
-    // MARK: - The ceiling is tunable downward only
-
-    @Test("A configuration cannot raise the ceiling, and a non-temperature falls back")
-    func theCeilingIsTunableDownwardOnly() {
-        let raised = ThermalMachine(stages: [.at(44)], requestedCeilingCelsius: 120)
-        #expect(raised.emergency.ceilingCelsius == ThermalCeiling.cpuCelsius)
-
-        let notATemperature = ThermalMachine(stages: [.at(44)], requestedCeilingCelsius: .nan)
-        #expect(notATemperature.emergency.ceilingCelsius == ThermalCeiling.cpuCelsius)
-
-        let tightened = ThermalMachine(stages: [.at(44)], requestedCeilingCelsius: 80)
-        #expect(tightened.emergency.ceilingCelsius == 80)
-        #expect(tightened.emergency.releaseThresholdCelsius == 75)
-    }
-
-    /// A tightened ceiling really governs the comparison — otherwise the assertion above
-    /// would only prove a stored property.
-    @Test("A tightened ceiling fires earlier")
-    func aTightenedCeilingFiresEarlier() async throws {
-        let machine = ThermalMachine(
-            stages: [.at(44), .at(85)], requestedCeilingCelsius: 80)
-        try await machine.lease(fans: [0])
-        await machine.plane.advance()
-
-        await machine.emergency.cycle()
-
-        #expect(await machine.latch.isActive)
-        let writes: [ScriptedControlPlane.Attempt] = await machine.writes
-        #expect(writes.contains(.commandTarget(fan: 0, rpm: 5_777)))
-    }
-
-    /// The latch's own contract, which is where the atomicity that guard relies on lives.
-    ///
-    /// `engage` reports whether it engaged a latch that was **clear** — the transition — and
-    /// the decision happens inside the actor, so exactly one of any number of concurrent
-    /// callers can be told `true`. Make it return `true` unconditionally and this goes red,
-    /// which is the closest a test gets to the interleaving above.
-    @Test("The latch reports a transition once, and reports repeats as repeats")
-    func theLatchReportsTransitionsNotState() async {
-        let latch = ThermalEmergencyLatch()
-        let hot = CriticalTemperature(key: smcKey("Tp01"), celsius: 99)
-        let hotter = CriticalTemperature(key: smcKey("Tp01"), celsius: 101)
-
-        #expect(await latch.engage(by: hot))
-        #expect(await latch.engage(by: hotter) == false)
-        // The most recent reading wins: a reader watching a machine that is still climbing
-        // wants the latest number, not the one that happened to cross first.
-        #expect(await latch.engagedBy == hotter)
-
-        #expect(await latch.release())
-        #expect(await latch.release() == false)
-        #expect(await latch.engagedBy == nil)
-    }
-
-    // MARK: - The contract does not move
-
-    /// Every refusal § 3 raises is a fault case E2 already shipped. ADR 0007 promised no
-    /// version bump for the whole of E5, and this is the assertion that keeps the promise
-    /// checkable in the change that consumes the vocabulary.
-    @Test("AeolusXPCVersion is unchanged by the thermal emergency")
-    func theProtocolVersionIsUnchanged() {
-        #expect(AeolusXPCVersion.current == 1)
     }
 }

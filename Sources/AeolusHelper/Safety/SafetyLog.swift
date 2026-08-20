@@ -49,7 +49,7 @@ struct SafetyLog: Sendable {
         }
     }
 
-    /// A sink a test can read back.
+    /// A sink a test can read back, **including the level**.
     ///
     /// `LeaseLog` has no equivalent and its lines go unasserted, which was tolerable while
     /// the log was commentary. It is not tolerable here: "partial loss is a degraded
@@ -57,8 +57,13 @@ struct SafetyLog: Sendable {
     /// the helper, and a review found that sentence true of nothing — `unreadableKeys` had
     /// no reader anywhere in `Sources/`. A claim that load-bearing needs a test that fails
     /// when it stops being true, and a test cannot read `os_log`.
-    init(recording sink: @escaping @Sendable (String) -> Void) {
-        emit = { _, message in sink(message) }
+    /// The level is passed through rather than discarded. An earlier version of this
+    /// initialiser was `{ _, message in sink(message) }`, which meant every `.fault` line
+    /// here could be demoted to `.notice` with the whole suite green — the level was a
+    /// claim no test could check, in the type whose own header says a load-bearing claim
+    /// "needs a test that fails when it stops being true".
+    init(recording sink: @escaping @Sendable (Level, String) -> Void) {
+        emit = sink
     }
 
     /// Some curated keys answered and some did not.
@@ -162,6 +167,23 @@ struct SafetyLog: Sendable {
             """
             Thermal emergency could not \(verb) fan \(fan): \(detail). The restore verb \
             is attempted regardless — under-firing is the dangerous direction.
+            """
+        )
+    }
+
+    /// A fan came under manual control while § 3 was already holding.
+    ///
+    /// It should not be reachable in the ordinary case — a latched machine refuses every
+    /// `acquireLease` — so a line here means either a lease raced the grant-time check or a
+    /// client engaged a fan under a lease it already held. Both are worth seeing.
+    func thermalEmergencyTakingBackLateEngagement(fans: [Int]) {
+        emit(
+            .fault,
+            """
+            Thermal emergency taking back fan(s) \
+            \(fans.map(String.init).joined(separator: ", ")) engaged while it was already \
+            holding. They go to maximum and then back to automatic, and every lease is \
+            revoked.
             """
         )
     }

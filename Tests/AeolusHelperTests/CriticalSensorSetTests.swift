@@ -267,7 +267,7 @@ struct CriticalSensorSetTests {
         let telemetry = CuratedCriticalTemperatures(
             plane: ScriptedControlPlane(fans: [:], stages: [.nominal(temperatures: temperatures)]),
             set: .mac16x5,
-            log: SafetyLog(recording: { recorder.append($0) }))
+            log: SafetyLog(recording: { recorder.append($0, $1) }))
 
         _ = try await telemetry.readCriticalTemperatures()
 
@@ -285,7 +285,7 @@ struct CriticalSensorSetTests {
             plane: ScriptedControlPlane(
                 fans: [:], stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)]),
             set: .mac16x5,
-            log: SafetyLog(recording: { recorder.append($0) }))
+            log: SafetyLog(recording: { recorder.append($0, $1) }))
 
         _ = try await telemetry.readCriticalTemperatures()
 
@@ -313,7 +313,7 @@ struct CriticalSensorSetTests {
             plane: ScriptedControlPlane(
                 fans: [:], stages: [.nominal(temperatures: temperatures)]),
             set: .mac16x5,
-            log: SafetyLog(recording: { recorder.append($0) }))
+            log: SafetyLog(recording: { recorder.append($0, $1) }))
 
         for _ in 0..<5 {
             _ = try await telemetry.readCriticalTemperatures()
@@ -347,7 +347,7 @@ struct CriticalSensorSetTests {
             ])
         let telemetry = CuratedCriticalTemperatures(
             plane: plane, set: .mac16x5,
-            log: SafetyLog(recording: { recorder.append($0) }))
+            log: SafetyLog(recording: { recorder.append($0, $1) }))
 
         _ = try await telemetry.readCriticalTemperatures()
         await plane.advance()
@@ -368,8 +368,22 @@ struct CriticalSensorSetTests {
 /// can read it without an `await`, matching `TestClock` in `LeaseTestDoubles.swift`.
 final class RecordedLog: @unchecked Sendable {
     private let lock = NSLock()
-    private var recorded: [String] = []
+    private var recorded: [(level: SafetyLog.Level, line: String)] = []
 
-    func append(_ line: String) { lock.withLock { recorded.append(line) } }
-    var lines: [String] { lock.withLock { recorded } }
+    func append(_ level: SafetyLog.Level, _ line: String) {
+        lock.withLock { recorded.append((level, line)) }
+    }
+
+    var lines: [String] { lock.withLock { recorded.map(\.line) } }
+
+    /// The levels, in order. `SafetyLog`'s level is a deliberate distinction — a fault-level
+    /// line for a routine partial read would train the reader to ignore the level real
+    /// trouble uses — and before this it was a claim no test could observe, because the
+    /// recording initialiser discarded it.
+    var levels: [SafetyLog.Level] { lock.withLock { recorded.map(\.level) } }
+
+    /// Just the lines emitted at `.fault`.
+    var faults: [String] {
+        lock.withLock { recorded.filter { $0.level == .fault }.map(\.line) }
+    }
 }
