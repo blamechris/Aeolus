@@ -292,6 +292,75 @@ struct CriticalSensorSetTests {
         #expect(recorder.lines.isEmpty)
     }
 
+    /// **#125's forward constraint from #124.**
+    ///
+    /// `degradedCycle` had one caller — `acquireLease`, at most once per acquisition — so
+    /// logging every time was fine. #125 adds a supervisor polling at 1 Hz, and as that
+    /// issue puts it: *"an unchanged degraded set logged every tick at 1 Hz is not a log, it
+    /// is a denial of service against the reader, and it would bury the one line that
+    /// matters."*
+    ///
+    /// Delete `DegradationMemo`'s comparison — log unconditionally again — and this goes
+    /// red on the count.
+    @Test("An unchanged degraded set is logged once, not once per cycle")
+    func anUnchangedDegradationIsLoggedOnce() async throws {
+        let recorder = RecordedLog()
+        var temperatures = LeaseFixture.nominalDieTemperatures
+        for dropped in CriticalSensorSet.mac16x5.keys.dropFirst(2) {
+            temperatures[dropped.rawValue] = nil
+        }
+        let telemetry = CuratedCriticalTemperatures(
+            plane: ScriptedControlPlane(
+                fans: [:], stages: [.nominal(temperatures: temperatures)]),
+            set: .mac16x5,
+            log: SafetyLog(recording: { recorder.append($0) }))
+
+        for _ in 0..<5 {
+            _ = try await telemetry.readCriticalTemperatures()
+        }
+
+        #expect(recorder.lines.count == 1)
+    }
+
+    /// The other half of "log the transition, not the state". A reader who saw a machine
+    /// lose sensors and never saw it get them back would read a cleared fault as current.
+    @Test("Recovery is logged, and a change in which keys are silent is logged again")
+    func transitionsAreLogged() async throws {
+        let recorder = RecordedLog()
+        let keys = CriticalSensorSet.mac16x5.keys
+        var degraded = LeaseFixture.nominalDieTemperatures
+        for dropped in keys.dropFirst(2) { degraded[dropped.rawValue] = nil }
+        // A different silent set with the *same* count, which is why the memo compares sets
+        // rather than counts: losing one key and gaining another changes what the mechanism
+        // can see while leaving "2 of 34" identical.
+        var differentlyDegraded = LeaseFixture.nominalDieTemperatures
+        for dropped in keys.dropFirst(3) { differentlyDegraded[dropped.rawValue] = nil }
+        differentlyDegraded[keys[2].rawValue] = 44.0
+        differentlyDegraded[keys[0].rawValue] = nil
+
+        let plane = ScriptedControlPlane(
+            fans: [:],
+            stages: [
+                .nominal(temperatures: degraded),
+                .nominal(temperatures: differentlyDegraded),
+                .nominal(temperatures: LeaseFixture.nominalDieTemperatures),
+            ])
+        let telemetry = CuratedCriticalTemperatures(
+            plane: plane, set: .mac16x5,
+            log: SafetyLog(recording: { recorder.append($0) }))
+
+        _ = try await telemetry.readCriticalTemperatures()
+        await plane.advance()
+        _ = try await telemetry.readCriticalTemperatures()
+        await plane.advance()
+        _ = try await telemetry.readCriticalTemperatures()
+
+        #expect(recorder.lines.count == 3)
+        #expect(recorder.lines[0].contains("degraded"))
+        #expect(recorder.lines[1].contains("degraded"))
+        #expect(recorder.lines[2].contains("recovered"))
+    }
+
     private func key(_ raw: String) -> SMCKey { smcKey(raw) }
 }
 
