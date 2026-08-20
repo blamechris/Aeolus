@@ -189,7 +189,9 @@ take a permit and that the restore verb takes none.
 
 The helper samples critical sensors every cycle. Above a compiled-in ceiling — 95 °C CPU,
 90 °C storage by default — it forces the affected fan to maximum, then hands back to
-automatic, and notifies the user.
+automatic, revokes any lease that covered it, and reports — on the snapshot and in the log.
+**Not a user notification**: a root daemon cannot post one, and this sentence said it did
+until the mechanism was built. See "what the user is actually told" below.
 
 **"95 °C CPU" means the package, not a core**, and the distinction is not pedantry: on the
 one machine this project has measured, an all-core load put **27 of 45 per-core sensors above
@@ -217,7 +219,7 @@ like a ceiling that is being enforced.
 
 **These ceilings are tunable downward only.** A configuration asking to raise one is
 rejected rather than honoured. A safety limit the user can defeat is not a safety limit,
-and the notification exists so that the override is never silent — a user whose machine
+and the reporting below exists so that the override is never silent — a user whose machine
 suddenly gets loud deserves to know why.
 
 A value that is not a temperature at all — NaN, an infinity — falls back to the compiled
@@ -242,12 +244,17 @@ override engages, writes maximum in one step, restores, revokes the whole lease,
 refuses the next `acquireLease` while latched. `ThermalSupervisorTests` drives the same
 mechanism through its own loop.
 
-**"and notifies the user" is not what this section used to promise, and the difference is
-stated rather than quietly dropped.** A root daemon cannot post a user notification. What
-the mechanism does is set `isThermalEmergencyActive` on the snapshot, which the app renders
-at 1 Hz, and write a `.fault` line to the log. A `fanctl`-held lease with no app running
-therefore gets no visual notification at all: the machine getting loud is the physical
-signal, and the next `fanctl` invocation reports. The as-built rewrite of this document is
+**What the user is actually told.** `isThermalEmergencyActive` on the snapshot, which the
+app renders at 1 Hz, and a `.fault` line in the log. That is the whole of it: a root daemon
+cannot post a user notification, so a `fanctl`-held lease with no app running gets no visual
+signal at all — the machine getting loud is the physical one, and the next `fanctl`
+invocation reports.
+
+This section promised a notification in three places until #125 built the mechanism and an
+adversarial review found the promise still standing two paragraphs above its own retraction.
+Both have been corrected in place rather than deleted, because a safety document that
+quietly stops claiming something is indistinguishable from one that never claimed it. The
+as-built rewrite of this document is
 [#104](https://github.com/blamechris/Aeolus/issues/104)'s.
 
 *Tested by (pending #104):* the hardware rows — a real fan actually reaching maximum, and
@@ -450,7 +457,10 @@ can hold a rate above the cap. `RampGovernorTests` — the governor caps a step 
 directions, lands exactly on the goal rather than overshooting, refuses to be made faster
 than the compiled cap, and computes the 22.135-second full-scale ramp ADR 0007 rests its
 refusal on. `ThermalEmergencyTests.theEmergencyReachesMaximumInOneWrite` is the other end of
-that argument: removing the bypass turns one write into a staircase and the test red.
+that argument — the emergency's bridge is asserted to reach the fan's declared maximum, so
+injecting a governor into the safety writer fails it on the commanded RPM. The stronger half
+is compile-time: `GovernedFanWriter` declares neither of the verbs a safety actor calls, so
+handing one to the emergency does not build.
 
 *Tested by (pending #17):* `FanKit` unit tests driving a temperature series across a curve
 boundary and asserting no oscillation. The ramp half of that line is now covered above; the

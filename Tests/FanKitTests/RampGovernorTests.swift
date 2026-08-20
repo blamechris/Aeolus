@@ -42,9 +42,14 @@ struct RampGovernorTests {
     }
 
     /// The same fact from the other direction: stepping one second at a time really does
-    /// take 23 writes to arrive. This is the shape a governed emergency would produce, and
-    /// it is what turns `theEmergencyReachesMaximumInOneWrite` red when that mutation is
-    /// applied.
+    /// take 23 writes to arrive.
+    ///
+    /// This is what a *control loop* under § 8 does, and it is the cost ADR 0007 refuses to
+    /// impose on § 3. It is **not** what a governed emergency would produce — `fire(_:)` is
+    /// latch-gated and bridges each fan once, so a governed emergency would write a single
+    /// truncated step and then restore. An earlier version of this comment said this test
+    /// was what turned `theEmergencyReachesMaximumInOneWrite` red; that test fails on the
+    /// commanded RPM value, and this one is the arithmetic behind why that value matters.
     @Test("Stepping a full-scale ramp one second at a time takes 23 writes")
     func aFullScaleRampIsAStaircase() {
         let governor = RampGovernor()

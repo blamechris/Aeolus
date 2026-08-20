@@ -10,14 +10,35 @@ import FanKit
 //
 // `SafetyActorWriter` holds no `RampGovernor` and has no property one could be assigned
 // to. `GovernedFanWriter` is the only type in `AeolusHelper` that holds one, and only the
-// control loop uses it. Because neither conforms to a shared writing protocol, no code can
-// be generic over "a writer" and hand a safety actor the governed one by accident — the
-// substitution is not expressible, rather than merely discouraged.
+// control loop uses it. They share no *writing* protocol, so no code can be generic over
+// "a writer" and hand a safety actor the governed one by accident. (They do both satisfy
+// `Sendable`, so a `<W: Sendable>` parameter accepts either; the exclusion is about the
+// verbs, not about every protocol in the language. An earlier draft of this paragraph said
+// "no protocol in common", which is false.)
 //
-// The mutation that proves this is not decorative: point `ThermalEmergency.writer` at a
-// `GovernedFanWriter` and its single maximum write becomes a staircase of 200 RPM steps,
-// which turns `ThermalEmergencyTests.theEmergencyReachesMaximumInOneWrite` red. The
-// arithmetic behind that number is in `RampGovernor`.
+// **How the exclusion is enforced, exactly — because an adversarial review found this
+// paragraph overstating it.** Two halves, and only the first is what "by construction"
+// means here:
+//
+//  1. **Compile time.** `GovernedFanWriter` declares neither `commandMaximum(of:)` nor
+//     `restoreToAutomatic(_:)`. Pointing `ThermalEmergency.writer` at one therefore does
+//     not compile at all until somebody deliberately adds both verbs. That is the strong
+//     half, and it is stronger than any runtime check.
+//  2. **Behaviour.** The mutation that turns a test red is injecting a governor into
+//     `SafetyActorWriter.commandMaximum(of:)` below: the bridge then writes one 200 RPM/s
+//     step instead of the fan's maximum, and
+//     `ThermalEmergencyTests.theEmergencyReachesMaximumInOneWrite` fails **on the RPM
+//     value**.
+//
+// This comment previously claimed the *type swap* produced "a staircase of 200 RPM steps"
+// and turned that test red "on the count". Both are wrong, and were checked: with the two
+// verbs added, the swap leaves all 866 tests green, because `GovernedFanWriter` sends the
+// first write to a fan straight to the goal and the fixture had never commanded that fan.
+// There is also no staircase to be had — `fire(_:)` is latch-gated and bridges each fan
+// exactly once, so on real hardware the mutant would issue **one truncated step and then
+// restore**, never reaching maximum at all. That is worse than the 22 seconds ADR 0007
+// refuses, not better, and it is the reason the claim was worth correcting rather than
+// deleting.
 
 /// The writer for actor levels 1 to 5: panic, thermal emergency, reclamation, sleep/wake,
 /// lease expiry.
