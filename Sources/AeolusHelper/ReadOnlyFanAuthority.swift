@@ -80,6 +80,9 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// would grant a lease refuses, so no fan is ever off automatic control, so
     /// `ThermalEmergency` has nothing to fire on. What changed is where the answer comes
     /// from.
+    ///
+    /// **Required, with no default.** A defaulted latch would compile and report a bit
+    /// nothing sets — see `LeaseAuthority`'s field of the same name.
     private let thermalEmergency: ThermalEmergencyLatch
 
     /// The sensor keys this machine exposes, discovered once. `nil` until the first
@@ -90,7 +93,7 @@ actor ReadOnlyFanAuthority: FanAuthority {
     init(
         provider: some SensorProvider,
         log: HelperLog,
-        thermalEmergency: ThermalEmergencyLatch = ThermalEmergencyLatch(),
+        thermalEmergency: ThermalEmergencyLatch,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.provider = provider

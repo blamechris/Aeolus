@@ -75,6 +75,12 @@ actor LeaseAuthority {
     /// The one bit that says `docs/SAFETY.md` § 3 is holding. Read at grant time; set by
     /// `ThermalEmergency`, which this type deliberately holds no reference to — see
     /// `ThermalEmergencyLatch` for why the latch is its own type.
+    ///
+    /// **Required, with no default**, unlike the other injected collaborators. A defaulted
+    /// `ThermalEmergencyLatch()` compiles silently and yields a private latch that nothing
+    /// will ever engage, which turns `refuseIfThermalEmergencyActive` into a guard that
+    /// cannot fire. `ThermalEmergency` already required its latch; the two types that must
+    /// agree with it did not, and an adversarial review named that as the E3 footgun it is.
     private let thermalEmergency: ThermalEmergencyLatch
     private let log: LeaseLog
 
@@ -95,7 +101,7 @@ actor LeaseAuthority {
         enumeration: some FanEnumerating,
         restorer: some FanRestoring,
         telemetry: some CriticalTemperatureSensing,
-        thermalEmergency: ThermalEmergencyLatch = ThermalEmergencyLatch(),
+        thermalEmergency: ThermalEmergencyLatch,
         clock: some MonotonicClock = SystemMonotonicClock(),
         wallClock: @escaping @Sendable () -> Date = Date.init,
         tombstoneCapacity: Int = ConnectionTombstones.defaultCapacity,
@@ -350,6 +356,38 @@ actor LeaseAuthority {
         }
     }
 
+    /// Revokes **every** live lease, whatever fans it covers.
+    ///
+    /// `docs/SAFETY.md` § 3 selects on this rather than on the emergency's own registry of
+    /// engaged fans, and the difference is a defect an adversarial review found rather than
+    /// a preference. A client can hold a live lease **without having engaged manual control
+    /// yet** — acquisition and the first write are separate messages — and such a fan is
+    /// still on automatic, so it appears in no registry of engaged fans. An emergency that
+    /// revoked only what it had bridged would latch, take back nothing, and leave that
+    /// lease live; the client's next write would then engage a fan into an emergency that
+    /// has already fired.
+    ///
+    /// It also closes a window the lease core cannot close from its own side. The latch is
+    /// a *different actor*, so `refuseIfThermalEmergencyActive` reads it across a hop and
+    /// then awaits `refuseIfBlind`'s real 34-key SMC read before the straight-line region
+    /// begins — the emergency can engage during that read, and the grant proceeds. No
+    /// re-check below the marker can fix that, because the hop back is itself a window
+    /// ([#95](https://github.com/blamechris/Aeolus/issues/95) is the same shape). What
+    /// closes it is the emergency taking back whatever it finds, every cycle it holds.
+    ///
+    /// Deliberately **not** shared with `releaseEveryLease()`, which drops the same table
+    /// for § 7's panic verb. They are different actors — levels 1 and 2 — and
+    /// `LeaseTable`'s own selectors are written out for exactly this reason: a shared
+    /// predicate remover is the first step towards one mechanism wearing several names, and
+    /// an operator reading `log show` must be able to tell the panic path from § 3.
+    func revokeEveryLease(because cause: FanRestoreCause) async {
+        let revoked = table.removeAll()
+        for entry in revoked {
+            log.revoked(entry.connection, fans: entry.fanIndices, because: cause)
+            await restore(entry.fanIndices, because: cause)
+        }
+    }
+
     // MARK: - The panic path
 
     /// Drops every lease and restores every fan they covered.
@@ -445,6 +483,17 @@ actor LeaseAuthority {
     /// Re-throwing is also still fail-safe: the lease is not granted either way. Only the
     /// reported reason differs, and `CLAUDE.md` rule 6 is about exactly that — never report
     /// a state that is not the one you are in.
+    private func refuseIfBlind(_ connection: ConnectionID) async throws {
+        do {
+            _ = try await telemetry.readCriticalTemperatures()
+        } catch let cancellation as CancellationError {
+            throw cancellation
+        } catch {
+            log.refusedBlindTelemetry(connection, detail: String(describing: error))
+            throw AeolusXPCFault.manualControlUnavailable(reason: .noThermalTelemetry)
+        }
+    }
+
     /// Refuses the grant while `docs/SAFETY.md` § 3 is holding.
     ///
     /// **A revoked holder is not silently re-granted.** The emergency revokes the whole
@@ -471,17 +520,6 @@ actor LeaseAuthority {
         guard await thermalEmergency.isActive else { return }
         log.refusedThermalEmergency(connection)
         throw AeolusXPCFault.thermalEmergencyActive
-    }
-
-    private func refuseIfBlind(_ connection: ConnectionID) async throws {
-        do {
-            _ = try await telemetry.readCriticalTemperatures()
-        } catch let cancellation as CancellationError {
-            throw cancellation
-        } catch {
-            log.refusedBlindTelemetry(connection, detail: String(describing: error))
-            throw AeolusXPCFault.manualControlUnavailable(reason: .noThermalTelemetry)
-        }
     }
 
     private func refuseIfInvalidated(_ connection: ConnectionID) throws {

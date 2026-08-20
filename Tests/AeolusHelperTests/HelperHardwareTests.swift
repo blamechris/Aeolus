@@ -32,7 +32,9 @@ struct HelperHardwareTests {
 
     @Test("A snapshot from real hardware reports real fans, controllable by nothing")
     func snapshotFromRealHardware() async throws {
-        let authority = ReadOnlyFanAuthority(provider: SMCSensorProvider(), log: Self.log)
+        let authority = ReadOnlyFanAuthority(
+            provider: SMCSensorProvider(), log: Self.log,
+            thermalEmergency: ThermalEmergencyLatch())
 
         let snapshot = try await authority.snapshot()
 
@@ -109,7 +111,9 @@ struct HelperHardwareTests {
     /// snapshot got slower, which is the thing worth knowing.
     @Test("Discovery stays off the snapshot path")
     func warmSnapshotIsCheap() async throws {
-        let authority = ReadOnlyFanAuthority(provider: SMCSensorProvider(), log: Self.log)
+        let authority = ReadOnlyFanAuthority(
+            provider: SMCSensorProvider(), log: Self.log,
+            thermalEmergency: ThermalEmergencyLatch())
 
         let coldStart = ContinuousClock.now
         let first = try await authority.snapshot()
@@ -141,7 +145,9 @@ struct HelperHardwareTests {
     /// authority to SMC and back, with no write path anywhere in it.
     @Test("A real snapshot crosses a real connection and decodes")
     func snapshotCrossesTheBoundary() async throws {
-        let authority = ReadOnlyFanAuthority(provider: SMCSensorProvider(), log: Self.log)
+        let authority = ReadOnlyFanAuthority(
+            provider: SMCSensorProvider(), log: Self.log,
+            thermalEmergency: ThermalEmergencyLatch())
         let harness = AnonymousListenerHarness(authority: authority)
 
         _ = await harness.payloadMessage { proxy, reply in

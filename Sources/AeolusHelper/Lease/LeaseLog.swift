@@ -61,10 +61,11 @@ struct LeaseLog: Sendable {
 
     /// A lease was taken from a client that had done nothing wrong.
     ///
-    /// `.fault`, and the only line in this type at that level. Every other refusal and
-    /// teardown here is a client running out of claim; this is `docs/SAFETY.md` § 3 deciding
-    /// the machine matters more than the claim, and it is the line a user arrives with when
-    /// they ask why their fan settings vanished.
+    /// `.fault` — the level this type reserves for "a safety mechanism decided the machine
+    /// matters more than the client's claim". `refusedBlindTelemetry` is the other one, and
+    /// an earlier version of this comment called this the only one, which was false. Every
+    /// *other* line here is a client running out of claim; this is the line a user arrives
+    /// with when they ask why their fan settings vanished.
     func revoked(_ connection: ConnectionID, fans: Set<Int>, because cause: FanRestoreCause) {
         log.fault(
             """
