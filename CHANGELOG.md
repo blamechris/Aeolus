@@ -26,6 +26,22 @@ number, negotiated at connect time. Protocol changes are called out explicitly b
   uncontrollable. There is no SMC write path in this build, and a lease that controlled
   nothing would be a lie about control. `fanctl reset --all`'s message succeeds as a
   truthful no-op, so the panic path is wired and tested from the day the boundary exists.
+- **The helper refuses a lease it cannot supervise.** `docs/SAFETY.md` § 3 is a
+  *precondition* of § 1, not a peer of it: a lease granted while the helper cannot read a
+  temperature pins fans with the thermal override blind and only the TTL left. Manual
+  control is now refused with an additive `noThermalTelemetry` reason whenever no curated
+  critical sensor answers. No protocol change — `Reason` is forward-tolerant by
+  construction, so `AeolusXPCVersion` stays at 1.
+- **The critical sensor set is curated in code, per machine, and no configuration reaches
+  it.** A file that could name the keys could name a set that never gets hot, which
+  disables the thermal override while leaving every ceiling constant untouched. `Mac16,5`
+  resolves to the measured `TPD*`/`TRD*` die cluster; a machine nobody has measured
+  resolves to the empty set, which is blindness, which is no lease. Readings are gated:
+  anything at or below 0 °C is not believed, because a non-reading on this hardware
+  presents as a clean constant rather than an error. There is deliberately **no upper
+  bound** — over-firing returns fans to automatic and is acceptable, while under-firing is
+  the dangerous direction.
+
 - **Fan bounds are checked before they are trusted.** `F<n>Mn`/`F<n>Mx` pass a
   plausibility gate — finite, non-negative, ascending, and inside a 100–20,000 RPM
   envelope — before a fan can be controlled at all. A fan that fails it is reported

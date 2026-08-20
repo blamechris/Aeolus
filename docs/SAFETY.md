@@ -182,6 +182,30 @@ The helper samples critical sensors every cycle. Above a compiled-in ceiling —
 90 °C storage by default — it forces the affected fan to maximum, then hands back to
 automatic, and notifies the user.
 
+**"95 °C CPU" means the package, not a core**, and the distinction is not pedantry: on the
+one machine this project has measured, an all-core load put **27 of 45 per-core sensors above
+this ceiling**, the hottest at 111 °C, while the package sat at 56 °C and the system's own
+thermal management stayed relaxed at 2372 of 5777 RPM. Apple Silicon cores are designed to
+run there. Compared against a core, this ceiling fires under any sustained multi-core work;
+compared against the package, the same load leaves 39 °C of headroom, and the worst reading
+in the whole session — 62 °C, during the heat soak after the load stopped — still leaves 33 °C.
+
+The load was a synthetic twelve-way busy loop, held for 40 s. That is stated because it is
+what was actually run: `docs/SMC-RESEARCH.md` carries the method, and an earlier draft of this
+paragraph described it as a `swift build`, which no measurement in that session was taken
+during. A number in a safety document has to be re-runnable by whoever doubts it.
+
+The sensors the comparison actually uses are curated in code, per machine, and
+`docs/SMC-RESEARCH.md` carries the measurement that separates the two populations — along
+with a third, load-invariant population that is not a temperature at all and would latch the
+override permanently on an idle machine.
+
+**The 90 °C storage ceiling has no verified sensor on that machine.** The constant exists;
+the key it would be compared against has not been identified, so no storage key is in the
+curated set today and the storage half of this section is not yet mechanised. Said here
+rather than left to be discovered, because a ceiling with nothing behind it reads exactly
+like a ceiling that is being enforced.
+
 **These ceilings are tunable downward only.** A configuration asking to raise one is
 rejected rather than honoured. A safety limit the user can defeat is not a safety limit,
 and the notification exists so that the override is never silent — a user whose machine

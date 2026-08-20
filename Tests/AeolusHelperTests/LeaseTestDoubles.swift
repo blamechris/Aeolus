@@ -265,9 +265,15 @@ enum LeaseFixture {
     }
 
     /// An authority wired to doubles, with the clock and wall clock the caller controls.
+    ///
+    /// `telemetry` defaults to a machine that can see, because that is what an ordinary
+    /// lease test is about. Blindness is opted into — `blindTelemetry()` — so that a test
+    /// asserting the grant-time gate says so at its call site rather than relying on a
+    /// fixture default nobody reads.
     static func authority(
         enumeration: ScriptedFanEnumeration = ScriptedFanEnumeration(),
         restorer: RecordingFanRestorer = RecordingFanRestorer(),
+        telemetry: any CriticalTemperatureSensing = sightedTelemetry(),
         clock: TestClock = TestClock(),
         wallClock: TestWallClock = TestWallClock(),
         tombstoneCapacity: Int = ConnectionTombstones.defaultCapacity
@@ -275,10 +281,45 @@ enum LeaseFixture {
         LeaseAuthority(
             enumeration: enumeration,
             restorer: restorer,
+            telemetry: telemetry,
             clock: clock,
             wallClock: wallClock.provider,
             tombstoneCapacity: tombstoneCapacity,
             log: log
+        )
+    }
+
+    /// Every curated key reading a plausible idle die temperature.
+    ///
+    /// 44.0 °C is inside the 41.48–44.80 °C band `docs/SMC-RESEARCH.md` recorded for this
+    /// cluster on an idle machine, so a test that accidentally starts comparing these
+    /// against § 3's ceiling gets a realistic answer rather than a suspiciously round one.
+    static var nominalDieTemperatures: [String: Double] {
+        Dictionary(
+            uniqueKeysWithValues: CriticalSensorSet.mac16x5.keys.map { ($0.rawValue, 44.0) })
+    }
+
+    /// Telemetry that can see — through the **real** curated conformer, not a stand-in.
+    ///
+    /// Wiring `CuratedCriticalTemperatures` over the scripted plane rather than writing a
+    /// bespoke `CriticalTemperatureSensing` double means the curated key list and the
+    /// plausibility gate are on the path every lease test exercises. A hand-rolled double
+    /// would answer "sighted" without either of them ever running.
+    static func sightedTelemetry() -> any CriticalTemperatureSensing {
+        CuratedCriticalTemperatures(
+            plane: ScriptedControlPlane(
+                fans: [:],
+                stages: [.nominal(temperatures: nominalDieTemperatures)]
+            ),
+            set: .mac16x5
+        )
+    }
+
+    /// Telemetry that cannot see: the SMC answers nothing, for every stage, forever.
+    static func blindTelemetry() -> any CriticalTemperatureSensing {
+        CuratedCriticalTemperatures(
+            plane: ScriptedControlPlane(fans: [:], stages: [.blind()]),
+            set: .mac16x5
         )
     }
 }

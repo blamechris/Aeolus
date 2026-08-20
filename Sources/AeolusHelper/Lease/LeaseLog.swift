@@ -84,6 +84,22 @@ struct LeaseLog: Sendable {
         )
     }
 
+    /// `.fault`, not `.info`. Every other refusal here is a normal negotiation outcome —
+    /// somebody else has the fans, a handback is in flight, the build has no self-renewal.
+    /// This one says the helper cannot see a temperature, which is a machine in a degraded
+    /// state rather than a client asking for the wrong thing, and it needs to be in the
+    /// log a user reaches for after the fact.
+    func refusedBlindTelemetry(_ connection: ConnectionID, detail: String) {
+        log.fault(
+            """
+            Connection \(connection.logDescription, privacy: .public) asked for manual \
+            control while no critical temperature could be read (\(detail, privacy: .public)). \
+            Refused: the thermal override is a precondition of a lease, not a peer of it, \
+            and a lease granted now would pin fans with nothing watching them.
+            """
+        )
+    }
+
     func refusedConcurrentLease(_ connection: ConnectionID) {
         log.info(
             """

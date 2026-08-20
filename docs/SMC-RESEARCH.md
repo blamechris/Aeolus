@@ -24,7 +24,11 @@ The machine available to this project:
 
 | Model identifier | Chip | macOS | Notes |
 |---|---|---|---|
-| `Mac16,5` | Apple M4 Max (12P/4E, 64 GB) | 26.5.2 (25F84) | Sole development machine |
+| `Mac16,5` | Apple M4 Max (12P/4E, 64 GB) | 26.6.2 (25G83) | Sole development machine |
+
+The machine ran 26.5.2 (25F84) for the 2026-07-25 session and 26.6.2 (25G83) for the
+2026-08-20 one. Each observation below is scoped to the build it was taken on, and says so;
+this row is the machine as it stands now.
 
 That is one Mac, from the M3-and-newer generation. It means:
 
@@ -562,6 +566,105 @@ observation about this machine's SMC — but the one comparison against an actua
 gauge misses by an order of magnitude more than this document's own corroboration bar, and
 no single `AppleSmartBattery` quantity accounts for all three keys at once. The catalog
 reflects this: `confidence: guess`, not `verified`, for all three.
+
+### Which `T*` keys are a thermal ceiling actually about — three classes, and only one of them is safe to compare against 95 °C
+
+> Second measurement session, **2026-08-20**. `Mac16,5`, Apple M4 Max, macOS **26.6.2**
+> (25G83) — a later build than the 2026-07-25 session above, which ran 26.5.2. `#KEY` now
+> reports **3386**, up from 3385; `T*` numeric keys are **368**, up from the 365 this
+> document records under the `IOHIDEventSystemClient` question. The OS update, not
+> anything this project did, is the only change between the two sessions.
+>
+> **Method, and it is repo code this time:** `fanctl sensors --json --raw-keys`, three
+> samples — idle; then under a synthetic twelve-way shell busy-loop held for 40 s; then
+> 45 s after that load stopped. Read selectors only, as ever. This is the first
+> observation in this document taken with the shipping CLI rather than a throwaway spike,
+> which means anybody with a source build can reproduce it.
+
+This section exists because [#124](https://github.com/blamechris/Aeolus/issues/124) had to
+choose the set of keys [SAFETY.md](SAFETY.md) § 3 compares against its 95 °C ceiling, and
+the measurement contradicts the obvious answer twice over.
+
+**The naive answer — max over every `T*` key — is wrong, and this document already said so**
+(365 keys spanning 0–113.83 °C). The 2026-08-20 samples say something sharper: the keys are
+not one population with some noise in it. They fall into three classes that behave
+differently, and picking the wrong class breaks the override in opposite directions.
+
+| Class | Keys | Idle | 12-way load | 45 s after load |
+|---|---|---|---|---|
+| **Die / package cluster** | `TPD0`–`TPD9`, `TPDa`–`TPDf`, `TPDX`, `TRD0`–`TRD9`, `TRDa`–`TRDf`, `TRDX` (34) | 41.48 – 44.80 | 53.17 – 56.07 | 55.85 – 62.40 |
+| **Per-core, apparently** | `Tp0*` (45 numeric) | **exactly 40.00**, every one | 74.43 – 111.14 | 70.80 – 107.27 |
+| **Frozen constants** | `Tf06` 98.484375, `Tf46` 98.203125, `Tf16`/`Tf26` 76.00, `Tf36` 79.703125 | — | **identical** | **identical** |
+
+Across all 368 `T*` keys, **34 were bit-for-bit unchanged** between idle and full load, and
+the maximum over the whole population went 98.48 → 112.03 °C. A further four — `TD00`,
+`TD02`, `TD04`, `TVA0` — moved by less than 0.005 °C, which is why an earlier draft of this
+paragraph said 38: it counted rows whose delta *rounded* to `+0.00` in a two-decimal working
+file rather than keys whose value was identical. The distinction matters here precisely
+because the argument below turns on values that do not change **at all**.
+
+"Identical" in the table above means identical to the last digit the SMC decoded. These
+captures are `fanctl sensors --json` output, which carries decoded scalars and no raw bytes,
+so they cannot support a claim about the bytes themselves — only about every value the decode
+produced. An earlier draft said "byte-identical", which is a claim this method cannot make.
+
+**Finding 1 — the frozen keys are not sensors.** `Tf06` reads 98.484375 on an idle machine
+with both fans stopped, and reads *exactly* the same value under a twelve-way load that
+takes the die cluster up 12 °C and spins the fans from a standstill to 2372/2551 RPM — and
+the same value again in the third sample, with the fans at 3433/3683 RPM and the die 18 °C
+above where it started. A quantity that does not respond to any of that is not a measurement
+of the die it supposedly sits on. Whatever `Tf*6` is — a trip point, a calibration constant, a limit register — a
+max-over-all-`T*` critical set would sit at 98.48 °C permanently, above § 3's 95 °C CPU
+ceiling, **on a machine doing nothing**. That is the permanent-latch failure this project
+predicted from the 113.83 °C figure, now pinned to specific keys and demonstrated to be
+load-invariant rather than merely high.
+
+**Finding 2 — and this is the one that was not predicted — filtering to keys that *do*
+track load is still not enough.** The `Tp0*` cluster tracks load beautifully: pinned at
+exactly 40.00 at idle, then 74.43–111.14 °C under the twelve-way busy loop. Those are real,
+responsive silicon temperatures. **Twenty-seven of the forty-five go above § 3's 95 °C CPU
+ceiling** — while the system's own thermal management stays perfectly content, fans at
+2372/2551 RPM against a declared maximum of 5777, i.e. nowhere near distress.
+
+Two numbers in that sentence were wrong in an earlier draft and are worth naming, because
+both errors flattered the argument. The band was given as 95.69–111.14: 95.69 is `Tp0H`, the
+*lowest key that happens to exceed the ceiling*, so the figure offered as evidence for the
+exclusion had been derived by first assuming the conclusion. And the load was described as
+"a routine `swift build`", which no capture in this session was taken during — the load was
+the synthetic busy loop named in the method above. The conclusion survives both corrections,
+since 27 keys over the ceiling is more than enough to break the override, but evidence that
+cannot be re-run is not evidence.
+
+Apple Silicon cores are designed to run there. A critical set built from `Tp0*` would fire
+the thermal emergency, revoke the user's lease, and slam the fans to maximum every time
+somebody compiled something. § 3's ceiling is only meaningful against a **package-level**
+temperature, and the die cluster is that: it peaked at 62.40 °C in the worst sample here,
+33 °C of headroom under the ceiling.
+
+**Finding 3 — a non-reading presents as an exact constant, not as an error.** `Tpx0`–`Tpx5`
+read **exactly 0.00** at idle and 81.24–111.14 °C under load: a sensor that reports a clean
+zero while its cluster is powered down, rather than failing the read. `Tp0*`'s exact 40.00
+at idle is the same phenomenon at a different floor. Neither is distinguishable from a
+legitimate reading by the read machinery — both are well-formed `flt` values that decode
+without complaint. **A plausibility gate that only rejects non-finite values will believe
+both.** This is the observational basis for `CriticalSensorSet`'s lower bound rejecting
+readings at or below 0 °C, and for its refusal to impose an *upper* bound: a spuriously
+low reading silently suppresses the override, which is the dangerous direction, while a
+spuriously high one merely over-fires.
+
+**What this does not establish.** That `Tp0*` is per-core and `TPD*`/`TRD*` is
+package/die is inferred from cardinality and behaviour — 45 versus 34 keys on a 12P/4E
+part, and the package cluster's slower, smaller, lagging response — not taken from any
+documented source. No community source consulted by this document names any of these keys.
+The load was a synthetic integer busy-loop, not a thermally representative workload, and
+one session on one machine is one session on one machine. What *is* established, and is
+enough for the decision it was taken for, is the three-way behavioural split and the fact
+that two of the three classes break § 3 if used.
+
+**Consequence for the ceiling's wording.** [SAFETY.md](SAFETY.md) § 3 says "95 °C CPU". On
+this hardware that number is only correct if "CPU" means the package, and is wrong by
+roughly 15 °C of routine operating range if it means a core. The document does not say
+which, because when it was written nobody had measured the difference. It says it now.
 
 ### Untestable on this hardware
 

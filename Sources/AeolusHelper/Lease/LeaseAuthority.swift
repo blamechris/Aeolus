@@ -8,14 +8,32 @@ import Foundation
 ///
 /// Behind `FanAuthority`, not on it. Every method below carries a `FanAuthority` signature
 /// verbatim, so the helper's control plane composes it with one-line forwards, but this
-/// type owns no hardware and produces no `SystemSnapshot`: it cannot enumerate a fan, read a
-/// sensor, or write a value. It asks `FanEnumerating` which fans exist and tells
-/// `FanRestoring` to put them back, and those are the only two things it needs of the
-/// machine.
+/// type owns no hardware and produces no `SystemSnapshot`. It asks for exactly three things
+/// of the machine, each as a narrow role rather than a control plane:
 ///
-/// That split is what keeps E5.1 fully testable with no hardware and no mock SMC, and it is
-/// why this file contains no write of any kind — `SMCConnection.write` is still
-/// `package`-scoped and still throws, and no write selector exists anywhere in `Sources/`.
+/// - `FanEnumerating` — which fans exist.
+/// - `FanRestoring` — put them back on automatic.
+/// - `CriticalTemperatureSensing` — **can the mechanism that protects a leased fan see
+///   anything at all**, asked once per grant. This one is a real read, and on the
+///   production conformer a real hardware round trip.
+///
+/// The third arrived with #124 and is the only one that reads. It is worth stating plainly
+/// here, because `acquireLease`'s `// ---- No await below this line ----` marker can only be
+/// reasoned about correctly by somebody who knows how many suspension points that method
+/// has: an earlier version of this paragraph said the type "cannot enumerate a fan, read a
+/// sensor, or write a value" and named only two dependencies, which would have hidden the
+/// slowest of the three from exactly that analysis.
+///
+/// **Still no write of any kind** — `SMCConnection.write` is `package`-scoped and still
+/// throws, and no write selector exists anywhere in `Sources/`.
+///
+/// The split keeps this fully testable with no hardware. It no longer keeps it free of the
+/// mock SMC: `LeaseFixture.authority` defaults `telemetry:` to a `CuratedCriticalTemperatures`
+/// over `ScriptedControlPlane`, so every lease test now runs against the scripted firmware.
+/// That is deliberate — a hand-rolled telemetry double would answer "sighted" without the
+/// curated key list or the plausibility gate ever running — and it means emptying
+/// `CriticalSensorSet.mac16x5` turns the lease suite red, which is a coupling worth knowing
+/// about before it surprises somebody.
 ///
 /// ## One lease at a time, and why the contract settles it
 ///
@@ -50,6 +68,10 @@ actor LeaseAuthority {
     private let wallClock: @Sendable () -> Date
     private let enumeration: any FanEnumerating
     private let restorer: any FanRestoring
+    /// The third — and, by design, last — thing this type needs of the machine. See
+    /// `CriticalTemperatureSensing` for why it is its own role rather than a method on
+    /// either of the two above.
+    private let telemetry: any CriticalTemperatureSensing
     private let log: LeaseLog
 
     private var table = LeaseTable()
@@ -68,6 +90,7 @@ actor LeaseAuthority {
     init(
         enumeration: some FanEnumerating,
         restorer: some FanRestoring,
+        telemetry: some CriticalTemperatureSensing,
         clock: some MonotonicClock = SystemMonotonicClock(),
         wallClock: @escaping @Sendable () -> Date = Date.init,
         tombstoneCapacity: Int = ConnectionTombstones.defaultCapacity,
@@ -75,6 +98,7 @@ actor LeaseAuthority {
     ) {
         self.enumeration = enumeration
         self.restorer = restorer
+        self.telemetry = telemetry
         self.clock = clock
         self.wallClock = wallClock
         self.tombstones = ConnectionTombstones(capacity: tombstoneCapacity)
@@ -95,7 +119,11 @@ actor LeaseAuthority {
     ///    as from a message.
     /// 3. The suspension points: enumerating the machine's fans, then sweeping anything
     ///    already lapsed — so the single-lease check below is made against live leases only,
-    ///    and a previous lease's fans are back on automatic before new ones are taken.
+    ///    and a previous lease's fans are back on automatic before new ones are taken — and
+    ///    then proving the helper can still see a temperature at all. The sweep runs
+    ///    **before** that proof deliberately: a lapsed lease's fans go back to automatic
+    ///    whether or not this machine is blind, and a blind machine is the last one on
+    ///    which to skip a restore.
     /// 4. **The liveness check, after the last suspension point and immediately before
     ///    registering.** Everything from there to the `insert` is straight-line: the actor
     ///    cannot be re-entered between the check and the act it guards.
@@ -123,6 +151,7 @@ actor LeaseAuthority {
 
         let enumerated = try await enumeration.enumeratedFanIndices()
         await expireLapsedLeases()
+        try await refuseIfBlind(connection)
 
         // ---- No `await` below this line. Adding one reopens #95. ----
         try AeolusXPCValidation.validateFanIndices(
@@ -332,6 +361,62 @@ actor LeaseAuthority {
     /// the client.
     private static let invalidatedInFlight = AeolusXPCFault.helperFailed(
         detail: "the connection was invalidated while this request was in flight")
+
+    /// Refuses the grant if the helper cannot currently see a critical temperature.
+    ///
+    /// **`docs/SAFETY.md` § 3 is a precondition of § 1.** A lease is a promise that
+    /// something is watching the fans it pins; a helper that cannot read a temperature is
+    /// not watching anything, and the thermal override, the reclamation watchdog and the
+    /// sleep supervisor are all equally blind. What is left is the TTL, which
+    /// [ADR 0007](../../../docs/ADR/0007-safety-composition.md) accepts as a *backstop*
+    /// and nowhere accepts as the whole mechanism.
+    ///
+    /// ## Why it sits here in the order
+    ///
+    /// It is above the straight-line region because it suspends, and it must be: the read
+    /// is the point. That places it ahead of the concurrent-lease and mid-handback
+    /// refusals, so a client asking during blindness is told about the blindness even when
+    /// another client holds the fans. Both facts are true and this is the one worth
+    /// telling: `leaseHeldByAnotherClient` invites "wait for them to finish", which is
+    /// wrong advice on a machine where nobody can be granted anything.
+    ///
+    /// It also lands ahead of `validateFanIndices`, which is the one ordering here that is
+    /// a consequence rather than a choice — everything in the straight-line region is below
+    /// every suspension point by construction. So a request naming a fan that does not
+    /// exist, sent to a blind machine, is answered `noThermalTelemetry` rather than
+    /// `invalidFanIndex`. That is tolerable (both are refusals, and the blindness is the
+    /// more consequential fact) but it is not a judgement anybody made, and a future reader
+    /// comparing this against the validation-first ordering elsewhere should know that.
+    ///
+    /// ## Why it catches everything except cancellation
+    ///
+    /// Every failure to obtain telemetry is blindness, whatever its type. There is no
+    /// allow-list of error cases that count, because an allow-list means the next error case
+    /// somebody adds silently defaults to *granted*, and this guard exists precisely to stop
+    /// a lease being handed out on a machine nothing can see. The default is refuse.
+    ///
+    /// `CancellationError` is the one exception, and it is not a hole in that rule — it is
+    /// the one error that is definitionally **not a statement about the machine**. A
+    /// cancelled request says the caller went away; it says nothing about whether the SMC
+    /// answered. Folding it in would tell a client "no thermal telemetry" when telemetry was
+    /// never the problem, and — worse — write a `.fault` line into a root daemon's log
+    /// claiming the sensors went silent on a machine whose sensors are fine. That log is
+    /// meant to be the record a user reaches for when asking whether the mechanism was
+    /// watching; a false entry in it is worse than no entry.
+    ///
+    /// Re-throwing is also still fail-safe: the lease is not granted either way. Only the
+    /// reported reason differs, and `CLAUDE.md` rule 6 is about exactly that — never report
+    /// a state that is not the one you are in.
+    private func refuseIfBlind(_ connection: ConnectionID) async throws {
+        do {
+            _ = try await telemetry.readCriticalTemperatures()
+        } catch let cancellation as CancellationError {
+            throw cancellation
+        } catch {
+            log.refusedBlindTelemetry(connection, detail: String(describing: error))
+            throw AeolusXPCFault.manualControlUnavailable(reason: .noThermalTelemetry)
+        }
+    }
 
     private func refuseIfInvalidated(_ connection: ConnectionID) throws {
         guard tombstones.contains(connection) else { return }
