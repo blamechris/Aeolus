@@ -388,15 +388,30 @@ actor LeaseAuthority {
     /// more consequential fact) but it is not a judgement anybody made, and a future reader
     /// comparing this against the validation-first ordering elsewhere should know that.
     ///
-    /// ## Why it catches everything
+    /// ## Why it catches everything except cancellation
     ///
-    /// Every failure to obtain telemetry is blindness, whatever its type. Enumerating the
-    /// error cases that count would mean a future error case silently defaulting to
-    /// *granted*, and this guard exists precisely to stop a lease being handed out on a
-    /// machine nothing can see.
+    /// Every failure to obtain telemetry is blindness, whatever its type. There is no
+    /// allow-list of error cases that count, because an allow-list means the next error case
+    /// somebody adds silently defaults to *granted*, and this guard exists precisely to stop
+    /// a lease being handed out on a machine nothing can see. The default is refuse.
+    ///
+    /// `CancellationError` is the one exception, and it is not a hole in that rule — it is
+    /// the one error that is definitionally **not a statement about the machine**. A
+    /// cancelled request says the caller went away; it says nothing about whether the SMC
+    /// answered. Folding it in would tell a client "no thermal telemetry" when telemetry was
+    /// never the problem, and — worse — write a `.fault` line into a root daemon's log
+    /// claiming the sensors went silent on a machine whose sensors are fine. That log is
+    /// meant to be the record a user reaches for when asking whether the mechanism was
+    /// watching; a false entry in it is worse than no entry.
+    ///
+    /// Re-throwing is also still fail-safe: the lease is not granted either way. Only the
+    /// reported reason differs, and `CLAUDE.md` rule 6 is about exactly that — never report
+    /// a state that is not the one you are in.
     private func refuseIfBlind(_ connection: ConnectionID) async throws {
         do {
             _ = try await telemetry.readCriticalTemperatures()
+        } catch let cancellation as CancellationError {
+            throw cancellation
         } catch {
             log.refusedBlindTelemetry(connection, detail: String(describing: error))
             throw AeolusXPCFault.manualControlUnavailable(reason: .noThermalTelemetry)

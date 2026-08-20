@@ -114,6 +114,40 @@ struct LeaseTelemetryGateTests {
         #expect(await authority.leaseCount == 0)
     }
 
+    /// A cancelled request is not a blind machine.
+    ///
+    /// Raised in review on #129. Folding `CancellationError` into the refusal would tell a
+    /// client "no thermal telemetry" when telemetry was never the problem, and write a
+    /// `.fault` line claiming the sensors went silent on a machine whose sensors are fine.
+    /// Both outcomes refuse the lease, so this is about honesty rather than safety — which
+    /// is `CLAUDE.md` rule 6's whole subject.
+    ///
+    /// Delete the `catch let cancellation as CancellationError` clause and this goes red.
+    @Test("A cancelled telemetry read propagates rather than becoming a blindness refusal")
+    func cancellationIsNotBlindness() async throws {
+        let authority = LeaseFixture.authority(telemetry: ThrowingTelemetry(CancellationError()))
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await authority.acquireLease(LeaseFixture.request(), from: ConnectionID())
+        }
+        #expect(await authority.leaseCount == 0)
+    }
+
+    /// The control: every other failure still becomes the refusal, so the clause above is a
+    /// carve-out for one error rather than a hole in the default.
+    @Test("Any other telemetry failure is still a blindness refusal")
+    func otherFailuresAreStillBlindness() async throws {
+        let authority = LeaseFixture.authority(
+            telemetry: ThrowingTelemetry(FanControlPlaneError.readFailed(detail: "stale port")))
+
+        await #expect(
+            throws: AeolusXPCFault.manualControlUnavailable(reason: .noThermalTelemetry)
+        ) {
+            _ = try await authority.acquireLease(LeaseFixture.request(), from: ConnectionID())
+        }
+        #expect(await authority.leaseCount == 0)
+    }
+
     /// Additive vocabulary, not a protocol change — the property that lets this refusal
     /// ship inside v1.
     @Test("The blindness refusal needs no protocol bump")
@@ -131,5 +165,20 @@ struct LeaseTelemetryGateTests {
         #expect(
             ManualControlAvailability.Reason(wireValue: "somethingFromAFutureHelper")
                 == .unknown("somethingFromAFutureHelper"))
+    }
+}
+
+/// Telemetry that fails a given way, for asserting how `refuseIfBlind` classifies an error.
+///
+/// Not `CuratedCriticalTemperatures` over a scripted plane, deliberately: the scripted plane
+/// can be blind but cannot be cancelled, and this suite is about the classification rather
+/// than about the curated conformer.
+struct ThrowingTelemetry: CriticalTemperatureSensing {
+    private let failure: any Error
+
+    init(_ failure: any Error) { self.failure = failure }
+
+    func readCriticalTemperatures() async throws -> CriticalTemperatureReport {
+        throw failure
     }
 }
