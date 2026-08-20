@@ -108,6 +108,21 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// client holds a live lease over a fan nothing is honouring. Refusing for a few
         /// milliseconds is the honest answer; a client may simply retry.
         case releaseInProgress
+        /// The helper cannot currently see any critical temperature, so the mechanism
+        /// that would protect a leased fan is blind.
+        ///
+        /// `docs/SAFETY.md` § 3 is a **precondition** of § 1, not a peer of it. A lease
+        /// granted while the helper cannot read a temperature pins fans with nothing
+        /// watching them: the thermal override cannot fire, the reclamation watchdog
+        /// cannot tell divergence from silence, and the only surviving backstop is the
+        /// TTL. [ADR 0007](../../docs/ADR/0007-safety-composition.md) records that gap as
+        /// its second hole, and refusing the lease is the half of the answer that runs
+        /// before any fan is taken off automatic control.
+        ///
+        /// Not transient in the way `releaseInProgress` is. A client may retry, but
+        /// retrying is not the advice — blindness lasts until the SMC answers again, and
+        /// nothing the client does affects that.
+        case noThermalTelemetry
         /// A reason this build does not recognise, carried verbatim so a newer helper
         /// can explain itself to an older client without a protocol bump. Render it
         /// generically; never treat it as equivalent to `available`.
@@ -122,6 +137,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case .leaseHeldByAnotherClient: return "leaseHeldByAnotherClient"
             case .selfRenewalNotBuilt: return "selfRenewalNotBuilt"
             case .releaseInProgress: return "releaseInProgress"
+            case .noThermalTelemetry: return "noThermalTelemetry"
             case .unknown(let raw): return raw
             }
         }
@@ -137,6 +153,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case Reason.leaseHeldByAnotherClient.wireValue: self = .leaseHeldByAnotherClient
             case Reason.selfRenewalNotBuilt.wireValue: self = .selfRenewalNotBuilt
             case Reason.releaseInProgress.wireValue: self = .releaseInProgress
+            case Reason.noThermalTelemetry.wireValue: self = .noThermalTelemetry
             default: self = .unknown(wireValue)
             }
         }
