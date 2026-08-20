@@ -8,10 +8,19 @@ import Testing
 ///
 /// Every test here is **scripted, not raced**. The provider double holds each turn until
 /// the test releases it, so an interleaving is something the test states rather than
-/// something it hopes for, and every wait is bounded by `yieldUntil(_:within:_:)` — which
-/// records an issue instead of hanging, because a race test that latches with no bound
-/// reports a regression as a CI timeout with no line number
+/// something it hopes for, and each *condition* is waited on through
+/// `yieldUntil(_:within:_:)`, which records an issue instead of spinning for ever
 /// ([#109](https://github.com/blamechris/Aeolus/issues/109)).
+///
+/// **That is not the whole of it, and an earlier version of this paragraph said it was.**
+/// Every test still joins its tasks with a bare `await task.value`, which `yieldUntil`
+/// does not bound and cannot. When mutual exclusion breaks, two turns reach the provider
+/// at once and one of those joins never returns — so the suite hung rather than failed,
+/// which is the worst way for a safety fixture to react to its subject being broken. Two
+/// things fix it, and both are load-bearing: `.timeLimit` here, on the precedent
+/// `AnonymousListenerTests` set one file away for the same reason, and
+/// `GatedSensorProvider.peakConcurrentTurns`, which turns the overlap itself into an
+/// assertion instead of a hang.
 ///
 /// ## The fixture's basis
 ///
@@ -22,11 +31,11 @@ import Testing
 /// matters to these tests is only the *ratio*: a snapshot spans many turns and a safety
 /// cycle spans one, so 200-odd keys against 2 reproduces the contention at a size a test
 /// can assert on turn by turn. No test here depends on wall-clock time.
-@Suite("SMC read scheduling")
+@Suite("SMC read scheduling", .timeLimit(.minutes(1)))
 struct SMCReadSchedulerTests {
 
-    /// Two turns' worth and a bit: 200 keys is four turns at `maxKeysPerTurn`, enough for a
-    /// snapshot to be genuinely mid-flight when the supervisor arrives.
+    /// Four turns at `maxKeysPerTurn` — 200 keys is three full turns and a part one — which
+    /// is enough for a snapshot to be genuinely mid-flight when the supervisor arrives.
     private static func snapshotKeys(_ count: Int = 200) -> [String] {
         (0..<count).map { "S\($0)" }
     }
@@ -100,12 +109,12 @@ struct SMCReadSchedulerTests {
     /// **Mutation:** delete the overtake branch from `SMCReadScheduler.nextTurn()` — the
     /// `if !supervisorWaiters.isEmpty, consecutiveOvertakes < …` clause. What is left is a
     /// plain two-queue FIFO that compiles and reads every key correctly, and it puts the
-    /// supervisor back behind the snapshot. Run: this test, the plane's, and the starvation
-    /// bound's all go red — all three on their ordering assertion — while the two
-    /// read-correctness tests stay green. Three at once is the right answer, not a lack of
-    /// discrimination: strict priority is the one property all three depend on, and a
-    /// mutation that removed it while only one noticed would mean two of them were not
-    /// testing what they claim.
+    /// supervisor back behind the snapshot. Run: **four** tests go red — this one, the
+    /// plane's, the starvation bound's, and `theSupervisorBoundIsPerOutstandingRead` — while
+    /// the read-correctness and turn-lifecycle tests stay green. Four at once is the right
+    /// answer, not a lack of discrimination: strict priority is the one property all four
+    /// depend on, and a mutation that removed it while only one noticed would mean three of
+    /// them were not testing what they claim.
     @Test("A queued supervisor turn is admitted ahead of a queued snapshot turn")
     func aSupervisorTurnIsAdmittedFirst() async throws {
         let provider = GatedSensorProvider(holdingSubsetReads: true)
@@ -210,6 +219,12 @@ struct SMCReadSchedulerTests {
     /// `SensorProvider.read(keys:)` promises one outcome per requested key, in the order
     /// requested, duplicates included, and concatenating consecutive slices preserves all
     /// three.
+    ///
+    /// **Mutation:** make `turns(over:)` return the whole key list as one slice. Run: red
+    /// here on the turn count, and red in two other tests that need a read to span more than
+    /// one turn — which is the useful part, because a scheduler that never splits grants the
+    /// connection for a whole 2929-key refresh and undoes the entire issue while every
+    /// ordering test still passes.
     @Test("A long read is split into bounded turns without disturbing its answer")
     func aLongReadIsSplitIntoBoundedTurns() async throws {
         let provider = GatedSensorProvider()
