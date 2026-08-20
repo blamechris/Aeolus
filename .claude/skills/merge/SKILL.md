@@ -41,8 +41,8 @@ If no review exists, run `/full-review ${PR_NUM}` **before proceeding to merge**
    Note the second is a *line*, not a file: `project.yml` also carries target
    definitions, build settings and entitlement paths, so "the diff only touches
    `project.yml`" is not the test — every changed line in it must be
-   `MARKETING_VERSION`, or the PR gets reviewed. Provenance is deliberately NOT the test: "the bump
-   script produced it" is not checkable from a diff, and a hand-authored
+   `MARKETING_VERSION`, or the PR gets reviewed. Provenance is deliberately NOT the
+   test: "the bump script produced it" is not checkable from a diff, and a hand-authored
    version-only PR must land on the same side of the gate as a scripted one.
    If the diff touches anything outside that list, it gets reviewed.
 2. **None — every PR gets reviewed, including documentation.** There is no docs
@@ -176,9 +176,9 @@ has already happened by this point. Raise it with the user or file it.
 
 If a `MARKETING_VERSION` bump *is* wanted (a release, not a routine merge):
 
-**Stage explicit paths, and assert the branch first.** The bump script may touch more than
-the version files (a lockfile, a changelog, a generated header), and the working copy is
-shared with concurrent sessions — so name the version files, do not sweep. `git status --short`
+**Stage explicit paths, and assert the branch first.** A hand edit can touch more than
+the version files (a stray reformat, an editor's trailing-newline fix), and the working copy
+is shared with concurrent sessions — so name the version files, do not sweep. `git status --short`
 first, then `git add` those paths. Never `git add -A`, `git add .`, `git add -u`,
 `git add <dir>/`, or `git commit -a`. `-u` is not the safe one: it restages every *tracked*
 file whose worktree copy differs, including files a clean/smudge filter rewrote without you
