@@ -141,6 +141,89 @@ struct HelperHardwareTests {
         #expect(warmest < cold, "discovery is supposed to be the expensive one")
     }
 
+    /// [#127](https://github.com/blamechris/Aeolus/issues/127), measured on the one machine
+    /// that can measure it.
+    ///
+    /// `SMCReadSchedulerTests` proves the *ordering* against a scripted double, where every
+    /// turn costs nothing and no firmware is involved. This proves the two things a double
+    /// cannot: that the **production wiring** works — one scheduler, its `snapshotReader`
+    /// under the authority and the same scheduler under the plane, which is exactly what
+    /// `AeolusHelperMain` builds — and what the safety cycle actually waits when a real
+    /// 2929-key refresh is on the connection.
+    ///
+    /// The load here is deliberately adversarial rather than realistic: the cycle is
+    /// re-issued as fast as it will go, which is ~180 Hz against the 1 Hz `ThermalSupervisor`
+    /// would use. That drives the overtake quota to its limit on every turn boundary, so the
+    /// snapshot cost printed below is the **worst case** the bound permits and not the
+    /// expected one.
+    ///
+    /// The assertion is a *ratio*, never a millisecond count.
+    /// [#118](https://github.com/blamechris/Aeolus/issues/118) is what a hardware test with
+    /// an absolute tolerance turns into. A cycle that queued behind the snapshot would cost
+    /// about what the snapshot costs; a quarter of it is far outside anything scheduling
+    /// noise produces and far inside the failure being guarded against.
+    ///
+    /// It also cannot hang. If the quota stopped bounding starvation the snapshot would
+    /// never finish, so the loop is bounded by a deadline and the missing completion is
+    /// reported as a failed expectation rather than as a killed job.
+    @Test("A safety cycle stays prompt while a real snapshot is on the connection")
+    func theSafetyCycleStaysPromptDuringARealSnapshot() async throws {
+        let scheduler = SMCReadScheduler(provider: SMCSensorProvider())
+        let authority = ReadOnlyFanAuthority(
+            provider: scheduler.snapshotReader, log: Self.log,
+            thermalEmergency: ThermalEmergencyLatch())
+        let plane = SMCFanControlPlane(scheduler: scheduler)
+        let critical = CriticalSensorSet.resolve(for: HardwareIdentity.current())
+        try #require(!critical.isEmpty, "no curated critical set on the machine it was cut for")
+
+        // Pay discovery first: the contention this issue is about is with the *warm*
+        // refresh, which is what runs every tick.
+        _ = try await authority.snapshot()
+
+        let soloStarted = ContinuousClock.now
+        _ = try await plane.readCriticalTemperatures(critical.keys)
+        let solo = ContinuousClock.now - soloStarted
+
+        let finished = CompletionFlag()
+        let snapshotStarted = ContinuousClock.now
+        let snapshot = Task {
+            let taken = try await authority.snapshot()
+            await finished.mark()
+            return taken
+        }
+
+        var worst = Duration.zero
+        var cycles = 0
+        let deadline = ContinuousClock.now + .seconds(20)
+        while await !finished.isSet, ContinuousClock.now < deadline {
+            let started = ContinuousClock.now
+            _ = try await plane.readCriticalTemperatures(critical.keys)
+            worst = max(worst, ContinuousClock.now - started)
+            cycles += 1
+        }
+        let contendedSnapshot = ContinuousClock.now - snapshotStarted
+
+        #expect(
+            await finished.isSet,
+            "the snapshot never completed under supervisor load; starvation is unbounded")
+        let taken = try await snapshot.value
+
+        print(
+            """
+            supervisor read latency on \(HardwareIdentity.current().modelIdentifier ?? "?"): \
+            \(critical.keys.count) curated keys cost \(solo) uncontended; \
+            worst of \(cycles) cycles issued against an in-flight \(taken.sensors.count)-key \
+            snapshot was \(worst); that snapshot took \(contendedSnapshot) under the load
+            """
+        )
+
+        #expect(!taken.sensors.isEmpty)
+        // A cycle that queued behind the snapshot would cost about what the snapshot costs.
+        #expect(
+            worst * 4 < contendedSnapshot,
+            "worst cycle \(worst) against a \(contendedSnapshot) snapshot: it queued behind")
+    }
+
     /// End to end over a real XPC connection, on real hardware: app to boundary to root
     /// authority to SMC and back, with no write path anywhere in it.
     @Test("A real snapshot crosses a real connection and decodes")

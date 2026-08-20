@@ -14,11 +14,11 @@ import Foundation
 /// ## What it is not
 ///
 /// It schedules nothing on the SMC connection. Whether a supervisor read pre-empts a
-/// client snapshot on the single connection ADR 0006 mandates — a snapshot costing 2.2 s
-/// warm against a 1 Hz cycle — is
-/// [#127](https://github.com/blamechris/Aeolus/issues/127)'s to settle, in
-/// `SMCFanControlPlane` and whatever owns connection access. This loop only says *when* a
-/// cycle should happen.
+/// client snapshot on the single connection ADR 0006 mandates is `SMCReadScheduler`'s,
+/// settled by [#127](https://github.com/blamechris/Aeolus/issues/127): reads issued through
+/// `SMCFanControlPlane` take `.supervisor` priority and are admitted ahead of a waiting
+/// snapshot turn, bounded at two turns in one direction and a spent overtake quota in the
+/// other. This loop only says *when* a cycle should happen.
 ///
 /// **Nothing starts it yet.** Actor level 2 has no fans to take back until E3 or E4 builds
 /// a write path, and `AeolusHelperMain` still serves `ReadOnlyFanAuthority`, which grants no

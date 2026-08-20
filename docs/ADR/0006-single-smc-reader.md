@@ -102,6 +102,16 @@ end up disagreeing about when "now" was.
   second continuous reader — should be treated as required work for the app-side client rather than a
   contingency. `Tests/AeolusHelperTests/HelperHardwareTests` re-measures the figure on every hardware
   run so it cannot drift unnoticed.
+- **One reader per machine still leaves two readers inside the helper**, and this ADR did not say
+  who wins between them. E5's safety supervisor reads a curated handful of keys on a tight cycle
+  over the same connection as the 1 Hz snapshot, and `SMCConnection.read(keys:)` has no suspension
+  point in it — so a 2929-key request is one indivisible occupation and a supervisor read issued
+  inside it waits for all of it, with no error and no log line to say so.
+  [#127](https://github.com/blamechris/Aeolus/issues/127) settles it in `SMCReadScheduler`: access
+  is granted in bounded turns, a supervisor turn is admitted ahead of a waiting snapshot turn, and
+  the overtaking is capped so a client is not starved of snapshots in the other direction. That is
+  arbitration *under* this decision, not a change to it — the corollary above is about continuous
+  pollers per machine and remains exactly as written.
 - The app-side client and source switching are **not** built in #72. #72 builds the helper side only;
   this ADR is recorded now because it shapes #72's snapshot semantics (pull-based, `capturedAt`
   stamped, cheap at 1 Hz).
