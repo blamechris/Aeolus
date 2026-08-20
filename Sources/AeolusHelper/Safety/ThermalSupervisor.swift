@@ -17,8 +17,11 @@ import Foundation
 /// client snapshot on the single connection ADR 0006 mandates is `SMCReadScheduler`'s,
 /// settled by [#127](https://github.com/blamechris/Aeolus/issues/127): reads issued through
 /// `SMCFanControlPlane` take `.supervisor` priority and are admitted ahead of a waiting
-/// snapshot turn, bounded at two turns in one direction and a spent overtake quota in the
-/// other. This loop only says *when* a cycle should happen.
+/// snapshot turn — two turns at most while this cycle's read is the only supervisor-priority
+/// one outstanding, and a spent overtake quota in the other direction. See
+/// `SMCReadScheduler` for what happens when it is not the only one, which
+/// `LeaseAuthority.refuseIfBlind` already makes possible. This loop only says *when* a cycle
+/// should happen.
 ///
 /// **Nothing starts it yet.** Actor level 2 has no fans to take back until E3 or E4 builds
 /// a write path, and `AeolusHelperMain` still serves `ReadOnlyFanAuthority`, which grants no

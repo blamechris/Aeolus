@@ -26,10 +26,15 @@ import SMCCore
 /// Naming the keys is what made the ordering *possible*; it is not the ordering.
 /// [#127](https://github.com/blamechris/Aeolus/issues/127) supplies that: every read below
 /// goes through `SMCReadScheduler` at `.supervisor`, which admits it ahead of a waiting
-/// snapshot turn and bounds its wait at two turns — ~22 ms — rather than the ~500 ms a
-/// snapshot-length occupation of the connection costs. Before that, a subset read was
-/// merely *small*, and a small read still waits for a big one on a connection that grants
-/// no turns.
+/// snapshot turn. Before that, a subset read was merely *small*, and a small read still
+/// waits for a big one on a connection that grants no turns.
+///
+/// **What that bounds, exactly.** A read issued here waits at most two turns — ~22 ms —
+/// *while it is the only supervisor-priority read outstanding*, against the ~500 ms a
+/// snapshot-length occupation costs. It does not bound the wait when several are
+/// outstanding, which `LeaseAuthority.refuseIfBlind` already makes possible today; the
+/// scheduler's own documentation carries the general form, and this comment stated the
+/// two-turn figure unconditionally until a review panel produced the counterexample.
 ///
 /// ## Restore issues no read, and that is the property to keep
 ///

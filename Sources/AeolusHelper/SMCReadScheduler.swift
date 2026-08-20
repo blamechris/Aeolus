@@ -1,27 +1,5 @@
 import SMCCore
 
-/// Which of the helper's two readers is asking, and therefore who waits for whom.
-///
-/// Two cases and no third. [ADR 0006](../../docs/ADR/0006-single-smc-reader.md) puts
-/// **one** continuous reader on the machine, inside this process, and the two things that
-/// share it want opposite treatment: a safety cycle whose lateness is blindness, and a
-/// client snapshot whose lateness is a slightly older reading.
-///
-/// Deliberately not a number, and deliberately not `TaskPriority`. A numeric level invites
-/// a third one to be slipped in between, and the whole point of `SMCReadScheduler`'s
-/// starvation bound is that it has exactly one pair to arbitrate between.
-enum SMCReadPriority: Sendable, Hashable, CaseIterable {
-
-    /// `docs/SAFETY.md` § 3's cycle: the curated critical set — thirty-four keys on
-    /// `Mac16,5` — on a 1 Hz loop. Blind is the failure mode, and it arrives with no error,
-    /// no fault and no log line, because every read eventually succeeds.
-    case supervisor
-
-    /// A client's `snapshot`: every discovered key, at 1 Hz. Late is the failure mode, and
-    /// a late snapshot is a reading with an older `capturedAt` on it.
-    case snapshot
-}
-
 /// The one gate every helper-side SMC read passes through, so the safety cycle is never
 /// stuck behind a client's snapshot.
 ///
@@ -72,14 +50,32 @@ enum SMCReadPriority: Sendable, Hashable, CaseIterable {
 /// whatever else is queued. Both directions are therefore bounded, and both bounds are
 /// arithmetic rather than hope:
 ///
-/// - **A supervisor read waits at most two turns** — the one in flight, plus one more if it
-///   arrives with the overtake quota already spent. At 64 keys a turn that is ~22 ms,
-///   against the ~500 ms it waits today.
+/// - **One outstanding supervisor read waits at most two turns** — the one in flight, plus
+///   one more if it arrives with the overtake quota already spent. At 64 keys a turn that is
+///   ~22 ms, against the ~500 ms it waits today.
+///
+///   **The qualifier is load-bearing, and this bullet stated it unconditionally until a
+///   review panel produced the counterexample.** `supervisorWaiters` is FIFO, and the quota
+///   forces a snapshot turn after every `maxConsecutiveOvertakes`, so *N* concurrently
+///   outstanding supervisor reads make the last one wait roughly
+///   `N + N / maxConsecutiveOvertakes` turns — measured at 4 turns for N=3, and 17 for N=12.
+///   That is not a defect the scheduler could fix: a serial connection cannot serve two
+///   readers at once, and a supervisor read waiting behind other supervisor work is not the
+///   snapshot delaying it. It is a defect in the *claim*, and the claim is what a future
+///   reader checks the mechanism against instead of re-deriving it.
+///
+///   It is also not hypothetical. `LeaseAuthority.refuseIfBlind` already issues
+///   supervisor-priority reads off the § 3 cycle, one per `acquireLease`, and each XPC
+///   message runs in its own `Task` — so #103 and #126 will routinely have several
+///   outstanding at once. `SMCReadSchedulerTests.theSupervisorBoundIsPerOutstandingRead`
+///   pins the real behaviour so this paragraph cannot quietly drift back.
 /// - **A snapshot completes within `turns × (turnCost + quota × supervisorTurnCost)`** —
 ///   46 × (11 ms + 2 × ~6 ms) ≈ 1.1 s worst case against a ~0.5 s nominal, where ~6 ms is
-///   the curated thirty-four keys. That worst case needs the supervisor to issue two reads
-///   inside every 11 ms window, which is ~180 Hz against its actual 1 Hz; the quota exists
-///   for the adversarial case, not the expected one.
+///   the curated thirty-four keys. Reaching it needs two supervisor reads outstanding at
+///   every turn boundary — they must arrive within one boundary's span, ~11 ms of snapshot
+///   turn plus up to 2 × ~6 ms of supervisor turns, so ~87 Hz — against § 3's 1 Hz. The
+///   quota is for the adversarial case, not the expected one, and no hardware run has
+///   reached it.
 ///
 /// `CLAUDE.md` rule 6 is why the second bound is not simply "the supervisor always wins": a
 /// client that never receives a snapshot is a UI reporting nothing, and a UI reporting
@@ -88,8 +84,8 @@ enum SMCReadPriority: Sendable, Hashable, CaseIterable {
 /// ### What that came out as, on the machine
 ///
 /// `HelperHardwareTests` drives the real thing and prints it. One run on `Mac16,5`, with the
-/// curated cycle re-issued as fast as it will go — ~180 Hz, so the quota is spent at every
-/// turn boundary and these are worst-case numbers rather than expected ones:
+/// curated cycle re-issued in a serial loop — 49 cycles against an 898 ms snapshot, so
+/// **~55 Hz**:
 ///
 /// | | Measured |
 /// |---|---|
@@ -98,10 +94,20 @@ enum SMCReadPriority: Sendable, Hashable, CaseIterable {
 /// | **Worst cycle against an in-flight snapshot** | **31.3 ms**, over 49 cycles |
 /// | That snapshot, under the load | 898 ms |
 ///
-/// 31.3 ms against the ~601 ms a cycle would wait behind an unscheduled refresh, and the
-/// snapshot's adversarial 898 ms sits inside the ~1.1 s the bound permits. The predicted
-/// figures above are ~28 ms and ~1.1 s, so the arithmetic is close enough to trust and the
-/// measurement is what settles it.
+/// 31.3 ms against the ~601 ms a cycle would wait behind an unscheduled refresh. That is the
+/// number this whole type exists to produce, and it is measured.
+///
+/// **What these figures are not.** An earlier draft called them worst-case and the load
+/// ~180 Hz; both were wrong, and a review panel caught it. The test's loop awaits each cycle
+/// before issuing the next, so at most **one** supervisor read is ever queued — and when a
+/// lone supervisor turn ends, `nextTurn()` finds `supervisorWaiters` empty, takes the
+/// "nobody to starve" branch and resets `consecutiveOvertakes`. The quota therefore never
+/// reaches its limit under this load and **never fires**: 46 turns × one overtake each is
+/// exactly the 49 cycles observed, and deleting the quota outright leaves the hardware test
+/// passing with the same numbers. The two-overtake case is unmeasured on hardware; what
+/// covers it is `SMCReadSchedulerTests.snapshotStarvationIsBounded`, which queues twelve
+/// supervisor reads at once and asserts the gaps. Read 898 ms as one-overtake-per-boundary,
+/// never as the ceiling the bound permits.
 ///
 /// ## `readAll()` is not a turn, and that is the sharpest decision here
 ///
@@ -115,8 +121,15 @@ enum SMCReadPriority: Sendable, Hashable, CaseIterable {
 /// within about one round trip. That is a property of how the walk is written rather than a
 /// guarantee the language makes about actor fairness, and it is stated that way on purpose:
 /// the choice is between a scheduling property that is very good in practice and a
-/// structural 5.9 s barrier, not between a guarantee and a hope. Its only caller is
-/// `ReadOnlyFanAuthority`'s discovery, at most once per process.
+/// structural 5.9 s barrier, not between a guarantee and a hope.
+///
+/// Its only caller is `ReadOnlyFanAuthority`'s discovery, which caches its key set and so
+/// runs once for the life of the process on the sequential path
+/// `ReadOnlyFanAuthorityTests` covers. Not *provably* once: `snapshot()` awaits inside an
+/// actor and is therefore reentrant, so two snapshots racing the very first tick can each
+/// enter discovery before either caches. That predates this type and is unchanged by it —
+/// it is written down here because "once per process" is the sentence doing the work above,
+/// and it is a habit rather than an invariant.
 ///
 /// ## Waiting is not cancellable, deliberately
 ///
@@ -141,10 +154,16 @@ actor SMCReadScheduler {
     /// The most consecutive supervisor turns that may be admitted ahead of a snapshot turn
     /// that is already waiting.
     ///
-    /// Two, because the supervisor issues one read per 1 Hz cycle and a warm snapshot takes
-    /// ~0.5 s, so at most one supervisor read can arrive during a snapshot in the intended
-    /// configuration. One would leave no headroom for a cycle that overruns; the bound is
-    /// here for the case where the cadences are not what this comment assumes.
+    /// Two, because § 3's cycle issues one read per second against a ~0.5 s warm snapshot,
+    /// so the *cycle* contributes at most one read per snapshot. One would leave no headroom
+    /// for a cycle that overruns.
+    ///
+    /// **The cycle is not the only supervisor-priority caller**, and an earlier version of
+    /// this comment reasoned as though it were. `LeaseAuthority.refuseIfBlind` issues one per
+    /// `acquireLease`, unpaced and off-cycle, and `SAFETY.md` § 3 explicitly predicts a
+    /// revoked client retrying as fast as it likes. The quota still bounds what the snapshot
+    /// suffers — that is what it is for, and it holds however many supervisor readers there
+    /// are. It says nothing about how long any one of them waits; see the class doc.
     static let maxConsecutiveOvertakes = 2
 
     /// The single provider every read here goes to. `SMCSensorProvider` in the daemon, a
@@ -265,7 +284,12 @@ actor SMCReadScheduler {
         }
         // Resumed by `admitNext()`, which set `isTurnInFlight` on this turn's behalf before
         // resuming it. Setting it here instead would leave a window in which the connection
-        // looks free to a caller arriving in between.
+        // looks free to a caller arriving in between — and the fast path above tests the
+        // queues as well, so the window is only reachable for a caller arriving in the
+        // instant `admitNext()` drains the last waiter. That is narrow enough that a
+        // concurrency test which starts all its work at once cannot reach it at all;
+        // `SchedulerTurnLifecycleTests.aFreshArrivalCannotBargeOntoAHeldTurn` scripts the
+        // arrival, and is the only thing in the suite that catches the flag going missing.
     }
 
     /// Gives the connection up between two turns of the same read, and takes a place at the
