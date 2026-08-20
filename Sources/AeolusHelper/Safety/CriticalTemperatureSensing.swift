@@ -20,11 +20,19 @@ import FanKit
 ///
 /// The lease core discards it — all it needs is whether the call threw. The report is
 /// returned anyway, because the alternative signature is
-/// `func canSeeCriticalTemperatures() async -> Bool`, and a boolean is the shape that
-/// decays into a cached flag. Somebody optimises the hardware round trip out of the grant
-/// path, the flag goes stale, and the gate reports "sighted" for a helper that has not
-/// successfully read anything in an hour. An operation that must actually perform the read
-/// to produce its return value cannot be satisfied by a remembered answer.
+/// `func canSeeCriticalTemperatures() async -> Bool`, and a boolean gives a consumer
+/// nothing to check: "sighted" is the whole of it, and a conformer that cached one would be
+/// indistinguishable from one that read. The report at least *can* be inspected — which
+/// keys answered, how many did not.
+///
+/// **It does not make staleness impossible, and an earlier draft of this comment said it
+/// did.** `CriticalTemperatureReport` is a plain value type with no instant and no nonce,
+/// so a conformer can cache one and return it exactly as cheaply as it could cache a
+/// `Bool`. Nothing in this signature forces a read. Freshness here is policy held by
+/// review, not by the type — the same honest framing `CommandedTarget` uses in
+/// `FanControlPlane.swift`, and for the same reason: a type that is claimed to guarantee
+/// something it does not is worse than one that guarantees nothing, because the next person
+/// stops checking.
 protocol CriticalTemperatureSensing: Sendable {
 
     /// Reads the curated critical set, once, now.
@@ -49,10 +57,12 @@ struct CuratedCriticalTemperatures<Plane: FanControlPlane>: CriticalTemperatureS
 
     private let plane: Plane
     private let set: CriticalSensorSet
+    private let log: SafetyLog
 
-    init(plane: Plane, set: CriticalSensorSet) {
+    init(plane: Plane, set: CriticalSensorSet, log: SafetyLog = SafetyLog()) {
         self.plane = plane
         self.set = set
+        self.log = log
     }
 
     /// - Note: there is no `guard !set.isEmpty` here, and that is not an oversight. The
@@ -63,6 +73,15 @@ struct CuratedCriticalTemperatures<Plane: FanControlPlane>: CriticalTemperatureS
     ///   and the second home is the one that drifts.
     func readCriticalTemperatures() async throws -> CriticalTemperatureReport {
         let asRead = try await plane.readCriticalTemperatures(set.keys)
-        return try CriticalTemperaturePlausibility.gate(asRead)
+        let gated = try CriticalTemperaturePlausibility.gate(asRead)
+        if !gated.unreadableKeys.isEmpty {
+            log.degradedCycle(
+                provenance: set.provenance,
+                answered: gated.readings.count,
+                requested: set.keys.count,
+                silent: gated.unreadableKeys
+            )
+        }
+        return gated
     }
 }

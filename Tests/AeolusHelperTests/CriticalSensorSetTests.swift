@@ -1,4 +1,5 @@
 import FanKit
+import Foundation
 import SMCCore
 import Testing
 
@@ -44,9 +45,10 @@ struct CriticalSensorSetTests {
         #expect(!keys.contains("Tf06"))
         #expect(!keys.contains("Tf46"))
 
-        // Per-core sensors: the Tp0* cluster runs 95.69–111.14 °C during an ordinary
-        // `swift build` while the system's own thermal management sits relaxed at
-        // 2372 RPM. Including one fires the emergency every time somebody compiles.
+        // Per-core sensors: under a twelve-way busy loop, 27 of the 45 Tp0* keys go above
+        // 95 °C (the cluster spans 74.43–111.14 °C) while the system's own thermal
+        // management sits relaxed at 2372 RPM against a 5777 RPM maximum. Including one
+        // fires the emergency under any sustained multi-core work.
         #expect(keys.allSatisfy { !$0.hasPrefix("Tp0") })
     }
 
@@ -174,15 +176,27 @@ struct CriticalSensorSetTests {
         }
     }
 
-    @Test("An empty curated set is blindness")
+    /// The plane here answers **every** curated key with a healthy temperature, so the only
+    /// thing that can produce blindness is the set being empty.
+    ///
+    /// An earlier version built its plane with `.nominal()`, whose `temperatures` dictionary
+    /// defaults to empty — so the double answered nothing for any key and the test passed
+    /// for the same reason `aBlindPlaneIsBlindness` does, whether or not the empty-set rule
+    /// held. The review demonstrated it: giving an empty set a fallback to
+    /// `CriticalSensorSet.mac16x5.keys` left all 809 tests green, which in production would
+    /// silently read Mac16,5's keys on an Intel Mac nobody has measured.
+    @Test("An empty curated set is blindness, even when the machine would answer")
     func anEmptySetIsBlindness() async throws {
-        let telemetry = CuratedCriticalTemperatures(
-            plane: ScriptedControlPlane(fans: [:], stages: [.nominal()]),
-            set: .unidentifiedHardware)
+        let plane = ScriptedControlPlane(
+            fans: [:],
+            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+        let telemetry = CuratedCriticalTemperatures(plane: plane, set: .unidentifiedHardware)
 
         await #expect(throws: FanControlPlaneError.self) {
             _ = try await telemetry.readCriticalTemperatures()
         }
+        // And it asked for nothing, rather than asking for somebody else's keys.
+        #expect(await plane.attempts == [.readCriticalTemperatures([])])
     }
 
     @Test("A plane that answers nothing is blindness")
@@ -215,5 +229,78 @@ struct CriticalSensorSetTests {
         #expect(report.unreadableKeys.count == 32)
     }
 
+    /// Count, prefix and uniqueness do not pin a key list.
+    ///
+    /// Every other test here derives both its fixture temperatures and its expectations from
+    /// `CriticalSensorSet.mac16x5.keys`, so they stay self-consistent under any change to it.
+    /// Change the suffix literal `"f"` to `"g"` and the set silently loses `TPDf`/`TRDf` and
+    /// gains two keys this firmware does not expose — `known(_:)` accepts them, the count
+    /// stays 34, the prefixes still match, and the suite stays green while the critical set
+    /// drifts off the hardware it was measured on. This is the only test that says which
+    /// keys, and it is a transcript of the 2026-08-20 enumeration.
+    @Test("The 34 curated keys are exactly the ones enumerated on this machine")
+    func theCuratedKeysArePinnedByName() {
+        let expected: Set<String> = [
+            "TPD0", "TPD1", "TPD2", "TPD3", "TPD4", "TPD5", "TPD6", "TPD7", "TPD8", "TPD9",
+            "TPDa", "TPDb", "TPDc", "TPDd", "TPDe", "TPDf", "TPDX",
+            "TRD0", "TRD1", "TRD2", "TRD3", "TRD4", "TRD5", "TRD6", "TRD7", "TRD8", "TRD9",
+            "TRDa", "TRDb", "TRDc", "TRDd", "TRDe", "TRDf", "TRDX",
+        ]
+        #expect(Set(CriticalSensorSet.mac16x5.keys.map(\.rawValue)) == expected)
+    }
+
+    /// `CriticalSensorSet`'s justification for compiling in a fixed key list is that a key
+    /// this firmware does not expose lands in `unreadableKeys` and produces "a degraded
+    /// **logged** cycle rather than blindness". A review found that sentence true of nothing:
+    /// `unreadableKeys` had no reader anywhere in `Sources/`, so 33 of 34 keys could fall
+    /// silent with a lease still granted and no line in the log.
+    ///
+    /// Delete the `log.degradedCycle(...)` call in `CuratedCriticalTemperatures` and this
+    /// goes red.
+    @Test("A degraded cycle is logged, naming how many keys answered")
+    func aDegradedCycleIsLogged() async throws {
+        let recorder = RecordedLog()
+        var temperatures = LeaseFixture.nominalDieTemperatures
+        for dropped in CriticalSensorSet.mac16x5.keys.dropFirst(2) {
+            temperatures[dropped.rawValue] = nil
+        }
+        let telemetry = CuratedCriticalTemperatures(
+            plane: ScriptedControlPlane(fans: [:], stages: [.nominal(temperatures: temperatures)]),
+            set: .mac16x5,
+            log: SafetyLog(recording: { recorder.append($0) }))
+
+        _ = try await telemetry.readCriticalTemperatures()
+
+        let lines = recorder.lines
+        #expect(lines.count == 1)
+        #expect(lines.first?.contains("2 of 34") == true)
+    }
+
+    /// A healthy cycle says nothing. A log that fires every time is a log nobody reads, and
+    /// it would make the degraded line above worthless as a signal.
+    @Test("A cycle where every key answers logs nothing")
+    func aHealthyCycleIsSilent() async throws {
+        let recorder = RecordedLog()
+        let telemetry = CuratedCriticalTemperatures(
+            plane: ScriptedControlPlane(
+                fans: [:], stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)]),
+            set: .mac16x5,
+            log: SafetyLog(recording: { recorder.append($0) }))
+
+        _ = try await telemetry.readCriticalTemperatures()
+
+        #expect(recorder.lines.isEmpty)
+    }
+
     private func key(_ raw: String) -> SMCKey { smcKey(raw) }
+}
+
+/// A `SafetyLog` sink a test can read back. `NSLock` rather than an actor so an assertion
+/// can read it without an `await`, matching `TestClock` in `LeaseTestDoubles.swift`.
+final class RecordedLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+
+    func append(_ line: String) { lock.withLock { recorded.append(line) } }
+    var lines: [String] { lock.withLock { recorded } }
 }

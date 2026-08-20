@@ -8,14 +8,32 @@ import Foundation
 ///
 /// Behind `FanAuthority`, not on it. Every method below carries a `FanAuthority` signature
 /// verbatim, so the helper's control plane composes it with one-line forwards, but this
-/// type owns no hardware and produces no `SystemSnapshot`: it cannot enumerate a fan, read a
-/// sensor, or write a value. It asks `FanEnumerating` which fans exist and tells
-/// `FanRestoring` to put them back, and those are the only two things it needs of the
-/// machine.
+/// type owns no hardware and produces no `SystemSnapshot`. It asks for exactly three things
+/// of the machine, each as a narrow role rather than a control plane:
 ///
-/// That split is what keeps E5.1 fully testable with no hardware and no mock SMC, and it is
-/// why this file contains no write of any kind — `SMCConnection.write` is still
-/// `package`-scoped and still throws, and no write selector exists anywhere in `Sources/`.
+/// - `FanEnumerating` — which fans exist.
+/// - `FanRestoring` — put them back on automatic.
+/// - `CriticalTemperatureSensing` — **can the mechanism that protects a leased fan see
+///   anything at all**, asked once per grant. This one is a real read, and on the
+///   production conformer a real hardware round trip.
+///
+/// The third arrived with #124 and is the only one that reads. It is worth stating plainly
+/// here, because `acquireLease`'s `// ---- No await below this line ----` marker can only be
+/// reasoned about correctly by somebody who knows how many suspension points that method
+/// has: an earlier version of this paragraph said the type "cannot enumerate a fan, read a
+/// sensor, or write a value" and named only two dependencies, which would have hidden the
+/// slowest of the three from exactly that analysis.
+///
+/// **Still no write of any kind** — `SMCConnection.write` is `package`-scoped and still
+/// throws, and no write selector exists anywhere in `Sources/`.
+///
+/// The split keeps this fully testable with no hardware. It no longer keeps it free of the
+/// mock SMC: `LeaseFixture.authority` defaults `telemetry:` to a `CuratedCriticalTemperatures`
+/// over `ScriptedControlPlane`, so every lease test now runs against the scripted firmware.
+/// That is deliberate — a hand-rolled telemetry double would answer "sighted" without the
+/// curated key list or the plausibility gate ever running — and it means emptying
+/// `CriticalSensorSet.mac16x5` turns the lease suite red, which is a coupling worth knowing
+/// about before it surprises somebody.
 ///
 /// ## One lease at a time, and why the contract settles it
 ///
@@ -361,6 +379,14 @@ actor LeaseAuthority {
     /// another client holds the fans. Both facts are true and this is the one worth
     /// telling: `leaseHeldByAnotherClient` invites "wait for them to finish", which is
     /// wrong advice on a machine where nobody can be granted anything.
+    ///
+    /// It also lands ahead of `validateFanIndices`, which is the one ordering here that is
+    /// a consequence rather than a choice — everything in the straight-line region is below
+    /// every suspension point by construction. So a request naming a fan that does not
+    /// exist, sent to a blind machine, is answered `noThermalTelemetry` rather than
+    /// `invalidFanIndex`. That is tolerable (both are refusals, and the blindness is the
+    /// more consequential fact) but it is not a judgement anybody made, and a future reader
+    /// comparing this against the validation-first ordering elsewhere should know that.
     ///
     /// ## Why it catches everything
     ///

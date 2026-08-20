@@ -21,16 +21,18 @@ import SMCCore
 ///
 /// 1. **Frozen constants.** `Tf06` reads 98.484375 °C on an idle machine with both fans
 ///    stopped, and reads *exactly* the same value under a twelve-way load that moves the
-///    die cluster 12 °C and spins the fans to 3400 RPM. It is not a measurement of
+///    die cluster 12 °C and takes the fans from a standstill to 2372/2551 RPM — and again
+///    in a third sample with the fans at 3433/3683 RPM. It is not a measurement of
 ///    anything thermal. A max-over-all-`T*` set would therefore sit at 98.48 °C
 ///    permanently — above the 95 °C CPU ceiling — and latch the emergency forever on a
 ///    machine doing nothing.
 /// 2. **Per-core sensors legitimately exceed the ceiling.** Filtering to keys that *do*
-///    respond to load is still not enough: the `Tp0*` cluster runs 95.69–111.14 °C during
-///    an ordinary `swift build`, while the system's own thermal management sits at
-///    2372 RPM against a 5777 RPM maximum — i.e. entirely relaxed. Apple Silicon cores are
-///    designed to run there. A set built from them would revoke the user's lease and slam
-///    the fans to maximum every time somebody compiled something.
+///    respond to load is still not enough: under that same twelve-way load, **27 of the 45
+///    `Tp0*` keys go above 95 °C**, the hottest reaching 111.14 °C, while the system's own
+///    thermal management sits at 2372 RPM against a 5777 RPM maximum — i.e. entirely
+///    relaxed. Apple Silicon cores are designed to run there. A set built from them would
+///    revoke the user's lease and slam the fans to maximum under any sustained multi-core
+///    work.
 ///
 /// The die/package cluster is the population a 95 °C ceiling is actually about: it
 /// moved 41.48–44.80 °C idle → 53.17–56.07 °C loaded → 55.85–62.40 °C at peak heat
@@ -52,17 +54,39 @@ import SMCCore
 /// lease. That is deliberate and it is the safe direction: refusing manual control on a
 /// machine whose thermal sensors nobody has identified is a product limitation, whereas
 /// granting it is a fan controller running with its eyes shut.
+///
+/// ## Why the initialiser is private
+///
+/// The paragraph above claims no file can reach this type. A synthesised **internal**
+/// memberwise initialiser would make that claim false the moment anyone wanted it to be:
+/// a new file in `AeolusHelper` could write `CriticalSensorSet(keys: decodedFromDisk, …)`
+/// and hand it to `CuratedCriticalTemperatures`, leaving every ceiling constant untouched,
+/// every compiled-in set untouched, and every test green while § 3 compared its ceiling
+/// against keys a user chose. `FanWriteAuthorisation.swift` closes exactly this route for
+/// the write permit and explains why both halves — a restricted initialiser *and* private
+/// stored properties — are needed rather than either alone. This is the same lock: the
+/// only `CriticalSensorSet` values that exist are the ones declared below.
 struct CriticalSensorSet: Sendable, Hashable {
+
+    private let storedKeys: [SMCKey]
+    private let storedProvenance: String
 
     /// The curated keys, in no significant order. May be empty — see this type's
     /// documentation for why that is a state rather than a bug.
-    let keys: [SMCKey]
+    var keys: [SMCKey] { storedKeys }
 
-    /// What this set is and where it came from, for the log. Diagnostic only; never
-    /// parsed, never compared.
-    let provenance: String
+    /// What this set is and where it came from, for the log. Diagnostic only, and never
+    /// parsed. It does participate in synthesised equality, which is harmless — two sets
+    /// with the same keys and different provenance are genuinely different facts — but it
+    /// is not a field anything should branch on.
+    var provenance: String { storedProvenance }
 
-    var isEmpty: Bool { keys.isEmpty }
+    var isEmpty: Bool { storedKeys.isEmpty }
+
+    private init(keys: [SMCKey], provenance: String) {
+        self.storedKeys = keys
+        self.storedProvenance = provenance
+    }
 
     /// This machine's critical set, or the empty set if nobody has measured this machine.
     ///
