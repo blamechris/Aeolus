@@ -287,6 +287,29 @@ struct ThermalEmergencyTests {
         #expect(writes.contains(.commandTarget(fan: 0, rpm: 5_777)))
     }
 
+    /// The latch's own contract, which is where the atomicity that guard relies on lives.
+    ///
+    /// `engage` reports whether it engaged a latch that was **clear** — the transition — and
+    /// the decision happens inside the actor, so exactly one of any number of concurrent
+    /// callers can be told `true`. Make it return `true` unconditionally and this goes red,
+    /// which is the closest a test gets to the interleaving above.
+    @Test("The latch reports a transition once, and reports repeats as repeats")
+    func theLatchReportsTransitionsNotState() async {
+        let latch = ThermalEmergencyLatch()
+        let hot = CriticalTemperature(key: smcKey("Tp01"), celsius: 99)
+        let hotter = CriticalTemperature(key: smcKey("Tp01"), celsius: 101)
+
+        #expect(await latch.engage(by: hot))
+        #expect(await latch.engage(by: hotter) == false)
+        // The most recent reading wins: a reader watching a machine that is still climbing
+        // wants the latest number, not the one that happened to cross first.
+        #expect(await latch.engagedBy == hotter)
+
+        #expect(await latch.release())
+        #expect(await latch.release() == false)
+        #expect(await latch.engagedBy == nil)
+    }
+
     // MARK: - The contract does not move
 
     /// Every refusal § 3 raises is a fault case E2 already shipped. ADR 0007 promised no
