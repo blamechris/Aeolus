@@ -81,6 +81,14 @@
         "claude"
       ]
     },
+    "merge": {
+      "hash": "98b6ad5",
+      "installed": "2026-08-19",
+      "profileHash": "d0531c0",
+      "targets": [
+        "claude"
+      ]
+    },
     "merge-gate": {
       "hash": "85269c8",
       "installed": "2026-07-25",
