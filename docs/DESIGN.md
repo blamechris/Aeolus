@@ -171,7 +171,9 @@ user renders video for two hours, thermal damage. The lease makes that impossibl
 2. **Thermal emergency override.** The helper samples critical sensors every cycle. Above a
    compiled-in ceiling (default 95 °C CPU / 90 °C SSD, tunable *downward* only), it forces
    that fan to maximum, then hands back to automatic, and surfaces a notification. User
-   curves cannot override this.
+   curves cannot override this. "CPU" is the **package**, not a core — see `SAFETY.md` § 3,
+   which carries the measurement, and note that the SSD ceiling has no identified sensor key
+   yet.
 3. **Lease expiry → restore to auto** (§ 3 above, and `SAFETY.md` § 1).
 4. **Sleep/wake supervision.** Register for system power notifications in the helper's own
    context (`IORegisterForSystemPower`). Release control before sleep — that half is
