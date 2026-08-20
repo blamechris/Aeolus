@@ -15,13 +15,21 @@ import SMCCore
 /// What ships today is the *shape*: every E5 mechanism can be written, reviewed and tested
 /// against this seam now, and E3/E4 supply three method bodies later rather than a design.
 ///
-/// ## The reads are real, and they are subset reads
+/// ## The reads are real, they are subset reads, and they go first
 ///
 /// `readAll()` is never called from here — not for discovery, not for a refresh, not once.
 /// [ADR 0006](../../docs/ADR/0006-single-smc-reader.md) puts the helper's 1 Hz snapshot on
-/// the same single SMC connection this uses, and on `Mac16,5` a snapshot costs ~0.5 s
+/// the same single SMC connection this uses, and on `Mac16,5` a warm snapshot costs ~0.5 s
 /// against 2929 keys. The supervisor's reads are a handful of keys and must not queue
 /// behind that, which is why every operation below names exactly the keys it needs.
+///
+/// Naming the keys is what made the ordering *possible*; it is not the ordering.
+/// [#127](https://github.com/blamechris/Aeolus/issues/127) supplies that: every read below
+/// goes through `SMCReadScheduler` at `.supervisor`, which admits it ahead of a waiting
+/// snapshot turn and bounds its wait at two turns — ~22 ms — rather than the ~500 ms a
+/// snapshot-length occupation of the connection costs. Before that, a subset read was
+/// merely *small*, and a small read still waits for a big one on a connection that grants
+/// no turns.
 ///
 /// ## Restore issues no read, and that is the property to keep
 ///
@@ -34,10 +42,16 @@ import SMCCore
 /// exists for. `SMCFanControlPlaneTests` asserts the provider records no request.
 struct SMCFanControlPlane: FanControlPlane {
 
-    private let provider: any SensorProvider
+    private let scheduler: SMCReadScheduler
 
-    init(provider: some SensorProvider) {
-        self.provider = provider
+    /// Takes the scheduler rather than a `SensorProvider`, so that **this type names its
+    /// own priority** at the point each read is issued. A `SensorProvider` carries no
+    /// priority in its signature, so a prioritised one would be a value whose behaviour
+    /// cannot be read off its type — and the safety path is the one place that matters.
+    /// Passing this plane a snapshot-priority reader is not a mistake there is a way to
+    /// make.
+    init(scheduler: SMCReadScheduler) {
+        self.scheduler = scheduler
     }
 
     // MARK: - Reads
@@ -183,7 +197,7 @@ struct SMCFanControlPlane: FanControlPlane {
     ) async throws -> [String: SensorReadOutcome] {
         let outcomes: [SensorReadOutcome]
         do {
-            outcomes = try await provider.read(keys: keys.map(\.rawValue))
+            outcomes = try await scheduler.read(keys: keys.map(\.rawValue), at: .supervisor)
         } catch {
             throw FanControlPlaneError.readFailed(
                 detail: "\(context): \(String(describing: error))")

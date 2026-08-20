@@ -16,7 +16,7 @@ struct SMCFanControlPlaneTests {
     private static let gpuKey = smcKey("TG0P")
 
     private static func plane(_ keyedResults: KeyedResults) -> SMCFanControlPlane {
-        SMCFanControlPlane(provider: FakeSensorProvider(keyedResults: keyedResults))
+        supervisorPlane(over: FakeSensorProvider(keyedResults: keyedResults))
     }
 
     // MARK: - The keystone
@@ -33,7 +33,7 @@ struct SMCFanControlPlaneTests {
     func restoringToAutomaticIssuesNoRead() async throws {
         for scope in [FanRestoreScope.everyFan, .fan(0)] {
             let provider = FakeSensorProvider(keyedResults: [:])
-            let plane = SMCFanControlPlane(provider: provider)
+            let plane = supervisorPlane(over: provider)
 
             await #expect(throws: FanControlPlaneError.controlPathNotBuilt) {
                 try await plane.restoreToAutomatic(scope)
@@ -81,7 +81,7 @@ struct SMCFanControlPlaneTests {
             "F0Md": .reading("F0Md", 1),
             "F0Tg": .reading("F0Tg", 2_400),
         ])
-        let plane = SMCFanControlPlane(provider: provider)
+        let plane = supervisorPlane(over: provider)
 
         _ = try await plane.readCriticalTemperatures([Self.cpuKey])
         _ = try await plane.readEnvelope(ofFan: 0)
@@ -274,7 +274,7 @@ struct SMCFanControlPlaneTests {
     @Test("A whole-request read failure is reported as a read failure naming the operation")
     func aWholeRequestFailureNamesTheOperation() async throws {
         let provider = FakeSensorProvider(keysError: FakeProviderError(description: "no SMC"))
-        let plane = SMCFanControlPlane(provider: provider)
+        let plane = supervisorPlane(over: provider)
 
         let error = await #expect(throws: FanControlPlaneError.self) {
             try await plane.readCriticalTemperatures([Self.cpuKey])
