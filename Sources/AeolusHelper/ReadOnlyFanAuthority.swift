@@ -85,6 +85,22 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// nothing sets — see `LeaseAuthority`'s field of the same name.
     private let thermalEmergency: ThermalEmergencyLatch
 
+    /// `docs/SAFETY.md` § 5's ledger, read once per snapshot.
+    ///
+    /// **Read from the mechanism, never written as a literal** — the same rule as the latch
+    /// above, and it is here because this field had exactly the defect that rule describes.
+    /// `fanState(for:)` wrote `isReclaimedBySystem: false` with a comment saying E2 has no
+    /// watchdog: true when it was written, and the shape that goes quietly wrong the day it
+    /// stops being true. `ReclamationWatchdog` is now that day.
+    ///
+    /// In *this* build the answer is still always `false`, and honestly so: every path that
+    /// would grant a lease refuses, so no fan is ever off automatic control, so nothing can
+    /// take one back. What changed is where the answer comes from.
+    ///
+    /// **Required, with no default**, for the latch's reason: a defaulted ledger would
+    /// compile and report a bit nothing sets.
+    private let reclamation: ReclamationLedger
+
     /// The sensor keys this machine exposes, discovered once. `nil` until the first
     /// successful discovery; a failed discovery leaves it `nil` so the next snapshot tries
     /// again rather than caching a machine with no sensors on it.
@@ -94,11 +110,13 @@ actor ReadOnlyFanAuthority: FanAuthority {
         provider: some SensorProvider,
         log: HelperLog,
         thermalEmergency: ThermalEmergencyLatch,
+        reclamation: ReclamationLedger,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.provider = provider
         self.log = log
         self.thermalEmergency = thermalEmergency
+        self.reclamation = reclamation
         self.now = now
     }
 
@@ -108,9 +126,13 @@ actor ReadOnlyFanAuthority: FanAuthority {
         let fans = try await SMCFanEnumeration.enumerate(provider: provider)
         let sensors = await readSensors()
         let isThermalEmergencyActive = await thermalEmergency.isActive
+        // One read of the ledger per snapshot rather than one per fan: a snapshot carries a
+        // single `capturedAt`, and two fans answered from two different views of who holds
+        // them would be one instant's report built from two.
+        let reclaimedFans = await reclamation.reclaimedFans
 
         return SystemSnapshot(
-            fans: fans.fans.map(Self.fanState(for:)),
+            fans: fans.fans.map { Self.fanState(for: $0, reclaimedFans: reclaimedFans) },
             sensors: sensors,
             // No lease can exist: every path that would grant one refuses below.
             activeLease: nil,
@@ -273,7 +295,9 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// a declared `F0Mn` of 1350 on this project's development machine, so a reading below
     /// the declared minimum is a legitimate observation. Clamping governs targets on the
     /// write path, never observations — see `SMCFanEnumeration`.
-    private static func fanState(for fan: SMCFanEnumeration.Fan) -> FanState {
+    private static func fanState(
+        for fan: SMCFanEnumeration.Fan, reclaimedFans: Set<Int>
+    ) -> FanState {
         FanState(
             index: fan.index,
             // `{fds`, the firmware fan-descriptor struct, is absent on this project's
@@ -287,7 +311,10 @@ actor ReadOnlyFanAuthority: FanAuthority {
             // is asking for nothing, and that is an answer.
             targetRPM: nil,
             mode: .automatic,
-            isReclaimedBySystem: false,
+            // From § 5's ledger, never a literal — see `reclamation`. Always `false` in
+            // this build because no fan is ever off automatic control here, but the field
+            // now moves when the mechanism does.
+            isReclaimedBySystem: reclaimedFans.contains(fan.index),
             // `.writePathNotBuilt` regardless of what this fan's bounds look like, and
             // deliberately so. E5's bounds gate — `FanKit.FanControlEnvelope.validating(
             // declaredMinimumRPM:declaredMaximumRPM:)`, whose failures map to

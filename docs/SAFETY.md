@@ -341,9 +341,23 @@ temperature is above ceiling.
 This is a correctness rule as much as a safety one. A UI that lies about fan state is
 worse than a UI that reports an error, because the user acts on it.
 
-*Tested by (pending #102):* integration tests where the mock SMC reverts a written value.
-`ScriptedControlPlane` can express that today — `WriteBehaviour.reverted` — but there is no
-watchdog yet to drive with it.
+*Tested by:* `Tests/AeolusHelperTests/ReclamationWatchdogTests.swift`, entirely through
+`ScriptedControlPlane`. Two of those tests are mutation checks rather than examples, and
+both were run against their mutants: switching the primary signal to actual-versus-target
+turns "An emergency ramp in flight is not read as reclamation" red, and deleting the
+arbiter consultation that enforces the above-ceiling rule turns "It never re-asserts while
+the thermal emergency latch holds" red.
+
+The re-assert budget and the blind-cycle threshold are **driven to exhaustion** by their
+tests rather than compared against their constants, so changing a constant changes what the
+test observes without changing whether it passes.
+
+*Not tested on hardware, and cannot be:* no write has ever been performed on this project's
+development machine, so real reclamation behaviour, `Ftst` semantics, and a fan's actual step
+response are unobserved. `ReclamationLimits.actualToleranceFraction` is set against a
+warm-up measurement rather than a commanded step for that reason, and the whole mechanism
+rests on the primary signal, which does not depend on fan dynamics at all. Hardware rows
+belong to [#104](https://github.com/blamechris/Aeolus/issues/104).
 
 ## 6. Restore on everything
 

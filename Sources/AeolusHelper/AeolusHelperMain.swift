@@ -63,6 +63,13 @@ enum AeolusHelperMain {
         // the same bit as the mechanism that sets it.
         let thermalEmergency = ThermalEmergencyLatch()
 
+        // § 5's ledger, for the same reason and on the same terms: nothing marks a fan
+        // reclaimed in this build, because no fan is ever off automatic control to be taken
+        // back. Constructed here so that the snapshot reads the mechanism's bit from the day
+        // `ReclamationWatchdog` is started rather than a literal that has to be found and
+        // rewired — which is the defect the latch's own comment records.
+        let reclamation = ReclamationLedger()
+
         // ADR 0006's one continuous reader, and the thing that decides who gets it when
         // two things want it at once. In *this* build only one does — nothing constructs
         // `SMCFanControlPlane`, because no lease can be granted and so § 3 has no fan to
@@ -77,7 +84,10 @@ enum AeolusHelperMain {
         // [#103](https://github.com/blamechris/Aeolus/issues/103).
         let scheduler = SMCReadScheduler(provider: SMCSensorProvider())
         let authority = ReadOnlyFanAuthority(
-            provider: scheduler.snapshotReader, log: log, thermalEmergency: thermalEmergency)
+            provider: scheduler.snapshotReader,
+            log: log,
+            thermalEmergency: thermalEmergency,
+            reclamation: reclamation)
         let delegate = HelperListenerDelegate(
             authorisation: authorisation,
             authority: authority,
