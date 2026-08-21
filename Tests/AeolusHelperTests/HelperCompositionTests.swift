@@ -13,7 +13,9 @@ import Testing
 /// `provider: scheduler.snapshotReader`, had **no coverage of any kind**. A review panel
 /// demonstrated the cost: reverting that line to the pre-#127 wiring, deleting the entire
 /// production effect of the change while leaving the scheduler constructed, left
-/// `Test run with 261 tests in 33 suites passed`. The hardware suite included.
+/// `swift test --filter AeolusHelperTests` green — 261 tests in 33 suites at the time,
+/// hardware suite included. (Figures in this PR come from two baselines: that helper-only
+/// filter, and the whole suite. Each is labelled where it is used.)
 ///
 /// `WritePathAbsenceTests` and `WriteAuthorisationTests` already assert properties of the
 /// source tree this way, through `SeamScanner`, for the same reason: some invariants are
@@ -41,18 +43,50 @@ struct HelperCompositionTests {
     /// everywhere else in the repository, which is the whole point of the file.
     @Test("The read-only authority is given the scheduler's snapshot reader, not a raw provider")
     func theAuthorityReadsThroughTheScheduler() throws {
-        let source = try Self.mainSource()
+        let source = Self.strippingComments(try Self.mainSource())
 
         #expect(
             source.contains("provider: scheduler.snapshotReader"),
             "the snapshot path no longer takes its turns from the scheduler")
-
-        // The raw provider may appear exactly once, inside the scheduler's own construction.
-        // A second occurrence is the authority — or something else — reading around the gate.
         #expect(
-            Self.occurrences(of: "SMCSensorProvider(", in: source) == 1,
-            "something in the composition root reads the SMC without taking a turn")
-        #expect(source.contains("SMCReadScheduler(provider: SMCSensorProvider())"))
+            source.contains("SMCReadScheduler(") && source.contains("SMCSensorProvider()"),
+            "the scheduler is no longer the thing holding the real provider")
+    }
+
+    /// Nothing in the helper may hold a raw `SMCSensorProvider`, anywhere.
+    ///
+    /// **Scoped to the whole of `Sources/AeolusHelper`, and it was one file until a review
+    /// caught that.** The earlier version counted occurrences inside `AeolusHelperMain.swift`
+    /// alone, so a second raw provider in any *other* helper file was invisible: a probe file
+    /// doing `try await SMCSensorProvider().read(keys:)` left both tests in this suite green.
+    /// Such a read takes no turn, sees no queue and is invisible to the safety cycle — and it
+    /// is the shortest path to a read at boot, which is exactly what
+    /// [#103](https://github.com/blamechris/Aeolus/issues/103)'s startup reconciliation wants
+    /// before the scheduler holds any state at all. The hazard was never confined to one
+    /// file, so neither is the guard.
+    ///
+    /// `fanctl` and the app are deliberately **not** covered: ADR 0006 makes them direct
+    /// readers in their own processes, and the corollary it states — at most one continuous
+    /// poller per machine — is about the helper's connection, not theirs.
+    ///
+    /// **Mutation:** add `SMCSensorProvider()` to any file under `Sources/AeolusHelper`.
+    /// Run: red.
+    @Test("Only the scheduler holds a raw provider, across the whole helper")
+    func nothingInTheHelperReadsAroundTheGate() throws {
+        var sites: [String] = []
+        for file in try SeamScanner.swiftFiles()
+        where file.pathComponents.contains("AeolusHelper") {
+            let code = Self.strippingComments(try String(contentsOf: file, encoding: .utf8))
+            let count = Self.occurrences(of: "SMCSensorProvider(", in: code)
+            if count > 0 { sites.append("\(file.lastPathComponent) x\(count)") }
+        }
+
+        #expect(
+            sites == ["AeolusHelperMain.swift x1"],
+            """
+            a helper-side SMC read that takes no turn is invisible to the safety cycle: \
+            \(sites). The one permitted construction is the scheduler's own.
+            """)
     }
 
     /// **Matched on `SMCReadScheduler(`, not on `SMCReadScheduler(provider:`.** The narrower

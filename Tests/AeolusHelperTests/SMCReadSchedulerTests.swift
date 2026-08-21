@@ -25,7 +25,7 @@ import Testing
 /// ## The fixture's basis
 ///
 /// The key counts below are scaled-down stand-ins for the measurement in ADR 0006 and
-/// `SMCReadScheduler`: on `Mac16,5` / macOS 26.5.2 a warm snapshot refresh reads **2929
+/// `SMCReadScheduler`: on `Mac16,5` / macOS 26.6.2 a warm snapshot refresh reads **2929
 /// keys in ~0.5 s** (~0.17 ms a key) while the curated critical set is **thirty-four
 /// keys**, and discovery — `readAll()` — costs **2.2 s warm and 5.9 s cold**, once. What
 /// matters to these tests is only the *ratio*: a snapshot spans many turns and a safety
@@ -223,11 +223,16 @@ struct SMCReadSchedulerTests {
     /// requested, duplicates included, and concatenating consecutive slices preserves all
     /// three.
     ///
-    /// **Mutation:** make `turns(over:)` return the whole key list as one slice. Run: red
-    /// here on the turn count, and red in two other tests that need a read to span more than
-    /// one turn — which is the useful part, because a scheduler that never splits grants the
-    /// connection for a whole 2929-key refresh and undoes the entire issue while every
-    /// ordering test still passes.
+    /// **Mutation:** make `turns(over:)` return the whole key list as one slice. Run: **four**
+    /// tests red across the three scheduler suites — this one on the turn count, plus three
+    /// that need a read to span more than one turn. That is the useful part: a scheduler
+    /// that never splits grants the connection for a whole ~2929-key refresh and undoes the
+    /// entire issue while every ordering test still passes.
+    ///
+    /// It reported "three" for one commit, and reported nothing at all for the commit before
+    /// that — the soak test's drain loop waited on the *expected* turn count, so a mutation
+    /// producing fewer spun it at ~158% CPU past every time limit. A mutation ledger is only
+    /// worth the runs behind it.
     @Test("A long read is split into bounded turns without disturbing its answer")
     func aLongReadIsSplitIntoBoundedTurns() async throws {
         let provider = GatedSensorProvider()
@@ -277,13 +282,13 @@ struct SMCReadSchedulerTests {
             await provider.readAllIsInFlight
         }
 
-        let finished = CompletionFlag()
+        let discoveryDone = CompletionFlag()
         let supervised = Task {
             _ = try await scheduler.read(keys: ["TPD1"], at: .supervisor)
-            await finished.mark()
+            await discoveryDone.mark()
         }
         await yieldUntil("the safety cycle to complete while discovery is still running") {
-            await finished.isSet
+            await discoveryDone.isSet
         }
 
         await provider.releaseReadAll()
@@ -297,6 +302,10 @@ struct SMCReadSchedulerTests {
     /// changed, so a client built against v1 is unaffected by any of it.
     @Test("AeolusXPCVersion is unchanged by connection scheduling")
     func theXPCVersionIsUnchanged() {
+        // Pins the constant, which is the only way to assert "unchanged" without a stored
+        // baseline — #127's acceptance criteria ask for exactly that. A legitimate bump to 2
+        // is therefore expected to turn this red: the reader should confirm the protocol
+        // really did change and move the number, not reach for the scheduler.
         #expect(AeolusXPCVersion.current == 1)
     }
 }

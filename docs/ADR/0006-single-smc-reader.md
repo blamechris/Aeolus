@@ -126,6 +126,13 @@ end up disagreeing about when "now" was.
 
   31.3 ms against the ~601 ms a cycle would otherwise wait behind an unscheduled refresh.
 
+  **On the key count.** The measurement above reads **2930** keys where the paragraph above
+  says 2929. Both are right for their own run: #72 counted 2929 on macOS 26.5.2, and every
+  run on 26.6.2 counts 2930. The count is a property of the firmware and the OS build, not a
+  constant, which is the reason nothing in the code asserts on it and the reason
+  `HelperHardwareTests` re-measures rather than hard-codes. `ceil(2930/64)` is 46, the same
+  as `ceil(2929/64)`, so no figure downstream moves.
+
   **These are not worst-case numbers**, and two drafts of the source comment said they were.
   The measuring loop awaits each cycle before issuing the next, so at most one supervisor
   read is ever queued; when that lone turn ends a snapshot turn is still queued, so the

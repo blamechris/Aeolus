@@ -181,19 +181,32 @@ struct SchedulerTurnLifecycleTests {
                     at: index.isMultiple(of: 2) ? .snapshot : .supervisor)
             }
         }
-        // Drain one turn at a time. Each release lets exactly one parked turn out, so the
-        // provider is occupied for the whole run rather than waved through.
-        let drain = Task {
-            while await provider.turns.count < 18 {
-                await provider.releaseOneTurn()
+        // Drain one turn at a time, so the provider stays occupied rather than waved
+        // through, and release only when something is actually parked — `releaseOneTurn()`
+        // banks a credit otherwise, and banked credits let later turns skip `hold()`.
+        //
+        // **Bounded and cancellable, and the first version was neither.** It looped
+        // `while await provider.turns.count < 18` — 6 reads x 150 keys / 64 — which is the
+        // *expected* turn count, so any mutation producing fewer turns spun it for ever.
+        // `Task.yield()` is not a cancellation check, an unstructured task does not inherit
+        // the test's cancellation, and `await drain.value` on a `Task<Void, Never>` is not
+        // cancellation-aware either — so `.timeLimit` had nothing to act on. The documented
+        // `turns()` mutation, which this suite's own table records as turning three tests
+        // red, instead wedged the run at ~158% CPU with no output, no line number and no
+        // test name. That is #109's complaint exactly, inside the suite whose header says a
+        // green suite must mean the tests ran.
+        let drain = observing {
+            for _ in 0..<10_000 {
+                if Task.isCancelled { return }
+                if await provider.parkedWaiters > 0 { await provider.releaseOneTurn() }
                 await Task.yield()
             }
-            await provider.releaseEveryTurn()
         }
         for (index, read) in reads.enumerated() {
             try await finished("concurrent read \(index)", read)
         }
-        await drain.value
+        drain.task.cancel()
+        try await finished("the drain loop", drain)
 
         #expect(
             await provider.peakConcurrentTurns == 1,
@@ -207,9 +220,13 @@ struct SchedulerTurnLifecycleTests {
     ///
     /// "A supervisor read waits at most two turns" is true of *one* outstanding supervisor
     /// read. `supervisorWaiters` is FIFO and the quota forces a snapshot turn after every
-    /// `maxConsecutiveOvertakes`, so N concurrent supervisor reads make the last one wait
-    /// roughly `N + N / maxConsecutiveOvertakes` turns. That is not a defect — a serial
-    /// connection cannot serve two readers at once — but it is not what the prose said, and
+    /// `maxConsecutiveOvertakes`, so with N outstanding the last is admitted
+    /// `N + (N - 1) / maxConsecutiveOvertakes` turns after it queues — 4 at N=3, which is
+    /// what this test measures. (`N + N / maxConsecutiveOvertakes` is the superseded form;
+    /// it survived here for one commit *in the very test whose job is to keep the corrected
+    /// one honest*, which is worth more as a warning than as an apology.) That is not a
+    /// defect — a serial connection cannot serve two readers at once — but it is not what
+    /// the prose said, and
     /// it matters: `LeaseAuthority.refuseIfBlind` already issues supervisor-priority reads
     /// off the § 3 cycle, so #103 and #126 will have several outstanding at once.
     ///
@@ -247,9 +264,11 @@ struct SchedulerTurnLifecycleTests {
         // two through, forces a snapshot turn, then admits the third. So the third is
         // admitted on the fifth turn overall — four turns after it queued, against the two
         // the doc claims for a lone read.
+        // The exact index the comment above derives, not merely "past the quota": pinning
+        // the number is what makes this a test of the formula it is named for.
         #expect(
-            lastSupervisor > SMCReadScheduler.maxConsecutiveOvertakes,
-            "trace \(turns.map { $0[0] }) — expected the third read past the quota")
+            lastSupervisor == 4,
+            "trace \(turns.map { $0[0] }) — expected the third supervisor read at index 4")
         #expect(turns[1][0].hasPrefix("T"), "the first supervisor read should still go first")
     }
 }

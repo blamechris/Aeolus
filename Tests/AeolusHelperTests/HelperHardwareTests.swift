@@ -206,18 +206,18 @@ struct HelperHardwareTests {
         _ = try await plane.readCriticalTemperatures(critical.keys)
         let solo = ContinuousClock.now - soloStarted
 
-        let finished = CompletionFlag()
+        let discoveryDone = CompletionFlag()
         let snapshotStarted = ContinuousClock.now
         let snapshot = Task {
             let taken = try await authority.snapshot()
-            await finished.mark()
+            await discoveryDone.mark()
             return taken
         }
 
         var worst = Duration.zero
         var cycles = 0
         let deadline = ContinuousClock.now + .seconds(20)
-        while await !finished.isSet, ContinuousClock.now < deadline {
+        while await !discoveryDone.isSet, ContinuousClock.now < deadline {
             let started = ContinuousClock.now
             _ = try await plane.readCriticalTemperatures(critical.keys)
             worst = max(worst, ContinuousClock.now - started)
@@ -226,7 +226,7 @@ struct HelperHardwareTests {
         let contendedSnapshot = ContinuousClock.now - snapshotStarted
 
         #expect(
-            await finished.isSet,
+            await discoveryDone.isSet,
             "the snapshot never completed under supervisor load; starvation is unbounded")
         let taken = try await snapshot.value
 

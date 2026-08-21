@@ -11,25 +11,26 @@ import SMCCore
 /// help: nothing else runs on `SMCConnection` until the last key returns. A supervisor read
 /// issued one key into that request waits for all of the rest.
 ///
-/// That wait is invisible. No read fails, nothing throws, and no log line is emitted —
-/// § 3 is simply looking at a temperature from half a second ago while a fan is pinned. It
-/// is the exact shape [#127](https://github.com/blamechris/Aeolus/issues/127) was filed
-/// against, and the reason the seam in `FanControlPlane` was drawn: **drawing the seam made
-/// this schedulable; this type is what schedules it.**
+/// That wait is invisible: no read fails, nothing throws, no log line is emitted — § 3 is
+/// simply reading a temperature from half a second ago while a fan is pinned. It is the
+/// shape [#127](https://github.com/blamechris/Aeolus/issues/127) was filed against, and why
+/// `FanControlPlane`'s seam was drawn: **the seam made this schedulable; this schedules it.**
 ///
 /// ## The measurement the design rests on
 ///
 /// From ADR 0006 and re-measured by `Tests/AeolusHelperTests/HelperHardwareTests` on every
-/// hardware run, on `Mac16,5` / macOS 26.5.2:
+/// hardware run, on `Mac16,5` / macOS 26.6.2:
 ///
 /// | What | Cost | How often |
 /// |---|---|---|
 /// | Discovery, `readAll()` | 2.2 s warm, 5.9 s cold | once per process |
-/// | Warm snapshot refresh, 2929 keys | ~0.5 s | every tick, at 1 Hz |
+/// | Warm snapshot refresh, ~2929 keys | ~0.5 s | every tick, at 1 Hz |
 ///
-/// ~0.5 s across 2929 keys is **~0.17 ms per key**, and every number below derives from that
-/// one figure. #127's summary quotes "2.2 s warm" for the snapshot; that is the *discovery*
-/// cost, which this type deliberately does not schedule. The refresh governs a turn.
+/// ~0.5 s across ~2929 keys is **~0.17 ms per key**, and every number below derives from
+/// that one figure. The count moves with the OS build — 2929 on 26.5.2, 2930 on 26.6.2, and
+/// `ceil(n/64)` is 46 either way — so nothing asserts on it; ADR 0006 has the detail.
+/// #127's summary quotes "2.2 s warm" for the snapshot; that is the *discovery* cost, which
+/// this type does not schedule. The refresh governs a turn.
 ///
 /// ## Turns
 ///
@@ -57,9 +58,10 @@ import SMCCore
 ///   forces a snapshot turn after every `maxConsecutiveOvertakes`, so with *N* supervisor
 ///   reads outstanding the last is admitted `N + (N - 1) / maxConsecutiveOvertakes` turns
 ///   after it queues — **4 turns for N=3 and 17 for N=12**, one more in each case if the
-///   quota was already spent. (An earlier draft said `N + N / maxConsecutiveOvertakes`,
-///   which is wrong by one from N=4 up.) N=3 is measured by the test named below; N=12 is
-///   derived from the same expression, not observed.
+///   quota was already spent. (Two earlier drafts had this wrong: `N + N / …` differs at
+///   every **even** N, and the correction that said "from N=4 up" excluded N=2 where it is
+///   wrong and implied N=5 where it is not.) N=3 is measured by the test named below;
+///   N=12 is derived, not observed.
 ///
 ///   That is not a defect the scheduler could fix: a serial connection cannot serve two
 ///   readers at once, and a supervisor read waiting behind other supervisor work is not the
@@ -76,16 +78,18 @@ import SMCCore
 ///   behaviour so this paragraph cannot drift back.
 /// - **A snapshot completes within `turns × (turnCost + quota × supervisorTurnCost)`** —
 ///   46 × (11 ms + 2 × ~6 ms) ≈ 1.1 s worst case against a ~0.5 s nominal, where ~6 ms is
-///   the curated thirty-four keys. A full `snapshot()` is **48** turns, not 46: the sensor
-///   refresh is 46, and `ReadOnlyFanAuthority.snapshot()` spends one on `FNum` and one on
-///   the fan keys first. Reaching the bound needs two supervisor reads outstanding at every
-///   boundary — arriving within one boundary's span, ~11 ms of snapshot turn plus up to
-///   2 × ~6 ms of supervisor turns, so ~87 Hz — against § 3's 1 Hz. No hardware run has
+///   the curated thirty-four keys. Reaching it needs two supervisor reads outstanding at
+///   every boundary — arriving within one boundary's span, ~11 ms of snapshot turn plus up
+///   to 2 × ~6 ms of supervisor turns, so ~87 Hz — against § 3's 1 Hz. No hardware run has
 ///   reached it.
 ///
-/// `CLAUDE.md` rule 6 is why the second bound is not simply "the supervisor always wins": a
-/// client that never receives a snapshot is a UI reporting nothing, and a UI reporting
-/// nothing is a UI a user cannot act on.
+///   **Per `read(keys:at:)`, not per `snapshot()`.** A `snapshot()` is 48 turns but *three*
+///   reads, and between them nothing sits in `snapshotWaiters`, so the quota restarts. The
+///   1.1 s bounds the 46-turn refresh; nothing here bounds `snapshot()` end to end, and an
+///   earlier draft implied it did. Small in wall-clock, but a gap in the claim — #134.
+///
+/// `CLAUDE.md` rule 6 is why the second bound is not "the supervisor always wins": a client
+/// that never receives a snapshot is a UI reporting nothing, which a user cannot act on.
 ///
 /// ### What that came out as, on the machine
 ///
@@ -103,13 +107,11 @@ import SMCCore
 /// 31.3 ms against the ~601 ms a cycle would wait behind an unscheduled refresh. That is the
 /// number this whole type exists to produce, and it is measured.
 ///
-/// **These are not worst-case figures**, and two drafts of this comment said they were.
-/// The loop awaits each cycle before issuing the next, so at most one supervisor read is
-/// ever queued and the quota **never fires** — deleting it leaves the test passing with the
-/// same numbers. `SMCReadSchedulerTests.snapshotStarvationIsBounded` is what covers the
-/// two-overtake case, which no hardware run has reached.
-/// [ADR 0006](../../docs/ADR/0006-single-smc-reader.md) carries the full reconciliation,
-/// including why 49 cycles and not 48.
+/// **Not worst-case figures**, though two drafts said they were: the loop awaits each cycle,
+/// so one supervisor read is ever queued and the quota **never fires**.
+/// `SMCReadSchedulerTests.snapshotStarvationIsBounded` covers the two-overtake case, which
+/// no hardware run has reached. [ADR 0006](../../docs/ADR/0006-single-smc-reader.md) has the
+/// full reconciliation, including why 49 cycles and not 48.
 ///
 /// ## `readAll()` is not a turn, and that is the sharpest decision here
 ///
@@ -251,24 +253,6 @@ actor SMCReadScheduler {
         }
     }
 
-    // MARK: - Prioritised views
-
-    /// The snapshot path's `SensorProvider`, and the **only** one this type vends.
-    ///
-    /// There is deliberately no matching `supervisorReader`. A `SensorProvider` carries no
-    /// priority in its signature, so a prioritised view of one is a value whose behaviour
-    /// cannot be read off its type — and the one place that would be dangerous is the
-    /// safety path. `SMCFanControlPlane` therefore takes this scheduler directly and names
-    /// `.supervisor` itself, at the point the read is issued, so a supervisor read wired at
-    /// snapshot priority is not a mistake anyone can make.
-    ///
-    /// `nonisolated` because it reads nothing: it hands back a reference to this actor
-    /// wearing a different protocol, which is what lets the composition root wire it
-    /// without an `await` in a synchronous `main`.
-    nonisolated var snapshotReader: SnapshotSensorReads {
-        SnapshotSensorReads(scheduler: self)
-    }
-
     // MARK: - Turns
 
     /// Consecutive slices of at most `maxKeysPerTurn` keys, in request order.
@@ -362,37 +346,5 @@ actor SMCReadScheduler {
 
         consecutiveOvertakes = 0
         return snapshotWaiters.removeFirst()
-    }
-}
-
-/// The snapshot path's view of the scheduler, as a plain `SensorProvider`.
-///
-/// A view rather than a change to `ReadOnlyFanAuthority`'s shape: the snapshot path asks for
-/// keys and gets outcomes, exactly as it did when it held `SMCSensorProvider` directly, and
-/// scheduling is a property of where it was obtained rather than of what it does.
-///
-/// Its initialiser is `fileprivate`, so the only way to hold one is
-/// `SMCReadScheduler.snapshotReader` — a reader detached from a scheduler is not a value
-/// this module can construct.
-struct SnapshotSensorReads: SensorProvider {
-
-    private let scheduler: SMCReadScheduler
-
-    fileprivate init(scheduler: SMCReadScheduler) {
-        self.scheduler = scheduler
-    }
-
-    var identifier: String { scheduler.identifier }
-
-    var isAvailable: Bool {
-        get async { await scheduler.isAvailable }
-    }
-
-    func readAll() async throws -> [SensorReading] {
-        try await scheduler.readAll()
-    }
-
-    func read(keys: [String]) async throws -> [SensorReadOutcome] {
-        try await scheduler.read(keys: keys, at: .snapshot)
     }
 }

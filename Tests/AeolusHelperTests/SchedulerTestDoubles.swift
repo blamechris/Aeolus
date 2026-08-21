@@ -88,6 +88,14 @@ actor GatedSensorProvider: SensorProvider {
         return keys.map { SensorReadOutcome(key: $0, result: .reading($0, 1)) }
     }
 
+    /// How many turns are parked inside `read(keys:)` right now.
+    ///
+    /// Exists so a draining loop can release only when there is something to release.
+    /// `releaseOneTurn()` banks a credit when nothing is parked, and a loop that banked
+    /// credits would wave later turns straight through — turning the provider back into the
+    /// non-holding one whose atomic `read(keys:)` made the soak test unable to fail.
+    var parkedWaiters: Int { subsetWaiters.count }
+
     /// Lets the turn currently at the provider finish.
     func releaseOneTurn() {
         guard !subsetWaiters.isEmpty else {
@@ -263,6 +271,12 @@ func observing<Value: Sendable>(
 }
 
 /// Waits for `work` to finish and returns its value, or records an issue and returns `nil`.
+///
+/// - Note: a *local* named `finished` shadows this function inside its scope. Two callers
+///   had one — `let finished = CompletionFlag()` — and both were renamed when this was
+///   added, because this repository has already lost a run to a global test helper being
+///   resolved by overload against a same-named sibling, with a `try` warning in an
+///   unrelated file as the only symptom.
 ///
 /// Never joins a task that has not finished, so a wedged scheduler ends the test instead of
 /// hanging it.
