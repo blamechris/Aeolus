@@ -95,7 +95,7 @@ struct SMCReadSchedulerTests {
             await provider.turns.count == 2
         }
 
-        #expect(await provider.turns[1] == Self.criticalKeys.map(\.rawValue))
+        #expect(await provider.turns.dropFirst().first == Self.criticalKeys.map(\.rawValue))
 
         await provider.releaseEveryTurn()
         #expect(try await cycle.value.readings.count == Self.criticalKeys.count)
@@ -142,7 +142,7 @@ struct SMCReadSchedulerTests {
             await provider.turns.count == 2
         }
 
-        #expect(await provider.turns[1] == supervisorKeys)
+        #expect(await provider.turns.dropFirst().first == supervisorKeys)
 
         await provider.releaseEveryTurn()
         #expect(try await supervised.value.count == supervisorKeys.count)

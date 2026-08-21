@@ -131,11 +131,14 @@ struct SchedulerTurnLifecycleTests {
             await provider.turns.count == 2
         }
 
-        // The fresh arrival. It must queue, not barge.
+        // The fresh arrival. It must queue, not barge. The `yieldUntil` result is the first
+        // half of the assertion — under the mutation the arrival never queues at all — and the
+        // `peakConcurrentTurns` check below is the second.
         let arrival = observing { try await scheduler.read(keys: ["C0"], at: .snapshot) }
-        await yieldUntil("the fresh arrival to queue behind the held turn") {
+        let queued = await yieldUntil("the fresh arrival to queue behind the held turn") {
             await scheduler.queuedTurns(at: .snapshot) == 1
         }
+        #expect(queued, "the fresh arrival never queued — it barged onto the held turn")
 
         #expect(
             await provider.peakConcurrentTurns == 1,
@@ -269,6 +272,11 @@ struct SchedulerTurnLifecycleTests {
         #expect(
             lastSupervisor == 4,
             "trace \(turns.map { $0[0] }) — expected the third supervisor read at index 4")
-        #expect(turns[1][0].hasPrefix("T"), "the first supervisor read should still go first")
+        // `dropFirst().first` rather than `turns[1]`: if a regression produced fewer turns,
+        // subscripting would trap and take the whole run's output with it instead of failing
+        // this one assertion.
+        #expect(
+            turns.dropFirst().first?.first?.hasPrefix("T") == true,
+            "the first supervisor read should still go first — trace \(turns.map { $0[0] })")
     }
 }

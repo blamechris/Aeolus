@@ -161,17 +161,24 @@ actor CompletionFlag {
 /// `sourceLocation` is defaulted from the call site, like the sibling `waitUntil` does, so
 /// a timeout names the wait that failed rather than this function's own line — which is
 /// most of the diagnostic value the `Issue.record` was added for.
+/// - Returns: whether the condition held. Recording an issue and returning leaves the caller
+///   running, and a caller that then indexes what it was waiting for — `turns[1]`, say —
+///   traps instead of failing, killing the process and taking the rest of the run's output
+///   with it. Callers that index must branch on this; the return is `@discardableResult` for
+///   the ones whose following assertions already cover the timeout.
+@discardableResult
 func yieldUntil(
     _ description: String,
     within yields: Int = 10_000,
     _ condition: () async -> Bool,
     sourceLocation: SourceLocation = #_sourceLocation
-) async {
+) async -> Bool {
     for _ in 0..<yields {
-        if await condition() { return }
+        if await condition() { return true }
         await Task.yield()
     }
     Issue.record("timed out waiting for \(description)", sourceLocation: sourceLocation)
+    return false
 }
 
 /// A provider that fails the first subset read it is given and answers normally afterwards.
