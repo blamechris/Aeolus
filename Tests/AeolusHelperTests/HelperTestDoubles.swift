@@ -239,3 +239,14 @@ extension AcknowledgementReply {
         return false
     }
 }
+
+/// The production control plane over `provider`, wired through the scheduler it takes its
+/// turns from.
+///
+/// `SMCFanControlPlane` has no initialiser that skips the scheduler, so this is not a
+/// convenience over a simpler shape — it *is* the shape, and every caller of this helper
+/// (`SMCFanControlPlaneTests`, in another file) therefore exercises the real admission path
+/// rather than a provider the plane reached directly.
+func supervisorPlane(over provider: some SensorProvider) -> SMCFanControlPlane {
+    SMCFanControlPlane(scheduler: SMCReadScheduler(provider: provider))
+}

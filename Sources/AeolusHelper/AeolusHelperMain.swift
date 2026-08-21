@@ -62,8 +62,22 @@ enum AeolusHelperMain {
         // `ThermalSupervisor` arrive, the snapshot and the lease core are already reading
         // the same bit as the mechanism that sets it.
         let thermalEmergency = ThermalEmergencyLatch()
+
+        // ADR 0006's one continuous reader, and the thing that decides who gets it when
+        // two things want it at once. In *this* build only one does — nothing constructs
+        // `SMCFanControlPlane`, because no lease can be granted and so § 3 has no fan to
+        // protect — so every turn granted below is a snapshot turn, and honestly so.
+        //
+        // **The hazard for whoever wires E5's lifecycle:** the supervisor's control plane
+        // must be built from *this* scheduler — `SMCFanControlPlane(scheduler: scheduler)`
+        // — and not from a second one. Two schedulers arbitrate nothing while looking
+        // exactly like one that does: each would grant turns against a queue the other
+        // cannot see, and the contention #127 exists to fix would be back with the
+        // machinery for fixing it still in the build. See
+        // [#103](https://github.com/blamechris/Aeolus/issues/103).
+        let scheduler = SMCReadScheduler(provider: SMCSensorProvider())
         let authority = ReadOnlyFanAuthority(
-            provider: SMCSensorProvider(), log: log, thermalEmergency: thermalEmergency)
+            provider: scheduler.snapshotReader, log: log, thermalEmergency: thermalEmergency)
         let delegate = HelperListenerDelegate(
             authorisation: authorisation,
             authority: authority,

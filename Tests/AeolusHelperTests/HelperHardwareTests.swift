@@ -141,6 +141,111 @@ struct HelperHardwareTests {
         #expect(warmest < cold, "discovery is supposed to be the expensive one")
     }
 
+    /// [#127](https://github.com/blamechris/Aeolus/issues/127), measured on the one machine
+    /// that can measure it.
+    ///
+    /// `SMCReadSchedulerTests` proves the *ordering* against a scripted double, where every
+    /// turn costs nothing and no firmware is involved. This measures the one thing a double
+    /// cannot: **what the safety cycle actually waits when a real 2929-key refresh is on the
+    /// connection**, in milliseconds, against real firmware.
+    ///
+    /// ## What it does not prove, said plainly
+    ///
+    /// It is **not** a test of the composition root, and an earlier version of this comment
+    /// claimed it was — "exactly what `AeolusHelperMain` builds". `AeolusHelperMain` builds
+    /// no `SMCFanControlPlane` at all in this build, which the comment beside the scheduler
+    /// there says in as many words; two comments from one change asserted opposite things
+    /// about the same file. This test constructs its own three objects and never reaches
+    /// `main()`. `HelperCompositionTests` is what guards the wiring, at the source, because
+    /// `main()` ends in `dispatchMain()` and has no seam to drive.
+    ///
+    /// It is also **not** the guard on the starvation quota. The loop below awaits each
+    /// cycle before issuing the next, so at most one supervisor read is ever queued; a lone
+    /// supervisor turn ending leaves `supervisorWaiters` empty, which resets
+    /// `consecutiveOvertakes`, so the quota never fires. Deleting
+    /// `maxConsecutiveOvertakes` entirely leaves this test passing with the same numbers —
+    /// measured, not supposed. `SMCReadSchedulerTests.snapshotStarvationIsBounded` is the
+    /// test that catches that; this one would tell you nothing.
+    ///
+    /// ## The load, as it actually is
+    ///
+    /// One cycle in flight at a time, re-issued immediately: 49 cycles against an ~898 ms
+    /// snapshot, so **~55 Hz** — well above § 3's 1 Hz, and nowhere near the ~87 Hz that
+    /// would spend the quota at every boundary. Read the printed snapshot cost as
+    /// one-overtake-per-boundary, never as the ceiling the bound permits.
+    ///
+    /// ## The assertion
+    ///
+    /// A *ratio*, never a millisecond count.
+    /// [#118](https://github.com/blamechris/Aeolus/issues/118) is what a hardware test with
+    /// an absolute tolerance turns into. A cycle that queued behind the snapshot would cost
+    /// about what the snapshot costs; a quarter of it is far outside anything scheduling
+    /// noise produces and far inside the failure being guarded against.
+    ///
+    /// The deadline on the loop is worth keeping but not for the reason first given here: a
+    /// single serial issuer cannot starve the snapshot at all, so "the snapshot would never
+    /// finish" is not a state this test can reach. What the deadline actually buys is that a
+    /// *deadlocked* scheduler — a turn taken and not given back, the failure
+    /// `aThrowingReadReleasesItsTurn` covers — is reported as a failed expectation rather
+    /// than as a killed job.
+    @Test("A safety cycle stays prompt while a real snapshot is on the connection")
+    func theSafetyCycleStaysPromptDuringARealSnapshot() async throws {
+        let scheduler = SMCReadScheduler(provider: SMCSensorProvider())
+        let authority = ReadOnlyFanAuthority(
+            provider: scheduler.snapshotReader, log: Self.log,
+            thermalEmergency: ThermalEmergencyLatch())
+        let plane = SMCFanControlPlane(scheduler: scheduler)
+        let critical = CriticalSensorSet.resolve(for: HardwareIdentity.current())
+        try #require(!critical.isEmpty, "no curated critical set on the machine it was cut for")
+
+        // Pay discovery first: the contention this issue is about is with the *warm*
+        // refresh, which is what runs every tick.
+        _ = try await authority.snapshot()
+
+        let soloStarted = ContinuousClock.now
+        _ = try await plane.readCriticalTemperatures(critical.keys)
+        let solo = ContinuousClock.now - soloStarted
+
+        let discoveryDone = CompletionFlag()
+        let snapshotStarted = ContinuousClock.now
+        let snapshot = Task {
+            let taken = try await authority.snapshot()
+            await discoveryDone.mark()
+            return taken
+        }
+
+        var worst = Duration.zero
+        var cycles = 0
+        let deadline = ContinuousClock.now + .seconds(20)
+        while await !discoveryDone.isSet, ContinuousClock.now < deadline {
+            let started = ContinuousClock.now
+            _ = try await plane.readCriticalTemperatures(critical.keys)
+            worst = max(worst, ContinuousClock.now - started)
+            cycles += 1
+        }
+        let contendedSnapshot = ContinuousClock.now - snapshotStarted
+
+        #expect(
+            await discoveryDone.isSet,
+            "the snapshot never completed under supervisor load; starvation is unbounded")
+        let taken = try await snapshot.value
+
+        print(
+            """
+            supervisor read latency on \(HardwareIdentity.current().modelIdentifier ?? "?"): \
+            \(critical.keys.count) curated keys cost \(solo) uncontended; \
+            worst of \(cycles) cycles issued against an in-flight \(taken.sensors.count)-key \
+            snapshot was \(worst); that snapshot took \(contendedSnapshot) under the load
+            """
+        )
+
+        #expect(!taken.sensors.isEmpty)
+        // A cycle that queued behind the snapshot would cost about what the snapshot costs.
+        #expect(
+            worst * 4 < contendedSnapshot,
+            "worst cycle \(worst) against a \(contendedSnapshot) snapshot: it queued behind")
+    }
+
     /// End to end over a real XPC connection, on real hardware: app to boundary to root
     /// authority to SMC and back, with no write path anywhere in it.
     @Test("A real snapshot crosses a real connection and decodes")

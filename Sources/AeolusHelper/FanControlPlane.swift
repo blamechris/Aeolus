@@ -26,6 +26,12 @@ import SMCCore
 /// of a separate seam; making every failure mode injectable without hardware is the other
 /// half.
 ///
+/// The scheduling this seam made *possible* is `SMCReadScheduler`'s, per
+/// [#127](https://github.com/blamechris/Aeolus/issues/127): the production conformer issues
+/// every read above at `.supervisor`, which is admitted ahead of a waiting snapshot turn.
+/// Naming the keys was necessary and was never sufficient — a small read still waits for a
+/// big one on a connection that grants no turns.
+///
 /// ## The keystone
 ///
 /// [ADR 0007](../../docs/ADR/0007-safety-composition.md) rests every safety mechanism on
