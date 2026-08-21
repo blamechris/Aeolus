@@ -27,21 +27,19 @@ import SMCCore
 /// | Discovery, `readAll()` | 2.2 s warm, 5.9 s cold | once per process |
 /// | Warm snapshot refresh, 2929 keys | ~0.5 s | every tick, at 1 Hz |
 ///
-/// ~0.5 s across 2929 keys is **~0.17 ms per key**, and every number below is derived from
-/// that one figure rather than guessed. #127's summary quotes "2.2 s warm" for the
-/// snapshot; that is the *discovery* cost, which this type deliberately does not schedule —
-/// see below. The number that governs a turn is the refresh.
+/// ~0.5 s across 2929 keys is **~0.17 ms per key**, and every number below derives from that
+/// one figure. #127's summary quotes "2.2 s warm" for the snapshot; that is the *discovery*
+/// cost, which this type deliberately does not schedule. The refresh governs a turn.
 ///
 /// ## Turns
 ///
-/// Access is granted in **turns**, and no turn may cover more than `maxKeysPerTurn` keys. A
-/// large read is split into as many turns as it needs and gives the connection up between
-/// them, which is what converts one 0.5 s occupation into 46 short ones a waiting
-/// supervisor can be admitted between.
+/// Access is granted in **turns** of at most `maxKeysPerTurn` keys. A large read is split
+/// into as many as it needs and gives the connection up between them, converting one 0.5 s
+/// occupation into 46 short ones a waiting supervisor can be admitted between.
 ///
 /// Splitting is not a loss of atomicity that anything relied on: a 2929-key snapshot already
-/// spans ~0.5 s of wall time and carries a single `capturedAt`, so its readings were never
-/// simultaneous. What changes is only who else may read inside that window.
+/// spans ~0.5 s and carries a single `capturedAt`, so its readings were never simultaneous.
+/// What changes is only who else may read inside that window.
 ///
 /// ## Priority, and the bound in the other direction
 ///
@@ -56,25 +54,33 @@ import SMCCore
 ///
 ///   **The qualifier is load-bearing, and this bullet stated it unconditionally until a
 ///   review panel produced the counterexample.** `supervisorWaiters` is FIFO, and the quota
-///   forces a snapshot turn after every `maxConsecutiveOvertakes`, so *N* concurrently
-///   outstanding supervisor reads make the last one wait roughly
-///   `N + N / maxConsecutiveOvertakes` turns — measured at 4 turns for N=3, and 17 for N=12.
+///   forces a snapshot turn after every `maxConsecutiveOvertakes`, so with *N* supervisor
+///   reads outstanding the last is admitted `N + (N - 1) / maxConsecutiveOvertakes` turns
+///   after it queues — **4 turns for N=3 and 17 for N=12**, one more in each case if the
+///   quota was already spent. (An earlier draft said `N + N / maxConsecutiveOvertakes`,
+///   which is wrong by one from N=4 up.) N=3 is measured by the test named below; N=12 is
+///   derived from the same expression, not observed.
+///
 ///   That is not a defect the scheduler could fix: a serial connection cannot serve two
 ///   readers at once, and a supervisor read waiting behind other supervisor work is not the
 ///   snapshot delaying it. It is a defect in the *claim*, and the claim is what a future
 ///   reader checks the mechanism against instead of re-deriving it.
 ///
-///   It is also not hypothetical. `LeaseAuthority.refuseIfBlind` already issues
-///   supervisor-priority reads off the § 3 cycle, one per `acquireLease`, and each XPC
-///   message runs in its own `Task` — so #103 and #126 will routinely have several
-///   outstanding at once. `SMCReadSchedulerTests.theSupervisorBoundIsPerOutstandingRead`
-///   pins the real behaviour so this paragraph cannot quietly drift back.
+///   It is also not hypothetical. `LeaseAuthority.refuseIfBlind` already issues a
+///   supervisor-priority `readCriticalTemperatures` per `acquireLease`, unpaced by any
+///   cycle, and each XPC message runs in its own `Task`. Those reads do not reach this
+///   scheduler *in this build* — they go through `telemetry`, and nothing constructs
+///   `SMCFanControlPlane` yet — but the call site exists and #103 connects it, so #103 and
+///   #126 will routinely have several outstanding.
+///   `SchedulerTurnLifecycleTests.theSupervisorBoundIsPerOutstandingRead` pins the real
+///   behaviour so this paragraph cannot drift back.
 /// - **A snapshot completes within `turns × (turnCost + quota × supervisorTurnCost)`** —
 ///   46 × (11 ms + 2 × ~6 ms) ≈ 1.1 s worst case against a ~0.5 s nominal, where ~6 ms is
-///   the curated thirty-four keys. Reaching it needs two supervisor reads outstanding at
-///   every turn boundary — they must arrive within one boundary's span, ~11 ms of snapshot
-///   turn plus up to 2 × ~6 ms of supervisor turns, so ~87 Hz — against § 3's 1 Hz. The
-///   quota is for the adversarial case, not the expected one, and no hardware run has
+///   the curated thirty-four keys. A full `snapshot()` is **48** turns, not 46: the sensor
+///   refresh is 46, and `ReadOnlyFanAuthority.snapshot()` spends one on `FNum` and one on
+///   the fan keys first. Reaching the bound needs two supervisor reads outstanding at every
+///   boundary — arriving within one boundary's span, ~11 ms of snapshot turn plus up to
+///   2 × ~6 ms of supervisor turns, so ~87 Hz — against § 3's 1 Hz. No hardware run has
 ///   reached it.
 ///
 /// `CLAUDE.md` rule 6 is why the second bound is not simply "the supervisor always wins": a
@@ -97,17 +103,13 @@ import SMCCore
 /// 31.3 ms against the ~601 ms a cycle would wait behind an unscheduled refresh. That is the
 /// number this whole type exists to produce, and it is measured.
 ///
-/// **What these figures are not.** An earlier draft called them worst-case and the load
-/// ~180 Hz; both were wrong, and a review panel caught it. The test's loop awaits each cycle
-/// before issuing the next, so at most **one** supervisor read is ever queued — and when a
-/// lone supervisor turn ends, `nextTurn()` finds `supervisorWaiters` empty, takes the
-/// "nobody to starve" branch and resets `consecutiveOvertakes`. The quota therefore never
-/// reaches its limit under this load and **never fires**: 46 turns × one overtake each is
-/// exactly the 49 cycles observed, and deleting the quota outright leaves the hardware test
-/// passing with the same numbers. The two-overtake case is unmeasured on hardware; what
-/// covers it is `SMCReadSchedulerTests.snapshotStarvationIsBounded`, which queues twelve
-/// supervisor reads at once and asserts the gaps. Read 898 ms as one-overtake-per-boundary,
-/// never as the ceiling the bound permits.
+/// **These are not worst-case figures**, and two drafts of this comment said they were.
+/// The loop awaits each cycle before issuing the next, so at most one supervisor read is
+/// ever queued and the quota **never fires** — deleting it leaves the test passing with the
+/// same numbers. `SMCReadSchedulerTests.snapshotStarvationIsBounded` is what covers the
+/// two-overtake case, which no hardware run has reached.
+/// [ADR 0006](../../docs/ADR/0006-single-smc-reader.md) carries the full reconciliation,
+/// including why 49 cycles and not 48.
 ///
 /// ## `readAll()` is not a turn, and that is the sharpest decision here
 ///
@@ -160,8 +162,11 @@ actor SMCReadScheduler {
     ///
     /// **The cycle is not the only supervisor-priority caller**, and an earlier version of
     /// this comment reasoned as though it were. `LeaseAuthority.refuseIfBlind` issues one per
-    /// `acquireLease`, unpaced and off-cycle, and `SAFETY.md` § 3 explicitly predicts a
-    /// revoked client retrying as fast as it likes. The quota still bounds what the snapshot
+    /// `acquireLease`, unpaced and off-cycle. (An earlier version of this comment attributed
+    /// the unpaced-retry prediction to `SAFETY.md` § 3. It is not there — § 3 says a latched
+    /// emergency *refuses* the next `acquireLease`, and the prediction about how fast a
+    /// client comes back is `LeaseAuthority`'s own doc comment. Cite the file that says it.)
+    /// The quota still bounds what the snapshot
     /// suffers — that is what it is for, and it holds however many supervisor readers there
     /// are. It says nothing about how long any one of them waits; see the class doc.
     static let maxConsecutiveOvertakes = 2

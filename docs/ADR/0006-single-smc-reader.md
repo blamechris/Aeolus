@@ -112,6 +112,35 @@ end up disagreeing about when "now" was.
   the overtaking is capped so a client is not starved of snapshots in the other direction. That is
   arbitration *under* this decision, not a change to it — the corollary above is about continuous
   pollers per machine and remains exactly as written.
+- **Contention between the two readers was then measured, and scheduled.**
+  [#127](https://github.com/blamechris/Aeolus/issues/127) put both readers on
+  `SMCReadScheduler`, which grants the connection in turns of at most 64 keys and admits a
+  waiting safety-supervisor turn ahead of a waiting snapshot turn. On `Mac16,5`:
+
+  | | Measured |
+  |---|---|
+  | 34 curated critical keys, uncontended | 7.0 ms |
+  | Warm 2930-key snapshot, uncontended | 601 ms |
+  | **Worst safety cycle against an in-flight snapshot** | **31.3 ms**, over 49 cycles |
+  | That snapshot, under the load | 898 ms |
+
+  31.3 ms against the ~601 ms a cycle would otherwise wait behind an unscheduled refresh.
+
+  **These are not worst-case numbers**, and two drafts of the source comment said they were.
+  The measuring loop awaits each cycle before issuing the next, so at most one supervisor
+  read is ever queued; when that lone turn ends a snapshot turn is still queued, so the
+  scheduler admits the snapshot and resets its overtake counter. The quota never reaches its
+  limit and never fires — deleting it outright leaves the hardware test passing with
+  identical numbers, so that test guards the *latency*, never the starvation bound.
+
+  The counts close exactly, which is the check that the model is right rather than merely
+  plausible. A full `snapshot()` is **48** turns — 46 for the 2930-key sensor refresh, plus
+  one for `FNum` and one for the fan keys — the serial cycle overtakes at one boundary each,
+  and one further cycle is admitted before the snapshot takes the connection and one after it
+  lets go. That is **49**, and the identity is `cycles == snapshotTurns + 1`. An earlier
+  version of this reconciliation said "46 turns × one overtake each is exactly the 49 cycles
+  observed", which is both the wrong turn count and not equal to 49.
+
 - The app-side client and source switching are **not** built in #72. #72 builds the helper side only;
   this ADR is recorded now because it shapes #72's snapshot semantics (pull-based, `capturedAt`
   stamped, cheap at 1 Hz).

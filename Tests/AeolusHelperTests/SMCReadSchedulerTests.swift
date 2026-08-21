@@ -110,11 +110,14 @@ struct SMCReadSchedulerTests {
     /// `if !supervisorWaiters.isEmpty, consecutiveOvertakes < …` clause. What is left is a
     /// plain two-queue FIFO that compiles and reads every key correctly, and it puts the
     /// supervisor back behind the snapshot. Run: **four** tests go red — this one, the
-    /// plane's, the starvation bound's, and `theSupervisorBoundIsPerOutstandingRead` — while
-    /// the read-correctness and turn-lifecycle tests stay green. Four at once is the right
-    /// answer, not a lack of discrimination: strict priority is the one property all four
-    /// depend on, and a mutation that removed it while only one noticed would mean three of
-    /// them were not testing what they claim.
+    /// plane's, `snapshotStarvationIsBounded`, and
+    /// `SchedulerTurnLifecycleTests.theSupervisorBoundIsPerOutstandingRead` — while the
+    /// read-correctness and turn-release tests stay green. (An earlier draft of this list
+    /// said "the turn-lifecycle tests stay green" while naming one of them as failing; they
+    /// are in `SchedulerTurnLifecycleTests`, and one of them does fail.) Four at once is the
+    /// right answer, not a lack of discrimination: strict priority is the one property all
+    /// four depend on, and a mutation that removed it while only one noticed would mean three
+    /// of them were not testing what they claim.
     @Test("A queued supervisor turn is admitted ahead of a queued snapshot turn")
     func aSupervisorTurnIsAdmittedFirst() async throws {
         let provider = GatedSensorProvider(holdingSubsetReads: true)

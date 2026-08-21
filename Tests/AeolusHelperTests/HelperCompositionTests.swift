@@ -55,15 +55,35 @@ struct HelperCompositionTests {
         #expect(source.contains("SMCReadScheduler(provider: SMCSensorProvider())"))
     }
 
-    /// **Mutation:** add a second `SMCReadScheduler(provider: SMCSensorProvider())` anywhere
-    /// in `Sources/` — which is exactly the shape #103 is at risk of writing when it builds
-    /// `SMCFanControlPlane`. Run: red.
+    /// **Matched on `SMCReadScheduler(`, not on `SMCReadScheduler(provider:`.** The narrower
+    /// string was the first version and it had a hole big enough to drive #103 through: a
+    /// nested construction is exactly what `swift format` wraps, so
+    ///
+    /// ```swift
+    /// let plane = SMCFanControlPlane(
+    ///     scheduler: SMCReadScheduler(
+    ///         provider: scheduler.snapshotReader))
+    /// ```
+    ///
+    /// puts the label on the next line and slips past — a second scheduler, both guards
+    /// green, the formatter satisfied. That is the precise shape this suite exists to catch,
+    /// so the pattern has to survive line wrapping.
+    ///
+    /// Comment lines are stripped first, because the mirror-image false positive is just as
+    /// live: `AeolusHelperMain` names the type in a comment addressed to #103, and a scanner
+    /// that counted it would fail on prose. `SeamScanner` warns about exactly this.
+    ///
+    /// **Mutation:** add a second construction anywhere in `Sources/`, wrapped or not,
+    /// including `SMCReadScheduler.init(provider:)`. Run: red.
     @Test("Exactly one scheduler is constructed in the whole of Sources")
     func onlyOneSchedulerIsEverBuilt() throws {
         var constructions: [String] = []
         for file in try SeamScanner.swiftFiles() {
             let source = try String(contentsOf: file, encoding: .utf8)
-            let count = Self.occurrences(of: "SMCReadScheduler(provider:", in: source)
+            let code = Self.strippingComments(source)
+            let count =
+                Self.occurrences(of: "SMCReadScheduler(", in: code)
+                + Self.occurrences(of: "SMCReadScheduler.init(", in: code)
             if count > 0 {
                 constructions.append("\(file.lastPathComponent) x\(count)")
             }
@@ -80,5 +100,19 @@ struct HelperCompositionTests {
 
     private static func occurrences(of needle: String, in haystack: String) -> Int {
         haystack.components(separatedBy: needle).count - 1
+    }
+
+    /// Drops `//` line comments so prose naming a type is not mistaken for code building one.
+    ///
+    /// Line comments only: this scans a composition root, and a block comment there would be
+    /// a stranger thing than the hazard being guarded against.
+    private static func strippingComments(_ source: String) -> String {
+        source
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> Substring in
+                guard let comment = line.range(of: "//") else { return line }
+                return line[line.startIndex..<comment.lowerBound]
+            }
+            .joined(separator: "\n")
     }
 }

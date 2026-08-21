@@ -150,12 +150,27 @@ struct SchedulerTurnLifecycleTests {
 
     /// The same property under undirected load, as a soak.
     ///
-    /// It catches nothing `aFreshArrivalCannotBargeOntoAHeldTurn` does not — every task
-    /// starts at once, so the barge window never opens — and it is kept because it exercises
-    /// multi-turn reads at both priorities interleaving, which that one does not.
+    /// **This test could not fail for its first two commits**, and the reason is worth more
+    /// than the test is. It built the double with `GatedSensorProvider()` — not holding — so
+    /// `hold()` returned at its first line without suspending. `read(keys:)` then ran
+    /// `concurrentTurns += 1`, the `max`, and `concurrentTurns -= 1` in one actor-isolated
+    /// step with no suspension point in it, and an actor serialises its own calls: the
+    /// counter could not be observed at 2 whatever the scheduler did. Deleting *every* line
+    /// of arbitration — `takeTurn` returning immediately and `yieldTurn` doing nothing — left
+    /// it green while both its siblings went red.
+    ///
+    /// A counter that cannot be incremented twice is not a weaker assertion than one that
+    /// can; it is not an assertion. The fix is one argument: the provider must **hold**, so
+    /// that a turn is genuinely parked inside `read(keys:)` while another could arrive.
+    ///
+    /// **Mutation:** `takeTurn` → `if true { isTurnInFlight = true; return }` and `yieldTurn`
+    /// → `if true { return }`. Run: red here and in
+    /// `aFreshArrivalCannotBargeOntoAHeldTurn`.
     @Test("Concurrent multi-turn reads never overlap at the provider")
     func soakedConcurrentReadsNeverOverlap() async throws {
-        let provider = GatedSensorProvider()
+        // Holding, so `hold()` actually suspends inside `read(keys:)` and an overlapping
+        // turn has a window to be seen in. See this test's documentation.
+        let provider = GatedSensorProvider(holdingSubsetReads: true)
         let scheduler = SMCReadScheduler(provider: provider)
 
         // Enough concurrent multi-turn work that any admission bug overlaps something.
@@ -166,9 +181,19 @@ struct SchedulerTurnLifecycleTests {
                     at: index.isMultiple(of: 2) ? .snapshot : .supervisor)
             }
         }
+        // Drain one turn at a time. Each release lets exactly one parked turn out, so the
+        // provider is occupied for the whole run rather than waved through.
+        let drain = Task {
+            while await provider.turns.count < 18 {
+                await provider.releaseOneTurn()
+                await Task.yield()
+            }
+            await provider.releaseEveryTurn()
+        }
         for (index, read) in reads.enumerated() {
             try await finished("concurrent read \(index)", read)
         }
+        await drain.value
 
         #expect(
             await provider.peakConcurrentTurns == 1,
