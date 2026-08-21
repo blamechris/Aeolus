@@ -278,6 +278,217 @@ struct SafetyLog: Sendable {
         )
     }
 
+    // MARK: - docs/SAFETY.md § 5
+
+    /// The system has taken a fan back.
+    ///
+    /// `.fault`, for `thermalEmergencyEngaged`'s reason inverted: a client is about to lose
+    /// fans it did nothing wrong to lose, and this time Aeolus is not the one taking them.
+    /// The line is emitted on the **transition** — `ReclamationLedger.markReclaimed(fanAt:)`
+    /// reports it — so a watchdog polling at 1 Hz against a fan the OS is holding says this
+    /// once rather than once a second.
+    func reclamationDetected(fan: Int, divergence: ReclamationDivergence) {
+        emit(
+            .fault,
+            """
+            Reclamation detected on fan \(fan): \(divergence.summary). Aeolus asked for a \
+            speed the firmware is not holding, so the fan is reported as reclaimed by the \
+            system from this point.
+            """
+        )
+    }
+
+    /// § 5 declined to re-assert because § 3 is holding.
+    ///
+    /// The precedence engine's first production ruling, and worth a line of its own: an
+    /// operator seeing a reclamation with no re-assert attempt is entitled to know that it
+    /// was a decision rather than a failure.
+    func reclamationYieldedToThermalEmergency(fan: Int, divergence: ReclamationDivergence) {
+        emit(
+            .fault,
+            """
+            Reclamation on fan \(fan) — \(divergence.summary) — while the thermal emergency \
+            latch is engaged. Aeolus does not fight the system for the fans above the \
+            ceiling: a more competent authority, one that can also throttle the SoC, got \
+            there first. Finalising the release instead of re-asserting.
+            """
+        )
+    }
+
+    /// A bounded re-assert landed on the wire.
+    func reclamationReasserted(fan: Int, rpm: Double, attempt: Int, budget: Int) {
+        emit(
+            .notice,
+            """
+            Reclamation on fan \(fan): re-asserted \(Int(rpm.rounded())) RPM, attempt \
+            \(attempt) of \(budget). The next cycle's read-back decides whether it held.
+            """
+        )
+    }
+
+    /// The re-assert budget is spent and § 5 is falling back.
+    func reclamationBudgetExhausted(
+        fan: Int, attempts: Int, divergence: ReclamationDivergence
+    ) {
+        emit(
+            .fault,
+            """
+            Reclamation on fan \(fan) survived \(attempts) re-assert attempt(s) — \
+            \(divergence.summary). The budget is spent: the fan goes back to automatic \
+            control and every lease is revoked, rather than Aeolus continuing a contest it \
+            is losing while reporting a speed nothing is honouring.
+            """
+        )
+    }
+
+    /// A re-assert could not obtain a believable envelope, so it restored instead.
+    ///
+    /// `docs/SAFETY.md` § 2's closing rule reached from § 5: the only action a fan with
+    /// untrusted bounds is subject to is the bounds-free restore verb.
+    func reclamationReassertHadNoEnvelope(fan: Int, detail: String) {
+        emit(
+            .fault,
+            """
+            Reclamation on fan \(fan): its envelope could not be read or was refused \
+            (\(detail)), so there is no range to clamp a re-assert into. Restoring to \
+            automatic instead of commanding — a re-assert without bounds is not a write \
+            this project makes.
+            """
+        )
+    }
+
+    /// Divergence with nothing to re-assert to.
+    func reclamationHadNothingToReassert(fan: Int) {
+        emit(
+            .notice,
+            """
+            Reclamation on fan \(fan) before any target was commanded on it. There is no \
+            speed to re-assert, so the fan goes back to automatic control and the lease is \
+            revoked.
+            """
+        )
+    }
+
+    /// A write on § 5's path did not land.
+    ///
+    /// `detail` is helper-authored — a `FanControlPlaneError`'s own description — never
+    /// client-chosen text, which is what keeps the whole line safe to mark `.public`.
+    func reclamationWriteFailed(verb: String, fan: Int, detail: String) {
+        emit(
+            .fault,
+            """
+            Reclamation watchdog could not \(verb) fan \(fan): \(detail). The attempt is \
+            spent; the budget is what bounds the trying, and restore is the floor.
+            """
+        )
+    }
+
+    /// A cycle could not read one held fan. The first of a run only — see
+    /// `ReclamationWatchdog.cycleCouldNotSee(fanAt:detail:)`.
+    func reclamationCycleUnreadable(fan: Int, detail: String) {
+        emit(
+            .notice,
+            """
+            Reclamation watchdog could not read fan \(fan): \(detail). One unreadable cycle \
+            changes nothing; \(ReclamationLimits.blindCyclesBeforeDivergence) in a row is \
+            divergence.
+            """
+        )
+    }
+
+    /// A held fan became readable again after a run of blind cycles.
+    ///
+    /// The closing half of "log the transition, not the state". Without it a reader sees a
+    /// fan go quiet and never sees it come back.
+    func reclamationTelemetryRecovered(fan: Int, afterCycles: Int) {
+        emit(
+            .notice,
+            "Reclamation watchdog can read fan \(fan) again after \(afterCycles) "
+                + "unreadable cycle(s)."
+        )
+    }
+
+    /// Read failure on a held fan has become persistent, and is now treated as divergence.
+    ///
+    /// ADR 0007's hole 2: `docs/SAFETY.md` § 5 covers divergence of values and nothing
+    /// covered the inability to obtain them, while a lease keeps the fans pinned.
+    func reclamationBlindnessEscalated(fan: Int, afterCycles: Int, detail: String) {
+        emit(
+            .fault,
+            """
+            Reclamation watchdog has not read fan \(fan) for \(afterCycles) consecutive \
+            cycles: \(detail). Being unable to read is divergence too — attempting a \
+            reconnect, then restoring to automatic whatever it answers.
+            """
+        )
+    }
+
+    /// The reconnect attempt returned without throwing.
+    ///
+    /// Deliberately **not** phrased as a recovery. Nothing has been read since, so the only
+    /// claim available is that the call did not throw — and the watchdog restores anyway.
+    func reclamationReconnected(fan: Int) {
+        emit(
+            .notice,
+            """
+            Reclamation watchdog reconnected to the SMC while escalating fan \(fan). That \
+            the call returned is not evidence that reading works; only the next read is, \
+            and the restore does not wait for it.
+            """
+        )
+    }
+
+    /// The reconnect attempt failed, or this build has no reconnect at all.
+    func reclamationReconnectFailed(fan: Int, detail: String) {
+        emit(
+            .fault,
+            """
+            Reclamation watchdog could not reconnect to the SMC while escalating fan \
+            \(fan): \(detail). Restoring to automatic regardless — the restore verb needs \
+            no working read, which is the whole reason it is the terminal action.
+            """
+        )
+    }
+
+    /// A fan went back to automatic control because the helper could not see it.
+    func reclamationRestoredBlindFan(fan: Int) {
+        emit(
+            .fault,
+            """
+            Fan \(fan) restored to automatic control because the helper cannot read its \
+            state. A pinned fan on a machine nobody is watching is the state a lease exists \
+            to prevent, so the lease is revoked rather than left to its TTL.
+            """
+        )
+    }
+
+    /// A fan that was reported as reclaimed is Aeolus's again.
+    func reclamationResolved(fan: Int) {
+        emit(
+            .notice,
+            "Fan \(fan) is no longer reported as reclaimed by the system."
+        )
+    }
+
+    /// § 5's supervisor stopped.
+    ///
+    /// `.fault` when fans are still being watched, for `thermalSupervisorStopped(whileLatched:)`'s
+    /// reason: nothing else notices a reclamation, so a loop that stops while fans are held
+    /// leaves them pinned with no mechanism watching for the firmware taking them back.
+    func reclamationSupervisorStopped(fansHeld: Int) {
+        emit(
+            fansHeld > 0 ? .fault : .notice,
+            fansHeld > 0
+                ? """
+                Reclamation watchdog supervisor stopped with \(fansHeld) fan(s) still under \
+                manual control. Nothing is now watching for the system taking them back, and \
+                the lease TTL is the only surviving backstop until the helper restarts.
+                """
+                : "Reclamation watchdog supervisor stopped. No fan is under manual control, "
+                    + "so there is nothing it would have been watching."
+        )
+    }
+
     /// One decimal place, so a log line does not carry a firmware float's full mantissa.
     private static func celsius(_ value: Double) -> String {
         String(format: "%.1f °C", value)
