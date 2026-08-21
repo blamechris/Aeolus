@@ -81,13 +81,47 @@ struct SafetyActorWriter<Plane: FanControlPlane>: Sendable {
     ///   read-back against ([#126](https://github.com/blamechris/Aeolus/issues/126)).
     @discardableResult
     func commandMaximum(of fan: CommandableFan) async throws -> CommandedTarget {
-        try await plane.commandTarget(fan.target(for: fan.envelope.highestCommandableRPM))
+        try await command(fan.envelope.highestCommandableRPM, of: fan)
+    }
+
+    /// Commands a particular speed, as **one** write.
+    ///
+    /// `docs/SAFETY.md` § 5's bounded re-assert is the caller this exists for:
+    /// `commandMaximum(of:)` is the wrong verb there, because a watchdog re-asserting a
+    /// user's 2,400 RPM by writing 5,777 would take a reclamation and answer it with a
+    /// noise complaint. Level 3 needs the number it last commanded, not the loudest one.
+    ///
+    /// Still ungoverned, and still clamped: `requestedRPM` goes through
+    /// `CommandableFan.target(for:)`, so §2's bounds and the 0-RPM floor bind this exactly
+    /// as they bind every other write in the project. There is one clamp and this is not a
+    /// second one.
+    ///
+    /// `commandMaximum(of:)` is now written in terms of this rather than beside it, so the
+    /// two cannot come to disagree about what a safety-actor write does to a permit.
+    @discardableResult
+    func command(_ requestedRPM: Double, of fan: CommandableFan) async throws -> CommandedTarget {
+        try await plane.commandTarget(fan.target(for: requestedRPM))
     }
 
     /// The keystone verb. Needs no bounds, no reading, and no lease — see
     /// [ADR 0007](../../../docs/ADR/0007-safety-composition.md) and `FanControlPlane`.
     func restoreToAutomatic(_ scope: FanRestoreScope) async throws {
         try await plane.restoreToAutomatic(scope)
+    }
+
+    /// Takes a fan back off the system's thermal management.
+    ///
+    /// The one verb here that a safety actor uses to move a fan *away* from the safe state,
+    /// and it exists for exactly one caller: § 5's bounded re-assert. A fan the system has
+    /// reclaimed is on automatic control, so re-commanding its target without this first
+    /// writes a number nothing honours.
+    ///
+    /// It is on this writer rather than reached through the plane directly because
+    /// `ReclamationWatchdog` holds no plane — see `FanStateSensing`. Like every verb here it
+    /// takes a `CommandableFan`, so § 2's plausibility gate binds it: a fan whose declared
+    /// bounds were refused cannot be taken off automatic control by a safety actor either.
+    func engageManualControl(of fan: CommandableFan) async throws {
+        try await plane.engageManualControl(of: fan)
     }
 }
 

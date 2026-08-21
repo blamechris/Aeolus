@@ -80,6 +80,7 @@ struct SMCFanControlPlaneTests {
             "F0Mx": .reading("F0Mx", 5_777),
             "F0Md": .reading("F0Md", 1),
             "F0Tg": .reading("F0Tg", 2_400),
+            "F0Ac": .reading("F0Ac", 2_380),
         ])
         let plane = supervisorPlane(over: provider)
 
@@ -90,7 +91,11 @@ struct SMCFanControlPlaneTests {
         let readAllCount = await provider.readAllCount
         let subsetRequests = await provider.subsetRequests
         #expect(readAllCount == 0)
-        #expect(subsetRequests == [["TC0P"], ["F0Mn", "F0Mx"], ["F0Md", "F0Tg"]])
+        // Three requests, not four: `F0Ac` rides in the control-state read rather than
+        // taking a second `.supervisor` turn of its own. #126 added it here for exactly that
+        // reason, and this assertion is what would notice somebody splitting it back out —
+        // see `FanStateSensing.readControlState(ofFan:)` and #134.
+        #expect(subsetRequests == [["TC0P"], ["F0Mn", "F0Mx"], ["F0Md", "F0Tg", "F0Ac"]])
     }
 
     // MARK: - Control state

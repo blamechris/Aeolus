@@ -85,6 +85,29 @@ enum FanRestoreCause: Sendable, Hashable {
     /// one.
     case thermalEmergency
 
+    /// `docs/SAFETY.md` § 5 confirmed divergence: the system took a fan back, and either
+    /// the bounded re-assert was refused, its budget was spent, or § 3 was holding and
+    /// level 3 must not fight level 2 for the fans. Actor level 3.
+    ///
+    /// Like `.thermalEmergency`, this is a lease being **taken** rather than a lease ending
+    /// — but for the opposite reason. § 3 takes fans because the machine is too hot; this
+    /// one records that the fans were *already* gone and Aeolus has stopped pretending
+    /// otherwise. `CLAUDE.md` rule 6 is the whole of it: a lease left alive over a fan the
+    /// firmware is no longer honouring is a client told it has control it does not have.
+    case systemReclaimed
+
+    /// § 5's other half: the helper could not read a leased fan's state for
+    /// `ReclamationLimits.blindCyclesBeforeDivergence` consecutive cycles, a reconnect was
+    /// attempted, and the fan went back to automatic control anyway. Also actor level 3.
+    ///
+    /// **Its own case rather than `.systemReclaimed`**, because the two are diagnosed
+    /// completely differently and this enum exists to keep such things apart — the same
+    /// argument `revokeEveryLease(because:)` makes for not sharing a predicate remover with
+    /// the panic path. A reclamation is a working helper losing a contest with the OS; this
+    /// is a helper that has gone blind, which ADR 0007 calls hole 2 and
+    /// [#68](https://github.com/blamechris/Aeolus/issues/68) is the motivating case for.
+    case supervisorBlind
+
     /// The TTL lapsed. The backstop path, driven by `LeaseExpirySupervisor` against the
     /// monotonic clock, and reachable with no connection event of any kind.
     case leaseExpired

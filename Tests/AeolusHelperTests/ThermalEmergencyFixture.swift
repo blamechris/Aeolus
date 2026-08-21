@@ -111,7 +111,12 @@ struct ThermalMachine {
             await plane.attempts.filter {
                 switch $0 {
                 case .commandTarget, .restoreToAutomatic, .engageManualControl: return true
-                case .readCriticalTemperatures, .readEnvelope, .readControlState: return false
+                // A reconnect is recovery of the read path, not a write. It belongs with
+                // the reads for the same reason `readControlState` does: an ordering
+                // assertion about what a mechanism *wrote* must not shift because it also
+                // tried to see again.
+                case .readCriticalTemperatures, .readEnvelope, .readControlState, .reconnect:
+                    return false
                 }
             }
         }

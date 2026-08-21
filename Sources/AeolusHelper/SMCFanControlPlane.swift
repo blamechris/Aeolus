@@ -124,29 +124,52 @@ struct SMCFanControlPlane: FanControlPlane {
     /// this project has not yet verified on hardware (`docs/SMC-RESEARCH.md`). Reading it
     /// here would encode an E4 hypothesis into the seam E4 is gated on.
     func readControlState(ofFan index: Int) async throws -> FanControlState {
-        guard let modeKey = SMCKey.fanMode(index), let targetKey = SMCKey.fanTargetRPM(index)
+        guard let modeKey = SMCKey.fanMode(index), let targetKey = SMCKey.fanTargetRPM(index),
+            let actualKey = SMCKey.fanActualRPM(index)
         else {
             throw FanControlPlaneError.fanNotAddressable(index: index)
         }
 
-        let outcomes = try await readSubset([modeKey, targetKey], context: "fan \(index) control")
+        // One turn, three keys. A second read verb for `F<n>Ac` would be a second
+        // `.supervisor` waiter per fan per cycle, which is the count `SMCReadScheduler`'s
+        // starvation arithmetic is sensitive to — see the seam's own note on this method.
+        let outcomes = try await readSubset(
+            [modeKey, targetKey, actualKey], context: "fan \(index) control")
 
         let modeValue = try Self.reading(for: modeKey, in: outcomes).get()
         let mode = Self.mode(from: modeValue)
 
-        // The target is carried, not thrown: reconciliation only needs the mode, and a fan
-        // whose mode reads fine while its target does not is still a fan that can be
+        // Both RPM keys are carried, not thrown: reconciliation only needs the mode, and a
+        // fan whose mode reads fine while its target does not is still a fan that can be
         // restored. The reclamation watchdog is the caller that cannot proceed without a
-        // target, and it can see from this value that it did not get one.
-        let target: FanTargetReadback
-        switch Self.reading(for: targetKey, in: outcomes) {
-        case .success(let rpm):
-            target = .rpm(rpm)
-        case .failure(let error):
-            target = .unreadable(reason: String(describing: error))
-        }
+        // target, and it can see from these values that it did not get one.
+        return FanControlState(
+            index: index,
+            mode: mode,
+            target: Self.readback(for: targetKey, in: outcomes),
+            actualRPM: Self.readback(for: actualKey, in: outcomes))
+    }
 
-        return FanControlState(index: index, mode: mode, target: target)
+    // MARK: - Recovery, not built
+
+    /// Throws `.reconnectNotBuilt`, always.
+    ///
+    /// Rebuilding the connection is `SMCConnection.close()` then `open()`, and neither is
+    /// reachable from here: this type holds an `SMCReadScheduler`, which holds a
+    /// `SensorProvider`, which is a **public** protocol every unprivileged client links.
+    /// Widening it to carry a reconnect verb — for one helper-internal caller, on a path
+    /// nothing has yet exercised on hardware — is a decision about a shipped public API,
+    /// and `SMCConnection`'s own cache note already assigns it: wiring recovery to a
+    /// lifecycle event "is a decision for whoever owns that lifecycle, not this cache."
+    /// [#103](https://github.com/blamechris/Aeolus/issues/103) owns sleep/wake and therefore
+    /// owns [#68](https://github.com/blamechris/Aeolus/issues/68), the stale `io_connect_t`
+    /// this verb exists for.
+    ///
+    /// What ships today is that `ReclamationWatchdog` really does attempt the reconnect,
+    /// really does see it fail, and really does go on to restore and report — the branch is
+    /// written and covered rather than deferred with the mechanism.
+    func reconnect() async throws {
+        throw FanControlPlaneError.reconnectNotBuilt
     }
 
     // MARK: - Writes, all refused
@@ -179,6 +202,19 @@ struct SMCFanControlPlane: FanControlPlane {
     /// manual costs one redundant restore write to a fan that is already automatic.
     private static func mode(from value: Double) -> FirmwareFanMode {
         value == 0 ? .automatic : .manual
+    }
+
+    /// One RPM key as a readback: the value, or the reason there is not one.
+    ///
+    /// Never throws. Both callers want to carry the failure rather than lose the whole
+    /// read to it — see `readControlState(ofFan:)`.
+    private static func readback(
+        for key: SMCKey, in outcomes: [String: SensorReadOutcome]
+    ) -> FanRPMReadback {
+        switch Self.reading(for: key, in: outcomes) {
+        case .success(let rpm): return .rpm(rpm)
+        case .failure(let error): return .unreadable(reason: String(describing: error))
+        }
     }
 
     /// One key's value, with the seam's finiteness rule applied.

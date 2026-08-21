@@ -199,6 +199,10 @@ struct LeaseLog: Sendable {
         switch cause {
         case .thermalEmergency:
             return "the thermal emergency override fired — docs/SAFETY.md § 3"
+        case .systemReclaimed:
+            return "the system took the fans back — docs/SAFETY.md § 5"
+        case .supervisorBlind:
+            return "the helper could not read the fans it was holding — docs/SAFETY.md § 5"
         case .leaseExpired: return "the lease expired — TTL, monotonic clock"
         case .connectionInvalidated: return "the holding connection died"
         case .leaseReleased: return "the client released the lease"
