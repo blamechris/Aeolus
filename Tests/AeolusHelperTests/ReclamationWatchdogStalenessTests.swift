@@ -87,6 +87,56 @@ struct ReclamationWatchdogStalenessTests {
             "an ordinary lease release was reported as a reclamation")
         #expect(await machine.didRestore(fan: 0) == false)
         #expect(await machine.leases.activeLease() == nil)
+        // **This assertion is what makes the test discriminate**, and without it the test
+        // could not fail for the guard it is named after. Mutation-checked: deleting the
+        // re-fetch in `examine(fanAt:)` left every assertion above green, because the
+        // second re-fetch in `diverged(_:fanAt:)` catches the same release one hop later
+        // and returns before the ledger, the restore or the revocation is touched. The one
+        // observable that changes is *where* the abandonment happened, so that is what is
+        // asserted. Two guards that are each safe in combination are not two guards that
+        // are each tested.
+        #expect(
+            machine.safetyLog.lines(containing: "during its control-state read").count == 1,
+            "the examination was abandoned somewhere other than the control-state read")
+    }
+
+    /// The stale copy carries a stale **commanded target**, and that is the hazard the
+    /// earliest re-fetch actually exists for.
+    ///
+    /// A release followed by a fresh engagement inside the same read leaves `held[index]`
+    /// non-`nil` — so `diverged(_:fanAt:)`'s re-fetch, which catches the plain-release case,
+    /// finds an entry and carries on. What it finds is a **new episode**: a new permit, and
+    /// no commanded target, because nothing has written to this fan yet.
+    ///
+    /// Judging that episode against the previous one's 2,400 RPM is a divergence report
+    /// about a fan a client has only just been granted, and it is exactly what the pre-read
+    /// copy produces. Only the re-fetch in `examine(fanAt:)` prevents it, which is why this
+    /// scenario is here and not folded into the one above.
+    @Test("A fan re-engaged during its control-state read is not judged against the old target")
+    func aFanReEngagedDuringTheReadIsNotJudgedAgainstTheOldTarget() async throws {
+        // The firmware holds 1,800 — divergent against the 2,400 of the *old* episode, and
+        // meaningless to the new one, which has commanded nothing at all.
+        let condition = ScriptedControlPlane.FanCondition.held(at: 1_800)
+        let plane = ScriptedControlPlane(fans: [0: condition])
+        let sensing = InterferingFanStateSensing(plane, during: .controlStateRead)
+        let machine = ReclamationMachine(plane: plane, fans: [0: condition], sensing: sensing)
+        try await machine.hold(fan: 0, commanding: 2_400)
+        await sensing.interfere { [machine] in
+            await machine.watchdog.manualControlReleased(fanAt: 0)
+            try? await machine.holdWithoutCommanding(fan: 0)
+        }
+
+        await machine.watchdog.cycle()
+
+        #expect(await sensing.didFire, "the scenario never arranged the interleaving")
+        // The new episode is still watched — it was legitimately engaged.
+        #expect(await machine.watchdog.fansUnderManualControl == [0])
+        // And nothing was concluded about it from the previous episode's target.
+        #expect(
+            await machine.ledger.reclaimedFans.isEmpty,
+            "a freshly engaged fan was reported as reclaimed, using the old episode's target")
+        #expect(await machine.commandedRPMs.isEmpty, "a re-assert used a stale commanded target")
+        #expect(await machine.didRestore(fan: 0) == false)
     }
 
     /// **Verify-after-act.** § 3 latching during the re-assert's writes undoes the

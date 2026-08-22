@@ -221,6 +221,18 @@ struct ReclamationWatchdogTests {
             await machine.ledger.reclaimedFans.isEmpty,
             "§ 3's own restore was attributed to the operating system")
         #expect(machine.safetyLog.lines(containing: "**not** recording it as reclaimed").count == 1)
+        // **This is the assertion that discriminates**, and the one above cannot.
+        // Mutation-checked: re-adding `ledger.markReclaimed` to the pre-empted branch left
+        // `reclaimedFans.isEmpty` green, because `releaseToThermalEmergency(fanAt:)` ends
+        // with `ledger.clearReclaimed(fanAt:)` — the same call path marks the fan and then
+        // erases the mark, so the end state is identical either way. What survives the
+        // round trip is the `.fault` line `markReclaimed`'s transition report fires on the
+        // way through: "Reclamation detected", asserting that the system took a fan § 3
+        // deliberately released. That is `CLAUDE.md` rule 6 in the direction the test's own
+        // comment names, so its absence is the thing worth pinning.
+        #expect(
+            machine.safetyLog.lines(containing: "Reclamation detected").isEmpty,
+            "§ 3's own restore was announced as a reclamation by the operating system")
         // Stopped watching it: level 2 owns this fan now.
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
         // The latch is § 3's, and § 5 does not touch it — releasing it here would hand the
