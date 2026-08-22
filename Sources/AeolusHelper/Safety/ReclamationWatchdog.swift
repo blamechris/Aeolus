@@ -14,9 +14,16 @@ import FanKit
 /// made.
 ///
 /// `CommandedTarget` is the number the comparison is made against: the step actually put on
-/// the wire, deliberately distinct from the goal a caller was heading for. Actual-versus-
-/// target survives as the **secondary** signal, behind `ReclamationLimits.actualDwellCycles`,
-/// which is exactly long enough that a ramp is not mistaken for a loss.
+/// the wire, deliberately distinct from the goal a caller was heading for.
+///
+/// Actual-versus-target survives as the **secondary** signal, behind
+/// `ReclamationLimits.actualDwellCycles` — and it **reports without acting**. Reaching it at
+/// all means the primary converged, so the firmware is holding Aeolus's target and nothing
+/// has been reclaimed; see `reportShortfall(_:fanAt:)` for why re-asserting, restoring and
+/// flagging `isReclaimedBySystem` are all wrong answers to a fan that simply cannot reach
+/// its commanded speed. It used to reach the terminal action, and that was this file's worst
+/// defect: a fan whose `F<n>Tg` read back exactly right lost its lease eight seconds after
+/// being asked for a speed it could not achieve.
 ///
 /// ## The above-ceiling rule is the arbiter, not an `if`
 ///
@@ -36,7 +43,8 @@ import FanKit
 /// reclamation watchdog (#126) and sleep/wake (#103) arrive to contend with it"*. This is
 /// that arrival. Replacing `SafetyArbiter.ruling`'s body with `return .commands` now fails
 /// `ReclamationWatchdogTests.itNeverReassertsWhileTheThermalLatchHolds` as well as the
-/// arbiter's own tests.
+/// arbiter's own tests — and, because the ruling is consulted twice per re-assert, also
+/// `itUndoesAReassertWhenTheEmergencyLatchesMidWrite`.
 ///
 /// **What the latch buys, stated exactly.** The incumbent is read from
 /// `ThermalEmergencyLatch`, which is engaged from the cycle § 3 fires on until a fresh
@@ -47,12 +55,21 @@ import FanKit
 ///
 /// The gap in the other direction is one cycle. A temperature crossing the ceiling is not
 /// visible here until § 3's next cycle engages the latch, so a re-assert can be issued into
-/// the first second of an emergency. It is bounded by § 3's 1 Hz cadence, and § 3 outranks
-/// this mechanism: its next cycle bridges the fan to maximum and restores it, which
-/// overrides the re-assert rather than racing it. Making this read a temperature of its own
-/// to close a one-second window would add a supervisor-priority read per cycle — see
-/// [#134](https://github.com/blamechris/Aeolus/issues/134) — to pre-empt a mechanism that
-/// already corrects it.
+/// the first second of an emergency. Making this read a temperature of its own to close that
+/// window would add a supervisor-priority read per cycle — see
+/// [#134](https://github.com/blamechris/Aeolus/issues/134) — for a window § 3 closes within
+/// one cycle by latching, after which this mechanism refuses.
+///
+/// **What does not close it is § 3 correcting the re-assert, and an earlier version of this
+/// paragraph claimed exactly that.** It said § 3's next cycle "bridges the fan to maximum and
+/// restores it, which overrides the re-assert rather than racing it". That is false, and
+/// checkably so: `ThermalEmergency.fire(_:from:)` empties `engagedFans` as it goes, and
+/// `ThermalEmergency.manualControlEngaged(_:)` has **no caller anywhere in `Sources/`** — so
+/// a fan this mechanism re-engaged is in no registry § 3 consults, and § 3's next cycle
+/// would leave it off automatic control indefinitely. Relying on another mechanism to clean
+/// up after this one was the wrong shape regardless; the correction belongs here, and
+/// `reassert(_:fanAt:attempt:)` performs it by re-checking the ruling **after** its writes
+/// and restoring if the latch engaged underneath them.
 ///
 /// ## Reads are strictly sequential, and that is #134's answer for this issue
 ///
@@ -214,26 +231,69 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// Never throws, for `ThermalEmergency.cycle()`'s reason: the driver is a loop in a
     /// root daemon, and an error escaping here would either kill the loop or be swallowed
     /// at the call site. Every failure below becomes a decision plus a log line.
+    ///
+    /// ## Nothing is carried across a suspension point
+    ///
+    /// This actor is reentrant, and every `await` below — a read, a write, a ledger or latch
+    /// hop — is a point at which `manualControlEngaged(_:)`, `commandedTarget(_:)`,
+    /// `manualControlReleased(fanAt:)` or a second `cycle()` can run. An adversarial review
+    /// found four distinct defects of one shape here: a value read before an `await` and
+    /// acted on after it. So the rule in this file is now uniform and stated once:
+    ///
+    /// > **Re-fetch `held[index]` after every `await`, and treat its absence as an
+    /// > instruction to stop rather than as a no-op.**
+    ///
+    /// Optional chaining (`held[index]?.x = y`) is *not* that rule. It makes a mutation
+    /// vanish silently while the code around it goes on acting as though the fan were still
+    /// registered, which is exactly how `reassert(_:fanAt:attempt:)` came to write `F<n>Md`
+    /// to a fan whose lease had just been released.
     func cycle() async {
         guard !held.isEmpty else { return }
-
-        // One latch read per cycle rather than per fan. The answer cannot usefully differ
-        // between two fans of the same sweep — § 3 is machine-wide — and reading it once
-        // means a sweep cannot act on two different views of who holds the fans.
-        let incumbent: SafetyActorLevel? = await latch.isActive ? .thermalEmergency : nil
-        let ruling = SafetyArbiter.ruling(for: .reclamationWatchdog, incumbent: incumbent)
 
         // Sorted and sequential. Sorted so a scenario's log and attempt order are
         // deterministic; sequential because this actor must contribute at most one
         // supervisor-priority waiter at a time — see this type's documentation.
+        //
+        // The index list is a snapshot, and deliberately so: `finaliseRelease` can empty the
+        // whole registry part-way through a sweep, and the remaining iterations then find
+        // nothing and stop. That is correct rather than merely tolerable — those fans were
+        // released by the revocation this sweep performed.
         for index in held.keys.sorted() {
-            await examine(fanAt: index, ruling: ruling)
+            await examine(fanAt: index)
         }
     }
 
+    /// § 3's bit and the arbiter's answer, read **immediately before the write it guards**.
+    ///
+    /// ## Why this is not read once per sweep any more
+    ///
+    /// It was, and that was a defect. The ruling was computed at the top of `cycle()` and
+    /// then carried by value through `examine` → `diverged` → `reassert`, where it
+    /// authorised two writes three suspension points and — at `SMCFanControlPlane`'s own
+    /// figures for two scheduled `.supervisor` turns — some tens of milliseconds later. § 3
+    /// runs on an independent 1 Hz detached loop and can latch anywhere inside that window,
+    /// so the writes were gated by an answer that was no longer true. `ThermalEmergency`
+    /// states the rule this broke: *a check separated from the act it guards is not a
+    /// check.*
+    ///
+    /// ## What it still cannot do, stated rather than papered over
+    ///
+    /// It cannot make check-and-act atomic. The latch is one actor and the plane is another,
+    /// so there is always a hop between the answer and the write, and no arrangement of
+    /// this code removes it. What this does is shrink the window from "a whole sweep" to
+    /// "one actor hop", and `reassert(_:fanAt:attempt:)` then **verifies again after
+    /// writing** and undoes in the safe direction if § 3 latched inside even that. Acting
+    /// and then checking is the only sound pattern available when the check cannot be made
+    /// atomic with the act; claiming the window is closed would be the more dangerous
+    /// spelling.
+    private func currentRuling() async -> SafetyRuling {
+        let incumbent: SafetyActorLevel? = await latch.isActive ? .thermalEmergency : nil
+        return SafetyArbiter.ruling(for: .reclamationWatchdog, incumbent: incumbent)
+    }
+
     /// One fan: read it, decide, act.
-    private func examine(fanAt index: Int, ruling: SafetyRuling) async {
-        guard let fan = held[index] else { return }
+    private func examine(fanAt index: Int) async {
+        guard held[index] != nil else { return }
 
         let state: FanControlState
         do {
@@ -243,30 +303,33 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             return
         }
 
+        // Re-fetched after the read, never carried across it. `manualControlReleased(fanAt:)`
+        // runs on whatever task the lease core is on and can clear this entry while the read
+        // is in flight; judging the fan from the pre-read copy reported an ordinary lease
+        // expiry as the system reclaiming a fan, and revoked whatever lease was live at that
+        // instant.
+        guard let fan = held[index] else {
+            log.reclamationFanReleasedMidExamination(fan: index, during: "its control-state read")
+            return
+        }
+
         if fan.consecutiveReadFailures > 0 {
             log.reclamationTelemetryRecovered(
                 fan: index, afterCycles: fan.consecutiveReadFailures)
             held[index]?.consecutiveReadFailures = 0
         }
 
-        // Primary first, and it is the only signal that can fire on its own.
+        // Primary first, and it is the only signal that reaches the terminal action.
         if let primary = Self.primaryDivergence(of: state, against: fan.commanded) {
             held[index]?.actualDwellCycles = 0
-            await diverged(primary, fanAt: index, ruling: ruling)
+            await diverged(primary, fanAt: index)
             return
         }
 
-        // Secondary: the fan is not turning as fast as it was told to, sustained.
+        // Secondary: the fan is not turning as fast as it was told to, sustained. It
+        // **reports and stops** — see `reportShortfall(_:fanAt:)`.
         if let shortfall = Self.actualShortfall(of: state, against: fan.commanded) {
-            let dwell = (held[index]?.actualDwellCycles ?? 0) + 1
-            held[index]?.actualDwellCycles = dwell
-            guard dwell >= ReclamationLimits.actualDwellCycles else { return }
-            await diverged(
-                .actualShortfall(
-                    actual: shortfall.actual,
-                    commanded: shortfall.commanded,
-                    dwellCycles: dwell),
-                fanAt: index, ruling: ruling)
+            reportShortfall(shortfall, fanAt: index)
             return
         }
 
@@ -276,6 +339,331 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         if await ledger.clearReclaimed(fanAt: index) {
             log.reclamationResolved(fan: index)
         }
+    }
+
+    // MARK: - The secondary signal reports, and does nothing else
+
+    /// The fan has been short of its commanded speed for the whole dwell. Say so, and stop.
+    ///
+    /// ## Why this no longer reaches the terminal action
+    ///
+    /// It used to, and that was the most consequential defect in this file. The secondary
+    /// signal is only ever *evaluated* when the primary has converged — `examine` returns
+    /// early on primary divergence — so reaching this function means `F<n>Md` reads manual
+    /// and `F<n>Tg` reads back exactly what Aeolus commanded. **The firmware is holding our
+    /// target.** Nothing has been reclaimed.
+    ///
+    /// A fan that is not reaching a target the firmware is faithfully holding is a fan that
+    /// *cannot* reach it: an obstruction, a failing bearing, a declared `F<n>Mx` the part
+    /// cannot actually achieve. The three things the mechanism could do about that are all
+    /// wrong. Re-asserting rewrites the number that is already correct. Restoring to
+    /// automatic makes it worse — Apple's thermal management will spin the same fan against
+    /// the same obstruction. And marking `isReclaimedBySystem` tells the user the system
+    /// took a fan it did not take, which is `CLAUDE.md` rule 6 in the direction people
+    /// forget: claiming to have *lost* control that is in fact still held.
+    ///
+    /// So it reports. The user is told, which is what `docs/SAFETY.md` § 5 asks for — *"and
+    /// either way tells the user"* — and the fan stays under the control it is genuinely
+    /// still under.
+    ///
+    /// ## `==` and not `>=`
+    ///
+    /// One line per episode. `>=` would emit at the supervisor's 1 Hz for as long as the
+    /// shortfall lasted, which is #124's forward constraint exactly: *an unchanged degraded
+    /// set logged every tick at 1 Hz is not a log, it is a denial of service against the
+    /// reader.* The dwell counter goes on rising and the next transition through
+    /// convergence, or a fresh `commandedTarget(_:)`, resets it — so a fan that recovers and
+    /// falls short again produces a second line rather than silence.
+    ///
+    /// Synchronous on purpose: it touches no other actor, so there is no suspension point
+    /// between reading the dwell and writing it back, and no re-fetch is needed.
+    private func reportShortfall(
+        _ shortfall: (actual: Double, commanded: Double), fanAt index: Int
+    ) {
+        let dwell = (held[index]?.actualDwellCycles ?? 0) + 1
+        held[index]?.actualDwellCycles = dwell
+        guard dwell == ReclamationLimits.actualDwellCycles else { return }
+        log.reclamationFanNotReachingTarget(
+            fan: index,
+            actual: shortfall.actual,
+            commanded: shortfall.commanded,
+            dwellCycles: dwell)
+    }
+
+    // MARK: - Acting on divergence
+
+    /// The primary signal fired for this fan. Re-assert, or fall back and report.
+    private func diverged(
+        _ divergence: ReclamationDivergence, fanAt index: Int
+    ) async {
+        // **The above-ceiling rule, asked here rather than once per sweep.** Deleting this
+        // guard is the mutation `ReclamationWatchdogTests.itNeverReassertsWhileTheThermalLatchHolds`
+        // exists to kill: without it, § 5 re-asserts a user's target into a machine § 3 has
+        // just handed to Apple's thermal management.
+        guard await currentRuling().permitsWrite else {
+            // **Attributed to § 3, not to the system.** § 3's `fire(_:from:)` bridges every
+            // held fan to maximum and restores it to automatic, so a latched machine is
+            // precisely where this mechanism should expect to read `.modeReclaimed` — and
+            // reading it is evidence of Aeolus's own thermal override working, not of the OS
+            // taking a fan. Marking the ledger here produced a `.fault` line claiming the
+            // system had reclaimed a fan § 3 had just deliberately released, and a
+            // `isReclaimedBySystem` that stayed true for the rest of the process.
+            log.reclamationYieldedToThermalEmergency(fan: index, divergence: divergence)
+            await releaseToThermalEmergency(fanAt: index)
+            return
+        }
+
+        // Re-fetched across the latch hop above.
+        guard let fan = held[index] else {
+            log.reclamationFanReleasedMidExamination(fan: index, during: "the precedence check")
+            return
+        }
+
+        if await ledger.markReclaimed(fanAt: index) {
+            log.reclamationDetected(fan: index, divergence: divergence)
+        }
+
+        // Re-fetched across the ledger hop above.
+        guard held[index] != nil else {
+            log.reclamationFanReleasedMidExamination(fan: index, during: "the reclamation report")
+            return
+        }
+
+        guard let commanded = fan.commanded else {
+            // Nothing was ever commanded here, so there is no target to re-assert to. The
+            // fan came off automatic control and the system took it back before a speed
+            // followed; restoring is both the honest answer and the only available one.
+            log.reclamationHadNothingToReassert(fan: index)
+            await finaliseRelease(fanAt: index, because: .systemReclaimed)
+            return
+        }
+
+        guard fan.reassertAttempts < ReclamationLimits.reassertAttemptBudget else {
+            log.reclamationBudgetExhausted(
+                fan: index, attempts: fan.reassertAttempts, divergence: divergence)
+            await finaliseRelease(fanAt: index, because: .systemReclaimed)
+            return
+        }
+
+        let attempt = fan.reassertAttempts + 1
+        held[index]?.reassertAttempts = attempt
+        await reassert(commanded, fanAt: index, attempt: attempt)
+    }
+
+    /// One bounded attempt to take the fan back, below the ceiling.
+    ///
+    /// ## It reads a fresh envelope, and that is deliberate
+    ///
+    /// Not the permit taken when the fan came off automatic control. Permits do not expire
+    /// — `FanWriteAuthorisation.swift` is explicit that freshness is *"policy held by
+    /// review, not by the type"* — and § 3 depends on that, because its maximum write has
+    /// to be available while the machine is above ceiling and reading may be what has
+    /// failed. This branch is the opposite case: it runs below the ceiling, and it has just
+    /// successfully read this fan's control state, so reading works. A mechanism that can
+    /// read has no excuse to command a fan against bounds nobody has checked since the
+    /// system took it back.
+    ///
+    /// That is also what `CommandedTarget` withholding an `AuthorisedFanTarget` is for: it
+    /// makes the re-assert explicitly fallible rather than free, and this is where the
+    /// fallibility is spent.
+    ///
+    /// A re-assert that cannot obtain an envelope **restores rather than commanding** —
+    /// #126's acceptance criterion, and `FanControlPlane`'s §2 rule that the only action a
+    /// fan with untrusted bounds is subject to is the bounds-free restore verb.
+    ///
+    /// ## The two writes are not one step, and are not caught together
+    ///
+    /// `engageManualControl` then `command` were wrapped in a single `do`/`catch`, which
+    /// made a firmware that accepted the first and refused the second indistinguishable from
+    /// one that refused both. Those are opposite states: the second leaves the fan on
+    /// Apple's thermal management, which is safe, and the first leaves it **off** automatic
+    /// control holding whatever `F<n>Tg` the system last wrote — a fan pinned at a speed
+    /// nobody chose, which is the worst reachable state in this project. They are caught
+    /// separately, and the half-landed case restores immediately rather than waiting for a
+    /// budget to run out.
+    private func reassert(
+        _ commanded: CommandedTarget, fanAt index: Int, attempt: Int
+    ) async {
+        let permit: CommandableFan
+        do {
+            permit = try await sensing.readEnvelope(ofFan: index).commandable.get()
+        } catch {
+            log.reclamationReassertHadNoEnvelope(
+                fan: index, detail: String(describing: error))
+            await finaliseRelease(fanAt: index, because: .systemReclaimed)
+            return
+        }
+
+        // Re-fetched across the envelope read. This is the guard whose absence let § 5 write
+        // `F<n>Md` to a fan whose lease had been released while the read was in flight —
+        // manual control with no lease behind it, no registry entry to notice it, and
+        // nothing left watching. `CLAUDE.md` rule 2.
+        guard held[index] != nil else {
+            log.reclamationFanReleasedMidExamination(fan: index, during: "its envelope read")
+            return
+        }
+        held[index]?.permit = permit
+
+        do {
+            // Re-engage before re-commanding. The system took this fan back, so it is on
+            // automatic control: writing `F<n>Tg` without first writing `F<n>Md` would put
+            // a number on the wire that nothing honours.
+            try await writer.engageManualControl(of: permit)
+        } catch {
+            // The fan is still on Apple's thermal management, which is the safe state. The
+            // attempt is spent and the budget is what bounds the trying.
+            log.reclamationWriteFailed(
+                verb: "re-engage manual control of", fan: index,
+                detail: String(describing: error))
+            return
+        }
+
+        // Past this point the fan is OFF automatic control, so every exit below has to leave
+        // it somewhere deliberate.
+        do {
+            let recommanded = try await writer.command(commanded.rpm, of: permit)
+            held[index]?.commanded = recommanded
+            log.reclamationReasserted(
+                fan: index,
+                rpm: recommanded.rpm,
+                attempt: attempt,
+                budget: ReclamationLimits.reassertAttemptBudget)
+        } catch {
+            log.reclamationReassertHalfLanded(fan: index, detail: String(describing: error))
+            await finaliseRelease(fanAt: index, because: .systemReclaimed)
+            return
+        }
+
+        // **Verify after acting.** § 3 can latch during either write above, and check-then-
+        // act cannot be made atomic across two actors — see `currentRuling()`. If it did,
+        // this mechanism has just taken a fan off automatic control that level 2 wants on
+        // it, and nothing else will correct that: `ThermalEmergency.fire(_:from:)` empties
+        // its own registry as it goes and nothing re-registers a fan with it, so § 3's next
+        // cycle will not bridge this one. The undo is therefore this mechanism's own, and it
+        // resolves in the safe direction.
+        guard await currentRuling().permitsWrite else {
+            log.reclamationUndoneAfterEmergencyLatched(fan: index)
+            await finaliseRelease(fanAt: index, because: .systemReclaimed)
+            return
+        }
+    }
+
+    // MARK: - Blindness
+
+    /// A cycle that could not read this fan at all.
+    ///
+    /// Transient failure changes nothing: taking a fan from a client because one read
+    /// missed would be over-firing on noise. Persistent failure **is divergence** — § 5 is
+    /// explicit that "being unable to read is divergence too" — because the alternative is
+    /// a read retried indefinitely while the fans stay pinned, which is ADR 0007's hole 2.
+    private func cycleCouldNotSee(fanAt index: Int, detail: String) async {
+        guard let fan = held[index] else { return }
+        let failures = fan.consecutiveReadFailures + 1
+        held[index]?.consecutiveReadFailures = failures
+
+        guard failures >= ReclamationLimits.blindCyclesBeforeDivergence else {
+            // Log the transition, not the state: the first blind cycle says so, and the
+            // ones after it are silent until either recovery or escalation. #124's forward
+            // constraint — a line per tick at 1 Hz is a denial of service against the
+            // reader.
+            if failures == 1 {
+                log.reclamationCycleUnreadable(fan: index, detail: detail)
+            }
+            return
+        }
+
+        log.reclamationBlindnessEscalated(fan: index, afterCycles: failures, detail: detail)
+
+        // The reconnect. One attempt, and its outcome does not change what happens next.
+        do {
+            try await sensing.reconnect()
+            log.reclamationReconnected(fan: index)
+        } catch {
+            log.reclamationReconnectFailed(fan: index, detail: String(describing: error))
+        }
+
+        // Re-fetched across the reconnect. A fan released while the connection was being
+        // rebuilt is a fan the lease core has already restored, and marking it reclaimed
+        // would report an ordinary release as a loss.
+        guard held[index] != nil else {
+            log.reclamationFanReleasedMidExamination(fan: index, during: "the reconnect attempt")
+            return
+        }
+
+        // Restore either way. A reconnect that returned without throwing has not been shown
+        // to have fixed anything — only the next read is evidence of that, and waiting for
+        // it is another cycle with a fan pinned on a machine nobody can see. § 5 says
+        // reconnect **then** restore and report, not reconnect and hope.
+        await ledger.markReclaimed(fanAt: index)
+        log.reclamationRestoredBlindFan(fan: index)
+        await finaliseRelease(fanAt: index, because: .supervisorBlind)
+    }
+
+    // MARK: - Falling back
+
+    /// § 3 holds the fans, so this one is level 2's to dispose of.
+    ///
+    /// The restore is still attempted — it is the keystone verb, it consumes nothing, and
+    /// § 3's own restore may have been refused. What is **not** done here is marking the
+    /// ledger or revoking leases: `fire(_:from:)` already revoked every lease before this
+    /// mechanism could observe anything, and claiming a reclamation would attribute § 3's
+    /// deliberate release to the operating system.
+    private func releaseToThermalEmergency(fanAt index: Int) async {
+        do {
+            try await writer.restoreToAutomatic(.fan(index))
+        } catch {
+            log.reclamationWriteFailed(
+                verb: "restore", fan: index, detail: String(describing: error))
+            log.reclamationFanMayStillBePinned(fan: index)
+        }
+        held[index] = nil
+        if await ledger.clearReclaimed(fanAt: index) {
+            log.reclamationResolved(fan: index)
+        }
+    }
+
+    /// The terminal action: hand the fan to Apple's thermal management and drop the leases
+    /// that claimed it.
+    ///
+    /// The restore is attempted whatever else failed, and consumes nothing a failing
+    /// machine might be unable to supply — ADR 0007's keystone. The ledger entry for `index`
+    /// is **kept**: the system does hold this fan now, that is what the user should be told,
+    /// and it stays true until something deliberately takes it off automatic control again.
+    ///
+    /// Every lease is revoked rather than the one covering this fan, for
+    /// `ThermalEmergency.fire(_:from:)`'s reason: a lease is a claim over a *set* of fans,
+    /// and a client left holding a lease over a subset it can no longer command would be
+    /// told it has control it does not have.
+    ///
+    /// ## Which is why the whole registry goes, not just this fan
+    ///
+    /// `revokeEveryLease(because:)` drops every lease on the machine and restores the fans
+    /// they covered. Every other entry in `held` is therefore a fan that is now unleased and
+    /// back on automatic control — and dropping only `index` left them registered, so the
+    /// next cycle read `.modeReclaimed` on a sibling and **re-engaged manual control on a
+    /// fan with no lease behind it**. Their ledger entries are cleared rather than marked:
+    /// they were not reclaimed by anything, they were given up by this mechanism.
+    private func finaliseRelease(fanAt index: Int, because cause: FanRestoreCause) async {
+        do {
+            try await writer.restoreToAutomatic(.fan(index))
+        } catch {
+            log.reclamationWriteFailed(
+                verb: "restore", fan: index, detail: String(describing: error))
+            log.reclamationFanMayStillBePinned(fan: index)
+        }
+
+        held[index] = nil
+        let siblings = held.keys.sorted()
+        held.removeAll()
+
+        if !siblings.isEmpty {
+            log.reclamationSiblingsReleased(fans: siblings)
+            for sibling in siblings where await ledger.clearReclaimed(fanAt: sibling) {
+                log.reclamationResolved(fan: sibling)
+            }
+        }
+
+        await leases.revokeEveryLease(because: cause)
     }
 
     // MARK: - The signals
@@ -344,179 +732,6 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         let tolerance = commanded.rpm * ReclamationLimits.actualToleranceFraction
         guard commanded.rpm - actual > tolerance else { return nil }
         return (actual: actual, commanded: commanded.rpm)
-    }
-
-    // MARK: - Acting on divergence
-
-    /// Divergence is confirmed for this fan. Re-assert, or fall back and report.
-    private func diverged(
-        _ divergence: ReclamationDivergence, fanAt index: Int, ruling: SafetyRuling
-    ) async {
-        // Report before acting. Whatever happens next, the user's display should already
-        // say the system holds this fan — `CLAUDE.md` rule 6 is about the window as much as
-        // the steady state.
-        if await ledger.markReclaimed(fanAt: index) {
-            log.reclamationDetected(fan: index, divergence: divergence)
-        }
-
-        // **The above-ceiling rule.** Deleting this guard is the mutation
-        // `ReclamationWatchdogTests.itNeverReassertsWhileTheThermalLatchHolds` exists to
-        // kill: without it, § 5 re-asserts a user's target into a machine § 3 has just
-        // handed to Apple's thermal management, and the two mechanisms fight over a fan
-        // while a CPU sits above its ceiling.
-        guard ruling.permitsWrite else {
-            log.reclamationYieldedToThermalEmergency(fan: index, divergence: divergence)
-            await finaliseRelease(fanAt: index, because: .systemReclaimed)
-            return
-        }
-
-        guard let commanded = held[index]?.commanded else {
-            // Nothing was ever commanded here, so there is no target to re-assert to. The
-            // fan came off automatic control and the system took it back before a speed
-            // followed; restoring is both the honest answer and the only available one.
-            log.reclamationHadNothingToReassert(fan: index)
-            await finaliseRelease(fanAt: index, because: .systemReclaimed)
-            return
-        }
-
-        let attempts = held[index]?.reassertAttempts ?? 0
-        guard attempts < ReclamationLimits.reassertAttemptBudget else {
-            log.reclamationBudgetExhausted(
-                fan: index, attempts: attempts, divergence: divergence)
-            await finaliseRelease(fanAt: index, because: .systemReclaimed)
-            return
-        }
-
-        held[index]?.reassertAttempts = attempts + 1
-        await reassert(commanded, fanAt: index, attempt: attempts + 1)
-    }
-
-    /// One bounded attempt to take the fan back, below the ceiling.
-    ///
-    /// ## It reads a fresh envelope, and that is deliberate
-    ///
-    /// Not the permit taken when the fan came off automatic control. Permits do not expire
-    /// — `FanWriteAuthorisation.swift` is explicit that freshness is *"policy held by
-    /// review, not by the type"* — and § 3 depends on that, because its maximum write has
-    /// to be available while the machine is above ceiling and reading may be what has
-    /// failed. This branch is the opposite case: it runs **only below the ceiling**, and it
-    /// has just successfully read this fan's control state, so reading works. A mechanism
-    /// that can read has no excuse to command a fan against bounds nobody has checked since
-    /// the system took it back.
-    ///
-    /// That is also what `CommandedTarget` withholding an `AuthorisedFanTarget` is for: it
-    /// makes the re-assert explicitly fallible rather than free, and this is where the
-    /// fallibility is spent.
-    ///
-    /// A re-assert that cannot obtain an envelope **restores rather than commanding** —
-    /// #126's acceptance criterion, and `FanControlPlane`'s §2 rule that the only action a
-    /// fan with untrusted bounds is subject to is the bounds-free restore verb.
-    private func reassert(
-        _ commanded: CommandedTarget, fanAt index: Int, attempt: Int
-    ) async {
-        let permit: CommandableFan
-        do {
-            permit = try await sensing.readEnvelope(ofFan: index).commandable.get()
-        } catch {
-            log.reclamationReassertHadNoEnvelope(
-                fan: index, detail: String(describing: error))
-            await finaliseRelease(fanAt: index, because: .systemReclaimed)
-            return
-        }
-        held[index]?.permit = permit
-
-        do {
-            // Re-engage before re-commanding. The system took this fan back, so it is on
-            // automatic control: writing `F<n>Tg` without first writing `F<n>Md` would put
-            // a number on the wire that nothing honours, and the next cycle would read the
-            // divergence again with an attempt spent for no action.
-            try await writer.engageManualControl(of: permit)
-            let recommanded = try await writer.command(commanded.rpm, of: permit)
-            held[index]?.commanded = recommanded
-            log.reclamationReasserted(
-                fan: index,
-                rpm: recommanded.rpm,
-                attempt: attempt,
-                budget: ReclamationLimits.reassertAttemptBudget)
-        } catch {
-            // The attempt is spent, not converted into an immediate restore. A firmware
-            // that refuses one write may honour the next, the budget is what bounds the
-            // trying, and `no_silent_write_failure` is why this is a logged decision rather
-            // than a `try?`. Exhausting the budget is what falls back.
-            log.reclamationWriteFailed(
-                verb: "re-assert control of", fan: index, detail: String(describing: error))
-        }
-    }
-
-    // MARK: - Blindness
-
-    /// A cycle that could not read this fan at all.
-    ///
-    /// Transient failure changes nothing: taking a fan from a client because one read
-    /// missed would be over-firing on noise. Persistent failure **is divergence** — § 5 is
-    /// explicit that "being unable to read is divergence too" — because the alternative is
-    /// a read retried indefinitely while the fans stay pinned, which is ADR 0007's hole 2.
-    private func cycleCouldNotSee(fanAt index: Int, detail: String) async {
-        let failures = (held[index]?.consecutiveReadFailures ?? 0) + 1
-        held[index]?.consecutiveReadFailures = failures
-
-        guard failures >= ReclamationLimits.blindCyclesBeforeDivergence else {
-            // Log the transition, not the state: the first blind cycle says so, and the
-            // ones after it are silent until either recovery or escalation. #124's forward
-            // constraint — a line per tick at 1 Hz is a denial of service against the
-            // reader.
-            if failures == 1 {
-                log.reclamationCycleUnreadable(fan: index, detail: detail)
-            }
-            return
-        }
-
-        log.reclamationBlindnessEscalated(fan: index, afterCycles: failures, detail: detail)
-
-        // The reconnect. One attempt, and its outcome does not change what happens next.
-        do {
-            try await sensing.reconnect()
-            log.reclamationReconnected(fan: index)
-        } catch {
-            log.reclamationReconnectFailed(fan: index, detail: String(describing: error))
-        }
-
-        // Restore either way. A reconnect that returned without throwing has not been shown
-        // to have fixed anything — only the next read is evidence of that, and waiting for
-        // it is another cycle with a fan pinned on a machine nobody can see. § 5 says
-        // reconnect **then** restore and report, not reconnect and hope.
-        await ledger.markReclaimed(fanAt: index)
-        log.reclamationRestoredBlindFan(fan: index)
-        await finaliseRelease(fanAt: index, because: .supervisorBlind)
-    }
-
-    // MARK: - Falling back
-
-    /// The terminal action: hand the fan to Apple's thermal management and drop the leases
-    /// that claimed it.
-    ///
-    /// The restore is attempted whatever else failed, and consumes nothing a failing
-    /// machine might be unable to supply — ADR 0007's keystone. The ledger entry is
-    /// **kept**: the system does hold this fan now, that is what the user should be told,
-    /// and it stays true until something deliberately takes it off automatic control again.
-    ///
-    /// Every lease is revoked rather than the one covering this fan, for
-    /// `ThermalEmergency.fire(_:from:)`'s reason: a lease is a claim over a *set* of fans,
-    /// and a client left holding a lease over a subset it can no longer command would be
-    /// told it has control it does not have.
-    private func finaliseRelease(fanAt index: Int, because cause: FanRestoreCause) async {
-        do {
-            try await writer.restoreToAutomatic(.fan(index))
-        } catch {
-            log.reclamationWriteFailed(
-                verb: "restore", fan: index, detail: String(describing: error))
-        }
-
-        // Stop watching. This mechanism has said everything it can say about this fan, and
-        // a registry entry that outlived the decision would go on spending budget and
-        // logging against a fan nothing is holding.
-        held[index] = nil
-        await leases.revokeEveryLease(because: cause)
     }
 
     // MARK: - Per-fan state

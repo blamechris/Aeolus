@@ -386,4 +386,23 @@ final class RecordedLog: @unchecked Sendable {
     var faults: [String] {
         lock.withLock { recorded.filter { $0.level == .fault }.map(\.line) }
     }
+
+    /// The lines containing `needle`.
+    ///
+    /// Substring matching, because these lines are prose and asserting one whole is a test
+    /// that fails on a comma. The needle should be a phrase only the intended line can
+    /// produce — a test matching text that a *different* line would also satisfy passes for
+    /// the wrong reason, which is the failure mode this repository has the most of.
+    func lines(containing needle: String) -> [String] {
+        lock.withLock { recorded.filter { $0.line.contains(needle) }.map(\.line) }
+    }
+
+    /// The levels of the lines containing `needle`, in order.
+    ///
+    /// The level is half of what a log line asserts. A `.fault` demoted to `.notice` says
+    /// "this is routine" about something that is not, and a `.notice` promoted to `.fault`
+    /// trains a reader to ignore the level real trouble uses.
+    func levels(containing needle: String) -> [SafetyLog.Level] {
+        lock.withLock { recorded.filter { $0.line.contains(needle) }.map(\.level) }
+    }
 }

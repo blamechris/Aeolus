@@ -79,18 +79,30 @@ actor ScriptedControlPlane: FanControlPlane {
         /// A mock that tied the two together could not express that, and would agree with an
         /// implementation that skipped the restore whenever the reconnect succeeded.
         var reconnects: ReconnectBehaviour
+        /// What the firmware does with a **target** write specifically, when that differs
+        /// from what it does with a mode write. `nil` means "whatever `writes` says".
+        ///
+        /// One axis could not express the state § 5's re-assert has to survive. Firmware
+        /// that accepts `F<n>Md` and then refuses `F<n>Tg` leaves a fan **off** Apple's
+        /// thermal management holding a speed nobody chose — the worst reachable state in
+        /// this project — where firmware that refuses both leaves it safely on automatic.
+        /// A single `WriteBehaviour` made those two indistinguishable, so the watchdog's
+        /// half-landed branch had nothing that could reach it.
+        var targetWrites: WriteBehaviour?
 
         init(
             temperatures: [String: Double] = [:],
             reads: ReadBehaviour = .answered,
             writes: WriteBehaviour = .honoured,
             reconnects: ReconnectBehaviour = .refused(
-                reason: "this build has no reconnect; see SMCFanControlPlane.reconnect()")
+                reason: "this build has no reconnect; see SMCFanControlPlane.reconnect()"),
+            targetWrites: WriteBehaviour? = nil
         ) {
             self.temperatures = temperatures
             self.reads = reads
             self.writes = writes
             self.reconnects = reconnects
+            self.targetWrites = targetWrites
         }
 
         /// A stage where the SMC answers and the machine reads as given.
@@ -99,9 +111,11 @@ actor ScriptedControlPlane: FanControlPlane {
         /// are about a machine that reads perfectly and does not keep what it is told —
         /// which is `.reverted`, on an otherwise nominal stage.
         static func nominal(
-            temperatures: [String: Double] = [:], writes: WriteBehaviour = .honoured
+            temperatures: [String: Double] = [:],
+            writes: WriteBehaviour = .honoured,
+            targetWrites: WriteBehaviour? = nil
         ) -> Stage {
-            Stage(temperatures: temperatures, writes: writes)
+            Stage(temperatures: temperatures, writes: writes, targetWrites: targetWrites)
         }
 
         /// A stage where the SMC answers nothing. One of these is a transient failure; a
@@ -387,7 +401,7 @@ actor ScriptedControlPlane: FanControlPlane {
         let index = target.fanIndex
         attempts.append(.commandTarget(fan: index, rpm: target.rpm))
         _ = try condition(ofFan: index)
-        try applyWrite { fans in
+        try applyWrite(behaviour: stage.targetWrites ?? stage.writes) { fans in
             fans[index]?.targetRPM = target.rpm
         }
         // Returned even when the firmware discarded it. The command was issued, and the
@@ -399,8 +413,10 @@ actor ScriptedControlPlane: FanControlPlane {
     // MARK: - Shared rules
 
     /// Applies a mutation according to this stage's `WriteBehaviour`.
-    private func applyWrite(_ mutate: (inout [Int: FanCondition]) -> Void) throws {
-        switch stage.writes {
+    private func applyWrite(
+        behaviour: WriteBehaviour? = nil, _ mutate: (inout [Int: FanCondition]) -> Void
+    ) throws {
+        switch behaviour ?? stage.writes {
         case .honoured:
             mutate(&fans)
         case .refused(let reason):

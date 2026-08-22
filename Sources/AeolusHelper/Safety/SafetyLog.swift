@@ -301,16 +301,134 @@ struct SafetyLog: Sendable {
     /// § 5 declined to re-assert because § 3 is holding.
     ///
     /// The precedence engine's first production ruling, and worth a line of its own: an
-    /// operator seeing a reclamation with no re-assert attempt is entitled to know that it
+    /// operator seeing a divergence with no re-assert attempt is entitled to know that it
     /// was a decision rather than a failure.
+    ///
+    /// **It does not say the system reclaimed the fan, and an earlier version did.** A
+    /// latched machine is exactly where § 5 should expect to find a fan reading automatic:
+    /// `ThermalEmergency.fire(_:from:)` restores every fan it bridges. Attributing that to
+    /// the OS was a false `.fault` line about Aeolus's own thermal override doing its job.
     func reclamationYieldedToThermalEmergency(fan: Int, divergence: ReclamationDivergence) {
         emit(
             .fault,
             """
-            Reclamation on fan \(fan) — \(divergence.summary) — while the thermal emergency \
-            latch is engaged. Aeolus does not fight the system for the fans above the \
-            ceiling: a more competent authority, one that can also throttle the SoC, got \
-            there first. Finalising the release instead of re-asserting.
+            Fan \(fan) diverged — \(divergence.summary) — while the thermal emergency latch \
+            is engaged, which is where § 3 leaves a fan it has just bridged and restored. \
+            Aeolus does not fight for the fans above the ceiling: a more competent \
+            authority, one that can also throttle the SoC, got there first. Handing this fan \
+            to § 3 rather than re-asserting, and **not** recording it as reclaimed by the \
+            system.
+            """
+        )
+    }
+
+    /// The secondary signal fired: this fan is not reaching the speed it was told to.
+    ///
+    /// `.notice`, not `.fault`, and that is the whole point of the rework this line came
+    /// from. Reaching the secondary signal means the primary converged — `F<n>Md` reads
+    /// manual and `F<n>Tg` reads back exactly what was commanded — so Aeolus **is** still in
+    /// control of this fan and nothing has been reclaimed. What the user is being told is
+    /// that a fan cannot reach its target, which is a hardware observation, not a safety
+    /// event. Nothing is restored, no lease is revoked, and `isReclaimedBySystem` stays
+    /// false, because all three would be claims that are not true.
+    func reclamationFanNotReachingTarget(
+        fan: Int, actual: Double, commanded: Double, dwellCycles: Int
+    ) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) has turned at \(Int(actual.rounded())) RPM against a commanded \
+            \(Int(commanded.rounded())) RPM for \(dwellCycles) consecutive cycles. Its \
+            target reads back correctly, so Aeolus still holds the fan and the firmware is \
+            honouring the request — the fan is not reaching it. Nothing is being taken back.
+            """
+        )
+    }
+
+    /// A fan left the registry while § 5 was part-way through examining it.
+    ///
+    /// The ordinary cause is a lease ending — released, expired, or torn down by connection
+    /// death — during one of the SMC reads this mechanism suspends in. It is not a fault:
+    /// the lease core has already restored the fan, and § 5 stopping is correct.
+    ///
+    /// It is logged because the alternative is silence on a path that used to be a defect.
+    /// Acting on the pre-read copy reported an ordinary lease expiry as a reclamation and
+    /// revoked whatever lease happened to be live; a reader diagnosing that would need to
+    /// see that the abandonment happened at all.
+    func reclamationFanReleasedMidExamination(fan: Int, during: String) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) was released during \(during), so § 5 abandoned this examination. \
+            The lease core owns the restore for a fan that left this way; nothing is \
+            recorded as reclaimed.
+            """
+        )
+    }
+
+    /// § 3 latched while § 5 was mid-re-assert, so the re-assert was undone.
+    ///
+    /// The compensating half of `ReclamationWatchdog.reassert(_:fanAt:attempt:)`. Check and
+    /// act cannot be made atomic across two actors, so the ruling is verified again after
+    /// the writes and this is what happens when it changed underneath them.
+    func reclamationUndoneAfterEmergencyLatched(fan: Int) {
+        emit(
+            .fault,
+            """
+            The thermal emergency latch engaged while § 5 was re-asserting fan \(fan), so \
+            the re-assert is being undone and the fan returned to automatic control. Level 2 \
+            outranks level 3, and nothing else would have corrected this: § 3 empties its \
+            own registry as it fires, so its next cycle would not have bridged this fan.
+            """
+        )
+    }
+
+    /// The mode write landed and the target write did not.
+    ///
+    /// The worst reachable state in the project — a fan off Apple's thermal management
+    /// holding a speed nobody chose — so it is `.fault` and it is followed immediately by a
+    /// restore rather than by another attempt.
+    func reclamationReassertHalfLanded(fan: Int, detail: String) {
+        emit(
+            .fault,
+            """
+            § 5 took fan \(fan) off automatic control and then could not command a target: \
+            \(detail). The fan is off Apple's thermal management holding a speed nobody \
+            chose, which is not a state to spend another attempt on — restoring it now.
+            """
+        )
+    }
+
+    /// Fans dropped from § 5's registry because the revocation that just ran took their
+    /// leases too.
+    ///
+    /// `revokeEveryLease(because:)` is whole-machine, so every other fan § 5 was watching is
+    /// now unleased. Dropping only the fan that diverged left the siblings registered, and
+    /// the next cycle re-engaged manual control on a fan with no lease behind it.
+    func reclamationSiblingsReleased(fans: [Int]) {
+        emit(
+            .notice,
+            """
+            § 5 also stopped watching fan(s) \
+            \(fans.map(String.init).joined(separator: ", ")): the revocation that just ran \
+            dropped every lease on the machine, so these are unleased and back on automatic \
+            control. They are not recorded as reclaimed — they were given up, not taken.
+            """
+        )
+    }
+
+    /// The terminal restore was refused, so the fan may still be pinned.
+    ///
+    /// The one outcome § 5 cannot fix. ADR 0007's keystone makes the restore the action that
+    /// must always be available, and a firmware that refuses it is the case the ADR names as
+    /// defeating everything in E5. Saying so is all that is left.
+    func reclamationFanMayStillBePinned(fan: Int) {
+        emit(
+            .fault,
+            """
+            Fan \(fan) may still be under manual control at a speed Aeolus is no longer \
+            tracking: the restore verb was refused, and it is the action every other \
+            mechanism here falls back to. Check the fan physically, and see docs/RECOVERY.md.
             """
         )
     }

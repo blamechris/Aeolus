@@ -12,6 +12,17 @@
 /// them end up in a `.fault` log line an operator reads. A bare "divergence detected" would
 /// make "the target read back wrong" indistinguishable from "the target could not be read
 /// at all", and those call for different diagnosis.
+///
+/// **Every case here is a *primary*-signal finding, and the secondary signal deliberately
+/// has none.** There was an `actualShortfall` case, and it was the file's worst defect: it
+/// let a sustained actual-RPM shortfall travel the same path as a genuine reclamation and
+/// reach restore-plus-revoke on a fan whose `F<n>Tg` read back exactly what Aeolus
+/// commanded. Reaching the secondary signal at all *means* the firmware is holding our
+/// target — `ReclamationWatchdog.examine(fanAt:)` returns early on any primary divergence —
+/// so a shortfall is a fan that cannot reach its speed, not a fan that was taken.
+/// `ReclamationWatchdog.reportShortfall(_:fanAt:)` carries it, it emits its own log line,
+/// and it never constructs one of these. Removing the case is what stops the two ever
+/// sharing a path again.
 enum ReclamationDivergence: Sendable, Hashable {
 
     /// `F<n>Md` reports automatic for a fan Aeolus is holding. The unambiguous signal.
@@ -24,10 +35,6 @@ enum ReclamationDivergence: Sendable, Hashable {
     /// `F<n>Tg` reads back something other than what was commanded. § 5's primary signal.
     case targetDiverged(commanded: Double, readBack: Double)
 
-    /// `F<n>Ac` has been short of the commanded target for the whole dwell. § 5's secondary
-    /// signal, and the only one with a memory.
-    case actualShortfall(actual: Double, commanded: Double, dwellCycles: Int)
-
     /// One line for a log, and the reason this type is not a `String` in the first place.
     var summary: String {
         switch self {
@@ -39,11 +46,6 @@ enum ReclamationDivergence: Sendable, Hashable {
             return """
                 its target reads back \(Int(readBack.rounded())) RPM against the \
                 \(Int(commanded.rounded())) RPM last commanded
-                """
-        case .actualShortfall(let actual, let commanded, let dwellCycles):
-            return """
-                it has turned at \(Int(actual.rounded())) RPM against a commanded \
-                \(Int(commanded.rounded())) RPM for \(dwellCycles) cycles
                 """
         }
     }
@@ -86,12 +88,23 @@ enum ReclamationLimits {
     /// How many consecutive cycles the actual speed must be short before the secondary
     /// signal fires.
     ///
-    /// Five, which is five seconds at the supervisor's 1 Hz. A fan spinning up from idle to
-    /// maximum is the case this must not fire on, and § 8's ramp cap is 200 RPM/s against a
-    /// 1350–5777 RPM span — a 22-second full-scale ramp — so a dwell alone cannot separate
-    /// them and is not asked to. What separates them is that a ramp's *target* reads back
-    /// correctly throughout, which is the primary signal converging; this dwell only stops
-    /// the secondary from firing on the ordinary lag while it does.
+    /// Five, which is five seconds at the supervisor's 1 Hz.
+    ///
+    /// **An earlier version of this comment had the causality backwards, and it was
+    /// load-bearing.** It said a ramp is separated from a reclamation by "the primary signal
+    /// converging", which suppresses nothing: the primary converging is the *precondition*
+    /// for the secondary being evaluated at all, since
+    /// `ReclamationWatchdog.examine(fanAt:)` returns early on primary divergence. A
+    /// correctly-reading `F<n>Tg` is what gets you here, not what protects you.
+    ///
+    /// What this dwell actually buys is that a fan briefly short of its target — a ramp, a
+    /// gust, one slow sample — is not reported as one that cannot reach it. Five seconds is
+    /// long against the ~1 % steady-state coupling `docs/SMC-RESEARCH.md` measured and short
+    /// against § 8's 22-second full-scale ramp, so a full-scale ramp under the governor
+    /// **will** cross it and be reported. That is now acceptable, because the report is all
+    /// that happens: since the shortfall path no longer reaches the terminal action, a line
+    /// saying a fan is below its commanded speed during a long ramp is accurate rather than
+    /// harmful. It was not acceptable when that path restored the fan and revoked the lease.
     static let actualDwellCycles = 5
 
     /// How many times § 5 will try to take a fan back before falling back to restore.

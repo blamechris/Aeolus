@@ -46,7 +46,30 @@ struct ReclamationMachine {
         fans: [Int: ScriptedControlPlane.FanCondition] = [0: .held(at: 2_400)],
         sensing: (any FanStateSensing)? = nil
     ) {
-        plane = ScriptedControlPlane(fans: fans, stages: stages)
+        self.init(
+            plane: ScriptedControlPlane(fans: fans, stages: stages),
+            fans: fans,
+            sensing: sensing)
+    }
+
+    /// Wires a machine around a plane the test already built.
+    ///
+    /// The scenarios that need this are the ones whose read seam has to *hold a reference to
+    /// the same plane* — `InterferingFanStateSensing`, which runs a side effect inside a read
+    /// and then delegates to the plane. Constructing the plane inside the initialiser would
+    /// leave those tests with a seam wrapping one plane and a fixture asserting against
+    /// another, which is two machines pretending to be one and the exact hazard
+    /// `ThermalMachine` shares a plane to avoid.
+    ///
+    /// `fans` is passed separately rather than read back out of the plane because the mock
+    /// keeps its `FanCondition`s `private` — deliberately, so a fixture cannot depend on
+    /// state the mock does not publish — and minting a permit needs the declared bounds.
+    init(
+        plane: ScriptedControlPlane,
+        fans: [Int: ScriptedControlPlane.FanCondition] = [0: .held(at: 2_400)],
+        sensing: (any FanStateSensing)? = nil
+    ) {
+        self.plane = plane
         fanConditions = fans
         latch = ThermalEmergencyLatch()
         ledger = ReclamationLedger()
@@ -204,5 +227,82 @@ actor GatedFanStateSensing: FanStateSensing {
 
     func reconnect() async throws {
         try await plane.reconnect()
+    }
+}
+
+/// Runs an arbitrary side effect **inside** one of § 5's reads, so that "the world changed
+/// across this `await`" is a scenario rather than an argument.
+///
+/// ## Why a double and not a stage
+///
+/// `ScriptedControlPlane`'s methods contain no suspension point a test can act inside, so a
+/// scenario built on stages alone can only change the machine *between* cycles. Every defect
+/// this type exists to cover happens *within* one — a lease expiring while a control-state
+/// read is in flight, § 3 latching while a re-assert is part-way through — and those are
+/// exactly the interleavings a reentrant actor is exposed to and a sequential test cannot
+/// reach.
+///
+/// An adversarial review found four separate defects of that shape in `ReclamationWatchdog`,
+/// every one of them invisible to the twenty tests that existed at the time. A concurrency
+/// test that starts all its work at once cannot see a bug that needs work to *arrive*; this
+/// makes the arrival scriptable.
+///
+/// The effect fires **once**, on the first read of the chosen kind. A side effect that ran on
+/// every read would make a scenario that loops — a budget driven to exhaustion, a dwell
+/// counted out — untestable, because the world would move under every cycle instead of once.
+actor InterferingFanStateSensing: FanStateSensing {
+
+    /// Which read the effect happens inside.
+    enum Moment: Sendable {
+        /// Inside `readControlState(ofFan:)` — the suspension `examine(fanAt:)` resumes from.
+        case controlStateRead
+        /// Inside `readEnvelope(ofFan:)` — the suspension `reassert(_:fanAt:attempt:)`
+        /// resumes from, and the one whose missing re-check wrote `F<n>Md` to an unleased fan.
+        case envelopeRead
+    }
+
+    private let plane: ScriptedControlPlane
+    private let moment: Moment
+    private var effect: (@Sendable () async -> Void)?
+    private var hasFired = false
+
+    /// Whether the effect actually ran.
+    ///
+    /// Asserted by every test using this type. A double whose interference silently never
+    /// fired would leave the test passing for the wrong reason — the exact "test that cannot
+    /// fail" shape this repository keeps producing — so the scenario is required to prove
+    /// its own setup happened.
+    private(set) var didFire = false
+
+    init(_ plane: ScriptedControlPlane, during moment: Moment) {
+        self.plane = plane
+        self.moment = moment
+    }
+
+    /// Sets what happens inside the read. Assigned after construction because the effect
+    /// usually needs the watchdog, which needs this.
+    func interfere(with effect: @escaping @Sendable () async -> Void) {
+        self.effect = effect
+    }
+
+    func readControlState(ofFan index: Int) async throws -> FanControlState {
+        if moment == .controlStateRead { await fireOnce() }
+        return try await plane.readControlState(ofFan: index)
+    }
+
+    func readEnvelope(ofFan index: Int) async throws -> FanEnvelope {
+        if moment == .envelopeRead { await fireOnce() }
+        return try await plane.readEnvelope(ofFan: index)
+    }
+
+    func reconnect() async throws {
+        try await plane.reconnect()
+    }
+
+    private func fireOnce() async {
+        guard !hasFired, let effect else { return }
+        hasFired = true
+        await effect()
+        didFire = true
     }
 }
