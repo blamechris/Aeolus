@@ -1,25 +1,19 @@
-import FanKit
 import Testing
 
 @testable import AeolusHelper
 
-/// `docs/SAFETY.md` § 5's mechanism: what it decides, and — more importantly — what it
-/// refuses to decide.
+/// `docs/SAFETY.md` § 5's **signals**: what makes this mechanism decide a fan has been taken,
+/// and what it must decline to read that way.
 ///
-/// Two of these are named in [#126](https://github.com/blamechris/Aeolus/issues/126) as
-/// mutation checks, and they are the reason the suite exists in this shape rather than as a
-/// list of happy paths:
+/// The verdicts only. What § 5 then *does* about a verdict — re-assert, fall back, escalate
+/// blindness — is `ReclamationWatchdogRecoveryTests`, and what happens when the machine moves
+/// while § 5 is mid-read is `ReclamationWatchdogStalenessTests`. Three suites because one
+/// crossed SwiftLint's `type_body_length` limit, split on subject rather than on line count,
+/// the same way `ThermalEmergencyReportingTests` was split from `ThermalEmergencyTests`.
 ///
-/// - `itDoesNotReadAnEmergencyRampAsReclamation` dies if the primary signal becomes
-///   actual-versus-target.
-/// - `itNeverReassertsWhileTheThermalLatchHolds` dies if the arbiter consultation is
-///   deleted.
-///
-/// Both were run against their mutants. Neither passes without the code it names.
-@Suite("The reclamation watchdog")
+/// Everything here runs through `ScriptedControlPlane`, which is what #100 built it for.
+@Suite("The reclamation watchdog's signals")
 struct ReclamationWatchdogTests {
-
-    // MARK: - The primary signal, and what it must not be
 
     /// **Mutation check.** Switch the primary signal to actual-versus-target and this goes
     /// red.
@@ -104,8 +98,6 @@ struct ReclamationWatchdogTests {
         #expect(await machine.ledger.reclaimedFans.isEmpty)
         #expect(await machine.didRestore(fan: 0) == false)
     }
-
-    // MARK: - The secondary signal and its dwell
 
     /// The dwell is real: the shortfall is present from the first cycle and reports on the
     /// fifth.
@@ -200,8 +192,6 @@ struct ReclamationWatchdogTests {
         #expect(await machine.ledger.reclaimedFans.isEmpty)
     }
 
-    // MARK: - Never fighting above the ceiling
-
     /// **Mutation check.** Delete the `ruling.permitsWrite` guard and this goes red.
     ///
     /// § 3 holds the latch, so level 2 is the incumbent and level 3 is pre-empted —
@@ -237,364 +227,6 @@ struct ReclamationWatchdogTests {
         // fans back on a machine nobody has read since it was above its ceiling.
         #expect(await machine.latch.isActive)
     }
-
-    // MARK: - Nothing survives a suspension point
-
-    /// **The rule-2 defect.** A fan released while the envelope read is in flight must not
-    /// be written to.
-    ///
-    /// The interference fires inside `readEnvelope(ofFan:)` — the suspension
-    /// `reassert(_:fanAt:attempt:)` resumes from — and releases the fan the way the lease
-    /// core does when a TTL lapses or a connection dies. The watchdog resumes holding a
-    /// `permit` for a fan it is no longer watching.
-    ///
-    /// It used to write `F<n>Md` and `F<n>Tg` anyway: manual control with no lease behind
-    /// it, no registry entry to notice it, and nothing left to restore it. `CLAUDE.md`
-    /// rule 2 — *manual control is a lease, never a setting* — with the lease gone.
-    ///
-    /// Delete the `guard held[index] != nil` after the envelope read and this goes red on
-    /// the first two assertions.
-    @Test("A fan released during its envelope read is never written to")
-    func aFanReleasedDuringTheEnvelopeReadIsNotWritten() async throws {
-        let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
-        let sensing = InterferingFanStateSensing(plane, during: .envelopeRead)
-        let machine = ReclamationMachine(plane: plane, sensing: sensing)
-        try await machine.hold(fan: 0, commanding: 2_400)
-        await sensing.interfere { [watchdog = machine.watchdog] in
-            await watchdog.manualControlReleased(fanAt: 0)
-        }
-
-        await machine.watchdog.cycle()
-
-        #expect(await sensing.didFire, "the scenario never arranged the interleaving")
-        #expect(
-            await machine.attempts.contains(.engageManualControl(fan: 0)) == false,
-            "§ 5 took an unleased fan off automatic control")
-        #expect(
-            await machine.commandedRPMs.isEmpty, "§ 5 commanded a fan it was not watching")
-        #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
-    }
-
-    /// The same rule one suspension earlier: a fan released during its control-state read is
-    /// not judged from the copy taken before it.
-    ///
-    /// Acting on the pre-read copy reported an ordinary lease expiry as the system
-    /// reclaiming a fan, and revoked whatever lease happened to be live at that instant —
-    /// so a client that acquired one in the intervening milliseconds lost it.
-    @Test("A fan released during its control-state read is not judged from the stale copy")
-    func aFanReleasedDuringTheControlStateReadIsAbandoned() async throws {
-        let plane = ScriptedControlPlane(fans: [0: .nominal])
-        let sensing = InterferingFanStateSensing(plane, during: .controlStateRead)
-        let machine = ReclamationMachine(plane: plane, sensing: sensing)
-        try await machine.hold(fan: 0, commanding: 2_400)
-        await sensing.interfere { [watchdog = machine.watchdog] in
-            await watchdog.manualControlReleased(fanAt: 0)
-        }
-
-        await machine.watchdog.cycle()
-
-        #expect(await sensing.didFire, "the scenario never arranged the interleaving")
-        // The fan reads `.automatic`, which is `.modeReclaimed` — the strongest primary
-        // signal there is. It must still not be acted on, because the fan is not ours.
-        #expect(
-            await machine.ledger.reclaimedFans.isEmpty,
-            "an ordinary lease release was reported as a reclamation")
-        #expect(await machine.didRestore(fan: 0) == false)
-        #expect(await machine.leases.activeLease() == nil)
-    }
-
-    /// **Verify-after-act.** § 3 latching during the re-assert's writes undoes the
-    /// re-assert.
-    ///
-    /// The ruling is checked before the writes, and the check cannot be atomic with them:
-    /// the latch is one actor and the plane is another. So it is checked *again* afterwards.
-    /// Here the interference latches § 3 inside the envelope read, which is after
-    /// `diverged(_:fanAt:)` has already been told the ruling permits a write.
-    ///
-    /// Nothing else would correct this. `ThermalEmergency.fire(_:from:)` empties
-    /// `engagedFans` as it goes and `manualControlEngaged(_:)` has no caller in `Sources/`,
-    /// so a fan § 5 re-engaged is in no registry § 3 consults — its next cycle would leave
-    /// the fan off automatic control indefinitely, above the ceiling. Delete the post-write
-    /// `guard await currentRuling().permitsWrite` and this goes red.
-    @Test("A re-assert is undone when the emergency latches mid-write")
-    func itUndoesAReassertWhenTheEmergencyLatchesMidWrite() async throws {
-        let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
-        let sensing = InterferingFanStateSensing(plane, during: .envelopeRead)
-        let machine = ReclamationMachine(plane: plane, sensing: sensing)
-        try await machine.lease(fans: [0])
-        try await machine.hold(fan: 0, commanding: 2_400)
-        await sensing.interfere { [machine] in await machine.engageThermalEmergency() }
-
-        await machine.watchdog.cycle()
-
-        #expect(await sensing.didFire, "the scenario never arranged the interleaving")
-        // The re-assert did happen — the pre-write check passed, which is what makes this a
-        // test of the *post*-write one rather than of the guard before it.
-        #expect(await machine.commandedRPMs == [2_400])
-        // And was undone.
-        #expect(await machine.didRestore(fan: 0), "a fan was left off automatic above ceiling")
-        #expect(machine.safetyLog.lines(containing: "is being undone").count == 1)
-        #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
-    }
-
-    /// A half-landed re-assert restores immediately rather than spending another attempt.
-    ///
-    /// The firmware accepts `F<n>Md` and refuses `F<n>Tg`, which leaves the fan **off**
-    /// Apple's thermal management holding whatever speed the system last wrote — the worst
-    /// reachable state in this project, and the opposite of what refusing both leaves
-    /// behind. Wrapping both writes in one `do`/`catch` made those indistinguishable.
-    @Test("A re-assert whose target write is refused restores rather than retrying")
-    func aHalfLandedReassertRestoresImmediately() async throws {
-        let machine = ReclamationMachine(
-            stages: [
-                .nominal(
-                    writes: .honoured,
-                    targetWrites: .refused(reason: "the firmware refused the target"))
-            ],
-            fans: [0: .held(at: 1_800)])
-        try await machine.hold(fan: 0, commanding: 2_400)
-
-        await machine.watchdog.cycle()
-
-        #expect(await machine.attempts.contains(.engageManualControl(fan: 0)))
-        #expect(
-            await machine.didRestore(fan: 0),
-            "a fan was left off automatic holding a speed nobody chose")
-        #expect(machine.safetyLog.lines(containing: "could not command a target").count == 1)
-        #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
-    }
-
-    /// Falling back drops **every** fan, because the revocation it performs is whole-machine.
-    ///
-    /// `revokeEveryLease(because:)` drops every lease and the lease core restores the fans
-    /// they covered, so a sibling left in the registry is a fan that is now unleased and on
-    /// automatic. Keeping it produced the worst possible follow-up: the next cycle read
-    /// `.modeReclaimed` on that sibling and **re-engaged manual control on a fan with no
-    /// lease behind it**.
-    ///
-    /// Change `held.removeAll()` back to dropping only `index` and the last assertion goes
-    /// red.
-    @Test("Falling back stops watching every fan, not just the one that diverged")
-    func fallingBackClearsTheWholeRegistry() async throws {
-        let machine = ReclamationMachine(
-            fans: [0: .nominal, 1: .held(at: 2_400)])
-        try await machine.lease(fans: [0, 1])
-        try await machine.holdWithoutCommanding(fan: 0)
-        try await machine.hold(fan: 1, commanding: 2_400)
-
-        // Fan 0 reads automatic with nothing ever commanded: it falls straight through to
-        // the terminal action, which revokes the lease covering fan 1 as well.
-        await machine.watchdog.cycle()
-
-        #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
-        #expect(machine.safetyLog.lines(containing: "also stopped watching").count == 1)
-        // Fan 1 was given up, not taken: it must not be reported as reclaimed.
-        #expect(await machine.ledger.isReclaimed(fanAt: 1) == false)
-
-        // The sibling is not re-engaged on any later cycle.
-        await machine.watchdog.cycle()
-        #expect(
-            await machine.attempts.contains(.engageManualControl(fan: 1)) == false,
-            "§ 5 re-engaged manual control on a fan whose lease it had just revoked")
-    }
-
-    /// Below the ceiling the same divergence produces a re-assert, which is what proves the
-    /// test above is about the latch rather than about divergence being ignored.
-    @Test("Below the ceiling, the same divergence is re-asserted")
-    func belowTheCeilingItReasserts() async throws {
-        let machine = ReclamationMachine(fans: [0: .held(at: 1_800)])
-        try await machine.hold(fan: 0, commanding: 2_400)
-
-        await machine.watchdog.cycle()
-
-        #expect(await machine.commandedRPMs == [2_400])
-        // Re-engaged first: a reclaimed fan is on automatic, so a target written without
-        // the mode verb is a number nothing honours.
-        #expect(await machine.attempts.contains(.engageManualControl(fan: 0)))
-    }
-
-    // MARK: - The bounded budget
-
-    /// The budget is **driven to exhaustion**, not asserted against its constant.
-    ///
-    /// `WriteBehaviour.reverted` is the machine § 5 cannot win against: every write is
-    /// accepted and discarded, so each cycle re-reads the same divergence. The loop runs
-    /// until the fan is restored, and then checks that the number of re-asserts issued was
-    /// the budget — so changing `reassertAttemptBudget` changes what this test observes
-    /// without changing whether it passes, and removing the budget entirely makes it spin
-    /// past its bound and fail.
-    @Test("A re-assert that never holds exhausts its budget and then restores")
-    func theReassertBudgetIsSpentAndThenFallsBack() async throws {
-        let machine = ReclamationMachine(
-            stages: [.nominal(writes: .reverted)],
-            fans: [0: .held(at: 1_800)])
-        try await machine.lease(fans: [0])
-        try await machine.hold(fan: 0, commanding: 2_400)
-
-        var cycles = 0
-        let bound = ReclamationLimits.reassertAttemptBudget + 5
-        while await !machine.didRestore(fan: 0), cycles < bound {
-            await machine.watchdog.cycle()
-            cycles += 1
-        }
-
-        #expect(await machine.didRestore(fan: 0), "the budget never ran out")
-        #expect(await machine.commandedRPMs.count == ReclamationLimits.reassertAttemptBudget)
-        // The lease goes with it, labelled for what happened: a client left holding a lease
-        // over a fan the firmware is not honouring is told it has control it does not have.
-        #expect(await machine.restorer.causes == [.systemReclaimed])
-    }
-
-    /// Once the budget is spent the watchdog stops watching that fan, so it cannot go on
-    /// commanding a fan it has already handed back.
-    @Test("A fan that has been given up on is no longer watched")
-    func aReleasedFanLeavesTheRegistry() async throws {
-        let machine = ReclamationMachine(
-            stages: [.nominal(writes: .reverted)],
-            fans: [0: .held(at: 1_800)])
-        try await machine.hold(fan: 0, commanding: 2_400)
-
-        for _ in 0..<(ReclamationLimits.reassertAttemptBudget + 3) {
-            await machine.watchdog.cycle()
-        }
-
-        #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
-        #expect(await machine.commandedRPMs.count == ReclamationLimits.reassertAttemptBudget)
-    }
-
-    /// A re-assert that cannot obtain an envelope **restores rather than commanding**.
-    ///
-    /// #126's acceptance criterion, and `docs/SAFETY.md` § 2's closing rule reached from
-    /// § 5: the only action a fan with untrusted bounds is subject to is the bounds-free
-    /// restore verb. It also spends no budget — there is nothing to retry when the bounds
-    /// themselves cannot be established.
-    @Test("A re-assert with no obtainable envelope restores instead of commanding")
-    func aReassertWithoutAnEnvelopeRestores() async throws {
-        let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
-        let machine = ReclamationMachine(
-            fans: [0: .held(at: 1_800)], sensing: EnvelopeRefusingSensing(plane))
-        try await machine.hold(fan: 0, commanding: 2_400)
-
-        await machine.watchdog.cycle()
-
-        #expect(await machine.commandedRPMs.isEmpty, "it commanded a fan with no bounds")
-        #expect(await machine.didRestore(fan: 0))
-        #expect(await machine.safetyLog.faults.contains { $0.contains("no range to clamp") })
-    }
-
-    /// Divergence before anything was ever commanded has nothing to re-assert to.
-    @Test("A fan reclaimed before any target was commanded is restored, not re-asserted")
-    func aFanWithNoCommandedTargetIsRestored() async throws {
-        let machine = ReclamationMachine(
-            fans: [0: ScriptedControlPlane.FanCondition(mode: .automatic)])
-        try await machine.holdWithoutCommanding(fan: 0)
-
-        await machine.watchdog.cycle()
-
-        #expect(await machine.commandedRPMs.isEmpty)
-        #expect(await machine.didRestore(fan: 0))
-    }
-
-    // MARK: - Blindness is divergence
-
-    /// One unreadable cycle changes nothing. Taking a fan from a client because a single
-    /// read missed would be over-firing on noise.
-    @Test("A transient read failure changes nothing")
-    func aTransientReadFailureIsNotDivergence() async throws {
-        let machine = ReclamationMachine(
-            stages: [.blind(), .nominal()],
-            fans: [0: .held(at: 2_400)])
-        try await machine.hold(fan: 0, commanding: 2_400)
-
-        await machine.watchdog.cycle()
-
-        #expect(await machine.didRestore(fan: 0) == false)
-        #expect(await machine.ledger.reclaimedFans.isEmpty)
-
-        await machine.plane.advance()
-        await machine.watchdog.cycle()
-
-        #expect(await machine.didRestore(fan: 0) == false)
-        #expect(
-            await machine.safetyLog.lines.contains { $0.contains("can read fan 0 again") },
-            "recovery was not logged, so a reader sees a fan go quiet and never come back")
-    }
-
-    /// Persistent read failure **is** divergence: reconnect, then restore and report.
-    ///
-    /// ADR 0007's hole 2 — `SAFETY.md` § 5 covered divergence of values and nothing covered
-    /// the inability to obtain them, while a lease keeps the fans pinned. Driven to the
-    /// threshold rather than asserted against it.
-    @Test("Persistent read failure attempts a reconnect and then restores")
-    func persistentBlindnessReconnectsThenRestores() async throws {
-        let machine = ReclamationMachine(
-            stages: [.blind()],
-            fans: [0: .held(at: 2_400)])
-        try await machine.lease(fans: [0])
-        try await machine.hold(fan: 0, commanding: 2_400)
-
-        for cycle in 1..<ReclamationLimits.blindCyclesBeforeDivergence {
-            await machine.watchdog.cycle()
-            #expect(
-                await machine.didRestore(fan: 0) == false,
-                "it gave up on cycle \(cycle), before the failure was persistent")
-        }
-
-        await machine.watchdog.cycle()
-
-        #expect(await machine.attempts.contains(ScriptedControlPlane.Attempt.reconnect))
-        #expect(await machine.didRestore(fan: 0))
-        #expect(await machine.ledger.isReclaimed(fanAt: 0))
-        // `.supervisorBlind`, not `.systemReclaimed`. A helper that has gone blind and a
-        // helper losing a contest with the OS are diagnosed differently, which is what
-        // `FanRestoreCause` exists to keep apart.
-        #expect(await machine.restorer.causes == [.supervisorBlind])
-    }
-
-    /// The restore does not wait on the reconnect having worked.
-    ///
-    /// § 5 says reconnect **then** restore and report — not reconnect and hope. A reconnect
-    /// that returns cleanly has read nothing since, so it is no evidence that reading works,
-    /// and waiting for the next cycle to find out is another cycle with a fan pinned on a
-    /// machine nobody can see. Make the restore conditional on the reconnect throwing and
-    /// this goes red.
-    @Test("A reconnect that succeeds does not cancel the restore")
-    func aSuccessfulReconnectStillRestores() async throws {
-        let machine = ReclamationMachine(
-            stages: [.blind(reconnects: .succeeded)],
-            fans: [0: .held(at: 2_400)])
-        try await machine.hold(fan: 0, commanding: 2_400)
-
-        for _ in 0..<ReclamationLimits.blindCyclesBeforeDivergence {
-            await machine.watchdog.cycle()
-        }
-
-        #expect(await machine.attempts.contains(ScriptedControlPlane.Attempt.reconnect))
-        #expect(await machine.didRestore(fan: 0))
-    }
-
-    // MARK: - The restore is the floor
-
-    /// A refused restore is logged, never swallowed, and the fan still leaves the registry.
-    ///
-    /// `no_silent_write_failure`: converting "the fan is still pinned" into "the watchdog
-    /// completed" is the inversion this whole subsystem exists to prevent.
-    @Test("A refused restore is reported rather than swallowed")
-    func aRefusedRestoreIsLogged() async throws {
-        let machine = ReclamationMachine(
-            stages: [.nominal(writes: .refused(reason: "firmware said no"))],
-            fans: [0: .held(at: 1_800)])
-        try await machine.hold(fan: 0, commanding: 2_400)
-
-        for _ in 0..<(ReclamationLimits.reassertAttemptBudget + 2) {
-            await machine.watchdog.cycle()
-        }
-
-        #expect(await machine.safetyLog.faults.contains { $0.contains("could not restore") })
-        #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
-    }
-
-    // MARK: - Reporting
 
     /// The ledger is the snapshot's source, and it clears when the fan comes back.
     ///
@@ -638,52 +270,6 @@ struct ReclamationWatchdogTests {
             $0.contains("Reclamation detected on fan 0")
         }
         #expect(announcements.count == 1)
-    }
-
-    // MARK: - Scheduling
-
-    /// Fans are examined **one at a time**, which is #126's answer to
-    /// [#134](https://github.com/blamechris/Aeolus/issues/134).
-    ///
-    /// `SMCReadScheduler` is FIFO within `.supervisor` and forces a snapshot turn after
-    /// every two overtakes, so each additional outstanding supervisor read delays § 3's
-    /// cycle by its own turn *plus* a share of a quota-forced 64-key snapshot turn.
-    /// Examining sequentially means this mechanism contributes at most one waiter however
-    /// many fans the machine has.
-    ///
-    /// The gate is what makes that observable: `ScriptedControlPlane`'s methods have no
-    /// suspension point, so two concurrent callers could never be caught overlapping there,
-    /// and a test built on the mock alone would pass against a `withTaskGroup`
-    /// implementation. Rewrite `cycle()`'s loop as a task group and `peakOutstanding`
-    /// reaches 2.
-    @Test("It examines one fan at a time, never several at once")
-    func itExaminesFansSequentially() async throws {
-        let plane = ScriptedControlPlane(
-            fans: [0: .held(at: 2_400), 1: .held(at: 2_400)])
-        let sensing = GatedFanStateSensing(plane)
-        let machine = ReclamationMachine(
-            fans: [0: .held(at: 2_400), 1: .held(at: 2_400)], sensing: sensing)
-        try await machine.hold(fan: 0, commanding: 2_400)
-        try await machine.hold(fan: 1, commanding: 2_400)
-
-        let sweep = Task { await machine.watchdog.cycle() }
-
-        let arrived = await yieldUntil("the first fan's control-state read") {
-            await sensing.controlStateRequests.isEmpty == false
-        }
-        #expect(arrived)
-
-        // Give a concurrent implementation every opportunity to issue the second read.
-        for _ in 0..<100 { await Task.yield() }
-        #expect(
-            await sensing.controlStateRequests == [0],
-            "fan 1 was asked about while fan 0's read was still in flight")
-
-        await sensing.open()
-        await sweep.value
-
-        #expect(await sensing.controlStateRequests == [0, 1])
-        #expect(await sensing.peakOutstanding == 1)
     }
 
     /// An empty registry does no work at all — no read, no latch consultation, nothing.

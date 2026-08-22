@@ -278,6 +278,47 @@ struct SafetyLog: Sendable {
         )
     }
 
+    /// One decimal place, so a log line does not carry a firmware float's full mantissa.
+    private static func celsius(_ value: Double) -> String {
+        String(format: "%.1f °C", value)
+    }
+
+    /// Caps the key list so one pathological cycle cannot write an unbounded line into a
+    /// root daemon's log. The count above is the number that matters; the names are a hint
+    /// for whoever is diagnosing it.
+    private static func describe(_ keys: [SMCKey]) -> String {
+        let names = keys.map(\.rawValue).sorted()
+        guard names.count > 8 else { return names.joined(separator: ", ") }
+        return names.prefix(8).joined(separator: ", ") + " and \(names.count - 8) more"
+    }
+}
+
+// MARK: - docs/SAFETY.md § 5
+
+// § 5's log lines live in an extension rather than in the struct body above, and in **this
+// file** rather than a new one.
+//
+// The extension is because `SafetyLog`'s body crossed SwiftLint's `type_body_length` limit
+// — the same pressure that split `ThermalEmergencyReportingTests` out of
+// `ThermalEmergencyTests`. An extension's body is measured separately from the type it
+// extends, so this is a real fix rather than a suppression.
+//
+// It is in this file because `emit` is `private`, and `private` in Swift is **file**-scoped.
+// Moving these lines to `SafetyLogReclamation.swift` compiled until it did not: every one of
+// them failed with "'emit' is inaccessible due to 'private' protection level". The available
+// answers were to widen `emit` to `internal` — which would let any file in `AeolusHelper`
+// emit an arbitrary line into the safety log, and the whole point of routing every line
+// through named methods is that the vocabulary is fixed and reviewable — or to keep the
+// extension beside the thing it extends. The encapsulation is worth more than the file
+// boundary.
+//
+// The rule every line below follows: each interpolated value is helper-authored or
+// firmware-derived — a fan index, a rounded RPM, a count, or a `FanControlPlaneError`'s own
+// description — never client-chosen text. That is what keeps them safe to mark `.public`,
+// exactly as this type's header requires.
+
+extension SafetyLog {
+
     // MARK: - docs/SAFETY.md § 5
 
     /// The system has taken a fan back.
@@ -605,19 +646,5 @@ struct SafetyLog: Sendable {
                 : "Reclamation watchdog supervisor stopped. No fan is under manual control, "
                     + "so there is nothing it would have been watching."
         )
-    }
-
-    /// One decimal place, so a log line does not carry a firmware float's full mantissa.
-    private static func celsius(_ value: Double) -> String {
-        String(format: "%.1f °C", value)
-    }
-
-    /// Caps the key list so one pathological cycle cannot write an unbounded line into a
-    /// root daemon's log. The count above is the number that matters; the names are a hint
-    /// for whoever is diagnosing it.
-    private static func describe(_ keys: [SMCKey]) -> String {
-        let names = keys.map(\.rawValue).sorted()
-        guard names.count > 8 else { return names.joined(separator: ", ") }
-        return names.prefix(8).joined(separator: ", ") + " and \(names.count - 8) more"
     }
 }
