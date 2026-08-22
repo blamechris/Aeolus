@@ -305,13 +305,24 @@ until a client asks again.
 `F<n>Tg` no longer holding what was put there, or the mode key no longer reading manual. A
 persistent divergence means the system has taken the fans back despite our request.
 
-**Actual RPM against target is a secondary signal, and only with a dwell time.** This
-section named it the primary one until #119. As a primary signal it specifies the exact
-defect the watchdog exists to avoid: `F<n>Ac` legitimately lags `F<n>Tg`, so an
-actual-versus-target watchdog reads every ramp as a reclamation,
-including the full-scale ramp § 3 performs during a thermal emergency, which is the one
+**Actual RPM against target is a secondary signal, it is only read behind a dwell time, and
+it reports without acting.** This section named it the primary one until #119. As a primary
+signal it specifies the exact defect the watchdog exists to avoid: `F<n>Ac` legitimately lags
+`F<n>Tg`, so an actual-versus-target watchdog reads every ramp as a reclamation, including
+the full-scale ramp § 3 performs during a thermal emergency, which is the one
 moment it must not fire. A watchdog that reads another safety mechanism's work as an attack
 on it is worse than no watchdog.
+
+**"Reports without acting" was added after an adversarial review**, and it is a correction to
+this document as much as to the code. The secondary signal is only ever *reached* when the
+primary has converged — the mode reads manual and `F<n>Tg` reads back exactly what was
+written — so by construction it fires only on fans the firmware is faithfully holding for us.
+A fan that cannot reach a target the firmware **is** holding has not been reclaimed: it is
+obstructed, or failing, or declaring a maximum it cannot achieve. Re-asserting rewrites a
+number that is already correct, restoring hands the fan to Apple's thermal management against
+the same obstruction, and reporting it as reclaimed is a false statement about who holds it.
+So the secondary signal tells the user and changes nothing else. Only the primary signal
+reaches the re-assert and the fallback below.
 
 The evidence for the lag is thinner than the ruling needs, and that is an argument *for* the
 ruling rather than against it. [SMC-RESEARCH.md](SMC-RESEARCH.md) records `F0Tg` and `F0Ac`
@@ -341,12 +352,17 @@ temperature is above ceiling.
 This is a correctness rule as much as a safety one. A UI that lies about fan state is
 worse than a UI that reports an error, because the user acts on it.
 
-*Tested by:* `Tests/AeolusHelperTests/ReclamationWatchdogTests.swift`, entirely through
-`ScriptedControlPlane`. Two of those tests are mutation checks rather than examples, and
-both were run against their mutants: switching the primary signal to actual-versus-target
-turns "An emergency ramp in flight is not read as reclamation" red, and deleting the
-arbiter consultation that enforces the above-ceiling rule turns "It never re-asserts while
-the thermal emergency latch holds" red.
+*Tested by:* `Tests/AeolusHelperTests/ReclamationWatchdogTests.swift` and
+`ReclamationSupervisorTests.swift`, entirely through `ScriptedControlPlane`. Several of those
+tests are mutation checks rather than examples, and each names the mutation it kills; every
+one was run against its mutant in an isolated worktree.
+
+Four of them exist because an adversarial review found that nothing in the original suite
+could see a value read before an `await` and acted on after it — the watchdog is a reentrant
+actor, and a lease can end, or § 3 can latch, in the middle of any SMC read it suspends in.
+Those interleavings are scripted rather than raced, via a read seam that runs a side effect
+*inside* one read, because a concurrency test that starts all its work at once cannot see a
+bug that needs work to **arrive**.
 
 The re-assert budget and the blind-cycle threshold are **driven to exhaustion** by their
 tests rather than compared against their constants, so changing a constant changes what the
