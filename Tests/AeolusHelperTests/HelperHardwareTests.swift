@@ -34,7 +34,8 @@ struct HelperHardwareTests {
     func snapshotFromRealHardware() async throws {
         let authority = ReadOnlyFanAuthority(
             provider: SMCSensorProvider(), log: Self.log,
-            thermalEmergency: ThermalEmergencyLatch())
+            thermalEmergency: ThermalEmergencyLatch(),
+            reclamation: ReclamationLedger())
 
         let snapshot = try await authority.snapshot()
 
@@ -113,7 +114,8 @@ struct HelperHardwareTests {
     func warmSnapshotIsCheap() async throws {
         let authority = ReadOnlyFanAuthority(
             provider: SMCSensorProvider(), log: Self.log,
-            thermalEmergency: ThermalEmergencyLatch())
+            thermalEmergency: ThermalEmergencyLatch(),
+            reclamation: ReclamationLedger())
 
         let coldStart = ContinuousClock.now
         let first = try await authority.snapshot()
@@ -193,7 +195,8 @@ struct HelperHardwareTests {
         let scheduler = SMCReadScheduler(provider: SMCSensorProvider())
         let authority = ReadOnlyFanAuthority(
             provider: scheduler.snapshotReader, log: Self.log,
-            thermalEmergency: ThermalEmergencyLatch())
+            thermalEmergency: ThermalEmergencyLatch(),
+            reclamation: ReclamationLedger())
         let plane = SMCFanControlPlane(scheduler: scheduler)
         let critical = CriticalSensorSet.resolve(for: HardwareIdentity.current())
         try #require(!critical.isEmpty, "no curated critical set on the machine it was cut for")
@@ -252,7 +255,8 @@ struct HelperHardwareTests {
     func snapshotCrossesTheBoundary() async throws {
         let authority = ReadOnlyFanAuthority(
             provider: SMCSensorProvider(), log: Self.log,
-            thermalEmergency: ThermalEmergencyLatch())
+            thermalEmergency: ThermalEmergencyLatch(),
+            reclamation: ReclamationLedger())
         let harness = AnonymousListenerHarness(authority: authority)
 
         _ = await harness.payloadMessage { proxy, reply in

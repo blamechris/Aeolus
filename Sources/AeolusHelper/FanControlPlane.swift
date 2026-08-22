@@ -52,20 +52,25 @@ import SMCCore
 /// epics, so modelling the write side here — while implementing none of it — is the whole
 /// shape of this seam. `ScriptedControlPlane`, in the test target, is the scriptable mock
 /// every other E5 mechanism is tested through.
-protocol FanControlPlane: Sendable {
-
-    // MARK: - Reads
-
-    /// Reads the curated critical temperature keys, as one subset read.
-    ///
-    /// The set is the caller's — #102 curates it in code, per family, never from
-    /// configuration — so it crosses as a parameter rather than being fixed here.
-    ///
-    /// - Throws: `FanControlPlaneError.criticalTelemetryUnavailable` when **no** requested
-    ///   key produced a usable reading, including when the requested set is empty. A
-    ///   supervisor that cannot see any temperature is blind, and blindness must not arrive
-    ///   as a successful report of nothing — see `CriticalTemperatureReport`.
-    func readCriticalTemperatures(_ keys: [SMCKey]) async throws -> CriticalTemperatureReport
+/// The read half of the seam: what a mechanism needs to know about one fan, and how to
+/// try again when it can no longer find out.
+///
+/// ## Why the read half is a protocol of its own
+///
+/// So that `ReclamationWatchdog` **cannot command a fan**. § 5's watchdog has to read
+/// (mode, target read-back, actual speed, and a fresh envelope before any re-assert) and
+/// has to write (re-assert, and the restore it falls back to) — but its writes must go
+/// through `SafetyActorWriter`, which is what keeps § 8's ramp governor away from a
+/// safety-actor write by construction rather than by rule. Handing it a whole
+/// `FanControlPlane` would put `commandTarget(_:)` in its hand, and the exclusion would
+/// again be a thing a future edit must remember rather than a thing the compiler refuses.
+/// It holds one of these and a writer, exactly as `ThermalEmergency` holds a
+/// `CriticalTemperatureSensing` and a writer, and for the same reason.
+///
+/// `FanControlPlane` refines this, so every conformer answers both and no separate
+/// production type is needed — the split is about what a *consumer* can be given, not
+/// about what the hardware offers.
+protocol FanStateSensing: Sendable {
 
     /// Reads one fan's firmware-declared envelope, `F<n>Mn` and `F<n>Mx`.
     ///
@@ -84,12 +89,69 @@ protocol FanControlPlane: Sendable {
     ///   regressed every Mac whose fans idle at rest.
     func readEnvelope(ofFan index: Int) async throws -> FanEnvelope
 
-    /// Reads one fan's control state: `F<n>Md` and the `F<n>Tg` read-back.
+    /// Reads one fan's control state: `F<n>Md`, the `F<n>Tg` read-back, and `F<n>Ac`.
     ///
-    /// Both halves in one subset read, because both consumers want them together: startup
+    /// All three in one subset read, because every consumer wants them together: startup
     /// reconciliation asks "is this fan in manual with nobody holding it", and the
-    /// reclamation watchdog compares this read-back against the target it last commanded.
+    /// reclamation watchdog compares the target read-back against the target it last
+    /// commanded — `docs/SAFETY.md` § 5's primary signal — and the actual speed against
+    /// that same commanded target behind a dwell, which is § 5's secondary one.
+    ///
+    /// **`F<n>Ac` is here rather than on a verb of its own, and that is a scheduling
+    /// decision.** A separate `readActualRPM(ofFan:)` would take a second `.supervisor`
+    /// turn per fan per cycle, and every extra supervisor waiter drags a quota-forced
+    /// snapshot turn along with it once every `maxConsecutiveOvertakes` — see
+    /// `SMCReadScheduler` for the arithmetic, and
+    /// [#134](https://github.com/blamechris/Aeolus/issues/134) for why the count of
+    /// outstanding supervisor reads is the number that matters. Three keys in one turn
+    /// costs ~0.5 ms; a second turn costs a scheduling decision.
     func readControlState(ofFan index: Int) async throws -> FanControlState
+
+    /// Rebuilds whatever the conformer uses to reach the SMC, because reading has stopped
+    /// working and the connection itself is the suspect.
+    ///
+    /// `docs/SAFETY.md` § 5's escalation for persistent read failure is *"attempt a
+    /// reconnect, then restore automatic and report"*, and this is the first half. A stale
+    /// `io_connect_t` after wake ([#68](https://github.com/blamechris/Aeolus/issues/68)) is
+    /// the motivating case: every read fails, nothing else is wrong with the machine, and
+    /// the fans stay wherever a lease left them.
+    ///
+    /// ## It is allowed to fail, and the caller must not depend on it
+    ///
+    /// This is deliberately **not** a keystone verb. It is one attempt, on a path that is
+    /// already failing, and the mechanism that calls it — `ReclamationWatchdog` — treats a
+    /// throw here exactly as it treats a reconnect that succeeded and changed nothing: it
+    /// goes on to restore and report. Anything else would make recovery from blindness
+    /// depend on the machinery that has gone blind, which is the shape ADR 0007's keystone
+    /// exists to refuse.
+    ///
+    /// - Important: **`SMCFanControlPlane` throws `.reconnectNotBuilt` today**, and that is
+    ///   the honest state rather than a stub. Rebuilding the connection means
+    ///   `SMCConnection.close()` then `open()`, and `SMCConnection`'s own cache note says
+    ///   wiring recovery to a lifecycle event "is a decision for whoever owns that
+    ///   lifecycle, not this cache" — which is
+    ///   [#103](https://github.com/blamechris/Aeolus/issues/103), the issue that owns
+    ///   sleep/wake and therefore owns #68. The seam is declared here so the watchdog's
+    ///   escalation is written, reviewed and tested against a real branch now, and #103
+    ///   supplies one method body rather than a design. `ScriptedControlPlane` scripts both
+    ///   outcomes, so both branches are covered before the production body exists.
+    func reconnect() async throws
+}
+
+protocol FanControlPlane: FanStateSensing {
+
+    // MARK: - Reads
+
+    /// Reads the curated critical temperature keys, as one subset read.
+    ///
+    /// The set is the caller's — #102 curates it in code, per family, never from
+    /// configuration — so it crosses as a parameter rather than being fixed here.
+    ///
+    /// - Throws: `FanControlPlaneError.criticalTelemetryUnavailable` when **no** requested
+    ///   key produced a usable reading, including when the requested set is empty. A
+    ///   supervisor that cannot see any temperature is blind, and blindness must not arrive
+    ///   as a successful report of nothing — see `CriticalTemperatureReport`.
+    func readCriticalTemperatures(_ keys: [SMCKey]) async throws -> CriticalTemperatureReport
 
     // MARK: - The keystone
 
@@ -180,17 +242,29 @@ struct FanControlState: Sendable, Hashable {
     /// sit pinned with nobody noticing, and that is the failure this whole epic exists to
     /// prevent.
     let mode: FirmwareFanMode
-    /// `F<n>Tg`, or the reason it could not be obtained.
-    let target: FanTargetReadback
+    /// `F<n>Tg`, or the reason it could not be obtained. `docs/SAFETY.md` § 5's **primary**
+    /// signal, compared against `CommandedTarget`.
+    let target: FanRPMReadback
+    /// `F<n>Ac`, or the reason it could not be obtained. § 5's **secondary** signal, and
+    /// only ever consulted behind a dwell — see `ReclamationLimits.actualDwellCycles` for
+    /// why a bare comparison here would read every ramp as a reclamation.
+    let actualRPM: FanRPMReadback
 }
 
-/// What `F<n>Tg` said, or why it said nothing.
+/// What one RPM key said, or why it said nothing.
 ///
 /// An enum rather than `Double?` because `nil` would mean two different things — "this fan
 /// has no target set" and "this target could not be read" — and only the second one blinds
 /// the reclamation watchdog. A watchdog that cannot tell them apart reports "no divergence"
 /// for a fan it can no longer see.
-enum FanTargetReadback: Sendable, Hashable {
+///
+/// **Named for its shape rather than for one of its two uses.** It was `FanTargetReadback`
+/// while `F<n>Tg` was the only key that needed it; `FanControlState.actualRPM` is the same
+/// question about `F<n>Ac` and wants the same answer, and a second identical enum would be
+/// two places for one rule about what an unreadable RPM means. The rename is
+/// [#126](https://github.com/blamechris/Aeolus/issues/126)'s, and that issue's text names
+/// the old spelling.
+enum FanRPMReadback: Sendable, Hashable {
     case rpm(Double)
     case unreadable(reason: String)
 }
@@ -206,7 +280,7 @@ enum FanTargetReadback: Sendable, Hashable {
 ///
 /// `rpm` is a plain `Double` while `commandTarget(_:)` takes an `AuthorisedFanTarget`, and
 /// the asymmetry is deliberate. This is a *record of what happened*, compared numerically
-/// against a `FanTargetReadback` that is also a plain number, and it lands in logs and test
+/// against a `FanRPMReadback` that is also a plain number, and it lands in logs and test
 /// fixtures. Embedding the permit would make any past command mint future writes without
 /// ever touching the read side again — provenance decaying to "an envelope was read once,
 /// ever", inside the one type whose job is to be a passive observation.
@@ -287,6 +361,19 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
     /// while the thermal manager is holding the fans; see `SMCError.isCommandRejection` for
     /// why the response code alone does not identify that condition.
     case firmwareRefusedControl(detail: String)
+
+    /// This build cannot rebuild its connection to the SMC.
+    ///
+    /// Its own case rather than a `readFailed`, because the two say different things to the
+    /// one caller that sees it: a `readFailed` means the attempt was made and the machine
+    /// did not come back, and this means no attempt was possible at all. Both send
+    /// `ReclamationWatchdog` down the same branch — restore and report — and an operator
+    /// reading `log show` is entitled to know which happened.
+    ///
+    /// `SMCFanControlPlane` answers with this until
+    /// [#103](https://github.com/blamechris/Aeolus/issues/103) owns the lifecycle that
+    /// closes and reopens the connection. See `FanControlPlane.reconnect()`.
+    case reconnectNotBuilt
 
     /// This build has no SMC write path at all.
     ///

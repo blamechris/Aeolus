@@ -21,12 +21,14 @@ struct ReadOnlyFanAuthorityTests {
 
     private func authority(
         provider: FakeSensorProvider,
-        thermalEmergency: ThermalEmergencyLatch = ThermalEmergencyLatch()
+        thermalEmergency: ThermalEmergencyLatch = ThermalEmergencyLatch(),
+        reclamation: ReclamationLedger = ReclamationLedger()
     ) -> ReadOnlyFanAuthority {
         ReadOnlyFanAuthority(
             provider: provider,
             log: Self.log,
             thermalEmergency: thermalEmergency,
+            reclamation: reclamation,
             now: { Date(timeIntervalSince1970: 1_000_000) }
         )
     }

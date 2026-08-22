@@ -70,27 +70,69 @@ actor ScriptedControlPlane: FanControlPlane {
         var reads: ReadBehaviour
         /// What the firmware does with a mode or target write this stage.
         var writes: WriteBehaviour
+        /// Whether rebuilding the SMC connection succeeds this stage.
+        ///
+        /// Independent of `reads`, because the interesting scenario is precisely the one
+        /// where they disagree: a reconnect that returns cleanly while reads keep failing is
+        /// what `SAFETY.md` § 5 means by *"attempt a reconnect, **then** restore automatic
+        /// and report"* — the restore is not conditional on the reconnect having worked.
+        /// A mock that tied the two together could not express that, and would agree with an
+        /// implementation that skipped the restore whenever the reconnect succeeded.
+        var reconnects: ReconnectBehaviour
+        /// What the firmware does with a **target** write specifically, when that differs
+        /// from what it does with a mode write. `nil` means "whatever `writes` says".
+        ///
+        /// One axis could not express the state § 5's re-assert has to survive. Firmware
+        /// that accepts `F<n>Md` and then refuses `F<n>Tg` leaves a fan **off** Apple's
+        /// thermal management holding a speed nobody chose — the worst reachable state in
+        /// this project — where firmware that refuses both leaves it safely on automatic.
+        /// A single `WriteBehaviour` made those two indistinguishable, so the watchdog's
+        /// half-landed branch had nothing that could reach it.
+        var targetWrites: WriteBehaviour?
 
         init(
             temperatures: [String: Double] = [:],
             reads: ReadBehaviour = .answered,
-            writes: WriteBehaviour = .honoured
+            writes: WriteBehaviour = .honoured,
+            reconnects: ReconnectBehaviour = .refused(
+                reason: "this build has no reconnect; see SMCFanControlPlane.reconnect()"),
+            targetWrites: WriteBehaviour? = nil
         ) {
             self.temperatures = temperatures
             self.reads = reads
             self.writes = writes
+            self.reconnects = reconnects
+            self.targetWrites = targetWrites
         }
 
-        /// A stage where everything works and the machine reads as given.
-        static func nominal(temperatures: [String: Double] = [:]) -> Stage {
-            Stage(temperatures: temperatures)
+        /// A stage where the SMC answers and the machine reads as given.
+        ///
+        /// `writes` is a parameter rather than always `.honoured` because § 5's scenarios
+        /// are about a machine that reads perfectly and does not keep what it is told —
+        /// which is `.reverted`, on an otherwise nominal stage.
+        static func nominal(
+            temperatures: [String: Double] = [:],
+            writes: WriteBehaviour = .honoured,
+            targetWrites: WriteBehaviour? = nil
+        ) -> Stage {
+            Stage(temperatures: temperatures, writes: writes, targetWrites: targetWrites)
         }
 
         /// A stage where the SMC answers nothing. One of these is a transient failure; a
         /// run of them to the end of the script is a persistent one, because the last stage
         /// repeats forever.
-        static func blind(reason: String = "the SMC did not answer") -> Stage {
-            Stage(reads: .failed(reason: reason))
+        ///
+        /// `reconnects` defaults to the shipping helper's behaviour — refused — so a blind
+        /// scenario that says nothing about reconnecting gets the branch the build really
+        /// has. A scenario that wants the reconnect to return cleanly while reads keep
+        /// failing asks for it, because that disagreement is the interesting case: § 5
+        /// restores either way.
+        static func blind(
+            reason: String = "the SMC did not answer",
+            reconnects: ReconnectBehaviour = .refused(
+                reason: "this build has no reconnect; see SMCFanControlPlane.reconnect()")
+        ) -> Stage {
+            Stage(reads: .failed(reason: reason), reconnects: reconnects)
         }
     }
 
@@ -98,6 +140,18 @@ actor ScriptedControlPlane: FanControlPlane {
     enum ReadBehaviour: Sendable, Hashable {
         case answered
         case failed(reason: String)
+    }
+
+    /// Whether rebuilding the connection works this stage.
+    ///
+    /// The default is `.refused`, matching `SMCFanControlPlane.reconnect()`, so a scenario
+    /// that says nothing about reconnecting gets the behaviour the shipping helper actually
+    /// has rather than an optimistic one no build provides.
+    enum ReconnectBehaviour: Sendable, Hashable {
+        /// The call returns. It says nothing about whether reads now work — that is
+        /// `ReadBehaviour`'s, on this stage or the next.
+        case succeeded
+        case refused(reason: String)
     }
 
     /// What the firmware does with a control write this stage.
@@ -125,16 +179,48 @@ actor ScriptedControlPlane: FanControlPlane {
         var minimumRPM: Double
         var maximumRPM: Double
 
+        /// What `F<n>Ac` reads — the speed the fan is actually turning at.
+        ///
+        /// **Set independently of `targetRPM`, and a honoured write does not move it.**
+        /// That separation is the whole point: a real fan slews toward its target rather
+        /// than stepping, so a mock that snapped the actual speed to every commanded target
+        /// could not express the one state § 5's primary signal exists to survive — a ramp
+        /// in flight, where the target reads back correctly and the actual speed does not
+        /// match it yet. A test that wants the fan to have arrived says so, with
+        /// `arrived(at:)` or by advancing to a stage that sets it.
+        var actualRPM: Double
+
         init(
             mode: FirmwareFanMode = .automatic,
             targetRPM: Double = 1_800,
+            actualRPM: Double = 1_800,
             minimumRPM: Double = 1_350,
             maximumRPM: Double = 5_777
         ) {
             self.mode = mode
             self.targetRPM = targetRPM
+            self.actualRPM = actualRPM
             self.minimumRPM = minimumRPM
             self.maximumRPM = maximumRPM
+        }
+
+        /// A fan already under manual control, holding and turning at `rpm`.
+        ///
+        /// The state a client's fan is in between its first write and anything going wrong,
+        /// and therefore the starting point of every § 5 scenario that is about something
+        /// other than engaging.
+        static func held(at rpm: Double) -> FanCondition {
+            FanCondition(mode: .manual, targetRPM: rpm, actualRPM: rpm)
+        }
+
+        /// A fan under manual control that has been *told* `target` and is still turning at
+        /// `actual` — a ramp in flight.
+        ///
+        /// § 5's primary signal must read this as convergence and its secondary signal must
+        /// not fire on it before the dwell. Both are acceptance criteria on
+        /// [#126](https://github.com/blamechris/Aeolus/issues/126).
+        static func ramping(target: Double, actual: Double) -> FanCondition {
+            FanCondition(mode: .manual, targetRPM: target, actualRPM: actual)
         }
 
         /// A fan on automatic control with the development machine's measured envelope.
@@ -171,6 +257,7 @@ actor ScriptedControlPlane: FanControlPlane {
         case restoreToAutomatic(FanRestoreScope)
         case engageManualControl(fan: Int)
         case commandTarget(fan: Int, rpm: Double)
+        case reconnect
     }
 
     // MARK: - State
@@ -241,13 +328,39 @@ actor ScriptedControlPlane: FanControlPlane {
         try requireReadable(context: "fan \(index) control")
         let fan = try condition(ofFan: index)
 
-        let target: FanTargetReadback
-        switch FanControlPlaneValue.finite(fan.targetRPM, describing: "F\(index)Tg") {
-        case .success(let rpm): target = .rpm(rpm)
-        case .failure(let error): target = .unreadable(reason: String(describing: error))
-        }
+        return FanControlState(
+            index: index,
+            mode: fan.mode,
+            target: Self.readback(fan.targetRPM, describing: "F\(index)Tg"),
+            actualRPM: Self.readback(fan.actualRPM, describing: "F\(index)Ac"))
+    }
 
-        return FanControlState(index: index, mode: fan.mode, target: target)
+    /// One RPM value as a readback, with the seam's finiteness rule applied.
+    ///
+    /// The same rule `SMCFanControlPlane` applies, restated here rather than shared because
+    /// `FanControlPlaneValue.finite(_:describing:)` is the shared part — a double that
+    /// answered a NaN where the real thing reports a fault would hide the bug it was written
+    /// to catch, which is this mock's own stated contract.
+    private static func readback(_ value: Double, describing what: String) -> FanRPMReadback {
+        switch FanControlPlaneValue.finite(value, describing: what) {
+        case .success(let rpm): return .rpm(rpm)
+        case .failure(let error): return .unreadable(reason: String(describing: error))
+        }
+    }
+
+    // MARK: - Recovery
+
+    /// Answers according to this stage's `ReconnectBehaviour`, and **changes nothing else**.
+    ///
+    /// In particular it does not make reads start working: a scenario that wants a reconnect
+    /// to have fixed the machine advances to a stage whose `reads` is `.answered`. Tying the
+    /// two together here would agree with an implementation that treated a successful
+    /// reconnect as a reason to skip the restore, which is exactly what § 5 says not to do.
+    func reconnect() async throws {
+        attempts.append(.reconnect)
+        if case .refused(let reason) = stage.reconnects {
+            throw FanControlPlaneError.readFailed(detail: "reconnect: \(reason)")
+        }
     }
 
     // MARK: - Writes
@@ -288,7 +401,7 @@ actor ScriptedControlPlane: FanControlPlane {
         let index = target.fanIndex
         attempts.append(.commandTarget(fan: index, rpm: target.rpm))
         _ = try condition(ofFan: index)
-        try applyWrite { fans in
+        try applyWrite(behaviour: stage.targetWrites ?? stage.writes) { fans in
             fans[index]?.targetRPM = target.rpm
         }
         // Returned even when the firmware discarded it. The command was issued, and the
@@ -300,8 +413,10 @@ actor ScriptedControlPlane: FanControlPlane {
     // MARK: - Shared rules
 
     /// Applies a mutation according to this stage's `WriteBehaviour`.
-    private func applyWrite(_ mutate: (inout [Int: FanCondition]) -> Void) throws {
-        switch stage.writes {
+    private func applyWrite(
+        behaviour: WriteBehaviour? = nil, _ mutate: (inout [Int: FanCondition]) -> Void
+    ) throws {
+        switch behaviour ?? stage.writes {
         case .honoured:
             mutate(&fans)
         case .refused(let reason):
