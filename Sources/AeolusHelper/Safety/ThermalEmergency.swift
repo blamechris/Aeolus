@@ -192,11 +192,21 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// outgoing one is still suspended inside its read
     /// ([#144](https://github.com/blamechris/Aeolus/issues/144)).
     ///
-    /// A second entrant returns having done nothing, rather than waiting its turn. A queued
-    /// cycle would ask "is it cool enough to release?" against a reading taken before the
-    /// one already in flight, and § 3's asymmetry says a stale release is the one answer
-    /// that must never be reachable — the next scheduled cycle is a better answer than a
-    /// late one.
+    /// A second entrant returns having done nothing, rather than waiting its turn — and it
+    /// is dropped to serialise the mechanism, not because its evidence is stale. The cycle
+    /// already in flight is acting on a reading it has taken; the entrant has taken none,
+    /// so an entrant that queued would read *after* the incumbent returned and would hold
+    /// the fresher sample of the two. What makes dropping it right is that it has nothing
+    /// to add: § 3 is driven at a fixed cadence, an entrant exists at all only because a
+    /// stop-then-start overlapped two loops, and queueing would run cycles back to back —
+    /// spending two supervisor turns on the single SMC connection inside an interval
+    /// budgeted for one, on a machine whose temperature cannot have moved far between them.
+    ///
+    /// Nothing is carried past the return, which is what makes it safe to drop: `cycle()`
+    /// takes its own `readCriticalTemperatures()` below on every entry and keeps no sample
+    /// between calls, so the next scheduled cycle asks "is it cool enough to release?"
+    /// against a reading taken after this one finished rather than against anything this
+    /// entrant would have brought.
     func cycle() async {
         guard !isCycling else { return }
         isCycling = true
