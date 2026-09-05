@@ -105,10 +105,22 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// used to enforce it, and the reason
     /// `HelperCompositionTests.theModeReadIsBuiltFromTheSameProviderAsTheFanRead` is now
     /// narrower than it was.
+    ///
+    /// `clock` is the lease core's own, defaulted to the one that ships and injected by
+    /// nothing in `Sources/`. It is here for one property no other seam can reach:
+    /// `SupervisedFanAuthority.snapshot()` reads the machine and *then* the lease, so that a
+    /// lease lapsing during the ~0.5 s of subset reads is reported as gone rather than as
+    /// live. Demonstrating that requires time to pass **inside** the read, which is a
+    /// `TestClock` and a provider that advances it — see
+    /// `SupervisedFanAuthorityTests.theLeaseIsReadAfterTheMachineNotBefore`. The alternative
+    /// was a source tripwire on statement order, which is what this repository reaches for
+    /// when there is no seam; here one defaulted parameter buys the behavioural test instead,
+    /// and `CLAUDE.md` rule 6 is worth that much.
     init(
         plane: Plane,
         snapshotProvider: some SensorProvider,
         criticalSensors: CriticalSensorSet,
+        clock: some MonotonicClock = SystemMonotonicClock(),
         log: HelperLog = HelperLog(),
         leaseLog: LeaseLog = LeaseLog(),
         safetyLog: SafetyLog = SafetyLog()
@@ -157,6 +169,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             writeCapability: plane,
             telemetry: telemetry,
             thermalEmergency: latch,
+            clock: clock,
             log: leaseLog)
         self.leases = leases
 
@@ -181,8 +194,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             watchdog: reclamationWatchdog, log: safetyLog)
         leaseExpirySupervisor = LeaseExpirySupervisor(authority: leases, log: leaseLog)
 
-        authority = SupervisedFanAuthority(
-            reading: reading, leases: leases, writeCapability: plane, log: log)
+        authority = SupervisedFanAuthority(reading: reading, leases: leases, log: log)
     }
 
     // MARK: - Bring-up

@@ -1,6 +1,7 @@
 import AeolusXPC
 import FanKit
 import Foundation
+import SMCCore
 import Testing
 
 @testable import AeolusHelper
@@ -28,9 +29,9 @@ import Testing
 @Suite("The helper's fan restorer, composed", .timeLimit(.minutes(1)))
 struct HelperRestorerTests {
 
-    private static let helperLog = HelperLog(
+    static let helperLog = HelperLog(
         subsystem: "dev.aeolus.AeolusHelperTests", category: "Composition")
-    private static let safetyLog = SafetyLog(
+    static let safetyLog = SafetyLog(
         subsystem: "dev.aeolus.AeolusHelperTests", category: "Safety")
 
     /// One composed helper over the scripted firmware, with one fan already under manual
@@ -38,8 +39,17 @@ struct HelperRestorerTests {
     ///
     /// `writes` is the firmware's answer to the keystone mode write, which is the whole of
     /// the difference between a fan that came back and a fan that was abandoned.
+    /// `clock` and `snapshotProvider` are defaulted to the production shapes and are
+    /// overridden by exactly one caller between them —
+    /// `SupervisedFanAuthorityTests.theLeaseIsReadAfterTheMachineNotBefore`, which needs the
+    /// TTL to lapse *inside* the snapshot's read. They are parameters here rather than a
+    /// second fixture so that every test in both suites composes the identical graph: a
+    /// paraphrased composition is the defect #163 exists to end, and it would be a strange
+    /// place to reintroduce it.
     static func composed(
-        writes: ScriptedControlPlane.WriteBehaviour = .honoured
+        writes: ScriptedControlPlane.WriteBehaviour = .honoured,
+        clock: some MonotonicClock = SystemMonotonicClock(),
+        snapshotProvider: some SensorProvider = fanProvider(fanCount: 1)
     ) -> HelperComposition<ScriptedControlPlane> {
         HelperComposition(
             plane: ScriptedControlPlane(
@@ -47,8 +57,9 @@ struct HelperRestorerTests {
                 stages: [
                     .nominal(temperatures: LeaseFixture.nominalDieTemperatures, writes: writes)
                 ]),
-            snapshotProvider: fanProvider(fanCount: 1),
+            snapshotProvider: snapshotProvider,
             criticalSensors: .mac16x5,
+            clock: clock,
             log: helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: safetyLog)
@@ -59,7 +70,7 @@ struct HelperRestorerTests {
     /// Both calls take a `CommandableFan`, so this cannot register a fan whose declared
     /// bounds would have failed #37's gate — see `ReclamationWatchdog.manualControlEngaged(_:)`
     /// for why the parameter is the permit rather than an index.
-    private static func engage<Plane: FanControlPlane>(
+    static func engage<Plane: FanControlPlane>(
         fan index: Int, in helper: HelperComposition<Plane>
     ) async throws {
         let permit = try commandableFan(index, declaring: .held(at: 2_400))

@@ -21,13 +21,22 @@ import Foundation
 /// have to perform the write. The mechanisms behind it — the lease table, both teardown
 /// paths, § 3, § 5 — are now running rather than merely present.
 ///
-/// ## It holds no plane, and cannot write
+/// ## It holds no plane, no capability reporter, and cannot write
 ///
-/// The one thing it needs of the firmware beyond the read path is *whether there is a write
-/// path*, and it takes that as `FanWriteCapabilityReporting` rather than as a
-/// `FanControlPlane`. Handing an authority a plane would put `commandTarget(_:)` one
-/// `await` from a decoded client message, which is the shape E2 froze this seam to prevent —
-/// see `FanControlPlane` and `FanStateSensing` for the same argument made twice already.
+/// It holds the read path and the lease core. Not a `FanControlPlane`: that would put
+/// `commandTarget(_:)` one `await` from a decoded client message, which is the shape E2
+/// froze this seam to prevent — see `FanControlPlane` and `FanStateSensing` for the same
+/// argument made twice already. And not a `FanWriteCapabilityReporting` either, which is a
+/// correction rather than an omission. An earlier draft of this file stored one and
+/// documented it as *"why `apply` refuses"*, while `apply`'s own documentation said the
+/// opposite two screens below: the refusal is **not** sourced from the seam, because there
+/// is no control loop here for a capable seam to reach. A stored property no method reads,
+/// carrying a doc comment that asserts a gate, is the same defect as the literal this file
+/// replaced — so it is gone, and `supervisedApplyRefusesEvenWhenTheSeamCanWrite` pins the
+/// behaviour it claimed to explain.
+///
+/// The capability gate that *is* consulted lives one layer down, in
+/// `LeaseAuthority.acquireLease`, where a refusal still stops a write from being attempted.
 /// E3 adds the control loop; it does not add it here by accident first.
 ///
 /// ## The composition, in one line each
@@ -52,21 +61,11 @@ struct SupervisedFanAuthority: FanAuthority {
 
     private let leases: LeaseAuthority
 
-    /// Why `apply` refuses, asked of the seam rather than assumed. See
-    /// `FanWriteCapabilityReporting`.
-    private let writeCapability: any FanWriteCapabilityReporting
-
     private let log: HelperLog
 
-    init(
-        reading: ReadOnlyFanAuthority,
-        leases: LeaseAuthority,
-        writeCapability: some FanWriteCapabilityReporting,
-        log: HelperLog
-    ) {
+    init(reading: ReadOnlyFanAuthority, leases: LeaseAuthority, log: HelperLog) {
         self.reading = reading
         self.leases = leases
-        self.writeCapability = writeCapability
         self.log = log
     }
 
@@ -122,11 +121,14 @@ struct SupervisedFanAuthority: FanAuthority {
     /// what keeps this method honest the day the control loop lands — the check will already
     /// be here, in front of the write, rather than being added alongside it.
     ///
-    /// The refusal is `.writePathNotBuilt` unconditionally, and that is **not** a literal
-    /// standing in for `writeCapability`: there is no control loop in this type for a
-    /// capable plane to reach. A `.built` seam behind a helper with nothing to apply is a
-    /// state only a test can produce, and answering it any other way would claim a
-    /// capability this file does not contain. E3 owns the body; #17 owns the curve behind it.
+    /// The refusal is `.writePathNotBuilt` unconditionally, and it is **not** a literal
+    /// standing in for the seam's `writeCapability`: there is no control loop in this type
+    /// for a capable plane to reach, so this type holds no capability reporter to consult —
+    /// see the note at the top of the file for why an unread one was removed rather than
+    /// left as decoration. A `.built` seam behind a helper with nothing to apply is a state
+    /// only a test can produce, and `supervisedApplyRefusesEvenWhenTheSeamCanWrite` produces
+    /// it: answering it any other way would claim a capability this file does not contain.
+    /// E3 owns the body; #17 owns the curve behind it.
     func apply(
         _ settings: [FanSetting],
         leaseID: UUID,
