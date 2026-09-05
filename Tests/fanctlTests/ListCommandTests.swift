@@ -145,17 +145,24 @@ struct ListCommandFetchTests {
         #expect(reason == "firmware rejected the read")
     }
 
-    @Test("An implausible FNum surfaces as .implausibleFanCount carrying the decoded value")
+    // A non-finite FNum, not merely an out-of-range one: `implausibleFanCountIsRefused`
+    // above already covers 9,000,000 rejecting as .implausibleFanCount("9000000"), and
+    // `nonFiniteFanCountIsRefusedWithoutTrapping` already covers a NaN FNum refusing
+    // without trapping — but neither checks *what string* the classified case carries
+    // for a non-finite decode. `FanctlError(_ error: SMCFanEnumerationError)` routes
+    // `.implausibleFanCount`'s payload through `Formatting.number(_:)`, and this is the
+    // only test asserting that payload renders "NaN" rather than a numeric string.
+    @Test("A non-finite implausible FNum surfaces as .implausibleFanCount carrying \"NaN\"")
     func implausibleFanCountSurfacesClassifiedCase() async {
         let provider = FakeSensorProvider(
             keyedResults: [
-                "FNum": .success(.fake(key: "FNum", value: 9_000_000))
+                "FNum": .success(.fake(key: "FNum", value: .nan))
             ])
 
         let error = await #expect(throws: FanctlError.self) {
             try await ListCommand.fetch(provider: provider)
         }
-        #expect(error == .implausibleFanCount("9000000"))
+        #expect(error == .implausibleFanCount("NaN"))
     }
 
     @Test("An absent FNum key (not just FNum == 0) is treated as zero fans, not an error")

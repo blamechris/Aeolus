@@ -78,7 +78,8 @@ extension CatalogSensorLookup {
 
 extension CatalogLoadWarning {
     /// A human-readable rendering for `fanctl`'s stderr warning output — never parsed,
-    /// same contract as `SensorReadFailure.readableDescription` in `ListCommand.swift`.
+    /// same contract as `SensorReadFailure.readableDescription` in `SMCCore`'s
+    /// `SensorProvider.swift`.
     var readableDescription: String {
         switch self {
         case .bundledCatalogUnavailable(let reason):
