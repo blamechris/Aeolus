@@ -125,6 +125,13 @@ struct ReclamationWatchdogRecoveryTests {
 
     /// One unreadable cycle changes nothing. Taking a fan from a client because a single
     /// read missed would be over-firing on noise.
+    ///
+    /// **Asserted over the whole ledger, not over `reclaimedFans`.** Since #140 the ledger
+    /// records two causes and `reclaimedFans` answers only for `.systemReclaimed`, so a
+    /// `reclaimedFans.isEmpty` here would be blind to the one thing this test exists to
+    /// pin: the blindness threshold. Lower `blindCyclesBeforeDivergence` to 1 — or escalate
+    /// on the first unreadable cycle — and `causes.isEmpty` goes red where
+    /// `reclaimedFans.isEmpty` stays green.
     @Test("A transient read failure changes nothing")
     func aTransientReadFailureIsNotDivergence() async throws {
         let machine = ReclamationMachine(
@@ -135,7 +142,9 @@ struct ReclamationWatchdogRecoveryTests {
         await machine.watchdog.cycle()
 
         #expect(await machine.didRestore(fan: 0) == false)
-        #expect(await machine.ledger.reclaimedFans.isEmpty)
+        #expect(
+            await machine.ledger.causes.isEmpty,
+            "one unreadable cycle put something in the ledger")
 
         await machine.plane.advance()
         await machine.watchdog.cycle()

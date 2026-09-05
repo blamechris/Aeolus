@@ -83,8 +83,8 @@ struct ReclamationWatchdogStalenessTests {
         // The fan reads `.automatic`, which is `.modeReclaimed` — the strongest primary
         // signal there is. It must still not be acted on, because the fan is not ours.
         #expect(
-            await machine.ledger.reclaimedFans.isEmpty,
-            "an ordinary lease release was reported as a reclamation")
+            await machine.ledger.causes.isEmpty,
+            "an ordinary lease release left an entry in § 5's ledger")
         #expect(await machine.didRestore(fan: 0) == false)
         #expect(await machine.leases.activeLease() == nil)
         // **This assertion is what makes the test discriminate**, and without it the test
@@ -133,8 +133,8 @@ struct ReclamationWatchdogStalenessTests {
         #expect(await machine.watchdog.fansUnderManualControl == [0])
         // And nothing was concluded about it from the previous episode's target.
         #expect(
-            await machine.ledger.reclaimedFans.isEmpty,
-            "a freshly engaged fan was reported as reclaimed, using the old episode's target")
+            await machine.ledger.causes.isEmpty,
+            "a freshly engaged fan was recorded in the ledger, using the old episode's target")
         #expect(await machine.commandedRPMs.isEmpty, "a re-assert used a stale commanded target")
         #expect(await machine.didRestore(fan: 0) == false)
     }

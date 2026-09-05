@@ -36,7 +36,7 @@ struct ReclamationWatchdogTests {
 
         await machine.watchdog.cycle()
 
-        #expect(await machine.ledger.reclaimedFans.isEmpty)
+        #expect(await machine.ledger.causes.isEmpty)
         #expect(await machine.didRestore(fan: 0) == false)
         #expect(await machine.commandedRPMs.isEmpty)
     }
@@ -95,7 +95,7 @@ struct ReclamationWatchdogTests {
 
         await machine.watchdog.cycle()
 
-        #expect(await machine.ledger.reclaimedFans.isEmpty)
+        #expect(await machine.ledger.causes.isEmpty)
         #expect(await machine.didRestore(fan: 0) == false)
     }
 
@@ -156,8 +156,8 @@ struct ReclamationWatchdogTests {
         }
 
         #expect(
-            await machine.ledger.reclaimedFans.isEmpty,
-            "a fan whose target reads back correctly was reported as reclaimed")
+            await machine.ledger.causes.isEmpty,
+            "a fan whose target reads back correctly was written into § 5's ledger")
         #expect(
             await machine.didRestore(fan: 0) == false,
             "a fan Aeolus still controls was handed back to automatic")
@@ -189,7 +189,7 @@ struct ReclamationWatchdogTests {
             await machine.watchdog.cycle()
         }
 
-        #expect(await machine.ledger.reclaimedFans.isEmpty)
+        #expect(await machine.ledger.causes.isEmpty)
     }
 
     /// **Mutation check.** Delete the `ruling.permitsWrite` guard and this goes red.
@@ -218,12 +218,12 @@ struct ReclamationWatchdogTests {
         // Aeolus's own thermal override doing its job, and an `isReclaimedBySystem` that
         // stayed true for the rest of the process.
         #expect(
-            await machine.ledger.reclaimedFans.isEmpty,
-            "§ 3's own restore was attributed to the operating system")
+            await machine.ledger.causes.isEmpty,
+            "§ 3's own restore left an entry in § 5's ledger")
         #expect(machine.safetyLog.lines(containing: "**not** recording it as reclaimed").count == 1)
         // **This is the assertion that discriminates**, and the one above cannot.
         // Mutation-checked: re-adding `ledger.markReclaimed` to the pre-empted branch left
-        // `reclaimedFans.isEmpty` green, because `releaseToThermalEmergency(fanAt:)` ends
+        // the ledger assertion above green, because `releaseToThermalEmergency(fanAt:)` ends
         // with `ledger.clearReclaimed(fanAt:)` — the same call path marks the fan and then
         // erases the mark, so the end state is identical either way. What survives the
         // round trip is the `.fault` line `markReclaimed`'s transition report fires on the
