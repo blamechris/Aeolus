@@ -21,6 +21,11 @@ import Testing
 @Suite("The TTL supervisor's schedule")
 struct LeaseExpirySupervisorScheduleTests {
 
+    /// The shortest TTL the validator will grant, read from the validator that enforces it
+    /// rather than from `LeaseExpirySupervisor.maximumWake`: the two are coupled, and a test
+    /// that read the supervisor's own constant would agree with it however wrong it was.
+    static let shortest = Duration.seconds(AeolusXPCValidation.leaseTTLRange.lowerBound)
+
     /// The bound itself, at the worst case the validator permits: a 120-second lease must
     /// not buy a 120-second sleep.
     @Test("No sleep outruns the shortest TTL the helper can grant")
@@ -41,12 +46,8 @@ struct LeaseExpirySupervisorScheduleTests {
             log: LeaseFixture.log
         )
 
-        // Asserted against the validator's own floor rather than against the supervisor's
-        // constant: the two are coupled, and a test that read the constant would agree with
-        // it however wrong it was.
-        let shortestGrantable = Duration.seconds(AeolusXPCValidation.leaseTTLRange.lowerBound)
         #expect(
-            clock.sleeps.first == start.advanced(by: shortestGrantable),
+            clock.sleeps.first == start.advanced(by: Self.shortest),
             "a pass parked on a 120 s deadline cannot see a 5 s lease taken during it"
         )
     }
@@ -56,14 +57,31 @@ struct LeaseExpirySupervisorScheduleTests {
     /// A client takes the longest lease the validator allows; the supervisor parks; **while
     /// it is parked** that client releases and a second client takes the shortest lease
     /// there is. The assertion is on *when* the restore happened on the monotonic timeline,
-    /// because that is the harm: against the pre-#151 schedule the second lease lapsed at
-    /// `start + 6` and its fans were not handed back until `start + 120`.
+    /// because that is the harm: against the pre-#151 schedule the successor lapsed a
+    /// shortest-TTL after it was granted and its fans were not handed back until the
+    /// *original* holder's deadline, ~115 seconds later.
     ///
     /// An outcome-only assertion — `leaseCount == 0` once the loop has run — passes against
     /// the defect, because the pass that eventually wakes at the *stale* deadline does sweep
     /// the lapsed lease. Lateness is the whole defect, so lateness is what is measured.
-    @Test("A shorter lease taken during a sleep is still expired at its own deadline")
-    func aShorterLeaseTakenDuringASleepExpiresOnTime() async throws {
+    ///
+    /// Run at two offsets into the parked sleep, because the second is the boundary the type
+    /// documentation's `>=` sentence is about and the first deliberately steps off it:
+    ///
+    /// - **one second in**, so the successor's deadline is a real instant strictly after the
+    ///   wake the cap had already scheduled;
+    /// - **none at all**, so the successor is granted at the very instant the pass parked
+    ///   and its deadline lands exactly on the wake the **cap** chose — rather than on a
+    ///   wake some later pass chose from that deadline, which is all the one-second case
+    ///   ever reaches. It is swept by that same wake rather than by the pass after it only
+    ///   because `LeaseTable.hasLapsed` compares on `>=`. Mutating that to `>` reddens
+    ///   *both* offsets by a `minimumWake`, so the comparison is not what separates the two
+    ///   cases; which wake each one turns on is.
+    @Test(
+        "A shorter lease taken during a sleep is still expired at its own deadline",
+        arguments: [Duration.seconds(1), .zero]
+    )
+    func aShorterLeaseTakenDuringASleepExpiresOnTime(grantedAfter: Duration) async throws {
         let start = ContinuousClock.now
         let inner = TestClock(start: start, sleepBudget: 3)
         let clock = InterleavingClock(inner)
@@ -90,9 +108,7 @@ struct LeaseExpirySupervisorScheduleTests {
         )
 
         clock.duringNextSleep = {
-            // One second into the parked sleep, so the successor's deadline is a real
-            // instant rather than coinciding with the wake under test.
-            inner.advance(by: .seconds(1))
+            inner.advance(by: grantedAfter)
             do {
                 try await authority.releaseLease(id: longest.id, from: holder)
                 _ = try await authority.acquireLease(
@@ -113,8 +129,10 @@ struct LeaseExpirySupervisorScheduleTests {
             log: LeaseFixture.log
         )
 
-        // Granted at start + 1 with a 5 s TTL.
-        let successorDeadline = start.advanced(by: .seconds(6))
+        // Granted `grantedAfter` into the sleep, for the shortest TTL the validator will
+        // grant — derived from that range rather than restated against it, so this stays
+        // correct if the floor ever moves.
+        let successorDeadline = start.advanced(by: grantedAfter + Self.shortest)
         let expiry = try #require(
             await restorer.stamps.first { $0.cause == .leaseExpired },
             "the successor's lease must have been expired by the TTL supervisor"
