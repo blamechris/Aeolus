@@ -39,15 +39,25 @@ import Testing
 /// ## What this still cannot see, stated rather than discovered later
 ///
 /// - **A synchronous function that spawns an unstructured `Task` and writes inside it.**
-///   That is the one route around "a synchronous function cannot `await`". `Sources` has
-///   five such spawn sites today, all of them supervisors handing control to an `async run`
-///   that *is* in this population.
+///   That is the one route around "a synchronous function cannot `await`".
+///   `Sources/AeolusHelper` has **eleven** such spawn sites today, and an earlier draft of
+///   this bullet said five and called them all supervisors — which was both the wrong number
+///   and the wrong description, so the containment argument it offered was not the one the
+///   tree supports. The real one, asserted by `everyUnstructuredTaskHandsOffToThePopulation`
+///   below: **every spawn site's body is a single `await` of an `async` method that is
+///   itself in this population.** Seven are `HelperXPCService`'s XPC entry points hopping a
+///   message onto `HelperConnectionSession`; one is `HelperListenerDelegate`'s invalidation
+///   hop onto the same actor; three are the supervisors' `Task.detached` handing control to
+///   an `async run(…)`. None of the eleven writes in its own body, so the verb that could
+///   reach a write is acknowledged even though the spawning function is not.
 /// - **A verb listed on the wrong list on purpose.** Putting a writer in
 ///   `permitFreeFunctions` is a lie a reviewer can read, which is the trade every allowlist
 ///   makes; what it buys is that the lie has to be written down.
 /// - **A computed property.** The permit mint is one — `FanEnvelope.commandable` — and what
 ///   confines it is the access levels
 ///   `WriteAuthorisationTests.anAuthorisationTypeCannotBeMintedElsewhere` asserts.
+/// - **An operator.** `SeamScanner.functions(in:)` scans `func <name>`, so
+///   `SafetyPrecedence.swift`'s synchronous `static func <` is not in the population at all.
 ///
 /// The maintenance cost is real and is the intended cost: a new `async` helper function does
 /// not compile a green suite until it is classified here.
@@ -106,9 +116,14 @@ struct WriteVerbAllowlistTests {
     ///
     /// [ADR 0007](../../docs/ADR/0007-safety-composition.md): restore-to-automatic must
     /// never depend on trusted data, because it is the action that must remain available to
-    /// a helper that cannot read. A permit *is* trusted data. This list is the population
-    /// half of `theRestoreVerbTakesNoAuthorisation` — that test asserts the property on
-    /// whatever it finds, this one asserts what there is to find.
+    /// a helper that cannot read. A permit *is* trusted data.
+    ///
+    /// The list names the keystone verbs a maintainer has acknowledged; it does not by
+    /// itself assert that they are all of them. Exhaustiveness comes from
+    /// `everyVerbIsAcknowledged`, whose union of the three lists must equal the scanned
+    /// population in both directions — an unlisted restore verb fails there, not here. An
+    /// earlier version of this comment claimed this list "asserts what there is to find",
+    /// which is a claim about a test that does not exist.
     private static let restoreVerbs: Set<String> = [
         "FanControlPlane.swift: restoreToAutomatic(_: FanRestoreScope)",
         "SMCFanControlPlane.swift: restoreToAutomatic(_: FanRestoreScope)",
@@ -294,9 +309,15 @@ struct WriteVerbAllowlistTests {
     func aPermitTravelsBesideNothingThatNamesAFan() throws {
         let bearing = try population().filter { $0.mentions(anyOf: Self.permits) }
 
+        // Distinct keys, not `bearing.count`: a protocol requirement and its same-file
+        // conformer are two declarations sharing one key, exactly as `LeaseClock` and
+        // `CriticalTemperatureSensing` are written today. Counting declarations made a
+        // permit-bearing verb written that way fail this guard with **no entry a maintainer
+        // could add** — the list is keyed, so it can never hold the second one.
+        let bearingKeys = Set(bearing.map(\.key))
         #expect(
-            bearing.count == Self.permitBearingVerbs.count,
-            "this scan is looking at \(bearing.count) verbs, not the acknowledged list")
+            bearingKeys == Self.permitBearingVerbs,
+            "this scan is looking at \(bearingKeys.count) verbs, not the acknowledged list")
 
         for verb in bearing {
             let permits = verb.parameterTypes.filter(Self.permits.contains)
@@ -322,23 +343,84 @@ struct WriteVerbAllowlistTests {
         }
     }
 
-    /// The keystone's population half. `theRestoreVerbTakesNoAuthorisation` asserts the
-    /// property on the verbs a `restore\w*` pattern finds; this asserts that the verbs the
-    /// pattern finds are the verbs there are.
+    /// ADR 0007's keystone, said in one place and failing with the ADR's own words.
+    ///
+    /// **This test cannot fail alone, and that is stated rather than hidden.** A restore verb
+    /// that grew a permit also reddens `onlyAcknowledgedVerbsNameAPermit` (its key joins the
+    /// bearing set), and moving the entry to `permitBearingVerbs` to quiet that reddens
+    /// `everyVerbIsAcknowledged`'s two-lists-at-once check. What this adds is the failure
+    /// *message*: a set difference tells a maintainer which key moved, and only this says why
+    /// a restore verb may not hold one. That is the whole of its job.
+    ///
+    /// It iterates every population member whose key is acknowledged rather than collapsing
+    /// the population into a dictionary first. A dictionary keeps one declaration per key, so
+    /// the earlier form examined the protocol requirement and never the same-file conformer
+    /// beneath it — the one shape where the two can disagree.
     @Test("Every acknowledged restore verb is in the tree and carries no authorisation")
     func restoreVerbsCarryNoAuthorisation() throws {
-        let byKey = Dictionary(
-            try population().map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        let scanned = try population()
 
         for key in Self.restoreVerbs.sorted() {
-            let verb = try #require(byKey[key], "\(key) is acknowledged but not in the tree")
-            #expect(
-                !verb.mentions(anyOf: Self.permits),
-                """
-                \(verb.file) declares `\(verb.text)`. Restore-to-automatic must never depend \
-                on trusted data — ADR 0007's keystone — and a permit is trusted data.
-                """
-            )
+            let declarations = scanned.filter { $0.key == key }
+            #expect(!declarations.isEmpty, "\(key) is acknowledged but not in the tree")
+
+            for verb in declarations {
+                #expect(
+                    !verb.mentions(anyOf: Self.permits),
+                    """
+                    \(verb.file) declares `\(verb.text)`. Restore-to-automatic must never \
+                    depend on trusted data — ADR 0007's keystone — and a permit is trusted \
+                    data.
+                    """
+                )
+            }
         }
+    }
+
+    // MARK: - The route around "a synchronous function cannot await"
+
+    /// The suite doc's first stated limit, asserted rather than asserted *about*.
+    ///
+    /// An unstructured `Task` lets a synchronous function reach an `async` write, so every
+    /// spawn site is a hole in the population — unless what it spawns is itself acknowledged.
+    /// That is what holds here: each of the eleven bodies is one `await` of an `async` method
+    /// in the population, and none writes in its own body.
+    ///
+    /// The count is asserted per file so it cannot drift silently. A twelfth spawn site fails
+    /// this with the file it was added to, and the maintainer either shows it hands off the
+    /// same way and updates the number, or has found the hole.
+    @Test("Every unstructured Task in the helper hands off to an acknowledged verb")
+    func everyUnstructuredTaskHandsOffToThePopulation() throws {
+        let expected = [
+            "HelperListenerDelegate.swift": 1,
+            "HelperXPCService.swift": 7,
+            "LeaseExpirySupervisor.swift": 1,
+            "ReclamationSupervisor.swift": 1,
+            "ThermalSupervisor.swift": 1,
+        ]
+
+        let spawn = try NSRegularExpression(
+            pattern: #"\bTask(\.detached)?\s*(\([^()]*\))?\s*\{"#)
+        var counted: [String: Int] = [:]
+
+        for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
+            let code = SeamScanner.strippingComments(
+                try String(contentsOf: file, encoding: .utf8))
+            let matches = spawn.numberOfMatches(
+                in: code, range: NSRange(code.startIndex..<code.endIndex, in: code))
+            if matches > 0 { counted[file.lastPathComponent] = matches }
+        }
+
+        #expect(
+            counted == expected,
+            """
+            the unstructured `Task` spawn sites in Sources/AeolusHelper changed: found \
+            \(counted.sorted(by: { $0.key < $1.key })), expected \
+            \(expected.sorted(by: { $0.key < $1.key })). Each existing one is a single \
+            `await` of an `async` method that this suite acknowledges, which is the only \
+            reason a synchronous spawner need not be in the population. Show that a new one \
+            does the same — and if it writes in its own body, that is the hole, not the count.
+            """
+        )
     }
 }
