@@ -761,13 +761,13 @@ actor LeaseAuthority {
     ///
     /// **Last of the four things `acquireLease` suspends on, and last of the three refusals
     /// among them — and the position is reasoned.** The four are the fan enumeration, § 3's
-    /// latch, the curated-telemetry read, and this; the enumeration is the one that is not a
+    /// latch, the sightedness proof, and this; the enumeration is the one that is not a
     /// refusal, and the sweep of lapsed leases runs ahead of all four rather than being one
     /// of them. Step 3 of `acquireLease` lists them in that order, and says which count is
     /// which for the same reason this does: two nearby sentences counting different things
     /// with the same word is how the previous "three" and "four" came to disagree. § 3's
     /// latch
-    /// and the curated-telemetry read are both properties of the *machine* and answer for
+    /// and the sightedness proof are both properties of the *machine* and answer for
     /// every fan at once; this one costs one `.supervisor` turn **per requested fan**, so it
     /// is the most expensive question here and the one most worth not asking when a cheaper
     /// refusal already applies. `refuseIfWritePathNotBuilt` running first (step 0) is what

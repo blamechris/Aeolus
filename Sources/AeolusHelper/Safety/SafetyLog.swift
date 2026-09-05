@@ -1,3 +1,9 @@
+// swiftlint:disable file_length
+// This file is exempt from `file_length` by design, not by neglect: `emit` is `private`, so
+// every safety-log line must live here — that is what keeps the log's vocabulary fixed and
+// reviewable in one place (the § 5 block below records why widening `emit` was rejected).
+// `type_body_length` still binds each extension. D26, PR #199.
+
 import Foundation
 import SMCCore
 import os

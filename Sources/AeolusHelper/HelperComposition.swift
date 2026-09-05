@@ -142,8 +142,9 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     ///
     /// The order below is A1's, and it is the order of the dependencies rather than a
     /// preference: plane, then the latch and the ledger both the snapshot and the mechanisms
-    /// read, then the restorer, then the lease core, then the two safety actors, then the
-    /// loops, then the authority.
+    /// read, then the sightings cache, then the restorer, then reconciliation, then the
+    /// lease core, then the two safety actors, then the loops, then the authority, then the
+    /// power responder.
     ///
     /// `snapshotProvider` is the reader the client-facing snapshot takes its turns from, and
     /// it is the one parameter worth a paragraph. The fan read and the `F<n>Md` read are both
