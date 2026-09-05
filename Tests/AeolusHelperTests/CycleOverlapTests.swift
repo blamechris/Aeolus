@@ -182,6 +182,50 @@ struct CancelledSweepTests {
         #expect(await machine.attempts.contains(.engageManualControl(fan: 0)))
         #expect(await machine.commandedRPMs == [2_400])
     }
+
+    /// **Kills:** restoring "The fan is left on automatic control" to
+    /// `SafetyLog.reclamationAbandonedOnCancellation(fan:)`. The line then claims a control
+    /// state the firmware contradicts in the very fixture the guard was written against.
+    ///
+    /// The scenario above is a `ReclamationDivergence.targetDiverged`, not a
+    /// `.modeReclaimed`: the firmware holds fan 0 at 1,800 RPM in `.manual` while Aeolus
+    /// believes it commanded 2,400. Abandoning the re-assert there leaves the fan **off**
+    /// Apple's thermal management holding a target Aeolus never wrote — so a log line saying
+    /// it was handed back to the system is an unverified claim about control state, which is
+    /// what `CLAUDE.md` rule 6 exists to forbid. Only one of the three divergences that reach
+    /// this guard puts the fan on automatic control, and the line cannot tell which it is.
+    ///
+    /// Both halves are asserted together on purpose: the firmware's mode is what makes the
+    /// wording wrong, so a test that only grepped the string would still pass if the fixture
+    /// silently stopped producing a target divergence.
+    @Test("Abandoning a re-assert never claims a diverged fan is on automatic control")
+    func abandonmentDoesNotClaimAutomaticControl() async throws {
+        let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
+        let sensing = GatedFanStateSensing(plane)
+        let machine = ReclamationMachine(
+            plane: plane, fans: [0: .held(at: 1_800)], sensing: sensing)
+        try await machine.hold(fan: 0, commanding: 2_400)
+
+        let sweep = Task { await machine.watchdog.cycle() }
+        #expect(
+            await yieldUntil("the sweep's control-state read") {
+                await sensing.controlStateRequests.isEmpty == false
+            })
+        sweep.cancel()
+        await sensing.open()
+        await sweep.value
+
+        let state = try await plane.readControlState(ofFan: 0)
+        #expect(
+            state.mode == .manual,
+            "the fixture stopped scripting a target divergence, so this test proves nothing")
+
+        let abandonment = machine.safetyLog.lines(containing: "stopped short of re-asserting")
+        #expect(abandonment.count == 1)
+        #expect(
+            abandonment.first?.contains("left on automatic control") == false,
+            "§ 5 said it handed back a fan the firmware still has off automatic control")
+    }
 }
 
 /// Holds every critical-temperature sample open until the test lets it go, and records how
