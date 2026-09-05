@@ -205,7 +205,11 @@ actor StampingFanRestorer: FanRestoring {
         self.clock = clock
     }
 
-    func restoreToAutomatic(fans: Set<Int>, because cause: FanRestoreCause) async {
+    /// Restores everything it is asked for: #151 turns on *when* the restore happened, never
+    /// on a firmware that would not take the write. The abandoning case has its own doubles,
+    /// in `HandbackBoundTests`.
+    func restoreToAutomatic(fans: Set<Int>, because cause: FanRestoreCause) async -> Set<Int> {
         stamps.append(Stamp(fans: fans, cause: cause, at: clock.now))
+        return []
     }
 }
