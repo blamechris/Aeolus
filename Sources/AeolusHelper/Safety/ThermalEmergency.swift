@@ -259,26 +259,33 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         // the time the clear actually lands, one more suspension point later. A `release()`
         // that cleared whatever it found would take the boundary case the guard above exists
         // to refuse and reintroduce it between the decision and the act.
-        if hottest.celsius <= releaseThresholdCelsius {
-            guard await latch.release(ifStill: episode) else {
-                // The episode ended and, if anything is holding now, a newer one began — in
-                // either case this cycle's decision was about something that no longer
-                // exists, and the safe reading of "I do not know what is holding" is to take
-                // back whatever is engaged. Idempotent, and silent on an empty table.
-                await takeBackAnythingEngagedSinceFiring()
-                return
-            }
+        //
+        // **A refused compare-and-clear falls through to the take-back below rather than
+        // into a branch of its own.** It means the episode ended and, if anything is holding
+        // now, a newer one began — so this cycle's decision was about something that no
+        // longer exists, and the safe reading of "I do not know what is holding" is the same
+        // take-back the still-hot path already does. Written as its own `else` body it was a
+        // *duplicate* of that statement which no test could reach: only a second cycle
+        // running concurrently can move the latch inside this one hop, and
+        // `ThermalSupervisor` is the sole driver until
+        // [#127](https://github.com/blamechris/Aeolus/issues/127) — so `fatalError()` could
+        // stand in that body, and the take-back could be deleted from it, with the whole
+        // suite green. An unreachable copy of a reachable statement is exactly where #152's
+        // shape reappears unnoticed. One statement, then, and deleting it goes red.
+        if hottest.celsius <= releaseThresholdCelsius, await latch.release(ifStill: episode) {
             log.thermalEmergencyReleased(hottest: hottest, threshold: releaseThresholdCelsius)
             return
         }
 
-        // Still holding. `fire(_:)` empties the registry as it goes, so anything in it now
+        // Still holding — above the release threshold, or judged against an episode that has
+        // since moved on. `fire(_:)` empties the registry as it goes, so anything in it now
         // came under manual control **after** the emergency fired — a fan whose lease was
         // granted in the window described on `LeaseAuthority.revokeEveryLease(because:)`,
         // or one engaged under a lease that raced the latch. Without this the emergency is
         // one-shot per episode: `fire(_:)` is unreachable while latched, so such a fan
         // would never be bridged, never restored, and its lease never revoked, with the
-        // machine above its ceiling the whole time.
+        // machine above its ceiling the whole time. Idempotent, and silent on an empty
+        // table.
         await takeBackAnythingEngagedSinceFiring()
     }
 
