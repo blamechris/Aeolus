@@ -307,6 +307,7 @@ reconciliation reads them. One machine, and the readings below are single snapsh
 | 2026-09-05 ~16:40 | `0` | `0` | Macs Fan Control running, evidently not holding |
 | 2026-09-05 ~17:06 | `1` | `1` | Macs Fan Control running **and holding both fans** |
 | 2026-09-05 ~17:50 | `0` | `0` | Macs Fan Control still running, back to not holding |
+| 2026-09-05 20:13 | `0` | `0` | Macs Fan Control **quit** (process absent) |
 
 Three things follow, and the third is the one worth keeping.
 
@@ -332,7 +333,19 @@ on the reviewer's desktop rather than about Aeolus (see
 `HelperHardwareTests.theComposedHelperServesRealHardware`, which now asserts the pair), and a
 reconciliation pass would find a fan in manual or not depending on *when the helper started*
 — which is an argument for the restart policy and reconciliation shipping together, not
-against.
+against. `HelperHardwareTests.snapshotFromRealHardware` now tolerates either value
+([#200](https://github.com/blamechris/Aeolus/issues/200)), while the checklist row
+`everyFanIsOnAutomaticControlAtStart` deliberately still pins `0` — that row's whole point
+is to say when this machine is *not* in the "nothing holding the fans" state, and loosening
+it would make it stop recording anything.
+
+At the fourth reading, `Ftst` read `0` (`ui8`, raw `00`) — the first `Ftst` reading in this
+series, taken by a separate `fanctl dump --key Ftst` in the same minute as the mode keys,
+**not** through the test's path: `SMCFanControlPlane.readControlState` deliberately refuses
+to read `Ftst`, so no co-read of the two happened. And the full suite (1172 tests, 174
+suites) passed on this machine with the tool quit — on `main` at `c8fb218`, before this
+change, so with `snapshotFromRealHardware` still pinning `.automatic` — including both
+hardware assertions that had failed while it held the fans.
 
 Still not verified: that writing `1` to `F<n>Md` engages manual control, or that writing `0`
 returns a held fan to Apple's management. Both are writes and belong to E4. What is settled

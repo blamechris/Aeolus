@@ -30,7 +30,18 @@ struct HelperHardwareTests {
     private static let log = HelperLog(
         subsystem: "dev.aeolus.AeolusHelperTests", category: "Hardware")
 
-    @Test("A snapshot from real hardware reports real fans, controllable by nothing")
+    /// A foreign tool holding a fan in manual is a legitimate state of this development
+    /// machine, not a regression in it. Macs Fan Control was observed holding both fans on
+    /// 2026-09-05 (`docs/SMC-RESEARCH.md` § "`F0Md`/`F1Md` have now been observed reading
+    /// `1`"), releasing them again within the hour while still running. `#expect(fan.mode ==
+    /// .automatic)` conflated two different claims: "controllable by nothing" is a fact about
+    /// `manualControlAvailability`, which this build's absent write path makes true regardless of
+    /// what else is running; "the firmware reports automatic" is a fact about the machine's
+    /// *current* state, which depends on what else is running. This test reports the helper,
+    /// not whatever the reviewer's desktop happened to be doing.
+    @Test(
+        "Real hardware: real fans, in whatever mode the firmware declares, controllable by nothing"
+    )
     func snapshotFromRealHardware() async throws {
         // One provider, read through twice: the fans and the mode key must come from the
         // same source, or a snapshot is one instant's report assembled from two.
@@ -48,7 +59,30 @@ struct HelperHardwareTests {
         #expect(snapshot.activeLease == nil)
         #expect(snapshot.isThermalEmergencyActive == false)
         for fan in snapshot.fans {
-            #expect(fan.mode == .automatic)
+            // `F<n>Md` on this machine legitimately declares either `.automatic` (nothing
+            // is holding the fan) or `.manualFixed` (something is) — see
+            // `ReadOnlyFanReport.controlMode(_:)` — and which one this run observes is a
+            // fact about the machine, not about this build. Printed rather than pinned to
+            // one value; `everyFanIsOnAutomaticControlAtStart` is the checklist row that
+            // wants `0` specifically, and it keeps pinning it.
+            //
+            // Printed as what this test actually observed — the decoded mode — and never
+            // as a raw `F<n>Md` byte, because nothing here reads one: `.automatic` covers
+            // both "firmware declared 0" and "the key could not be read" (`controlMode(_:)`
+            // folds a `nil` read into `.automatic`, #178), and `.manualFixed` covers any
+            // non-zero value, not only `1`. A register value in this line would be a
+            // number nobody read (#208).
+            print(
+                "fan \(fan.index) reads .\(fan.mode.rawValue) "
+                    + "(the decoded mode; the raw F\(fan.index)Md byte is not read here)")
+            // A tripwire on `controlMode(_:)`'s codomain, not on machine state: on this
+            // path `mode` comes only from that function, which maps onto exactly
+            // `{.automatic, .manualFixed}`, so no hardware state can fail this line and a
+            // `.manualCurve` here would mean the mapping itself had grown a third case.
+            // "No lease is live" is `#expect(snapshot.activeLease == nil)` above, not this
+            // line. Hardware coverage of the mode read is the checklist row and, over doubles,
+            // in `ReadOnlyFanAuthorityModeTests`.
+            #expect(fan.mode == .automatic || fan.mode == .manualFixed)
             #expect(fan.targetRPM == nil)
             #expect(fan.manualControlAvailability == .unavailable(.writePathNotBuilt))
         }
