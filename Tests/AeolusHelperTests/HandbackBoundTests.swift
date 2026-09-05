@@ -153,14 +153,21 @@ struct HandbackBoundTests {
     /// went away; it says nothing about the firmware, which is `refuseIfBlind`'s distinction
     /// applied to the write rather than to a read.
     ///
-    /// The gate is the ordering, not `cancel()`: without it the task can finish the whole
-    /// restore before the cancellation lands, and the test passes without ever exercising
-    /// the property. `AsyncSignal.wait()` is a non-throwing continuation, so waiting on it
-    /// does not itself observe the cancellation.
+    /// **What the gate guarantees: cancellation is already pending when `restoreToAutomatic`
+    /// is entered.** The teardown task cannot get past `cancelled.wait()` until either
+    /// `teardown.cancel()` or `cancelled.signal()` releases it, and both of those happen
+    /// after the main task has observed `ready` — so `Task.isCancelled` is true on entry in
+    /// every interleaving. Without the gate the task could run the whole restore before
+    /// `cancel()` ever landed, and the test would pass green having exercised nothing.
+    ///
+    /// `AsyncSignal.wait()` is cancellation-aware since #174, so the parked `wait()` is the
+    /// call that observes the cancellation first: it throws `CancellationError`. That is
+    /// swallowed with `try?` on purpose — the gate's only job is the ordering above, and the
+    /// property under test is what the *restorer* does next, not what the gate reports.
     ///
     /// No caller runs a teardown on a cancellable task today. This is what lets one.
     @Test("A teardown on a cancelled task still lands the write", .timeLimit(.minutes(1)))
-    func cancellationIsNotAFirmwareRefusal() async {
+    func cancellationIsNotAFirmwareRefusal() async throws {
         let attempting = CancellationSensitiveRestore()
         let restorer = BoundedFanRestorer(attempting: attempting, log: LeaseFixture.log)
         let ready = AsyncSignal()
@@ -168,10 +175,10 @@ struct HandbackBoundTests {
 
         let teardown = Task {
             await ready.signal()
-            await cancelled.wait()
+            try? await cancelled.wait()
             return await restorer.restoreToAutomatic(fans: [0], because: .connectionInvalidated)
         }
-        await ready.wait()
+        try await ready.wait()
         teardown.cancel()
         await cancelled.signal()
         let abandoned = await teardown.value
