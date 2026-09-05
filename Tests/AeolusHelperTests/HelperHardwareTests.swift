@@ -414,23 +414,25 @@ struct HelperHardwareTests {
         // This is the hardware row E5.4d can execute today, and it is worth being exact
         // about what it does and does not show. `SMCFanControlPlane.restoreToAutomatic(_:)`
         // throws `.controlPathNotBuilt` before touching IOKit, so what is demonstrated on
-        // this machine is the **failure** half of the exit-code contract: the keystone is
-        // issued, it is refused by the build rather than by the firmware, and the process
-        // would exit non-zero so that launchd starts it again. The row that matters more —
-        // `launchctl bootout` or `kill -TERM` with a lease held, and a fan that actually
-        // comes back — needs a signed daemon and a write path, and belongs to E3/E4
-        // bring-up.
+        // this machine is the **nothing-to-restore** half of the exit-code contract, ruling
+        // D15's: the keystone is issued twice, it is refused by the *build* rather than by
+        // the firmware, and the process would exit zero so that launchd leaves it down. The
+        // row that matters more — `launchctl bootout` or `kill -TERM` with a lease held, and
+        // a fan that actually comes back — needs a signed daemon and a write path, and
+        // belongs to E3/E4 bring-up. So does the row that would show a non-zero exit: it
+        // takes a firmware that refuses a mode write, and no build here can issue one.
         //
         // It also doubles as this test's `shutDown()`: stopping the supervisors is the
         // teardown's own fourth step, and running it here rather than beside it is the point.
         await helper.signalTeardown.run(stoppingSupervisorsWith: { await helper.shutDown() })
 
         #expect(
-            await teardown.events == [.exited(.restoreFailed)],
+            await teardown.events == [.exited(.nothingToRestore)],
             """
-            the orderly teardown claimed it had handed the fans back on a build whose \
-            keystone write cannot reach the firmware. launchd would not restart the helper, \
-            and nothing else would clear a fan left in manual.
+            the orderly teardown did not report "nothing to restore" on a build whose \
+            keystone write cannot reach the firmware. A non-zero exit here would make \
+            #165's `SuccessfulExit = false` restart this helper after every bootout and \
+            every quit, over fans it could never have touched.
             """)
         #expect(await helper.thermalSupervisor.isRunning == false, "§ 3 outlived the teardown")
         #expect(await helper.reclamationSupervisor.isRunning == false, "§ 5 outlived it")

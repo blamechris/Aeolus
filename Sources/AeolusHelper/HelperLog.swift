@@ -311,12 +311,29 @@ struct HelperLog: Sendable {
         )
     }
 
+    /// The keystone was refused because this build has no write path at all.
+    ///
+    /// `notice` rather than `fault`, which is ruling D15's whole point: a build that cannot
+    /// write cannot have put a fan into manual, so there is nothing here for an operator to
+    /// act on. It is logged rather than passed over in silence because it is also the line
+    /// that explains a zero exit on a helper that wrote nothing.
+    func teardownFoundNothingToRestore() {
+        log.notice(
+            """
+            The orderly teardown's machine-wide restore was refused: this build has no SMC \
+            write path, so no fan can be off automatic control because of Aeolus. The helper \
+            exits zero and launchd leaves it down.
+            """
+        )
+    }
+
     /// The last line the process writes.
     func teardownFinished(outcome: TeardownOutcome) {
         log.notice(
             """
-            Orderly teardown finished; exiting \(outcome.rawValue, privacy: .public). Every \
-            lease was released and a machine-wide restore was attempted.
+            Orderly teardown finished (\(String(describing: outcome), privacy: .public)); \
+            exiting \(outcome.exitCode, privacy: .public). Every lease was released and a \
+            machine-wide restore was attempted.
             """
         )
     }

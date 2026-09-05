@@ -58,12 +58,32 @@ actor TeardownJournal {
 /// refusal, all of it.
 actor JournallingPlane: FanControlPlane {
 
+    /// What this plane's *restore* verb does, which is the one axis `ScriptedControlPlane`
+    /// cannot express.
+    ///
+    /// `WriteBehaviour.refused` models a firmware that says no; nothing models a **build**
+    /// with no write path at all, and after ruling D15 those are different outcomes with
+    /// different exit codes. `SMCFanControlPlane` is the thing being stood in for here, so
+    /// `.refusedAsNotBuilt` throws exactly what it throws, from the same place: before any
+    /// of the firmware underneath is touched, and therefore without a journal entry, because
+    /// no restore reached the firmware to record.
+    enum RestoreBehaviour: Sendable, Hashable {
+        case reachTheFirmware
+        case refusedAsNotBuilt
+    }
+
     private let wrapped: ScriptedControlPlane
     private let journal: TeardownJournal
+    private let restores: RestoreBehaviour
     private var gate: ControlMessageGate?
 
-    init(journal: TeardownJournal, wrapping wrapped: ScriptedControlPlane) {
+    init(
+        journal: TeardownJournal,
+        restores: RestoreBehaviour = .reachTheFirmware,
+        wrapping wrapped: ScriptedControlPlane
+    ) {
         self.journal = journal
+        self.restores = restores
         self.wrapped = wrapped
     }
 
@@ -76,11 +96,19 @@ actor JournallingPlane: FanControlPlane {
         self.gate = gate
     }
 
-    nonisolated var writeCapability: FanWriteCapability { .built }
+    /// Reported from the same field the restore verb reads, so a `.refusedAsNotBuilt` plane
+    /// cannot be handed a lease it could never honour. `restores` is a `let` of a `Sendable`
+    /// type, which is what makes it readable from outside the actor without an `await`.
+    nonisolated var writeCapability: FanWriteCapability {
+        restores == .refusedAsNotBuilt ? .notBuilt : .built
+    }
 
     // MARK: - The observed verb
 
     func restoreToAutomatic(_ scope: FanRestoreScope) async throws {
+        if restores == .refusedAsNotBuilt {
+            throw FanControlPlaneError.controlPathNotBuilt
+        }
         let closed = await gate?.isClosed ?? false
         await journal.record(.restored(scope, gateClosed: closed))
         try await wrapped.restoreToAutomatic(scope)

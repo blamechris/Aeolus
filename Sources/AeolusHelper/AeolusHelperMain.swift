@@ -19,14 +19,15 @@ import SMCCore
 //
 // The graph this file used to build inline is now `HelperComposition`. What is left here is
 // the *lifecycle*: resolve who to obey, build the graph, bring it up, advertise the service,
-// and never return. Startup reconciliation (#164) and sleep/wake (#167) each added a step to
-// that bring-up and nothing to this file; the signal handlers (#166) and connection health
-// (#168) go the same way — one step in the composition's bring-up, and nothing to the
-// listener, the admission policy, the handshake gate, or the contract.
+// and never return. Startup reconciliation (#164), sleep/wake (#167) and the orderly signal
+// handlers (#166) each added a step to that bring-up and nothing to this file —
+// `HelperComposition.bringUp()` installs the signal handlers last; connection health (#168)
+// goes the same way — one step in the composition's bring-up, and nothing to the listener,
+// the admission policy, the handshake gate, or the contract.
 //
 // The restart policy (#165) is the exception, and it touches no Swift at all: launchd is
 // told to restart this process whenever it exits non-zero, which makes the exit code a
-// contract this file will have to keep once #166 gives it an orderly teardown to exit from.
+// contract this file keeps now that #166 has given it an orderly teardown to exit from.
 
 /// The helper's entry point: resolve who this daemon will obey, bring the safety subsystem
 /// up, stand up the listener, and wait.

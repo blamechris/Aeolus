@@ -209,6 +209,12 @@ struct WriteVerbAllowlistTests {
     /// belong here rather than reading as a hedged keystone: the budget decides how many
     /// times to try the write, never whether the caller is entitled to it, and it is spent
     /// without consulting a lease, a sensor or a permit.
+    ///
+    /// `SignalTeardown.keystone()` is here for the same reason and takes nothing at all: it
+    /// is `restoreToAutomatic(.everyFan)` plus the mapping from what that write answered to
+    /// the process's exit code. Naming no fan is what makes it the keystone at its widest —
+    /// no reading, no bound, no lease — which is exactly the shape ADR 0007 defines it to
+    /// have, and the reason a helper on its way out can always issue it.
     private static let restoreVerbs: Set<String> = [
         "BoundedFanRestorer.swift: restoreOnce(fanAt: Int)",
         "HelperFanRestorer.swift: restoreOnce(fanAt: Int)",
@@ -227,6 +233,7 @@ struct WriteVerbAllowlistTests {
         "FanAuthority.swift: restoreAllToAutomatic(from: ConnectionID)",
         "ReadOnlyFanAuthority.swift: restoreAllToAutomatic(from: ConnectionID)",
         "HelperConnectionSession.swift: restoreAllToAutomatic()",
+        "SignalTeardown.swift: keystone()",
     ]
 
     /// Everything else in the target.

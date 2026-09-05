@@ -7,42 +7,84 @@ import Foundation
 /// `KeepAlive = { SuccessfulExit = false }` with this enum: a teardown that put the fans
 /// back is finished and must not be restarted, and one that could not is a machine with a
 /// fan possibly still off automatic control, which is exactly the case where the helper
-/// should come back and reconcile. Naming the two outcomes rather than passing an `Int32`
-/// around keeps that pairing readable at both ends.
-enum TeardownOutcome: Int32, Sendable, Hashable, CaseIterable {
+/// should come back and reconcile. Naming the outcomes rather than passing an `Int32` around
+/// keeps that pairing readable at both ends.
+///
+/// ## Why "nothing to restore" is a third case and not a fourth reading of the other two
+///
+/// Ruling D15 on [#197](https://github.com/blamechris/Aeolus/pull/197): a
+/// `FanControlPlaneError.controlPathNotBuilt` refusal of the keystone is **proof there was
+/// nothing to hand back**, not a failed handback. A build with no write path cannot have put
+/// a fan into manual — `LeaseAuthority` refuses every grant on `writeCapability`, and
+/// `SMCFanControlPlane` throws before touching IOKit — so exiting non-zero would only make
+/// #165's `SuccessfulExit = false` restart the helper after every `launchctl bootout` or app
+/// quit on a pre-E3 build. It carries the *same exit code* as `.restored` and a *different
+/// name*, because the two say different things to a reader of `log show` and the same thing
+/// to launchd.
+///
+/// The distinction is sourced from the thrown error case and never from `writeCapability` or
+/// a literal: consulting the capability would reintroduce the `FanWriteCapability` literal
+/// that type was created to delete, and it would survive into the E3/E4 build where the same
+/// refusal means something entirely different.
+///
+/// The raw-value backing is gone with it. Two cases cannot share a raw value, and the exit
+/// code is not an identity — it is a mapping, and `exitCode` is where it lives so that a
+/// test can execute it. See `TeardownExit`.
+enum TeardownOutcome: Sendable, Hashable, CaseIterable {
 
     /// Every lease released and `restoreToAutomatic(.everyFan)` accepted by the firmware.
-    case restored = 0
+    case restored
 
-    /// The machine-wide restore threw. Non-zero, deliberately: see `TeardownExit`.
-    case restoreFailed = 1
+    /// The keystone was refused with `.controlPathNotBuilt`: this build has no write path,
+    /// so no fan can be off automatic control because of Aeolus. Zero, deliberately.
+    case nothingToRestore
+
+    /// The machine-wide restore threw something else. Non-zero, deliberately.
+    case restoreFailed
+
+    /// The code the process ends with, and the whole of A3's launchd contract.
+    ///
+    /// A pure function of the outcome rather than a `switch` inside the terminating closure,
+    /// for one reason: a closure whose body calls `exit` cannot be executed by a test, so a
+    /// mapping written there is a contract nothing can check. Inverting this switch reddens
+    /// `theOutcomesCarryTheExitCodesTheRestartPolicyReads`.
+    var exitCode: Int32 {
+        switch self {
+        case .restored, .nothingToRestore: 0
+        case .restoreFailed: 1
+        }
+    }
 }
 
 /// The **only** place in `Sources/AeolusHelper` that ends the process.
 ///
-/// A3 makes `exit(0)` mean one specific thing — *the orderly teardown ran and the fans are
-/// back* — so it may appear on one path and nowhere else. `SignalTeardownTests` asserts
-/// that at the source, because a second `exit(0)` added anywhere would still compile, still
-/// pass every behavioural test, and quietly tell launchd not to restart a helper that never
-/// restored anything.
+/// A3 makes a zero exit mean one specific thing — *the orderly teardown ran and no fan is
+/// left off automatic control by Aeolus* — so it may be reached on one path and nowhere
+/// else. `SignalTeardownTests` asserts that at the source, because a second `exit` added
+/// anywhere would still compile, still pass every behavioural test, and quietly tell launchd
+/// not to restart a helper that never restored anything.
+///
+/// ## Nothing here to invert
+///
+/// The body is one expression. It used to be a `switch` over the outcome, which is the whole
+/// of A3's contract written in the one place a test cannot execute: `exit` returns `Never`,
+/// so a suite that ran this closure would end the `swift test` process, and inverting the
+/// switch therefore survived every test in the repository. The mapping now lives on
+/// `TeardownOutcome.exitCode`, which is a pure function under test, and what is left here is
+/// a call with no branch in it. The tripwire in `SignalTeardownTests` keeps it that way: this
+/// is the only file under `Sources/AeolusHelper` that may name `exit`, and no literal exit
+/// code may be written anywhere, because a literal is a second mapping competing with the
+/// one above.
 ///
 /// It is a value rather than a function so that it can be the default argument of
-/// `SignalTeardown.init`, and so a test can substitute a recorder for it. `exit` returns
-/// `Never`, so in the shipping daemon nothing after the terminate call in
-/// `SignalTeardown.run(stoppingSupervisorsWith:)` runs at all; under a recorder it returns,
-/// which is what lets a test observe the exit as an ordered event beside the restores rather
-/// than by inspecting a return value.
+/// `SignalTeardown.init`, and so a test can substitute a recorder for it. In the shipping
+/// daemon nothing after the terminate call in `SignalTeardown.run(stoppingSupervisorsWith:)`
+/// runs at all; under a recorder it returns, which is what lets a test observe the exit as an
+/// ordered event beside the restores rather than by inspecting a return value.
 enum TeardownExit {
 
     /// Ends the process with the code `outcome` names.
-    static let process: @Sendable (TeardownOutcome) async -> Void = { outcome in
-        switch outcome {
-        case .restored:
-            exit(0)
-        case .restoreFailed:
-            exit(TeardownOutcome.restoreFailed.rawValue)
-        }
-    }
+    static let process: @Sendable (TeardownOutcome) async -> Void = { exit($0.exitCode) }
 }
 
 /// Where the signals come from, so the handler body can be run without raising one.
@@ -154,24 +196,31 @@ actor DispatchSignalSources: SignalSourcing {
 /// 4. **Stop the supervisors**, after the writes rather than before them. A supervisor
 ///    stopped first is § 3 and § 5 not watching while the last two writes of the process's
 ///    life are issued.
-/// 5. **Exit**, `0` if the restore landed and non-zero if it did not.
+/// 5. **Re-issue the keystone, and take the exit code from *that* write.** Ruling D19 on
+///    [#197](https://github.com/blamechris/Aeolus/pull/197). `stop()` cancels the three
+///    supervisors; it does not await a cycle already in flight. A § 3 fire or a § 5
+///    re-assert that began before step 4 can therefore land its `engageManualControl` write
+///    *after* step 3 has run, and the process would then exit `0` — "every fan is back" —
+///    over a fan it had just put into manual. The keystone takes no reading, no bound and no
+///    lease, so re-issuing it is idempotent and cheap, and it closes the window without
+///    reordering anything A4 fixed. Step 3 is not redundant with it: a restore issued only
+///    after the supervisors stop is a restore that has not happened while § 3 and § 5 are
+///    still running, which is the ordering step 4's own paragraph exists to protect.
+/// 6. **Exit**, `0` if the final restore landed or there was nothing to restore, and
+///    non-zero if it failed. See `TeardownOutcome`.
 ///
 /// ## What this build actually does today, said plainly
 ///
-/// `SMCFanControlPlane.restoreToAutomatic(_:)` throws `.controlPathNotBuilt`
-/// unconditionally, so **on the shipping helper step 3 always fails and this path always
-/// exits non-zero.** That is not a bug being deferred; it is the honest reading of A4's
-/// "unconditionally … non-zero if the restore failed". A build with no write path cannot
-/// verify that the fans are automatic, and the exit code says exactly that to launchd. The
-/// tempting alternative — consult `writeCapability` and call a `.notBuilt` plane's refusal a
-/// success — reintroduces the capability *literal* `FanWriteCapability` was created to
-/// delete, and it would survive into the E3/E4 build where the same refusal means something
-/// entirely different.
-///
-/// The consequence, so nobody meets it as a surprise: once #165 lands
-/// `KeepAlive = { SuccessfulExit = false }`, `kill -TERM` on today's helper makes launchd
-/// start it again. `launchctl bootout` unloads the job and is unaffected, and once E3 gives
-/// the plane a real write path a successful restore exits `0` and nothing restarts.
+/// `SMCFanControlPlane.restoreToAutomatic(_:)` throws `.controlPathNotBuilt` unconditionally,
+/// so on the shipping helper the keystone is refused by the *build* rather than by the
+/// firmware — and ruling D15 is that this is `.nothingToRestore` and **exits `0`**. The
+/// argument is `TeardownOutcome`'s and is not repeated here; the consequence is worth stating
+/// plainly, because the previous draft of this paragraph promised the opposite. Once #165
+/// lands `KeepAlive = { SuccessfulExit = false }`, `kill -TERM` on today's helper lets it
+/// stay down, exactly as `launchctl bootout` does, rather than restarting a helper that had
+/// nothing to hand back. Any *other* refusal — a firmware that says no on an E3 build — is
+/// still non-zero, and is still the case where launchd should bring the helper back so that
+/// reconciliation can clear whatever is left in manual.
 ///
 /// ## No crash handler, no mach exception port, no `atexit`
 ///
@@ -255,17 +304,35 @@ actor SignalTeardown<Plane: FanControlPlane> {
         await gate.close()
         await leases.releaseEveryLease()
 
-        let outcome: TeardownOutcome
-        do {
-            try await restore.restoreToAutomatic(.everyFan)
-            outcome = .restored
-        } catch {
-            log.teardownRestoreFailed(detail: String(describing: error))
-            outcome = .restoreFailed
-        }
+        // Step 3. Its outcome is logged and deliberately not returned: the exit code comes
+        // from the write below, after the supervisors have stopped writing.
+        _ = await keystone()
 
         await stop()
+
+        // Step 5, ruling D19. The one whose answer launchd reads.
+        let outcome = await keystone()
         log.teardownFinished(outcome: outcome)
         await seams.terminate(outcome)
+    }
+
+    /// `restoreToAutomatic(.everyFan)`, and what its answer means for the exit code.
+    ///
+    /// The `.controlPathNotBuilt` clause is ruling D15's, and it is sourced from the thrown
+    /// case: this is a build with no write path, so the refusal is proof there is nothing to
+    /// hand back rather than a failure to hand it back. Consulting `writeCapability` here
+    /// instead would be the `FanWriteCapability` literal all over again, and it would still
+    /// be here on the E3 build where the same refusal means the firmware said no.
+    private func keystone() async -> TeardownOutcome {
+        do {
+            try await restore.restoreToAutomatic(.everyFan)
+            return .restored
+        } catch FanControlPlaneError.controlPathNotBuilt {
+            log.teardownFoundNothingToRestore()
+            return .nothingToRestore
+        } catch {
+            log.teardownRestoreFailed(detail: String(describing: error))
+            return .restoreFailed
+        }
     }
 }
