@@ -23,7 +23,13 @@ import Testing
 /// Each test asserts `didFire`, so a scenario that silently failed to arrange its own
 /// interleaving is a failure rather than a pass. That guard is the difference between this
 /// suite and one that would go green against the very code it was written to condemn.
-@Suite("The reclamation watchdog, across a suspension point")
+/// `itExaminesFansSequentially` awaits `machine.watchdog.cycle()` gated by
+/// `GatedFanStateSensing`'s own `withCheckedContinuation`, which never times out on its
+/// own — a watchdog that deadlocks instead of overlapping its reads would hang this suite
+/// rather than fail it, exactly the class of defect
+/// [#109](https://github.com/blamechris/Aeolus/issues/109) is about. `.timeLimit` is the
+/// same fix `AnonymousListenerTests` and `SMCReadSchedulerTests` already carry.
+@Suite("The reclamation watchdog, across a suspension point", .timeLimit(.minutes(1)))
 struct ReclamationWatchdogStalenessTests {
 
     /// **The rule-2 defect.** A fan released while the envelope read is in flight must not

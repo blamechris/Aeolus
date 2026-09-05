@@ -33,7 +33,14 @@ import Testing
 /// refuses with different text. Asserting the authority's text is what distinguishes "the
 /// new guard fired" from "the old gate happened to catch it", and without it these tests
 /// would pass against an implementation with no authority-side guard at all.
-@Suite("Binding a lease to a dead connection")
+/// `tombstoneIsRecordedBeforeTheReleaseSuspends` awaits `AsyncSignal.wait()`, which never
+/// times out on its own: during mutation testing of the lease core, deleting a guard made
+/// this suite hang indefinitely instead of failing, because the restore it was waiting on
+/// never happened
+/// ([#109](https://github.com/blamechris/Aeolus/issues/109)). `.timeLimit` turns that into a
+/// named failure, the same fix `AnonymousListenerTests` and `SMCReadSchedulerTests` already
+/// carry for the same reason.
+@Suite("Binding a lease to a dead connection", .timeLimit(.minutes(1)))
 struct LeaseBindingRaceTests {
 
     /// What the authority says when a request's own connection died mid-flight.

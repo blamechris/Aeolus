@@ -167,7 +167,12 @@ struct LeaseReleaseTests {
 /// Reported independently by two reviewers of #107, which is why it is closed here rather
 /// than deferred to E5.3 — the interlock needs nothing from the control plane, and a core
 /// that ships with a known rule-6 window is a worse foundation than one that does not.
-@Suite("The handback window")
+/// Every test here awaits `AsyncSignal.wait()` on a gate the test itself must open, so a
+/// mutation that never reaches the release point hangs the suite rather than failing it —
+/// the class of defect [#109](https://github.com/blamechris/Aeolus/issues/109) is about.
+/// `.timeLimit` is the same fix `LeaseBindingRaceTests` carries for its own `AsyncSignal`
+/// use.
+@Suite("The handback window", .timeLimit(.minutes(1)))
 struct LeaseHandbackWindowTests {
 
     /// The interleaving stated as the failure it produces, not as the mechanism: while fan
@@ -268,7 +273,10 @@ struct LeaseHandbackWindowTests {
 /// for the #95 liveness check — "a test could stay green on the early refusal while the
 /// guarded region below was unprotected, which is exactly how a guard survives being
 /// deleted" — so the new guard gets the same treatment the old one has.
-@Suite("The handback guard sits after the last suspension point")
+/// Same reasoning as `LeaseHandbackWindowTests`: this suite gates on `AsyncSignal.wait()`
+/// and `ScriptedFanEnumeration.Gate`, and a guard that never releases hangs it rather than
+/// failing it.
+@Suite("The handback guard sits after the last suspension point", .timeLimit(.minutes(1)))
 struct LeaseHandbackGuardPlacementTests {
 
     /// The interleaving a hoisted guard admits: the acquirer suspends in the hardware round
