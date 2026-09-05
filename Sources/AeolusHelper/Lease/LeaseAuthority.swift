@@ -68,6 +68,14 @@ actor LeaseAuthority {
     private let wallClock: @Sendable () -> Date
     private let enumeration: any FanEnumerating
     private let restorer: any FanRestoring
+    /// Whether the build behind the restorer can write at all, asked once per grant.
+    ///
+    /// **The narrow role, never the plane.** This type owns no hardware, and holding a
+    /// `FanControlPlane` to read one property would put `commandTarget(_:)` in the lease
+    /// core's hand — the same exclusion `FanStateSensing` exists to give
+    /// `ReclamationWatchdog`. See `FanWriteCapabilityReporting` for why the answer is
+    /// synchronous, and `acquireLease` for why it is consulted before anything else.
+    private let writeCapability: any FanWriteCapabilityReporting
     /// The third — and, by design, last — thing this type needs of the machine. See
     /// `CriticalTemperatureSensing` for why it is its own role rather than a method on
     /// either of the two above.
@@ -114,6 +122,7 @@ actor LeaseAuthority {
     init(
         enumeration: some FanEnumerating,
         restorer: some FanRestoring,
+        writeCapability: some FanWriteCapabilityReporting,
         telemetry: some CriticalTemperatureSensing,
         thermalEmergency: ThermalEmergencyLatch,
         clock: some MonotonicClock = SystemMonotonicClock(),
@@ -123,6 +132,7 @@ actor LeaseAuthority {
     ) {
         self.enumeration = enumeration
         self.restorer = restorer
+        self.writeCapability = writeCapability
         self.telemetry = telemetry
         self.thermalEmergency = thermalEmergency
         self.clock = clock
@@ -137,7 +147,13 @@ actor LeaseAuthority {
     ///
     /// The order of the steps is the design, so it is worth reading as one:
     ///
-    /// 1. **Self-renewal is refused first**, before any work is done for a request that
+    /// 0. **The build's own write capability is refused before anything else**, because it
+    ///    is the only refusal here that is a fact about the *executable* rather than about
+    ///    the request or the machine. Nothing a client sends and nothing the SMC says can
+    ///    change it, so every other answer given ahead of it invites a retry that can never
+    ///    succeed — and one of those answers, `noThermalTelemetry`, costs a real 34-key
+    ///    hardware read to produce. See `refuseIfWritePathNotBuilt`.
+    /// 1. **Self-renewal is refused next**, before any work is done for a request that
     ///    cannot be granted whatever the machine says.
     /// 2. The TTL is re-validated here although the listener already checked it. Sharing
     ///    `AeolusXPCValidation` is not the same as the listener doing the checking
@@ -163,6 +179,7 @@ actor LeaseAuthority {
         _ request: LeaseRequest,
         from connection: ConnectionID
     ) async throws -> Lease {
+        try refuseIfWritePathNotBuilt(connection)
         guard !request.isSelfRenewing else {
             log.refusedSelfRenewal(connection)
             throw AeolusXPCFault.manualControlUnavailable(reason: .selfRenewalNotBuilt)
@@ -479,6 +496,33 @@ actor LeaseAuthority {
     /// the client.
     private static let invalidatedInFlight = AeolusXPCFault.helperFailed(
         detail: "the connection was invalidated while this request was in flight")
+
+    /// Refuses the grant when this build has no SMC write path.
+    ///
+    /// **Synchronous, and first in `acquireLease`.** Both halves are the point.
+    ///
+    /// *First*, because this is the only refusal in the method that no client and no machine
+    /// can change. `refuseIfBlind` costs a real 34-key `.supervisor` read, so ordering it
+    /// ahead of this one would spend a hardware round trip to produce an answer about the
+    /// *sensors* for a request that was never going to be granted whatever they said — and a
+    /// client told `noThermalTelemetry` reasonably retries when the machine recovers, into a
+    /// refusal that is not about the machine at all. `LeaseWriteCapabilityTests` asserts the
+    /// read count, not merely the fault, because a check that is merely *present* can be
+    /// moved below the read by an ordinary-looking edit and nothing else would notice.
+    ///
+    /// *Synchronous*, because `FanWriteCapabilityReporting` has no `async` on it: "before
+    /// any hardware round trip" is then a property of the type rather than a claim about
+    /// where this line sits. See that protocol.
+    ///
+    /// It replaces `ReadOnlyFanAuthority`'s hard-coded `Self.noWritePath` — the same fault,
+    /// the same reason case, sourced from the seam that would have to perform the write
+    /// instead of from a literal. `AeolusXPCFault.manualControlUnavailable(reason:)` and
+    /// `.writePathNotBuilt` both already exist, so `AeolusXPCVersion` does not move.
+    private func refuseIfWritePathNotBuilt(_ connection: ConnectionID) throws {
+        guard writeCapability.writeCapability == .notBuilt else { return }
+        log.refusedNoWritePath(connection)
+        throw AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
+    }
 
     /// Refuses the grant if the helper cannot currently see a critical temperature.
     ///

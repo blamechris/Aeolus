@@ -286,6 +286,16 @@ actor ScriptedControlPlane: FanControlPlane {
 
     private var stage: Stage { stages[min(stageIndex, stages.count - 1)] }
 
+    /// `.built`, always: this firmware really does take writes, and `WriteBehaviour` is how
+    /// a scenario says one was refused.
+    ///
+    /// `nonisolated`, so the answer costs no actor hop and no read — see
+    /// `FanWriteCapabilityReporting`, which is the whole reason a mechanism can ask it before
+    /// touching hardware. It is deliberately **not** scriptable per stage: the capability is
+    /// a property of the build behind the seam, not of the machine at a moment, and a mock
+    /// that could toggle it would let a test drive a state no executable can be in.
+    nonisolated var writeCapability: FanWriteCapability { .built }
+
     // MARK: - Reads
 
     func readCriticalTemperatures(_ keys: [SMCKey]) async throws -> CriticalTemperatureReport {

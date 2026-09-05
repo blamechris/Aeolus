@@ -317,6 +317,7 @@ enum LeaseFixture {
     static func authority(
         enumeration: ScriptedFanEnumeration = ScriptedFanEnumeration(),
         restorer: any FanRestoring = RecordingFanRestorer(),
+        writeCapability: any FanWriteCapabilityReporting = writePathBuilt(),
         telemetry: any CriticalTemperatureSensing = sightedTelemetry(),
         thermalEmergency: ThermalEmergencyLatch = ThermalEmergencyLatch(),
         clock: TestClock = TestClock(),
@@ -326,6 +327,7 @@ enum LeaseFixture {
         LeaseAuthority(
             enumeration: enumeration,
             restorer: restorer,
+            writeCapability: writeCapability,
             telemetry: telemetry,
             thermalEmergency: thermalEmergency,
             clock: clock,
@@ -359,6 +361,21 @@ enum LeaseFixture {
             ),
             set: .mac16x5
         )
+    }
+
+    /// A build that can write — the **real** scripted firmware, not a stand-in.
+    ///
+    /// The default for every lease test, because an ordinary lease test is about what
+    /// happens *after* the capability gate. Answering it with `ScriptedControlPlane` rather
+    /// than a bespoke one-property double is the same argument `sightedTelemetry()` makes:
+    /// the conformer under the seam is the shipped one, so a change to what `.built` means
+    /// reaches every test that depends on it.
+    ///
+    /// The empty stage is deliberate. Nothing here reads a temperature or names a fan — the
+    /// capability is answered without touching the plane's state at all, which is exactly the
+    /// property `FanWriteCapabilityReporting` exists to guarantee.
+    static func writePathBuilt() -> any FanWriteCapabilityReporting {
+        ScriptedControlPlane(fans: [:], stages: [.nominal()])
     }
 
     /// Telemetry that cannot see: the SMC answers nothing, for every stage, forever.

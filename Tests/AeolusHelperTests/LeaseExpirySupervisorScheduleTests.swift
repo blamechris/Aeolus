@@ -92,6 +92,7 @@ struct LeaseExpirySupervisorScheduleTests {
         let authority = LeaseAuthority(
             enumeration: ScriptedFanEnumeration(),
             restorer: restorer,
+            writeCapability: LeaseFixture.writePathBuilt(),
             telemetry: LeaseFixture.sightedTelemetry(),
             thermalEmergency: ThermalEmergencyLatch(),
             clock: clock,
