@@ -54,9 +54,29 @@ enum SeamScanner {
 
         var isAsync: Bool { effects.contains("async") }
 
-        /// `File.swift: name(label:label:)` — stable across a return-type or body change,
-        /// and different for two verbs that differ only in their labels.
-        var key: String { "\(file): \(name)(\(labels.map { "\($0):" }.joined()))" }
+        /// `File.swift: name(label: Type, label: Type)` — stable across a return-type or
+        /// body change, and different for two verbs that differ in their labels **or in
+        /// their parameters' types**.
+        ///
+        /// The types are in the key because an allowlist keyed on `name(label:label:)`
+        /// alone cannot see an overload. `SafetyActorWriter.command(_ rpm: Double, of fan:
+        /// CommandableFan)` is acknowledged; adding `command(_ rpm: Double, of index: Int)`
+        /// beside it — an ungoverned write taking the bare index ADR 0008 removed — produced
+        /// the identical key `command(_:of:)`, so it landed on an acknowledged entry and was
+        /// invisible to every test in `WriteVerbAllowlistTests`. That is precisely the
+        /// silent-addition failure this suite exists to stop, reached by the one route a
+        /// label-only key leaves open.
+        ///
+        /// The two same-file protocol-requirement/conformer pairs the target has —
+        /// `LeaseClock.sleep(until:)` and `CriticalTemperatureSensing`'s
+        /// `readCriticalTemperatures()` — are written with byte-identical signatures, so they
+        /// still collapse onto one key, as `functions(in:)` records.
+        var key: String {
+            let parameters = zip(labels, parameterTypes)
+                .map { "\($0): \($1)" }
+                .joined(separator: ", ")
+            return "\(file): \(name)(\(parameters))"
+        }
 
         /// Whether any of `names` appears in a parameter's type or in the return type.
         func mentions(anyOf names: [String]) -> Bool {
