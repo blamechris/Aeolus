@@ -124,13 +124,15 @@ extension SMCFanEnumeration {
     /// The largest `FNum` value this project trusts as a real fan count rather than a
     /// decode fault.
     ///
-    /// One constant, deliberately. This value existed **twice** before this type did —
+    /// One constant, held once. This value existed **twice** before this type did —
     /// `FanPoller.maxPlausibleFanCount` in `AeolusUI` and `ListCommand.maxPlausibleFanCount`
-    /// in `fanctl`, each independently `64`, each carrying its own copy of the reasoning.
-    /// Two constants that must agree, with nothing enforcing that they do, are a
-    /// disagreement waiting to happen; both now read this one. It is the same defence
-    /// `SMCConnection.maxPlausibleKeyCount` applies to `#KEY`, applied to `FNum`: a
-    /// corrupted read must not become an unbounded enumeration.
+    /// in `fanctl`, each independently `64`, each carrying its own copy of the reasoning
+    /// and its own `FNum` validation. Two constants that must agree, with nothing
+    /// enforcing that they do, are a disagreement waiting to happen; both clients now
+    /// enumerate through this type instead of restating either the number or the
+    /// validation that uses it. It is the same defence `SMCConnection
+    /// .maxPlausibleKeyCount` applies to `#KEY`, applied to `FNum`: a corrupted read
+    /// must not become an unbounded enumeration.
     public static let maxPlausibleFanCount = 64
 
     /// `F<n>Ac` — fan `index`'s measured speed.
@@ -243,7 +245,7 @@ extension SMCFanEnumeration {
             return 0
         case .failure(let failure):
             throw SMCFanEnumerationError.readFailed(
-                context: "read \(fanCountKey)", reason: describe(failure))
+                context: "read \(fanCountKey)", reason: failure.readableDescription)
         }
 
         // Validated before conversion, not after. SMCValue.scalar() applies no finiteness
@@ -300,21 +302,6 @@ extension SMCFanEnumeration {
                             + "fault; see docs/SMC-RESEARCH.md")))
         }
         return outcome
-    }
-
-    /// A human-readable rendering of a per-key failure, for the `reason` on a thrown
-    /// `SMCFanEnumerationError`. Diagnostic only, never parsed or matched on.
-    ///
-    /// Deliberately a private function rather than an `extension SensorReadFailure`
-    /// property: `fanctl` and `AeolusUI` each already declare a
-    /// `SensorReadFailure.readableDescription` of their own, and adding a third, `public`
-    /// one in this module would make those call sites ambiguous.
-    private static func describe(_ failure: SensorReadFailure) -> String {
-        switch failure {
-        case .unknownKey(let key): return "\(key) is not present on this machine"
-        case .readFailed(let reason): return reason
-        case .notDecodable(let reason): return reason
-        }
     }
 
     private static func describeNonFinite(_ value: Double) -> String {

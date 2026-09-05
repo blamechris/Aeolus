@@ -84,8 +84,10 @@ extension KeyedReading {
     ///    `SMCCore`: a byte-swapped `flt` can decode to `±.infinity`/`.nan`, and
     ///    `Double.infinity == Double.infinity.rounded()` is `true` — a genuine property,
     ///    not a bug — so any code downstream that assumes a plausible RPM or temperature
-    ///    must never see a non-finite value reach it. Same defence as `fanctl`'s
-    ///    `Formatting.number`/`ListCommand.sanitized`.
+    ///    must never see a non-finite value reach it. Same defence as
+    ///    `SMCFanEnumeration.checked(_:in:)` applies to fan readings one layer earlier,
+    ///    and as `SensorsCommand.sanitize(_:)` applies for `fanctl sensors`; this is the
+    ///    seam that applies it for `AeolusUI`.
     public init(key: String, outcome: Result<SensorReading, SensorReadFailure>) {
         switch outcome {
         case .success(let reading):

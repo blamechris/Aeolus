@@ -93,7 +93,8 @@ enum SensorsCommand {
     }
 
     /// Guards a reading's value before it can reach either renderer — see
-    /// `ListCommand.sanitized(key:value:)`, the identical guard for `list`, for why:
+    /// `SMCFanEnumeration.checked(_:in:)` (Sources/SMCCore/FanEnumeration.swift), the
+    /// identical guard `list`/`watch` get from `SMCFanEnumeration` itself, for why:
     /// `SMCValue.scalar()` applies no finiteness check on the way out of `SMCCore`, and
     /// a non-finite `Double` reaching `FanctlJSON` would make `JSONEncoder`'s default
     /// `nonConformingFloatEncodingStrategy` throw, voiding the *entire* `--json` output

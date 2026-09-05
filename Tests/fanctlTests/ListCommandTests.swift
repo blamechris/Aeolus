@@ -125,6 +125,46 @@ struct ListCommandFetchTests {
         }
     }
 
+    // MARK: - Classified-error surfacing (proving the shared enumeration's error is
+    // reclassified into FanctlError's own vocabulary, not flattened to a generic case)
+
+    @Test("An FNum read failure that is not absence surfaces as .connectionFailed, with its reason")
+    func fnumReadFailureSurfacesClassifiedConnectionFailed() async {
+        let provider = FakeSensorProvider(
+            keyedResults: [
+                "FNum": .failure(.readFailed(reason: "firmware rejected the read"))
+            ])
+
+        let error = await #expect(throws: FanctlError.self) {
+            try await ListCommand.fetch(provider: provider)
+        }
+        guard case .connectionFailed(_, let reason) = error else {
+            Issue.record("expected .connectionFailed, got \(String(describing: error))")
+            return
+        }
+        #expect(reason == "firmware rejected the read")
+    }
+
+    // A non-finite FNum, not merely an out-of-range one: `implausibleFanCountIsRefused`
+    // above already covers 9,000,000 rejecting as .implausibleFanCount("9000000"), and
+    // `nonFiniteFanCountIsRefusedWithoutTrapping` already covers a NaN FNum refusing
+    // without trapping — but neither checks *what string* the classified case carries
+    // for a non-finite decode. `FanctlError(_ error: SMCFanEnumerationError)` routes
+    // `.implausibleFanCount`'s payload through `Formatting.number(_:)`, and this is the
+    // only test asserting that payload renders "NaN" rather than a numeric string.
+    @Test("A non-finite implausible FNum surfaces as .implausibleFanCount carrying \"NaN\"")
+    func implausibleFanCountSurfacesClassifiedCase() async {
+        let provider = FakeSensorProvider(
+            keyedResults: [
+                "FNum": .success(.fake(key: "FNum", value: .nan))
+            ])
+
+        let error = await #expect(throws: FanctlError.self) {
+            try await ListCommand.fetch(provider: provider)
+        }
+        #expect(error == .implausibleFanCount("NaN"))
+    }
+
     @Test("An absent FNum key (not just FNum == 0) is treated as zero fans, not an error")
     func absentFNumIsTreatedAsZeroFans() async throws {
         // FakeSensorProvider with no FNum stub reports .unknownKey for it by

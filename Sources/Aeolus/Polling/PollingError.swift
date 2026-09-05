@@ -17,8 +17,8 @@ public enum PollingError: Error, Sendable, Hashable, CustomStringConvertible {
     /// `SMCConnection` could not be opened.
     case readFailed(context: String, reason: String)
     /// `FNum` decoded to something outside the range this project trusts as a real fan
-    /// count — see `FanPoller.maxPlausibleFanCount`, the same defence
-    /// `fanctl`'s `ListCommand.maxPlausibleFanCount` applies for the identical reason.
+    /// count — see `SMCFanEnumeration.maxPlausibleFanCount`, the same defence
+    /// `fanctl`'s `ListCommand` enumeration applies for the identical reason.
     case implausibleFanCount(Double)
 
     public var description: String {
@@ -33,20 +33,19 @@ public enum PollingError: Error, Sendable, Hashable, CustomStringConvertible {
     }
 }
 
-extension SensorReadFailure {
-    /// A human-readable rendering of this failure, for `KeyedReading.Availability
-    /// .unavailable`'s `reason`. Never parsed or matched on — mirrors `fanctl`'s
-    /// identical `SensorReadFailure.readableDescription` in `ListCommand.swift`,
-    /// reimplemented here rather than imported since `AeolusUI` does not depend on the
-    /// `fanctl` executable target.
-    var readableDescription: String {
-        switch self {
-        case .unknownKey(let key):
-            return "\(key) is not present on this machine"
-        case .readFailed(let reason):
-            return reason
-        case .notDecodable(let reason):
-            return reason
+extension PollingError {
+    /// Reclassifies `SMCFanEnumeration`'s enumeration-level failures into this module's
+    /// own error vocabulary, case for case — `FanPoller.poll(provider:)` throws this,
+    /// never `SMCFanEnumerationError` directly, so `PollingViewModel` and its tests keep
+    /// speaking one error type regardless of which layer actually did the enumerating.
+    init(_ error: SMCFanEnumerationError) {
+        switch error {
+        case .noSMC:
+            self = .noSMC
+        case .readFailed(let context, let reason):
+            self = .readFailed(context: context, reason: reason)
+        case .implausibleFanCount(let declared):
+            self = .implausibleFanCount(declared)
         }
     }
 }

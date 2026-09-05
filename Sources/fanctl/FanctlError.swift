@@ -1,4 +1,5 @@
 import Foundation
+import SMCCore
 
 /// The one error type every `fanctl` read command (`list`, `sensors`, `watch`, `dump`)
 /// throws for a runtime failure — never a bare `throw someLibraryError`, and never a
@@ -37,8 +38,8 @@ enum FanctlError: Error, LocalizedError, Equatable {
     case connectionFailed(context: String, reason: String)
 
     /// `FNum` decoded to a value this project does not trust as a real fan count —
-    /// non-finite, negative, or outside `ListCommand.maxPlausibleFanCount`. See that
-    /// constant for why this exists — the same defence `SMCConnection` applies to
+    /// non-finite, negative, or outside `SMCFanEnumeration.maxPlausibleFanCount`. See
+    /// that constant for why this exists — the same defence `SMCConnection` applies to
     /// `#KEY` itself. Carries a rendering of the raw decoded value (via
     /// `Formatting.number`, which never traps on the same class of anomaly) rather than
     /// an `Int`: the value that makes this case worth having at all — `NaN`,
@@ -60,10 +61,11 @@ enum FanctlError: Error, LocalizedError, Equatable {
     /// case this actually guards against is a non-finite `Double` reaching the encoder:
     /// `JSONEncoder`'s default `nonConformingFloatEncodingStrategy` throws on `NaN`/
     /// `±Inf` rather than encoding them. Every reading this CLI hands to `FanctlJSON` is
-    /// sanitised first — see `ListCommand`'s and `SensorsCommand`'s `sanitized`/
-    /// `sanitize` helpers — specifically so that throw is never supposed to fire; this
-    /// case is what surfaces it, reported rather than silently producing partial JSON,
-    /// if that contract is ever violated by a call site that skips sanitisation.
+    /// sanitised first — by `SMCFanEnumeration.checked(_:in:)` for `list`/`watch`, and by
+    /// `SensorsCommand`'s own `sanitize` helper for `sensors` — specifically so that
+    /// throw is never supposed to fire; this case is what surfaces it, reported rather
+    /// than silently producing partial JSON, if that contract is ever violated by a call
+    /// site that skips sanitisation.
     case jsonEncodingFailed(reason: String)
 
     var errorDescription: String? {
@@ -86,6 +88,24 @@ enum FanctlError: Error, LocalizedError, Equatable {
             return keyFilterNotFoundMessage(key: key, declaredCount: declaredCount)
         case .jsonEncodingFailed(let reason):
             return "Could not encode --json output: \(reason)"
+        }
+    }
+}
+
+extension FanctlError {
+    /// Reclassifies `SMCFanEnumeration`'s enumeration-level failures into this CLI's own
+    /// vocabulary, case for case — `ListCommand.fetch(provider:now:)` throws this, never
+    /// `SMCFanEnumerationError` directly, so every `fanctl` read command (`list`, and
+    /// `watch`, which reuses `fetch`) keeps speaking the one error type this file's own
+    /// documentation describes.
+    init(_ error: SMCFanEnumerationError) {
+        switch error {
+        case .noSMC:
+            self = .noSMC
+        case .readFailed(let context, let reason):
+            self = .connectionFailed(context: context, reason: reason)
+        case .implausibleFanCount(let declared):
+            self = .implausibleFanCount(Formatting.number(declared))
         }
     }
 }

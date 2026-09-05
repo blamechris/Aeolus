@@ -1,9 +1,9 @@
 import Foundation
 
 /// Human-readable number formatting shared by the table renderers. `--json` output never
-/// goes through this — it encodes the `Double` directly (after sanitisation — see
-/// `ListCommand`'s and `SensorsCommand`'s `sanitized`/`sanitize` helpers) — this is
-/// display-only.
+/// goes through this — it encodes the `Double` directly (after sanitisation — by
+/// `SMCFanEnumeration.checked(_:in:)` for `list`/`watch`, and by `SensorsCommand`'s own
+/// `sanitize` helper for `sensors`) — this is display-only.
 enum Formatting {
     /// Renders `value` as a whole number when it already is one, or to two decimal
     /// places otherwise. SMC readings decode to whole RPM, whole-plus-quarter RPM
