@@ -166,6 +166,9 @@ actor ThermalEmergency<Plane: FanControlPlane> {
 
     // MARK: - One cycle
 
+    /// Whether a cycle is in flight. See `cycle()`'s "one cycle at a time".
+    private var isCycling = false
+
     /// Samples the curated critical set once and acts on it.
     ///
     /// Never throws. There is nobody to report to: the supervisor driving this is a loop in
@@ -177,7 +180,28 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     ///   priority over a client snapshot on the single SMC connection, is
     ///   [#127](https://github.com/blamechris/Aeolus/issues/127)'s to settle — which is why
     ///   this method takes no clock and schedules nothing.
+    ///
+    /// ## One cycle at a time, by construction
+    ///
+    /// This actor is reentrant and carries state across its awaits —
+    /// `lastCycleWasUnreadable`, the registry, and the pair of latch reads the
+    /// episode-boundary guard below compares across `readCriticalTemperatures()` — so two
+    /// cycles in flight at once are two decisions taken from one sample's worth of evidence.
+    /// `ThermalSupervisor.stop()` cancels without awaiting, so a stop-then-start across
+    /// sleep/wake reaches exactly that: the incoming loop's first `cycle()` runs while the
+    /// outgoing one is still suspended inside its read
+    /// ([#144](https://github.com/blamechris/Aeolus/issues/144)).
+    ///
+    /// A second entrant returns having done nothing, rather than waiting its turn. A queued
+    /// cycle would ask "is it cool enough to release?" against a reading taken before the
+    /// one already in flight, and § 3's asymmetry says a stale release is the one answer
+    /// that must never be reachable — the next scheduled cycle is a better answer than a
+    /// late one.
     func cycle() async {
+        guard !isCycling else { return }
+        isCycling = true
+        defer { isCycling = false }
+
         // Read **before** the report, and compared against the episode read after it. A
         // release is only ever decided against a temperature this cycle actually measured,
         // and an episode that began during the read below was never measured — see the

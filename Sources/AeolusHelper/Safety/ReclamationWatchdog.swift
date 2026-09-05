@@ -227,6 +227,9 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
 
     // MARK: - One cycle
 
+    /// Whether a sweep is in flight. See `cycle()`'s "one sweep at a time".
+    private var isSweeping = false
+
     /// Examines every held fan once and acts on what it finds.
     ///
     /// Never throws, for `ThermalEmergency.cycle()`'s reason: the driver is a loop in a
@@ -248,7 +251,27 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// vanish silently while the code around it goes on acting as though the fan were still
     /// registered, which is exactly how `reassert(_:fanAt:attempt:)` came to write `F<n>Md`
     /// to a fan whose lease had just been released.
+    ///
+    /// ## One sweep at a time, by construction
+    ///
+    /// The sequential examination below is a property of *one* invocation, and until
+    /// [#144](https://github.com/blamechris/Aeolus/issues/144) nothing made it a property of
+    /// the mechanism. `ReclamationSupervisor.stop()` cancels without awaiting, so a
+    /// stop-then-start — what a sleep/wake cycle does — starts a second loop whose first act
+    /// is a `cycle()` while the outgoing one is still suspended inside a read. Two sweeps of
+    /// the same fan then spend one re-assert budget twice and count one dwell twice, and a
+    /// dwell that elapses in half the cycles it should is how the secondary signal starts
+    /// reading a ramp as a reclamation.
+    ///
+    /// A second entrant therefore returns having done nothing, rather than waiting its turn:
+    /// this loop is driven at a fixed cadence, so a queued sweep would run against readings
+    /// from an interval that has already passed, and the next scheduled cycle is a better
+    /// answer than a late one.
     func cycle() async {
+        guard !isSweeping else { return }
+        isSweeping = true
+        defer { isSweeping = false }
+
         guard !held.isEmpty else { return }
 
         // Sorted and sequential. Sorted so a scenario's log and attempt order are
