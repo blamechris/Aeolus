@@ -151,4 +151,157 @@ struct ReclamationRegistrationWindowTests {
             machine.safetyLog.lines(containing: "no target commanded on it yet").count == 1,
             "the grace logged once per cycle rather than once per episode")
     }
+
+    /// **The budget is spent, not reset — and a clean cycle in the middle does not refill
+    /// it.**
+    ///
+    /// `examine(fanAt:)`'s converged branch resets the dwell and the re-assert attempts and
+    /// deliberately leaves `uncommandedDivergentCycles` alone. Nothing asserted that: adding
+    /// `held[index]?.uncommandedDivergentCycles = 0` beside those two left the whole suite
+    /// green, so the property was true of the code and unclaimed by the tests.
+    ///
+    /// It matters because the fan it describes is a real one. A `F<n>Tg` that is merely
+    /// flaky — readable one second, unreadable the next — would refill the grace on every
+    /// readable cycle under that mutation, and the fan would stay off automatic control for
+    /// as long as the flapping lasted with the terminal action never reached. That is the
+    /// unbounded hold `theGraceBeforeTheFirstCommandIsBounded` rules out in the other
+    /// direction.
+    ///
+    /// The expectation is derived per cycle from the number of *divergent* cycles seen so
+    /// far, not from the cycle index, so it is non-vacuous at every value of
+    /// `blindCyclesBeforeDivergence` — including 1, where the clean read arrives after the
+    /// budget is already spent.
+    ///
+    /// Mutation-checked: adding that reset to the converged branch turns the final cycle's
+    /// assertion red, and the registry and lease assertions with it.
+    @Test("A converged cycle in the middle of the grace does not refill it")
+    func aConvergedCycleDoesNotRefillTheGrace() async throws {
+        let flaky = FanControlState(
+            index: 0,
+            mode: .manual,
+            target: .unreadable(reason: "F0Tg: the read returned nothing"),
+            actualRPM: .rpm(2_400))
+        let clean = FanControlState(
+            index: 0, mode: .manual, target: .rpm(2_400), actualRPM: .rpm(2_400))
+
+        // One divergent cycle, one clean read, then divergent for the rest of the budget.
+        // The clean read is in the middle on purpose: it is the cycle the mutation reaches.
+        let readings =
+            [flaky, clean]
+            + Array(repeating: flaky, count: ReclamationLimits.blindCyclesBeforeDivergence - 1)
+
+        let plane = ScriptedControlPlane(fans: [0: .held(at: 2_400)])
+        let sensing = ScriptedReadingsSensing(plane, reading: readings)
+        let machine = ReclamationMachine(
+            plane: plane, fans: [0: .held(at: 2_400)], sensing: sensing)
+        try await machine.lease(fans: [0])
+        try await machine.holdWithoutCommanding(fan: 0)
+
+        var divergentCycles = 0
+        var examinedCycles = 0
+
+        for reading in readings {
+            // Counted only while the fan is still registered: once the terminal action has
+            // run there is nothing left to examine, and the readings that follow are served
+            // to nobody.
+            if await !machine.watchdog.fansUnderManualControl.isEmpty {
+                examinedCycles += 1
+                if case .unreadable = reading.target { divergentCycles += 1 }
+            }
+
+            await machine.watchdog.cycle()
+
+            #expect(
+                await sensing.readCount == examinedCycles,
+                "the fan was not examined this cycle, so the assertion below proves nothing")
+
+            let expected = divergentCycles >= ReclamationLimits.blindCyclesBeforeDivergence
+            #expect(
+                await machine.didRestore(fan: 0) == expected,
+                """
+                after \(divergentCycles) divergent of \
+                \(ReclamationLimits.blindCyclesBeforeDivergence) graced cycles the fan \
+                should \(expected ? "" : "not ")have been handed back
+                """)
+        }
+
+        #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
+        #expect(await machine.leases.activeLease() == nil)
+    }
+
+    /// **Registering a fan that is already held does not refill its grace either.**
+    ///
+    /// `manualControlEngaged(_:)` built a fresh `HeldFan` unconditionally, so a second call
+    /// on a fan already in the registry put `uncommandedDivergentCycles` back to zero. That
+    /// makes the budget refillable by the caller it exists to bound: re-register on every
+    /// other cycle and the fan is held off automatic control indefinitely, the terminal
+    /// action never reached and the lease never revoked — measured at twenty registrations
+    /// buying forty divergent cycles and no restore.
+    ///
+    /// Registration is idempotent now, so the cycle after the re-registration is the one
+    /// that spends the last of the budget, exactly as it would have been without it.
+    ///
+    /// Mutation-checked: restoring the unconditional `held[fan.index] = HeldFan()` turns the
+    /// restore, registry and lease assertions red together.
+    @Test("Re-registering a held fan mid-grace does not refill the budget")
+    func reRegisteringMidGraceDoesNotRefillIt() async throws {
+        let machine = ReclamationMachine(
+            fans: [0: ScriptedControlPlane.FanCondition(mode: .manual, targetRPM: .nan)])
+        try await machine.lease(fans: [0])
+        try await machine.holdWithoutCommanding(fan: 0)
+
+        // Spend all but the last cycle of the grace.
+        for _ in 1..<ReclamationLimits.blindCyclesBeforeDivergence {
+            await machine.watchdog.cycle()
+        }
+        #expect(
+            await machine.didRestore(fan: 0) == false,
+            "the grace ran out before the re-registration under test, which proves nothing")
+
+        // The re-registration: E3 engaging manual control on a fan it already holds.
+        try await machine.holdWithoutCommanding(fan: 0)
+        await machine.watchdog.cycle()
+
+        #expect(
+            await machine.didRestore(fan: 0),
+            "re-registering the fan refilled a budget that belongs to one registration")
+        #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
+        #expect(await machine.leases.activeLease() == nil)
+    }
+
+    /// **Registering a fan that is already held does not forget what was commanded on it.**
+    ///
+    /// The other half of the same unconditional `HeldFan()`. `primaryDivergence(of:against:)`
+    /// reaches `.targetDiverged` only behind `guard let commanded`, so a re-registration that
+    /// wiped `commanded` left a fan whose `F<n>Tg` disagrees with what Aeolus wrote reading
+    /// as *converged* — the strongest signal § 5 has, silenced until the next
+    /// `commandedTarget(_:)` arrives, on a fan that is pinned at a speed this mechanism has
+    /// just forgotten it asked for. `CLAUDE.md` rule 6.
+    ///
+    /// The firmware here holds 2,400 while 3,000 was commanded, so the very next cycle must
+    /// see the divergence and re-assert. Asserting the re-assert rather than reading
+    /// `lastCommanded(ofFan:)` back is the point: what matters is that the signal still
+    /// fires, not that a field survived.
+    ///
+    /// Mutation-checked: restoring the unconditional `held[fan.index] = HeldFan()` leaves the
+    /// fan reading converged, so the stored command, the wire and the ledger all go red
+    /// together — measured, three issues on this test and none on any other.
+    @Test("Re-registering a held fan keeps what was commanded on it")
+    func reRegisteringKeepsWhatWasCommanded() async throws {
+        let machine = ReclamationMachine(fans: [0: .held(at: 2_400)])
+        try await machine.lease(fans: [0])
+        try await machine.hold(fan: 0, commanding: 3_000)
+
+        // The re-registration, with no release in between.
+        try await machine.holdWithoutCommanding(fan: 0)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 3_000)
+
+        await machine.watchdog.cycle()
+
+        #expect(
+            await machine.commandedRPMs == [3_000],
+            "the divergence was invisible, so § 5 never re-asserted the commanded target")
+        #expect(await machine.ledger.reclaimedFans == [0])
+        #expect(await machine.watchdog.fansUnderManualControl == [0])
+    }
 }

@@ -143,9 +143,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// Every fan currently off Apple's thermal management, with what this mechanism knows
     /// about it.
     ///
-    /// Keyed by index so a second registration replaces rather than duplicates. Empty is
-    /// the ordinary state, and a cycle over an empty registry does nothing at all — there
-    /// is no fan pinned, so there is nothing that could be taken back.
+    /// Keyed by index so a second registration finds the entry that is already there rather
+    /// than duplicating it — and `manualControlEngaged(_:)` then leaves that entry alone,
+    /// which is what stops a re-registration rearming a budget. Empty is the ordinary state,
+    /// and a cycle over an empty registry does nothing at all — there is no fan pinned, so
+    /// there is nothing that could be taken back.
     private var held: [Int: HeldFan] = [:]
 
     /// `sensing` is an existential rather than `some FanStateSensing`, unlike
@@ -229,11 +231,41 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// `ThermalEmergency.manualControlEngaged(_:)` takes the same parameter for the same
     /// reason.
     ///
+    /// ## Re-registering a fan already held changes nothing about it
+    ///
+    /// The entry is created only when there is not one already, so calling this twice
+    /// without an intervening `manualControlReleased(fanAt:)` is idempotent: the fan keeps
+    /// its `commanded` target, its grace counter, its re-assert attempts and its blind-cycle
+    /// count. It used to build a fresh `HeldFan` unconditionally, and that was two defects
+    /// rather than one:
+    ///
+    /// - **The grace was rearmed.** `uncommandedDivergentCycles` went back to zero, so a
+    ///   caller re-registering a fan every other cycle held it off automatic control
+    ///   indefinitely and the terminal action was never reached — twenty registrations bought
+    ///   forty divergent cycles, no restore, and a lease still live. That is the budget
+    ///   `gracedBeforeItsFirstCommand(_:of:fanAt:)` exists to bound, refillable on demand by
+    ///   the very caller it is meant to bound.
+    /// - **`commanded` was wiped.** `primaryDivergence(of:against:)` reaches
+    ///   `.targetDiverged` only behind `guard let commanded`, so a re-registered fan Aeolus
+    ///   *had* commanded became unjudgeable on that case until the next `commandedTarget(_:)`
+    ///   — a fan pinned at a number this mechanism had just forgotten it wrote, which is
+    ///   `CLAUDE.md` rule 6.
+    ///
+    /// The refill point is a genuine release, and both of them drop the entry:
+    /// `manualControlReleased(fanAt:)` for a lease that ended, `finaliseRelease(fanAt:because:)`
+    /// for a fan this mechanism gave up. A registration after either of those starts fresh,
+    /// which is the case a fresh `HeldFan` is actually for.
+    ///
+    /// `ReclamationRegistrationWindowTests.reRegisteringMidGraceDoesNotRefillIt` and
+    /// `.reRegisteringKeepsWhatWasCommanded` are the two halves.
+    ///
     /// Clears any reclamation recorded against this fan: something has just taken it off
     /// automatic control, so the ledger's claim that the system holds it is now false, and
     /// a stale `true` there would report a fan as lost that a client is about to command.
+    /// That half is unconditional, because it is a statement about the world rather than
+    /// about this registry.
     func manualControlEngaged(_ fan: CommandableFan) async {
-        held[fan.index] = HeldFan()
+        if held[fan.index] == nil { held[fan.index] = HeldFan() }
         if await ledger.clearReclaimed(fanAt: fan.index) {
             log.reclamationResolved(fan: fan.index)
         }
@@ -386,7 +418,12 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             return
         }
 
-        // Converged on both signals.
+        // Converged on both signals. `uncommandedDivergentCycles` is deliberately **not**
+        // reset alongside these two — see `HeldFan.uncommandedDivergentCycles`. A fan whose
+        // `F<n>Tg` is merely flaky rather than gone would otherwise refill the registration
+        // grace on every readable cycle and stay off automatic control for as long as the
+        // flapping lasted, which is
+        // `ReclamationRegistrationWindowTests.aConvergedCycleDoesNotRefillTheGrace`.
         held[index]?.actualDwellCycles = 0
         held[index]?.reassertAttempts = 0
         if await ledger.clearReclaimed(fanAt: index) {
@@ -913,8 +950,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         /// the registration grace, see `gracedBeforeItsFirstCommand(_:of:fanAt:)`.
         ///
         /// **Spent, never reset.** A fan cannot be graced indefinitely by alternating
-        /// between divergence and convergence: the budget belongs to one registration, and
-        /// only `manualControlEngaged(_:)` — which builds a fresh `HeldFan` — refills it.
+        /// between divergence and convergence — `examine(fanAt:)`'s converged branch resets
+        /// the two counters below it and deliberately not this one — and it cannot be graced
+        /// indefinitely by being registered again either: the budget belongs to one
+        /// registration, and the only thing that refills it is a fresh `HeldFan`, which
+        /// `manualControlEngaged(_:)` builds only for a fan that is not already held.
         var uncommandedDivergentCycles = 0
     }
 }
