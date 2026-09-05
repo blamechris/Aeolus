@@ -23,6 +23,13 @@ import os
 /// neither, because nothing in it reached IOKit: it proved the handle neither dead nor
 /// alive, and on a fanless Mac it arrives once per snapshot for ever.
 ///
+/// That escape is unreachable in production, though. `knownKeys` is either `nil` — nothing
+/// discovered yet, so every key is attempted for real — or the complete, cross-checked result
+/// of a discovery walk, so every snapshot or supervisor request carries at least one key that
+/// walk found present and performs a real round trip through it. A future caller that drew its
+/// key set from anywhere but discovery would reopen #68 silently, which is what this case
+/// exists to catch should one ever be added.
+///
 /// ## Why the scheduler is where it listens
 ///
 /// Because the scheduler is the only place the two paths meet. `SnapshotSensorReads` and
