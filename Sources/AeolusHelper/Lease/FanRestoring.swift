@@ -171,6 +171,19 @@ enum FanRestoreCause: Sendable, Hashable {
 
     /// The panic path: every lease dropped at once.
     case allLeasesDropped
+
+    /// Startup reconciliation found the fan in manual before this process served anything.
+    ///
+    /// **The one cause that names no lease**, and the only one that can be true of a fan
+    /// *this* helper never touched. Every case above is a lease ending or being taken; this
+    /// one is `docs/SAFETY.md` § 6's crash coverage, clearing what a dead predecessor — or
+    /// another program — left behind. See
+    /// [ADR 0011](../../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md).
+    ///
+    /// It happens exactly once per process, before `listener.resume()`. A fan found in
+    /// manual afterwards is foreign control and is refused rather than restored, so nothing
+    /// can produce this cause twice for the same fan.
+    case startupReconciliation
 }
 
 /// Where the lease core gets the set of fans this machine actually has.

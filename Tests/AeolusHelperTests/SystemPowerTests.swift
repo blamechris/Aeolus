@@ -30,13 +30,24 @@ struct SystemPowerTests {
     static let helperLog = HelperLog(
         subsystem: "dev.aeolus.AeolusHelperTests", category: "SystemPower")
 
-    /// A machine whose one fan is already under manual control at a plausible speed, with
-    /// every curated sensor answering — so a lease can be granted over it.
+    /// A machine whose one fan is spinning at a plausible speed under Apple's own thermal
+    /// management, with every curated sensor answering — so a lease can be granted over it.
+    ///
+    /// **Fan 0 starts automatic, and it used to start `.held(at: 2_400)`**, for the reason
+    /// `HelperRestorerTests.composed` gives at length: since #164 a fan the firmware reports
+    /// in manual that no lease covers is foreign control, and `acquireLease` refuses it as
+    /// `.foreignManualControl`. Every test here that takes a lease does so without running
+    /// the reconciliation pass — `bindSafetyRegistries()` and `observeSystemPower()` are
+    /// called by hand precisely so that no loop and no pass touches the scripted firmware
+    /// underneath the assertions — so a manual fan in this fixture would be indistinguishable
+    /// from another program holding it, and correctly refused. Nothing asserted below reads
+    /// the fan's starting mode: the scripted plane records `.restoreToAutomatic(.fan(0))`
+    /// whichever mode the fan is in.
     static func machine(
         writes: ScriptedControlPlane.WriteBehaviour = .honoured
     ) -> ScriptedControlPlane {
         ScriptedControlPlane(
-            fans: [0: .held(at: 2_400)],
+            fans: [0: .automatic(at: 2_400)],
             stages: [
                 .nominal(temperatures: LeaseFixture.nominalDieTemperatures, writes: writes)
             ])

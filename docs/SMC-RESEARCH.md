@@ -295,6 +295,49 @@ forced either key to a different value and watched the fans respond to it — th
 belongs to E4, not yet attempted. The catalog reflects this honestly:
 `confidence: community`, not `verified`, until a write actually exercises the mode key.
 
+### `F0Md`/`F1Md` have now been observed reading `1` — the first sighting on this machine
+
+**Date:** 2026-09-05. **Machine:** `Mac16,5`, macOS 26.6.2. **Method:**
+`HelperHardwareTests.everyFanIsOnAutomaticControlAtStart`, read-only, through the production
+plane's `SMCReadScheduler` at `.supervisor` priority — one turn per fan, exactly as startup
+reconciliation reads them. One machine, and the readings below are single snapshots.
+
+| Time (UTC) | `F0Md` | `F1Md` | Competing tool |
+|---|---|---|---|
+| 2026-09-05 ~16:40 | `0` | `0` | Macs Fan Control running, evidently not holding |
+| 2026-09-05 ~17:06 | `1` | `1` | Macs Fan Control running **and holding both fans** |
+| 2026-09-05 ~17:50 | `0` | `0` | Macs Fan Control still running, back to not holding |
+
+Three things follow, and the third is the one worth keeping.
+
+**`F<n>Md` genuinely takes the value `1` on Apple Silicon.** Until this reading the key had
+only ever been seen at `0` here, which made every mechanism keyed on it — startup
+reconciliation, the snapshot's `.manualFixed`, ADR 0011's whole foreign-control baseline —
+rest on a value nothing had witnessed. It has now been witnessed. The convention "0 =
+automatic, 1 = held" survives its first contact with a machine where something is actually
+holding a fan.
+
+**Nothing in Aeolus wrote it.** `SMCConnection.write` is `package` and throws, no write
+selector appears in `Sources` (`WritePathAbsenceTests`, green), and the whole suite was
+running read-only. A third-party tool moved the key, which is precisely the case ADR 0011
+was written for and the case the 2026-09-04 triage on #103 predicted.
+
+**The value moves back on its own while that tool keeps running**, which is the finding that
+was not predicted. The competing tool's process was present for all three readings, so
+"another program is installed" and "another program is holding the fans" are *different
+states of the same machine minutes apart* — presumably the tool holds the fans only while it
+is actively driving a curve and releases them otherwise. Two consequences for this
+repository: a hardware assertion that pins either value is a test about whatever was running
+on the reviewer's desktop rather than about Aeolus (see
+`HelperHardwareTests.theComposedHelperServesRealHardware`, which now asserts the pair), and a
+reconciliation pass would find a fan in manual or not depending on *when the helper started*
+— which is an argument for the restart policy and reconciliation shipping together, not
+against.
+
+Still not verified: that writing `1` to `F<n>Md` engages manual control, or that writing `0`
+returns a held fan to Apple's management. Both are writes and belong to E4. What is settled
+is only the read.
+
 ### The attribute byte — bit `0x80` is "readable", necessary but not sufficient
 
 Perfect correlation across all 3385 rows: every key that read successfully has bit 7 set,

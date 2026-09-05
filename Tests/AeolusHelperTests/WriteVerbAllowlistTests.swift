@@ -214,6 +214,8 @@ struct WriteVerbAllowlistTests {
         "SafetyWriters.swift: restoreToAutomatic(_: FanRestoreScope)",
         "FanRestoring.swift: restoreToAutomatic(fans: Set<Int>, because: FanRestoreCause)",
         "LeaseAuthority.swift: restore(_: Set<Int>, because: FanRestoreCause)",
+        "StartupReconciliation.swift: restore(fanAt: Int)",
+        "StartupReconciliation.swift: restoreEveryFan(because: SafetyLog.KeystoneReason)",
         "FanAuthority.swift: restoreAllToAutomatic(from: ConnectionID)",
         "ReadOnlyFanAuthority.swift: restoreAllToAutomatic(from: ConnectionID)",
         "HelperConnectionSession.swift: restoreAllToAutomatic()",
@@ -253,6 +255,18 @@ struct WriteVerbAllowlistTests {
     /// and `respond(to:)` are its callers, and the two `acknowledge` verbs put no fan write on
     /// any wire at all — one of them calls `IOAllowPowerChange`, which is a kernel message
     /// about power state and nothing to do with a fan.
+    ///
+    /// [#164](https://github.com/blamechris/Aeolus/issues/164) added five here and two to
+    /// `restoreVerbs`, and the split is worth stating because startup reconciliation both
+    /// reads the firmware and restores it. `StartupReconciliation.restore(fanAt:)` and
+    /// `restoreEveryFan(because:)` are on the restore list for
+    /// `LeaseAuthority.restore(_:because:)`'s reason — an index, or nothing at all, and no
+    /// permit anywhere. `reconcile()` and `reconcileFans()` are here for
+    /// `ReclamationWatchdog.cycle()`'s: they reach the keystone, and can only do it through
+    /// those two. `refusalForGrant(overFans:heldByAeolus:)` and
+    /// `refuseIfForeignManualControl(_:wanting:)` read `F<n>Md` and return a refusal — they
+    /// are the half of ADR 0011 that exists **so that** no second restore happens, which is
+    /// the opposite of a write verb. `activeLeaseView()` reads the lease table.
     private static let permitFreeFunctions: Set<String> = [
         "BoundedFanRestorer.swift: attemptUncancellably(fanAt: Int)",
         // `CriticalTemperatureRecording`'s single requirement, declared beside the cache in
@@ -262,6 +276,12 @@ struct WriteVerbAllowlistTests {
         // conformer's body is an assignment to a stored property.
         "CriticalTemperatureCache.swift: record(_: CriticalTemperatureSighting)",
         "CriticalTemperatureCache.swift: sighting()",
+        "HelperComposition.swift: reconcileFans()",
+        "LeaseAuthority.swift: activeLeaseView()",
+        "LeaseAuthority.swift: refuseIfForeignManualControl(_: ConnectionID, wanting: Set<Int>)",
+        "StartupReconciliation.swift: reconcile()",
+        "StartupReconciliation.swift: refusalForGrant(overFans: Set<Int>, "
+            + "heldByAeolus: Set<Int>)",
         "CriticalTemperatureSensing.swift: readCriticalTemperatures()",
         "FanAuthority.swift: acquireLease(_: LeaseRequest, from: ConnectionID)",
         "FanAuthority.swift: apply(_: [FanSetting], leaseID: UUID, from: ConnectionID)",

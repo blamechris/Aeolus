@@ -320,11 +320,17 @@ enum LeaseFixture {
     /// a coalescing bug shows up in the suite that grants leases rather than only in the one
     /// that tests the cache. Cold at construction, so the first grant in any test still
     /// performs a real read.
+    ///
+    /// `foreignControl` defaults to a reconciled machine on which every fan is automatic —
+    /// the ordinary case, and the state a completed startup reconciliation leaves behind.
+    /// A test about the gate itself supplies its own; `StartupReconciliationTests` drives
+    /// the real one over scripted firmware.
     static func authority(
         enumeration: ScriptedFanEnumeration = ScriptedFanEnumeration(),
         restorer: any FanRestoring = RecordingFanRestorer(),
         writeCapability: any FanWriteCapabilityReporting = writePathBuilt(),
         telemetry: any SightednessProving = sightedTelemetry(),
+        foreignControl: any ForeignManualControlSensing = automaticFans(),
         thermalEmergency: ThermalEmergencyLatch = ThermalEmergencyLatch(),
         clock: TestClock = TestClock(),
         wallClock: TestWallClock = TestWallClock(),
@@ -335,12 +341,51 @@ enum LeaseFixture {
             restorer: restorer,
             writeCapability: writeCapability,
             telemetry: telemetry,
+            foreignControl: foreignControl,
             thermalEmergency: thermalEmergency,
             clock: clock,
             wallClock: wallClock.provider,
             tombstoneCapacity: tombstoneCapacity,
             log: log
         )
+    }
+
+    /// A post-reconciliation baseline over a machine whose fans are all on automatic
+    /// control — the **real** `StartupReconciliation` over the **real** scripted firmware,
+    /// for `sightedTelemetry()`'s reason: a hand-rolled double would answer "nothing foreign
+    /// here" without the grant-time read ever running, and that read is the mechanism.
+    ///
+    /// Eight fans rather than the two `ScriptedFanEnumeration` enumerates, so a test that
+    /// names an unusual index gets an answer about *that fan's mode* rather than a
+    /// `.fanNotAddressable` throw the gate would have to report as blindness.
+    static func automaticFans() -> any ForeignManualControlSensing {
+        reconciliation(
+            over: ScriptedControlPlane(
+                fans: Dictionary(
+                    uniqueKeysWithValues: (0..<8).map { ($0, ScriptedControlPlane.FanCondition()) }
+                ),
+                stages: [.nominal(temperatures: nominalDieTemperatures)]))
+    }
+
+    /// The real `StartupReconciliation` over `plane`, wired exactly as the composition root
+    /// wires it: the same restorer type, the same `.panicRestore` writer for the
+    /// machine-wide verb.
+    static func reconciliation(
+        over plane: ScriptedControlPlane,
+        enumeration: some FanEnumerating = ScriptedFanEnumeration(),
+        clock: some MonotonicClock = SystemMonotonicClock(),
+        budget: Duration = ReconciliationLimits.budget,
+        log: SafetyLog = SafetyLog(subsystem: "dev.aeolus.AeolusHelperTests", category: "Safety")
+    ) -> StartupReconciliation<ScriptedControlPlane> {
+        StartupReconciliation(
+            plane: plane,
+            enumeration: enumeration,
+            restorer: HelperFanRestorer(
+                writer: SafetyActorWriter(plane: plane, level: .leaseExpiry), log: Self.log),
+            panic: SafetyActorWriter(plane: plane, level: .panicRestore),
+            clock: clock,
+            budget: budget,
+            log: log)
     }
 
     /// Every curated key reading a plausible idle die temperature.

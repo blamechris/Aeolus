@@ -1,3 +1,9 @@
+// swiftlint:disable file_length
+// This file is exempt from `file_length` by design, not by neglect: `emit` is `private`, so
+// every safety-log line must live here — that is what keeps the log's vocabulary fixed and
+// reviewable in one place (the § 5 block below records why widening `emit` was rejected).
+// `type_body_length` still binds each extension. D26, PR #199.
+
 import Foundation
 import SMCCore
 import os
@@ -752,6 +758,211 @@ extension SafetyLog {
                 : "Reclamation watchdog supervisor stopped. No fan is under manual control, "
                     + "so there is nothing it would have been watching."
         )
+    }
+
+    // MARK: - docs/SAFETY.md § 6 — startup reconciliation
+
+    /// The pass ran to completion. `.notice`: the ordinary start.
+    func reconciliationCompleted(fans: Int) {
+        emit(
+            .notice,
+            """
+            Startup reconciliation read the control state of \(fans) fan(s) before serving \
+            anything. Nothing was left in manual control that Aeolus did not restore.
+            """
+        )
+    }
+
+    /// A fan was found off automatic control before this process served anything.
+    ///
+    /// `.fault`, and the level is the point: `F<n>Md` reading manual at start means either
+    /// the previous helper died holding the fan with nothing counting its TTL, or another
+    /// program is holding it right now. Both are worth a line a user can find afterwards,
+    /// and neither is an ordinary start.
+    func reconcilingManualFan(fanAt fan: Int) {
+        emit(
+            .fault,
+            """
+            Startup reconciliation found fan \(fan) in manual control with no live lease — \
+            nothing in this process put it there. Returning it to Apple's thermal \
+            management (docs/SAFETY.md § 6, ADR 0011). This is done once: a fan later found \
+            in manual is reported as foreign control and refused, never restored again.
+            """
+        )
+    }
+
+    /// The restore was refused. `.notice` when this build simply has no write path.
+    ///
+    /// Every restore issued by today's helper is refused that way — `SMCFanControlPlane`
+    /// answers `FanWriteCapability.notBuilt` and every write verb throws
+    /// `.controlPathNotBuilt` — so emitting a fault per fan per start would train a reader
+    /// to skip the line that matters on the day a real firmware refusal appears here.
+    func reconciliationRestoreRefused(fanAt fan: Int, capability: FanWriteCapability) {
+        emit(
+            capability == .notBuilt ? .notice : .fault,
+            capability == .notBuilt
+                ? """
+                Startup reconciliation could not return fan \(fan) to automatic control: \
+                this build has no SMC write path at all (E3/E4). Expected, and nothing is \
+                wrong with this machine — the fan is refused a lease rather than claimed.
+                """
+                : """
+                Startup reconciliation spent its attempts on fan \(fan) and the firmware \
+                never took the mode write. The fan is still off automatic control and may be \
+                pinned at a speed nothing is tracking; see docs/RECOVERY.md.
+                """
+        )
+    }
+
+    /// A mode read threw, so the per-fan pass is abandoned for the machine-wide verb.
+    func reconciliationReadFailed(fanAt fan: Int, detail: String, unreconciled: Set<Int>) {
+        emit(
+            .fault,
+            """
+            Startup reconciliation could not read fan \(fan)'s control state \
+            (\(detail)). Fan(s) \(Self.describe(unreconciled)) are therefore of unknown \
+            mode, and the machine-wide restore-to-automatic is issued instead — it needs no \
+            data, which is why ADR 0007 makes it the keystone.
+            """
+        )
+    }
+
+    /// Why startup reconciliation reached for the machine-wide keystone.
+    ///
+    /// Three branches, one rule: the pass could not see. The distinction is kept in the log
+    /// and nowhere else — no code branches on it — because an operator reading `log show`
+    /// after a hot machine needs to know *which* blindness this was, while the act itself is
+    /// identical by design (ADR 0011 D3/D4). A single string parameter would have done the
+    /// same job and would have let a caller invent a fourth cause in passing.
+    enum KeystoneReason: Sendable {
+        case enumerationFailed
+        case modeReadFailed
+        case budgetExhausted
+
+        var clause: String {
+            switch self {
+            case .enumerationFailed: return "this machine's fans could not be enumerated"
+            case .modeReadFailed: return "a fan's control state could not be read"
+            case .budgetExhausted: return "the budget ran out with fans never read"
+            }
+        }
+    }
+
+    /// The machine-wide restore landed, so nothing is left off automatic control.
+    func reconciliationRestoredEveryFan(because reason: KeystoneReason) {
+        emit(
+            .notice,
+            """
+            Startup reconciliation restored every fan to automatic control because \
+            \(reason.clause). No fan is left in an unknown mode, so leases are not refused \
+            on account of it.
+            """
+        )
+    }
+
+    /// The machine-wide restore was refused too, so the helper knows nothing about any fan.
+    func reconciliationEveryFanRestoreFailed(
+        because reason: KeystoneReason, detail: String, capability: FanWriteCapability
+    ) {
+        emit(
+            capability == .notBuilt ? .notice : .fault,
+            """
+            Startup reconciliation could not restore every fan after \(reason.clause) \
+            (\(detail)). No fan's mode has been established and none has been handed back, \
+            so manual control is refused for the life of this process.\
+            \(capability == .notBuilt ? " This build has no SMC write path (E3/E4)." : "")
+            """
+        )
+    }
+
+    /// A second `reconcile()` arrived, and was declined.
+    ///
+    /// `.fault`, and the level is a judgement about the caller rather than about the
+    /// machine: nothing here is wrong with the hardware, but a second pass is a bug in the
+    /// bring-up — it would clear every durable refusal and issue the second restore ADR 0011
+    /// refuses to make. The guard holds; the line is how anybody finds out it had to.
+    func reconciliationAlreadyRan() {
+        emit(
+            .fault,
+            """
+            Startup reconciliation was asked to run a second time in this process and \
+            declined. The pass is one-shot by design (ADR 0011 D2): running it again would \
+            discard the refusals it established and hand a fan back a second time, which is \
+            the first move of a restore contest with whatever holds it.
+            """
+        )
+    }
+
+    /// The budget ran out with fans still unread.
+    func reconciliationBudgetExhausted(unreconciled: Set<Int>, budget: Duration) {
+        emit(
+            .fault,
+            """
+            Startup reconciliation ran out of its \(budget) budget with fan(s) \
+            \(Self.describe(unreconciled)) never read. The machine-wide restore-to-automatic \
+            is issued for them — it needs no read — and the helper serves clients anyway, \
+            refusing manual control of those fans for the life of this process unless that \
+            write lands, because nothing runs this pass again.
+            """
+        )
+    }
+
+    /// A fan is in manual and Aeolus did not put it there.
+    ///
+    /// `.notice`, not `.fault`. Nothing is wrong with the machine and nothing failed:
+    /// another program holds a fan, which is its right, and Aeolus is declining to fight it.
+    func foreignManualControlObserved(fanAt fan: Int) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) is in manual control and Aeolus does not hold it, so something else \
+            does. Refusing manual control of it rather than restoring it a second time: a \
+            restore loop against a live writer is the fight, not the fix (ADR 0011). \
+            F<n>Md cannot name the holder, so neither can this line.
+            """
+        )
+    }
+
+    /// A fan's control state could not be read at the moment a lease was asked for.
+    func grantTimeStateUnreadable(fanAt fan: Int, detail: String) {
+        emit(
+            .fault,
+            """
+            Fan \(fan)'s control state could not be read while a client asked for manual \
+            control of it (\(detail)). Refused: a lease granted now would claim a fan \
+            nothing has looked at.
+            """
+        )
+    }
+
+    /// The machine's fans could not be enumerated, so no fan could be named.
+    ///
+    /// `.fault`: a helper that cannot read `FNum` cannot name a fan and cannot issue a
+    /// per-fan restore. The machine-wide keystone is issued instead — it needs no fan index
+    /// — and until it lands every grant is refused, because nothing has established
+    /// anything about any fan. A machine in this state is broken and the log should say so
+    /// once, at start.
+    ///
+    /// **What a client sees is a snapshot that throws, not one reporting no fans.** An
+    /// earlier version of this line said the latter. `ReadOnlyFanAuthority.snapshot()` calls
+    /// `SMCFanEnumeration.enumerate(provider:)` and rethrows its failure, so while the
+    /// condition persists the client is refused rather than told the machine has no fans —
+    /// which is the honest direction, and the difference matters to whoever reads this line
+    /// while a user reports "the app shows nothing".
+    func reconciliationEnumerationFailed(detail: String) {
+        emit(
+            .fault,
+            """
+            Startup reconciliation could not enumerate this machine's fans (\(detail)). No \
+            fan's mode has been read and no fan can be named, so the machine-wide \
+            restore-to-automatic is issued instead. Every snapshot from this process will \
+            fail the same way while the condition lasts.
+            """
+        )
+    }
+
+    private static func describe(_ fans: Set<Int>) -> String {
+        fans.sorted().map(String.init).joined(separator: ", ")
     }
 }
 

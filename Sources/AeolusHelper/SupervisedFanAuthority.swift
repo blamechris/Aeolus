@@ -83,14 +83,39 @@ struct SupervisedFanAuthority: FanAuthority {
     /// automatic under a lease that has not yet commanded anything, which is a true statement
     /// about both.
     ///
-    /// The other four fields are the read path's own and are passed through untouched: this
+    /// The lease is read as a **view** — the lease itself and every fan Aeolus is
+    /// accountable for, in one hop — because that fan set is not on the wire and this method
+    /// needs it. A fan in manual that Aeolus is not accountable for is under something
+    /// else's control and is reported as
+    /// `ManualControlAvailability.Reason.foreignManualControl`
+    /// ([ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md)); a fan
+    /// in manual that Aeolus put there is not, and `F<n>Md` cannot tell them apart on its
+    /// own. Asking for the lease and the fan set in two hops could answer from two views of
+    /// the lease core and report Aeolus's own fan as somebody else's, which is `CLAUDE.md`
+    /// rule 6 pointed at the user rather than at the client.
+    ///
+    /// **Accountable for, not merely leasing.** The set is `LeaseAuthority`'s own
+    /// `fansAeolusIsAccountableFor` — leases, fans mid-handback, and fans whose handback was
+    /// abandoned — which is the identical set the grant path judges against. The narrower
+    /// "the first lease's fans" this used to read reported a fan Aeolus pinned and could not
+    /// give back as another program's doing, which is the worst of the available wrong
+    /// answers: it sends a user to quit software that is not holding their fan.
+    ///
+    /// **The re-statement touches one field of one fan and nothing else.** The rule, and the
+    /// § 5 causes it deliberately does not overwrite, are in
+    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:)`. The other three
+    /// snapshot fields are the read path's own and are passed through untouched: this
     /// re-assembles the value rather than producing a second opinion about any of them.
     func snapshot() async throws -> SystemSnapshot {
         let machine = try await reading.snapshot()
+        let held = await leases.activeLeaseView()
         return SystemSnapshot(
-            fans: machine.fans,
+            fans: machine.fans.map {
+                ReadOnlyFanReport.reportingForeignControl(
+                    of: $0, heldByAeolus: held.accountableFans)
+            },
             sensors: machine.sensors,
-            activeLease: await leases.activeLease(),
+            activeLease: held.lease,
             isThermalEmergencyActive: machine.isThermalEmergencyActive,
             capturedAt: machine.capturedAt
         )

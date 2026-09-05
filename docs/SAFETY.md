@@ -24,10 +24,12 @@ so everything above the IOKit registration is driven with no hardware. **§ 5 wa
 not-built list until it merged, and this line was stale for one wave; § 4 was listed there in
 the very PR that built it, which is the same failure caught one wave earlier** — both
 sentences are corrected in place rather than quietly rewritten, because a status paragraph
-nobody re-reads is how a coverage claim outlives its subject. Not built: § 6's signal
-teardown and startup reconciliation, § 7's body, and § 8's hysteresis. All of it is
-tracked as epic E5, and E5 blocks the write-path epics E3 and E4. No code that writes to the
-SMC merges before the safety subsystem exists and is tested.
+nobody re-reads is how a coverage claim outlives its subject. **§ 6's startup reconciliation
+left that list in #164**, along with the launchd restart policy ADR 0007 made conditional on
+it, and the same correction-in-place rule applies here as above. Not built: § 6's signal
+teardown, § 7's body, and § 8's hysteresis. All of it is tracked as epic E5, and E5 blocks
+the write-path epics E3 and E4. No code that writes to the SMC merges before the safety
+subsystem exists and is tested.
 
 **Built does not mean writing, and since #163 it does mean running.** This paragraph said
 *"the helper still serves `ReadOnlyFanAuthority`, which grants no lease at all"*, and it was
@@ -94,9 +96,10 @@ eviction in the same change. Two conditions sit outside the backstop, and both a
 elsewhere rather than by the lease: helper death, where nothing is counting the TTL at all
 and § 6's reconciliation is the only cover, and possibly sleep, per § 4's clock caveat.
 
-The launchd job named in the paragraph above is itself part of what must be verified, not
-something that exists: `KeepAlive` and `RunAtLoad` are absent from the plist today. § 6 says
-what is scheduled to put them back — #86 holds that gap open and #103 closes it.
+The launchd job named in the paragraph above now exists — `KeepAlive = { SuccessfulExit =
+false }` and an explicit `RunAtLoad = true`, added in #165 alongside § 6's reconciliation and
+never before it, which closes #86. What is still unverified is whether `SMAppService` accepts
+either key in a daemon plist, and that needs the signing identity.
 
 **The handback is bounded, and a handback that fails is terminal** (#110). "Restores every
 affected fan" above is what the helper *attempts*; what it guarantees is that it stops
@@ -120,11 +123,13 @@ this document:
   later restore the firmware *does* accept leaves the refusal standing. #189 owns the
   clearing path; § 7's panic restore is the first caller that will need it.
 
-A helper restart is the intended route out, and § 6's reconciliation is what would make that
-route safe. **Not built — #103 (E5.4b, #164)**, on the same terms as the `KeepAlive`
-paragraph in § 6. Until it lands there is no route out at all: a fan this refusal names stays
-named for the life of the process, and a restart hands the next process a fan whose mode
-nothing has read. `docs/RECOVERY.md` is the user-facing version.
+A helper restart is the route out, and § 6's reconciliation is what makes it safe: the next
+process reads `F<n>Md` before it serves anything and hands back whatever it finds in manual,
+so the fan this refusal named is no longer one whose mode nothing has read. Built in #164,
+and **still not a route out on today's build** — the restore it issues is refused with
+`.controlPathNotBuilt` until E3/E4 ship a write path, so the fan is carried into the new
+process as `.foreignManualControl` instead. That is a more accurate refusal, not a recovery.
+`docs/RECOVERY.md` is the user-facing version.
 
 *Tested by:* unit tests on expiry arithmetic, including a wall clock moved in either
 direction and a monotonic jump (`LeaseExpiryTests`); tests on the supervisor's *schedule* as
@@ -616,12 +621,31 @@ Reconciliation is that sentence made mechanical, and at boot it also covers manu
 persisting across a *reboot*, which nobody has verified cannot happen. See
 [ADR 0007](ADR/0007-safety-composition.md).
 
-**Restart is not configured yet.** `KeepAlive` and `RunAtLoad` were removed from the launch
-daemon plist in #81 because they would have restarted a scaffold that always exits non-zero.
-ADR 0007 reinstates them **in the same change that ships reconciliation, never before** —
-#103 — because a restart policy without reconciliation restarts a helper that then serves
-without checking what the SMC still holds. Until that lands, the paragraph above describes a
-decision rather than a mechanism, which is what #86 exists to hold open.
+**Restart is configured.** `KeepAlive = { SuccessfulExit = false }` and an explicit
+`RunAtLoad = true` are in the launch daemon plist. #81 had removed them because they would
+have restarted a scaffold that always exits non-zero; ADR 0007 required them back **in the
+same change that ships reconciliation, never before** — a restart policy without
+reconciliation restarts a helper that then serves without checking what the SMC still holds —
+and #164/#165 is that change. `RunAtLoad` is written out rather than left to `KeepAlive`'s
+documented implication, because boot-start is what covers manual mode persisting across a
+*reboot*.
+
+`SuccessfulExit = false` makes the exit code a contract: a zero exit means "the fans are back
+and nobody needs to check", so it belongs on the orderly-teardown path and nowhere else, and
+anything that dies another way is restarted and reconciles.
+`LaunchDaemonPlistTests.theOrderlyExitIsCountedNotAssumed` counts `exit(0)` across
+`Sources/AeolusHelper` — **zero today**, because `AeolusHelperMain` ends in `dispatchMain()`
+and the teardown that restores and then exits is E5.4d (#166), which raises the expected count
+to one in the same change that adds the path.
+
+The plist's key set is an allowlist of exactly six with an exact-member count, so a seventh —
+`StartInterval` (#84's named gap), `WatchPaths`, `StartCalendarInterval` — fails the suite
+before it starts a root process nobody argued for.
+
+**Whether `SMAppService` accepts either key in a daemon plist is unverified**, and cannot be
+until a signing identity exists. ADR 0007 carries it as an assumption and the hardware
+checklist carries the row. If it is rejected, reconciliation still runs — but only when a
+client connects, not at boot and not after a crash.
 
 **"On every exit path" is a guarantee about *attempting*, not about the firmware agreeing.**
 Every mechanism in this section ends in the same mode write, and the firmware can refuse it.
@@ -633,12 +657,44 @@ still be pinned at a speed Aeolus is no longer tracking, and no in-process mecha
 take it back. That is not a weakening of the intent below; it is the same reason § 5 logs
 `reclamationFanMayStillBePinned` rather than asserting a destination it did not reach.
 
-Restart plus reconciliation is the intended cover for that case as much as for a crash: on
-the next start the helper would read fan mode state and restore anything found in manual with
-no live lease, which is the one path that can clear a fan the previous process gave up on.
-**Not built — #103 (E5.4b, #164)**, the same issue the `KeepAlive` paragraph above is waiting
-on, so today nothing clears such a fan and the paragraph describes a decision rather than a
-mechanism.
+Restart plus reconciliation is the cover for that case as much as for a crash: on the next
+start the helper reads fan mode state and restores anything found in manual, which is the one
+path that can clear a fan the previous process gave up on. Built in #164 —
+`Sources/AeolusHelper/Safety/StartupReconciliation.swift`, run by
+`HelperComposition.bringUp()` after the safety registries are bound and before any supervisor
+starts. **It cannot land a write on today's build**: `SMCFanControlPlane` answers
+`FanWriteCapability.notBuilt` and every write verb throws `.controlPathNotBuilt`, so the pass
+reads the machine, says what it found, and is refused. E3/E4 make the restore real; the
+reading, the ordering and the refusals are here now.
+
+**A fan found in manual *after* that one pass is foreign control, and is refused rather than
+restored** — [ADR 0011](ADR/0011-reconciliation-and-foreign-manual-control.md). The pass is
+unconditional because `F<n>Md` names no owner and the failure directions are not symmetric:
+restoring another program's fan hands it to Apple's thermal management, which is safe,
+visible, and one click to undo, while declining leaves a fan possibly pinned low by Aeolus's
+own dead helper with nothing counting a TTL. Restoring it a *second* time is different — it
+is the beginning of a contest in which two programs undo each other's mode write over a
+machine's cooling — so instead the fan is reported as
+`ManualControlAvailability.Reason.foreignManualControl`, refused a lease after a fresh
+`readControlState`, and never named to § 5, whose registry is fans **Aeolus** engaged.
+
+The pass runs on a bounded budget (`ReconciliationLimits.budget`). If it runs out, the helper
+serves clients anyway and refuses manual control of the fans it never reached, as
+`.supervisorBlind` — nobody has looked at them, and nothing will, because reconciliation is
+one-shot. **Wherever the pass cannot see, the machine-wide restore is issued anyway**: on a
+failed mode read, on a failed fan enumeration, and on that budget expiry. The keystone needs
+no data, which is the whole reason ADR 0007 makes it the keystone, and a fan nobody looked at
+is not less pinned than one whose read threw (ADR 0011 D3). Being one-shot is enforced rather
+than assumed — a second `reconcile()` is declined, because it would discard those refusals
+and hand a fan back a second time.
+
+**A fan the firmware refuses to hand back is refused a lease durably**, as
+`.restoreToAutomaticFailed` — this process asked for automatic, spent #110's attempts, and
+stopped asking. It is watched by nothing, § 3 included, because it was never in either
+registry: reconciliation engaged nothing, so there is no entry for the emergency bridge to
+find. That gap is deliberate rather than overlooked — registering a possibly-foreign fan with
+§ 3 means writing to another program's fan during an emergency — and
+[#201](https://github.com/blamechris/Aeolus/issues/201) holds it open against E3/E4 bring-up.
 
 The guarantee to match is Macs Fan Control's: quitting always returns the fans to Apple's
 control. Anything less and users are right not to trust the software.
@@ -650,9 +706,21 @@ handles a crashed, killed, or hung app — `SIGKILL`, a kernel panic, a power lo
 enforcer is the casualty: the TTL is not counted by anything, the watchdog is not watching,
 and the SMC keeps the last value written. Only a restart can notice.
 
-*Tested by (pending #103):* integration tests per exit path, including a helper restarted
-with a fan left in manual and no lease; a manual hardware checklist covering quit, kill,
-logout, and restart.
+*Tested by:* `StartupReconciliationTests` drives the composed helper over scripted firmware —
+a fan starting in manual is restored exactly once, a failed mode read and a failed
+enumeration both fall back to the machine-wide verb, a second pass is declined, a fan taken
+afterwards is refused and not restored, a fan the firmware would not hand back is refused
+`.restoreToAutomaticFailed`, an exhausted budget takes the keystone and still refuses
+durably, and the snapshot reports the firmware's own mode.
+`ForeignManualControlReportingTests` covers the three fans the snapshot must **not** call
+somebody else's: one under a live lease, one whose handback was abandoned, and one § 5
+diagnosed as reclaimed by the system.
+`HelperCompositionTests.reconciliationSitsBetweenTheBindAndTheSupervisors` holds the pass in
+its position. `LaunchDaemonPlistTests` holds the restart keys and the exit-code contract.
+*Pending #166:* an integration test per orderly exit path. *Pending hardware:* the checklist
+rows for a helper restarted with a fan left in manual, boot-start, `kill -9`, and
+`SMAppService` accepting the two keys — all of which need the signing identity and E3/E4's
+write path.
 
 ## 7. Panic path
 

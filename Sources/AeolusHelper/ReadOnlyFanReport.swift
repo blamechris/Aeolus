@@ -67,6 +67,63 @@ enum ReadOnlyFanReport {
         )
     }
 
+    /// Re-states one fan's availability once the lease core has been consulted.
+    ///
+    /// `ReadOnlyFanAuthority` cannot answer this. It reads the machine and knows nothing
+    /// about leases, and `SupervisedFanAuthority.snapshot()` reads the lease **after** the
+    /// machine on purpose — so the composition is: the read path produces the fan, this
+    /// re-states one field of it, and the ordering that makes a lapsing lease honest is
+    /// preserved.
+    ///
+    /// ## The rule, and the two fans it leaves alone
+    ///
+    /// A fan whose firmware mode is not automatic, that no live lease covers, is under
+    /// somebody else's control — startup reconciliation restored anything it found in manual
+    /// before this process served a single client, so a fan in manual now was put there
+    /// afterwards and not by Aeolus. See
+    /// [ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md).
+    ///
+    /// It is **not** applied over § 5's two causes. `.supervisorBlind` and a system
+    /// reclamation are statements about a fan Aeolus *engaged* — the ledger's registry holds
+    /// nothing else — and both are more specific than this one. Overwriting either would
+    /// replace a diagnosis with a guess, and in the reclamation case would blame a third
+    /// party for the operating system's act.
+    ///
+    /// **The two causes are asked for differently, and that is the correction rather than a
+    /// quirk.** Blindness is read off the availability, because `availability(whenLedgerSays:)`
+    /// publishes it there. A reclamation is read off `isReclaimedBySystem`, because that
+    /// method deliberately does *not* publish `.reclaimedBySystem` as an availability —
+    /// #140's rule is that a reclaimed fan is still `.writePathNotBuilt` in this build — so
+    /// a switch looking for `.unavailable(.reclaimedBySystem)` matched nothing at all. That
+    /// arm was dead code, and its deletion is not a loosening: the guard it promised is the
+    /// `isReclaimedBySystem` check that replaces it, which is keyed on the ledger's own
+    /// cause and therefore cannot be made dead by a change to what the availability says.
+    ///
+    /// Everything else is overwritten, including `.available`. Writing the guard as "only
+    /// when the read path said `.writePathNotBuilt`" would pass today and silently stop
+    /// applying on the day E3 makes that answer something else.
+    static func reportingForeignControl(
+        of fan: FanState, heldByAeolus held: Set<Int>
+    ) -> FanState {
+        guard fan.mode != .automatic, !held.contains(fan.index), !fan.isReclaimedBySystem
+        else { return fan }
+        switch fan.manualControlAvailability {
+        case .unavailable(.supervisorBlind): return fan
+        default: break
+        }
+        return FanState(
+            index: fan.index,
+            firmwareName: fan.firmwareName,
+            actualRPM: fan.actualRPM,
+            minimumRPM: fan.minimumRPM,
+            maximumRPM: fan.maximumRPM,
+            targetRPM: fan.targetRPM,
+            mode: fan.mode,
+            isReclaimedBySystem: fan.isReclaimedBySystem,
+            manualControlAvailability: .unavailable(.foreignManualControl)
+        )
+    }
+
     /// What a fan's disposition means for whether it could be leased.
     ///
     /// `.writePathNotBuilt` is the build-level answer, and it stays the answer for every
@@ -85,6 +142,10 @@ enum ReadOnlyFanReport {
     /// such a fan, `isReclaimedBySystem` having said it wrongly as a system reclamation. In
     /// this build it is unreachable for the ledger's own reason — nothing is ever held, so
     /// nothing can go blind — and what changed is where the answer comes from.
+    ///
+    /// **A system reclamation deliberately produces no availability of its own**, which is
+    /// #140's rule and the reason `reportingForeignControl(of:heldByAeolus:)` has to consult
+    /// `FanState.isReclaimedBySystem` rather than switch on what this returns.
     private static func availability(
         whenLedgerSays cause: ReclamationLedger.Cause?
     ) -> ManualControlAvailability {

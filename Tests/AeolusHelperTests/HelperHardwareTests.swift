@@ -373,9 +373,7 @@ struct HelperHardwareTests {
             #expect(!snapshot.sensors.isEmpty, "the composed helper discovered no sensors")
             #expect(snapshot.activeLease == nil, "no lease can be granted in this build")
             #expect(snapshot.isThermalEmergencyActive == false)
-            for fan in snapshot.fans {
-                #expect(fan.manualControlAvailability == .unavailable(.writePathNotBuilt))
-            }
+            for fan in snapshot.fans { Self.expectHonestAvailability(of: fan) }
 
             // The capability gate, end to end: no double anywhere between this call and
             // `SMCFanControlPlane.writeCapability`.
@@ -402,5 +400,81 @@ struct HelperHardwareTests {
         }
 
         await helper.shutDown()
+    }
+
+    /// What the composed helper must answer about one real fan, in **either** state this
+    /// machine is legitimately in.
+    ///
+    /// Two honest answers, and which one applies depends on what else is running rather than
+    /// on this build. `SupervisedFanAuthority` re-states a fan the firmware reports in
+    /// manual, that Aeolus is not accountable for, as `.foreignManualControl`
+    /// ([ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md)) — and
+    /// on the development machine that is a live condition rather than a hypothesis: Macs
+    /// Fan Control was observed holding both fans on 2026-09-05, and releasing them again
+    /// within the hour while still running (`docs/SMC-RESEARCH.md`).
+    ///
+    /// Asserting `.writePathNotBuilt` unconditionally, as this did, made the test a report
+    /// about whatever was on the reviewer's desktop. Asserting the pair makes it a report
+    /// about the helper, and it still cannot pass by accident: each branch pins a different
+    /// answer, and answering the *other* one fails.
+    private static func expectHonestAvailability(of fan: FanState) {
+        let expected: ManualControlAvailability =
+            fan.mode == .automatic
+            ? .unavailable(.writePathNotBuilt) : .unavailable(.foreignManualControl)
+        #expect(
+            fan.manualControlAvailability == expected,
+            """
+            Fan \(fan.index) reads \(fan.mode) and the composed helper answers \
+            \(fan.manualControlAvailability). A fan on Apple's thermal management must \
+            answer .writePathNotBuilt — this build has no write path for any fan — and a fan \
+            in manual that no lease covers must answer .foreignManualControl, because \
+            something outside Aeolus is holding it and telling the user to look at Aeolus \
+            sends them to the wrong program.
+            """)
+    }
+
+    /// The hardware-checklist row #164 makes executable: what `F<n>Md` actually reads on this
+    /// machine at the moment a helper would start.
+    ///
+    /// Read-only, and it is the one row of that issue's list that needs neither a signing
+    /// identity nor a write path. Everything else about reconciliation — the restore landing,
+    /// boot-start, `kill -9` — waits for E3/E4.
+    ///
+    /// **The number is printed and the mode is asserted, and the asymmetry is deliberate.**
+    /// `0` is what the pass expects to find on a healthy machine with nothing holding the
+    /// fans, and a `1` is a genuine observation rather than a test failure — it would mean
+    /// something on this machine is holding a fan, which is exactly the condition ADR 0011
+    /// exists for. The assertion is here anyway, because the checklist row is *"both fans
+    /// read `F<n>Md == 0`"* and a row that cannot fail records nothing: if this goes red,
+    /// read the printed values and the failure is the finding.
+    @Test("Every fan on this machine reads F<n>Md == 0 at the moment a helper would start")
+    func everyFanIsOnAutomaticControlAtStart() async throws {
+        // One provider for both reads. Two would be two views of the same connection on a
+        // suite whose other tests are timing the SMC, and this row needs neither.
+        let provider = SMCSensorProvider()
+        let plane = supervisorPlane(over: provider)
+        let fans = try await SMCFanEnumeration.enumerate(provider: provider)
+
+        var observed: [String] = []
+        for index in fans.fanIndices.sorted() {
+            let state = try await plane.readControlState(ofFan: index)
+            observed.append("F\(index)Md=\(state.mode == .automatic ? 0 : 1)")
+            #expect(
+                state.mode == .automatic,
+                """
+                Fan \(index) is in manual control on this machine. Startup reconciliation \
+                would hand it back — and on this build be refused, because there is no write \
+                path. Every fan-state measurement taken here while that is true is \
+                contaminated: find what is holding the fan before trusting any of them.
+                """)
+        }
+
+        print(
+            """
+            startup fan modes on Mac16,5: \(observed.joined(separator: ", ")) \
+            (0 = Apple's thermal management). Read through the production plane's scheduler, \
+            one supervisor turn per fan, exactly as startup reconciliation reads them.
+            """)
+        #expect(!observed.isEmpty, "no fan was enumerated, so the row measured nothing")
     }
 }

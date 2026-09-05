@@ -19,11 +19,14 @@ import SMCCore
 //
 // The graph this file used to build inline is now `HelperComposition`. What is left here is
 // the *lifecycle*: resolve who to obey, build the graph, bring it up, advertise the service,
-// and never return. Startup reconciliation (#164), the restart policy (#165), the signal
-// handlers (#166) and connection health (#168) each add one step to the bring-up below and
-// nothing to the listener, the admission policy, the handshake gate, or the contract.
-// Sleep/wake (#167) took that shape too and has landed: it is a step inside
-// `HelperComposition.bringUp()`, so nothing in this file changed for it.
+// and never return. Startup reconciliation (#164) and sleep/wake (#167) each added a step to
+// that bring-up and nothing to this file; the signal handlers (#166) and connection health
+// (#168) go the same way — one step in the composition's bring-up, and nothing to the
+// listener, the admission policy, the handshake gate, or the contract.
+//
+// The restart policy (#165) is the exception, and it touches no Swift at all: launchd is
+// told to restart this process whenever it exits non-zero, which makes the exit code a
+// contract this file will have to keep once #166 gives it an orderly teardown to exit from.
 
 /// The helper's entry point: resolve who this daemon will obey, bring the safety subsystem
 /// up, stand up the listener, and wait.
@@ -98,7 +101,7 @@ enum AeolusHelperMain {
     /// a client that can acquire a lease over a fan whose reconciliation restore is still in
     /// flight (#103, decision A1). Everything that has to be true first is
     /// `HelperComposition.bringUp()`'s: the safety registries bound to the restorer, startup
-    /// reconciliation once it exists, and both supervisors running.
+    /// reconciliation run over every enumerated fan, and all three supervisors running.
     ///
     /// `HelperCompositionTests.theServiceIsAdvertisedOnlyAfterBringUp` asserts the ordering
     /// at the source. It has to: this function is reached once, in a process that never

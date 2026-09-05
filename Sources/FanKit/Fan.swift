@@ -148,6 +148,15 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// [#181](https://github.com/blamechris/Aeolus/issues/181)'s, which owns
         /// re-registration. Until it lands, the refusal is for the life of the helper
         /// process and `docs/RECOVERY.md` is the user's route out.
+        ///
+        /// **Two producers, and the second is not a lease teardown.** Startup reconciliation
+        /// hands back every fan it finds in manual at bring-up
+        /// ([ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md)),
+        /// and a fan the firmware refuses there is in exactly the state the paragraphs above
+        /// describe — asked for automatic, refused, no longer asked — reached before a
+        /// client ever connected rather than after one disconnected. It is watched by
+        /// nothing for the same reason, § 3 included, which is
+        /// [#201](https://github.com/blamechris/Aeolus/issues/201)'s.
         case restoreToAutomaticFailed
         /// The machine is going to sleep, and the helper has already handed every fan back.
         ///
@@ -193,7 +202,37 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// when what had happened was Aeolus's own SMC connection dying, and it claimed a
         /// loss of control that nothing had established — `CLAUDE.md` rule 6 in the
         /// direction that is easy to miss.
+        ///
+        /// **Two producers, and the second is not a cycle at all.** Startup reconciliation
+        /// runs on a bounded budget — see
+        /// [ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md) —
+        /// and a fan it never reached before the budget ran out is a fan nobody has looked
+        /// at — the sentence above, arrived at by a different route. The helper serves
+        /// clients anyway, because refusing to answer a snapshot helps nobody, and refuses
+        /// a lease over that fan for the life of the process: reconciliation is one-shot
+        /// and never runs again, so nothing will revise the answer.
         case supervisorBlind
+        /// Something outside Aeolus is holding this fan in manual mode.
+        ///
+        /// The helper reads `F<n>Md` once at startup and returns anything it finds in
+        /// manual to Apple's thermal management — see
+        /// [ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md).
+        /// After that one pass, a fan observed in manual that Aeolus did not engage was put
+        /// there by something else: another fan-control tool, or firmware that re-asserted
+        /// it. **It is not a reclamation**, and reporting it as one would blame the
+        /// operating system for a third party's write.
+        ///
+        /// Manual control is refused rather than taken, and the fan is **not** restored a
+        /// second time. A restore loop against a live writer *is* the fight — each side
+        /// undoing the other's mode write, several times a second, over a machine's cooling
+        /// — and the honest answer is to decline and say who has it. `F<n>Md` cannot name
+        /// the holder, so this reason cannot either; a client rendering it should say the
+        /// fan is under another program's control and leave the user to quit it.
+        ///
+        /// Durable, and not in the way `.releaseInProgress` is transient: nothing in Aeolus
+        /// will change it, because nothing in Aeolus put the fan there. It clears when the
+        /// other writer hands the fan back.
+        case foreignManualControl
         /// A reason this build does not recognise, carried verbatim so a newer helper
         /// can explain itself to an older client without a protocol bump. Render it
         /// generically; never treat it as equivalent to `available`.
@@ -212,6 +251,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case .systemSleeping: return "systemSleeping"
             case .noThermalTelemetry: return "noThermalTelemetry"
             case .supervisorBlind: return "supervisorBlind"
+            case .foreignManualControl: return "foreignManualControl"
             case .unknown(let raw): return raw
             }
         }
@@ -231,6 +271,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case Reason.systemSleeping.wireValue: self = .systemSleeping
             case Reason.noThermalTelemetry.wireValue: self = .noThermalTelemetry
             case Reason.supervisorBlind.wireValue: self = .supervisorBlind
+            case Reason.foreignManualControl.wireValue: self = .foreignManualControl
             default: self = .unknown(wireValue)
             }
         }
