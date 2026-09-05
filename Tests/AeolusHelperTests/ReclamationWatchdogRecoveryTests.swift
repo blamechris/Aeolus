@@ -170,11 +170,41 @@ struct ReclamationWatchdogRecoveryTests {
 
         #expect(await machine.attempts.contains(ScriptedControlPlane.Attempt.reconnect))
         #expect(await machine.didRestore(fan: 0))
-        #expect(await machine.ledger.isReclaimed(fanAt: 0))
         // `.supervisorBlind`, not `.systemReclaimed`. A helper that has gone blind and a
         // helper losing a contest with the OS are diagnosed differently, which is what
         // `FanRestoreCause` exists to keep apart.
         #expect(await machine.restorer.causes == [.supervisorBlind])
+    }
+
+    /// The ledger keeps that distinction too, and #140 is where it did not.
+    ///
+    /// The blindness path called `markReclaimed(fanAt:)` and then revoked the lease
+    /// `because: .supervisorBlind`, so the one field the user sees — `isReclaimedBySystem`,
+    /// rendered verbatim as "Reclaimed by system" — said the operating system had taken a
+    /// fan that nothing had been learned about. All that was learned is that the helper
+    /// cannot read: a stale `io_connect_t` after wake ([#68]), which is ADR 0007's hole 2
+    /// and not a contest with Apple's thermal management. Telling the user the system took
+    /// the fan sends them to look at macOS's thermal behaviour instead of at Aeolus's dead
+    /// SMC connection, and it is `CLAUDE.md` rule 6 in the direction this file's ledger
+    /// documents: claiming to have *lost* control that nobody has shown was lost.
+    ///
+    /// Collapse `ReclamationLedger.Cause`'s two cases — have `markSupervisorBlind(fanAt:)`
+    /// record `.systemReclaimed` — and this goes red on both assertions.
+    @Test("A blind episode is recorded as blindness, not as a system reclamation")
+    func blindnessIsNotRecordedAsASystemReclamation() async throws {
+        let machine = ReclamationMachine(
+            stages: [.blind()],
+            fans: [0: .held(at: 2_400)])
+        try await machine.lease(fans: [0])
+        try await machine.hold(fan: 0, commanding: 2_400)
+
+        for _ in 0..<ReclamationLimits.blindCyclesBeforeDivergence {
+            await machine.watchdog.cycle()
+        }
+
+        #expect(await machine.didRestore(fan: 0))
+        #expect(await machine.ledger.isReclaimed(fanAt: 0) == false)
+        #expect(await machine.ledger.isSupervisorBlind(fanAt: 0))
     }
 
     /// The restore does not wait on the reconnect having worked.

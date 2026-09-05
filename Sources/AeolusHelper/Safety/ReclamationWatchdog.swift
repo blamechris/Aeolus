@@ -594,7 +594,14 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // to have fixed anything — only the next read is evidence of that, and waiting for
         // it is another cycle with a fan pinned on a machine nobody can see. § 5 says
         // reconnect **then** restore and report, not reconnect and hope.
-        await ledger.markReclaimed(fanAt: index)
+        //
+        // **Recorded as blindness, not as a reclamation** — #140. This path calls
+        // `markReclaimed(fanAt:)` nowhere: nothing here has been learned about who holds the
+        // fan, only that the helper cannot read it, and the ledger's reclaimed set is what
+        // becomes `FanState.isReclaimedBySystem`. Setting that bit told the user the system
+        // had taken a fan while `finaliseRelease` in the next line told the lease core the
+        // supervisor had gone blind.
+        await ledger.markSupervisorBlind(fanAt: index)
         log.reclamationRestoredBlindFan(fan: index)
         await finaliseRelease(fanAt: index, because: .supervisorBlind)
     }

@@ -621,11 +621,16 @@ extension SafetyLog {
         )
     }
 
-    /// A fan that was reported as reclaimed is Aeolus's again.
+    /// A fan the ledger had given up on is Aeolus's again.
+    ///
+    /// Deliberately says neither "reclaimed" nor "blind": `ReclamationLedger` records either
+    /// cause and this line is emitted when *whichever* one was recorded is cleared. Naming
+    /// the reclamation here would attribute a blind episode's recovery to the operating
+    /// system, which is the same conflation #140 removed from `isReclaimedBySystem`.
     func reclamationResolved(fan: Int) {
         emit(
             .notice,
-            "Fan \(fan) is no longer reported as reclaimed by the system."
+            "Fan \(fan) is no longer reported as taken from Aeolus."
         )
     }
 
