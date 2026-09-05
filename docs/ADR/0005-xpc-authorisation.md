@@ -133,14 +133,31 @@ E2 owns everything from the mach port to a dispatch onto an internal `FanAuthori
 everything behind it. E2 ships `ReadOnlyFanAuthority`:
 
 - `snapshot` serves **real data** — fans and sensors through `SMCCore`'s public read API — with
-  `activeLease: nil`, every fan `.automatic`, and every fan
+  `activeLease: nil`, every fan's `mode` as `F<n>Md` declares it, and every fan
   `manualControlAvailability: .unavailable(.writePathNotBuilt)`. This makes E2 demonstrable
   end-to-end on hardware without a write path existing.
+
+  > **Amended 2026-09-05 (#148).** This bullet read "every fan `.automatic`" until the mode was
+  > read rather than asserted. A literal `.automatic` was a fact about the executable — nothing
+  > here can take a fan off automatic control — and never an observation of the machine, so a fan
+  > left in manual by another vendor's tool or by a crashed previous helper was reported as
+  > managed. The mode is now read per fan; an unreadable `F<n>Md` still falls back to
+  > `.automatic`, because v1's `FanControlMode` has no way to say "not known" —
+  > [#178](https://github.com/blamechris/Aeolus/issues/178) holds that open half.
 - `acquireLease`/`renewLease`/`releaseLease`/`apply` **refuse** with `.manualControlUnavailable`.
   Never a stubbed success: a lease you can acquire that controls nothing is a lie about control —
   rule 6's exact shape.
-- `restoreAllToAutomatic` **succeeds as a truthful no-op**: in E2 every fan is already automatic.
-  This wires and tests the panic path from day one.
+- `restoreAllToAutomatic` **succeeds as a no-op**: nothing in E2 can take a fan off automatic
+  control, so the call leaves the machine as it found it. This wires and tests the panic path
+  from day one.
+
+  > **Amended 2026-09-05 (#148).** This bullet read "a truthful no-op: in E2 every fan is already
+  > automatic". Reading `F<n>Md` falsified the premise, not the behaviour: a firmware-manual fan
+  > is now observable in the same snapshot, and E2 has no write path with which to clear it. The
+  > verb still succeeds — the panic path keeps the fewest preconditions it can have, and
+  > [#159](https://github.com/blamechris/Aeolus/issues/159) ships its client before any write
+  > path — and clearing such a fan belongs to startup reconciliation,
+  > [#164](https://github.com/blamechris/Aeolus/issues/164).
 
 Three things E2 builds now purely so E5 and #37 cannot force a protocol change later — the same
 forward-compatibility argument that put `isReclaimedBySystem` into E7's view models before any helper

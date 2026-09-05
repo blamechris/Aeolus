@@ -127,9 +127,12 @@ import SMCCore
 /// the choice is between a scheduling property that is very good in practice and a
 /// structural 5.9 s barrier, not between a guarantee and a hope.
 ///
-/// Its only caller is `ReadOnlyFanAuthority`'s discovery, which runs at most one walk at a
-/// time and caches the key set the walk returns — so the exemption above is spent once for
-/// the life of the process rather than once per snapshot that happens to be in flight.
+/// Its only caller is `ReadOnlyFanAuthority`'s discovery, and the invariant is stated there
+/// in the two halves it is actually enforced in: **at most one walk is ever in flight, and
+/// after a successful one there are no more.** Not "spent once for the life of the process"
+/// — a walk that throws is deliberately not cached, so N failed walks cost N exemptions, one
+/// after another. The looser wording is what [#149](https://github.com/blamechris/Aeolus/issues/149)
+/// was filed on: two comments describing the same mechanism, one of them optimistic.
 ///
 /// That was a habit until [#149](https://github.com/blamechris/Aeolus/issues/149) and is now
 /// an invariant. `snapshot()` awaits inside an actor and is therefore reentrant, so two

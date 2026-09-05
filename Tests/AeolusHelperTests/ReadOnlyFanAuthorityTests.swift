@@ -323,8 +323,13 @@ struct ReadOnlyFanAuthorityTests {
         }
     }
 
-    /// Truthful, not stubbed: in E2 every fan really is under the system's control,
-    /// because nothing in this build can take one off it.
+    /// A no-op, not a stub: nothing in this build can take a fan off the system's control,
+    /// so the call really does leave the machine as it found it.
+    ///
+    /// It is **not** a claim that every fan was automatic to begin with. Since #148 the
+    /// snapshot reads `F<n>Md`, so a fan another vendor's tool left in manual is an
+    /// observable state this verb neither clears nor reports — see the type doc, and #164
+    /// for the reconciliation that does clear it.
     @Test("restoreAllToAutomatic succeeds")
     func restoreAllToAutomaticSucceeds() async throws {
         let authority = authority(provider: fanProvider(fanCount: 1))
