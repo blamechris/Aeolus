@@ -75,13 +75,19 @@ struct ReadOnlyFanAuthorityDiscoveryTests {
             group.addTask { try await authority.snapshot() }
             group.addTask { try await authority.snapshot() }
 
-            // Both callers get past enumeration — two subset reads each — before either can
-            // reach discovery, so this waits for the arrival rather than sleeping on faith.
-            try await Self.waitUntil { await provider.subsetReadCount >= 4 }
-            // Then give a second walk every chance to start, so that a build with the defect
-            // reaches `readAllCount == 2` before anything is released. Under the fix this
-            // simply expires, which is what the assertion below is measuring.
-            try await Self.waitUntil { await provider.readAllCount >= 2 }
+            // **A precondition that must hold**, so its result is asserted. Each caller
+            // issues three subset reads before it can reach discovery — `FNum`, the batch of
+            // fan keys, and this fan's `F0Md`, the last of which #148 added — so six is
+            // "both callers have arrived", where the four this once waited for was reachable
+            // with one caller done and the other one read in. Waiting rather than sleeping on
+            // faith.
+            #expect(await Self.waitUntil { await provider.subsetReadCount >= 6 })
+            // **A grace period that must expire**, so its result is deliberately discarded.
+            // It gives a second walk every chance to start: a build with the defect reaches
+            // `readAllCount == 2` here, before anything is released, and the fixed build burns
+            // the full limit instead. Naming the two apart is the point — a silently swallowed
+            // expiry cannot tell "the second walk never started" from "the poll never ran".
+            _ = await Self.waitUntil { await provider.readAllCount >= 2 }
             await provider.release()
 
             var snapshots: [SystemSnapshot] = []
@@ -102,17 +108,26 @@ struct ReadOnlyFanAuthorityDiscoveryTests {
         #expect(later.sensors.map(\.key).sorted() == ["TC0D", "TC0P"])
     }
 
-    /// Polls `condition` until it holds or the deadline expires. Expiry is not a failure:
-    /// the caller above uses it both to wait for something that must happen and to give
-    /// something that must *not* happen its chance to.
+    /// Polls `condition` until it holds, and answers **whether it ever did**.
+    ///
+    /// Expiry is not a failure here — the caller above uses this both to wait for something
+    /// that must happen and to give something that must *not* happen its chance to — but it
+    /// must not be invisible either. Returning `Bool` is what lets the caller say which of
+    /// the two each wait is: one `#expect`s the answer, the other discards it, and neither
+    /// can be mistaken for the other by a later reader.
+    ///
+    /// Sleeps with `Task.sleep(for:)` and swallows its cancellation error rather than
+    /// throwing: a cancelled poll has not observed the condition, which is exactly what
+    /// `false` says, and a `throws` here would give the caller a third outcome to interpret.
     private static func waitUntil(
         within limit: Duration = .milliseconds(500),
         _ condition: () async -> Bool
-    ) async throws {
+    ) async -> Bool {
         let deadline = ContinuousClock.now + limit
         while ContinuousClock.now < deadline {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(2))
+            if await condition() { return true }
+            try? await Task.sleep(for: .milliseconds(2))
         }
+        return await condition()
     }
 }
