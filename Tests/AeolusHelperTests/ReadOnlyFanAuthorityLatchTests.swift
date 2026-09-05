@@ -40,7 +40,7 @@ struct ReadOnlyFanAuthorityLatchTests {
     /// `isReclaimedBySystem` is read from § 5's ledger, not written as a literal.
     ///
     /// The same defect as the latch's, one epic later and one cardinality up:
-    /// `fanState(for:reclaimedFans:)` carried `isReclaimedBySystem: false` with a comment
+    /// `fanState(for:reclamation:)` carried `isReclaimedBySystem: false` with a comment
     /// saying E2 has no watchdog. Mark a fan in the ledger and the snapshot says so; put the
     /// literal back and this goes red.
     @Test("A fan the ledger records as reclaimed is reported on the snapshot")
