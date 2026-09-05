@@ -373,9 +373,7 @@ struct HelperHardwareTests {
             #expect(!snapshot.sensors.isEmpty, "the composed helper discovered no sensors")
             #expect(snapshot.activeLease == nil, "no lease can be granted in this build")
             #expect(snapshot.isThermalEmergencyActive == false)
-            for fan in snapshot.fans {
-                #expect(fan.manualControlAvailability == .unavailable(.writePathNotBuilt))
-            }
+            for fan in snapshot.fans { Self.expectHonestAvailability(of: fan) }
 
             // The capability gate, end to end: no double anywhere between this call and
             // `SMCFanControlPlane.writeCapability`.
@@ -402,6 +400,37 @@ struct HelperHardwareTests {
         }
 
         await helper.shutDown()
+    }
+
+    /// What the composed helper must answer about one real fan, in **either** state this
+    /// machine is legitimately in.
+    ///
+    /// Two honest answers, and which one applies depends on what else is running rather than
+    /// on this build. `SupervisedFanAuthority` re-states a fan the firmware reports in
+    /// manual, that Aeolus is not accountable for, as `.foreignManualControl`
+    /// ([ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md)) — and
+    /// on the development machine that is a live condition rather than a hypothesis: Macs
+    /// Fan Control was observed holding both fans on 2026-09-05, and releasing them again
+    /// within the hour while still running (`docs/SMC-RESEARCH.md`).
+    ///
+    /// Asserting `.writePathNotBuilt` unconditionally, as this did, made the test a report
+    /// about whatever was on the reviewer's desktop. Asserting the pair makes it a report
+    /// about the helper, and it still cannot pass by accident: each branch pins a different
+    /// answer, and answering the *other* one fails.
+    private static func expectHonestAvailability(of fan: FanState) {
+        let expected: ManualControlAvailability =
+            fan.mode == .automatic
+            ? .unavailable(.writePathNotBuilt) : .unavailable(.foreignManualControl)
+        #expect(
+            fan.manualControlAvailability == expected,
+            """
+            Fan \(fan.index) reads \(fan.mode) and the composed helper answers \
+            \(fan.manualControlAvailability). A fan on Apple's thermal management must \
+            answer .writePathNotBuilt — this build has no write path for any fan — and a fan \
+            in manual that no lease covers must answer .foreignManualControl, because \
+            something outside Aeolus is holding it and telling the user to look at Aeolus \
+            sends them to the wrong program.
+            """)
     }
 
     /// The hardware-checklist row #164 makes executable: what `F<n>Md` actually reads on this

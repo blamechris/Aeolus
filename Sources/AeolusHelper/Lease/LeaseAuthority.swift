@@ -208,9 +208,10 @@ actor LeaseAuthority {
     ///    a requested fan. The sweep runs **before** all of those deliberately: a lapsed
     ///    lease's fans go back to automatic whether or not this machine is blind and whether
     ///    or not it is too hot, and neither is a machine on which to skip a restore. The
-    ///    foreign-control question comes last of the four because it is the only one whose
-    ///    cost scales with the number of fans asked for — see
-    ///    `refuseIfForeignManualControl(_:wanting:)`.
+    ///    foreign-control question comes last of the four things suspended on — the
+    ///    enumeration, § 3's latch, the telemetry read and it, three of which are refusals —
+    ///    because it is the only one whose cost scales with the number of fans asked for.
+    ///    See `refuseIfForeignManualControl(_:wanting:)`.
     /// 4. **The liveness check, after the last suspension point and immediately before
     ///    registering.** Everything from there to the `insert` is straight-line: the actor
     ///    cannot be re-entered between the check and the act it guards.
@@ -588,17 +589,27 @@ actor LeaseAuthority {
         await activeLeaseView().lease
     }
 
-    /// The lease a client is shown **and the fans it covers**, read in one hop.
+    /// The lease a client is shown **and every fan Aeolus is accountable for**, read in one
+    /// hop.
     ///
     /// The fan set is not on the wire — `Lease` carries no indices — and the snapshot needs
     /// it anyway, to tell a fan Aeolus is holding from one somebody else is. Two calls would
     /// answer that question from two views of this actor: a lease reported live beside an
     /// empty fan set, and therefore a fan under Aeolus's own lease reported as foreign
     /// control. One hop cannot disagree with itself.
-    func activeLeaseView() async -> (lease: Lease?, fans: Set<Int>) {
+    ///
+    /// **It is `fansAeolusIsAccountableFor`, not the lease's own fans, and the two are not
+    /// the same set.** An earlier version returned `table.all.first`'s indices, which was
+    /// wrong twice over: it named only the *first* entry's fans, so a second table entry's
+    /// fans read as foreign; and it omitted the fans that are mid-handback or whose handback
+    /// was abandoned. A fan Aeolus itself put into manual and could not give back would then
+    /// be reported to the user as another program's — `CLAUDE.md` rule 6, in the direction
+    /// `fansAeolusIsAccountableFor` calls *"a considerably worse thing to be told is
+    /// somebody else's fault"*. The grant path has always judged against this set; the
+    /// snapshot now asks the same question of the same state, in the same hop.
+    func activeLeaseView() async -> (lease: Lease?, accountableFans: Set<Int>) {
         await expireLapsedLeases()
-        guard let entry = table.all.first else { return (nil, []) }
-        return (entry.asLease(), entry.fanIndices)
+        return (table.all.first?.asLease(), fansAeolusIsAccountableFor)
     }
 
     var leaseCount: Int { table.count }
@@ -740,9 +751,22 @@ actor LeaseAuthority {
     /// round trip, so a latched machine refuses without spending an SMC read it does not
     /// need. The same reasoning `refuseIfBlind` gives for sitting above the concurrent-lease
     /// refusal, one step further up.
+    private func refuseIfThermalEmergencyActive(_ connection: ConnectionID) async throws {
+        guard await thermalEmergency.isActive else { return }
+        log.refusedThermalEmergency(connection)
+        throw AeolusXPCFault.thermalEmergencyActive
+    }
+
     /// `docs/SAFETY.md` § 6's baseline, asked immediately after the blindness gate.
     ///
-    /// **Last of the three suspending refusals, and the position is reasoned.** § 3's latch
+    /// **Last of the four things `acquireLease` suspends on, and last of the three refusals
+    /// among them — and the position is reasoned.** The four are the fan enumeration, § 3's
+    /// latch, the curated-telemetry read, and this; the enumeration is the one that is not a
+    /// refusal, and the sweep of lapsed leases runs ahead of all four rather than being one
+    /// of them. Step 3 of `acquireLease` lists them in that order, and says which count is
+    /// which for the same reason this does: two nearby sentences counting different things
+    /// with the same word is how the previous "three" and "four" came to disagree. § 3's
+    /// latch
     /// and the curated-telemetry read are both properties of the *machine* and answer for
     /// every fan at once; this one costs one `.supervisor` turn **per requested fan**, so it
     /// is the most expensive question here and the one most worth not asking when a cheaper
@@ -766,8 +790,8 @@ actor LeaseAuthority {
     ///
     /// Three registers, and each one has a **more precise** refusal further down this
     /// method — which is the whole reason they are excluded rather than judged. `F<n>Md`
-    /// reads `1` for all four cases and names no owner, so without this a client would be
-    /// told "another program holds it" about:
+    /// reads `1` for all three and names no owner, so without this a client would be told
+    /// "another program holds it" about:
     ///
     /// - a fan under a live lease (`.leaseHeldByAnotherClient` — another *client*, not
     ///   another program);
@@ -775,14 +799,13 @@ actor LeaseAuthority {
     /// - a fan whose handback was given up on (`.restoreToAutomaticFailed` — Aeolus put it
     ///   there and could not take it back, which is a considerably worse thing to be told
     ///   is somebody else's fault).
+    ///
+    /// **Read by the snapshot as well as by the gate**, through `activeLeaseView()`. One
+    /// definition, because two would disagree the moment either moved — and the way they
+    /// disagreed before was the snapshot naming a fan Aeolus could not hand back as another
+    /// program's, while the gate refused it correctly.
     private var fansAeolusIsAccountableFor: Set<Int> {
         table.fansUnderLease.union(restoreAbandoned).union(releasing.keys)
-    }
-
-    private func refuseIfThermalEmergencyActive(_ connection: ConnectionID) async throws {
-        guard await thermalEmergency.isActive else { return }
-        log.refusedThermalEmergency(connection)
-        throw AeolusXPCFault.thermalEmergencyActive
     }
 
     private func refuseIfInvalidated(_ connection: ConnectionID) throws {
