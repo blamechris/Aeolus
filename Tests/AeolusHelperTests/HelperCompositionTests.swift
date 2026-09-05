@@ -66,11 +66,19 @@ struct HelperCompositionTests {
     func theSnapshotPathTakesItsTurnsFromTheScheduler() throws {
         let source = try Self.compositionSource()
 
+        // Bound to a `Bool` before the expectation, here and below. `#expect` prints its
+        // operands, so passing the `contains` call directly dumps the whole scanned file
+        // into the failure — which buries the message that says what broke.
+        let readsThroughTheScheduler = Self.strippingWhitespace(source)
+            .contains("snapshotProvider:scheduler.snapshotReader")
         #expect(
-            Self.strippingWhitespace(source).contains("snapshotProvider:scheduler.snapshotReader"),
+            readsThroughTheScheduler,
             "the snapshot path no longer takes its turns from the scheduler")
+
+        let schedulerHoldsTheProvider =
+            source.contains("SMCReadScheduler(") && source.contains("SMCSensorProvider()")
         #expect(
-            source.contains("SMCReadScheduler(") && source.contains("SMCSensorProvider()"),
+            schedulerHoldsTheProvider,
             "the scheduler is no longer the thing holding the real provider")
     }
 
@@ -83,15 +91,17 @@ struct HelperCompositionTests {
     /// construction anywhere in `Sources`; this catches the narrower, likelier slip of
     /// building the plane from something other than the local that is already in hand.
     ///
-    /// **Mutation:** `SMCFanControlPlane(scheduler: SMCReadScheduler(provider: SMCSensorProvider()))`.
+    /// **Mutation:** build the plane from
+    /// `SMCReadScheduler(provider: SMCSensorProvider())` instead of from `scheduler`.
     /// Run: red here, and red in both counting tests below — three failures for one edit,
     /// which is the pair working.
     @Test("The control plane is built from the one scheduler, not a second one")
     func thePlaneIsBuiltFromTheOneScheduler() throws {
         let source = Self.strippingWhitespace(try Self.compositionSource())
+        let builtFromTheOneScheduler = source.contains("SMCFanControlPlane(scheduler:scheduler)")
 
         #expect(
-            source.contains("SMCFanControlPlane(scheduler:scheduler)"),
+            builtFromTheOneScheduler,
             """
             the safety subsystem's plane is no longer built from the scheduler the snapshot \
             shares. Two schedulers arbitrate nothing while looking exactly like one that does.
@@ -119,15 +129,18 @@ struct HelperCompositionTests {
     /// Run: red.
     @Test("The fan mode is read through the one provider the snapshot was given")
     func theModeReadIsBuiltFromTheSameProviderAsTheFanRead() throws {
+        let readsThroughTheOneProvider = Self.strippingWhitespace(try Self.compositionSource())
+            .contains("SnapshotFanModeReads(provider:snapshotProvider)")
         #expect(
-            Self.strippingWhitespace(try Self.compositionSource())
-                .contains("SnapshotFanModeReads(provider:snapshotProvider)"),
+            readsThroughTheOneProvider,
             """
             F<n>Md is no longer read through the provider the fan read was given, so one \
             snapshot is a composite of two sources.
             """)
         #expect(
-            try Self.constructionSites(of: "SnapshotFanModeReads(") == ["HelperComposition.swift x1"],
+            try Self.constructionSites(of: "SnapshotFanModeReads(") == [
+                "HelperComposition.swift x1"
+            ],
             """
             the snapshot's mode reader is built in exactly one place. A second one is a \
             second view of who owns a fan, and the two will eventually disagree.
@@ -220,24 +233,40 @@ struct HelperCompositionTests {
     /// `HelperComposition.bringUp()` binds to the restorer before anything can restore.
     ///
     /// Three assertions, because a hoist can land in either function. `main()` must contain
-    /// no resume at all; `bringUp` must contain exactly one; and inside `bringUp` it must
-    /// come after the composition has been brought up.
+    /// no resume at all; `bringUp` must contain exactly one; and inside `bringUp` nothing may
+    /// follow it.
+    ///
+    /// ## "Last statement", not "after the call" — the first version of this was wrong
+    ///
+    /// It asserted that `listener.resume()` came after `helper.bringUp()` in the text, and
+    /// **mutation B below survived it**: `helper.bringUp()` sits inside the `Task { … }` that
+    /// *starts* the asynchronous half, so it is textually above the `broughtUp.wait()` that
+    /// makes it *complete*. Hoisting the resume above the wait therefore left it after the
+    /// call, and the suite stayed green while the daemon advertised its Mach service with the
+    /// safety registries unbound.
+    ///
+    /// So the assertion is the contract itself: the resume is the **last** statement in the
+    /// function body, with nothing but the closing brace after it. That holds however the
+    /// bring-up is spelled — awaited, blocked on, or restructured by whichever of #164 to
+    /// #168 gets here next — because the property is about what may follow it, not about what
+    /// precedes it.
     ///
     /// **Mutation A:** move `listener.resume()` into `main()`, beside `listener.delegate`.
     /// Run: red on the first two.
-    /// **Mutation B:** inside `bringUp`, move `listener.resume()` above `helper.bringUp()`.
+    /// **Mutation B:** inside `bringUp`, move `listener.resume()` above `broughtUp.wait()`.
     /// Run: red on the third.
     @Test("The Mach service is advertised only after bring-up, as the last statement")
     func theServiceIsAdvertisedOnlyAfterBringUp() throws {
         let code = try Self.mainSource()
-        let declaration = try #require(
-            code.range(of: "static func bringUp"),
+        let bringUpBody = try #require(
+            Self.body(ofFunctionMatching: "static func bringUp", in: code),
             "AeolusHelperMain no longer has a bring-up function to order the resume against")
-        let beforeBringUp = String(code[code.startIndex..<declaration.lowerBound])
-        let bringUpBody = String(code[declaration.upperBound...])
+        let elsewhere =
+            Self.occurrences(of: "listener.resume()", in: code)
+            - Self.occurrences(of: "listener.resume()", in: bringUpBody)
 
         #expect(
-            Self.occurrences(of: "listener.resume()", in: beforeBringUp) == 0,
+            elsewhere == 0,
             """
             the Mach service is advertised outside the bring-up function, so a client can \
             connect while the safety registries are unbound and no supervisor is running.
@@ -246,11 +275,17 @@ struct HelperCompositionTests {
             Self.occurrences(of: "listener.resume()", in: bringUpBody) == 1,
             "bring-up no longer advertises the service exactly once")
 
-        let brought = try #require(bringUpBody.range(of: "helper.bringUp()"))
-        let resumed = try #require(bringUpBody.range(of: "listener.resume()"))
+        // Everything after the resume, inside the body. Bound to a `Bool` before the
+        // expectation so a failure names the rule rather than printing the function.
+        let trailing = bringUpBody.range(of: "listener.resume()").map {
+            bringUpBody[$0.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         #expect(
-            brought.upperBound < resumed.lowerBound,
-            "the service is advertised before the safety subsystem has been brought up")
+            trailing?.isEmpty == true,
+            """
+            something runs after the Mach service is advertised. Whatever it is, a client \
+            can now be answered before it has happened — which is the whole of decision A1.
+            """)
     }
 
     /// The listener is handed the supervised authority, not the read-only one.
@@ -264,9 +299,10 @@ struct HelperCompositionTests {
     @Test("The listener is given the supervised authority, not the read-only one")
     func theListenerServesTheSupervisedAuthority() throws {
         let code = Self.strippingWhitespace(try Self.mainSource())
+        let servesTheComposedAuthority = code.contains("authority:helper.authority")
 
         #expect(
-            code.contains("authority:helper.authority"),
+            servesTheComposedAuthority,
             "the listener no longer serves the authority the composition root built")
         #expect(
             try Self.constructionSites(of: "SupervisedFanAuthority(")
@@ -275,6 +311,34 @@ struct HelperCompositionTests {
     }
 
     // MARK: - Scanning
+
+    /// The body of the first function whose declaration matches `marker`, by brace matching.
+    ///
+    /// Brace matching rather than "from here to the end of the file", so the assertion above
+    /// means "nothing follows the resume **in this function**" rather than "`bringUp` happens
+    /// to be the last thing in the file" — a coupling that would turn green into red the day
+    /// somebody adds a method after it, which is a tripwire nobody keeps.
+    ///
+    /// Line comments are already stripped by the callers, and this target has no string
+    /// literal containing a brace, so a plain depth count is sufficient here. It is not a
+    /// general Swift parser and is not claimed to be.
+    private static func body(ofFunctionMatching marker: String, in code: String) -> String? {
+        guard let declaration = code.range(of: marker),
+            let open = code[declaration.upperBound...].firstIndex(of: "{")
+        else { return nil }
+
+        var depth = 0
+        var index = open
+        while index < code.endIndex {
+            if code[index] == "{" { depth += 1 }
+            if code[index] == "}" {
+                depth -= 1
+                if depth == 0 { return String(code[code.index(after: open)..<index]) }
+            }
+            index = code.index(after: index)
+        }
+        return nil
+    }
 
     /// Which files in `Sources` construct `needle`, and how many times each.
     private static func constructionSites(of needle: String) throws -> [String] {

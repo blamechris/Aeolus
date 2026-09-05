@@ -218,8 +218,10 @@ struct HelperRestorerTests {
         await helper.bindSafetyRegistries()
         try await Self.acquireAndRelease(in: helper)
 
-        await #expect(throws: AeolusXPCFault.manualControlUnavailable(
-            reason: .restoreToAutomaticFailed)) {
+        await #expect(
+            throws: AeolusXPCFault.manualControlUnavailable(
+                reason: .restoreToAutomaticFailed)
+        ) {
             _ = try await helper.leases.acquireLease(
                 LeaseFixture.request(fans: [0]), from: ConnectionID())
         }

@@ -98,11 +98,13 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// read, then the restorer, then the lease core, then the two safety actors, then the
     /// loops, then the authority.
     ///
-    /// - Parameters:
-    ///   - snapshotProvider: the reader the client-facing snapshot takes its turns from. The
-    ///     fan read and the `F<n>Md` read are both built from **this one value** here, so a
-    ///     snapshot assembled from two connections is not a mistake a caller can make —
-    ///     which is a stronger guarantee than the source tripwire that used to enforce it.
+    /// `snapshotProvider` is the reader the client-facing snapshot takes its turns from, and
+    /// it is the one parameter worth a paragraph. The fan read and the `F<n>Md` read are both
+    /// built from **this single value** below, so a snapshot assembled from two connections is
+    /// not a mistake a caller can make — a stronger guarantee than the source tripwire that
+    /// used to enforce it, and the reason
+    /// `HelperCompositionTests.theModeReadIsBuiltFromTheSameProviderAsTheFanRead` is now
+    /// narrower than it was.
     init(
         plane: Plane,
         snapshotProvider: some SensorProvider,
@@ -272,8 +274,7 @@ extension HelperComposition where Plane == SMCFanControlPlane {
     /// cycle. That is the documented steady state for an unmeasured machine rather than an
     /// edge case: § 3 being a precondition of § 1 means such a machine refuses leases, which
     /// is the honest answer and not a degradation to be papered over.
-    static func production(log: HelperLog = HelperLog()) -> HelperComposition<SMCFanControlPlane>
-    {
+    static func production(log: HelperLog = HelperLog()) -> HelperComposition<SMCFanControlPlane> {
         let scheduler = SMCReadScheduler(provider: SMCSensorProvider())
         let plane = SMCFanControlPlane(scheduler: scheduler)
         return HelperComposition(

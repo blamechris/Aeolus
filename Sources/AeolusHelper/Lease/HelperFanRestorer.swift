@@ -44,9 +44,10 @@ struct KeystoneRestoreAttempt<Plane: FanControlPlane>: FanRestoreAttempting {
 ///
 /// #103's adjudication found it: *"there is no `FanRestoring` conformer anywhere in
 /// `Sources/` (only `RecordingFanRestorer` in tests), and
-/// `ReclamationWatchdog.manualControlReleased(fanAt:)` / `ThermalEmergency.manualControlEngaged(_:)`
-/// have zero callers in `Sources/`."* The lease core, the bound and both registries all
-/// shipped; the wire between them did not. This is that wire, and it is the reason the
+/// `ReclamationWatchdog.manualControlReleased(fanAt:)` and
+/// `ThermalEmergency.manualControlEngaged(_:)` have zero callers in `Sources/`."* The lease
+/// core, the bound from #110 and both safety registries all shipped; the wire between them
+/// did not. This is that wire, and it is the reason the
 /// bridge is worth a type of its own rather than a closure at the composition root: the
 /// **order** of the two deregistrations relative to the write is a safety decision, and a
 /// decision needs somewhere to be written down and tested.
