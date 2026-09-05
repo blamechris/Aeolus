@@ -140,6 +140,7 @@ struct ReadOnlyFanAuthorityLatchTests {
     ) -> ReadOnlyFanAuthority {
         ReadOnlyFanAuthority(
             provider: provider,
+            fanMode: SnapshotFanModeReads(provider: provider),
             log: HelperLog(subsystem: "dev.aeolus.AeolusHelperTests", category: "Authority"),
             thermalEmergency: thermalEmergency,
             reclamation: reclamation,

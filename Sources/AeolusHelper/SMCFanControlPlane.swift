@@ -191,17 +191,14 @@ struct SMCFanControlPlane: FanControlPlane {
 
     // MARK: - Decoding
 
-    /// `F<n>Md` is a flag key: zero is the system's thermal management, and **anything else
-    /// is manual.**
+    /// The one decode of `F<n>Md`, which lives on `FirmwareFanMode` rather than here.
     ///
-    /// Not rounded, and that is the load-bearing part. A value of `0.4` — a decode artefact
-    /// rather than anything firmware would intend — reads as manual here, and would read as
-    /// automatic if this rounded first. The asymmetry decides it: reading a manual fan as
-    /// automatic leaves it pinned with reconciliation satisfied that there is nothing to do,
-    /// which is exactly the failure this epic exists to prevent. Reading an automatic fan as
-    /// manual costs one redundant restore write to a fan that is already automatic.
+    /// It moved when the snapshot path started reading the same key
+    /// ([#148](https://github.com/blamechris/Aeolus/issues/148)): two spellings of "is this
+    /// fan on automatic control" is two answers, and the supervisor and the client reporting
+    /// different ones about the same fan is the defect, not the duplication.
     private static func mode(from value: Double) -> FirmwareFanMode {
-        value == 0 ? .automatic : .manual
+        FirmwareFanMode(declaredByFirmware: value)
     }
 
     /// One RPM key as a readback: the value, or the reason there is not one.

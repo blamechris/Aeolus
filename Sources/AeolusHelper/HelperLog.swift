@@ -36,10 +36,52 @@ import os
 /// would train whoever reads the log to ignore it.
 struct HelperLog: Sendable {
 
+    /// The two levels the fan lines below choose between. Only those lines, deliberately —
+    /// see `fanLineSink`.
+    enum FanLineLevel: Sendable, Hashable {
+        /// Persisted, and the level an operator goes looking at.
+        case error
+        /// Not persisted by default. What a repeat of an already-reported condition costs.
+        case debug
+    }
+
     private let log: Logger
+
+    /// A sink the **fan** lines are also handed to, with their level, so a test can assert
+    /// which level one was emitted at.
+    ///
+    /// Shaped after `SafetyLog.init(recording:)`, and narrow on purpose. Most lines in this
+    /// type interpolate a client-supplied string under a deliberate `privacy:` annotation,
+    /// and funnelling those through one already-rendered `String` would move the redaction
+    /// decision out of `os_log` — a change to what a shipping helper discloses, made for a
+    /// test's benefit. The fan lines interpolate an `Int` and an error description this
+    /// module produced, so mirroring them redacts nothing differently.
+    ///
+    /// `nil` in every shipping build: `AeolusHelperMain` calls `init(subsystem:category:)`,
+    /// which cannot set it.
+    private let fanLineSink: (@Sendable (FanLineLevel, String) -> Void)?
 
     init(subsystem: String = "dev.aeolus.AeolusHelper", category: String = "XPCBoundary") {
         log = Logger(subsystem: subsystem, category: category)
+        fanLineSink = nil
+    }
+
+    /// A log whose fan lines a test can read back, level included.
+    ///
+    /// The level is the whole assertion: `fanModeUnreadable` reports a condition that is
+    /// *normal* on an entire architecture family, so whether the tenth occurrence is an
+    /// error or a debug line is the difference between a diagnostic and a denial of service
+    /// against whoever reads the log. Before this seam that choice was a claim no test could
+    /// observe — `Logger` writes to the unified log, `.debug` is not persisted by default,
+    /// and reading it back with `OSLogStore` would make the assertion depend on the
+    /// machine's logging configuration rather than on the code.
+    init(
+        subsystem: String = "dev.aeolus.AeolusHelper",
+        category: String = "XPCBoundary",
+        recordingFanLines sink: @escaping @Sendable (FanLineLevel, String) -> Void
+    ) {
+        log = Logger(subsystem: subsystem, category: category)
+        fanLineSink = sink
     }
 
     // MARK: - Connections
@@ -175,6 +217,45 @@ struct HelperLog: Sendable {
             sensors.
             """
         )
+    }
+
+    // MARK: - Fans
+
+    /// `F<n>Md` did not answer for one fan, so the snapshot could not say who owns it.
+    ///
+    /// The wire has no way to report "not known" at protocol version 1 — see
+    /// `ReadOnlyFanReport.controlMode(_:)` — so this line is the only place the gap is
+    /// visible. It is `error` rather than `info` for that reason: what reaches the client is
+    /// a fallback, and an operator diagnosing "why does Aeolus say this fan is automatic"
+    /// needs to find this. Expected on every Intel Mac, which expresses fan mode as a
+    /// bitmask rather than as this key.
+    ///
+    /// **Which is exactly why only the first occurrence per fan is an error.** `snapshot()`
+    /// is on a 1 Hz path, so an unthrottled line here is about 86,400 error-level entries per
+    /// fan per day, for the life of the process, on a condition that is normal for a whole
+    /// architecture — the signal this line exists to preserve, drowned on the one
+    /// architecture this project cannot test. The repeats say nothing the first did not, so
+    /// they go to `.debug`, which is not persisted by default. The wording is identical
+    /// either way: the level carries the distinction, not the prose. The caller owns the
+    /// "have I said this about this fan before" state, because this type is a value and holds
+    /// none — `ObservedFanModes.reportedUnreadable`.
+    func fanModeUnreadable(fanIndex: Int, reason: String, alreadyReported: Bool) {
+        // Rendered once and logged `.public` whole, rather than interpolated per field: both
+        // fields are the helper's own — an index it enumerated and an error it produced —
+        // so there is nothing here for `os_log` to redact, and the mirror below must see the
+        // same text the unified log gets.
+        let message = """
+            Fan \(fanIndex)'s mode key could not be read (\(reason)). This snapshot reports \
+            it as automatic, which is a fallback and not an observation: the wire has no way \
+            to say "not known" at protocol version 1.
+            """
+        if alreadyReported {
+            log.debug("\(message, privacy: .public)")
+            fanLineSink?(.debug, message)
+        } else {
+            log.error("\(message, privacy: .public)")
+            fanLineSink?(.error, message)
+        }
     }
 
     // MARK: - Lifecycle

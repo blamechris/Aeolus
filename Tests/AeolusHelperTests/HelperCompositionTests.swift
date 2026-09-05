@@ -53,6 +53,47 @@ struct HelperCompositionTests {
             "the scheduler is no longer the thing holding the real provider")
     }
 
+    /// The mode read goes through the **same** reader as the fans beside it, at snapshot
+    /// priority.
+    ///
+    /// Two ways this line can regress and neither shows up at runtime here. Dropping the
+    /// argument is impossible — the initialiser requires it — but wiring it to a *second*
+    /// source would make one snapshot a composite of two connections, and wiring it to an
+    /// `SMCFanControlPlane` would issue a client's 1 Hz reporting at `.supervisor`, which is
+    /// the priority § 3's safety cycle is meant to have to itself. `main()` ends in
+    /// `dispatchMain()` and has no seam to drive, so this is asserted at the source for the
+    /// reason the whole suite exists.
+    ///
+    /// **Mutation:** change `main()` to
+    /// `fanMode: SnapshotFanModeReads(provider: SMCSensorProvider())`. Run: red here — and
+    /// red in `nothingInTheHelperReadsAroundTheGate` too, which is the pair working.
+    @Test("The mode read is wired to the scheduler's snapshot reader, like the fan read")
+    func theModeReadTakesTheSameTurnsAsTheFanRead() throws {
+        let source = Self.strippingComments(try Self.mainSource())
+
+        // Two fragments rather than one exact single-line literal, which is the brittleness
+        // this file's own documentation records: the wired expression is nested, and a nested
+        // construction is exactly what `swift format` wraps — so a one-line match would turn a
+        // *correct* composition red the day the line grew past the column limit. Each fragment
+        // names one of the two ways this line can regress, and each survives a wrap.
+        #expect(
+            source.contains("fanMode: SnapshotFanModeReads("),
+            """
+            F<n>Md is no longer read through the snapshot path's own conformer, so it is \
+            either a second source or a supervisor-priority read on a client's 1 Hz path.
+            """)
+        // The provider inside that construction, matched on the whitespace-stripped source so
+        // the label may sit on its own line. Anchored to `SnapshotFanModeReads(` so it cannot
+        // be satisfied by the authority's own `provider:` argument two lines above.
+        #expect(
+            Self.strippingWhitespace(source)
+                .contains("SnapshotFanModeReads(provider:scheduler.snapshotReader)"),
+            """
+            F<n>Md is no longer read through the scheduler's snapshot reader, so one \
+            snapshot is a composite of two connections or a read that takes no turn.
+            """)
+    }
+
     /// Nothing in the helper may hold a raw `SMCSensorProvider`, anywhere.
     ///
     /// **Scoped to the whole of `Sources/AeolusHelper`, and it was one file until a review
@@ -134,6 +175,15 @@ struct HelperCompositionTests {
 
     private static func occurrences(of needle: String, in haystack: String) -> Int {
         haystack.components(separatedBy: needle).count - 1
+    }
+
+    /// The same source with **every** whitespace character removed.
+    ///
+    /// So a match can name one composed expression exactly without depending on where
+    /// `swift format` chose to wrap it. `contains("A(b: c)")` is precise and brittle;
+    /// `contains("A(") && contains("c")` is wrap-proof and imprecise; this is both.
+    private static func strippingWhitespace(_ source: String) -> String {
+        source.filter { !$0.isWhitespace }
     }
 
     /// Drops `//` line comments so prose naming a type is not mistaken for code building one.
