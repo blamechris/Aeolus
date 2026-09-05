@@ -187,21 +187,47 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// Registering *before* the mode write is not a harmless reordering. This mechanism runs
     /// on its own 1 Hz loop, so a `cycle()` can land in the window between the registration
     /// and the write. What it reads there is `mode == .automatic` on a fan with nothing
-    /// commanded, which is `.modeReclaimed` — the strongest primary signal there is — and it
-    /// falls straight through `diverged(_:fanAt:)`'s "nothing to re-assert" branch to
+    /// commanded, which is `.modeReclaimed` — the strongest primary signal there is — and
+    /// it reaches `diverged(_:fanAt:)`'s "nothing to re-assert" branch and
     /// `finaliseRelease(fanAt:because:)` with `.systemReclaimed`: the fan restored, **every
     /// lease on the machine revoked**, and a `.fault` line blaming the operating system —
     /// milliseconds after a client was granted control it never got to use.
     /// `ReclamationWatchdogRecoveryTests.aFanWithNoCommandedTargetIsRestored` and
     /// `fallingBackClearsTheWholeRegistry` are that path, arrived at on purpose.
     ///
-    /// The window on the far side of the write is safe, and is the reason a grace flag on
-    /// `HeldFan` is not needed to make it safe. Between the mode write and the first
-    /// `commandedTarget(_:)` a cycle reads manual with no commanded target, and
-    /// `primaryDivergence(of:against:)`'s `guard let commanded else { return nil }` is what
-    /// makes that a converged cycle rather than a divergence.
-    /// `ReclamationWatchdogTests.aFanRegisteredBeforeItsFirstTargetKeepsItsLease` asserts it,
-    /// so the ordering this comment mandates is covered rather than merely recommended.
+    /// ## The far side of the write is not free either, and the grace is what pays for it
+    ///
+    /// An earlier version of this comment said the window after the mode write was safe, and
+    /// that a grace flag on `HeldFan` was therefore unnecessary. That was true of the
+    /// `.targetDiverged` case and of nothing else: both `.modeReclaimed` and
+    /// `.targetUnreadable` are decided *before* `primaryDivergence(of:against:)` consults
+    /// `commanded` at all, so a cycle landing in the `F<n>Md` write-to-read-back lag, or on
+    /// one unreadable `F<n>Tg`, reached the same whole-machine revocation from the ordering
+    /// this comment mandates. A write returning successfully and a read reflecting it are
+    /// different facts, and the lag between them is unmeasured on Apple Silicon.
+    ///
+    /// `gracedBeforeItsFirstCommand(_:of:fanAt:)` closes that window — #147's second remedy,
+    /// implemented rather than declined — by giving a fan with nothing commanded on it
+    /// `ReclamationLimits.blindCyclesBeforeDivergence` cycles before the primary signal
+    /// reaches the terminal action. So the ordering above is what this method requires, and
+    /// the grace is what makes obeying it survivable rather than merely correct on paper.
+    /// The two sides are not symmetrical after it: registering early still costs the client
+    /// its lease, three cycles later instead of one.
+    ///
+    /// `ReclamationRegistrationWindowTests` is the whole window, one test per answer
+    /// `primaryDivergence(of:against:)` can give inside it, so this comment claims no more
+    /// than the suite shows.
+    ///
+    /// ## The parameter stays a `CommandableFan`
+    ///
+    /// Only `fan.index` is read, and with `HeldFan.permit` gone there is nothing else it is
+    /// stored into — so tidying this to `manualControlEngaged(fanAt index: Int)` looks free.
+    /// It is not: a `CommandableFan` can only be minted from a `FanEnvelope` that passed its
+    /// bounds gate, so the type is what makes registration lawful only from a caller that
+    /// was actually authorised to write to the fan. Widening it would let anything put a fan
+    /// into a registry whose entries this mechanism will later re-engage manual control on.
+    /// `ThermalEmergency.manualControlEngaged(_:)` takes the same parameter for the same
+    /// reason.
     ///
     /// Clears any reclamation recorded against this fan: something has just taken it off
     /// automatic control, so the ledger's claim that the system holds it is now false, and
@@ -348,6 +374,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // Primary first, and it is the only signal that reaches the terminal action.
         if let primary = Self.primaryDivergence(of: state, against: fan.commanded) {
             held[index]?.actualDwellCycles = 0
+            guard !gracedBeforeItsFirstCommand(primary, of: fan, fanAt: index) else { return }
             await diverged(primary, fanAt: index)
             return
         }
@@ -365,6 +392,84 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         if await ledger.clearReclaimed(fanAt: index) {
             log.reclamationResolved(fan: index)
         }
+    }
+
+    // MARK: - The registration grace
+
+    /// Whether this divergence is still inside the window that follows registration, and so
+    /// must not reach the terminal action yet.
+    ///
+    /// ## The window this closes
+    ///
+    /// `manualControlEngaged(_:)` mandates registration **after** the `F<n>Md` write lands,
+    /// and an earlier version of that comment claimed the far side of the write was
+    /// therefore safe without any grace. It is not, and the claim covered exactly one of the
+    /// three ways `primaryDivergence(of:against:)` can answer for a fan on which nothing has
+    /// been commanded yet:
+    ///
+    /// - `.targetDiverged` — unreachable, because that case is behind
+    ///   `guard let commanded else { return nil }`. This is the only case the old claim
+    ///   analysed, and it is the one that never needed a grace.
+    /// - `.modeReclaimed` — reached **before** `commanded` is consulted at all. A write that
+    ///   has returned successfully is not the same fact as a read that reflects it, and the
+    ///   `F<n>Md` write-to-read-back latency on Apple Silicon is unmeasured — `docs/SMC-
+    ///   RESEARCH.md`'s observed section is empty on this point. One cycle landing inside
+    ///   that lag reads automatic.
+    /// - `.targetUnreadable` — reached before `commanded` as well. A single unreadable
+    ///   `F<n>Tg` on a fan nothing has been commanded on took the terminal action on the
+    ///   spot, with none of the tolerance `cycleCouldNotSee(fanAt:detail:)` gives a fan that
+    ///   could not be read at all.
+    ///
+    /// Both of the latter two ended at `diverged(_:fanAt:)`'s "nothing to re-assert" branch:
+    /// the fan restored, **every lease on the machine revoked**, and a `.fault` line blaming
+    /// the operating system — milliseconds after a client was granted control it never got
+    /// to use. That is the defect [#147](https://github.com/blamechris/Aeolus/issues/147)
+    /// names, arrived at from the ordering it mandates rather than from the one it forbids.
+    ///
+    /// ## Why the failure asymmetry inverts here, and only here
+    ///
+    /// This file's rule is that over-firing is the safe direction: handing a fan back to
+    /// Apple's thermal management costs cooling nobody chose, while under-firing leaves a
+    /// fan pinned at a speed nothing honours, which is `CLAUDE.md` rule 6. **On a fan with
+    /// no commanded target there is no such speed.** Nothing Aeolus picked is on the wire,
+    /// so the pinned-fan hazard the asymmetry is built around does not exist, and what
+    /// over-firing costs instead is the whole-machine revocation above — losing control that
+    /// is in fact still held, which is rule 6 in the direction people forget.
+    /// `reportShortfall(_:fanAt:)` declines the terminal action on the same grounds.
+    ///
+    /// So the tolerance is granted **only while `commanded` is `nil`**. The first
+    /// `commandedTarget(_:)` ends it for the rest of that registration, and a commanded fan
+    /// is judged exactly as strictly as before — including on the very next cycle.
+    ///
+    /// ## Bounded by `blindCyclesBeforeDivergence`, and not by a fourth constant
+    ///
+    /// The same number, because it is the same question: how many 1 Hz cycles may pass
+    /// without this mechanism being able to confirm a fan is ours before that becomes
+    /// divergence. Three cycles is three seconds — long against any plausible firmware
+    /// read-back lag and short against anything a user would notice — and a genuine
+    /// reclamation of an uncommanded fan is still restored and reported, just on the third
+    /// cycle rather than the first. `ReclamationLimitsTests` already holds that constant
+    /// under a literal ceiling, so this window cannot be widened into minutes either.
+    ///
+    /// Synchronous, so there is no suspension point between reading the counter and writing
+    /// it back and no re-fetch is owed — `reportShortfall(_:fanAt:)`'s reason.
+    ///
+    /// - Returns: `true` when the caller must stop, leaving the fan held and untouched.
+    private func gracedBeforeItsFirstCommand(
+        _ divergence: ReclamationDivergence, of fan: HeldFan, fanAt index: Int
+    ) -> Bool {
+        guard fan.commanded == nil else { return false }
+
+        let cycles = fan.uncommandedDivergentCycles + 1
+        held[index]?.uncommandedDivergentCycles = cycles
+        guard cycles < ReclamationLimits.blindCyclesBeforeDivergence else { return false }
+
+        // Log the transition, not the state — #124's forward constraint, and
+        // `cycleCouldNotSee(fanAt:detail:)`'s rule for the same reason.
+        if cycles == 1 {
+            log.reclamationAwaitingItsFirstCommand(fan: index, divergence: divergence)
+        }
+        return true
     }
 
     // MARK: - The secondary signal reports, and does nothing else
@@ -446,7 +551,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         }
 
         if await ledger.markReclaimed(fanAt: index) {
-            log.reclamationDetected(fan: index, divergence: divergence)
+            log.reclamationDetected(
+                fan: index, divergence: divergence, commanded: fan.commanded)
         }
 
         // Re-fetched across the ledger hop above.
@@ -803,5 +909,12 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         var actualDwellCycles = 0
         /// Re-asserts issued for the current episode. Reset by convergence.
         var reassertAttempts = 0
+        /// Divergent cycles spent on this fan before anything was ever commanded on it —
+        /// the registration grace, see `gracedBeforeItsFirstCommand(_:of:fanAt:)`.
+        ///
+        /// **Spent, never reset.** A fan cannot be graced indefinitely by alternating
+        /// between divergence and convergence: the budget belongs to one registration, and
+        /// only `manualControlEngaged(_:)` — which builds a fresh `HeldFan` — refills it.
+        var uncommandedDivergentCycles = 0
     }
 }

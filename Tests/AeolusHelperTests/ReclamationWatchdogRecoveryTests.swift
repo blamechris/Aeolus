@@ -111,16 +111,48 @@ struct ReclamationWatchdogRecoveryTests {
     }
 
     /// Divergence before anything was ever commanded has nothing to re-assert to.
+    ///
+    /// **After the registration grace, not on the first cycle.** `.modeReclaimed` is decided
+    /// before `primaryDivergence(of:against:)` consults the commanded target, so a fan whose
+    /// `F<n>Md` write has landed but is not yet reflected in a read looks identical here to
+    /// one the system genuinely took —  and acting on the first cycle revoked every lease on
+    /// the machine inside the write-to-read-back lag.
+    /// `ReclamationWatchdog.gracedBeforeItsFirstCommand(_:of:fanAt:)` separates them by
+    /// waiting: a lag resolves, and a reclamation does not.
+    ///
+    /// The loop runs `1...N` and derives its expectation per cycle rather than asserting the
+    /// threshold separately after a `1..<N` loop, which is empty at `N == 1`.
     @Test("A fan reclaimed before any target was commanded is restored, not re-asserted")
     func aFanWithNoCommandedTargetIsRestored() async throws {
         let machine = ReclamationMachine(
             fans: [0: ScriptedControlPlane.FanCondition(mode: .automatic)])
         try await machine.holdWithoutCommanding(fan: 0)
 
-        await machine.watchdog.cycle()
+        for cycle in 1...ReclamationLimits.blindCyclesBeforeDivergence {
+            await machine.watchdog.cycle()
+            let expected = cycle == ReclamationLimits.blindCyclesBeforeDivergence
+            #expect(
+                await machine.didRestore(fan: 0) == expected,
+                """
+                after \(cycle) of \(ReclamationLimits.blindCyclesBeforeDivergence) cycles \
+                reading automatic, the fan should \(expected ? "" : "not ")have been restored
+                """)
+        }
 
         #expect(await machine.commandedRPMs.isEmpty)
-        #expect(await machine.didRestore(fan: 0))
+        #expect(
+            machine.safetyLog.lines(containing: "no speed to re-assert").count == 1,
+            "the terminal action was not reached, or was reached more than once")
+        // The `.fault` line must not invent a request nobody made. It read "Aeolus asked for
+        // a speed the firmware is not holding" on this path, about a fan on which nothing
+        // was ever put on the wire, and sent the reader looking for a write that never
+        // happened. The commanded half is
+        // `ReclamationWatchdogTests.detectionIsLoggedOnTheTransition`.
+        #expect(
+            machine.safetyLog.faults.contains {
+                $0.contains("no speed had been commanded on this fan yet")
+            },
+            "the detection line claimed a speed was asked for on an uncommanded fan")
     }
 
     /// One unreadable cycle changes nothing. Taking a fan from a client because a single
@@ -283,9 +315,13 @@ struct ReclamationWatchdogRecoveryTests {
         try await machine.holdWithoutCommanding(fan: 0)
         try await machine.hold(fan: 1, commanding: 2_400)
 
-        // Fan 0 reads automatic with nothing ever commanded: it falls straight through to
-        // the terminal action, which revokes the lease covering fan 1 as well.
-        await machine.watchdog.cycle()
+        // Fan 0 reads automatic with nothing ever commanded, so it reaches the terminal
+        // action — once its registration grace runs out — and that revokes the lease
+        // covering fan 1 as well. Fan 1 is commanded and converged throughout: it is dropped
+        // by the whole-machine revocation, never by a judgement of its own.
+        for _ in 1...ReclamationLimits.blindCyclesBeforeDivergence {
+            await machine.watchdog.cycle()
+        }
 
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
         #expect(machine.safetyLog.lines(containing: "also stopped watching").count == 1)

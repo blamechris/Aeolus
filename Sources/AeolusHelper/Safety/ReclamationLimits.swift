@@ -116,11 +116,21 @@ enum ReclamationLimits {
     /// `ScriptedControlPlane.WriteBehaviour.reverted` is exactly that machine.
     static let reassertAttemptBudget = 3
 
-    /// How many consecutive unreadable cycles make a fan's read failure persistent.
+    /// How many consecutive cycles § 5 may fail to confirm a fan is still Aeolus's before
+    /// that becomes divergence.
     ///
     /// Three, so a single missed read — or two — changes nothing. Taking a fan from a
     /// client because one read failed would be over-firing on noise, and this mechanism has
     /// the luxury of waiting that § 3 does not: § 3 is watching a temperature that can rise
     /// in three seconds, and this is watching a fan that is already where it was put.
+    ///
+    /// **Two consumers, one question.** `ReclamationWatchdog.cycleCouldNotSee(fanAt:detail:)`
+    /// counts cycles that could not read the fan at all;
+    /// `ReclamationWatchdog.gracedBeforeItsFirstCommand(_:of:fanAt:)` counts cycles that read
+    /// it but could not yet see it as manual-with-a-target, in the window between
+    /// `engageManualControl` and the first `F<n>Tg` write. Both are "this mechanism cannot
+    /// confirm the fan is ours", and both spend the same currency — a fan held for a bounded
+    /// number of seconds before it is restored and reported — so a second constant would be
+    /// two numbers answering one question, free to drift apart.
     static let blindCyclesBeforeDivergence = 3
 }

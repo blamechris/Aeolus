@@ -5,11 +5,14 @@ import Testing
 /// `docs/SAFETY.md` § 5's **signals**: what makes this mechanism decide a fan has been taken,
 /// and what it must decline to read that way.
 ///
-/// The verdicts only. What § 5 then *does* about a verdict — re-assert, fall back, escalate
-/// blindness — is `ReclamationWatchdogRecoveryTests`, and what happens when the machine moves
-/// while § 5 is mid-read is `ReclamationWatchdogStalenessTests`. Three suites because one
-/// crossed SwiftLint's `type_body_length` limit, split on subject rather than on line count,
-/// the same way `ThermalEmergencyReportingTests` was split from `ThermalEmergencyTests`.
+/// The verdicts only, and only for a fan something has been commanded on. What § 5 then
+/// *does* about a verdict — re-assert, fall back, escalate blindness — is
+/// `ReclamationWatchdogRecoveryTests`; what happens when the machine moves while § 5 is
+/// mid-read is `ReclamationWatchdogStalenessTests`; and what happens to a fan registered but
+/// not yet commanded on is `ReclamationRegistrationWindowTests`, where every verdict here
+/// has a different answer. Four suites because one crossed SwiftLint's `type_body_length`
+/// limit, split on subject rather than on line count, the same way
+/// `ThermalEmergencyReportingTests` was split from `ThermalEmergencyTests`.
 ///
 /// Everything here runs through `ScriptedControlPlane`, which is what #100 built it for.
 @Suite("The reclamation watchdog's signals")
@@ -97,40 +100,6 @@ struct ReclamationWatchdogTests {
 
         #expect(await machine.ledger.causes.isEmpty)
         #expect(await machine.didRestore(fan: 0) == false)
-    }
-
-    /// **The registration contract, asserted from the side that is safe.**
-    ///
-    /// `manualControlEngaged(_:)` is called at the same point as the `F<n>Md` write, and its
-    /// doc comment now says which side: after. This is the window that ordering leaves open
-    /// — the fan is off automatic control and registered here, but no target has been
-    /// commanded yet, because E3 writes `F<n>Tg` next. A supervisor cycle can land in it, and
-    /// what it must do is nothing at all.
-    ///
-    /// The lease assertion is the point. `finaliseRelease(fanAt:because:)` does not revoke
-    /// one lease, it revokes **every** lease on the machine, so a fan judged reclaimed inside
-    /// this window costs a client the control it was granted milliseconds earlier — and the
-    /// log blames the operating system for it. The *other* ordering produces exactly that,
-    /// and `ReclamationWatchdogRecoveryTests.aFanWithNoCommandedTargetIsRestored` is that
-    /// same registry entry read as `.automatic` instead.
-    ///
-    /// Mutation-checked: making `primaryDivergence(of:against:)` treat an absent commanded
-    /// target as divergence — `guard let commanded else { return nil }` becoming
-    /// `guard let commanded else { return .modeReclaimed }` — turns all four assertions red.
-    @Test("A fan registered before its first target keeps its lease through a cycle")
-    func aFanRegisteredBeforeItsFirstTargetKeepsItsLease() async throws {
-        let machine = ReclamationMachine(fans: [0: .held(at: 2_400)])
-        let lease = try await machine.lease(fans: [0])
-        try await machine.holdWithoutCommanding(fan: 0)
-
-        await machine.watchdog.cycle()
-
-        #expect(
-            await machine.leases.activeLease()?.id == lease.id,
-            "registering a fan cost the client the lease it had just been granted")
-        #expect(await machine.watchdog.fansUnderManualControl == [0])
-        #expect(await machine.didRestore(fan: 0) == false)
-        #expect(await machine.ledger.reclaimedFans.isEmpty)
     }
 
     /// The dwell is real: the shortfall is present from the first cycle and reports on the
@@ -327,6 +296,12 @@ struct ReclamationWatchdogTests {
             $0.contains("Reclamation detected on fan 0")
         }
         #expect(announcements.count == 1)
+        // A commanded fan names the number that was asked for. The uncommanded half of this
+        // is `ReclamationWatchdogRecoveryTests.aFanWithNoCommandedTargetIsRestored`, where
+        // the same line must not invent a request nobody made.
+        #expect(
+            announcements.first?.contains("Aeolus asked for 2400 RPM") == true,
+            "the detection line no longer names the speed the firmware is refusing to hold")
     }
 
     /// An empty registry does no work at all — no read, no latch consultation, nothing.

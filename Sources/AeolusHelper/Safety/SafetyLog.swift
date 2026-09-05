@@ -350,13 +350,40 @@ extension SafetyLog {
     /// The line is emitted on the **transition** — `ReclamationLedger.markReclaimed(fanAt:)`
     /// reports it — so a watchdog polling at 1 Hz against a fan the OS is holding says this
     /// once rather than once a second.
-    func reclamationDetected(fan: Int, divergence: ReclamationDivergence) {
+    ///
+    /// ## The second sentence takes the commanded target, because it used not to
+    ///
+    /// It read *"Aeolus asked for a speed the firmware is not holding"* unconditionally, and
+    /// that is false on the one path this line most needs to be trusted on: `.modeReclaimed`
+    /// and `.targetUnreadable` are both decided before
+    /// `ReclamationWatchdog.primaryDivergence(of:against:)` consults the commanded target, so
+    /// a fan registered and never commanded reaches here with **no speed ever put on the
+    /// wire** — and told an operator otherwise, in a `.fault` line, about a fan the user had
+    /// asked nothing of. `CLAUDE.md` rule 6 is about not claiming control that is not held;
+    /// a diagnostic that invents a request nobody made is the same defect wearing a log
+    /// line's clothes, and it sends the reader looking for a write that never happened.
+    ///
+    /// `commanded` is the last step put on the wire, or `nil` when nothing has been.
+    func reclamationDetected(
+        fan: Int, divergence: ReclamationDivergence, commanded: CommandedTarget?
+    ) {
+        let consequence =
+            if let commanded {
+                """
+                Aeolus asked for \(Int(commanded.rpm.rounded())) RPM and the firmware is not \
+                holding it
+                """
+            } else {
+                """
+                no speed had been commanded on this fan yet, so it was taken back before \
+                Aeolus asked it for anything
+                """
+            }
         emit(
             .fault,
             """
-            Reclamation detected on fan \(fan): \(divergence.summary). Aeolus asked for a \
-            speed the firmware is not holding, so the fan is reported as reclaimed by the \
-            system from this point.
+            Reclamation detected on fan \(fan): \(divergence.summary). \(consequence), so \
+            the fan is reported as reclaimed by the system from this point.
             """
         )
     }
@@ -534,6 +561,28 @@ extension SafetyLog {
             (\(detail)), so there is no range to clamp a re-assert into. Restoring to \
             automatic instead of commanding — a re-assert without bounds is not a write \
             this project makes.
+            """
+        )
+    }
+
+    /// Divergence on a fan registered but not yet commanded, inside the registration grace.
+    ///
+    /// `.notice` rather than `.fault`: the ordinary reading of this line is that a client
+    /// has just been granted a fan and the first `F<n>Tg` write has not followed yet, so the
+    /// firmware has not had a chance to agree that the fan is Aeolus's. Nothing is wrong
+    /// until the grace runs out, and if it does, `reclamationHadNothingToReassert(fan:)`
+    /// says so at the level that finding deserves.
+    ///
+    /// The transition only — one line per grace, not one per cycle, which is #124's
+    /// constraint on a 1 Hz supervisor.
+    func reclamationAwaitingItsFirstCommand(fan: Int, divergence: ReclamationDivergence) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) is under manual control with no target commanded on it yet, and \
+            \(divergence.summary). Waiting up to \
+            \(ReclamationLimits.blindCyclesBeforeDivergence) cycles for the first command \
+            before treating that as a reclamation.
             """
         )
     }
