@@ -84,11 +84,14 @@ something that exists: `KeepAlive` and `RunAtLoad` are absent from the plist tod
 what is scheduled to put them back — #86 holds that gap open and #103 closes it.
 
 *Tested by:* unit tests on expiry arithmetic, including a wall clock moved in either
-direction and a monotonic jump (`LeaseExpiryTests`); tests against a recording restorer
-double covering connection death, an invalidation that never arrives at all, and a repeated
-one (`LeaseTeardownTests`). Not against the scripted mock control plane — that is what § 3's,
-§ 5's and § 6's pending lines will be driven through, and naming it here would have claimed
-a fidelity these tests do not have.
+direction and a monotonic jump (`LeaseExpiryTests`); tests on the supervisor's *schedule* as
+distinct from that arithmetic — no sleep outruns the shortest TTL the helper will grant, so a
+lease taken while a pass is parked is still swept at its own deadline rather than at the
+stale one the pass went to sleep on (`LeaseExpirySupervisorScheduleTests`, #151); tests
+against a recording restorer double covering connection death, an invalidation that never
+arrives at all, and a repeated one (`LeaseTeardownTests`). Not against the scripted mock
+control plane — that is what § 3's, § 5's and § 6's pending lines will be driven through, and
+naming it here would have claimed a fidelity these tests do not have.
 
 *Tested by (pending #104):* a manual hardware check that `kill -9` on the app returns the
 fans to automatic. It cannot run until a write path exists to put them anywhere else, which
