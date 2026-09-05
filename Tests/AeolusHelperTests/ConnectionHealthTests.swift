@@ -15,12 +15,23 @@ import Testing
 /// yet", which is [#109](https://github.com/blamechris/Aeolus/issues/109)'s complaint in the
 /// one place it would be invisible.
 ///
+/// ## Every count below is a literal, and that is not a style choice
+///
+/// The first draft of this suite derived its counts from
+/// `ConnectionHealthLimits.consecutiveWholeReadFailures`, which reads as the careful thing to
+/// do and is the opposite. **It was measured:** raising that constant from 3 to 4 raised the
+/// number of failures every test drove along with it, and the whole 1088-test suite stayed
+/// green — a suite that could not fail on the mutation it was written to catch. Literals are
+/// what make the policy and the assertion two things that can disagree.
+///
+/// `theLimitsAreWhatTheseTestsAssume` pins the constants those literals encode, so a
+/// deliberate change to the policy fails in one obvious place rather than silently making the
+/// rest of the suite mean something else.
+///
 /// `.timeLimit` because every wait here is on a pump task: a pump that stopped draining would
 /// hang rather than fail, and a green suite must mean the tests ran.
 @Suite("Connection health", .timeLimit(.minutes(1)))
 struct ConnectionHealthTests {
-
-    private static var threshold: Int { ConnectionHealthLimits.consecutiveWholeReadFailures }
 
     private static func failure(
         _ priority: SMCReadPriority = .snapshot
@@ -43,22 +54,39 @@ struct ConnectionHealthTests {
         }
     }
 
+    // MARK: - The policy the literals encode
+
+    /// The two numbers every count below is written against.
+    ///
+    /// It is the only place either constant is read, which is what makes the rest of the
+    /// suite able to disagree with it. See this suite's documentation for the measurement
+    /// that made this necessary: with the counts derived instead, raising the threshold by
+    /// one left all 1088 tests green.
+    @Test("The policy is three consecutive failures and a thirty-second window")
+    func theLimitsAreWhatTheseTestsAssume() {
+        #expect(ConnectionHealthLimits.consecutiveWholeReadFailures == 3)
+        #expect(ConnectionHealthLimits.minimumInterval == .seconds(30))
+    }
+
     // MARK: - The count
 
-    /// N consecutive whole-read failures fire exactly one reconnect.
+    /// Three consecutive whole-read failures fire exactly one reconnect.
     ///
     /// **Mutation:** raise `ConnectionHealthLimits.consecutiveWholeReadFailures` by one. Run:
-    /// red — N failures no longer reach the threshold and nothing reconnects. That is the
-    /// mutation this test exists for, and the reason it drives *exactly* N rather than
-    /// comfortably more: a test that drove twice the threshold would still see one reconnect
-    /// with N raised, and would be asserting the rate limit instead.
+    /// red here — three failures no longer reach the threshold and nothing reconnects — and
+    /// red on `theLimitsAreWhatTheseTestsAssume`. Both, deliberately: the pin alone would say
+    /// a number changed, and this says the behaviour did.
+    ///
+    /// It drives *exactly* three rather than comfortably more, because a test that drove six
+    /// would still see one reconnect with the threshold raised — it would be asserting the
+    /// rate limit under another name.
     @Test("A run of whole-read failures fires one reconnect")
     func aRunOfFailuresFiresOneReconnect() async throws {
         let recovery = RecordingReconnector()
         let health = ConnectionHealth(clock: TestClock(), log: SafetyLog(recording: { _, _ in }))
         await health.start(recovering: recovery)
 
-        await Self.drive(health, Array(repeating: Self.failure(), count: Self.threshold))
+        await Self.drive(health, Array(repeating: Self.failure(), count: 3))
 
         #expect(await recovery.attempts == 1)
         await health.stop()
@@ -78,7 +106,7 @@ struct ConnectionHealthTests {
         let health = ConnectionHealth(clock: TestClock(), log: SafetyLog(recording: { _, _ in }))
         await health.start(recovering: recovery)
 
-        await Self.drive(health, Array(repeating: Self.failure(), count: Self.threshold - 1))
+        await Self.drive(health, Array(repeating: Self.failure(), count: 2))
 
         #expect(await recovery.attempts == 0)
         await health.stop()
@@ -98,9 +126,9 @@ struct ConnectionHealthTests {
         let health = ConnectionHealth(clock: TestClock(), log: SafetyLog(recording: { _, _ in }))
         await health.start(recovering: recovery)
 
-        var script = Array(repeating: Self.failure(), count: Self.threshold - 1)
+        var script = Array(repeating: Self.failure(), count: 2)
         script.append(.wholeReadSucceeded(priority: .supervisor))
-        script += Array(repeating: Self.failure(), count: Self.threshold - 1)
+        script += Array(repeating: Self.failure(), count: 2)
         await Self.drive(health, script)
 
         #expect(
@@ -122,7 +150,7 @@ struct ConnectionHealthTests {
         let health = ConnectionHealth(clock: TestClock(), log: SafetyLog(recording: { _, _ in }))
         await health.start(recovering: recovery)
 
-        let alternating = (0..<Self.threshold).map { index in
+        let alternating = (0..<3).map { index in
             Self.failure(index.isMultiple(of: 2) ? .snapshot : .supervisor)
         }
         await Self.drive(health, alternating)
@@ -149,7 +177,7 @@ struct ConnectionHealthTests {
         let health = ConnectionHealth(clock: TestClock(), log: SafetyLog(recording: { _, _ in }))
         await health.start(recovering: recovery)
 
-        await Self.drive(health, Array(repeating: Self.failure(), count: Self.threshold * 2))
+        await Self.drive(health, Array(repeating: Self.failure(), count: 6))
 
         #expect(await recovery.attempts == 1)
         await health.stop()
@@ -173,9 +201,9 @@ struct ConnectionHealthTests {
         let health = ConnectionHealth(clock: clock, log: SafetyLog(recording: { _, _ in }))
         await health.start(recovering: recovery)
 
-        await Self.drive(health, Array(repeating: Self.failure(), count: Self.threshold))
+        await Self.drive(health, Array(repeating: Self.failure(), count: 3))
         clock.advance(by: ConnectionHealthLimits.minimumInterval + .seconds(1))
-        await Self.drive(health, Array(repeating: Self.failure(), count: Self.threshold * 2))
+        await Self.drive(health, Array(repeating: Self.failure(), count: 6))
 
         #expect(await recovery.attempts == 2)
         await health.stop()
@@ -195,14 +223,14 @@ struct ConnectionHealthTests {
         let recovery = RecordingReconnector()
         let health = ConnectionHealth(clock: TestClock(), log: SafetyLog(recording: { _, _ in }))
 
-        for _ in 0..<Self.threshold {
+        for _ in 0..<3 {
             health.schedulerDidObserve(Self.failure())
         }
         #expect(await recovery.attempts == 0, "nothing may be handled before the pump exists")
 
         await health.start(recovering: recovery)
         await yieldUntil("the buffered failures to be handled") {
-            await health.observedOutcomes == Self.threshold
+            await health.observedOutcomes == 3
         }
 
         #expect(await recovery.attempts == 1)
@@ -220,32 +248,52 @@ struct ConnectionHealthTests {
             log: SafetyLog(recording: { [recorded] in recorded.append($0, $1) }))
         await health.start(recovering: recovery)
 
-        await Self.drive(health, Array(repeating: Self.failure(), count: Self.threshold))
+        await Self.drive(health, Array(repeating: Self.failure(), count: 3))
 
         #expect(await recovery.attempts == 1)
         #expect(!recorded.lines(containing: "Rebuilding the SMC connection failed").isEmpty)
         await health.stop()
     }
 
-    /// Turn events are dropped at the door and never counted.
+    /// Turn events are dropped **at the door**, before the buffer, and this is the shape that
+    /// can tell that apart from dropping them one step later.
     ///
-    /// Not tidiness: a snapshot is 46 turns and one outcome, so turn events outnumber the
-    /// ones this type counts by about that ratio. A buffer carrying them would evict the
-    /// outcomes, invisibly. The assertion is that a flood of them changes nothing at all.
-    @Test("Turn events are not counted and never trigger anything")
-    func turnEventsAreIgnored() async throws {
+    /// A snapshot is 46 turns and one outcome, so turn events outnumber the ones this type
+    /// counts by about that ratio — and the event buffer holds the *newest* 64. Forwarding
+    /// them would therefore evict the outcomes being counted, invisibly, on a busy machine.
+    ///
+    /// The script reproduces exactly that, and it is the only shape that can: three failures
+    /// while the pump is not yet running, then a flood of turn events, then the pump. With the
+    /// filter, the buffer holds three failures and one reconnect fires. Without it, the
+    /// failures are the oldest of two hundred and three events in a 64-slot buffer, so they
+    /// are gone before anything reads them.
+    ///
+    /// An earlier version of this test flooded *first* and asserted that nothing changed. It
+    /// could not fail: `handle(_:recovering:)` ignores turn events too, and with the pump
+    /// draining continuously nothing was ever evicted. Removing the door filter left it green.
+    ///
+    /// **Mutation:** in `schedulerDidObserve(_:)`, yield every event rather than only the two
+    /// outcome cases. Run: red.
+    @Test("Turn events are dropped before they can evict what is counted")
+    func turnEventsNeverDisplaceAnOutcome() async throws {
         let recovery = RecordingReconnector()
         let health = ConnectionHealth(clock: TestClock(), log: SafetyLog(recording: { _, _ in }))
-        await health.start(recovering: recovery)
 
+        for _ in 0..<3 {
+            health.schedulerDidObserve(Self.failure())
+        }
         for _ in 0..<200 {
             health.schedulerDidObserve(.turnEnded(priority: .snapshot))
-            health.schedulerDidObserve(.overtakeTaken(consecutive: 1))
         }
-        await Self.drive(health, Array(repeating: Self.failure(), count: Self.threshold))
 
-        #expect(await recovery.attempts == 1, "turn events displaced the outcomes being counted")
-        #expect(await health.observedOutcomes == Self.threshold)
+        await health.start(recovering: recovery)
+        await yieldUntil("the buffered failures to be handled") {
+            await health.observedOutcomes == 3
+        }
+
+        #expect(
+            await recovery.attempts == 1,
+            "turn events displaced the outcomes this observer exists to count")
         await health.stop()
     }
 }
