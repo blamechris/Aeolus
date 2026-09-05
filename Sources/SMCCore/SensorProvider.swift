@@ -68,6 +68,29 @@ public enum SensorReadFailure: Error, Sendable, Hashable {
     case notDecodable(reason: String)
 }
 
+extension SensorReadFailure {
+    /// A human-readable rendering of this failure. Diagnostic only, never parsed or
+    /// matched on by a caller.
+    ///
+    /// The one implementation, published here after three read clients — `fanctl`'s
+    /// `ListCommand`, `AeolusUI`'s `PollingError`, and `SMCFanEnumeration` itself —
+    /// each carried an independent copy of the identical switch. `SMCFanEnumeration`
+    /// previously kept its copy `private` specifically because a `public` one here
+    /// would have made `fanctl` and `AeolusUI`'s own extensions ambiguous; publishing
+    /// it required deleting those two local copies in the same change, not just adding
+    /// a third.
+    public var readableDescription: String {
+        switch self {
+        case .unknownKey(let key):
+            return "\(key) is not present on this machine"
+        case .readFailed(let reason):
+            return reason
+        case .notDecodable(let reason):
+            return reason
+        }
+    }
+}
+
 /// One sensor reading at one instant.
 public struct SensorReading: Sendable, Hashable {
     /// The raw key, always retained. It is shown alongside any friendly label so a wrong
