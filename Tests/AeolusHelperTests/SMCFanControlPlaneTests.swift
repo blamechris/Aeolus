@@ -67,29 +67,23 @@ struct SMCFanControlPlaneTests {
         }
     }
 
-    /// The recovery verb refuses, and refuses with **its own case**.
-    ///
-    /// `.reconnectNotBuilt`'s entire justification is that a reconnect that was never built
-    /// and a reconnect that failed send `ReclamationWatchdog` down the same branch, and an
-    /// operator reading `log show` is *"entitled to know which happened"*. Nothing asserted
-    /// it: `everyWriteVerbRefuses` did not cover this verb, `reconnectNotBuilt` appeared
-    /// nowhere under `Tests/`, and `ScriptedControlPlane.reconnect()`'s refused branch
-    /// throws a `.readFailed` of its own — so the value this build actually ships was never
-    /// observed by a test at all.
-    ///
-    /// The failure that leaves open is quiet: someone stubbing this to return successfully
-    /// would put a `.notice` line in front of an operator saying the helper reconnected to
-    /// the SMC, on a build with no reconnect in it, with the suite green.
-    ///
-    /// Asserted apart from `everyWriteVerbRefuses` because it is not a write verb and does
-    /// not throw that suite's `.controlPathNotBuilt`. Folding it in would have meant relaxing
-    /// that test's error expectation, which is the assertion doing the work there.
-    @Test("Reconnecting refuses with the case that says the reconnect is what is missing")
-    func reconnectRefusesAsUnbuilt() async throws {
-        await #expect(throws: FanControlPlaneError.reconnectNotBuilt) {
-            try await Self.plane([:]).reconnect()
-        }
-    }
+    // The recovery verb is **not** a write verb, and the reason it is named here is that
+    // this file used to assert the opposite.
+    //
+    // [#146](https://github.com/blamechris/Aeolus/pull/146) added
+    // `reconnectRefusesAsUnbuilt`, which pinned `FanControlPlaneError.reconnectNotBuilt` as
+    // the value this build ships. That was right for that build and is wrong for this one:
+    // #168 gives `reconnect()` a body, and an error case meaning *"no attempt was possible
+    // at all"* is a lie the day an attempt is. The case is deleted rather than deprecated,
+    // and its test with it.
+    //
+    // What replaces it is not a refusal assertion. The property worth pinning about a
+    // reconnect is that it does not run *inside* a read, and it lives with the rest of the
+    // recovery behaviour: `ConnectionRecoveryTests`, which drives this same plane over a
+    // fake SMC whose connection and provider are two views of one state.
+    //
+    // This comment is the tombstone. Without it the next reader finds a suite that covers
+    // every verb on the seam except one, and no way to tell a deliberate move from a gap.
 
     // MARK: - Reads are subset reads
 

@@ -70,7 +70,7 @@ import SMCCore
 /// `FanControlPlane` refines this, so every conformer answers both and no separate
 /// production type is needed — the split is about what a *consumer* can be given, not
 /// about what the hardware offers.
-protocol FanStateSensing: FanModeSensing {
+protocol FanStateSensing: FanModeSensing, SMCConnectionRecovering {
 
     /// Reads one fan's firmware-declared envelope, `F<n>Mn` and `F<n>Mx`.
     ///
@@ -106,9 +106,27 @@ protocol FanStateSensing: FanModeSensing {
     /// outstanding supervisor reads is the number that matters. Three keys in one turn
     /// costs ~0.5 ms; a second turn costs a scheduling decision.
     func readControlState(ofFan index: Int) async throws -> FanControlState
+}
 
-    /// Rebuilds whatever the conformer uses to reach the SMC, because reading has stopped
-    /// working and the connection itself is the suspect.
+// MARK: - Recovery
+
+/// One verb: rebuild whatever the conformer uses to reach the SMC, because reading has
+/// stopped working and the connection itself is the suspect.
+///
+/// ## Why it is a protocol of its own
+///
+/// The same argument `FanModeSensing` makes, in the same direction. `FanStateSensing`
+/// refines this, so every plane answers it and no separate production type is needed — but
+/// the two consumers want very different amounts of authority. `ReclamationWatchdog` reads
+/// fans *and* reconnects, so it holds the wider seam; `ConnectionHealth` only ever
+/// reconnects, and handing a lifecycle observer a seam that can also read fan state would be
+/// an authority it has no use for and that a later edit could quietly spend.
+///
+/// `Sendable`, because the lifecycle owner holds one across an actor boundary. Every
+/// conformer already is.
+protocol SMCConnectionRecovering: Sendable {
+
+    /// Rebuilds the connection to the SMC. One attempt.
     ///
     /// `docs/SAFETY.md` § 5's escalation for persistent read failure is *"attempt a
     /// reconnect, then restore automatic and report"*, and this is the first half. A stale
@@ -125,16 +143,19 @@ protocol FanStateSensing: FanModeSensing {
     /// depend on the machinery that has gone blind, which is the shape ADR 0007's keystone
     /// exists to refuse.
     ///
-    /// - Important: **`SMCFanControlPlane` throws `.reconnectNotBuilt` today**, and that is
-    ///   the honest state rather than a stub. Rebuilding the connection means
-    ///   `SMCConnection.close()` then `open()`, and `SMCConnection`'s own cache note says
-    ///   wiring recovery to a lifecycle event "is a decision for whoever owns that
-    ///   lifecycle, not this cache" — which is
-    ///   [#103](https://github.com/blamechris/Aeolus/issues/103), the issue that owns
-    ///   sleep/wake and therefore owns #68. The seam is declared here so the watchdog's
-    ///   escalation is written, reviewed and tested against a real branch now, and #103
-    ///   supplies one method body rather than a design. `ScriptedControlPlane` scripts both
-    ///   outcomes, so both branches are covered before the production body exists.
+    /// ## What returning proves, which is less than it looks
+    ///
+    /// That the handle was rebuilt, and nothing else. No read has been issued since, so a
+    /// caller that treats a clean return as "reading works again" is claiming something it
+    /// has not observed — `CLAUDE.md` rule 6, one level below the fans.
+    /// `SafetyLog.reclamationReconnected(fan:)` says exactly this in the line it emits, and
+    /// the watchdog restores regardless.
+    ///
+    /// - Important: `SMCFanControlPlane` implements this against the real `SMCConnection` as
+    ///   of [#168](https://github.com/blamechris/Aeolus/issues/168) — a `close()` and an
+    ///   `open()` taken under an exclusive scheduler turn. It threw `.reconnectNotBuilt`
+    ///   until then, and that case is gone rather than deprecated: an error meaning "no
+    ///   attempt was possible" is a lie the day an attempt is.
     func reconnect() async throws
 }
 
@@ -368,19 +389,6 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
     /// while the thermal manager is holding the fans; see `SMCError.isCommandRejection` for
     /// why the response code alone does not identify that condition.
     case firmwareRefusedControl(detail: String)
-
-    /// This build cannot rebuild its connection to the SMC.
-    ///
-    /// Its own case rather than a `readFailed`, because the two say different things to the
-    /// one caller that sees it: a `readFailed` means the attempt was made and the machine
-    /// did not come back, and this means no attempt was possible at all. Both send
-    /// `ReclamationWatchdog` down the same branch — restore and report — and an operator
-    /// reading `log show` is entitled to know which happened.
-    ///
-    /// `SMCFanControlPlane` answers with this until
-    /// [#103](https://github.com/blamechris/Aeolus/issues/103) owns the lifecycle that
-    /// closes and reopens the connection. See `FanControlPlane.reconnect()`.
-    case reconnectNotBuilt
 
     /// This build has no SMC write path at all.
     ///

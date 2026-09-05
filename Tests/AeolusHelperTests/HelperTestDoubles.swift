@@ -410,6 +410,26 @@ extension AcknowledgementReply {
 /// convenience over a simpler shape — it *is* the shape, and every caller of this helper
 /// (`SMCFanControlPlaneTests`, in another file) therefore exercises the real admission path
 /// rather than a provider the plane reached directly.
-func supervisorPlane(over provider: some SensorProvider) -> SMCFanControlPlane {
-    SMCFanControlPlane(scheduler: SMCReadScheduler(provider: provider))
+///
+/// The connection is defaulted to one that records nothing, because every caller here is
+/// asserting on reads and writes rather than on recovery. A suite that is about the recycle
+/// passes its own — see `ConnectionRecoveryTests`, whose fake connection and fake provider
+/// are two views of one state, which is the only way the property under test means anything.
+func supervisorPlane(
+    over provider: some SensorProvider,
+    connection: some SMCConnectionRecycling = InertSMCConnection()
+) -> SMCFanControlPlane {
+    SMCFanControlPlane(
+        scheduler: SMCReadScheduler(provider: provider), connection: connection)
+}
+
+/// A connection that can be closed and opened and is attached to nothing.
+///
+/// For the suites where the plane's recovery verb is never called. It deliberately records
+/// nothing at all: a double that counted calls would invite an assertion on the count, in a
+/// file whose callers have no connection behind their provider — so the count would be about
+/// the double rather than about the machine.
+struct InertSMCConnection: SMCConnectionRecycling {
+    func close() async {}
+    func open() async throws {}
 }

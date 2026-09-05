@@ -95,7 +95,7 @@ actor ScriptedControlPlane: FanControlPlane {
             reads: ReadBehaviour = .answered,
             writes: WriteBehaviour = .honoured,
             reconnects: ReconnectBehaviour = .refused(
-                reason: "this build has no reconnect; see SMCFanControlPlane.reconnect()"),
+                reason: "the SMC did not come back; see SMCFanControlPlane.reconnect()"),
             targetWrites: WriteBehaviour? = nil
         ) {
             self.temperatures = temperatures
@@ -122,15 +122,15 @@ actor ScriptedControlPlane: FanControlPlane {
         /// run of them to the end of the script is a persistent one, because the last stage
         /// repeats forever.
         ///
-        /// `reconnects` defaults to the shipping helper's behaviour — refused — so a blind
-        /// scenario that says nothing about reconnecting gets the branch the build really
-        /// has. A scenario that wants the reconnect to return cleanly while reads keep
-        /// failing asks for it, because that disagreement is the interesting case: § 5
+        /// `reconnects` defaults to refused, so a blind scenario that says nothing about
+        /// reconnecting gets the harder branch: the read is dark and the rebuild did not
+        /// help either. A scenario that wants the reconnect to return cleanly while reads
+        /// keep failing asks for it, because that disagreement is the interesting case: § 5
         /// restores either way.
         static func blind(
             reason: String = "the SMC did not answer",
             reconnects: ReconnectBehaviour = .refused(
-                reason: "this build has no reconnect; see SMCFanControlPlane.reconnect()")
+                reason: "the SMC did not come back; see SMCFanControlPlane.reconnect()")
         ) -> Stage {
             Stage(reads: .failed(reason: reason), reconnects: reconnects)
         }
@@ -144,9 +144,12 @@ actor ScriptedControlPlane: FanControlPlane {
 
     /// Whether rebuilding the connection works this stage.
     ///
-    /// The default is `.refused`, matching `SMCFanControlPlane.reconnect()`, so a scenario
-    /// that says nothing about reconnecting gets the behaviour the shipping helper actually
-    /// has rather than an optimistic one no build provides.
+    /// The default is `.refused`, and until #168 the reason was that this matched
+    /// `SMCFanControlPlane.reconnect()`, which had no body. It has one now, so the default
+    /// is a *scenario* choice rather than a mirror of the build: every stage that defaults
+    /// here is a § 5 blindness scenario, and the point of those is that the restore happens
+    /// whether or not the reconnect worked. A default of `.succeeded` would quietly make
+    /// every one of them test the easy branch.
     enum ReconnectBehaviour: Sendable, Hashable {
         /// The call returns. It says nothing about whether reads now work — that is
         /// `ReadBehaviour`'s, on this stage or the next.

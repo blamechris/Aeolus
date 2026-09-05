@@ -220,13 +220,18 @@ struct HelperHardwareTests {
     /// than as a killed job.
     @Test("A safety cycle stays prompt while a real snapshot is on the connection")
     func theSafetyCycleStaysPromptDuringARealSnapshot() async throws {
-        let scheduler = SMCReadScheduler(provider: SMCSensorProvider())
+        // The one connection, named here for the reason `HelperComposition.production(log:)`
+        // names one: the provider reads through it and the plane recycles it, and a second
+        // one would make this fixture disagree with the daemon's wiring. Nothing below
+        // reconnects — this test is about contention — but the shape is the shipped shape.
+        let connection = SMCConnection()
+        let scheduler = SMCReadScheduler(provider: SMCSensorProvider(connection: connection))
         let authority = ReadOnlyFanAuthority(
             provider: scheduler.snapshotReader,
             fanMode: SnapshotFanModeReads(provider: scheduler.snapshotReader), log: Self.log,
             thermalEmergency: ThermalEmergencyLatch(),
             reclamation: ReclamationLedger())
-        let plane = SMCFanControlPlane(scheduler: scheduler)
+        let plane = SMCFanControlPlane(scheduler: scheduler, connection: connection)
         let critical = CriticalSensorSet.resolve(for: HardwareIdentity.current())
         try #require(!critical.isEmpty, "no curated critical set on the machine it was cut for")
 
