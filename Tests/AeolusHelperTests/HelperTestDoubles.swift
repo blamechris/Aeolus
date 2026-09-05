@@ -232,6 +232,54 @@ actor GatedDiscoveryProvider: SensorProvider {
     }
 }
 
+/// Wraps a real provider, counts what was asked of it, and changes no answer.
+///
+/// For the one assertion a hardware test cannot make with a stopwatch. "Discovery is off the
+/// snapshot path" is a claim about the number of `readAll()` calls, and
+/// [#97](https://github.com/blamechris/Aeolus/issues/97) is the record of what happens when
+/// a wall-clock bound is asked to prove it instead: the mutation the threshold was written
+/// for — discovery re-run on every snapshot — costs about 1.22 s warm against a two-second
+/// bound, so it passed with 39% to spare. A count does not depend on how fast the machine is
+/// or on what else is running on it, which is the recurring problem with every figure in that
+/// test.
+///
+/// Deliberately a **decorator over the real provider** rather than a canned double. The
+/// timings printed alongside the count are still measured against real firmware; all this
+/// adds is one actor hop per read.
+actor ReadAllCountingProvider: SensorProvider {
+    nonisolated let identifier: String
+
+    private let wrapped: any SensorProvider
+
+    /// How many full index-table walks the authority asked for. Exactly one, for the life of
+    /// the authority, however many snapshots it serves.
+    private(set) var readAllCount = 0
+
+    /// How many subset reads it asked for. Not asserted on — enumeration and the sensor
+    /// refresh both use them and the split is not this test's business — but printed, because
+    /// "the warm path is a subset read" is only meaningful next to a number.
+    private(set) var subsetReadCount = 0
+
+    init(wrapping wrapped: some SensorProvider) {
+        self.wrapped = wrapped
+        self.identifier = wrapped.identifier
+    }
+
+    var isAvailable: Bool {
+        get async { await wrapped.isAvailable }
+    }
+
+    func readAll() async throws -> [SensorReading] {
+        readAllCount += 1
+        return try await wrapped.readAll()
+    }
+
+    func read(keys: [String]) async throws -> [SensorReadOutcome] {
+        subsetReadCount += 1
+        return try await wrapped.read(keys: keys)
+    }
+}
+
 extension SensorReading {
     static func fake(key: String, value: Double, kind: Kind = .rpm) -> SensorReading {
         SensorReading(key: key, value: value, kind: kind, providerIdentifier: "fake")
