@@ -83,13 +83,21 @@ public struct FanCurve: Sendable, Hashable, Codable {
 
     /// The hysteresis margin actually used, given what a configuration asked for.
     ///
-    /// Mirrors `FanSafetyLimits.effectiveRampRPMPerSecond(requested:)`: a request that is
-    /// not a usable margin at all — negative, `-.infinity`, or NaN — falls back to
-    /// `defaultHysteresisCelsius` rather than being honoured. `requested >= 0` is false
-    /// for NaN as well, since every comparison with NaN is false, so one condition
-    /// covers all three cases without a separate finiteness check beside it.
-    /// `+.infinity` is refused too — an unbounded margin never releases, which disables
-    /// the mechanism exactly as completely as NaN does, just at the other end.
+    /// Mirrors the shape of `FanSafetyLimits.effectiveRampRPMPerSecond(requested:)` — a
+    /// request that cannot be honoured falls back to a documented default rather than
+    /// being carried — but **diverges from it on zero**, deliberately: an explicit `0`
+    /// here is a legitimate "no hysteresis" request and is honoured, where
+    /// `effectiveRampRPMPerSecond` rejects `0` because a ramp rate of zero would mean the
+    /// fan can never move at all. There is no equivalent floor for a margin — zero
+    /// hysteresis just means the curve reacts to every crossing immediately, which is a
+    /// real (if noisier) configuration, not a disabled mechanism.
+    ///
+    /// `requested >= 0` is false for NaN as well as for negative numbers, since every
+    /// comparison with NaN is false — so that one condition rejects both without a
+    /// separate finiteness check for the negative case. It does **not** reject
+    /// `+.infinity`, though, which is why `requested.isFinite` is checked alongside it:
+    /// an unbounded margin never releases, disabling the mechanism exactly as completely
+    /// as NaN does, just from the other end.
     public static func effectiveHysteresisCelsius(requested: Double) -> Double {
         guard requested.isFinite, requested >= 0 else { return defaultHysteresisCelsius }
         return requested
