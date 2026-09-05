@@ -109,13 +109,18 @@ import FanKit
 /// both supervisors, and E3 owns telling this actor what it commanded.
 ///
 /// - Note: this file is over SwiftLint's 400-line warning, as `ThermalEmergency.swift` and
-///   `LeaseAuthority.swift` already are. The split that *was* available has been taken —
-///   `ReclamationDivergence` and `ReclamationLimits` are values rather than mechanism and
-///   live in `ReclamationLimits.swift`. What is left is the actor and its private state, and
-///   moving any of it into an extension in another file would mean widening that state to
-///   the whole module. That state is exactly what makes `examine(fanAt:ruling:)`'s
-///   read-then-mutate reasoning checkable, and
-///   [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of this space.
+///   `LeaseAuthority.swift` already are, and it crossed the 1000-line **error** threshold
+///   once #169/#170/#172 landed alongside the registration grace. Both splits available
+///   without widening state have now been taken: `ReclamationDivergence` and
+///   `ReclamationLimits` are values rather than mechanism and live in
+///   `ReclamationLimits.swift`, and `primaryDivergence(of:against:)` and
+///   `actualShortfall(of:against:)` are `static` and pure and live in
+///   `ReclamationSignals.swift`. What is left is the actor and its private state: every
+///   remaining member either reads or writes `held`, or is `held`, so moving any of it into
+///   an extension in another file would mean widening that state to the whole module. That
+///   state is exactly what makes `examine(fanAt:ruling:)`'s read-then-mutate reasoning
+///   checkable, and [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of
+///   this space — including what to do when the next paragraph pushes this over again.
 actor ReclamationWatchdog<Plane: FanControlPlane> {
 
     /// The read half of the seam. **Not a `FanControlPlane`**, so this actor cannot
@@ -934,74 +939,6 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         }
 
         await leases.revokeEveryLease(because: cause)
-    }
-
-    // MARK: - The signals
-
-    /// § 5's primary signal: what was written against what the firmware reads back.
-    ///
-    /// Pure, and static, so the whole of the ruling is one expression over two values a
-    /// test can construct directly.
-    ///
-    /// **The mutation this exists to survive** is replacing this comparison with an
-    /// actual-versus-target one — `switch state.target` becoming `switch state.actualRPM`.
-    /// Run: `ReclamationWatchdogTests`'s "An emergency ramp in flight is not read as
-    /// reclamation" goes red on both its assertions, because that scenario has `F<n>Tg`
-    /// holding exactly what § 3 commanded while `F<n>Ac` is still climbing — convergence
-    /// here, and divergence under the mutant.
-    private static func primaryDivergence(
-        of state: FanControlState, against commanded: CommandedTarget?
-    ) -> ReclamationDivergence? {
-        // The mode is the unambiguous half, and it needs no commanded target to read: a fan
-        // Aeolus is holding that the firmware reports as automatic has been taken back,
-        // whatever any RPM key says.
-        guard state.mode == .manual else { return .modeReclaimed }
-
-        switch state.target {
-        case .unreadable(let reason):
-            // **Divergence, never "no divergence".** This is why `FanRPMReadback` is an enum
-            // and not a `Double?`: a watchdog that could not tell "no target set" from "this
-            // target could not be read" would report a fan it can no longer see as healthy,
-            // which is the single failure this signal exists to prevent.
-            return .targetUnreadable(reason: reason)
-        case .rpm(let readBack):
-            // Nothing has been commanded on this fan yet — it came off automatic control
-            // and no target followed. The mode check above is the whole of what can be said.
-            guard let commanded else { return nil }
-            guard abs(readBack - commanded.rpm) > ReclamationLimits.targetToleranceRPM
-            else { return nil }
-            return .targetDiverged(commanded: commanded.rpm, readBack: readBack)
-        }
-    }
-
-    /// § 5's secondary signal: the fan is turning slower than it was told to.
-    ///
-    /// A **shortfall** only. A fan spinning faster than asked is the system helping or a
-    /// sensor reading high, and neither is Aeolus losing control of it; treating it as
-    /// divergence would fire this mechanism on a machine that is cooling perfectly well.
-    ///
-    /// An unreadable `F<n>Ac` is *not* divergence here, and that is not an inconsistency
-    /// with the primary signal's treatment of an unreadable target. The target read-back is
-    /// the evidence that the fan is still ours; the actual speed is corroboration. Losing
-    /// corroboration while the evidence still reads correctly is a degraded cycle, not a
-    /// reclamation — and a total read failure is caught by `examine(fanAt:ruling:)`'s
-    /// blindness path rather than here.
-    ///
-    /// - Returns: both speeds when the observed one is short by more than the tolerance,
-    ///   else `nil`. The caller applies the dwell; this function has no memory.
-    ///
-    /// It returns the commanded speed as well as the observed one so the caller never has to
-    /// re-derive it. An earlier draft returned only the observed speed and the call site
-    /// read the other half back out of an optional with a `?? 0` fallback — a fabricated
-    /// zero that could only ever have reached a `.fault` log line telling an operator a fan
-    /// had been commanded to stop, which is the one number this project may never state.
-    private static func actualShortfall(
-        of state: FanControlState, against commanded: CommandedTarget?
-    ) -> (actual: Double, commanded: Double)? {
-        guard let commanded, case .rpm(let actual) = state.actualRPM else { return nil }
-        let tolerance = commanded.rpm * ReclamationLimits.actualToleranceFraction
-        guard commanded.rpm - actual > tolerance else { return nil }
-        return (actual: actual, commanded: commanded.rpm)
     }
 
     // MARK: - Per-fan state
