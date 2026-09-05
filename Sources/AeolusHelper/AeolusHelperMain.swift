@@ -83,8 +83,14 @@ enum AeolusHelperMain {
         // machinery for fixing it still in the build. See
         // [#103](https://github.com/blamechris/Aeolus/issues/103).
         let scheduler = SMCReadScheduler(provider: SMCSensorProvider())
+        // `F<n>Md` through the *same* reader as everything else in the snapshot, and
+        // therefore at snapshot priority. When E5's supervisor exists this could instead be
+        // its `SMCFanControlPlane`, which satisfies `FanModeSensing` already — but that plane
+        // issues every read at `.supervisor`, and a client's 1 Hz reporting does not belong
+        // in the queue § 3's cycle is meant to have to itself. See `FanModeSensing`.
         let authority = ReadOnlyFanAuthority(
             provider: scheduler.snapshotReader,
+            fanMode: SnapshotFanModeReads(provider: scheduler.snapshotReader),
             log: log,
             thermalEmergency: thermalEmergency,
             reclamation: reclamation)

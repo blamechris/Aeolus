@@ -76,7 +76,9 @@ struct LeaseRevocationTests {
     func aLatchedEmergencyRefusesAGrant() async throws {
         let latch = ThermalEmergencyLatch()
         let authority = LeaseFixture.authority(thermalEmergency: latch)
-        await latch.engage(by: CriticalTemperature(key: smcKey("Tp01"), celsius: 99))
+        await latch.engage(
+            by: CriticalTemperature(key: smcKey("Tp01"), celsius: 99),
+            answering: [smcKey("Tp01")])
 
         await #expect(throws: AeolusXPCFault.thermalEmergencyActive) {
             _ = try await authority.acquireLease(LeaseFixture.request(), from: ConnectionID())
@@ -93,7 +95,9 @@ struct LeaseRevocationTests {
         let latch = ThermalEmergencyLatch()
         let authority = LeaseFixture.authority(
             telemetry: LeaseFixture.blindTelemetry(), thermalEmergency: latch)
-        await latch.engage(by: CriticalTemperature(key: smcKey("Tp01"), celsius: 99))
+        await latch.engage(
+            by: CriticalTemperature(key: smcKey("Tp01"), celsius: 99),
+            answering: [smcKey("Tp01")])
 
         await #expect(throws: AeolusXPCFault.thermalEmergencyActive) {
             _ = try await authority.acquireLease(LeaseFixture.request(), from: ConnectionID())
@@ -117,7 +121,9 @@ struct LeaseRevocationTests {
             LeaseFixture.request(timeToLive: 5), from: ConnectionID())
 
         clock.advance(by: .seconds(10))
-        await latch.engage(by: CriticalTemperature(key: smcKey("Tp01"), celsius: 99))
+        await latch.engage(
+            by: CriticalTemperature(key: smcKey("Tp01"), celsius: 99),
+            answering: [smcKey("Tp01")])
 
         await #expect(throws: AeolusXPCFault.thermalEmergencyActive) {
             _ = try await authority.acquireLease(LeaseFixture.request(), from: ConnectionID())

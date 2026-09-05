@@ -28,7 +28,8 @@ struct ReadOnlyFanAuthorityLatchTests {
     func theSnapshotReportsTheLatch() async throws {
         let latch = ThermalEmergencyLatch()
         await latch.engage(
-            by: CriticalTemperature(key: smcKey("Tp01"), celsius: 99))
+            by: CriticalTemperature(key: smcKey("Tp01"), celsius: 99),
+            answering: [smcKey("Tp01")])
 
         let snapshot = try await authority(
             provider: fanProvider(fanCount: 1), thermalEmergency: latch
@@ -139,6 +140,7 @@ struct ReadOnlyFanAuthorityLatchTests {
     ) -> ReadOnlyFanAuthority {
         ReadOnlyFanAuthority(
             provider: provider,
+            fanMode: SnapshotFanModeReads(provider: provider),
             log: HelperLog(subsystem: "dev.aeolus.AeolusHelperTests", category: "Authority"),
             thermalEmergency: thermalEmergency,
             reclamation: reclamation,

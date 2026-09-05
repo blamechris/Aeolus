@@ -95,11 +95,12 @@ actor ThermalSupervisor<Plane: FanControlPlane> {
     /// above its ceiling — the failure asymmetry's second branch, reached through a
     /// lifecycle event instead of a bad reading.
     ///
-    /// **The consequence, stated rather than left to be discovered.**
-    /// `ThermalEmergency.cycle()` is the only caller of `ThermalEmergencyLatch.release()`
-    /// anywhere in `Sources/`, so stopping while latched leaves § 3 engaged for the life of
-    /// the process: `acquireLease` refuses `.thermalEmergencyActive` forever and every
-    /// snapshot reports an emergency that is no longer happening. That is the right trade —
+    /// **The consequence, stated rather than left to be discovered.** Nothing in `Sources/`
+    /// clears `ThermalEmergencyLatch` except `ThermalEmergency.cycle()`, and it clears it
+    /// through `release(ifStill:)` — the no-argument `release()` has no caller there at all.
+    /// So stopping while latched leaves § 3 engaged for the life of the process:
+    /// `acquireLease` refuses `.thermalEmergencyActive` forever and every snapshot
+    /// reports an emergency that is no longer happening. That is the right trade —
     /// refusing manual control is safe, releasing blind is not — but it is a trade, and the
     /// loop now says so at `.fault` on its way out.
     /// [#103](https://github.com/blamechris/Aeolus/issues/103) owns the restart policy that

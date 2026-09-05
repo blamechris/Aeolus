@@ -32,8 +32,12 @@ struct HelperHardwareTests {
 
     @Test("A snapshot from real hardware reports real fans, controllable by nothing")
     func snapshotFromRealHardware() async throws {
+        // One provider, read through twice: the fans and the mode key must come from the
+        // same source, or a snapshot is one instant's report assembled from two.
+        let provider = SMCSensorProvider()
         let authority = ReadOnlyFanAuthority(
-            provider: SMCSensorProvider(), log: Self.log,
+            provider: provider,
+            fanMode: SnapshotFanModeReads(provider: provider), log: Self.log,
             thermalEmergency: ThermalEmergencyLatch(),
             reclamation: ReclamationLedger())
 
@@ -90,30 +94,47 @@ struct HelperHardwareTests {
     ///
     /// ## What the two-second threshold actually buys, stated honestly
     ///
-    /// It is a **coarse regression tripwire, and it does not kill the mutation it was
-    /// written for.** Measured on this machine, a warm snapshot costs **roughly half a
-    /// second** — six runs have ranged from 0.48 s to 0.60 s — so two seconds is only about
-    /// **3x to 4x** it, not the order of magnitude an earlier version of this comment
-    /// claimed.
+    /// It is a **coarse regression tripwire, and on its own it did not kill the mutation it
+    /// was written for** — which is why the assertion that carries this test's name is now
+    /// the *count* below, and the clock is kept only as a tripwire that says so. Measured on
+    /// this machine, a warm snapshot costs **roughly half a second** — six runs have ranged
+    /// from 0.48 s to 0.60 s — so two seconds is only about **3x to 4x** it, not the order of
+    /// magnitude an earlier version of this comment claimed.
     ///
     /// The mutation it names — `readAll()` back on every snapshot, reproduced by making
-    /// `readSensors()` ignore its cached key set — **survives**. Three runs put `warmest` at
-    /// 1.216 s to 1.221 s, well inside the threshold, and `warmest < cold` holds too because
-    /// the mutant's first snapshot still pays discovery on top of the re-read. The **2.46 s**
-    /// figure once quoted here as the mutant's cost is the mutant's *first* snapshot, which
-    /// includes discovery; the assertion is on `warmest`, so that number was never the one
-    /// the threshold is compared against.
-    /// [#97](https://github.com/blamechris/Aeolus/issues/97) tracks making this assertion
-    /// structural — counting `readAll()` calls — rather than timed.
+    /// `readSensors()` ignore its cached key set — **survived the clock**. Three runs put
+    /// `warmest` at 1.216 s to 1.221 s, well inside the threshold, and `warmest < cold` held
+    /// too, because the mutant's first snapshot still pays discovery on top of the re-read.
+    /// The **2.46 s** figure once quoted here as the mutant's cost is the mutant's *first*
+    /// snapshot, which includes discovery; the assertion is on `warmest`, so that number was
+    /// never the one the threshold is compared against. The underlying reason a warm mutant
+    /// is cheap: by the second snapshot `SMCConnection`'s per-key metadata cache is fully
+    /// populated, so re-running the enumeration costs about half what the first one did.
+    ///
+    /// ## What kills it: counting the walks, per
+    /// [#97](https://github.com/blamechris/Aeolus/issues/97)
+    ///
+    /// `ReadAllCountingProvider` wraps the real `SMCSensorProvider` and counts, so "discovery
+    /// is off the snapshot path" is asserted as the structural fact it is —
+    /// `readAllCount == 1` across a cold snapshot and three warm ones — rather than inferred
+    /// from a duration. That assertion cannot be satisfied by a fast machine and cannot be
+    /// broken by a loaded one, which is the failure mode every measured figure in this suite
+    /// has. The mutation above turns it red at the first warm snapshot.
+    ///
+    /// The two assertions are kept apart on purpose: the count says discovery did not come
+    /// back, and the clock says the snapshot is still fast enough for the 1 Hz path ADR 0006
+    /// puts it on. Neither answers the other's question.
     ///
     /// The threshold is still **not** to be loosened, since raising it toward the cold cost
-    /// gives up what little it does catch; it just must not be read as proof that discovery
-    /// cannot return to the hot path. If this ever goes flaky, the finding is that the
-    /// snapshot got slower, which is the thing worth knowing.
+    /// gives up what little it does catch. If it ever goes flaky, the finding is that the
+    /// snapshot got slower — or that the machine was busy, which on a shared development
+    /// machine is worth confirming before anything else.
     @Test("Discovery stays off the snapshot path")
     func warmSnapshotIsCheap() async throws {
+        let provider = ReadAllCountingProvider(wrapping: SMCSensorProvider())
         let authority = ReadOnlyFanAuthority(
-            provider: SMCSensorProvider(), log: Self.log,
+            provider: provider,
+            fanMode: SnapshotFanModeReads(provider: provider), log: Self.log,
             thermalEmergency: ThermalEmergencyLatch(),
             reclamation: ReclamationLedger())
 
@@ -136,9 +157,16 @@ struct HelperHardwareTests {
             snapshot cost on \(HardwareIdentity.current().modelIdentifier ?? "unknown"): \
             \(first.sensors.count) sensors; first (with discovery) \(cold); \
             warmest of three subsequent \(warmest); \
+            \(await provider.readAllCount) full walk(s) and \
+            \(await provider.subsetReadCount) subset reads across four snapshots; \
             encoded payload \(encoded.count) bytes, which is the per-tick wire cost at 1 Hz
             """
         )
+        // The assertion this test is named for, and the only one here a busy machine cannot
+        // move: four snapshots, one index-table walk.
+        #expect(
+            await provider.readAllCount == 1,
+            "a warm snapshot walked the index table again — discovery is back on the hot path")
         #expect(warmest < .seconds(2))
         #expect(warmest < cold, "discovery is supposed to be the expensive one")
     }
@@ -194,7 +222,8 @@ struct HelperHardwareTests {
     func theSafetyCycleStaysPromptDuringARealSnapshot() async throws {
         let scheduler = SMCReadScheduler(provider: SMCSensorProvider())
         let authority = ReadOnlyFanAuthority(
-            provider: scheduler.snapshotReader, log: Self.log,
+            provider: scheduler.snapshotReader,
+            fanMode: SnapshotFanModeReads(provider: scheduler.snapshotReader), log: Self.log,
             thermalEmergency: ThermalEmergencyLatch(),
             reclamation: ReclamationLedger())
         let plane = SMCFanControlPlane(scheduler: scheduler)
@@ -253,8 +282,12 @@ struct HelperHardwareTests {
     /// authority to SMC and back, with no write path anywhere in it.
     @Test("A real snapshot crosses a real connection and decodes")
     func snapshotCrossesTheBoundary() async throws {
+        // One provider, read through twice: the fans and the mode key must come from the
+        // same source, or a snapshot is one instant's report assembled from two.
+        let provider = SMCSensorProvider()
         let authority = ReadOnlyFanAuthority(
-            provider: SMCSensorProvider(), log: Self.log,
+            provider: provider,
+            fanMode: SnapshotFanModeReads(provider: provider), log: Self.log,
             thermalEmergency: ThermalEmergencyLatch(),
             reclamation: ReclamationLedger())
         let harness = AnonymousListenerHarness(authority: authority)

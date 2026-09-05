@@ -41,12 +41,31 @@ public struct Fan: Sendable, Hashable, Codable, Identifiable {
 }
 
 /// What is currently driving a fan.
+///
+/// These cases describe the **fan**, not Aeolus. "Who is holding it" is a separate question
+/// answered by `SystemSnapshot.activeLease` and `ManualControlAvailability`, and a client that
+/// conflates the two will attribute another tool's manual hold to Aeolus — see `manualFixed`.
 public enum FanControlMode: String, Sendable, Hashable, Codable {
     /// Apple's thermal management owns the fan. The default and the safe state.
     case automatic
-    /// Aeolus is holding the fan at a constant speed under an active lease.
+    /// The fan is off the system's thermal management and is being held at a fixed speed.
+    ///
+    /// **By Aeolus under a lease, or by something else.** This case said "Aeolus is holding
+    /// the fan at a constant speed under an active lease" until the helper began reporting the
+    /// mode `F<n>Md` actually declares
+    /// ([#148](https://github.com/blamechris/Aeolus/issues/148)); a fan another vendor's tool
+    /// or a crashed previous helper left in manual now arrives here with `activeLease: nil`,
+    /// which the old sentence made unreadable. Read `activeLease` and
+    /// `manualControlAvailability` to tell the two apart: a fan Aeolus holds has a lease
+    /// naming it, and one it merely observes does not.
+    ///
+    /// A clarification of what the firmware bit means, not a new meaning for the field — the
+    /// wire value and its decoding are unchanged, so `AeolusXPCVersion` does not move.
     case manualFixed
     /// Aeolus is driving the fan from a curve under an active lease.
+    ///
+    /// Unlike `manualFixed` this one really is about Aeolus: a curve is Aeolus's own intent
+    /// and no firmware bit expresses it, so nothing outside this project can put a fan here.
     case manualCurve
 }
 
