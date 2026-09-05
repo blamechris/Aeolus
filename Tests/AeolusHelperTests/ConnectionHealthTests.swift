@@ -405,6 +405,45 @@ struct ConnectionHealthTests {
         await health.stop()
     }
 
+    /// A gap **before the first outcome the pump ever handles** is counted too.
+    ///
+    /// `outcomesLostToTheBuffer` claimed to be exact, and a review found the one place it was
+    /// not: with `lastHandledSequence` an optional that skipped the comparison on the first
+    /// outcome, anything evicted before the pump started was invisible — and the bring-up
+    /// window is precisely when the pump is not yet draining. Numbering starts at one and
+    /// the last-handled marker starts at zero, so the first handled sequence number says how
+    /// many went before it.
+    ///
+    /// Six more than the buffer holds, all yielded before `start(recovering:)`: the six
+    /// oldest are gone, the first sequence the pump sees is seven, and the loss is six —
+    /// exactly, which is the claim.
+    ///
+    /// **Mutation:** make `lastHandledSequence` optional again and skip the gap check before
+    /// the first handled outcome. Run: red — zero lost.
+    @Test("Outcomes evicted before the pump ever ran are counted from the first sequence number")
+    func aGapBeforeTheFirstHandledOutcomeIsCounted() async throws {
+        let recovery = RecordingReconnector()
+        let health = ConnectionHealth(clock: TestClock(), log: SafetyLog(recording: { _, _ in }))
+
+        for _ in 0..<6 { health.schedulerDidObserve(.wholeReadSucceeded(priority: .snapshot)) }
+        for _ in 0..<64 { health.schedulerDidObserve(Self.failure()) }
+
+        await health.start(recovering: recovery)
+        await yieldUntil("everything the buffer kept to be handled") {
+            await health.observedOutcomes == 64
+        }
+
+        #expect(
+            await health.outcomesLostToTheBuffer == 6,
+            """
+            six outcomes were evicted before the pump started and the count is not six. A \
+            gap before the first handled outcome is the bring-up window exactly, and a count \
+            that cannot see it is not exact.
+            """)
+        #expect(await recovery.attempts == 1)
+        await health.stop()
+    }
+
     // MARK: - Binding, and what is not counted
 
     /// Failures that arrive **before** the observer is bound are handled once it is.

@@ -114,8 +114,13 @@ actor ConnectionHealth: SchedulerObserving {
     /// Whole reads that have failed since the last one that succeeded.
     private var consecutiveFailures = 0
 
-    /// The sequence number of the last outcome handled, or `nil` before the first.
-    private var lastHandledSequence: UInt64?
+    /// The sequence number of the last outcome handled. **Zero before the first**, not `nil`,
+    /// and the difference is a review finding: numbering starts at one, so a gap *before* the
+    /// first outcome the pump ever handles is `sequence - 1` — outcomes the buffer threw away
+    /// while nothing was draining it, which is exactly the bring-up window
+    /// `start(recovering:)` describes. An optional that skipped the comparison on the first
+    /// outcome made those invisible, while `outcomesLostToTheBuffer` claimed to be exact.
+    private var lastHandledSequence: UInt64 = 0
 
     /// Forwarded outcomes the buffer threw away before the pump could reach them.
     ///
@@ -124,6 +129,12 @@ actor ConnectionHealth: SchedulerObserving {
     /// indistinguishable from the run having ended for the ordinary reason. The count is
     /// exact rather than a flag because the gap says how many went missing, and a fixture that
     /// overflowed the buffer by more than it meant to should say so rather than pass.
+    ///
+    /// **Exact from the first sequence number.** A gap before the first outcome the pump
+    /// handles is counted like any other — `lastHandledSequence` starts at zero and numbering
+    /// at one — because the window before `start(recovering:)` is the one in which nothing is
+    /// draining, and a count that could not see it was exact everywhere except where it
+    /// mattered. `ConnectionHealthTests.aGapBeforeTheFirstHandledOutcomeIsCounted`.
     private(set) var outcomesLostToTheBuffer = 0
 
     /// When the last reconnect was attempted, or `nil` if none has been.
@@ -291,7 +302,7 @@ actor ConnectionHealth: SchedulerObserving {
         // across a hole is not a run. Ending it here is the conservative direction: the
         // machine that is really failing keeps producing failures and asks again a second and
         // a half later, whereas a manufactured run rebuilds a working handle immediately.
-        if let lastHandledSequence, outcome.sequence > lastHandledSequence + 1 {
+        if outcome.sequence > lastHandledSequence + 1 {
             outcomesLostToTheBuffer += Int(outcome.sequence - lastHandledSequence - 1)
             consecutiveFailures = 0
         }
