@@ -556,10 +556,34 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // Read from the task, because cancellation is the supervisor's stop signal and
         // `cycle()` runs on the supervisor's task; placed immediately before the write for
         // this file's own rule, that a check separated from the act it guards is not a
-        // check. The attempt `diverged(_:fanAt:)` spent to get here is not refunded — the
-        // budget bounds the trying, and restarting with one fewer attempt gives the fan back
-        // to automatic control sooner, which is the direction this mechanism fails in.
+        // check.
+        //
+        // **The attempt is refunded, because the budget counts writes and this branch
+        // performs none.** `diverged(_:fanAt:)` spends the attempt before the envelope read
+        // that suspends, so the cost is booked at the point of *intent* and this is the one
+        // exit that never converts it into a write. Leaving it spent made a sleep/wake cycle
+        // — `stop()` then `start()` — able to burn the whole budget without a single
+        // `F<n>Md` reaching the firmware: three stop-starts catching one diverged fan inside
+        // its read, and the next real sweep skips straight to `finaliseRelease` with cause
+        // `.systemReclaimed`. The direction is safe and the account is false, which is
+        // exactly what rule 6 forbids — the operator is told the system took a fan Aeolus
+        // never once tried to take back, and loses control it could have had.
+        //
+        // An earlier version of this comment argued the other way, that "restarting with one
+        // fewer attempt gives the fan back to automatic control sooner, which is the
+        // direction this mechanism fails in". Failing safe is not a licence to mis-attribute:
+        // the budget exists to stop Aeolus *fighting* firmware that discards its writes, and
+        // an attempt that never reached the wire is not a round of that fight. Refunding
+        // keeps the budget measuring the thing it was sized against.
+        //
+        // Decremented rather than assigned back to `attempt - 1`: `held[index]` is re-fetched
+        // above but is not proven to be the same episode, and a decrement is correct for
+        // whatever count is actually there. Floored at zero so a concurrent reset —
+        // `convergence` zeroes this — cannot leave it negative and hand the fan an extra try.
         guard !Task.isCancelled else {
+            if let spent = held[index]?.reassertAttempts {
+                held[index]?.reassertAttempts = max(0, spent - 1)
+            }
             log.reclamationAbandonedOnCancellation(fan: index)
             return
         }

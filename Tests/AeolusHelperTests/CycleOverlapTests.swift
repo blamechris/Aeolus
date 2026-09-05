@@ -226,6 +226,52 @@ struct CancelledSweepTests {
             abandonment.first?.contains("left on automatic control") == false,
             "§ 5 said it handed back a fan the firmware still has off automatic control")
     }
+
+    /// **Kills:** deleting the refund from the cancellation guard in
+    /// `reassert(_:fanAt:attempt:)`. The fourth sweep then finds `reassertAttempts` at the
+    /// budget, skips the re-assert entirely and restores fan 0, so neither
+    /// `.engageManualControl(fan: 0)` nor a commanded target ever appears.
+    ///
+    /// `diverged(_:fanAt:)` books the attempt before the envelope read that suspends, so an
+    /// exit taken in between spends budget on a write that never reached the firmware. A
+    /// sleep/wake pair is `stop()` then `start()`, and `stop()` cancels without awaiting —
+    /// so three of them catching one diverged fan mid-sweep used to exhaust
+    /// `reassertAttemptBudget` with zero writes attempted, after which the next real sweep
+    /// gave the fan up and revoked its lease citing `.systemReclaimed`. Safe direction,
+    /// false account: the system is blamed for taking a fan Aeolus never tried to take back.
+    ///
+    /// Cancelled before the sweep starts rather than gated mid-read, because the interleaving
+    /// itself is already established by the two tests above and what this one needs is the
+    /// guard traversed `reassertAttemptBudget` times. `GatedFanStateSensing.open()` is a
+    /// one-way switch, so a gated loop would only gate its first iteration.
+    @Test("Sleep-wake cancellations do not exhaust the re-assert budget")
+    func cancellationsDoNotExhaustTheBudget() async throws {
+        let machine = ReclamationMachine(fans: [0: .held(at: 1_800)])
+        try await machine.hold(fan: 0, commanding: 2_400)
+
+        for _ in 0..<ReclamationLimits.reassertAttemptBudget {
+            let sweep = Task { await machine.watchdog.cycle() }
+            sweep.cancel()
+            await sweep.value
+        }
+
+        #expect(
+            await machine.attempts.contains(.engageManualControl(fan: 0)) == false,
+            "a cancelled sweep took fan 0 off automatic control")
+        #expect(
+            machine.safetyLog.lines(containing: "stopped short of re-asserting").count
+                == ReclamationLimits.reassertAttemptBudget,
+            "the cancellation guard was not reached once per sweep")
+
+        // The supervisor is running again, and this is the first sweep that can write.
+        await machine.watchdog.cycle()
+
+        #expect(
+            await machine.attempts.contains(.engageManualControl(fan: 0)),
+            "the budget was spent on writes that never happened, so § 5 gave fan 0 up")
+        #expect(await machine.commandedRPMs == [2_400])
+        #expect(await machine.didRestore(fan: 0) == false)
+    }
 }
 
 /// Holds every critical-temperature sample open until the test lets it go, and records how
