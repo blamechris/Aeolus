@@ -17,13 +17,15 @@ import SMCCore
 // in the GUI, quitting or crashing the GUI would leave the fans pinned wherever they were
 // last set. The helper is always the authority on fan state.
 //
-// TODO(E5): Lease supervisor, thermal emergency override, sleep/wake handling via
-//           IORegisterForSystemPower, reclamation watchdog, restore-on-exit paths. All of
-//           it goes behind FanAuthority, replacing ReadOnlyFanAuthority. Nothing in the
-//           listener, the admission policy, the handshake gate, or the contract changes.
+// The graph this file used to build inline is now `HelperComposition`. What is left here is
+// the *lifecycle*: resolve who to obey, build the graph, bring it up, advertise the service,
+// and never return. Startup reconciliation (#164), the restart policy (#165), the signal
+// handlers (#166), sleep/wake (#167) and connection health (#168) each add one step to the
+// bring-up below and nothing to the listener, the admission policy, the handshake gate, or
+// the contract.
 
-/// The helper's entry point: resolve who this daemon will obey, stand up the listener,
-/// and wait.
+/// The helper's entry point: resolve who this daemon will obey, bring the safety subsystem
+/// up, stand up the listener, and wait.
 ///
 /// ## What this build can and cannot do
 ///
@@ -33,6 +35,11 @@ import SMCCore
 /// strongest safety property is structural: it cannot fail open into a write, because
 /// there is no write to fail into.** Adding one "ready for E5" would spend that property
 /// for nothing.
+///
+/// What changed in #163 is that the refusal is no longer a literal in the type serving
+/// clients. `SMCFanControlPlane` answers `FanWriteCapability.notBuilt`, `LeaseAuthority`
+/// reads that at the top of every grant, and the mechanisms behind it — the lease table,
+/// both teardown paths, § 3 and § 5 — are running rather than merely constructed.
 ///
 /// ## Refusing every client is a running state, not a crash
 ///
@@ -56,47 +63,11 @@ enum AeolusHelperMain {
         // and must not be on a per-connection path.
         let authorisation = ClientAuthorisation.resolveForRunningProcess()
 
-        // One latch for the whole process. Nothing engages it in this build — no lease can
-        // be granted, so no fan is ever off automatic control — but it is constructed here
-        // rather than defaulted inside the authority so that the day E3's control plane and
-        // `ThermalSupervisor` arrive, the snapshot and the lease core are already reading
-        // the same bit as the mechanism that sets it.
-        let thermalEmergency = ThermalEmergencyLatch()
+        let helper = HelperComposition.production(log: log)
 
-        // § 5's ledger, for the same reason and on the same terms: nothing marks a fan
-        // reclaimed in this build, because no fan is ever off automatic control to be taken
-        // back. Constructed here so that the snapshot reads the mechanism's bit from the day
-        // `ReclamationWatchdog` is started rather than a literal that has to be found and
-        // rewired — which is the defect the latch's own comment records.
-        let reclamation = ReclamationLedger()
-
-        // ADR 0006's one continuous reader, and the thing that decides who gets it when
-        // two things want it at once. In *this* build only one does — nothing constructs
-        // `SMCFanControlPlane`, because no lease can be granted and so § 3 has no fan to
-        // protect — so every turn granted below is a snapshot turn, and honestly so.
-        //
-        // **The hazard for whoever wires E5's lifecycle:** the supervisor's control plane
-        // must be built from *this* scheduler — `SMCFanControlPlane(scheduler: scheduler)`
-        // — and not from a second one. Two schedulers arbitrate nothing while looking
-        // exactly like one that does: each would grant turns against a queue the other
-        // cannot see, and the contention #127 exists to fix would be back with the
-        // machinery for fixing it still in the build. See
-        // [#103](https://github.com/blamechris/Aeolus/issues/103).
-        let scheduler = SMCReadScheduler(provider: SMCSensorProvider())
-        // `F<n>Md` through the *same* reader as everything else in the snapshot, and
-        // therefore at snapshot priority. When E5's supervisor exists this could instead be
-        // its `SMCFanControlPlane`, which satisfies `FanModeSensing` already — but that plane
-        // issues every read at `.supervisor`, and a client's 1 Hz reporting does not belong
-        // in the queue § 3's cycle is meant to have to itself. See `FanModeSensing`.
-        let authority = ReadOnlyFanAuthority(
-            provider: scheduler.snapshotReader,
-            fanMode: SnapshotFanModeReads(provider: scheduler.snapshotReader),
-            log: log,
-            thermalEmergency: thermalEmergency,
-            reclamation: reclamation)
         let delegate = HelperListenerDelegate(
             authorisation: authorisation,
-            authority: authority,
+            authority: helper.authority,
             helperBuild: build,
             log: log
         )
@@ -106,13 +77,66 @@ enum AeolusHelperMain {
         // that never returns, which is what keeps it alive; a `listener.delegate = ...`
         // with a temporary on the right-hand side would deallocate it immediately and
         // every connection would be accepted with no delegate to configure it.
+        //
+        // The same rule is why the graph and the delegate are built *here* rather than
+        // inside the bring-up task below: `main()` is the only frame in this process that
+        // never returns, so it is the only place a weakly-held reference can be parked.
         listener.delegate = delegate
-        listener.resume()
 
-        log.listening(machServiceName: AeolusXPCService.machServiceName, build: build)
+        bringUp(helper, advertising: listener, log: log)
 
         // Never returns. The listener runs on libdispatch, so the main thread's only job
         // from here is to not exit.
         dispatchMain()
+    }
+
+    /// Brings the safety subsystem up, then advertises the Mach service — in that order,
+    /// and never the other one.
+    ///
+    /// `listener.resume()` is the **last statement**, because an advertised Mach service is
+    /// a client that can acquire a lease over a fan whose reconciliation restore is still in
+    /// flight (#103, decision A1). Everything that has to be true first is
+    /// `HelperComposition.bringUp()`'s: the safety registries bound to the restorer, startup
+    /// reconciliation once it exists, and both supervisors running.
+    ///
+    /// `HelperCompositionTests.theServiceIsAdvertisedOnlyAfterBringUp` asserts the ordering
+    /// at the source. It has to: this function is reached once, in a process that never
+    /// returns, so there is nothing to observe it from at runtime — the same reason the rest
+    /// of that suite exists.
+    ///
+    /// The "listening" line is logged immediately *before* the resume rather than after it,
+    /// so that the resume keeps the last-statement position the tripwire depends on. The gap
+    /// is one statement; the alternative is a rule enforced by nothing.
+    ///
+    /// ## Why it blocks rather than awaits
+    ///
+    /// `main()` is synchronous and ends in `dispatchMain()`, and `NSXPCListener` is not
+    /// `Sendable`, so handing it to an unstructured `Task` is a data race the compiler
+    /// refuses — correctly, and the fix is not to annotate the refusal away. The listener
+    /// therefore never leaves this thread: the asynchronous half runs in a `Task` that
+    /// touches only the composition, and this frame waits for it.
+    ///
+    /// The wait is safe here and would not be safe elsewhere. It blocks the **main thread**,
+    /// which at this point is an ordinary thread with nothing scheduled on it — `dispatchMain()`
+    /// has not been called and nothing in this target is `@MainActor`-isolated, so no
+    /// cooperative-pool thread is held and there is no actor for the awaited work to deadlock
+    /// against. A daemon that cannot bring its safety subsystem up therefore never reaches
+    /// `dispatchMain()` and serves nothing at all, which is the same fail-safe direction as
+    /// a bring-up that hangs: refusing to serve is safe, serving over unreconciled fans is
+    /// not.
+    private static func bringUp(
+        _ helper: HelperComposition<SMCFanControlPlane>,
+        advertising listener: NSXPCListener,
+        log: HelperLog
+    ) {
+        let broughtUp = DispatchSemaphore(value: 0)
+        Task {
+            await helper.bringUp()
+            broughtUp.signal()
+        }
+        broughtUp.wait()
+
+        log.listening(machServiceName: AeolusXPCService.machServiceName, build: build)
+        listener.resume()
     }
 }

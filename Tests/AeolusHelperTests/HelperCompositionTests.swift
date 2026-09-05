@@ -21,76 +21,116 @@ import Testing
 /// source tree this way, through `SeamScanner`, for the same reason: some invariants are
 /// about what is *written*, and no runtime can observe them.
 ///
+/// ## Two files now, and which invariant lives where
+///
+/// #163 split the graph out of the entry point: `HelperComposition.swift` wires every
+/// mechanism, `AeolusHelperMain.swift` owns the lifecycle. The tripwires moved with the code
+/// they guard — the scheduler and provider assertions scan the composition, the advertising
+/// order scans `main`. What is guarded is unchanged, and one of the four is now weaker on
+/// purpose because the code became stronger: see
+/// `theModeReadIsBuiltFromTheSameProviderAsTheFanRead`.
+///
+/// The behavioural half of this suite — a lease acquired and torn down through the composed
+/// graph — is `HelperRestorerTests`, which composes the *same* type over
+/// `ScriptedControlPlane`.
+///
 /// ## The hazard this exists for
 ///
 /// Two `SMCReadScheduler`s arbitrate nothing while looking exactly like one that does. Each
 /// grants turns against a queue the other cannot see, so the safety cycle and the client
 /// snapshot contend exactly as they did before #127 — with all the machinery for fixing it
-/// present, tested, and bypassed. `AeolusHelperMain` warns #103 about this in a comment;
-/// this is the same warning in a form that fails.
+/// present, tested, and bypassed. `HelperComposition` warns about this in a comment; this is
+/// the same warning in a form that fails.
 @Suite("The helper's composition root")
 struct HelperCompositionTests {
 
-    private static func mainSource() throws -> String {
-        let file = try #require(
-            SeamScanner.swiftFiles().first { $0.lastPathComponent == "AeolusHelperMain.swift" },
-            "AeolusHelperMain.swift was not found in Sources")
-        return try String(contentsOf: file, encoding: .utf8)
+    private static func source(of file: String) throws -> String {
+        let url = try #require(
+            SeamScanner.swiftFiles().first { $0.lastPathComponent == file },
+            "\(file) was not found in Sources")
+        return try String(contentsOf: url, encoding: .utf8)
     }
 
-    /// **Mutation:** restore the pre-#127 line —
-    /// `ReadOnlyFanAuthority(provider: SMCSensorProvider(), …)`. Run: red here, and green
-    /// everywhere else in the repository, which is the whole point of the file.
-    @Test("The read-only authority is given the scheduler's snapshot reader, not a raw provider")
-    func theAuthorityReadsThroughTheScheduler() throws {
-        let source = Self.strippingComments(try Self.mainSource())
+    private static func compositionSource() throws -> String {
+        strippingComments(try source(of: "HelperComposition.swift"))
+    }
+
+    private static func mainSource() throws -> String {
+        strippingComments(try source(of: "AeolusHelperMain.swift"))
+    }
+
+    /// **Mutation:** restore the pre-#127 wiring — `snapshotProvider: SMCSensorProvider()`.
+    /// Run: red here, and green everywhere else in the repository, which is the whole point
+    /// of the file.
+    @Test("The snapshot path is given the scheduler's snapshot reader, not a raw provider")
+    func theSnapshotPathTakesItsTurnsFromTheScheduler() throws {
+        let source = try Self.compositionSource()
 
         #expect(
-            source.contains("provider: scheduler.snapshotReader"),
+            Self.strippingWhitespace(source).contains("snapshotProvider:scheduler.snapshotReader"),
             "the snapshot path no longer takes its turns from the scheduler")
         #expect(
             source.contains("SMCReadScheduler(") && source.contains("SMCSensorProvider()"),
             "the scheduler is no longer the thing holding the real provider")
     }
 
+    /// The control plane every safety mechanism reads and writes through is built from the
+    /// **one** scheduler the snapshot takes its turns from.
+    ///
+    /// This is the hazard `AeolusHelperMain` spent a paragraph warning #103 about, now that
+    /// #103 is here: *"the supervisor's control plane must be built from this scheduler and
+    /// not from a second one."* `onlyOneSchedulerIsEverBuilt` below catches a second
+    /// construction anywhere in `Sources`; this catches the narrower, likelier slip of
+    /// building the plane from something other than the local that is already in hand.
+    ///
+    /// **Mutation:** `SMCFanControlPlane(scheduler: SMCReadScheduler(provider: SMCSensorProvider()))`.
+    /// Run: red here, and red in both counting tests below — three failures for one edit,
+    /// which is the pair working.
+    @Test("The control plane is built from the one scheduler, not a second one")
+    func thePlaneIsBuiltFromTheOneScheduler() throws {
+        let source = Self.strippingWhitespace(try Self.compositionSource())
+
+        #expect(
+            source.contains("SMCFanControlPlane(scheduler:scheduler)"),
+            """
+            the safety subsystem's plane is no longer built from the scheduler the snapshot \
+            shares. Two schedulers arbitrate nothing while looking exactly like one that does.
+            """)
+    }
+
     /// The mode read goes through the **same** reader as the fans beside it, at snapshot
     /// priority.
     ///
-    /// Two ways this line can regress and neither shows up at runtime here. Dropping the
-    /// argument is impossible — the initialiser requires it — but wiring it to a *second*
-    /// source would make one snapshot a composite of two connections, and wiring it to an
-    /// `SMCFanControlPlane` would issue a client's 1 Hz reporting at `.supervisor`, which is
-    /// the priority § 3's safety cycle is meant to have to itself. `main()` ends in
-    /// `dispatchMain()` and has no seam to drive, so this is asserted at the source for the
-    /// reason the whole suite exists.
+    /// ## This assertion is deliberately weaker than it was, because the code is stronger
     ///
-    /// **Mutation:** change `main()` to
-    /// `fanMode: SnapshotFanModeReads(provider: SMCSensorProvider())`. Run: red here — and
-    /// red in `nothingInTheHelperReadsAroundTheGate` too, which is the pair working.
-    @Test("The mode read is wired to the scheduler's snapshot reader, like the fan read")
-    func theModeReadTakesTheSameTurnsAsTheFanRead() throws {
-        let source = Self.strippingComments(try Self.mainSource())
-
-        // Two fragments rather than one exact single-line literal, which is the brittleness
-        // this file's own documentation records: the wired expression is nested, and a nested
-        // construction is exactly what `swift format` wraps — so a one-line match would turn a
-        // *correct* composition red the day the line grew past the column limit. Each fragment
-        // names one of the two ways this line can regress, and each survives a wrap.
+    /// It used to require the literal `SnapshotFanModeReads(provider: scheduler.snapshotReader)`
+    /// in `main()`, because the two reads were wired from two separate expressions and either
+    /// could be pointed somewhere else. `HelperComposition.init` now takes **one**
+    /// `snapshotProvider` and builds both from it, so "a snapshot assembled from two
+    /// connections" is no longer a mistake a caller can make — there is no second argument to
+    /// get wrong. What is left to guard is that nobody reintroduces a second source, which is
+    /// the count below.
+    ///
+    /// Wiring it to an `SMCFanControlPlane` instead remains the other hazard, and it is
+    /// caught by type: `HelperComposition.init` takes a `SensorProvider`, and a plane is not
+    /// one.
+    ///
+    /// **Mutation:** build a second `SnapshotFanModeReads(provider:)` anywhere in `Sources`.
+    /// Run: red.
+    @Test("The fan mode is read through the one provider the snapshot was given")
+    func theModeReadIsBuiltFromTheSameProviderAsTheFanRead() throws {
         #expect(
-            source.contains("fanMode: SnapshotFanModeReads("),
+            Self.strippingWhitespace(try Self.compositionSource())
+                .contains("SnapshotFanModeReads(provider:snapshotProvider)"),
             """
-            F<n>Md is no longer read through the snapshot path's own conformer, so it is \
-            either a second source or a supervisor-priority read on a client's 1 Hz path.
+            F<n>Md is no longer read through the provider the fan read was given, so one \
+            snapshot is a composite of two sources.
             """)
-        // The provider inside that construction, matched on the whitespace-stripped source so
-        // the label may sit on its own line. Anchored to `SnapshotFanModeReads(` so it cannot
-        // be satisfied by the authority's own `provider:` argument two lines above.
         #expect(
-            Self.strippingWhitespace(source)
-                .contains("SnapshotFanModeReads(provider:scheduler.snapshotReader)"),
+            try Self.constructionSites(of: "SnapshotFanModeReads(") == ["HelperComposition.swift x1"],
             """
-            F<n>Md is no longer read through the scheduler's snapshot reader, so one \
-            snapshot is a composite of two connections or a read that takes no turn.
+            the snapshot's mode reader is built in exactly one place. A second one is a \
+            second view of who owns a fan, and the two will eventually disagree.
             """)
     }
 
@@ -123,7 +163,7 @@ struct HelperCompositionTests {
         }
 
         #expect(
-            sites == ["AeolusHelperMain.swift x1"],
+            sites == ["HelperComposition.swift x1"],
             """
             a helper-side SMC read that takes no turn is invisible to the safety cycle: \
             \(sites). The one permitted construction is the scheduler's own.
@@ -145,8 +185,8 @@ struct HelperCompositionTests {
     /// so the pattern has to survive line wrapping.
     ///
     /// Comment lines are stripped first, because the mirror-image false positive is just as
-    /// live: `AeolusHelperMain` names the type in a comment addressed to #103, and a scanner
-    /// that counted it would fail on prose. `SeamScanner` warns about exactly this.
+    /// live: `HelperComposition` names the type in prose, and a scanner that counted it would
+    /// fail on the explanation. `SeamScanner` warns about exactly this.
     ///
     /// **Mutation:** add a second construction anywhere in `Sources/`, wrapped or not,
     /// including `SMCReadScheduler.init(provider:)`. Run: red.
@@ -154,8 +194,7 @@ struct HelperCompositionTests {
     func onlyOneSchedulerIsEverBuilt() throws {
         var constructions: [String] = []
         for file in try SeamScanner.swiftFiles() {
-            let source = try String(contentsOf: file, encoding: .utf8)
-            let code = Self.strippingComments(source)
+            let code = Self.strippingComments(try String(contentsOf: file, encoding: .utf8))
             let count =
                 Self.occurrences(of: "SMCReadScheduler(", in: code)
                 + Self.occurrences(of: "SMCReadScheduler.init(", in: code)
@@ -165,12 +204,87 @@ struct HelperCompositionTests {
         }
 
         #expect(
-            constructions == ["AeolusHelperMain.swift x1"],
+            constructions == ["HelperComposition.swift x1"],
             """
             the SMC connection is arbitrated by one scheduler or by none: \(constructions). \
             A second scheduler grants turns against a queue the first cannot see, so the \
             safety cycle and the snapshot contend exactly as they did before #127.
             """)
+    }
+
+    /// The Mach service is advertised **after** the safety subsystem is up, and never before.
+    ///
+    /// #103's decision A1 states the property and the reason in one sentence: *"an advertised
+    /// Mach service is a client that can acquire a lease over a fan whose reconciliation
+    /// restore is still in flight."* The same window covers the safety registries, which
+    /// `HelperComposition.bringUp()` binds to the restorer before anything can restore.
+    ///
+    /// Three assertions, because a hoist can land in either function. `main()` must contain
+    /// no resume at all; `bringUp` must contain exactly one; and inside `bringUp` it must
+    /// come after the composition has been brought up.
+    ///
+    /// **Mutation A:** move `listener.resume()` into `main()`, beside `listener.delegate`.
+    /// Run: red on the first two.
+    /// **Mutation B:** inside `bringUp`, move `listener.resume()` above `helper.bringUp()`.
+    /// Run: red on the third.
+    @Test("The Mach service is advertised only after bring-up, as the last statement")
+    func theServiceIsAdvertisedOnlyAfterBringUp() throws {
+        let code = try Self.mainSource()
+        let declaration = try #require(
+            code.range(of: "static func bringUp"),
+            "AeolusHelperMain no longer has a bring-up function to order the resume against")
+        let beforeBringUp = String(code[code.startIndex..<declaration.lowerBound])
+        let bringUpBody = String(code[declaration.upperBound...])
+
+        #expect(
+            Self.occurrences(of: "listener.resume()", in: beforeBringUp) == 0,
+            """
+            the Mach service is advertised outside the bring-up function, so a client can \
+            connect while the safety registries are unbound and no supervisor is running.
+            """)
+        #expect(
+            Self.occurrences(of: "listener.resume()", in: bringUpBody) == 1,
+            "bring-up no longer advertises the service exactly once")
+
+        let brought = try #require(bringUpBody.range(of: "helper.bringUp()"))
+        let resumed = try #require(bringUpBody.range(of: "listener.resume()"))
+        #expect(
+            brought.upperBound < resumed.lowerBound,
+            "the service is advertised before the safety subsystem has been brought up")
+    }
+
+    /// The listener is handed the supervised authority, not the read-only one.
+    ///
+    /// The whole of #163 in one assertion. `ReadOnlyFanAuthority` survives as the *read path*
+    /// — `SupervisedFanAuthority` composes it, and the lease core enumerates the machine
+    /// through it — but a delegate given one directly is a helper whose lease core, § 3 and
+    /// § 5 are constructed and unreachable, which is the state this issue exists to end.
+    ///
+    /// **Mutation:** pass `helper.reading` instead of `helper.authority`. Run: red.
+    @Test("The listener is given the supervised authority, not the read-only one")
+    func theListenerServesTheSupervisedAuthority() throws {
+        let code = Self.strippingWhitespace(try Self.mainSource())
+
+        #expect(
+            code.contains("authority:helper.authority"),
+            "the listener no longer serves the authority the composition root built")
+        #expect(
+            try Self.constructionSites(of: "SupervisedFanAuthority(")
+                == ["HelperComposition.swift x1"],
+            "the helper's authority is composed in exactly one place")
+    }
+
+    // MARK: - Scanning
+
+    /// Which files in `Sources` construct `needle`, and how many times each.
+    private static func constructionSites(of needle: String) throws -> [String] {
+        var sites: [String] = []
+        for file in try SeamScanner.swiftFiles() {
+            let code = strippingComments(try String(contentsOf: file, encoding: .utf8))
+            let count = occurrences(of: needle, in: code)
+            if count > 0 { sites.append("\(file.lastPathComponent) x\(count)") }
+        }
+        return sites
     }
 
     private static func occurrences(of needle: String, in haystack: String) -> Int {
