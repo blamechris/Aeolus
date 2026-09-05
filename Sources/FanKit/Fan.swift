@@ -148,6 +148,15 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// [#181](https://github.com/blamechris/Aeolus/issues/181)'s, which owns
         /// re-registration. Until it lands, the refusal is for the life of the helper
         /// process and `docs/RECOVERY.md` is the user's route out.
+        ///
+        /// **Two producers, and the second is not a lease teardown.** Startup reconciliation
+        /// hands back every fan it finds in manual at bring-up
+        /// ([ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md)),
+        /// and a fan the firmware refuses there is in exactly the state the paragraphs above
+        /// describe — asked for automatic, refused, no longer asked — reached before a
+        /// client ever connected rather than after one disconnected. It is watched by
+        /// nothing for the same reason, § 3 included, which is
+        /// [#201](https://github.com/blamechris/Aeolus/issues/201)'s.
         case restoreToAutomaticFailed
         /// The machine is going to sleep, and the helper has already handed every fan back.
         ///

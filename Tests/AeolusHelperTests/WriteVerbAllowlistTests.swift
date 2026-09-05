@@ -215,7 +215,7 @@ struct WriteVerbAllowlistTests {
         "FanRestoring.swift: restoreToAutomatic(fans: Set<Int>, because: FanRestoreCause)",
         "LeaseAuthority.swift: restore(_: Set<Int>, because: FanRestoreCause)",
         "StartupReconciliation.swift: restore(fanAt: Int)",
-        "StartupReconciliation.swift: restoreEveryFan(after: any Error, fanAt: Int)",
+        "StartupReconciliation.swift: restoreEveryFan(because: SafetyLog.KeystoneReason)",
         "FanAuthority.swift: restoreAllToAutomatic(from: ConnectionID)",
         "ReadOnlyFanAuthority.swift: restoreAllToAutomatic(from: ConnectionID)",
         "HelperConnectionSession.swift: restoreAllToAutomatic()",
@@ -259,7 +259,7 @@ struct WriteVerbAllowlistTests {
     /// [#164](https://github.com/blamechris/Aeolus/issues/164) added five here and two to
     /// `restoreVerbs`, and the split is worth stating because startup reconciliation both
     /// reads the firmware and restores it. `StartupReconciliation.restore(fanAt:)` and
-    /// `restoreEveryFan(after:fanAt:)` are on the restore list for
+    /// `restoreEveryFan(because:)` are on the restore list for
     /// `LeaseAuthority.restore(_:because:)`'s reason — an index, or nothing at all, and no
     /// permit anywhere. `reconcile()` and `reconcileFans()` are here for
     /// `ReclamationWatchdog.cycle()`'s: they reach the keystone, and can only do it through

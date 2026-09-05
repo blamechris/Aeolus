@@ -821,27 +821,68 @@ extension SafetyLog {
         )
     }
 
+    /// Why startup reconciliation reached for the machine-wide keystone.
+    ///
+    /// Three branches, one rule: the pass could not see. The distinction is kept in the log
+    /// and nowhere else — no code branches on it — because an operator reading `log show`
+    /// after a hot machine needs to know *which* blindness this was, while the act itself is
+    /// identical by design (ADR 0011 D3/D4). A single string parameter would have done the
+    /// same job and would have let a caller invent a fourth cause in passing.
+    enum KeystoneReason: Sendable {
+        case enumerationFailed
+        case modeReadFailed
+        case budgetExhausted
+
+        var clause: String {
+            switch self {
+            case .enumerationFailed: return "this machine's fans could not be enumerated"
+            case .modeReadFailed: return "a fan's control state could not be read"
+            case .budgetExhausted: return "the budget ran out with fans never read"
+            }
+        }
+    }
+
     /// The machine-wide restore landed, so nothing is left off automatic control.
-    func reconciliationRestoredEveryFan() {
+    func reconciliationRestoredEveryFan(because reason: KeystoneReason) {
         emit(
             .notice,
             """
-            Startup reconciliation restored every fan to automatic control after a failed \
-            mode read. No fan is left in an unknown mode, so leases are not refused on \
-            account of it.
+            Startup reconciliation restored every fan to automatic control because \
+            \(reason.clause). No fan is left in an unknown mode, so leases are not refused \
+            on account of it.
             """
         )
     }
 
     /// The machine-wide restore was refused too, so the helper knows nothing about any fan.
-    func reconciliationEveryFanRestoreFailed(detail: String, capability: FanWriteCapability) {
+    func reconciliationEveryFanRestoreFailed(
+        because reason: KeystoneReason, detail: String, capability: FanWriteCapability
+    ) {
         emit(
             capability == .notBuilt ? .notice : .fault,
             """
-            Startup reconciliation could not restore every fan after a failed mode read \
+            Startup reconciliation could not restore every fan after \(reason.clause) \
             (\(detail)). No fan's mode has been established and none has been handed back, \
             so manual control is refused for the life of this process.\
             \(capability == .notBuilt ? " This build has no SMC write path (E3/E4)." : "")
+            """
+        )
+    }
+
+    /// A second `reconcile()` arrived, and was declined.
+    ///
+    /// `.fault`, and the level is a judgement about the caller rather than about the
+    /// machine: nothing here is wrong with the hardware, but a second pass is a bug in the
+    /// bring-up — it would clear every durable refusal and issue the second restore ADR 0011
+    /// refuses to make. The guard holds; the line is how anybody finds out it had to.
+    func reconciliationAlreadyRan() {
+        emit(
+            .fault,
+            """
+            Startup reconciliation was asked to run a second time in this process and \
+            declined. The pass is one-shot by design (ADR 0011 D2): running it again would \
+            discard the refusals it established and hand a fan back a second time, which is \
+            the first move of a restore contest with whatever holds it.
             """
         )
     }
@@ -852,9 +893,10 @@ extension SafetyLog {
             .fault,
             """
             Startup reconciliation ran out of its \(budget) budget with fan(s) \
-            \(Self.describe(unreconciled)) never read. The helper serves clients anyway — \
-            refusing to answer a snapshot helps nobody — and refuses manual control of those \
-            fans for the life of this process, because nothing runs this pass again.
+            \(Self.describe(unreconciled)) never read. The machine-wide restore-to-automatic \
+            is issued for them — it needs no read — and the helper serves clients anyway, \
+            refusing manual control of those fans for the life of this process unless that \
+            write lands, because nothing runs this pass again.
             """
         )
     }
@@ -887,20 +929,28 @@ extension SafetyLog {
         )
     }
 
-    /// The machine's fans could not be enumerated, so there was nothing to reconcile.
+    /// The machine's fans could not be enumerated, so no fan could be named.
     ///
-    /// `.fault`: a helper that cannot read `FNum` cannot name a fan, cannot issue a per-fan
-    /// restore, and will serve snapshots reporting no fans at all. Nothing is claimed and
-    /// nothing is refused on account of it — `acquireLease` enumerates through the same seam
-    /// and throws before it could grant anything — but a machine in this state is broken and
-    /// the log should say so once, at start.
+    /// `.fault`: a helper that cannot read `FNum` cannot name a fan and cannot issue a
+    /// per-fan restore. The machine-wide keystone is issued instead — it needs no fan index
+    /// — and until it lands every grant is refused, because nothing has established
+    /// anything about any fan. A machine in this state is broken and the log should say so
+    /// once, at start.
+    ///
+    /// **What a client sees is a snapshot that throws, not one reporting no fans.** An
+    /// earlier version of this line said the latter. `ReadOnlyFanAuthority.snapshot()` calls
+    /// `SMCFanEnumeration.enumerate(provider:)` and rethrows its failure, so while the
+    /// condition persists the client is refused rather than told the machine has no fans —
+    /// which is the honest direction, and the difference matters to whoever reads this line
+    /// while a user reports "the app shows nothing".
     func reconciliationEnumerationFailed(detail: String) {
         emit(
             .fault,
             """
             Startup reconciliation could not enumerate this machine's fans (\(detail)). No \
-            fan's mode has been read and none has been restored. Every snapshot from this \
-            process will report no fans.
+            fan's mode has been read and no fan can be named, so the machine-wide \
+            restore-to-automatic is issued instead. Every snapshot from this process will \
+            fail the same way while the condition lasts.
             """
         )
     }
