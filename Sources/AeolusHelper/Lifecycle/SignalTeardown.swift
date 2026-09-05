@@ -108,8 +108,8 @@ protocol SignalSourcing: Sendable {
 /// Both defaults are the shipping ones, and both have to be overridable for the same blunt
 /// reason: `HelperComposition.bringUp()` installs the teardown, tests call `bringUp()`, and
 /// the production pair would replace the disposition of `SIGTERM` in the `swift test`
-/// process and then end it with `exit(0)` when anything fired. A seam that only production
-/// can supply is a mechanism only production can run.
+/// process and then end it with the successful-exit call when anything fired. A seam that
+/// only production can supply is a mechanism only production can run.
 struct TeardownSeams: Sendable {
 
     /// Where the three orderly signals come from.
@@ -202,8 +202,9 @@ actor DispatchSignalSources: SignalSourcing {
 ///    re-assert that began before step 4 can therefore land its `engageManualControl` write
 ///    *after* step 3 has run, and the process would then exit `0` — "every fan is back" —
 ///    over a fan it had just put into manual. The keystone takes no reading, no bound and no
-///    lease, so re-issuing it is idempotent and cheap, and it closes the window without
-///    reordering anything A4 fixed. Step 3 is not redundant with it: a restore issued only
+///    lease, so re-issuing it is idempotent and cheap, and it narrows the window — a write
+///    landing between this restore and the exit is still possible — without reordering
+///    anything A4 fixed. Step 3 is not redundant with it: a restore issued only
 ///    after the supervisors stop is a restore that has not happened while § 3 and § 5 are
 ///    still running, which is the ordering step 4's own paragraph exists to protect.
 /// 6. **Exit**, `0` if the final restore landed or there was nothing to restore, and

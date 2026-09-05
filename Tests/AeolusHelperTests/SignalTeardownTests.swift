@@ -172,7 +172,7 @@ struct SignalTeardownTests {
             """)
     }
 
-    /// D19's window, closed: a fan put into manual **after** the first keystone is still
+    /// D19's window, narrowed: a fan put into manual **after** the first keystone is still
     /// automatic when the process exits.
     ///
     /// `stop()` cancels the three supervisors; it does not await a cycle already in flight,

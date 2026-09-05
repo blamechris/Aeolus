@@ -100,40 +100,43 @@ struct SignalTeardownTripwireTests {
     /// The pattern is the tolerant one either way: `\s*` around the parenthesis and a word
     /// boundary after the digit.
     ///
-    /// Ruling D20 asks that this and #199's exit-count tripwire be reconciled into one when
-    /// this branch rebases onto that one. They already agree — #199 asserts the tree's count
-    /// is zero and so does this — so the reconciliation is a deletion of whichever is the
-    /// duplicate, and it is deliberately not done here: #199 has not merged, and a tripwire
-    /// deleted in anticipation of a merge is a tripwire deleted.
+    /// Ruling D20 on #197: this is the one exit-count tripwire. #199 shipped a second in
+    /// `LaunchDaemonPlistTests` — the literal `exit(0)` counted over raw source, comments
+    /// included, asserted at zero until the teardown landed — and the rebase onto it folded
+    /// that one into this. The regex form stays; comments are stripped first, so the prose
+    /// explaining the rule cannot trip it; and the count is of **call sites**, exactly one,
+    /// in `SignalTeardown.swift`. The earlier form here asserted the set of files, which a
+    /// second `exit` inside the teardown's own file would have passed.
     ///
     /// **Mutation:** add `exit(1)` to any other file under `Sources/AeolusHelper`. Run: red.
+    /// **Mutation:** add a second `exit($0.exitCode)` to `SignalTeardown.swift`. Run: red.
     /// **Mutation:** write `exit(0)`, `exit( 0 )` or `exit(0 as Int32)` anywhere in the
     /// target, `SignalTeardown.swift` included. Run: red.
     @Test("The helper ends the process in one place, and writes no exit code as a literal")
     func theOrderlyPathIsTheOnlyExit() throws {
         let call = try NSRegularExpression(pattern: #"(?<![\w.])exit\s*\("#)
         let literalCode = try NSRegularExpression(pattern: #"(?<![\w.])exit\s*\(\s*\d"#)
-        var sites: [String] = []
+        var sites: [String: Int] = [:]
         var literals: [String] = []
 
         for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
             let code = SeamScanner.strippingComments(
                 try String(contentsOf: file, encoding: .utf8))
             let range = NSRange(code.startIndex..<code.endIndex, in: code)
-            if call.numberOfMatches(in: code, range: range) > 0 {
-                sites.append(file.lastPathComponent)
-            }
+            let calls = call.numberOfMatches(in: code, range: range)
+            if calls > 0 { sites[file.lastPathComponent] = calls }
             if literalCode.numberOfMatches(in: code, range: range) > 0 {
                 literals.append(file.lastPathComponent)
             }
         }
 
         #expect(
-            sites == ["SignalTeardown.swift"],
+            sites == ["SignalTeardown.swift": 1],
             """
-            the helper ends the process somewhere other than the orderly teardown: \
-            \(sites.sorted()). Every other exit is a root daemon leaving the fans wherever \
-            they were, with launchd told nothing useful about it.
+            the helper ends the process somewhere other than the orderly teardown's one \
+            call, or more than once: \(sites.sorted { $0.key < $1.key }). Every other exit \
+            is a root daemon leaving the fans wherever they were, with launchd told nothing \
+            useful about it.
             """)
         #expect(
             literals.isEmpty,

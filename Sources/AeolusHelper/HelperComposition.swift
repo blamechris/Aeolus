@@ -484,7 +484,8 @@ extension HelperComposition where Plane == SMCFanControlPlane {
     /// caller: `HelperHardwareTests`, which composes this graph over the real SMC and calls
     /// `bringUp()`. That bring-up installs the signal teardown, and the shipping source
     /// would `SIG_IGN` `SIGTERM`, `SIGINT` and `SIGHUP` in the `swift test` process and then
-    /// `exit(0)` it on the next one — a test run that reports success without finishing.
+    /// end it with the successful-exit call on the next one — a test run that reports
+    /// success without finishing.
     static func production(
         log: HelperLog = HelperLog(),
         teardown: TeardownSeams = TeardownSeams()

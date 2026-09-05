@@ -621,7 +621,9 @@ handler plus `atexit`" — and that one is undefined behaviour on the path it wa
   makes the exit code the contract `KeepAlive = { SuccessfulExit = false }` reads. The restore
   is issued twice because stopping a supervisor does not await a cycle already in flight: a
   § 3 fire or a § 5 re-assert can land after the first one, and the exit code is taken from
-  the write that comes after them. **A restore refused with `controlPathNotBuilt` — this
+  the write that comes after them. That narrows the window rather than closing it: a write
+  landing between that last restore and the exit is still possible, and nothing in this
+  process is left to see it. **A restore refused with `controlPathNotBuilt` — this
   build, which has no SMC write path — exits `0`, because a helper that cannot write cannot
   have left a fan in manual, and restarting it after every quit would tell the user nothing.**
   Built in E5.4d (#166): `Sources/AeolusHelper/Lifecycle/SignalTeardown.swift`.
@@ -658,10 +660,11 @@ documented implication, because boot-start is what covers manual mode persisting
 `SuccessfulExit = false` makes the exit code a contract: a zero exit means "the fans are back
 and nobody needs to check", so it belongs on the orderly-teardown path and nowhere else, and
 anything that dies another way is restarted and reconciles.
-`LaunchDaemonPlistTests.theOrderlyExitIsCountedNotAssumed` counts `exit(0)` across
-`Sources/AeolusHelper` — **zero today**, because `AeolusHelperMain` ends in `dispatchMain()`
-and the teardown that restores and then exits is E5.4d (#166), which raises the expected count
-to one in the same change that adds the path.
+`SignalTeardownTripwireTests.theOrderlyPathIsTheOnlyExit` counts the `exit` call sites across
+`Sources/AeolusHelper`, comments stripped — **exactly one**, the teardown's, and no exit code
+written as a literal anywhere, because the one mapping from outcome to code is
+`TeardownOutcome.exitCode`. Until E5.4d (#166) landed, `LaunchDaemonPlistTests` asserted the
+same count at zero; the two were reconciled into this one on #197 (ruling D20).
 
 The plist's key set is an allowlist of exactly six with an exact-member count, so a seventh —
 `StartInterval` (#84's named gap), `WatchPaths`, `StartCalendarInterval` — fails the suite
