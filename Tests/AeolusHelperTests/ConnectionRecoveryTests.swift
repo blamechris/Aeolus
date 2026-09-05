@@ -254,9 +254,15 @@ struct ConnectionRecoveryTests {
     /// closed and not yet reopened, which is the only vantage point from which a walk starting
     /// during it is a fact rather than a race.
     ///
+    /// **The assertion is `walkBeganInsideARecycle`, and the first version of this test used
+    /// `recycledInsideAWalk` instead and stayed green under its own mutation.** A walk that
+    /// barges into a recycle begins *and ends* while the handle is shut, so no close or open
+    /// falls inside it — the harm is that the walk ran against nothing, not that it was
+    /// interrupted, and only a scan of the recycle's span can see that. It is the whole reason
+    /// the mutation below is quoted from a run rather than reasoned about.
+    ///
     /// **Mutation:** delete the `while exclusiveClaims > 0` wait from
-    /// `SMCReadScheduler.readAll()`. Run: red — the walk begins against a closed handle and
-    /// the reopen lands inside it.
+    /// `SMCReadScheduler.readAll()`. Run: red — the walk begins against a closed handle.
     @Test("A discovery walk started during a recycle waits for the recycle")
     func aDiscoveryWalkWaitsForARecycle() async throws {
         let smc = FakeSMC(holdingRecycle: true)
@@ -282,11 +288,13 @@ struct ConnectionRecoveryTests {
 
         let events = await smc.events
         #expect(
-            await smc.recycledInsideAWalk == false,
+            await smc.walkBeganInsideARecycle == false,
             """
-            a discovery walk started while the recycle held the connection, so the reopen \
-            landed inside it. Log: \(events)
+            a discovery walk began while the recycle held the connection closed. It walks the \
+            index table against a shut handle, skips every key that fails, and the authority \
+            caches the short result for the life of the daemon. Log: \(events)
             """)
+        #expect(await smc.recycledInsideAWalk == false, "the reopen landed inside the walk")
         #expect(await smc.walksBegun == 1, "the walk never ran")
         #expect(await smc.openCount == 1, "the reconnect did not reopen exactly once")
     }
@@ -446,8 +454,32 @@ actor FakeSMC {
             begins: { $0 == .walkBegan }, ends: { $0 == .walkEnded })
     }
 
-    /// The scan both properties above are: a depth counter over the log, answering whether a
-    /// `.closed` or an `.opened` ever fell inside a span.
+    /// Whether a discovery walk ever **began inside a recycle** — between a `close()` and the
+    /// `open()` that ended it, with the handle shut.
+    ///
+    /// **It is not the mirror image of `recycledInsideAWalk`, and assuming it was is how the
+    /// test for this direction came to pass on the mutation it names.** The two hazards leave
+    /// different marks in the log. A recycle barging into a running walk puts a `.closed`
+    /// *inside* a walk span, which the scan below sees. A walk barging into a running recycle
+    /// puts a `.walkBegan` inside a *recycle* span — and the walk then begins and ends before
+    /// the reopen, so no close or open is inside it and `recycledInsideAWalk` is `false`.
+    /// Deleting the wait in `SMCReadScheduler.readAll()` left the whole suite green until this
+    /// property existed.
+    var walkBeganInsideARecycle: Bool {
+        var isRecycling = false
+        for event in events {
+            switch event {
+            case .closed: isRecycling = true
+            case .opened: isRecycling = false
+            case .walkBegan: if isRecycling { return true }
+            case .walkEnded, .readBegan, .readEnded: break
+            }
+        }
+        return false
+    }
+
+    /// The scan both `recycledInside…` properties are: a depth counter over the log, answering
+    /// whether a `.closed` or an `.opened` ever fell inside a span.
     private func recycledInsideSomethingBoundedBy(
         begins: (Event) -> Bool, ends: (Event) -> Bool
     ) -> Bool {
