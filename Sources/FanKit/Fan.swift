@@ -253,9 +253,17 @@ extension ManualControlAvailability: Codable {
 /// behaviour is structured — that is `ManualControlAvailability`'s job, and a client
 /// deciding what it may do consults that, not this string.
 public enum FanReading: Sendable, Hashable {
-    /// A value that has already passed the `isFinite` guard in `measured(_:)`. Never
-    /// constructed directly — go through `measured(_:)`, which is the only place that
-    /// guard lives, so it cannot be bypassed by a call site that forgot it exists.
+    /// A value that has already passed the `isFinite` guard in `measured(_:)`. By
+    /// **convention**, constructed only through `measured(_:)` — go there for the guard.
+    ///
+    /// That convention is not enforced by the type system: `measuredFinite` is a public
+    /// enum case, and Swift cannot restrict a case's access below the enum's own level,
+    /// so `FanReading.measuredFinite(.nan)` compiles from any module today, this one
+    /// included. What enforces it is `MeasuredFiniteConstructionSiteTests` in
+    /// `FanKitTests`, which fails the moment `measuredFinite(` is constructed anywhere
+    /// under `Sources/` outside this file — a source-tripwire test, not a compiler
+    /// guarantee. #96's acceptance criterion ("a test that fails if a producer is added
+    /// without it") is that test, not this doc comment.
     case measuredFinite(Double)
 
     /// The key is absent on this machine, the read failed, or it decoded to something
@@ -382,15 +390,23 @@ public struct FanState: Sendable, Hashable, Codable {
     public let minimumRPM: FanReading
     public let maximumRPM: FanReading
     /// The speed the helper is currently asking for, or `nil` when it is asking for
-    /// nothing. Distinct from an unavailable reading: "no target is set" is an answer,
-    /// "the target could not be read" is not, and conflating them would let a fan under
-    /// nobody's control render identically to one whose state is unknown.
+    /// nothing. That distinction (an unset target vs. a reading that could not be
+    /// produced) is what `FanReading` exists to make for `actualRPM`/`minimumRPM`/
+    /// `maximumRPM`, each of which carries its `unavailable(reason:)` separately from
+    /// `nil`-shaped "no value".
     ///
-    /// A non-finite value is never stored here: both initialisers route it through
-    /// `FanState.normalizedTargetRPM(_:)`, which lands it on `nil` — "asking for nothing"
-    /// is already this field's safe shape, so a NaN or infinite target from an arithmetic
-    /// producer costs this one field, never the whole snapshot at
-    /// `AeolusXPCCoding`'s encoder.
+    /// `targetRPM` deliberately does **not** make that distinction. It is a bare
+    /// `Double?`, and a non-finite value given to either initialiser is normalised to
+    /// `nil` by `FanState.normalizedTargetRPM(_:)` rather than carried or reported —  so
+    /// "no target is set" and "a producer computed a target that came out NaN or
+    /// infinite" are indistinguishable on the wire, on purpose. The alternative is
+    /// `AeolusXPCCoding`'s bare `JSONEncoder`, whose `nonConformingFloatEncodingStrategy`
+    /// is `.throw`: a poisoned target that reached the encoder would refuse the *entire*
+    /// snapshot, every tick, over one field nobody can currently act on anyway (there is
+    /// no wire-level "target unavailable" state for a client to render). Diagnosing *why*
+    /// a producer computed a non-finite target belongs at the producer's own call site —
+    /// E5's control loop, once it is arithmetic rather than a fixed value — not on this
+    /// field, which only has room to say "nothing" either way.
     public let targetRPM: Double?
     public let mode: FanControlMode
     /// `true` when the helper asked for manual control but the system has taken the fan
