@@ -18,7 +18,10 @@ import os
 ///
 /// So this counts whole-read failures **on either path** — the client snapshot and the
 /// supervisor cycle both — and fires one reconnect when a run of them says the connection
-/// rather than a sensor is the problem.
+/// rather than a sensor is the problem. A success ends the run. A request that asked only for
+/// keys this Mac does not have — `SchedulerEvent.wholeReadAbsentOnly`, ruling D25 — does
+/// neither, because nothing in it reached IOKit: it proved the handle neither dead nor
+/// alive, and on a fanless Mac it arrives once per snapshot for ever.
 ///
 /// ## Why the scheduler is where it listens
 ///
@@ -205,7 +208,7 @@ actor ConnectionHealth: SchedulerObserving {
     /// their own.
     nonisolated func schedulerDidObserve(_ event: SchedulerEvent) {
         switch event {
-        case .wholeReadSucceeded, .wholeReadFailed:
+        case .wholeReadSucceeded, .wholeReadAbsentOnly, .wholeReadFailed:
             // Numbered here rather than in the pump, because a number assigned after the
             // buffer could not describe what the buffer threw away.
             let next = sequence.withLock { issued -> UInt64 in
@@ -297,6 +300,14 @@ actor ConnectionHealth: SchedulerObserving {
         switch outcome.event {
         case .wholeReadSucceeded:
             consecutiveFailures = 0
+        case .wholeReadAbsentOnly:
+            // Neither. Nothing in the request reached IOKit — an absent key is answered from
+            // `knownKeys` at zero round trips — so it proved the handle neither alive nor
+            // dead. Resetting here is the fanless-Mac defect ruling D25 closed: the run
+            // peaked at one for ever. Counting it is the rebuild-every-1.5-s defect D21's
+            // guard exists to prevent. It is still an outcome that was handled, so it is
+            // counted below like the other two.
+            break
         case .wholeReadFailed:
             consecutiveFailures += 1
             if consecutiveFailures >= ConnectionHealthLimits.consecutiveWholeReadFailures {

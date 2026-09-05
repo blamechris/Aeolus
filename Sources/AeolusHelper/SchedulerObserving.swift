@@ -105,11 +105,43 @@ enum SchedulerEvent: Sendable, Hashable {
     case quotaExhausted(waitingSupervisorTurns: Int)
 
     /// A whole `read(keys:at:)` completed — every turn of it, in order — and produced at
-    /// least one reading, or failed only on keys this machine does not have.
+    /// least one reading.
+    ///
+    /// One is enough, and it is the only thing that earns this case: a reading is an IOKit
+    /// round trip that came back with a value, which is the one fact that proves the handle
+    /// alive. A request that failed only on keys this machine does not have is
+    /// `wholeReadAbsentOnly`, not this — it *was* this for one head of #198, and ruling D25
+    /// is why it is not.
     case wholeReadSucceeded(priority: SMCReadPriority)
 
-    /// A whole `read(keys:at:)` produced **no reading at all**, for a reason that is not
-    /// "this machine does not have that key" — or threw.
+    /// A whole `read(keys:at:)` produced no reading, and every failure in it was
+    /// `.unknownKey`: the request asked only for keys this machine does not expose.
+    ///
+    /// ## Neutral, and a third case because neither of the other two is honest about it
+    ///
+    /// It is not a failure. An absent key is a fact about the *Mac*, not about the handle —
+    /// `SMCFanEnumeration` asks every Mac for `FNum` and a fanless one has none, and
+    /// `CriticalSensorSet` asks for keys some firmwares lack — so counting it would rebuild
+    /// a working connection every 1.5 s for ever, on the machines least able to afford it.
+    /// That is ruling D21's false-positive guard and it is unchanged.
+    ///
+    /// It is not a success either, and for one head of #198 it was reported as one.
+    /// `SMCConnection.read(keys:)` answers a key outside `knownKeys` with `.keyNotFound` at
+    /// **zero round trips**: nothing in the request touched IOKit, so nothing proved the
+    /// handle alive. Reported as a success it *reset* `ConnectionHealth`'s run — and on a
+    /// fanless Mac with a stale handle, where the fan-count read is absent-only on every
+    /// snapshot, the pump saw success, failure, success, failure for ever, the run peaked at
+    /// one, and [#68](https://github.com/blamechris/Aeolus/issues/68)'s
+    /// render-unavailable-forever survived the mechanism built to close it. Ruling D25 is
+    /// this case: `ConnectionHealth` neither increments nor resets on it.
+    ///
+    /// A request with at least one real value is `wholeReadSucceeded`; one with no value
+    /// and at least one failure that is not `.unknownKey` is `wholeReadFailed`. D21 only had
+    /// two answers where three were needed.
+    case wholeReadAbsentOnly(priority: SMCReadPriority)
+
+    /// A whole `read(keys:at:)` produced **no reading at all**, and at least one of its
+    /// failures was not "this machine does not have that key" — or it threw.
     ///
     /// **A whole-request failure, never a per-key one.** Losing one thermistor out of
     /// thirty-four is not this; the request still answered. This is the connection failing to
@@ -123,9 +155,10 @@ enum SchedulerEvent: Sendable, Hashable {
     /// and non-zero, so `SMCConnection.open()` returns from its own `guard` having done
     /// nothing and `SMCConnection.read(keys:)` — which does not throw — reports every key as
     /// a per-key failure. The one event `ConnectionHealth` counts was therefore unreachable
-    /// on the one machine state it was written for. `SMCReadScheduler.blindnessDetail(in:)`
-    /// is the rule that replaced it, and carries the reasoning including why `.unknownKey`
-    /// sits on the success side of it.
+    /// on the one machine state it was written for.
+    /// `SMCReadScheduler.wholeReadEvent(for:at:)` is the rule that replaced it, and carries
+    /// the reasoning — including why `.unknownKey` is on neither side of it, which is
+    /// `wholeReadAbsentOnly`.
     ///
     /// `detail` is diagnostic and is never parsed.
     case wholeReadFailed(priority: SMCReadPriority, detail: String)
@@ -148,6 +181,7 @@ extension SchedulerEvent {
         case overtakeTaken
         case quotaExhausted
         case wholeReadSucceeded
+        case wholeReadAbsentOnly
         case wholeReadFailed
     }
 
@@ -159,6 +193,7 @@ extension SchedulerEvent {
         case .overtakeTaken: return .overtakeTaken
         case .quotaExhausted: return .quotaExhausted
         case .wholeReadSucceeded: return .wholeReadSucceeded
+        case .wholeReadAbsentOnly: return .wholeReadAbsentOnly
         case .wholeReadFailed: return .wholeReadFailed
         }
     }

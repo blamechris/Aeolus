@@ -290,16 +290,13 @@ actor SMCReadScheduler {
         }
 
         // A throw is not the only way a whole read fails, and for the case this hook exists
-        // for it is not even the usual one. See `blindnessDetail(in:)`.
-        if let detail = Self.blindnessDetail(in: outcomes) {
-            report(.wholeReadFailed(priority: priority, detail: detail))
-        } else {
-            report(.wholeReadSucceeded(priority: priority))
-        }
+        // for it is not even the usual one. See `wholeReadEvent(for:at:)`.
+        report(Self.wholeReadEvent(for: outcomes, at: priority))
         return outcomes
     }
 
-    /// Why this request produced **nothing**, or `nil` if it produced anything at all.
+    /// What this request says about the connection: it answered; it answered nothing for a
+    /// reason that is the handle's; or it was never asked anything the handle could answer.
     ///
     /// ## Deciding from the outcomes rather than from a throw, and why that is the whole fix
     ///
@@ -315,44 +312,59 @@ actor SMCReadScheduler {
     /// read of nothing, and the only test that said otherwise was a double that threw where
     /// production does not. #103's ruling D21 is this method.
     ///
-    /// ## The three-way rule, and why `.unknownKey` is on the other side of it
+    /// ## The three-way rule, and why `.unknownKey` is on neither side of it
     ///
-    /// - A request in which **any** key produced a value read successfully. One thermistor
-    ///   going quiet is not the connection, and never was — that is the distinction the
-    ///   `wholeReadFailed` case's documentation has always drawn.
-    /// - A request in which every failure is `.unknownKey` succeeded too. An absent key is a
-    ///   fact about the *machine*, not about the handle: `CriticalSensorSet` deliberately asks
-    ///   for keys a given Mac may not expose, and `SMCConnection.read(keys:)` answers a key a
-    ///   completed walk never saw with `.keyNotFound` at zero round trips — so a subset that
-    ///   this firmware simply lacks would otherwise reconnect the helper, on a connection that
-    ///   is answering perfectly, once every 1.5 s for ever.
-    /// - Anything else — no value anywhere, and at least one failure that is not
-    ///   `.unknownKey` — is the connection failing to answer at all.
+    /// - A request in which **any** key produced a value is `wholeReadSucceeded`. One
+    ///   thermistor going quiet is not the connection, and never was — that is the
+    ///   distinction the `wholeReadFailed` case's documentation has always drawn.
+    /// - A request with no value and **at least one failure that is not `.unknownKey`** is
+    ///   `wholeReadFailed`: the connection failing to answer at all.
+    /// - A request whose failures are **all** `.unknownKey` is `wholeReadAbsentOnly`, and
+    ///   ruling D25 is why that is a third answer rather than either of the first two. It is
+    ///   not a failure: an absent key is a fact about the *machine*, not about the handle —
+    ///   `SMCFanEnumeration` asks every Mac for `FNum` and a fanless one has none, and
+    ///   `CriticalSensorSet` deliberately asks for keys a given Mac may not expose — so
+    ///   counting it would reconnect the helper, on a connection that is answering perfectly,
+    ///   once every 1.5 s for ever. But it is not a success either, and D21's first draft
+    ///   said it was: `SMCConnection.read(keys:)` answers a key outside `knownKeys` with
+    ///   `.keyNotFound` at **zero round trips**, so no IOKit call happened and nothing proved
+    ///   the handle alive. Reported as a success it reset `ConnectionHealth`'s run, and on a
+    ///   fanless Mac with a stale handle — where the fan-count read is absent-only on every
+    ///   snapshot — the pump saw success, failure, success, failure for ever and the run
+    ///   peaked at one. `ConnectionRecoveryTests.theFanlessMacCaseReachesAReconnect` is that
+    ///   machine, driven through this graph.
     ///
     /// An empty `outcomes` array reports success. It is unreachable through
     /// `SensorProvider`'s contract (one outcome per requested key, and `read(keys:at:)`
     /// returns early on an empty request), and inventing a connection failure out of a
     /// provider returning nothing would be claiming a fault that nothing observed.
-    private static func blindnessDetail(in outcomes: [SensorReadOutcome]) -> String? {
+    private static func wholeReadEvent(
+        for outcomes: [SensorReadOutcome], at priority: SMCReadPriority
+    ) -> SchedulerEvent {
         var firstFailure: SensorReadOutcome?
+        var sawAbsentKey = false
         for outcome in outcomes {
             switch outcome.result {
             case .success:
-                return nil
+                return .wholeReadSucceeded(priority: priority)
             case .failure(.unknownKey):
-                continue
+                sawAbsentKey = true
             case .failure:
                 if firstFailure == nil { firstFailure = outcome }
             }
         }
 
         guard let failed = firstFailure, case .failure(let reason) = failed.result else {
-            return nil
+            return sawAbsentKey
+                ? .wholeReadAbsentOnly(priority: priority)
+                : .wholeReadSucceeded(priority: priority)
         }
-        return """
-            no key in a \(outcomes.count)-key request produced a value: \(failed.key) \
-            reported \(reason.readableDescription)
-            """
+        return .wholeReadFailed(
+            priority: priority,
+            detail: """
+                no key in a \(outcomes.count)-key request produced a value: \(failed.key) \
+                reported \(reason.readableDescription)
+                """)
     }
 
     // MARK: - Exclusive access

@@ -154,13 +154,13 @@ struct ConnectionRecoveryTests {
     /// `ConnectionHealth` as its observer, and the plane as the recovery seam — and asserts
     /// the fans-out end: the handle really was recycled, and reads really do work afterwards.
     ///
-    /// **Mutation:** in `SMCReadScheduler.read(keys:at:)`, drop the `blindnessDetail(in:)`
-    /// branch and report `.wholeReadSucceeded` whenever the provider did not throw — the
-    /// behaviour at the PR's first head. Run: red, on the close count, because no failure is
-    /// ever counted.
-    /// **Mutation (false-positive guard):** make `blindnessDetail(in:)` count `.unknownKey`
-    /// failures too. Run: red on `unknownKeysAreNotAConnectionFailure` in
-    /// `SchedulerObservingTests`, which is the other half of the rule.
+    /// **Mutation:** in `SMCReadScheduler.read(keys:at:)`, replace the
+    /// `wholeReadEvent(for:at:)` report with `.wholeReadSucceeded` whenever the provider did
+    /// not throw — the behaviour at the PR's first head. Run: red, on the close count,
+    /// because no failure is ever counted.
+    /// **Mutation (false-positive guard):** make `wholeReadEvent(for:at:)` count
+    /// `.unknownKey` failures too. Run: red on `absentKeysAreNeitherAFailureNorASuccess` in
+    /// `SchedulerObservingTests`, which is the other side of the rule.
     @Test("A handle that fails every key without throwing still reaches a reconnect")
     func theStaleHandleCaseReachesAReconnect() async throws {
         let smc = FakeSMC(handleIsStale: true)
@@ -188,6 +188,133 @@ struct ConnectionRecoveryTests {
             """)
         let served = try await scheduler.read(keys: ["TC0P"], at: .snapshot)
         #expect(!Self.everyKeyFailed(served), "the rebuilt handle still answers nothing")
+        await health.stop()
+    }
+
+    /// Whether every outcome is `.unknownKey` — the answer a key outside `knownKeys` gets.
+    private static func everyKeyAbsent(_ outcomes: [SensorReadOutcome]) -> Bool {
+        !outcomes.isEmpty
+            && outcomes.allSatisfy {
+                if case .failure(.unknownKey) = $0.result { return true }
+                return false
+            }
+    }
+
+    /// **Ruling D25's machine: a fanless Mac with a stale handle.**
+    ///
+    /// `SMCFanEnumeration.enumerate` reads `FNum` as a request of its own on every snapshot,
+    /// and on a Mac with no fans the key is outside `knownKeys`, so `SMCConnection` answers
+    /// it `.keyNotFound` at zero round trips whatever state the handle is in. When the handle
+    /// goes stale, the scheduler therefore sees the fan-count read alternate with genuine
+    /// failures: absent-only, failed, absent-only, failed. At `eb91026` an absent-only
+    /// request was reported `.wholeReadSucceeded` and **reset the run**, so
+    /// `consecutiveFailures` peaked at one for ever and the reconnect never fired — #68 on a
+    /// fanless Air, surviving every mechanism built to close it. The re-review measured it:
+    /// twenty whole reads, ten genuine failures, zero attempts.
+    ///
+    /// The production graph over one `FakeSMC`, as `theStaleHandleCaseReachesAReconnect`,
+    /// driven **exactly** to the threshold — three genuine failures interleaved with three
+    /// absent-only reads — with the attempt count checked one read short, so that a rule
+    /// which *counted* absent-only reads (reaching three on the third read, two of which
+    /// touched no hardware) is red here as well as on
+    /// `aRunOfAbsentOnlyReadsReconnectsNothing`.
+    ///
+    /// **Mutation A:** in `SMCReadScheduler.wholeReadEvent(for:at:)`, return
+    /// `.wholeReadSucceeded` where it returns `.wholeReadAbsentOnly` — `eb91026`'s rule.
+    /// Run: red — the run never reaches three.
+    /// **Mutation B:** in `ConnectionHealth.handle(_:recovering:)`, treat
+    /// `.wholeReadAbsentOnly` as `.wholeReadSucceeded`. Run: red on the same line.
+    /// **Mutation C:** treat it as `.wholeReadFailed` instead. Run: red on the one-short
+    /// check.
+    @Test("A fanless Mac's absent fan-count read does not reset the run a stale handle builds")
+    func theFanlessMacCaseReachesAReconnect() async throws {
+        let smc = FakeSMC(handleIsStale: true, absentKeys: ["FNum"])
+        let health = ConnectionHealth(clock: TestClock(), log: SafetyLog(recording: { _, _ in }))
+        let scheduler = SMCReadScheduler(provider: FakeSMCProvider(smc: smc), observer: health)
+        let plane = SMCFanControlPlane(
+            scheduler: scheduler, connection: FakeSMCConnection(smc: smc))
+        await health.start(recovering: plane)
+
+        // Absent-only, failed, absent-only, failed, absent-only — two genuine failures on
+        // either path, and nothing may have fired yet.
+        for _ in 0..<2 {
+            let fanCount = try await scheduler.read(keys: ["FNum"], at: .snapshot)
+            #expect(Self.everyKeyAbsent(fanCount), "the fanless Mac answered a fan count")
+            let blind = try await scheduler.read(keys: ["TC0P"], at: .supervisor)
+            #expect(Self.everyKeyFailed(blind), "a stale handle answered something")
+        }
+        _ = try await scheduler.read(keys: ["FNum"], at: .snapshot)
+        await yieldUntil("the first five outcomes to be handled") {
+            await health.observedOutcomes == 5
+        }
+        #expect(
+            await health.reconnectAttempts == 0,
+            """
+            a reconnect fired after two genuine failures. The absent-only reads between them \
+            touched no hardware and were counted as the handle failing — D21's false-positive \
+            guard, which on a healthy fanless Mac is a rebuild every third snapshot.
+            """)
+
+        // The third genuine failure, and the whole run is three.
+        _ = try await scheduler.read(keys: ["TC0P"], at: .supervisor)
+        await yieldUntil("the sixth outcome to be handled") {
+            await health.observedOutcomes == 6
+        }
+
+        #expect(
+            await health.reconnectAttempts == 1,
+            """
+            three genuine whole-read failures, interleaved with a fanless Mac's absent-only \
+            fan-count reads, fired no reconnect. The absent-only reads touched no hardware \
+            and reset the run anyway, so it peaked at one for ever — #68 on a fanless Air, \
+            surviving every mechanism built to close it.
+            """)
+        #expect(await smc.closeCount == 1, "the reconnect did not recycle the handle")
+
+        let served = try await scheduler.read(keys: ["TC0P"], at: .supervisor)
+        #expect(!Self.everyKeyFailed(served), "the rebuilt handle still answers nothing")
+        // And the Mac still has no fans, because that was never about the handle.
+        let fanCount = try await scheduler.read(keys: ["FNum"], at: .snapshot)
+        #expect(Self.everyKeyAbsent(fanCount), "the rebuild invented a fan-count key")
+        await health.stop()
+    }
+
+    /// A run made only of absent-only reads reconnects nothing, however long it is.
+    ///
+    /// The other half of D25 — D21's false-positive guard, asserted through the production
+    /// graph rather than at the emission. A fanless Mac whose handle is *fine* produces one
+    /// of these on every snapshot; counting them would recycle a working connection every
+    /// third snapshot, on the machines least able to afford it. Six rather than three, so
+    /// that a rule which counted them cannot pass by firing late.
+    ///
+    /// **Mutation:** in `ConnectionHealth.handle(_:recovering:)`, treat `.wholeReadAbsentOnly`
+    /// as `.wholeReadFailed`. Run: red — one attempt, one close.
+    /// (`SchedulerObservingTests.absentKeysAreNeitherAFailureNorASuccess` kills the same
+    /// mistake made on the scheduler's side of the seam.)
+    @Test("A run of absent-only reads reconnects nothing")
+    func aRunOfAbsentOnlyReadsReconnectsNothing() async throws {
+        let smc = FakeSMC(absentKeys: ["FNum"])
+        let health = ConnectionHealth(clock: TestClock(), log: SafetyLog(recording: { _, _ in }))
+        let scheduler = SMCReadScheduler(provider: FakeSMCProvider(smc: smc), observer: health)
+        let plane = SMCFanControlPlane(
+            scheduler: scheduler, connection: FakeSMCConnection(smc: smc))
+        await health.start(recovering: plane)
+
+        for _ in 0..<6 {
+            let fanCount = try await scheduler.read(keys: ["FNum"], at: .snapshot)
+            #expect(Self.everyKeyAbsent(fanCount), "the fanless Mac answered a fan count")
+        }
+        await yieldUntil("the six absent-only outcomes to be handled") {
+            await health.observedOutcomes == 6
+        }
+
+        #expect(
+            await health.reconnectAttempts == 0,
+            """
+            six reads that touched no hardware — a fanless Mac asking for a fan count — were \
+            counted as the connection failing, and a working handle was rebuilt over them.
+            """)
+        #expect(await smc.closeCount == 0, "a working handle was recycled")
         await health.stop()
     }
 
@@ -412,6 +539,17 @@ actor FakeSMC {
     private var isOpen = true
     private let reopenFails: Bool
 
+    /// Keys this machine's firmware does not expose — outside `knownKeys`, in
+    /// `SMCConnection`'s terms.
+    ///
+    /// Answered `.unknownKey` **before the handle is consulted**, because that is the order
+    /// `SMCConnection.readOutcome(for:)` answers in: a key outside `knownKeys` is
+    /// `.keyNotFound` at zero round trips, whatever state the `io_connect_t` is in. A fanless
+    /// Mac has no `FNum`, and `SMCFanEnumeration` asks for it on every snapshot — so a stale
+    /// handle on such a Mac produces an absent-only request between every pair of genuine
+    /// failures, which is the shape ruling D25 exists for.
+    private let absentKeys: Set<String>
+
     private var isHeld: Bool
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
@@ -426,13 +564,15 @@ actor FakeSMC {
         holdingReads: Bool = false,
         holdingDiscovery: Bool = false,
         holdingRecycle: Bool = false,
-        reopenFails: Bool = false
+        reopenFails: Bool = false,
+        absentKeys: Set<String> = []
     ) {
         self.isStale = handleIsStale
         self.isHeld = holdingReads
         self.isWalkHeld = holdingDiscovery
         self.isRecycleHeld = holdingRecycle
         self.reopenFails = reopenFails
+        self.absentKeys = absentKeys
     }
 
     /// Whether any close or open landed between a read beginning and that read ending.
@@ -540,8 +680,9 @@ actor FakeSMC {
     /// reentrancy — which is precisely what lets the interleaving be observed rather than
     /// merely reasoned about.
     ///
-    /// A closed or stale handle fails every key and throws nothing. See this type's
-    /// documentation for why that, and not a throw, is what production does.
+    /// A closed or stale handle fails every key it is asked to touch and throws nothing. See
+    /// this type's documentation for why that, and not a throw, is what production does —
+    /// and `absentKeys` for the keys it is never asked to touch.
     func read(keys: [String]) async -> [SensorReadOutcome] {
         turnsBegun += 1
         let turn = turnsBegun
@@ -551,13 +692,26 @@ actor FakeSMC {
         }
         events.append(.readEnded(turn))
 
-        guard isOpen, !isStale else {
-            let reason = isOpen ? "the io_connect_t is stale" : "the connection is closed"
-            return keys.map {
-                SensorReadOutcome(key: $0, result: .failure(.readFailed(reason: reason)))
-            }
+        let handleFailure: String?
+        if !isOpen {
+            handleFailure = "the connection is closed"
+        } else if isStale {
+            handleFailure = "the io_connect_t is stale"
+        } else {
+            handleFailure = nil
         }
-        return keys.map { SensorReadOutcome(key: $0, result: .reading($0, 1)) }
+        return keys.map { key in
+            // Absent first, handle second: `SMCConnection.readOutcome(for:)`'s order, and the
+            // whole reason an absent-only request says nothing about the handle.
+            if absentKeys.contains(key) {
+                return SensorReadOutcome(key: key, result: .failure(.unknownKey(key)))
+            }
+            if let handleFailure {
+                return SensorReadOutcome(
+                    key: key, result: .failure(.readFailed(reason: handleFailure)))
+            }
+            return SensorReadOutcome(key: key, result: .reading(key, 1))
+        }
     }
 
     /// The discovery walk, recorded either side of whatever suspension the test asked for.

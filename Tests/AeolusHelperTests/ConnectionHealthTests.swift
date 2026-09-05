@@ -39,6 +39,13 @@ struct ConnectionHealthTests {
         .wholeReadFailed(priority: priority, detail: "the SMC did not answer")
     }
 
+    /// A request that asked only for keys this Mac does not have — a fanless Mac's fan count.
+    private static func absentOnly(
+        _ priority: SMCReadPriority = .snapshot
+    ) -> SchedulerEvent {
+        .wholeReadAbsentOnly(priority: priority)
+    }
+
     /// Yields `events` and waits until every one has been handled to completion.
     ///
     /// The target is computed from the count already handled rather than from `events.count`,
@@ -156,6 +163,45 @@ struct ConnectionHealthTests {
         await Self.drive(health, alternating)
 
         #expect(await recovery.attempts == 1)
+        await health.stop()
+    }
+
+    /// An absent-only read neither ends a run nor lengthens it — ruling D25 at the pump.
+    ///
+    /// Two scripts against one policy. Six absent-only outcomes reconnect nothing: nothing
+    /// in them touched IOKit, so nothing said the handle was dead. Then two failures, two
+    /// absent-only outcomes, and a third failure reconnect **once**: nothing in the two said
+    /// the handle was alive either, so the run of three is intact across them. A rule that
+    /// counted them is red on the first script; one that reset on them is red on the second.
+    /// `ConnectionRecoveryTests.theFanlessMacCaseReachesAReconnect` drives the same two
+    /// rules through the production graph, where the review found the second one live.
+    ///
+    /// **Mutation A:** in `handle(_:recovering:)`, treat `.wholeReadAbsentOnly` as
+    /// `.wholeReadFailed`. Run: red — one attempt after the first six.
+    /// **Mutation B:** treat it as `.wholeReadSucceeded` — the rule at `eb91026`, one seam
+    /// over. Run: red — no attempt at the end.
+    @Test("An absent-only read neither ends nor lengthens a run")
+    func anAbsentOnlyReadIsNeutral() async throws {
+        let recovery = RecordingReconnector()
+        let health = ConnectionHealth(clock: TestClock(), log: SafetyLog(recording: { _, _ in }))
+        await health.start(recovering: recovery)
+
+        await Self.drive(health, Array(repeating: Self.absentOnly(), count: 6))
+        #expect(
+            await recovery.attempts == 0,
+            "six reads that touched no hardware were counted as the connection failing")
+
+        var script = Array(repeating: Self.failure(), count: 2)
+        script += Array(repeating: Self.absentOnly(), count: 2)
+        script.append(Self.failure(.supervisor))
+        await Self.drive(health, script)
+        #expect(
+            await recovery.attempts == 1,
+            """
+            two reads that touched no hardware ended a run of failures that was still \
+            building. On a fanless Mac that read arrives every snapshot, so the run never \
+            reaches three and a stale handle is never rebuilt.
+            """)
         await health.stop()
     }
 

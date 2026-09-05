@@ -11,8 +11,8 @@ import Testing
 /// A seam that nobody consumes yet. `SchedulerObserving` exists for
 /// [#133](https://github.com/blamechris/Aeolus/issues/133) and
 /// [#135](https://github.com/blamechris/Aeolus/issues/135), which will fill in emission
-/// policy against it; today only `ConnectionHealth` listens, and it listens to two of the
-/// seven kinds. The other five have no consumer at all, which is exactly the condition under
+/// policy against it; today only `ConnectionHealth` listens, and it listens to three of the
+/// eight kinds. The other five have no consumer at all, which is exactly the condition under
 /// which an emission can be deleted, mis-wired, or never written, with nothing red.
 ///
 /// So the assertion is *exhaustive by construction*: `SchedulerEvent.Kind` is `CaseIterable`,
@@ -52,7 +52,9 @@ struct SchedulerObservingTests {
     ///    A second scheduler rather than a failing turn in the run above, because which
     ///    ordinal a failing turn lands on depends on the admission order the run is *testing*
     ///    — so it would be a fixture whose correctness depended on the thing under test. The
-    ///    observer is the subject here, and it hears both schedulers.
+    ///    observer is the subject here, and it hears every scheduler.
+    /// 6. A read on a third scheduler, over a provider that answers every key `.unknownKey`,
+    ///    gives `wholeReadAbsentOnly` — ruling D25's neutral third.
     ///
     /// **Mutation:** delete any one `report(…)` call from `SMCReadScheduler` — the
     /// `overtakeTaken` line in `nextTurn()` is the least obviously load-bearing, so it is the
@@ -101,6 +103,11 @@ struct SchedulerObservingTests {
         await #expect(throws: (any Error).self) {
             try await failing.read(keys: ["TPD0"], at: .supervisor)
         }
+
+        // The neutral third: a request made entirely of keys this machine lacks.
+        let absent = SMCReadScheduler(
+            provider: OutcomeScriptedProvider { .failure(.unknownKey($0)) }, observer: observer)
+        _ = try await absent.read(keys: ["FNum"], at: .snapshot)
 
         let seen = Set(observer.events.map(\.kind))
         let missing = Set(SchedulerEvent.Kind.allCases).subtracting(seen).map(
@@ -172,10 +179,9 @@ struct SchedulerObservingTests {
     /// The provider here therefore never throws, which is the whole point of it — a double
     /// that threw would agree with the version of `read(keys:at:)` this replaces.
     ///
-    /// **Mutation:** delete the `blindnessDetail(in:)` branch from
-    /// `SMCReadScheduler.read(keys:at:)` and report `.wholeReadSucceeded` whenever nothing
-    /// threw. Run: red here, and red on
-    /// `ConnectionRecoveryTests.theStaleHandleCaseReachesAReconnect`.
+    /// **Mutation:** in `SMCReadScheduler.read(keys:at:)`, replace the
+    /// `wholeReadEvent(for:at:)` report with `.wholeReadSucceeded` whenever nothing threw.
+    /// Run: red here, and red on `ConnectionRecoveryTests.theStaleHandleCaseReachesAReconnect`.
     @Test("A request in which no key produced a value is a whole-read failure")
     func aRequestThatProducesNothingIsAWholeReadFailure() async throws {
         let observer = RecordingSchedulerObserver()
@@ -197,19 +203,28 @@ struct SchedulerObservingTests {
             """)
     }
 
-    /// **The false-positive guard, and it is the reason the rule is not simply "no value".**
+    /// **The false-positive guard, and — since ruling D25 — the false-*negative* guard too.**
     ///
     /// `CriticalSensorSet` deliberately asks every Mac for keys some Macs do not have, and
     /// `SMCConnection.read(keys:)` answers a key a completed walk never saw with
     /// `.keyNotFound` at zero round trips. A subset made entirely of keys this firmware lacks
-    /// is therefore a perfectly healthy request that produces nothing — and counting it would
-    /// rebuild a working connection every 1.5 s for ever, on the machines least able to
-    /// afford it.
+    /// is therefore not the connection failing — counting it would rebuild a working
+    /// connection every 1.5 s for ever, on the machines least able to afford it.
     ///
-    /// **Mutation:** in `blindnessDetail(in:)`, remove the `case .failure(.unknownKey):
-    /// continue` arm so every failure counts. Run: red.
-    @Test("A request whose only failures are absent keys is a success")
-    func unknownKeysAreNotAConnectionFailure() async throws {
+    /// It is not a success either, and for one head of #198 it was reported as one. Zero
+    /// round trips means nothing in the request touched IOKit, so nothing proved the handle
+    /// alive; reported as a success it reset `ConnectionHealth`'s run, and on a fanless Mac
+    /// with a stale handle — where `SMCFanEnumeration`'s `FNum` read is absent-only on every
+    /// snapshot — the run peaked at one for ever. Neutral is the only honest answer, and it
+    /// is a third case so that an observer cannot mistake it for either of the other two.
+    ///
+    /// **Mutation A:** in `wholeReadEvent(for:at:)`, remove the `case .failure(.unknownKey)`
+    /// arm so every failure counts. Run: red — reported as a failure.
+    /// **Mutation B:** in `wholeReadEvent(for:at:)`, return `.wholeReadSucceeded` where it
+    /// returns `.wholeReadAbsentOnly` — the rule at `eb91026`. Run: red — reported as a
+    /// success, and red on `ConnectionRecoveryTests.theFanlessMacCaseReachesAReconnect`.
+    @Test("A request whose only failures are absent keys is neither a failure nor a success")
+    func absentKeysAreNeitherAFailureNorASuccess() async throws {
         let observer = RecordingSchedulerObserver()
         let scheduler = SMCReadScheduler(
             provider: OutcomeScriptedProvider { .failure(.unknownKey($0)) },
@@ -217,7 +232,7 @@ struct SchedulerObservingTests {
 
         _ = try await scheduler.read(keys: ["TZ99", "TZ98"], at: .supervisor)
 
-        #expect(Self.count(of: .wholeReadSucceeded, in: observer) == 1)
+        #expect(Self.count(of: .wholeReadAbsentOnly, in: observer) == 1)
         #expect(
             Self.count(of: .wholeReadFailed, in: observer) == 0,
             """
@@ -225,14 +240,58 @@ struct SchedulerObservingTests {
             is a fact about the Mac, not about the handle, and reconnecting over it recycles \
             a connection that is answering perfectly.
             """)
+        #expect(
+            Self.count(of: .wholeReadSucceeded, in: observer) == 0,
+            """
+            keys this machine does not expose were reported as the connection answering. \
+            Nothing in the request touched IOKit, so nothing proved the handle alive — and \
+            a success resets the run a stale handle is building, which on a fanless Mac is \
+            every snapshot.
+            """)
+    }
+
+    /// D21 is unchanged by D25, and this is the boundary between them asserted from both
+    /// sides. A request that mixes an absent key with a failure that *is* the handle's
+    /// produced no value for the handle's reason — `wholeReadFailed`, so a fanless Mac's
+    /// `FNum` cannot dilute a failing read it happens to share a request with. And one that
+    /// mixes an absent key with a reading answered — `wholeReadSucceeded`, because a round
+    /// trip came back.
+    ///
+    /// **Mutation:** in `wholeReadEvent(for:at:)`, return `.wholeReadAbsentOnly` whenever
+    /// an absent key was seen, before the `firstFailure` guard. Run: red on the first half.
+    @Test("An absent key beside a real failure is still a failure, and beside a reading a success")
+    func anAbsentKeyDecidesNothingOnItsOwn() async throws {
+        let failing = RecordingSchedulerObserver()
+        let mixedWithFailure = SMCReadScheduler(
+            provider: OutcomeScriptedProvider { key in
+                key == "FNum"
+                    ? .failure(.unknownKey(key))
+                    : .failure(.readFailed(reason: "the SMC did not answer \(key)"))
+            },
+            observer: failing)
+        _ = try await mixedWithFailure.read(keys: ["FNum", "TC0P"], at: .supervisor)
+        #expect(
+            Self.count(of: .wholeReadFailed, in: failing) == 1,
+            "an absent key softened a request in which the handle failed every other key")
+        #expect(Self.count(of: .wholeReadAbsentOnly, in: failing) == 0)
+
+        let succeeding = RecordingSchedulerObserver()
+        let mixedWithReading = SMCReadScheduler(
+            provider: OutcomeScriptedProvider { key in
+                key == "FNum" ? .failure(.unknownKey(key)) : .reading(key, 42)
+            },
+            observer: succeeding)
+        _ = try await mixedWithReading.read(keys: ["FNum", "TC0P"], at: .supervisor)
+        #expect(Self.count(of: .wholeReadSucceeded, in: succeeding) == 1)
+        #expect(Self.count(of: .wholeReadAbsentOnly, in: succeeding) == 0)
     }
 
     /// One reading is enough. Losing thirty-three of thirty-four curated keys is a degraded
     /// cycle — `SafetyLog.degradedCycle`'s subject — and it is emphatically not the
     /// connection being gone, because the connection just answered.
     ///
-    /// **Mutation:** in `blindnessDetail(in:)`, return the detail whenever *any* failure is
-    /// present rather than only when nothing succeeded. Run: red.
+    /// **Mutation:** in `wholeReadEvent(for:at:)`, return the failed event whenever *any*
+    /// failure is present rather than only when nothing succeeded. Run: red.
     @Test("One readable key is enough to make the request a success")
     func oneReadingIsEnoughToSucceed() async throws {
         let observer = RecordingSchedulerObserver()
