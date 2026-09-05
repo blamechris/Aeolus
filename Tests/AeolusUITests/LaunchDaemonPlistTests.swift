@@ -188,17 +188,41 @@ struct LaunchDaemonPlistTests {
     /// ([#166](https://github.com/blamechris/Aeolus/issues/166)). That change raises this
     /// number to 1 in the same commit that adds the path, deliberately — which is the whole
     /// point of asserting a count rather than a location.
+    ///
+    /// ## What this tripwire does not catch, named so #166 does not walk into one
+    ///
+    /// The scan is a regular expression over source text, so it sees spelling rather than
+    /// semantics. It matches `exit(0)`, `exit( 0 )` and `exit(EXIT_SUCCESS)` — the same act
+    /// written three ways — and deliberately not:
+    ///
+    /// - a **non-literal argument**: `exit(status)`, `exit(code)`, `exit(Int32(n))`. Nothing
+    ///   short of running the program can say whether those are zero, and a tripwire that
+    ///   guessed would fire on every non-zero exit the restart policy *wants*.
+    /// - an occurrence **inside a comment or a string**, which counts as one. That direction
+    ///   is deliberate: a false positive costs somebody a rewrite of a comment, while a
+    ///   false negative is a root daemon telling launchd not to restart it.
+    /// - `_exit(0)` and `Foundation.exit(0)`, which the leading-character guard excludes to
+    ///   keep `_exit` and member accesses from matching. Neither appears in the tree, and
+    ///   #166 must spell its one exit `exit(0)` — the plainest form, and the one this
+    ///   asserts.
     @Test("`exit(0)` appears in the helper exactly as many times as a path has argued for")
     func theOrderlyExitIsCountedNotAssumed() throws {
         let helper = Self.repositoryRoot.appendingPathComponent("Sources/AeolusHelper")
         let enumerator = try #require(
             FileManager.default.enumerator(at: helper, includingPropertiesForKeys: nil),
             "Sources/AeolusHelper was not found")
+        // `(?<![\w.])` keeps `_exit(` and `Foundation.exit(` from matching; the alternation
+        // is the two spellings of a successful status. `NSRegularExpression` rather than
+        // Swift's `Regex`, which rejects the lookbehind outright ("lookbehind is not
+        // currently supported") — the guard is worth an older engine.
+        let orderlyExit = try NSRegularExpression(
+            pattern: #"(?<![\w.])exit\s*\(\s*(?:0|EXIT_SUCCESS)\s*\)"#)
 
         var occurrences: [String: Int] = [:]
         for case let file as URL in enumerator where file.pathExtension == "swift" {
             let source = try String(contentsOf: file, encoding: .utf8)
-            let count = source.components(separatedBy: "exit(0)").count - 1
+            let count = orderlyExit.numberOfMatches(
+                in: source, range: NSRange(source.startIndex..., in: source))
             if count > 0 { occurrences[file.lastPathComponent] = count }
         }
 
