@@ -35,10 +35,13 @@ import SMCCore
 ///
 /// No startup reconciliation ([#164](https://github.com/blamechris/Aeolus/issues/164)), no
 /// restart policy ([#165](https://github.com/blamechris/Aeolus/issues/165)), no signal
-/// handlers ([#166](https://github.com/blamechris/Aeolus/issues/166)), no sleep/wake
-/// observer ([#167](https://github.com/blamechris/Aeolus/issues/167)) and no connection
+/// handlers ([#166](https://github.com/blamechris/Aeolus/issues/166)) and no connection
 /// health or reconnect ([#168](https://github.com/blamechris/Aeolus/issues/168)). `bringUp()`
 /// names where the first of those goes.
+///
+/// Sleep and wake ([#167](https://github.com/blamechris/Aeolus/issues/167)) *is* here, and is
+/// the one lifecycle event this graph acts on: `powerObserver` and `powerResponder`, wired
+/// last in `bringUp()`. See `SystemPowerResponder` for why it holds no supervisor.
 struct HelperComposition<Plane: FanControlPlane>: Sendable {
 
     /// The single control plane. Every safety mechanism's reads and writes go through it, at
@@ -113,6 +116,19 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// What the listener is given. Replaces `ReadOnlyFanAuthority` in that role.
     let authority: SupervisedFanAuthority
 
+    /// § 4's responder: release, restore, then allow the power change. See
+    /// `SystemPowerResponder`.
+    let powerResponder: SystemPowerResponder<Plane>
+
+    /// The seam § 4 hears the system through, or `nil` for a graph that hears nothing.
+    ///
+    /// Optional because the production conformer registers with the real power management
+    /// root the moment it is asked to observe, and most tests compose this graph to drive
+    /// something else entirely. `production(log:)` supplies one; a § 4 test supplies a
+    /// scripted one; everything else composes a helper that never hears a power event, which
+    /// is the same state as a machine that never sleeps.
+    let powerObserver: (any SystemPowerObserving)?
+
     /// Wires the graph. Constructs nothing that touches hardware — see `production(log:)`.
     ///
     /// The order below is A1's, and it is the order of the dependencies rather than a
@@ -143,11 +159,14 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         snapshotProvider: some SensorProvider,
         criticalSensors: CriticalSensorSet,
         clock: some MonotonicClock = SystemMonotonicClock(),
+        powerObserver: (any SystemPowerObserving)? = nil,
+        acknowledgementBudget: Duration = SystemPowerLimits.acknowledgementBudget,
         log: HelperLog = HelperLog(),
         leaseLog: LeaseLog = LeaseLog(),
         safetyLog: SafetyLog = SafetyLog()
     ) {
         self.plane = plane
+        self.powerObserver = powerObserver
 
         // Built as locals and then handed round, because each is read by several mechanisms
         // and written by one, and because a stored property cannot be read while the rest of
@@ -233,6 +252,14 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         leaseExpirySupervisor = LeaseExpirySupervisor(authority: leases, log: leaseLog)
 
         authority = SupervisedFanAuthority(reading: reading, leases: leases, log: log)
+
+        // § 4, at ADR 0007's level 4 and through `SafetyActorWriter` like every other
+        // ungoverned actor. It is handed the lease core and a writer and **no supervisor**,
+        // which is decision A5's "neither event stops or starts a supervisor" as a property
+        // of the graph rather than a rule about a method body.
+        powerResponder = SystemPowerResponder(
+            leases: leases, writer: SafetyActorWriter(plane: plane, level: .sleepWake),
+            clock: clock, acknowledgementBudget: acknowledgementBudget, log: safetyLog)
     }
 
     // MARK: - Bring-up
@@ -255,6 +282,12 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     ///    method that looks like it does would be worse than a marker that says it does not.
     /// 3. **Start the supervisors.** § 3 first: it is the higher-precedence actor, and its
     ///    first cycle is what establishes whether this machine can be seen at all.
+    /// 4. **Hear the system's power events** — `#167`, E5.4e. Last, because § 4's first act
+    ///    on a `.willSleep` is to drop every lease and restore, and both need the registries
+    ///    bound; and because a sleep arriving before the supervisors are running would leave
+    ///    the handback unwatched by § 5. It is also the one step allowed to fail and carry
+    ///    on: a helper that cannot hear the system still has § 1's TTL, which is the backstop
+    ///    § 4 was always measured against.
     ///
     /// A1 states the property this buys: *"an advertised Mach service is a client that can
     /// acquire a lease over a fan whose reconciliation restore is still in flight."*
@@ -277,6 +310,37 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         await thermalSupervisor.start()
         await reclamationSupervisor.start()
         await leaseExpirySupervisor.start()
+
+        observeSystemPower()
+    }
+
+    /// Points § 4 at the system, if this graph was given something to hear it through.
+    ///
+    /// Synchronous, because `SystemPowerObserving.observe(_:)` registers and returns —
+    /// nothing is awaited and nothing is written here. What is stored is a closure, and the
+    /// closure's whole body is one `await` of `SystemPowerResponder.respond(to:)`.
+    ///
+    /// **A failure is logged and swallowed, deliberately.** Every other bring-up step is a
+    /// precondition of serving clients — decision A1's rule that a hung bring-up serves
+    /// nothing is the fail-safe direction — and this one is not: § 4 is an *improvement* on
+    /// the TTL, not a replacement for it, so a daemon that cannot register for power events
+    /// is strictly better running than not. The `.fault` line says which of the two states
+    /// this process is in.
+    ///
+    /// Its own method rather than four lines inside `bringUp()` so that a § 4 test can
+    /// install the observer without also starting three loops that would read the same
+    /// scripted firmware underneath its assertions — the same reason
+    /// `bindSafetyRegistries()` is its own method.
+    func observeSystemPower() {
+        guard let powerObserver else { return }
+        let responder = powerResponder
+        do {
+            try powerObserver.observe { notification in
+                await responder.respond(to: notification)
+            }
+        } catch {
+            powerResponder.couldNotObserve(error)
+        }
     }
 
     /// Closes the one circular edge in the graph: the restorer learns which registries to
@@ -331,6 +395,7 @@ extension HelperComposition where Plane == SMCFanControlPlane {
             plane: plane,
             snapshotProvider: scheduler.snapshotReader,
             criticalSensors: CriticalSensorSet.resolve(for: .current()),
+            powerObserver: IOKitSystemPowerObserver(),
             log: log)
     }
 }
