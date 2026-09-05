@@ -13,9 +13,9 @@ import Foundation
 ///
 /// - `FanEnumerating` — which fans exist.
 /// - `FanRestoring` — put them back on automatic.
-/// - `CriticalTemperatureSensing` — **can the mechanism that protects a leased fan see
-///   anything at all**, asked once per grant. This one is a real read, and on the
-///   production conformer a real hardware round trip.
+/// - `SightednessProving` — **can the mechanism that protects a leased fan see anything at
+///   all**, asked once per grant. This one can cost a real hardware round trip, and since
+///   [#134](https://github.com/blamechris/Aeolus/issues/134) usually does not.
 ///
 /// The third arrived with #124 and is the only one that reads. It is worth stating plainly
 /// here, because `acquireLease`'s `// ---- No await below this line ----` marker can only be
@@ -24,12 +24,21 @@ import Foundation
 /// sensor, or write a value" and named only two dependencies, which would have hidden the
 /// slowest of the three from exactly that analysis.
 ///
+/// It was `CriticalTemperatureSensing` until #134, and the swap is not a rename. A read is
+/// still what happens when there is no fresh evidence; what changed is that the grant path
+/// asks *"can § 3 see"* rather than *"read the curated set now"*, and § 3's own cycle is the
+/// authoritative answer to the first.
+/// [ADR 0010](../../../docs/ADR/0010-coalesced-supervisor-reads.md) records why, and
+/// `SightednessProving` explains why handing this type the cycle's telemetry no longer
+/// compiles.
+///
 /// **Still no write of any kind** — `SMCConnection.write` is `package`-scoped and still
 /// throws, and no write selector exists anywhere in `Sources/`.
 ///
 /// The split keeps this fully testable with no hardware. It no longer keeps it free of the
-/// mock SMC: `LeaseFixture.authority` defaults `telemetry:` to a `CuratedCriticalTemperatures`
-/// over `ScriptedControlPlane`, so every lease test now runs against the scripted firmware.
+/// mock SMC: `LeaseFixture.authority` defaults `telemetry:` to a `CriticalTemperatureCache`
+/// over a `CuratedCriticalTemperatures` over `ScriptedControlPlane`, so every lease test now
+/// runs against the scripted firmware through the shipped cache.
 /// That is deliberate — a hand-rolled telemetry double would answer "sighted" without the
 /// curated key list or the plausibility gate ever running — and it means emptying
 /// `CriticalSensorSet.mac16x5` turns the lease suite red, which is a coupling worth knowing
@@ -77,9 +86,9 @@ actor LeaseAuthority {
     /// synchronous, and `acquireLease` for why it is consulted before anything else.
     private let writeCapability: any FanWriteCapabilityReporting
     /// The third — and, by design, last — thing this type needs of the machine. See
-    /// `CriticalTemperatureSensing` for why it is its own role rather than a method on
-    /// either of the two above.
-    private let telemetry: any CriticalTemperatureSensing
+    /// `SightednessProving` for why it is its own role rather than a method on either of the
+    /// two above, and why it is deliberately **not** the role § 3's own cycle holds.
+    private let telemetry: any SightednessProving
     /// The one bit that says `docs/SAFETY.md` § 3 is holding. Read at grant time; set by
     /// `ThermalEmergency`, which this type deliberately holds no reference to — see
     /// `ThermalEmergencyLatch` for why the latch is its own type.
@@ -123,7 +132,7 @@ actor LeaseAuthority {
         enumeration: some FanEnumerating,
         restorer: some FanRestoring,
         writeCapability: some FanWriteCapabilityReporting,
-        telemetry: some CriticalTemperatureSensing,
+        telemetry: some SightednessProving,
         thermalEmergency: ThermalEmergencyLatch,
         clock: some MonotonicClock = SystemMonotonicClock(),
         wallClock: @escaping @Sendable () -> Date = Date.init,
@@ -151,7 +160,7 @@ actor LeaseAuthority {
     ///    is the only refusal here that is a fact about the *executable* rather than about
     ///    the request or the machine. Nothing a client sends and nothing the SMC says can
     ///    change it, so every other answer given ahead of it invites a retry that can never
-    ///    succeed — and one of those answers, `noThermalTelemetry`, costs a real 34-key
+    ///    succeed — and one of those answers, `noThermalTelemetry`, can cost a real 34-key
     ///    hardware read to produce. See `refuseIfWritePathNotBuilt`.
     /// 1. **Self-renewal is refused next**, before any work is done for a request that
     ///    cannot be granted whatever the machine says.
@@ -422,8 +431,11 @@ actor LeaseAuthority {
     ///
     /// It also closes a window the lease core cannot close from its own side. The latch is
     /// a *different actor*, so `refuseIfThermalEmergencyActive` reads it across a hop and
-    /// then awaits `refuseIfBlind`'s real 34-key SMC read before the straight-line region
-    /// begins — the emergency can engage during that read, and the grant proceeds. No
+    /// then awaits `refuseIfBlind`'s sightedness proof before the straight-line region
+    /// begins — the emergency can engage during that hop, and the grant proceeds. #134
+    /// narrowed the window without closing it: the proof is usually served from § 3's own
+    /// last reading now rather than from a fresh 34-key read, so it is an actor hop rather
+    /// than a hardware round trip, and a hop is still a window. No
     /// re-check below the marker can fix that, because the hop back is itself a window
     /// ([#95](https://github.com/blamechris/Aeolus/issues/95) is the same shape). What
     /// closes it is the emergency taking back whatever it finds, every cycle it holds.
@@ -506,7 +518,9 @@ actor LeaseAuthority {
     /// **Synchronous, and first in `acquireLease`.** Both halves are the point.
     ///
     /// *First*, because this is the only refusal in the method that no client and no machine
-    /// can change. `refuseIfBlind` costs a real 34-key `.supervisor` read, so ordering it
+    /// can change. `refuseIfBlind` can cost a real 34-key `.supervisor` read — it does
+    /// whenever § 3's last reading has aged out, and always on a helper whose supervisor is
+    /// not running — so ordering it
     /// ahead of this one would spend a hardware round trip to produce an answer about the
     /// *sensors* for a request that was never going to be granted whatever they said — and a
     /// client told `noThermalTelemetry` reasonably retries when the machine recovers, into a
@@ -537,9 +551,21 @@ actor LeaseAuthority {
     /// [ADR 0007](../../../docs/ADR/0007-safety-composition.md) accepts as a *backstop*
     /// and nowhere accepts as the whole mechanism.
     ///
+    /// ## What it costs, since #134
+    ///
+    /// Not a read per call. `SightednessProving` is answered by `CriticalTemperatureCache`,
+    /// which serves § 3's own most recent reading while it is less than one cycle period
+    /// old and coalesces concurrent callers onto a single read when it is not — so a client
+    /// retrying `acquireLease` in a tight loop can no longer queue an unbounded number of
+    /// `.supervisor` turns ahead of the cycle that would take its fans back. A cold cache,
+    /// or a helper whose thermal supervisor is not running, still costs one real 34-key read
+    /// per grant. [ADR 0010](../../../docs/ADR/0010-coalesced-supervisor-reads.md) records
+    /// why that staleness is exact rather than tolerated: this method asks whether § 3 can
+    /// see, and § 3's own cycle is the authoritative answer to that question.
+    ///
     /// ## Why it sits here in the order
     ///
-    /// It is above the straight-line region because it suspends, and it must be: the read
+    /// It is above the straight-line region because it suspends, and it must be: the proof
     /// is the point. That places it ahead of the concurrent-lease and mid-handback
     /// refusals, so a client asking during blindness is told about the blindness even when
     /// another client holds the fans. Both facts are true and this is the one worth
@@ -575,7 +601,7 @@ actor LeaseAuthority {
     /// a state that is not the one you are in.
     private func refuseIfBlind(_ connection: ConnectionID) async throws {
         do {
-            _ = try await telemetry.readCriticalTemperatures()
+            _ = try await telemetry.sighting()
         } catch let cancellation as CancellationError {
             throw cancellation
         } catch {

@@ -53,6 +53,18 @@ struct LeaseTelemetryGateTests {
     ///
     /// `leaseHeldByAnotherClient` invites "wait for them to finish", which is wrong advice
     /// on a machine where nobody can be granted anything.
+    ///
+    /// ## The clock advance is part of the assertion, not scaffolding
+    ///
+    /// Since [#134](https://github.com/blamechris/Aeolus/issues/134) the grant path proves
+    /// sightedness from § 3's most recent reading, so the *first* grant's own reading is
+    /// still unexpired when the second arrives and a machine that goes blind in between is
+    /// answered from it. That is the staleness
+    /// [ADR 0010](../../docs/ADR/0010-coalesced-supervisor-reads.md) accepts and bounds:
+    /// **one cycle period, which is the granularity at which blindness is detected at all.**
+    /// Advancing past `CriticalTemperatureCache.defaultMaxAge` is what makes this a test of
+    /// the ordering rather than of the bound — `aStaleSightingIsNotServed` in
+    /// `CriticalTemperatureCacheTests` owns the bound itself.
     @Test("Blindness is reported ahead of another client's lease")
     func blindnessOutranksTheConcurrentLeaseRefusal() async throws {
         let plane = ScriptedControlPlane(
@@ -61,13 +73,19 @@ struct LeaseTelemetryGateTests {
                 .nominal(temperatures: LeaseFixture.nominalDieTemperatures),
                 .blind(),
             ])
+        let clock = TestClock()
         let authority = LeaseFixture.authority(
-            telemetry: CuratedCriticalTemperatures(plane: plane, set: .mac16x5))
+            telemetry: LeaseFixture.cache(over: plane, clock: clock), clock: clock)
 
         _ = try await authority.acquireLease(LeaseFixture.request(), from: ConnectionID())
         #expect(await authority.leaseCount == 1)
 
         await plane.advance()
+        // A § 3 cycle period, named from the supervisor rather than from the cache's own
+        // bound: advancing by the constant under test is how a staleness test stops being
+        // able to fail. See `CriticalTemperatureCacheTests.aStaleSightingIsNotServed`.
+        clock.advance(
+            by: ThermalSupervisor<ScriptedControlPlane>.defaultInterval + .milliseconds(1))
 
         await #expect(
             throws: AeolusXPCFault.manualControlUnavailable(reason: .noThermalTelemetry)
@@ -92,9 +110,11 @@ struct LeaseTelemetryGateTests {
                 .nominal(temperatures: LeaseFixture.nominalDieTemperatures),
                 .blind(),
             ])
+        // One clock for the TTL and for the sighting's age bound, as the daemon has: the
+        // advance below is past both, so the lapsed sweep and a real re-read both happen.
         let authority = LeaseFixture.authority(
             restorer: restorer,
-            telemetry: CuratedCriticalTemperatures(plane: plane, set: .mac16x5),
+            telemetry: LeaseFixture.cache(over: plane, clock: clock),
             clock: clock)
 
         _ = try await authority.acquireLease(
@@ -125,7 +145,8 @@ struct LeaseTelemetryGateTests {
     /// Delete the `catch let cancellation as CancellationError` clause and this goes red.
     @Test("A cancelled telemetry read propagates rather than becoming a blindness refusal")
     func cancellationIsNotBlindness() async throws {
-        let authority = LeaseFixture.authority(telemetry: ThrowingTelemetry(CancellationError()))
+        let authority = LeaseFixture.authority(
+            telemetry: CriticalTemperatureCache(source: ThrowingTelemetry(CancellationError())))
 
         await #expect(throws: CancellationError.self) {
             _ = try await authority.acquireLease(LeaseFixture.request(), from: ConnectionID())
@@ -138,7 +159,9 @@ struct LeaseTelemetryGateTests {
     @Test("Any other telemetry failure is still a blindness refusal")
     func otherFailuresAreStillBlindness() async throws {
         let authority = LeaseFixture.authority(
-            telemetry: ThrowingTelemetry(FanControlPlaneError.readFailed(detail: "stale port")))
+            telemetry: CriticalTemperatureCache(
+                source: ThrowingTelemetry(
+                    FanControlPlaneError.readFailed(detail: "stale port"))))
 
         await #expect(
             throws: AeolusXPCFault.manualControlUnavailable(reason: .noThermalTelemetry)

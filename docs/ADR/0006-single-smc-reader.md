@@ -148,6 +148,18 @@ end up disagreeing about when "now" was.
   version of this reconciliation said "46 turns × one overtake each is exactly the 49 cycles
   observed", which is both the wrong turn count and not equal to 49.
 
+- **The two readers became four, and only one of them was paced by the helper.**
+  [#134](https://github.com/blamechris/Aeolus/issues/134) is the sequel to the bullet above:
+  `SMCReadScheduler` is FIFO *within* `.supervisor`, and by E5.4 four mechanisms take
+  supervisor turns — § 3's cycle, § 5's watchdog, startup reconciliation, and
+  `LeaseAuthority.refuseIfBlind`, which issues one 34-key read per `acquireLease` at whatever
+  rate a client asks. The single reader this ADR mandates was therefore consumable at will by
+  an unprivileged client, with § 3's cycle queued behind it by pure FIFO.
+  [ADR 0010](0010-coalesced-supervisor-reads.md) settles it: no third priority level — the
+  connection would still be saturated, so the snapshot would starve and this ADR's rule 6
+  argument would fail from the other side — and the grant-time read is coalesced and
+  age-bounded against § 3's own most recent reading instead. Also arbitration *under* this
+  decision rather than a change to it.
 - The app-side client and source switching are **not** built in #72. #72 builds the helper side only;
   this ADR is recorded now because it shapes #72's snapshot semantics (pull-based, `capturedAt`
   stamped, cheap at 1 Hz).

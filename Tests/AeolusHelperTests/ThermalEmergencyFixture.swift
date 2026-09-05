@@ -39,28 +39,56 @@ struct ThermalMachine {
     /// interference behaves exactly as it did before this existed.
     let emergencyTelemetry: InterferingCriticalTemperatures
 
-    /// The same seam on the lease core's blindness check.
+    /// The same seam on the lease core's blindness check — the cache's `source`, since #134.
     ///
     /// Separate from `emergencyTelemetry` because the two reads are the two halves of the
     /// grant-time window `LeaseAuthority.revokeEveryLease(because:)` documents: the latch is
-    /// read, and then a real 34-key read is awaited, and § 3 can engage across it. One shared
+    /// read, and then a sightedness proof is awaited, and § 3 can engage across it. One shared
     /// interferer could not fire inside the lease core's read without also firing inside the
     /// emergency's, which is the cycle the scenario is trying to script.
+    ///
+    /// It fires only when the grant actually reads — a cold or aged-out cache. That is the
+    /// production shape rather than a fixture quirk: after #134 the window exists at its full
+    /// width only when there is nothing fresh to serve, and `InterferingCriticalTemperatures`
+    /// asserts its own `didFire` so a scenario that stopped reaching the read says so
+    /// instead of passing for the wrong reason.
     let leaseTelemetry: InterferingCriticalTemperatures
+
+    /// § 3's most recent reading, written by the cycle and read by the grant path — **one
+    /// instance, as `HelperComposition` builds it**.
+    ///
+    /// Sharing it is what makes the fixture a model of the daemon rather than of a
+    /// convenient arrangement: a cycle run in a test warms the same cache the next grant
+    /// proves sightedness from, exactly as it does in the helper.
+    let sightings: CriticalTemperatureCache
 
     /// Everything § 3 said about itself, with levels. Empty unless a test asked for it.
     let safetyLog = RecordedLog()
+
+    /// The clock the lease core's TTL **and** the sighting cache's age bound are measured
+    /// against.
+    ///
+    /// One clock for both, because they are one timeline: a test that advances it past a
+    /// lease's TTL also ages out the sighting, which is what the daemon does. It never
+    /// advances on its own, so every reading a cycle records stays unexpired until a test
+    /// says otherwise — the ordinary case, since a scenario that wanted staleness would say
+    /// so.
+    let clock: TestClock
 
     /// - Parameters:
     ///   - stages: the scenario. The last stage repeats forever.
     ///   - fans: which fans the machine has, and their firmware state.
     ///   - requestedCeilingCelsius: what a configuration asked § 3's ceiling to be. Left at
     ///     the compiled default unless a test is about the downward-only rule.
+    ///   - clock: the timeline the lease TTL and the sighting cache's age bound share. Only
+    ///     a test that needs one of them to elapse supplies its own.
     init(
         stages: [ScriptedControlPlane.Stage],
         fans: [Int: ScriptedControlPlane.FanCondition] = [0: .nominal, 1: .nominal],
-        requestedCeilingCelsius: Double = ThermalCeiling.cpuCelsius
+        requestedCeilingCelsius: Double = ThermalCeiling.cpuCelsius,
+        clock: TestClock = TestClock()
     ) {
+        self.clock = clock
         plane = ScriptedControlPlane(fans: fans, stages: stages)
         fanConditions = fans
         latch = ThermalEmergencyLatch()
@@ -69,10 +97,13 @@ struct ThermalMachine {
         let curated = CuratedCriticalTemperatures(plane: plane, set: .mac16x5)
         emergencyTelemetry = InterferingCriticalTemperatures(curated)
         leaseTelemetry = InterferingCriticalTemperatures(curated)
+        let sightings = CriticalTemperatureCache(source: leaseTelemetry, clock: clock)
+        self.sightings = sightings
         leases = LeaseFixture.authority(
-            restorer: restorer, telemetry: leaseTelemetry, thermalEmergency: latch)
+            restorer: restorer, telemetry: sightings, thermalEmergency: latch, clock: clock)
         emergency = ThermalEmergency(
             telemetry: emergencyTelemetry,
+            sightings: sightings,
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
             leases: leases,
             latch: latch,

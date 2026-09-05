@@ -20,7 +20,8 @@ import Testing
 /// ## Why the read count is asserted and not only the fault
 ///
 /// A check that is merely *present* can be moved. `LeaseAuthority.acquireLease` reaches
-/// `refuseIfBlind` — a real 34-key `.supervisor` read on the production conformer — three
+/// `refuseIfBlind` — a real 34-key `.supervisor` read on the production conformer, whenever
+/// there is no unexpired sighting to serve, and there is none here — three
 /// statements later, and an edit that put the capability check below it would leave every
 /// assertion about the *fault* green while the daemon spent an SMC round trip per rejected
 /// grant and answered `noThermalTelemetry` on a machine whose sensors are fine. The number of
@@ -50,7 +51,8 @@ struct LeaseWriteCapabilityTests {
         let authority = LeaseFixture.authority(
             enumeration: enumeration,
             writeCapability: plane,
-            telemetry: CuratedCriticalTemperatures(plane: plane, set: .mac16x5))
+            telemetry: CriticalTemperatureCache(
+                source: CuratedCriticalTemperatures(plane: plane, set: .mac16x5)))
 
         await #expect(
             throws: AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
@@ -103,7 +105,8 @@ struct LeaseWriteCapabilityTests {
         let plane = Self.productionPlane(over: provider)
         let authority = LeaseFixture.authority(
             writeCapability: plane,
-            telemetry: CuratedCriticalTemperatures(plane: plane, set: .mac16x5))
+            telemetry: CriticalTemperatureCache(
+                source: CuratedCriticalTemperatures(plane: plane, set: .mac16x5)))
 
         await #expect(
             throws: AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)

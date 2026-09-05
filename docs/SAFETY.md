@@ -270,6 +270,15 @@ what was actually run: `docs/SMC-RESEARCH.md` carries the method, and an earlier
 paragraph described it as a `swift build`, which no measurement in that session was taken
 during. A number in a safety document has to be re-runnable by whoever doubts it.
 
+**A client retrying `acquireLease` cannot delay this cycle without bound.** While the
+override is latched a retry is refused from the latch alone, before any sensor is read;
+while it is not, every grant-time sightedness check within one cycle period is served from
+that cycle's own reading, and concurrent checks share a single read — so at most one
+grant-time read is ever outstanding, and this cycle reaches the SMC connection within four
+turns of asking. The mechanism is
+[ADR 0010](ADR/0010-coalesced-supervisor-reads.md); the arithmetic that made it necessary,
+and the third priority level that was rejected instead, are recorded there.
+
 The sensors the comparison actually uses are curated in code, per machine, and
 `docs/SMC-RESEARCH.md` carries the measurement that separates the two populations — along
 with a third, load-invariant population that is not a temperature at all and would latch the

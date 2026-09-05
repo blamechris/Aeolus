@@ -233,6 +233,79 @@ struct HelperCompositionTests {
             """)
     }
 
+    /// **One** sighting cache, handed to both the grant path and § 3's cycle.
+    ///
+    /// [ADR 0010](../../docs/ADR/0010-coalesced-supervisor-reads.md)'s mechanism is a cache
+    /// the cycle **writes** and the lease core **reads**. Two of them is the same hazard shape
+    /// as two `SMCReadScheduler`s and is quieter: the lease core would prove sightedness from
+    /// a cache no cycle ever wrote, so every `acquireLease` would read the SMC for itself and
+    /// [#134](https://github.com/blamechris/Aeolus/issues/134)'s storm would be back — with
+    /// the coalescing machinery present, tested and bypassed. Nothing at runtime can see it:
+    /// each cache behaves correctly in isolation, `GrantStormTests` composes its own graph,
+    /// and every unit test in `CriticalTemperatureCacheTests` builds exactly one.
+    ///
+    /// Four assertions, because "one is constructed" and "that one reaches both consumers"
+    /// are different edits away from each other. The construction count catches a second
+    /// `CriticalTemperatureCache(` anywhere in `Sources`; the two hand-off assertions catch a
+    /// consumer pointed at a fresh one inline, which keeps the count at one.
+    ///
+    /// The fourth is one layer down and was missing until an adversarial review ran the
+    /// mutation. `HelperComposition.telemetry` claims the grant path reads *"through this same
+    /// instance, memo and all"* — the sharing `CuratedCriticalTemperatures` says its
+    /// `DegradationMemo` collapse depends on. Giving the cache its own
+    /// `CuratedCriticalTemperatures(plane: plane, set: criticalSensors, log: safetyLog)` keeps
+    /// one cache, satisfies both hand-off assertions, and leaves the whole suite green — while
+    /// § 3 and the grant path each log the same partial sensor loss on their own schedule,
+    /// which is the defect this composition was written to end.
+    ///
+    /// The types make the *last* mistake impossible rather than merely detectable: passing
+    /// `telemetry` where `sightings` belongs does not compile, because
+    /// `CuratedCriticalTemperatures` is no `SightednessProving`, and the cycle cannot read from
+    /// the cache it writes to because `CriticalTemperatureRecording` has no `sighting()` — see
+    /// both protocols.
+    ///
+    /// **Mutation A:** construct a second cache — give `ThermalEmergency`
+    /// `sightings: CriticalTemperatureCache(source: telemetry)` inline. Run: red on the count
+    /// and on the emergency's hand-off.
+    /// **Mutation B:** pass the emergency a fresh cache while deleting the shared local. Run:
+    /// red on the hand-off assertions.
+    /// **Mutation C:** give the cache a second `CuratedCriticalTemperatures` of its own. Run:
+    /// red on the curated count, and green on everything else in the repository.
+    @Test("Exactly one sighting cache is constructed, and both consumers are given it")
+    func onlyOneSightingCacheIsEverBuilt() throws {
+        #expect(
+            try Self.constructionSites(of: "CriticalTemperatureCache(")
+                == ["HelperComposition.swift x1"],
+            """
+            § 3's reading is cached in one place or in none. A second cache is a grant path \
+            proving sightedness from a reading no cycle ever wrote, which is #134's storm \
+            with the mechanism present and bypassed.
+            """)
+
+        #expect(
+            try Self.constructionSites(of: "CuratedCriticalTemperatures(")
+                == ["HelperComposition.swift x1"],
+            """
+            the curated critical set is built in one place or in none. A second one is a \
+            second DegradationMemo, so § 3 and the grant path each log the same partial \
+            sensor loss on their own schedule — the collapse HelperComposition.telemetry \
+            claims, one level below where the cache count can see it.
+            """)
+
+        // Bound to `Bool`s before the expectations, for this file's usual reason: `#expect`
+        // prints its operands, and passing the `contains` call directly dumps the whole
+        // composition root into the failure.
+        let source = Self.strippingWhitespace(try Self.compositionSource())
+        let leaseCoreProvesFromTheCache = source.contains("telemetry:sightings")
+        let cycleRecordsIntoTheCache = source.contains("sightings:sightings")
+        #expect(
+            leaseCoreProvesFromTheCache,
+            "the lease core no longer proves sightedness from the cache § 3 writes")
+        #expect(
+            cycleRecordsIntoTheCache,
+            "§ 3's cycle no longer records into the cache the lease core reads")
+    }
+
     /// The Mach service is advertised **after** the safety subsystem is up, and never before.
     ///
     /// #103's decision A1 states the property and the reason in one sentence: *"an advertised
