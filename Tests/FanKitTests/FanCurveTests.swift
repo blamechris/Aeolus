@@ -6,9 +6,18 @@ import Testing
 /// #106: `min`/`max` propagate NaN, and every comparison against NaN is false. A NaN
 /// `hysteresisCelsius` does not raise the falling-temperature margin — it removes it,
 /// silently, exactly the way an unguarded `ThermalCeiling.effective(requested:default:)`
-/// removed a thermal ceiling in #101. The consequence to test is whether the mechanism
-/// still fires, never the stored value in isolation — asserting the value is what let the
-/// `ThermalCeiling` defect survive under test.
+/// removed a thermal ceiling in #101.
+///
+/// The full standard #106 sets — assert the *consequence* (does the mechanism still
+/// fire?), never the stored value in isolation — is what caught the `ThermalCeiling`
+/// defect in #101, where a curve *evaluating* against the margin already existed. This
+/// suite cannot apply it yet: hysteresis *evaluation* is E8b
+/// ([#17](https://github.com/blamechris/Aeolus/issues/17)) and does not exist in this
+/// codebase, so there is no "does the fan still hold" behaviour here to assert against.
+/// What follows guards the stored value's shape — finite, non-negative, falling back to a
+/// real margin rather than a disabled one — so that once E8b's evaluation lands, this
+/// field cannot have been the thing quietly holding a NaN or infinity the whole time.
+/// Re-visit this suite when #17 lands and add the consequence assertion then.
 @Suite("FanCurve.hysteresisCelsius refuses non-finite and negative values")
 struct FanCurveHysteresisTests {
 
