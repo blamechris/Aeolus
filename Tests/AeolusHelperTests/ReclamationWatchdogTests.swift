@@ -99,6 +99,40 @@ struct ReclamationWatchdogTests {
         #expect(await machine.didRestore(fan: 0) == false)
     }
 
+    /// **The registration contract, asserted from the side that is safe.**
+    ///
+    /// `manualControlEngaged(_:)` is called at the same point as the `F<n>Md` write, and its
+    /// doc comment now says which side: after. This is the window that ordering leaves open
+    /// — the fan is off automatic control and registered here, but no target has been
+    /// commanded yet, because E3 writes `F<n>Tg` next. A supervisor cycle can land in it, and
+    /// what it must do is nothing at all.
+    ///
+    /// The lease assertion is the point. `finaliseRelease(fanAt:because:)` does not revoke
+    /// one lease, it revokes **every** lease on the machine, so a fan judged reclaimed inside
+    /// this window costs a client the control it was granted milliseconds earlier — and the
+    /// log blames the operating system for it. The *other* ordering produces exactly that,
+    /// and `ReclamationWatchdogRecoveryTests.aFanWithNoCommandedTargetIsRestored` is that
+    /// same registry entry read as `.automatic` instead.
+    ///
+    /// Mutation-checked: making `primaryDivergence(of:against:)` treat an absent commanded
+    /// target as divergence — `guard let commanded else { return nil }` becoming
+    /// `guard let commanded else { return .modeReclaimed }` — turns all four assertions red.
+    @Test("A fan registered before its first target keeps its lease through a cycle")
+    func aFanRegisteredBeforeItsFirstTargetKeepsItsLease() async throws {
+        let machine = ReclamationMachine(fans: [0: .held(at: 2_400)])
+        let lease = try await machine.lease(fans: [0])
+        try await machine.holdWithoutCommanding(fan: 0)
+
+        await machine.watchdog.cycle()
+
+        #expect(
+            await machine.leases.activeLease()?.id == lease.id,
+            "registering a fan cost the client the lease it had just been granted")
+        #expect(await machine.watchdog.fansUnderManualControl == [0])
+        #expect(await machine.didRestore(fan: 0) == false)
+        #expect(await machine.ledger.reclaimedFans.isEmpty)
+    }
+
     /// The dwell is real: the shortfall is present from the first cycle and reports on the
     /// fifth.
     ///

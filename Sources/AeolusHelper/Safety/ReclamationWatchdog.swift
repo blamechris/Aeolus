@@ -178,6 +178,31 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// plane, once it exists — at the same point it calls
     /// `ThermalEmergency.manualControlEngaged(_:)`.
     ///
+    /// ## The ordering is normative: call this **after** the `F<n>Md` write has landed
+    ///
+    /// "At the same point" says nothing about which side, and only one of the two sides
+    /// works. E3 will be written against this comment, so the constraint is stated here
+    /// rather than discovered later.
+    ///
+    /// Registering *before* the mode write is not a harmless reordering. This mechanism runs
+    /// on its own 1 Hz loop, so a `cycle()` can land in the window between the registration
+    /// and the write. What it reads there is `mode == .automatic` on a fan with nothing
+    /// commanded, which is `.modeReclaimed` — the strongest primary signal there is — and it
+    /// falls straight through `diverged(_:fanAt:)`'s "nothing to re-assert" branch to
+    /// `finaliseRelease(fanAt:because:)` with `.systemReclaimed`: the fan restored, **every
+    /// lease on the machine revoked**, and a `.fault` line blaming the operating system —
+    /// milliseconds after a client was granted control it never got to use.
+    /// `ReclamationWatchdogRecoveryTests.aFanWithNoCommandedTargetIsRestored` and
+    /// `fallingBackClearsTheWholeRegistry` are that path, arrived at on purpose.
+    ///
+    /// The window on the far side of the write is safe, and is the reason a grace flag on
+    /// `HeldFan` is not needed to make it safe. Between the mode write and the first
+    /// `commandedTarget(_:)` a cycle reads manual with no commanded target, and
+    /// `primaryDivergence(of:against:)`'s `guard let commanded else { return nil }` is what
+    /// makes that a converged cycle rather than a divergence.
+    /// `ReclamationWatchdogTests.aFanRegisteredBeforeItsFirstTargetKeepsItsLease` asserts it,
+    /// so the ordering this comment mandates is covered rather than merely recommended.
+    ///
     /// Clears any reclamation recorded against this fan: something has just taken it off
     /// automatic control, so the ledger's claim that the system holds it is now false, and
     /// a stale `true` there would report a fan as lost that a client is about to command.
