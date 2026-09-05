@@ -109,7 +109,7 @@ this document:
   clearing path; § 7's panic restore is the first caller that will need it.
 
 A helper restart is the intended route out, and § 6's reconciliation is what would make that
-route safe — **not built, #103 (E5.4b, #164)**, on the same terms as the `KeepAlive`
+route safe. **Not built — #103 (E5.4b, #164)**, on the same terms as the `KeepAlive`
 paragraph in § 6. Until it lands there is no route out at all: a fan this refusal names stays
 named for the life of the process, and a restart hands the next process a fan whose mode
 nothing has read. `docs/RECOVERY.md` is the user-facing version.
