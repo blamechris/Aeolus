@@ -100,6 +100,15 @@ actor LeaseAuthority {
     /// Fans a restorer gave up on: the attempts are spent and the firmware never took the
     /// write. The durable half of the same ledger `releasing` holds the transient half of —
     /// see `BoundedFanRestorer` for the bound, and #110 for why there is one.
+    ///
+    /// **Append-only, and nothing clears it.** A fan that enters stays refused for the life
+    /// of the helper process. That is #110's decided outcome and is correct while nothing in
+    /// `Sources/` restores a fan outside lease teardown — a clearing path would be code no
+    /// test could drive. It stops being correct as soon as one exists, and § 7's panic path
+    /// is the first: a fan whose mode write is accepted on that pass is still refused on the
+    /// strength of an older failure. [#189](https://github.com/blamechris/Aeolus/issues/189)
+    /// owns that, including the harder half — whether a write that merely did not throw is
+    /// enough to clear a refusal set by three that did.
     private var restoreAbandoned: Set<Int> = []
 
     init(
@@ -175,11 +184,17 @@ actor LeaseAuthority {
         try AeolusXPCValidation.validateFanIndices(
             request.fanIndices, enumeratedFanIndices: enumerated)
         try refuseIfInvalidated(connection)
-        // Refusals in order of how long they last, most durable first, for the reason the
-        // next comment gives at length. This one outlasts every other: a fan whose handback
-        // was given up on is not coming back on its own, so a client told anything else
-        // retries — past the other client's release, past the handback window — into this
-        // refusal in the end.
+        // The three refusals in this straight-line region are ordered by how long they last,
+        // most durable first, for the reason the next comment gives at length. This one is
+        // the most durable *of the three*: a fan whose handback was given up on is not coming
+        // back on its own, so a client told either of the others retries — past the other
+        // client's release, past the handback window — into this refusal in the end.
+        //
+        // It is not the first refusal in the method, and that is not an inconsistency.
+        // `refuseIfThermalEmergencyActive` and `refuseIfBlind` run above, both transient,
+        // because both need a suspension point and everything here is below every await by
+        // construction — the same "a consequence rather than a choice" `refuseIfBlind`
+        // documents about its own position relative to `validateFanIndices`.
         let abandoned = request.fanIndices.filter { restoreAbandoned.contains($0) }
         guard abandoned.isEmpty else {
             log.refusedAbandonedHandback(connection, fans: Set(abandoned))

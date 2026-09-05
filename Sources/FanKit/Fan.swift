@@ -137,9 +137,16 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// Manual control is refused because the helper no longer knows what mode the fan
         /// is in: it asked for automatic, was refused, and stopped asking. Granting a lease
         /// over it would be `CLAUDE.md` rule 6 — claiming control of a fan nothing has
-        /// confirmed is listening. The fan is not unattended: the system's own thermal
-        /// management is what a firmware that refused the write left it under, and
-        /// `docs/SAFETY.md` § 5's watchdog is still watching it.
+        /// confirmed is listening.
+        ///
+        /// The fan may still be pinned at a speed Aeolus is no longer tracking, and nothing
+        /// is watching it: every path that reaches this state clears `docs/SAFETY.md` § 5's
+        /// registry — `ReclamationWatchdog.finaliseRelease(fanAt:because:)` empties it before
+        /// it revokes, and `manualControlReleased(fanAt:)` drops the entry — so § 5 has no
+        /// entry left to cycle over. That gap is
+        /// [#181](https://github.com/blamechris/Aeolus/issues/181)'s, which owns
+        /// re-registration. Until it lands, the refusal is for the life of the helper
+        /// process and `docs/RECOVERY.md` is the user's route out.
         case restoreToAutomaticFailed
         /// The helper cannot currently see any critical temperature, so the mechanism
         /// that would protect a leased fan is blind.

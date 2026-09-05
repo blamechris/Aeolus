@@ -66,6 +66,12 @@ struct LeaseLog: Sendable {
     /// that turned out not to be true. Correcting the record is exactly what this level is
     /// for — a user asking why a fan can no longer be controlled has this line as the
     /// answer, and nothing else in the log says it.
+    ///
+    /// **It states the helper's uncertainty rather than a destination.** An earlier version
+    /// closed by asserting the fan was under the system's own thermal management — the very
+    /// state the write that just failed was trying to establish, and a claim `CLAUDE.md`
+    /// rule 6 forbids. `SafetyLog.reclamationFanMayStillBePinned` already says the true
+    /// thing about the identical event next door, so the two now agree.
     func abandonedHandback(
         fanAt index: Int, because cause: FanRestoreCause, after attempts: Int, error: any Error
     ) {
@@ -74,8 +80,9 @@ struct LeaseLog: Sendable {
             Fan \(index, privacy: .public) could not be returned to automatic control \
             (\(Self.describe(cause), privacy: .public)) after \(attempts, privacy: .public) \
             attempts: \(String(describing: error), privacy: .public). Aeolus has stopped \
-            trying and will refuse manual control of this fan. The system's own thermal \
-            management is what the firmware left it under.
+            trying and will refuse manual control of this fan. It may still be under manual \
+            control at a speed Aeolus is no longer tracking. Check the fan physically, and \
+            see docs/RECOVERY.md.
             """
         )
     }

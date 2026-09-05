@@ -51,14 +51,23 @@ import Foundation
 ///
 /// ## Giving up is reported, never swallowed
 ///
-/// The returned set is the fans this call could not put back. `LeaseAuthority` keeps them,
-/// and refuses a later lease over one with
+/// The returned set is the fans whose mode write **threw** on every attempt. `LeaseAuthority`
+/// keeps them, and refuses a later lease over one with
 /// `ManualControlAvailability.Reason.restoreToAutomaticFailed` — durable, and deliberately
 /// distinct from the transient `.releaseInProgress`, so a client can tell *retrying* from
-/// *gave up*. Returning an empty set from a restore that failed is the inversion this whole
-/// subsystem exists to prevent: it converts "the fans are still pinned" into "the teardown
+/// *gave up*. Returning an empty set from a restore that threw is the inversion this whole
+/// subsystem exists to prevent: it converts "the write was refused" into "the teardown
 /// completed", and the next client is then handed a lease over a fan in a mode nothing has
 /// confirmed. `BoundedFanRestorer` is the shipped implementation of all of this.
+///
+/// **The throwing half is the whole of it, and the scope is worth stating precisely.** A
+/// firmware that accepts the write and then discards it is not detectable here and is not
+/// claimed to be: this seam sees a return, not a read-back. An empty set therefore means
+/// "nothing was refused", never "every fan is confirmed automatic". Silent reversion is
+/// `docs/SAFETY.md` § 5's job — written-versus-read-back on the watchdog's own cycle — and a
+/// read-back inside the restore itself would need the write path E3/E4 have not shipped.
+/// Widening this contract to promise confirmation before that exists would be a guarantee
+/// nothing in the build can keep.
 ///
 /// ## Its relationship to `FanControlPlane`
 ///
@@ -94,8 +103,10 @@ protocol FanRestoring: Sendable {
     /// whatever its tests say, because its caller is a teardown path with no timeout of its
     /// own.
     ///
-    /// - Returns: the subset of `fans` this call gave up on — empty when every fan is back
-    ///   under the system's thermal management. Never the fans it restored.
+    /// - Returns: the subset of `fans` whose mode write was refused on every attempt — empty
+    ///   when no write threw. Never the fans it restored, and never a claim that a fan is
+    ///   confirmed automatic: see "Giving up is reported, never swallowed" for why a write
+    ///   the firmware accepts and discards is § 5's to catch rather than this seam's.
     func restoreToAutomatic(fans: Set<Int>, because cause: FanRestoreCause) async -> Set<Int>
 }
 
