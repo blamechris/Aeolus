@@ -537,8 +537,8 @@ extension HelperComposition where Plane == SMCFanControlPlane {
             plane: plane,
             snapshotProvider: scheduler.snapshotReader,
             criticalSensors: CriticalSensorSet.resolve(for: .current()),
-            powerObserver: IOKitSystemPowerObserver(),
             connectionHealth: connectionHealth,
+            powerObserver: IOKitSystemPowerObserver(),
             log: log,
             teardown: teardown)
     }
