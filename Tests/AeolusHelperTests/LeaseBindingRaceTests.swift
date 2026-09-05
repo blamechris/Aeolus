@@ -33,7 +33,16 @@ import Testing
 /// refuses with different text. Asserting the authority's text is what distinguishes "the
 /// new guard fired" from "the old gate happened to catch it", and without it these tests
 /// would pass against an implementation with no authority-side guard at all.
-@Suite("Binding a lease to a dead connection")
+/// `tombstoneIsRecordedBeforeTheReleaseSuspends` awaits `AsyncSignal.wait()`: during
+/// mutation testing of the lease core, deleting a guard made this suite hang indefinitely
+/// instead of failing, because the restore it was waiting on never happened
+/// ([#109](https://github.com/blamechris/Aeolus/issues/109)). The assertion that follows
+/// `wait()` is what is load-bearing — it is what names the actual defect. `.timeLimit` is
+/// the backstop for when that assertion never gets to run at all, the same one
+/// `AnonymousListenerTests` and `SMCReadSchedulerTests` already carry; `AsyncSignal.wait()`
+/// is cancellation-aware precisely so that backstop's cancellation reaches a waiter parked
+/// on a continuation, rather than recording its issue while the process sits hung on one.
+@Suite("Binding a lease to a dead connection", .timeLimit(.minutes(1)))
 struct LeaseBindingRaceTests {
 
     /// What the authority says when a request's own connection died mid-flight.
@@ -73,7 +82,7 @@ struct LeaseBindingRaceTests {
 
         // The acquisition is now suspended inside the enumeration, which is what makes this
         // the in-flight ordering rather than the arrival one.
-        await gate.entered.wait()
+        try await gate.entered.wait()
         await session.invalidate()
         await gate.release.signal()
 
@@ -138,13 +147,13 @@ struct LeaseBindingRaceTests {
                 return error
             }
         }
-        await gate.entered.wait()
+        try await gate.entered.wait()
 
         let invalidating = Task { await authority.connectionDidInvalidate(connection) }
         // The invalidation is now suspended inside the restore, having already recorded its
         // tombstone and emptied the table — or, if the ordering were wrong, having recorded
         // nothing yet.
-        await restoring.wait()
+        try await restoring.wait()
 
         await gate.release.signal()
         let refusal = await second.value

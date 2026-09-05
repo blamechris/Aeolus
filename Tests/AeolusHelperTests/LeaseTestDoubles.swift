@@ -12,10 +12,25 @@ import Foundation
 /// merely likely. A test that had to signal *after* the waiter arrived would be racing the
 /// scheduler to set up a race, which is how a concurrency test ends up green for reasons
 /// nobody chose.
+///
+/// `wait()` is cancellation-aware: a suspended waiter is parked on a
+/// `CheckedContinuation`, which nothing but this type will ever resume, so the assertion
+/// a test makes after awaiting `wait()` is what is load-bearing — `signal()` calling on
+/// time is what a correct implementation does, and a missing call is exactly the bug a
+/// test here exists to catch. `.timeLimit` on the enclosing `@Suite` is the *backstop*
+/// for when that assertion never gets the chance to run at all: it cancels the test's
+/// task, and `withTaskCancellationHandler` is what turns that cancellation into a resumed
+/// continuation instead of a continuation nothing will ever touch again. Without it, a
+/// suite's `.timeLimit` fires and records its issue while the awaiting task — and the
+/// `swift test` process hosting it — sits parked on the continuation forever, which is a
+/// killed test in the report and a hung process on the machine, not the "named, red
+/// failure" `.timeLimit` is supposed to deliver.
 actor AsyncSignal {
 
+    private typealias Waiter = CheckedContinuation<Void, any Error>
+
     private var isSignalled = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [Waiter] = []
 
     func signal() {
         guard !isSignalled else { return }
@@ -25,9 +40,29 @@ actor AsyncSignal {
         for waiter in pending { waiter.resume() }
     }
 
-    func wait() async {
+    /// Resumes every still-parked waiter with `CancellationError`, without marking the
+    /// signal itself as fired. This is the cancellation handler `wait()` installs — it is
+    /// what lets a `.timeLimit`'s `cancelAll()` actually unblock a suspended `wait()`
+    /// instead of leaving it on a continuation the time limit has no other way to reach.
+    private func cancelWaiters() {
+        let pending = waiters
+        waiters = []
+        for waiter in pending { waiter.resume(throwing: CancellationError()) }
+    }
+
+    func wait() async throws {
         guard !isSignalled else { return }
-        await withCheckedContinuation { waiters.append($0) }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: Waiter) in
+                if isSignalled {
+                    continuation.resume()
+                } else {
+                    waiters.append(continuation)
+                }
+            }
+        } onCancel: {
+            Task { await self.cancelWaiters() }
+        }
     }
 }
 
@@ -143,7 +178,7 @@ actor ScriptedFanEnumeration: FanEnumerating {
         let gate = gates.isEmpty ? nil : gates.removeFirst()
         if let gate {
             await gate.entered.signal()
-            await gate.release.wait()
+            try await gate.release.wait()
         }
         if let failure { throw failure }
         return indices
@@ -175,7 +210,12 @@ actor RecordingFanRestorer: FanRestoring {
     func restoreToAutomatic(fans: Set<Int>, because cause: FanRestoreCause) async {
         restores.append(Restore(fans: fans, cause: cause))
         if let entered { await entered.signal() }
-        if let release { await release.wait() }
+        // `restoreToAutomatic` is not `throws` — `FanRestoring` is production-frozen — so
+        // a cancelled `release.wait()` is swallowed here rather than propagated. That is
+        // still correct: the point of making `wait()` cancellation-aware is to let a
+        // `.timeLimit` unblock the *awaiting test*, not to make this double report the
+        // cancellation itself.
+        if let release { try? await release.wait() }
     }
 
     var causes: [FanRestoreCause] { restores.map(\.cause) }

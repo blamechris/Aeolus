@@ -187,10 +187,21 @@ struct EnvelopeRefusingSensing: FanStateSensing {
 /// feeding a gate wedges the moment the implementation issues one fewer read than it
 /// expected — which is the failure `yieldUntil` exists to convert into a red assertion, and
 /// which is worth not writing in the first place.
+///
+/// The gate's continuation is cancellation-aware. `itExaminesFansSequentially` never awaits
+/// `cycle()`'s task directly — it uses `finished(_:_:)`, whose bounded poll-and-cancel is
+/// what is load-bearing when `open()` never comes — but that cancellation only *finishes*
+/// the abandoned task, rather than leaving it parked here forever, because
+/// `withTaskCancellationHandler` turns `cycle()`'s task being cancelled into this
+/// continuation resuming with `CancellationError`. Without it, `finished(_:_:)` still
+/// returns and the test still fails on time, but the cancelled task itself — and the actor
+/// it is suspended inside — would stay parked for the rest of the process's life.
 actor GatedFanStateSensing: FanStateSensing {
 
+    private typealias Waiter = CheckedContinuation<Void, any Error>
+
     private let plane: ScriptedControlPlane
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [Waiter] = []
     private var isOpen = false
 
     /// Which fans have been asked about, in order.
@@ -212,12 +223,33 @@ actor GatedFanStateSensing: FanStateSensing {
         for waiter in waiting { waiter.resume() }
     }
 
+    /// Resumes every still-parked read with `CancellationError`, without opening the gate.
+    /// This is the cancellation handler `readControlState(ofFan:)` installs, so that
+    /// cancelling the task it runs in — whatever cancels it, `finished(_:_:)`'s explicit
+    /// `task.cancel()` included — reaches a read parked here waiting on `open()` instead of
+    /// leaving it suspended for good.
+    private func cancelWaiters() {
+        let pending = waiters
+        waiters = []
+        for waiter in pending { waiter.resume(throwing: CancellationError()) }
+    }
+
     func readControlState(ofFan index: Int) async throws -> FanControlState {
         controlStateRequests.append(index)
         outstanding += 1
         peakOutstanding = max(peakOutstanding, outstanding)
         if !isOpen {
-            await withCheckedContinuation { waiters.append($0) }
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: Waiter) in
+                    if isOpen {
+                        continuation.resume()
+                    } else {
+                        waiters.append(continuation)
+                    }
+                }
+            } onCancel: {
+                Task { await self.cancelWaiters() }
+            }
         }
         outstanding -= 1
         return try await plane.readControlState(ofFan: index)
