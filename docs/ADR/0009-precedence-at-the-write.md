@@ -41,13 +41,15 @@ time the write landed. Reproduced against the code rather than argued:
    fan stays pinned for the whole emergency and after it.
 
 2. **A stale `held` entry authorised manual control for a fan whose lease had ended.**
-   `manualControlReleased(fanAt:)` had zero callers, `LeaseAuthority` holds no reference to
-   either safety registry, and every teardown path restores through `FanRestoring` without
-   deregistering. One second later the watchdog re-engages `F<n>Md` and re-commands the old
-   speed — with no lease counting a TTL, no registry entry so no later cycle examines it, and
-   no §3 entry so no emergency bridges it. That is `docs/SAFETY.md`'s opening scenario,
-   produced by the mechanism written to prevent it, and it inverts `CLAUDE.md` hard rule 2:
-   manual control surviving as a setting.
+   `manualControlReleased(fanAt:)` had **no caller in `Sources/`** — the same wording as
+   `manualControlEngaged(_:)` above, and for the same reason: both watchdog methods have test
+   callers, which is precisely what makes the absence in `Sources/` hard to see.
+   `LeaseAuthority` holds no reference to either safety registry, and every teardown path
+   restores through `FanRestoring` without deregistering. One second later the watchdog
+   re-engages `F<n>Md` and re-commands the old speed — with no lease counting a TTL, no
+   registry entry so no later cycle examines it, and no §3 entry so no emergency bridges it.
+   That is `docs/SAFETY.md`'s opening scenario, produced by the mechanism written to prevent
+   it, and it inverts `CLAUDE.md` hard rule 2: manual control surviving as a setting.
 
 The shape underneath both is one this repository has already named. `LeaseAuthority`'s
 doctrine — **a check separated from the act it guards is not a check** — was written for the
@@ -90,7 +92,8 @@ documented:
 
 - **Register the re-assert with §3** — call `ThermalEmergency.manualControlEngaged(_:)` on a
   successful engage, and deregister in `finaliseRelease`. §3's idempotent
-  `takeBackAnythingEngagedSinceFiring()` exists verbatim for *"a fan engaged under a lease
+  `takeBackAnythingEngagedSinceFiring()` exists for exactly this case — its own comment at
+  `Sources/AeolusHelper/Safety/ThermalEmergency.swift:258` names *"one engaged under a lease
   that raced the latch"*; the re-assert is exactly that race, and is invisible to it only
   because it performs `engageManualControl` without honouring the obligation the codebase
   already documents on whoever performs that verb.
@@ -143,16 +146,22 @@ lookup to the mechanism that runs while the machine is above its ceiling would m
 write that must never be blocked depend on one more thing that can be unavailable — the
 opposite of ADR 0007's keystone.
 
-## As built in `c913448`, and what did not land
+## As built, and what did not land
 
 Stated in full rather than left to be inferred, because this ADR is being written after the
-mechanism merged and a reader will otherwise assume the decision and the tree agree.
+mechanism merged and a reader will otherwise assume the decision and the tree agree. **The
+decision above is normative and is left as the #136 review settled it; this section is the
+audit against the tree, and where the two disagree the disagreement is recorded here rather
+than by quietly editing the decision down to what shipped.** Every `file:line` below was read
+against `main` at `456124f` — the base this branch merges onto — not taken from #136's
+description.
 
-**Landed.** D1's first half is built and tested. `currentRuling()`
+**Landed.** `currentRuling()`
 (`Sources/AeolusHelper/Safety/ReclamationWatchdog.swift:289`) reads the latch and asks
 `SafetyArbiter.ruling(for:incumbent:)` (`Sources/AeolusHelper/Safety/SafetyPrecedence.swift:200`)
-per write; the `ruling:` threading is gone; the guard sits immediately before the write path at
-`:403`; the post-`readEnvelope` re-fetch is at `:501`; and the file states the general rule
+per write; the `ruling:` threading is gone from `cycle()` → `examine` → `diverged`; the first
+of D1's two pre-write rulings sits immediately before the write path at `:403`; the
+post-`readEnvelope` **`held` re-fetch** is at `:501`; and the file states the general rule
 once, at `:243` — *"re-fetch `held[index]` after every `await`, and treat its absence as an
 instruction to stop rather than as a no-op"*.
 
@@ -161,17 +170,54 @@ the ruling after its writes and calls `finaliseRelease` if §3 latched underneat
 (`:544`). The re-assert does **not** register with §3 —
 `ThermalEmergency.manualControlEngaged(_:)` still has no caller in `Sources/`. That satisfies
 this decision, with one named residual: the undo is a restore that can be refused, and a
-refused undo emits `reclamationFanMayStillBePinned` and nothing more. Registration would have
-given §3 a second, independent chance at the same fan —
+refused undo emits `reclamationFanMayStillBePinned` (`:670`) and nothing more. Registration
+would have given §3 a second, independent chance at the same fan —
 [#181](https://github.com/blamechris/Aeolus/issues/181).
 
-**Did not land.** D2 is unbuilt in every part: there is no `.leaseLapsed` case, no liveness
-query on `LeaseAuthority`, and `leases` is still referenced from exactly one place in the
-watchdog — `revokeEveryLease` at `:666`. Hard rule 2 therefore still rests on notification
-discipline in the tree as it stands, which is the condition D2 exists to remove.
+**Did not land.**
+
+**D1's second pre-write ruling.** D1 prescribes a fresh latch read *"after `readEnvelope`
+returns, before `engageManualControl`"*. It does not exist. `reassert` reads the envelope at
+`:489`, re-fetches `held[index]` at `:501` — the `held` guard, not a ruling — and engages at
+`:511` with no `currentRuling()` between. So the shipped window is one full `.supervisor` SMC
+turn wide, not the actor hop D1 describes, and what closes it is the post-write undo at `:544`
+rather than a second refusal.
+
+The consequence is already scripted, which is why this is a recorded gap rather than a
+suspicion: `ReclamationWatchdogStalenessTests.itUndoesAReassertWhenTheEmergencyLatchesMidWrite`
+(`Tests/AeolusHelperTests/ReclamationWatchdogStalenessTests.swift:156-175`) latches §3 *inside*
+the envelope read and asserts that both writes land — `#expect(await machine.commandedRPMs ==
+[2_400])`, above ceiling — and are then undone. The second pre-write ruling would have refused
+them instead. [#181](https://github.com/blamechris/Aeolus/issues/181) carries it: it is the
+same fan, the same window, and the same residual that issue already owns.
+
+**One write-side `await` breaks the file's own re-fetch rule.** `:243` states the rule and
+`:246` states that *"optional chaining (`held[index]?.x = y`) is **not** that rule"*.
+`reassert`'s last write-side await does exactly that: `held[index]?.commanded = recommanded`
+(`:525`), immediately after `writer.command`. A lease released during that write makes the
+mutation vanish while the code around it goes on logging a successful re-assert. No test can
+see it, and that is itself the finding: `InterferingFanStateSensing.Moment`
+(`Tests/AeolusHelperTests/ReclamationWatchdogFixture.swift:256-261`) offers only
+`.controlStateRead` and `.envelopeRead`, so the fixture has no write-side interference seam at
+all. A fix needs a `.commandWrite` moment before it can be tested rather than asserted.
+[#180](https://github.com/blamechris/Aeolus/issues/180) carries it — it is the same
+lease-authority-at-the-write hole D2 exists to close.
+
+**D2 is unbuilt in every part:** there is no `.leaseLapsed` case, no liveness query on
+`LeaseAuthority`, and `leases` is still referenced from exactly one place in the watchdog —
+`revokeEveryLease` at `:684`. Hard rule 2 therefore still rests on notification discipline in
+the tree as it stands, which is the condition D2 exists to remove.
 [#180](https://github.com/blamechris/Aeolus/issues/180) carries it.
 
-Also unbuilt: `FanRestoring`'s contract still reads *"must log it and keep trying"*
+**Three doc comments still describe the retired per-sweep ruling** — `:116` and `:735` name the
+removed `examine(fanAt:ruling:)` signature, and `:131` documents the latch as *"read once per
+cycle to decide the incumbent"*. Pre-existing in `c913448` and comment-only, so out of scope
+for a documentation change that carries no test, but recorded here because `:131` is the exact
+sentence a future editor would cite to re-hoist the ruling under #134's read budget — the
+re-hoist this ADR's D1 argues against at length.
+[#191](https://github.com/blamechris/Aeolus/issues/191) owns them.
+
+**`FanRestoring`'s contract still reads "must log it and keep trying"**
 (`Sources/AeolusHelper/Lease/FanRestoring.swift:31`). That sentence is load-bearing for this
 mechanism in a way it was not before — a keep-trying conformer awaited from `cycle()` parks
 `ReclamationSupervisor` permanently and silently, for every fan, not just the one being
@@ -215,15 +261,19 @@ mechanism exists: the correction belongs to the actor that performed the write.
 - **`SafetyArbiter` is load-bearing rather than decorative.** Replacing
   `SafetyArbiter.ruling`'s body with `return .commands` now fails
   `ReclamationWatchdogTests.itNeverReassertsWhileTheThermalLatchHolds` *and*
-  `itUndoesAReassertWhenTheEmergencyLatchesMidWrite`, because the ruling is consulted twice
-  per re-assert.
+  `ReclamationWatchdogStalenessTests.itUndoesAReassertWhenTheEmergencyLatchesMidWrite` —
+  different suites in different files, which is the point: the first kills the pre-write
+  ruling and the second kills the post-write one, so the ruling is demonstrably consulted
+  twice per re-assert rather than once.
 - **A safety actor's registry is documentation, not authority.** Any future mechanism that
   writes away from the safe state inherits D2: it must ask the lease table at the write, and
   the registry entry that got it there proves only that somebody once thought the fan was
   held. This is the sentence to quote at E3 when the control plane is written.
 - **`.leaseLapsed` is owed** ([#180](https://github.com/blamechris/Aeolus/issues/180)). Until
-  it exists, the tree satisfies D1 and not D2, and hard rule 2 depends on a notification that
-  has been forgotten twice.
+  it exists, the tree satisfies D1's *intent* — no ruling is spent across a sweep, and the
+  residual is not permanent — but not D1 in full, and not D2 at all: the second pre-write
+  ruling is missing (#181) and hard rule 2 depends on a notification that has been forgotten
+  twice. The "As built" section says exactly which parts, so this bullet is not the audit.
 - **No XPC version bump.** Nothing here crosses the boundary. The eventual durable
   per-fan-unavailability wire reason belongs to #102 and is expected to be an additive,
   forward-tolerant `Reason` — ADR 0007 consequence 3.
@@ -232,7 +282,7 @@ mechanism exists: the correction belongs to the actor that performed the write.
 
 | Assumption | Basis | If it fails |
 |---|---|---|
-| A latch read costs an actor hop, not an SMC turn | `ThermalEmergencyLatch` is an actor over one `Bool`, read with no I/O | Per-write rulings acquire a real cost and #134's budget has to price them; the ruling still may not be hoisted, so the answer would be fewer writes rather than a staler check |
+| A latch read costs an actor hop, not an SMC turn | `ThermalEmergencyLatch` is an actor over one optional reading (`engagedBy: CriticalTemperature?`, with `isActive` computed from it), read with no I/O | Per-write rulings acquire a real cost and #134's budget has to price them; the ruling still may not be hoisted, so the answer would be fewer writes rather than a staler check |
 | §3 latches within one cycle of a temperature crossing the ceiling | `ThermalSupervisor` polls at 1 Hz and `fire(_:from:)` engages the latch as it goes | §5's one-cycle blind window widens; the undo at `:544` is what still bounds the damage, and it becomes the only thing that does |
 | A restore refused once may still succeed later | ADR 0007's keystone — the restore depends on no trusted data | The undo path's residual becomes unbounded, and D1's registration half stops being optional |
 | The lease table is cheap to interrogate per fan per cycle | `LeaseAuthority` is an actor over an in-memory table capped at one entry today | D2's liveness query needs a cache with its own staleness story, which is the problem it was written to remove — escalate rather than caching |

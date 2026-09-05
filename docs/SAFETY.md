@@ -355,15 +355,27 @@ competent authority — one that can also throttle the SoC, which Aeolus never c
 the same destination first. Aeolus does not fight the system for the fans while any
 temperature is above ceiling.
 
-**That rule is asked immediately before each write, and again immediately after it** —
+**That rule is asked before the write path, and again after the writes land — with one
+supervisor SMC turn still inside that window** —
 [ADR 0009](ADR/0009-precedence-at-the-write.md). The re-assert is the first ordinary safety
 write in this project that moves a fan **away** from the safe state, so the question of when
 precedence is read stopped being academic with it. An answer obtained once per sweep and
 spent several SMC turns later authorised a write § 3 had already forbidden, and the failure
 was permanent: a re-pinned fan reads as converged on both of this section's own signals
-forever, so nothing revisits it. The check cannot be made atomic with the act across two
-actors, so the residual is closed by verifying after the write and undoing in the safe
-direction, not by claiming the window is shut.
+forever, so nothing revisits it.
+
+The window is narrowed rather than shut, and the bolded sentence above is worded to say so
+rather than to reassure. ADR 0009 prescribes a second precedence read after the envelope read
+and before manual control is re-engaged; **that read did not ship**, so § 3 can still latch
+during the envelope read and both writes will land above the ceiling. What corrects it is the
+check *after* the writes, which restores the fan in the safe direction — acting and then
+checking, because the check cannot be made atomic with the act across two actors. The residual
+that leaves is disclosed rather than rounded off: the undo is itself a restore, a restore can
+be refused, and a refused undo leaves the fan pinned with a log line and no mechanism watching
+it — § 3's registry is not told about the re-assert either.
+[#181](https://github.com/blamechris/Aeolus/issues/181) carries all three — the missing read,
+the § 3 registration, and the refused undo — and ADR 0009's "As built, and what did not land"
+section is the audit of which parts of that ruling are in the tree.
 
 **A write away from the safe state requires a live lease, checked at the write.** ADR 0009's
 second ruling: this section's registry of held fans is a hint, and the lease table is the
