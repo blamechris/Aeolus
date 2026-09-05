@@ -186,10 +186,14 @@ actor GatedDiscoveryProvider: SensorProvider {
     /// can see one happening.
     private(set) var readAllCount = 0
 
-    /// How many subset reads have been issued. `snapshot()` enumerates fans through two of
-    /// these — `FNum`, then the fan keys — before it reaches discovery, so this is how a
-    /// test waits for a caller to have arrived rather than guessing with a sleep.
+    /// How many subset reads have been issued. `snapshot()` enumerates fans through several
+    /// of these — `FNum`, the fan-key batch, then each fan's `F0Md` — before it reaches
+    /// discovery, so this is how a test knows a caller has arrived rather than guessing with
+    /// a sleep. Await it through `waitUntilSubsetReads(reach:)`, never by polling it.
     private(set) var subsetReadCount = 0
+
+    /// Continuations waiting for `subsetReadCount` to reach their target.
+    private var arrivals: [(target: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     /// `readingsPerCall` is what each successive `readAll()` returns; the last entry answers
     /// every call beyond it.
@@ -218,8 +222,33 @@ actor GatedDiscoveryProvider: SensorProvider {
 
     func read(keys: [String]) async throws -> [SensorReadOutcome] {
         subsetReadCount += 1
+        let reached = arrivals.filter { subsetReadCount >= $0.target }
+        arrivals.removeAll { subsetReadCount >= $0.target }
+        for arrival in reached { arrival.continuation.resume() }
+
         return keys.map { key in
             SensorReadOutcome(key: key, result: keyedResults[key] ?? .failure(.unknownKey(key)))
+        }
+    }
+
+    /// Suspends until `read(keys:)` has been entered `target` times.
+    ///
+    /// **A rendezvous, not a deadline**, and the distinction is what
+    /// [#192](https://github.com/blamechris/Aeolus/issues/192) is about. This is a
+    /// precondition that *must* hold — the caller cannot proceed until both racing snapshots
+    /// have arrived — and a precondition that must hold does not want a timeout. Expressed as
+    /// a wall-clock poll it was a bet on scheduling: the budget bought no correctness, only a
+    /// chance of a false red, and it collected one on a loaded CI runner while every local
+    /// run passed.
+    ///
+    /// The backstop is the enclosing suite's `.timeLimit`, exactly as `LeaseTestDoubles`
+    /// records for the gates there — if the arrival genuinely never happens, the suite fails
+    /// on time rather than this hanging forever, and it fails saying so instead of blaming an
+    /// expectation that was never the point.
+    func waitUntilSubsetReads(reach target: Int) async {
+        if subsetReadCount >= target { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            arrivals.append((target, continuation))
         }
     }
 
