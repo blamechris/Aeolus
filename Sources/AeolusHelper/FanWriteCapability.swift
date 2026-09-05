@@ -16,8 +16,18 @@
 /// `SMCFanControlPlane` answers `.notBuilt` because `SMCConnection.write(_:to:)` is
 /// `package`-scoped and throws and no write selector exists anywhere in `Sources`, and
 /// `ScriptedControlPlane` answers `.built` because its scripted firmware really does take
-/// writes. The day E3/E4 supply the three method bodies, one line moves and every gate that
-/// reads it moves with it.
+/// writes.
+///
+/// **One line moves, and it is not the only one — say so rather than imply otherwise.** The
+/// day E3/E4 supply the three method bodies, `SMCFanControlPlane.writeCapability` flips and
+/// every gate that *reads* it flips with it: `LeaseAuthority.acquireLease` is the one that
+/// matters, and it is the reason a lease is refused today. But
+/// `ReadOnlyFanReport.availability(whenLedgerSays:)` still writes
+/// `.unavailable(.writePathNotBuilt)` as a literal, so flipping the seam alone would grant
+/// leases while every fan in the snapshot reported manual control unavailable — a client
+/// told two different things by one helper, which is `CLAUDE.md` rule 6 arriving through the
+/// read path. [#194](https://github.com/blamechris/Aeolus/issues/194) holds that second
+/// literal open and must land in the same change as the flip.
 enum FanWriteCapability: Sendable, Hashable {
 
     /// The conformer has a write path. Every write verb on it may still refuse — a firmware

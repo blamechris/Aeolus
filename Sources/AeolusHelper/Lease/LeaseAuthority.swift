@@ -328,10 +328,14 @@ actor LeaseAuthority {
     /// - Warning: That is the whole of what it buys, and the empty table cuts both ways. An
     ///   emptied table is exactly what makes `acquireLease`'s liveness check pass, so a new
     ///   lease **can** be granted over a fan whose restore is still parked inside
-    ///   `FanRestoring`. Demonstrated against this code, not theorised. It is harmless today
-    ///   because nothing in `Sources/` constructs a restorer over a plane that writes —
-    ///   `BoundedFanRestorer` is the conformer, and #110 gave it a bound, not a caller — but
-    ///   once #102 wires the control plane, the losing order is: A's connection dies, A's
+    ///   `FanRestoring`. Demonstrated against this code, not theorised. **#163 built the
+    ///   restorer this warning said did not exist** — `HelperFanRestorer`, constructed by
+    ///   `HelperComposition` over the daemon's own plane — so the remaining reason it is
+    ///   harmless is narrower and worth stating exactly: `SMCFanControlPlane` still answers
+    ///   `.notBuilt`, so its restore verb throws before touching the firmware and no lease
+    ///   can be granted to race in the first place. The window is real code now and is held
+    ///   shut by the capability gate alone. Once #102 wires the control plane, the losing
+    ///   order is: A's connection dies, A's
     ///   restore is enqueued, B acquires and writes a target, A's restore lands and returns
     ///   the fan to automatic. B then holds a live lease over a fan nothing is honouring,
     ///   which is `CLAUDE.md` rule 6 arriving through a door this comment used to claim was

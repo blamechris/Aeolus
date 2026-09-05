@@ -47,10 +47,19 @@ struct KeystoneRestoreAttempt<Plane: FanControlPlane>: FanRestoreAttempting {
 /// `ReclamationWatchdog.manualControlReleased(fanAt:)` and
 /// `ThermalEmergency.manualControlEngaged(_:)` have zero callers in `Sources/`."* The lease
 /// core, the bound from #110 and both safety registries all shipped; the wire between them
-/// did not. This is that wire, and it is the reason the
-/// bridge is worth a type of its own rather than a closure at the composition root: the
-/// **order** of the two deregistrations relative to the write is a safety decision, and a
-/// decision needs somewhere to be written down and tested.
+/// did not.
+///
+/// **This type closes the teardown half of that finding and none of the other.** What the
+/// quote lists is two symmetrical gaps, and only one is #163's: every `manualControlReleased`
+/// gains its production caller here, on both registries, while `manualControlEngaged` still
+/// has none in `Sources/` and is E3's to supply — nothing puts a fan *into* manual control in
+/// a build with no write path. Read the sentence as naming the two ends of a missing wire
+/// rather than as naming this file's subject; the engage end stays open, deliberately, and
+/// `HelperRestorerTests` has to register fan 0 by hand for exactly that reason.
+///
+/// The wire is worth a type of its own rather than a closure at the composition root for one
+/// reason: the **order** of the two deregistrations relative to the write is a safety
+/// decision, and a decision needs somewhere to be written down and tested.
 ///
 /// ## The order, and why the two registries do not share one
 ///
