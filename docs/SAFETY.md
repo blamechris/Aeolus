@@ -361,6 +361,22 @@ When divergence is confirmed the helper either re-asserts control or falls back 
 — and either way **tells the user**. It never continues reporting a target speed the
 hardware is ignoring.
 
+**One window is graced, and only one.** A fan is registered as under manual control at the
+moment the `F<n>Md` write lands, which is before anything has been commanded on it. In that
+window the primary signal's target comparison cannot be made at all, and the two answers that
+*are* reachable — the mode still reading automatic, or `F<n>Tg` not reading — are exactly
+what the lag between a mode write and a read reflecting it looks like. Confirming divergence
+there costs the client every lease on the machine milliseconds after it was granted one, with
+a fault line blaming the operating system for it. So divergence on a fan with **nothing
+commanded** is tolerated for `blindCyclesBeforeDivergence` cycles — three, so three seconds —
+before it reaches the fallback above; for those cycles the user is told nothing beyond a
+single notice-level line, and the paragraph above is true only from the cycle the grace ends
+on. The first commanded target ends the grace outright, and a commanded fan is judged as
+strictly as ever. The budget belongs to **one registration and is spent rather than reset**:
+a converged cycle in the middle of it does not refill it, and neither does registering the
+same fan again, so a fan whose firmware never agrees it is Aeolus's still ends up on
+automatic control with the user told.
+
 **The re-assert branch exists only below § 3's ceiling**, with a bounded attempt budget,
 after which it falls back and reports. Reclamation during a thermal emergency means a more
 competent authority — one that can also throttle the SoC, which Aeolus never can — reached
@@ -403,15 +419,23 @@ This is a correctness rule as much as a safety one. A UI that lies about fan sta
 worse than a UI that reports an error, because the user acts on it.
 
 *Tested by:* `Tests/AeolusHelperTests/ReclamationWatchdogTests.swift`,
-`ReclamationWatchdogRecoveryTests.swift`, `ReclamationWatchdogStalenessTests.swift` and
-`ReclamationSupervisorTests.swift` — mostly through `ScriptedControlPlane`, with three
-bespoke read seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express:
-a refused envelope, a read held open so overlapping reads would be visible, and a read that
-runs a side effect while it is suspended. § 1's line makes the same distinction for the same
-reason, and it is drawn rather than rounded off because "entirely through the scripted plane"
-is a claim about how much of the mechanism one shared double can reach.
+`ReclamationWatchdogRecoveryTests.swift`, `ReclamationWatchdogStalenessTests.swift`,
+`ReclamationRegistrationWindowTests.swift`, `ReclamationLimitsTests.swift` and
+`ReclamationSupervisorTests.swift` — mostly through `ScriptedControlPlane`, with four bespoke
+read seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express: a refused
+envelope, a read held open so overlapping reads would be visible, a read that runs a side
+effect while it is suspended, and a control-state read answered from a scripted sequence so a
+`F<n>Tg` can be readable on one cycle and not the next. § 1's line makes the same distinction
+for the same reason, and it is drawn rather than rounded off because "entirely through the
+scripted plane" is a claim about how much of the mechanism one shared double can reach. The
+registration grace above is the fourth suite, one test per answer the primary signal can give
+inside that window plus the two ways the budget must not be refilled.
 Several of these tests are mutation checks rather than examples, and each names the mutation
 it kills; every one was run against its mutant in an isolated worktree.
+`ReclamationLimitsTests` is the exception to "driven, not asserted against the constant": it
+bounds three constants from **above** with literals, because a test that derives its own loop
+bound from the constant it exercises moves with that constant and catches nothing. The floors
+are open, and #185 owns them.
 
 Four of them exist because an adversarial review found that nothing in the original suite
 could see a value read before an `await` and acted on after it — the watchdog is a reentrant

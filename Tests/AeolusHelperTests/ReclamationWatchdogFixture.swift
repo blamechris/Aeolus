@@ -174,6 +174,59 @@ struct EnvelopeRefusingSensing: FanStateSensing {
     }
 }
 
+/// Answers control state from a scripted sequence of readings — one per read — and delegates
+/// everything else to the plane.
+///
+/// ## Why a double and not a stage, again
+///
+/// `ScriptedControlPlane` keeps each fan's `FanCondition` private and moves it only when a
+/// write lands; stages describe the *environment*, not the fans. So no scenario built on the
+/// mock alone can make one fan read divergent, then converged, then divergent again with no
+/// write in between. That alternation is exactly what `HeldFan.uncommandedDivergentCycles`
+/// being *spent, never reset* is a rule about, and a flaky `F<n>Tg` — readable one second and
+/// not the next — is the hardware story behind it.
+///
+/// Readings are whole `FanControlState` values rather than `FanCondition`s so a scenario can
+/// say `.unreadable` outright instead of routing a `NaN` through the mock's finiteness rule,
+/// which is the mock's own contract to apply and not this type's to restate. The last reading
+/// repeats forever, `ScriptedControlPlane.Stage`'s convention, so a scenario scripts only the
+/// part that changes.
+///
+/// **One fan's worth of scenario.** Every read is served from the same sequence whatever fan
+/// is asked about, so a multi-fan scenario needs a different double.
+actor ScriptedReadingsSensing: FanStateSensing {
+
+    private let plane: ScriptedControlPlane
+    private let readings: [FanControlState]
+
+    /// How many control-state reads were served.
+    ///
+    /// Asserted on by every test using this type, for `InterferingFanStateSensing.didFire`'s
+    /// reason: a scenario that stopped being examined part-way through would go on passing
+    /// its later assertions by never looking at the fan again.
+    private(set) var readCount = 0
+
+    init(_ plane: ScriptedControlPlane, reading readings: [FanControlState]) {
+        precondition(!readings.isEmpty, "a scripted read seam with no readings answers nothing")
+        self.plane = plane
+        self.readings = readings
+    }
+
+    func readControlState(ofFan index: Int) async throws -> FanControlState {
+        let reading = readings[min(readCount, readings.count - 1)]
+        readCount += 1
+        return reading
+    }
+
+    func readEnvelope(ofFan index: Int) async throws -> FanEnvelope {
+        try await plane.readEnvelope(ofFan: index)
+    }
+
+    func reconnect() async throws {
+        try await plane.reconnect()
+    }
+}
+
 /// Holds every control-state read open until the test lets it go, and records how many were
 /// in flight at once.
 ///

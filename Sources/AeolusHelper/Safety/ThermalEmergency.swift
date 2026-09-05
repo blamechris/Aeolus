@@ -138,6 +138,25 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// plane, once it exists. That call already requires a `CommandableFan`, so the permit
     /// this needs is always in the caller's hand at exactly the moment it is needed, and
     /// there is never a reason for this type to read one for itself.
+    ///
+    /// ## The same ordering as § 5, and it costs less to get wrong here
+    ///
+    /// `ReclamationWatchdog.manualControlEngaged(_:)` mandates that both registrations
+    /// happen **after** the `F<n>Md` write lands, and states the argument at length. E3's
+    /// author will be looking at one call site with two calls on it, so the constraint is
+    /// restated here rather than left to be found in the sibling file.
+    ///
+    /// What differs is the consequence of disobeying it. § 5 judges a fan the instant it
+    /// appears in its registry, so an early registration there costs a client its lease. This
+    /// registry is only ever *read* by `fire(_:from:)`, and an early registration means at
+    /// worst that a thermal emergency firing inside that same window bridges a fan whose
+    /// mode write has not landed — a write against a fan on automatic control, which the
+    /// firmware ignores, followed by the restore `fire(_:from:)` performs anyway. The
+    /// opposite ordering error, registering late, is bounded to one cycle by
+    /// `takeBackAnythingEngagedSinceFiring()`, which exists for exactly that.
+    ///
+    /// So this is a correctness nicety here and a safety rule there, and the two are stated
+    /// together so nobody has to derive that difference at the call site.
     func manualControlEngaged(_ fan: CommandableFan) {
         engagedFans[fan.index] = fan
     }

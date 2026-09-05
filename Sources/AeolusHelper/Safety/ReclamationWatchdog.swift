@@ -109,13 +109,18 @@ import FanKit
 /// both supervisors, and E3 owns telling this actor what it commanded.
 ///
 /// - Note: this file is over SwiftLint's 400-line warning, as `ThermalEmergency.swift` and
-///   `LeaseAuthority.swift` already are. The split that *was* available has been taken —
-///   `ReclamationDivergence` and `ReclamationLimits` are values rather than mechanism and
-///   live in `ReclamationLimits.swift`. What is left is the actor and its private state, and
-///   moving any of it into an extension in another file would mean widening that state to
-///   the whole module. That state is exactly what makes `examine(fanAt:ruling:)`'s
-///   read-then-mutate reasoning checkable, and
-///   [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of this space.
+///   `LeaseAuthority.swift` already are, and it crossed the 1000-line **error** threshold
+///   once #169/#170/#172 landed alongside the registration grace. Both splits available
+///   without widening state have now been taken: `ReclamationDivergence` and
+///   `ReclamationLimits` are values rather than mechanism and live in
+///   `ReclamationLimits.swift`, and `primaryDivergence(of:against:)` and
+///   `actualShortfall(of:against:)` are `static` and pure and live in
+///   `ReclamationSignals.swift`. What is left is the actor and its private state: every
+///   remaining member either reads or writes `held`, or is `held`, so moving any of it into
+///   an extension in another file would mean widening that state to the whole module. That
+///   state is exactly what makes `examine(fanAt:ruling:)`'s read-then-mutate reasoning
+///   checkable, and [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of
+///   this space — including what to do when the next paragraph pushes this over again.
 actor ReclamationWatchdog<Plane: FanControlPlane> {
 
     /// The read half of the seam. **Not a `FanControlPlane`**, so this actor cannot
@@ -143,9 +148,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// Every fan currently off Apple's thermal management, with what this mechanism knows
     /// about it.
     ///
-    /// Keyed by index so a second registration replaces rather than duplicates. Empty is
-    /// the ordinary state, and a cycle over an empty registry does nothing at all — there
-    /// is no fan pinned, so there is nothing that could be taken back.
+    /// Keyed by index so a second registration finds the entry that is already there rather
+    /// than duplicating it — and `manualControlEngaged(_:)` then leaves that entry alone,
+    /// which is what stops a re-registration rearming a budget. Empty is the ordinary state,
+    /// and a cycle over an empty registry does nothing at all — there is no fan pinned, so
+    /// there is nothing that could be taken back.
     private var held: [Int: HeldFan] = [:]
 
     /// `sensing` is an existential rather than `some FanStateSensing`, unlike
@@ -178,11 +185,92 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// plane, once it exists — at the same point it calls
     /// `ThermalEmergency.manualControlEngaged(_:)`.
     ///
+    /// ## The ordering is normative: call this **after** the `F<n>Md` write has landed
+    ///
+    /// "At the same point" says nothing about which side, and only one of the two sides
+    /// works. E3 will be written against this comment, so the constraint is stated here
+    /// rather than discovered later.
+    ///
+    /// Registering *before* the mode write is not a harmless reordering. This mechanism runs
+    /// on its own 1 Hz loop, so a `cycle()` can land in the window between the registration
+    /// and the write. What it reads there is `mode == .automatic` on a fan with nothing
+    /// commanded, which is `.modeReclaimed` — the strongest primary signal there is — and
+    /// it reaches `diverged(_:fanAt:)`'s "nothing to re-assert" branch and
+    /// `finaliseRelease(fanAt:because:)` with `.systemReclaimed`: the fan restored, **every
+    /// lease on the machine revoked**, and a `.fault` line blaming the operating system —
+    /// milliseconds after a client was granted control it never got to use.
+    /// `ReclamationWatchdogRecoveryTests.aFanWithNoCommandedTargetIsRestored` and
+    /// `fallingBackClearsTheWholeRegistry` are that path, arrived at on purpose.
+    ///
+    /// ## The far side of the write is not free either, and the grace is what pays for it
+    ///
+    /// An earlier version of this comment said the window after the mode write was safe, and
+    /// that a grace flag on `HeldFan` was therefore unnecessary. That was true of the
+    /// `.targetDiverged` case and of nothing else: both `.modeReclaimed` and
+    /// `.targetUnreadable` are decided *before* `primaryDivergence(of:against:)` consults
+    /// `commanded` at all, so a cycle landing in the `F<n>Md` write-to-read-back lag, or on
+    /// one unreadable `F<n>Tg`, reached the same whole-machine revocation from the ordering
+    /// this comment mandates. A write returning successfully and a read reflecting it are
+    /// different facts, and the lag between them is unmeasured on Apple Silicon.
+    ///
+    /// `gracedBeforeItsFirstCommand(_:of:fanAt:)` closes that window — #147's second remedy,
+    /// implemented rather than declined — by giving a fan with nothing commanded on it
+    /// `ReclamationLimits.blindCyclesBeforeDivergence` cycles before the primary signal
+    /// reaches the terminal action. So the ordering above is what this method requires, and
+    /// the grace is what makes obeying it survivable rather than merely correct on paper.
+    /// The two sides are not symmetrical after it: registering early still costs the client
+    /// its lease, three cycles later instead of one.
+    ///
+    /// `ReclamationRegistrationWindowTests` is the whole window, one test per answer
+    /// `primaryDivergence(of:against:)` can give inside it, so this comment claims no more
+    /// than the suite shows.
+    ///
+    /// ## The parameter stays a `CommandableFan`
+    ///
+    /// Only `fan.index` is read, and with `HeldFan.permit` gone there is nothing else it is
+    /// stored into — so tidying this to `manualControlEngaged(fanAt index: Int)` looks free.
+    /// It is not: a `CommandableFan` can only be minted from a `FanEnvelope` that passed its
+    /// bounds gate, so the type is what makes registration lawful only from a caller that
+    /// was actually authorised to write to the fan. Widening it would let anything put a fan
+    /// into a registry whose entries this mechanism will later re-engage manual control on.
+    /// `ThermalEmergency.manualControlEngaged(_:)` takes the same parameter for the same
+    /// reason.
+    ///
+    /// ## Re-registering a fan already held changes nothing about it
+    ///
+    /// The entry is created only when there is not one already, so calling this twice
+    /// without an intervening `manualControlReleased(fanAt:)` is idempotent: the fan keeps
+    /// its `commanded` target, its grace counter, its re-assert attempts and its blind-cycle
+    /// count. It used to build a fresh `HeldFan` unconditionally, and that was two defects
+    /// rather than one:
+    ///
+    /// - **The grace was rearmed.** `uncommandedDivergentCycles` went back to zero, so a
+    ///   caller re-registering a fan every other cycle held it off automatic control
+    ///   indefinitely and the terminal action was never reached — twenty registrations bought
+    ///   forty divergent cycles, no restore, and a lease still live. That is the budget
+    ///   `gracedBeforeItsFirstCommand(_:of:fanAt:)` exists to bound, refillable on demand by
+    ///   the very caller it is meant to bound.
+    /// - **`commanded` was wiped.** `primaryDivergence(of:against:)` reaches
+    ///   `.targetDiverged` only behind `guard let commanded`, so a re-registered fan Aeolus
+    ///   *had* commanded became unjudgeable on that case until the next `commandedTarget(_:)`
+    ///   — a fan pinned at a number this mechanism had just forgotten it wrote, which is
+    ///   `CLAUDE.md` rule 6.
+    ///
+    /// The refill point is a genuine release, and both of them drop the entry:
+    /// `manualControlReleased(fanAt:)` for a lease that ended, `finaliseRelease(fanAt:because:)`
+    /// for a fan this mechanism gave up. A registration after either of those starts fresh,
+    /// which is the case a fresh `HeldFan` is actually for.
+    ///
+    /// `ReclamationRegistrationWindowTests.reRegisteringMidGraceDoesNotRefillIt` and
+    /// `.reRegisteringKeepsWhatWasCommanded` are the two halves.
+    ///
     /// Clears any reclamation recorded against this fan: something has just taken it off
     /// automatic control, so the ledger's claim that the system holds it is now false, and
     /// a stale `true` there would report a fan as lost that a client is about to command.
+    /// That half is unconditional, because it is a statement about the world rather than
+    /// about this registry.
     func manualControlEngaged(_ fan: CommandableFan) async {
-        held[fan.index] = HeldFan(permit: fan)
+        if held[fan.index] == nil { held[fan.index] = HeldFan() }
         if await ledger.clearReclaimed(fanAt: fan.index) {
             log.reclamationResolved(fan: fan.index)
         }
@@ -355,6 +443,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // Primary first, and it is the only signal that reaches the terminal action.
         if let primary = Self.primaryDivergence(of: state, against: fan.commanded) {
             held[index]?.actualDwellCycles = 0
+            guard !gracedBeforeItsFirstCommand(primary, of: fan, fanAt: index) else { return }
             await diverged(primary, fanAt: index)
             return
         }
@@ -366,12 +455,95 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             return
         }
 
-        // Converged on both signals.
+        // Converged on both signals. `uncommandedDivergentCycles` is deliberately **not**
+        // reset alongside these two — see `HeldFan.uncommandedDivergentCycles`. A fan whose
+        // `F<n>Tg` is merely flaky rather than gone would otherwise refill the registration
+        // grace on every readable cycle and stay off automatic control for as long as the
+        // flapping lasted, which is
+        // `ReclamationRegistrationWindowTests.aConvergedCycleDoesNotRefillTheGrace`.
         held[index]?.actualDwellCycles = 0
         held[index]?.reassertAttempts = 0
         if await ledger.clearReclaimed(fanAt: index) {
             log.reclamationResolved(fan: index)
         }
+    }
+
+    // MARK: - The registration grace
+
+    /// Whether this divergence is still inside the window that follows registration, and so
+    /// must not reach the terminal action yet.
+    ///
+    /// ## The window this closes
+    ///
+    /// `manualControlEngaged(_:)` mandates registration **after** the `F<n>Md` write lands,
+    /// and an earlier version of that comment claimed the far side of the write was
+    /// therefore safe without any grace. It is not, and the claim covered exactly one of the
+    /// three ways `primaryDivergence(of:against:)` can answer for a fan on which nothing has
+    /// been commanded yet:
+    ///
+    /// - `.targetDiverged` — unreachable, because that case is behind
+    ///   `guard let commanded else { return nil }`. This is the only case the old claim
+    ///   analysed, and it is the one that never needed a grace.
+    /// - `.modeReclaimed` — reached **before** `commanded` is consulted at all. A write that
+    ///   has returned successfully is not the same fact as a read that reflects it, and the
+    ///   `F<n>Md` write-to-read-back latency on Apple Silicon is unmeasured — `docs/SMC-
+    ///   RESEARCH.md`'s observed section is empty on this point. One cycle landing inside
+    ///   that lag reads automatic.
+    /// - `.targetUnreadable` — reached before `commanded` as well. A single unreadable
+    ///   `F<n>Tg` on a fan nothing has been commanded on took the terminal action on the
+    ///   spot, with none of the tolerance `cycleCouldNotSee(fanAt:detail:)` gives a fan that
+    ///   could not be read at all.
+    ///
+    /// Both of the latter two ended at `diverged(_:fanAt:)`'s "nothing to re-assert" branch:
+    /// the fan restored, **every lease on the machine revoked**, and a `.fault` line blaming
+    /// the operating system — milliseconds after a client was granted control it never got
+    /// to use. That is the defect [#147](https://github.com/blamechris/Aeolus/issues/147)
+    /// names, arrived at from the ordering it mandates rather than from the one it forbids.
+    ///
+    /// ## Why the failure asymmetry inverts here, and only here
+    ///
+    /// This file's rule is that over-firing is the safe direction: handing a fan back to
+    /// Apple's thermal management costs cooling nobody chose, while under-firing leaves a
+    /// fan pinned at a speed nothing honours, which is `CLAUDE.md` rule 6. **On a fan with
+    /// no commanded target there is no such speed.** Nothing Aeolus picked is on the wire,
+    /// so the pinned-fan hazard the asymmetry is built around does not exist, and what
+    /// over-firing costs instead is the whole-machine revocation above — losing control that
+    /// is in fact still held, which is rule 6 in the direction people forget.
+    /// `reportShortfall(_:fanAt:)` declines the terminal action on the same grounds.
+    ///
+    /// So the tolerance is granted **only while `commanded` is `nil`**. The first
+    /// `commandedTarget(_:)` ends it for the rest of that registration, and a commanded fan
+    /// is judged exactly as strictly as before — including on the very next cycle.
+    ///
+    /// ## Bounded by `blindCyclesBeforeDivergence`, and not by a fourth constant
+    ///
+    /// The same number, because it is the same question: how many 1 Hz cycles may pass
+    /// without this mechanism being able to confirm a fan is ours before that becomes
+    /// divergence. Three cycles is three seconds — long against any plausible firmware
+    /// read-back lag and short against anything a user would notice — and a genuine
+    /// reclamation of an uncommanded fan is still restored and reported, just on the third
+    /// cycle rather than the first. `ReclamationLimitsTests` already holds that constant
+    /// under a literal ceiling, so this window cannot be widened into minutes either.
+    ///
+    /// Synchronous, so there is no suspension point between reading the counter and writing
+    /// it back and no re-fetch is owed — `reportShortfall(_:fanAt:)`'s reason.
+    ///
+    /// - Returns: `true` when the caller must stop, leaving the fan held and untouched.
+    private func gracedBeforeItsFirstCommand(
+        _ divergence: ReclamationDivergence, of fan: HeldFan, fanAt index: Int
+    ) -> Bool {
+        guard fan.commanded == nil else { return false }
+
+        let cycles = fan.uncommandedDivergentCycles + 1
+        held[index]?.uncommandedDivergentCycles = cycles
+        guard cycles < ReclamationLimits.blindCyclesBeforeDivergence else { return false }
+
+        // Log the transition, not the state — #124's forward constraint, and
+        // `cycleCouldNotSee(fanAt:detail:)`'s rule for the same reason.
+        if cycles == 1 {
+            log.reclamationAwaitingItsFirstCommand(fan: index, divergence: divergence)
+        }
+        return true
     }
 
     // MARK: - The secondary signal reports, and does nothing else
@@ -453,7 +625,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         }
 
         if await ledger.markReclaimed(fanAt: index) {
-            log.reclamationDetected(fan: index, divergence: divergence)
+            log.reclamationDetected(
+                fan: index, divergence: divergence, commanded: fan.commanded)
         }
 
         // Re-fetched across the ledger hop above.
@@ -487,7 +660,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     ///
     /// ## It reads a fresh envelope, and that is deliberate
     ///
-    /// Not the permit taken when the fan came off automatic control. Permits do not expire
+    /// Not the permit taken when the fan came off automatic control — and `HeldFan` keeps no
+    /// permit at all, so there is not one to reach for. Permits do not expire
     /// — `FanWriteAuthorisation.swift` is explicit that freshness is *"policy held by
     /// review, not by the type"* — and § 3 depends on that, because its maximum write has
     /// to be available while the machine is above ceiling and reading may be what has
@@ -535,7 +709,6 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             log.reclamationFanReleasedMidExamination(fan: index, during: "its envelope read")
             return
         }
-        held[index]?.permit = permit
 
         // **A cancelled sweep does not take a fan off automatic control.** The other half of
         // #144's `stop()` shape: the in-flight guard on `cycle()` makes the *incoming* loop
@@ -768,81 +941,22 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         await leases.revokeEveryLease(because: cause)
     }
 
-    // MARK: - The signals
-
-    /// § 5's primary signal: what was written against what the firmware reads back.
-    ///
-    /// Pure, and static, so the whole of the ruling is one expression over two values a
-    /// test can construct directly.
-    ///
-    /// **The mutation this exists to survive** is replacing this comparison with an
-    /// actual-versus-target one — `switch state.target` becoming `switch state.actualRPM`.
-    /// Run: `ReclamationWatchdogTests`'s "An emergency ramp in flight is not read as
-    /// reclamation" goes red on both its assertions, because that scenario has `F<n>Tg`
-    /// holding exactly what § 3 commanded while `F<n>Ac` is still climbing — convergence
-    /// here, and divergence under the mutant.
-    private static func primaryDivergence(
-        of state: FanControlState, against commanded: CommandedTarget?
-    ) -> ReclamationDivergence? {
-        // The mode is the unambiguous half, and it needs no commanded target to read: a fan
-        // Aeolus is holding that the firmware reports as automatic has been taken back,
-        // whatever any RPM key says.
-        guard state.mode == .manual else { return .modeReclaimed }
-
-        switch state.target {
-        case .unreadable(let reason):
-            // **Divergence, never "no divergence".** This is why `FanRPMReadback` is an enum
-            // and not a `Double?`: a watchdog that could not tell "no target set" from "this
-            // target could not be read" would report a fan it can no longer see as healthy,
-            // which is the single failure this signal exists to prevent.
-            return .targetUnreadable(reason: reason)
-        case .rpm(let readBack):
-            // Nothing has been commanded on this fan yet — it came off automatic control
-            // and no target followed. The mode check above is the whole of what can be said.
-            guard let commanded else { return nil }
-            guard abs(readBack - commanded.rpm) > ReclamationLimits.targetToleranceRPM
-            else { return nil }
-            return .targetDiverged(commanded: commanded.rpm, readBack: readBack)
-        }
-    }
-
-    /// § 5's secondary signal: the fan is turning slower than it was told to.
-    ///
-    /// A **shortfall** only. A fan spinning faster than asked is the system helping or a
-    /// sensor reading high, and neither is Aeolus losing control of it; treating it as
-    /// divergence would fire this mechanism on a machine that is cooling perfectly well.
-    ///
-    /// An unreadable `F<n>Ac` is *not* divergence here, and that is not an inconsistency
-    /// with the primary signal's treatment of an unreadable target. The target read-back is
-    /// the evidence that the fan is still ours; the actual speed is corroboration. Losing
-    /// corroboration while the evidence still reads correctly is a degraded cycle, not a
-    /// reclamation — and a total read failure is caught by `examine(fanAt:ruling:)`'s
-    /// blindness path rather than here.
-    ///
-    /// - Returns: both speeds when the observed one is short by more than the tolerance,
-    ///   else `nil`. The caller applies the dwell; this function has no memory.
-    ///
-    /// It returns the commanded speed as well as the observed one so the caller never has to
-    /// re-derive it. An earlier draft returned only the observed speed and the call site
-    /// read the other half back out of an optional with a `?? 0` fallback — a fabricated
-    /// zero that could only ever have reached a `.fault` log line telling an operator a fan
-    /// had been commanded to stop, which is the one number this project may never state.
-    private static func actualShortfall(
-        of state: FanControlState, against commanded: CommandedTarget?
-    ) -> (actual: Double, commanded: Double)? {
-        guard let commanded, case .rpm(let actual) = state.actualRPM else { return nil }
-        let tolerance = commanded.rpm * ReclamationLimits.actualToleranceFraction
-        guard commanded.rpm - actual > tolerance else { return nil }
-        return (actual: actual, commanded: commanded.rpm)
-    }
-
     // MARK: - Per-fan state
 
     /// What this mechanism knows about one fan it is watching.
+    ///
+    /// **No write permit is kept here, deliberately.** One was, and it was read nowhere: a
+    /// `CommandableFan` stored at registration and overwritten by every envelope read. The
+    /// hazard was not the dead field, it was the sentence attached to it — *"replaced by
+    /// every successful re-assert, so it is never older than the last envelope actually
+    /// read"* — which is both inaccurate on its own terms and an argument, handed to the next
+    /// editor, for deleting `reassert(_:fanAt:attempt:)`'s fresh `readEnvelope(ofFan:)` and
+    /// passing the stored permit instead. That would remove the bounds check the branch
+    /// exists to perform and the "no envelope → restore, not command" failure path with it.
+    /// ADR 0008's context is the same defect: a comment telling an editor that load-bearing
+    /// code was redundant. The field is gone rather than re-documented, because there is
+    /// nothing to reuse if nothing is kept.
     private struct HeldFan: Sendable {
-        /// The write permit. Replaced by every successful re-assert, so it is never older
-        /// than the last envelope actually read.
-        var permit: CommandableFan
         /// The step last put on the wire, or `nil` when nothing has been commanded yet.
         var commanded: CommandedTarget?
         /// Cycles in a row that could not read this fan. Reset by any successful read.
@@ -852,5 +966,15 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         var actualDwellCycles = 0
         /// Re-asserts issued for the current episode. Reset by convergence.
         var reassertAttempts = 0
+        /// Divergent cycles spent on this fan before anything was ever commanded on it —
+        /// the registration grace, see `gracedBeforeItsFirstCommand(_:of:fanAt:)`.
+        ///
+        /// **Spent, never reset.** A fan cannot be graced indefinitely by alternating
+        /// between divergence and convergence — `examine(fanAt:)`'s converged branch resets
+        /// the two counters below it and deliberately not this one — and it cannot be graced
+        /// indefinitely by being registered again either: the budget belongs to one
+        /// registration, and the only thing that refills it is a fresh `HeldFan`, which
+        /// `manualControlEngaged(_:)` builds only for a fan that is not already held.
+        var uncommandedDivergentCycles = 0
     }
 }
