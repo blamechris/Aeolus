@@ -191,8 +191,8 @@ actor SMCReadScheduler {
 
     /// Waiters, FIFO within each priority, so equal-priority reads cannot starve each
     /// other either.
-    private var supervisorWaiters: [CheckedContinuation<Void, Never>] = []
-    private var snapshotWaiters: [CheckedContinuation<Void, Never>] = []
+    private var supervisorWaiters: [ParkedTurn] = []
+    private var snapshotWaiters: [ParkedTurn] = []
 
     /// Supervisor turns admitted in a row while a snapshot turn was waiting. Reset by every
     /// snapshot turn, which is what makes "consecutive" mean what it says.
@@ -202,9 +202,21 @@ actor SMCReadScheduler {
     /// `SensorProvider.identifier` without an `await`.
     nonisolated let identifier: String
 
-    init(provider: some SensorProvider) {
+    /// Who is told what this scheduler did, or nobody.
+    ///
+    /// `nonisolated` and reported synchronously, so a report costs no actor hop and no task —
+    /// see `SchedulerObserving`, which also carries the rule that buys: a conformer must
+    /// return promptly, because this call happens inside the turn it is describing.
+    ///
+    /// Optional because the daemon is the only composition that has one: every scheduler
+    /// built under `Tests/` for a reason other than observing passes nothing, and gets the
+    /// same code path with the reports discarded at the `?.`.
+    nonisolated private let observer: (any SchedulerObserving)?
+
+    init(provider: some SensorProvider, observer: (any SchedulerObserving)? = nil) {
         self.provider = provider
         self.identifier = provider.identifier
+        self.observer = observer
     }
 
     /// Whether the machine has a readable SMC at all. Takes no turn: it is a static IOKit
@@ -231,14 +243,61 @@ actor SMCReadScheduler {
         await takeTurn(at: priority)
         // Holds on every exit, including a throw from the provider: the turn is held from
         // `takeTurn` above or from the last `yieldTurn` below, and never anywhere else.
-        defer { endTurn() }
+        defer { endTurn(at: priority) }
 
-        for (offset, turn) in Self.turns(over: keys).enumerated() {
-            if offset > 0 { await yieldTurn(at: priority) }
-            outcomes.append(contentsOf: try await provider.read(keys: Array(turn)))
+        do {
+            for (offset, turn) in Self.turns(over: keys).enumerated() {
+                if offset > 0 { await yieldTurn(at: priority) }
+                outcomes.append(contentsOf: try await provider.read(keys: Array(turn)))
+            }
+        } catch {
+            // Reported here rather than in the `defer`, because the `defer` cannot see the
+            // error and a "the read ended" event that could not say whether it ended well is
+            // exactly the successful-report-of-nothing shape this repository keeps refusing.
+            report(.wholeReadFailed(priority: priority, detail: String(describing: error)))
+            throw error
         }
 
+        report(.wholeReadSucceeded(priority: priority))
         return outcomes
+    }
+
+    // MARK: - Exclusive access
+
+    /// Runs `body` with the connection to itself: no turn is granted to anything else from
+    /// the moment this returns from the gate until `body` returns.
+    ///
+    /// It exists for exactly one caller — `SMCFanControlPlane.reconnect()`, which closes the
+    /// `io_connect_t` and opens a new one — and the reason it must be a scheduler verb rather
+    /// than something the plane does on its own is that **a close racing a read invalidates
+    /// the handle the read is holding.** `SMCSensorProvider.read(keys:)` opens idempotently
+    /// and then issues its round trips against whatever handle it found; a recycle landing in
+    /// the middle of that is a read against a closed connection, reported as a firmware
+    /// failure that nothing on this machine caused.
+    ///
+    /// ## What it does and does not serialise
+    ///
+    /// It takes an ordinary turn, at `.supervisor`, so it excludes everything a turn excludes
+    /// and nothing more. In particular a **multi-turn** read is not held off end to end: a
+    /// 46-turn snapshot yields between slices, and this may be admitted in one of those gaps.
+    /// That is correct rather than a gap in the exclusion — the provider reopens on the next
+    /// slice, and a snapshot's readings were never simultaneous anyway (see this type's
+    /// documentation on splitting). What must never happen is a recycle *inside* one
+    /// `provider.read(keys:)` call, and that is precisely what a turn prevents.
+    ///
+    /// `ConnectionRecoveryTests.aReconnectNeverLandsInsideAReadInFlight` scripts a three-turn
+    /// read against a reconnect and asserts the property directly, on an ordered log the
+    /// provider and the connection share.
+    ///
+    /// - Important: `body` is run **while this actor is suspended and the turn is held**, so
+    ///   it must not issue a read through this scheduler. It would queue behind a turn only
+    ///   its own caller can release.
+    func withExclusiveAccess<T: Sendable>(
+        _ body: @Sendable () async throws -> T
+    ) async rethrows -> T {
+        await takeTurn(at: .supervisor)
+        defer { endTurn(at: .supervisor) }
+        return try await body()
     }
 
     /// Discovery. **Takes no turn** — see this type's documentation for why holding one
@@ -273,6 +332,10 @@ actor SMCReadScheduler {
     private func takeTurn(at priority: SMCReadPriority) async {
         if !isTurnInFlight && supervisorWaiters.isEmpty && snapshotWaiters.isEmpty {
             isTurnInFlight = true
+            // `queuedAt` is now, because this turn queued for nothing. A consumer computing
+            // a wait therefore gets zero rather than a missing value, which is what lets
+            // `turnGranted` be one case instead of two.
+            report(.turnGranted(priority: priority, queuedAt: ContinuousClock.now))
             return
         }
         await withCheckedContinuation { continuation in
@@ -305,32 +368,38 @@ actor SMCReadScheduler {
     /// `maxConsecutiveOvertakes + 1`.
     private func yieldTurn(at priority: SMCReadPriority) async {
         isTurnInFlight = false
+        report(.turnEnded(priority: priority))
         await withCheckedContinuation { continuation in
             enqueue(continuation, at: priority)
             admitNext()
         }
     }
 
-    /// Releases the connection at the end of a read.
-    private func endTurn() {
+    /// Releases the connection at the end of a read, or of an exclusive body.
+    private func endTurn(at priority: SMCReadPriority) {
         isTurnInFlight = false
+        report(.turnEnded(priority: priority))
         admitNext()
     }
 
     private func enqueue(
         _ continuation: CheckedContinuation<Void, Never>, at priority: SMCReadPriority
     ) {
+        let parked = ParkedTurn(
+            continuation: continuation, priority: priority, queuedAt: ContinuousClock.now)
         switch priority {
-        case .supervisor: supervisorWaiters.append(continuation)
-        case .snapshot: snapshotWaiters.append(continuation)
+        case .supervisor: supervisorWaiters.append(parked)
+        case .snapshot: snapshotWaiters.append(parked)
         }
+        report(.waiterParked(priority: priority, queuedAt: parked.queuedAt))
     }
 
     /// Hands the connection to whichever waiter the policy chooses, if any.
     private func admitNext() {
         guard !isTurnInFlight, let next = nextTurn() else { return }
         isTurnInFlight = true
-        next.resume()
+        report(.turnGranted(priority: next.priority, queuedAt: next.queuedAt))
+        next.continuation.resume()
     }
 
     /// The policy itself: strict supervisor priority, spent down by a quota.
@@ -339,7 +408,7 @@ actor SMCReadScheduler {
     /// a plain two-queue FIFO that compiles, answers every key correctly, and orders the
     /// supervisor behind the snapshot again. Run: the three ordering tests go red and the
     /// read-correctness ones stay green, which is the split worth having.
-    private func nextTurn() -> CheckedContinuation<Void, Never>? {
+    private func nextTurn() -> ParkedTurn? {
         // Nobody to starve: the quota has nothing to protect, so it does not run down.
         guard !snapshotWaiters.isEmpty else {
             consecutiveOvertakes = 0
@@ -348,10 +417,48 @@ actor SMCReadScheduler {
 
         if !supervisorWaiters.isEmpty, consecutiveOvertakes < Self.maxConsecutiveOvertakes {
             consecutiveOvertakes += 1
+            report(.overtakeTaken(consecutive: consecutiveOvertakes))
             return supervisorWaiters.removeFirst()
         }
 
+        // Only when something was actually overtaken. A snapshot admitted with no supervisor
+        // waiting has spent no quota, so reporting one here would make the event mean "a
+        // snapshot went next" — which is every ordinary turn and therefore nothing.
+        if !supervisorWaiters.isEmpty {
+            report(.quotaExhausted(waitingSupervisorTurns: supervisorWaiters.count))
+        }
         consecutiveOvertakes = 0
         return snapshotWaiters.removeFirst()
+    }
+
+    // MARK: - Reporting
+
+    /// Tells the observer, if there is one.
+    ///
+    /// `nonisolated` because it touches no state of this actor: the observer is a
+    /// `nonisolated let` and the call is synchronous, so a report costs neither a hop nor a
+    /// task and cannot reorder against the state change it describes. See
+    /// `SchedulerObserving` for the obligation that puts on a conformer.
+    nonisolated private func report(_ event: SchedulerEvent) {
+        observer?.schedulerDidObserve(event)
+    }
+
+    // MARK: - Values
+
+    /// A turn waiting for the connection: who to resume, at what priority, and since when.
+    ///
+    /// The `queuedAt` instant is the whole reason this is a struct rather than the bare
+    /// continuation it was: it travels with the waiter so `turnGranted` can report what the
+    /// turn waited from, which is what [#135](https://github.com/blamechris/Aeolus/issues/135)
+    /// needs and what no consumer could reconstruct from outside.
+    ///
+    /// `ContinuousClock` directly rather than the helper's `MonotonicClock` seam, because
+    /// this value is carried and reported and **never compared against a deadline here**. A
+    /// clock seam on the scheduler would be a knob on the one type whose subject is ordering,
+    /// bought for a timestamp nothing in this file reads.
+    private struct ParkedTurn {
+        let continuation: CheckedContinuation<Void, Never>
+        let priority: SMCReadPriority
+        let queuedAt: ContinuousClock.Instant
     }
 }
