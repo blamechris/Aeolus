@@ -20,6 +20,24 @@ protocol FanRestoreAttempting: Sendable {
     /// Throwing means the firmware did not take the write. It does **not** mean the fan is
     /// manual: a refused restore of a fan that was already automatic is a no-op that
     /// happened to fail, which is why the caller retries rather than concluding anything.
+    ///
+    /// **A conformer must return in bounded time**, and that obligation lives here rather
+    /// than only on `FanRestoring`. `BoundedFanRestorer` bounds the *attempts*, not the
+    /// wall clock, and it does not cancel one in flight —
+    /// [#110](https://github.com/blamechris/Aeolus/issues/110)'s answer deliberately makes
+    /// the restore uncancellable, because a `CancellationError` is a statement about the
+    /// caller rather than about the firmware. So a single synchronous IOKit call that never
+    /// comes back on a wedged connection ([#68](https://github.com/blamechris/Aeolus/issues/68))
+    /// parks `revokeEveryLease(because:)` and therefore `ReclamationWatchdog.cycle()` — #110's
+    /// exact failure, reached through one attempt instead of infinitely many. An attempt
+    /// budget cannot close that; only a time bound on the attempt itself can.
+    ///
+    /// Supplying that bound is **not this protocol's job and not #110's**: it is the
+    /// connection-health and reconnect policy of
+    /// [#168](https://github.com/blamechris/Aeolus/issues/168) (E5.4f), which owns what a
+    /// call into a wedged SMC connection does. Until it lands, this sentence is the contract
+    /// a conformer is held to, and the shipped conformers are test doubles that return
+    /// immediately.
     func restoreOnce(fanAt index: Int) async throws
 }
 
