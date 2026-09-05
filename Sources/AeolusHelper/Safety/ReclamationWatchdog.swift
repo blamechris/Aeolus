@@ -130,8 +130,9 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     private let leases: LeaseAuthority
 
     /// § 3's bit, read once per cycle to decide the incumbent. Never written here: this
-    /// mechanism does not engage or release a thermal emergency, and
-    /// `ThermalEmergency.cycle()` remains the only caller of `release()` in `Sources/`.
+    /// mechanism does not engage or release a thermal emergency, and `ThermalEmergency`
+    /// remains the only thing in `Sources/` that clears the latch at all — through
+    /// `cycle()`'s `release(ifStill:)`, the no-argument `release()` having no caller here.
     private let latch: ThermalEmergencyLatch
 
     /// What the user is told, via `FanState.isReclaimedBySystem`.

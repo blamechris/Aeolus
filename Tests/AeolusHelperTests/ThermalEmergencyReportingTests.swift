@@ -53,8 +53,8 @@ struct ThermalEmergencyReportingTests {
         let hot = CriticalTemperature(key: smcKey("Tp01"), celsius: 99)
         let hotter = CriticalTemperature(key: smcKey("Tp01"), celsius: 101)
 
-        #expect(await latch.engage(by: hot))
-        #expect(await latch.engage(by: hotter) == false)
+        #expect(await latch.engage(by: hot, answering: [hot.key]))
+        #expect(await latch.engage(by: hotter, answering: [hotter.key]) == false)
         // The most recent reading wins: a reader watching a machine that is still climbing
         // wants the latest number, not the one that happened to cross first.
         #expect(await latch.engagedBy == hotter)
@@ -147,8 +147,9 @@ struct ThermalEmergencyReportingTests {
         #expect(machine.safetyLog.lines.last?.contains("recovered") == true)
     }
 
-    /// § 3's loop is the **only** caller of `ThermalEmergencyLatch.release()` in `Sources/`,
-    /// so stopping it while latched strands the latch for the life of the process:
+    /// § 3's loop is the **only** thing in `Sources/` that clears `ThermalEmergencyLatch` —
+    /// through `cycle()`'s `release(ifStill:)`, the no-argument `release()` having no caller
+    /// there — so stopping it while latched strands the latch for the life of the process:
     /// `acquireLease` refuses forever and every snapshot reports an emergency that is not
     /// happening. `stop()` is still right not to clear it — releasing on a machine nobody
     /// has read since it was above its ceiling is worse — so the answer is to say so.

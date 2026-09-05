@@ -204,6 +204,27 @@ struct SafetyLog: Sendable {
         )
     }
 
+    /// The latch was held because the episode holding began after this cycle took its
+    /// reading.
+    ///
+    /// `.notice` and not `.fault`, which is where it differs from every other "held through"
+    /// line here. Nothing is wrong with the machine or with the mechanism: a cycle simply
+    /// arrived with a reading of the moment before the emergency started, and the honest
+    /// thing to do with a measurement of the wrong episode is not to act on it. The next
+    /// cycle judges on a reading taken after the episode began, so this cannot repeat while
+    /// the episode lasts — it is a boundary, not a state, and cannot reach the polling-rate
+    /// repetition #124's forward constraint is about.
+    func thermalEmergencyHeldAcrossEpisodeBoundary() {
+        emit(
+            .notice,
+            """
+            Thermal emergency latch held across an episode boundary: the episode now \
+            holding engaged after this cycle read its temperatures, so that reading \
+            describes the machine before the emergency and is not evidence it has passed.
+            """
+        )
+    }
+
     /// Telemetry came back after a run of cycles that could read nothing.
     ///
     /// The closing half of the blind path's transition logging. Without it a reader sees a
@@ -223,9 +244,10 @@ struct SafetyLog: Sendable {
     ///
     /// `LeaseExpirySupervisor` logs its own stop because "a lease enforcer that went quiet
     /// without saying so would be the worst silent failure in the project". The same is
-    /// true here and more so: `ThermalEmergency.cycle()` is the **only** caller of
-    /// `ThermalEmergencyLatch.release()` anywhere in `Sources/`, so a loop that stops while
-    /// latched leaves the latch engaged for the life of the process — `acquireLease`
+    /// true here and more so: nothing in `Sources/` clears `ThermalEmergencyLatch` except
+    /// `ThermalEmergency.cycle()`, and it clears it through `release(ifStill:)` — the
+    /// no-argument `release()` has no caller there at all. So a loop that stops while
+    /// latched leaves the latch engaged for the life of the process: `acquireLease`
     /// refusing `.thermalEmergencyActive` forever and every snapshot reporting a thermal
     /// emergency that is no longer happening, which is `CLAUDE.md` rule 6 reached through a
     /// lifecycle event. `stop()` deliberately does not clear the latch (releasing § 3 on a

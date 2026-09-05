@@ -86,29 +86,6 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// that can disagree with itself.
     nonisolated let releaseThresholdCelsius: Double
 
-    /// The curated keys that answered on the cycle that engaged the latch.
-    ///
-    /// **The latch does not let go on a view that has shrunk since it fired.** `cycle()`
-    /// releases on `max(...)` over whatever answered, and it used to ask nothing about what
-    /// did *not* — so losing the hot keys and keeping the cool ones read as "the machine
-    /// cooled down". That is not hypothetical on this hardware:
-    /// `CriticalSensorSet` records the curated cluster spanning 55.85–62.40 °C at peak heat
-    /// soak, a ~6.5 °C spread, against a 5 °C `releaseHysteresisCelsius`. So a cluster whose
-    /// spread exceeds the margin is the **measured** case, and the failure is concrete —
-    /// hottest die key at 95.5 °C, coolest at 89 °C, hot half silent, latch releases,
-    /// `acquireLease` stops refusing, and the client that was revoked retries into the same
-    /// overheating workload. Exactly the loop the refusal exists to prevent.
-    ///
-    /// Comparing against the engaging cycle's key set rather than requiring a *complete*
-    /// read is deliberate. `CriticalSensorSet`'s whole justification for a compiled-in key
-    /// list is that a key this firmware never exposes is not a failure, so demanding
-    /// `unreadableKeys.isEmpty` would strand the latch forever on any machine that
-    /// permanently lacks one of the 34 — permanent refusal of manual control, which is
-    /// `CLAUDE.md` rule 6 reached from the safe-looking direction. A key absent at engage
-    /// time is absent from this set and cannot block the release; a key that *was* answering
-    /// and has since gone quiet can, and should.
-    private var keysAnsweringAtEngage: Set<SMCKey> = []
-
     /// Whether the previous cycle failed to read anything at all.
     ///
     /// Collapses the blind path to one line per transition. `DegradationMemo` sits inside
@@ -201,6 +178,12 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     ///   [#127](https://github.com/blamechris/Aeolus/issues/127)'s to settle — which is why
     ///   this method takes no clock and schedules nothing.
     func cycle() async {
+        // Read **before** the report, and compared against the episode read after it. A
+        // release is only ever decided against a temperature this cycle actually measured,
+        // and an episode that began during the read below was never measured — see the
+        // episode-boundary guard.
+        let episodeBeforeRead = await latch.holding
+
         let report: CriticalTemperatureReport
         do {
             report = try await telemetry.readCriticalTemperatures()
@@ -223,16 +206,42 @@ actor ThermalEmergency<Plane: FanControlPlane> {
             log.thermalEmergencyTelemetryRecovered(answered: report.readings.count)
         }
 
-        guard await latch.isActive else {
+        // The bit and the key set qualifying it come out of the latch **together**, in one
+        // isolated step. Two hops, or a qualifier cached here while the bit lived over
+        // there, is #150's shape exactly.
+        guard let episode = await latch.holding else {
             if hottest.celsius > ceilingCelsius { await fire(hottest, from: report) }
             return
         }
 
-        // Latched. Before asking whether it is cool enough to let go, ask whether this
-        // cycle can still see everything it could see when it fired. A shrinking view reads
-        // exactly like a cooling machine, and only one of those is safe to act on — see
-        // `keysAnsweringAtEngage`.
+        // Latched — but is it the episode this cycle read the temperature of? The report was
+        // gathered before the latch was looked at, so an episode that engaged in between is
+        // *younger than the reading in hand*, and the reading in hand describes the machine
+        // before it went over its ceiling. Judging that episode against it is releasing on a
+        // measurement of the wrong episode: `acquireLease` stops refusing, and the client
+        // that was just revoked retries into the workload that fired the emergency a
+        // millisecond ago.
+        //
+        // The answer is not to re-read the temperature — the cycle has one report and it is
+        // stale for this episode, whatever it says. It is to decline to judge, hold, and let
+        // the next cycle decide on a reading taken after the episode began. Holding one extra
+        // cycle is the over-firing direction; releasing is not.
+        //
+        // `nil` before and an episode after is the ordinary shape of this: the latch was
+        // clear when the report was taken, so the report is a measurement of a machine that
+        // was not in an emergency.
+        guard episode.sequence == episodeBeforeRead?.sequence else {
+            log.thermalEmergencyHeldAcrossEpisodeBoundary()
+            await takeBackAnythingEngagedSinceFiring()
+            return
+        }
+
+        // Before asking whether it is cool enough to let go, ask whether this cycle can
+        // still see everything it could see when it fired. A shrinking view reads exactly
+        // like a cooling machine, and only one of those is safe to act on — see
+        // `ThermalEmergencyLatch.Episode.keysAnsweringAtEngage`.
         let answeringNow = Set(report.readings.map(\.key))
+        let keysAnsweringAtEngage = episode.keysAnsweringAtEngage
         guard keysAnsweringAtEngage.isSubset(of: answeringNow) else {
             log.thermalEmergencyHeldThroughDegradedCycle(
                 missing: keysAnsweringAtEngage.subtracting(answeringNow).count,
@@ -242,23 +251,41 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         }
 
         // Asked against a *fresh* reading — a latch tested against the reading that engaged
-        // it would never release.
-        if hottest.celsius <= releaseThresholdCelsius {
-            if await latch.release() {
-                keysAnsweringAtEngage = []
-                log.thermalEmergencyReleased(
-                    hottest: hottest, threshold: releaseThresholdCelsius)
-            }
+        // it would never release. Nothing is cleared here: the key set went with the episode
+        // inside `release(ifStill:)`, which is the whole of #150's fix.
+        //
+        // `ifStill:` closes the last hop in the chain. The guard above establishes that the
+        // episode is older than the report; this establishes that it is still the episode by
+        // the time the clear actually lands, one more suspension point later. A `release()`
+        // that cleared whatever it found would take the boundary case the guard above exists
+        // to refuse and reintroduce it between the decision and the act.
+        //
+        // **A refused compare-and-clear falls through to the take-back below rather than
+        // into a branch of its own.** It means the episode ended and, if anything is holding
+        // now, a newer one began — so this cycle's decision was about something that no
+        // longer exists, and the safe reading of "I do not know what is holding" is the same
+        // take-back the still-hot path already does. Written as its own `else` body it was a
+        // *duplicate* of that statement which no test could reach: only a second cycle
+        // running concurrently can move the latch inside this one hop, and
+        // `ThermalSupervisor` is the sole driver until
+        // [#127](https://github.com/blamechris/Aeolus/issues/127) — so `fatalError()` could
+        // stand in that body, and the take-back could be deleted from it, with the whole
+        // suite green. An unreachable copy of a reachable statement is exactly where #152's
+        // shape reappears unnoticed. One statement, then, and deleting it goes red.
+        if hottest.celsius <= releaseThresholdCelsius, await latch.release(ifStill: episode) {
+            log.thermalEmergencyReleased(hottest: hottest, threshold: releaseThresholdCelsius)
             return
         }
 
-        // Still holding. `fire(_:)` empties the registry as it goes, so anything in it now
+        // Still holding — above the release threshold, or judged against an episode that has
+        // since moved on. `fire(_:)` empties the registry as it goes, so anything in it now
         // came under manual control **after** the emergency fired — a fan whose lease was
         // granted in the window described on `LeaseAuthority.revokeEveryLease(because:)`,
         // or one engaged under a lease that raced the latch. Without this the emergency is
         // one-shot per episode: `fire(_:)` is unreachable while latched, so such a fan
         // would never be bridged, never restored, and its lease never revoked, with the
-        // machine above its ceiling the whole time.
+        // machine above its ceiling the whole time. Idempotent, and silent on an empty
+        // table.
         await takeBackAnythingEngagedSinceFiring()
     }
 
@@ -320,13 +347,13 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     private func fire(
         _ hottest: CriticalTemperature, from report: CriticalTemperatureReport
     ) async {
-        // `engage(by:)` reports whether it engaged a latch that was **clear**, and that
-        // answer is decided inside the latch actor — so exactly one caller can get `true`
-        // however many cycles are in flight. Guarding on it here is what keeps this method
-        // from running twice.
+        // `engage(by:answering:)` reports whether it engaged a latch that was **clear**, and
+        // that answer is decided inside the latch actor — so exactly one caller can get
+        // `true` however many cycles are in flight. Guarding on it here is what keeps this
+        // method from running twice.
         //
-        // `cycle()` already checked `latch.isActive` before calling this, and that check is
-        // not enough on its own: reading the latch is a suspension point, this actor is
+        // `cycle()` already found `latch.holding` empty before calling this, and that check
+        // is not enough on its own: reading the latch is a suspension point, this actor is
         // reentrant across it, and two overlapping cycles could both find it clear and both
         // fire. The supervisor awaits each cycle before sleeping so its own loop cannot
         // produce that interleaving, but `cycle()` is reachable from anywhere and #127 may
@@ -339,10 +366,11 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         // about.
         //
         // **No test drives that interleaving, and this sentence is here so nobody deletes
-        // the guard believing one does.** Replacing this line with a bare
-        // `await latch.engage(by: hottest)` leaves the whole suite green — checked by
-        // mutation, not assumed. Forcing the losing order needs both cycles to read the
-        // latch before either engages it, and nothing available to a test can arrange that:
+        // the guard believing one does.** Dropping the `guard else { return }` and letting
+        // `engage(by:answering:)`'s `@discardableResult` swallow the answer leaves the whole
+        // suite green — checked by mutation, not assumed. Forcing the losing order needs both
+        // cycles to read the latch before either engages it, and nothing available to a test
+        // can arrange that:
         // a gated telemetry double gets both past the read and cannot order what they do
         // next, a gate inside the latch would mean instrumenting production code for a
         // test, and a repeat-until-it-races loop would be flaky, which #109 is already open
@@ -351,13 +379,15 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         // fail is worse than no test, since it retires the question.
         //
         // What *is* tested is the atomicity this relies on:
-        // `ThermalEmergencyTests.theLatchReportsTransitionsNotState` pins `engage(by:)`
-        // reporting the transition rather than the state, and that decision happens inside
-        // the latch actor, so exactly one of any number of concurrent callers is told
-        // `true`. `LeaseAuthority.restore(_:because:)` carries the same admission about its
+        // `ThermalEmergencyTests.theLatchReportsTransitionsNotState` pins
+        // `engage(by:answering:)` reporting the transition rather than the state, and that
+        // decision happens inside the latch actor, so exactly one of any number of concurrent
+        // callers is told `true`.
+        // `LeaseAuthority.restore(_:because:)` carries the same admission about its
         // `releasing` count, for the same reason and in the same words.
-        guard await latch.engage(by: hottest) else { return }
-        keysAnsweringAtEngage = Set(report.readings.map(\.key))
+        guard
+            await latch.engage(by: hottest, answering: Set(report.readings.map(\.key)))
+        else { return }
         log.thermalEmergencyEngaged(
             hottest: hottest, ceiling: ceilingCelsius, fansHeld: engagedFans.count)
 
@@ -399,23 +429,46 @@ actor ThermalEmergency<Plane: FanControlPlane> {
 
     /// A cycle that obtained no temperature at all.
     ///
-    /// It changes nothing. A latch stays latched — the asymmetry's second branch — and a
-    /// clear latch stays clear, because firing on one unreadable cycle would take the fans
-    /// from a client on a transient. Persistent read failure is divergence, and the
-    /// reconnect-then-restore-and-report escalation belongs to
+    /// It changes **the latch** not at all. A latch stays latched — the asymmetry's second
+    /// branch — and a clear latch stays clear, because firing on one unreadable cycle would
+    /// take the fans from a client on a transient. Persistent read failure is divergence,
+    /// and the reconnect-then-restore-and-report escalation belongs to
     /// [#126](https://github.com/blamechris/Aeolus/issues/126); until then this is the line
     /// that makes the condition visible rather than silent.
+    ///
+    /// ## It does still take back what it finds, and that is not the same thing
+    ///
+    /// `LeaseAuthority.revokeEveryLease(because:)` names a grant-time window it cannot close
+    /// from its own side, and the mitigation it names is *"the emergency taking back whatever
+    /// it finds, every cycle it holds."* This branch used to return before reaching that, so
+    /// the sentence was false on exactly the machine where it matters most: the SMC stops
+    /// answering, every cycle returns here, and the lease granted in the window survives —
+    /// renewed indefinitely, because `renewLease` consults neither the latch nor telemetry.
+    /// A client holding manual control through an emergency the mechanism believes it took
+    /// back is `CLAUDE.md` rule 6.
+    ///
+    /// It needs no reading to do it, and `revokeEveryLease` is idempotent and silent on an
+    /// empty table, so the steady blind state costs nothing and logs nothing. The latch read
+    /// can go stale across its hop like any other; the direction it can be wrong in is
+    /// over-firing, against declining to take back on a machine nobody can read.
+    ///
+    /// - Note: [#152](https://github.com/blamechris/Aeolus/issues/152).
     private func cycleSawNothing(_ detail: String) async {
         let wasAlreadyUnreadable = lastCycleWasUnreadable
         lastCycleWasUnreadable = true
-        // Log the transition, not the state. See `lastCycleWasUnreadable`.
-        guard !wasAlreadyUnreadable else { return }
+        let holding = await latch.isActive
 
-        if await latch.isActive {
-            log.thermalEmergencyHeldThroughUnreadableCycle(detail: detail)
-        } else {
-            log.thermalEmergencyCycleUnreadable(detail: detail)
+        // Log the transition, not the state. See `lastCycleWasUnreadable`.
+        if !wasAlreadyUnreadable {
+            if holding {
+                log.thermalEmergencyHeldThroughUnreadableCycle(detail: detail)
+            } else {
+                log.thermalEmergencyCycleUnreadable(detail: detail)
+            }
         }
+
+        guard holding else { return }
+        await takeBackAnythingEngagedSinceFiring()
     }
 
     /// Whether § 3 is currently holding, for a supervisor that needs to say so on its way
