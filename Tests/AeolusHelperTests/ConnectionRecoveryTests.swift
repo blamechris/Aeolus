@@ -28,6 +28,16 @@ struct ConnectionRecoveryTests {
         (0..<count).map { "S\($0)" }
     }
 
+    /// Whether a request produced no reading at all — the shape a stale handle answers in,
+    /// asserted rather than a throw. See `FakeSMC`.
+    private static func everyKeyFailed(_ outcomes: [SensorReadOutcome]) -> Bool {
+        !outcomes.isEmpty
+            && outcomes.allSatisfy {
+                if case .failure = $0.result { return true }
+                return false
+            }
+    }
+
     // MARK: - Serialisation
 
     /// **The exclusive turn, asserted at the one instant it matters.**
@@ -109,6 +119,10 @@ struct ConnectionRecoveryTests {
     /// **Mutation B:** delete `await connection.close()` instead. Run: red — the `open()` is
     /// a no-op against a handle that is already open, so the stale one survives and the
     /// follow-up read still fails.
+    ///
+    /// The first read **returns**, and that is the ruling-D21 correction rather than a
+    /// weakening of the assertion: a stale handle answers per key, so what the caller receives
+    /// is a full-length array of failures, not a throw. See `FakeSMC`.
     @Test("A read that fails against a stale handle succeeds after the reconnect")
     func aReconnectRestoresReadsThroughAStaleHandle() async throws {
         let smc = FakeSMC(handleIsStale: true)
@@ -116,14 +130,165 @@ struct ConnectionRecoveryTests {
         let plane = SMCFanControlPlane(
             scheduler: scheduler, connection: FakeSMCConnection(smc: smc))
 
-        await #expect(throws: (any Error).self) {
-            try await scheduler.read(keys: ["TC0P"], at: .snapshot)
-        }
+        let blind = try await scheduler.read(keys: ["TC0P"], at: .snapshot)
+        #expect(Self.everyKeyFailed(blind), "a stale handle answered something")
 
         try await plane.reconnect()
 
         let served = try await scheduler.read(keys: ["TC0P"], at: .snapshot)
         #expect(served.map(\.key) == ["TC0P"])
+        #expect(!Self.everyKeyFailed(served), "the reconnect did not restore reading")
+    }
+
+    /// **#68 end to end, on the contract production actually has.**
+    ///
+    /// The one test the adversarial review asked for by name, and the reason ruling D21
+    /// exists: a provider that fails every key **without throwing** must still reach a
+    /// reconnect. Nothing else in the repository covers the whole chain — `ConnectionHealth`'s
+    /// suite drives the observer directly and `SchedulerObservingTests` drives the emission —
+    /// and it was precisely in the joint between them that the defect lived. Every mechanism
+    /// was present, tested, and wired; the event that drives it was unreachable on the one
+    /// machine state it was written for.
+    ///
+    /// So this wires the production graph over one `FakeSMC` — provider, scheduler,
+    /// `ConnectionHealth` as its observer, and the plane as the recovery seam — and asserts
+    /// the fans-out end: the handle really was recycled, and reads really do work afterwards.
+    ///
+    /// **Mutation:** in `SMCReadScheduler.read(keys:at:)`, drop the `blindnessDetail(in:)`
+    /// branch and report `.wholeReadSucceeded` whenever the provider did not throw — the
+    /// behaviour at the PR's first head. Run: red, on the close count, because no failure is
+    /// ever counted.
+    /// **Mutation (false-positive guard):** make `blindnessDetail(in:)` count `.unknownKey`
+    /// failures too. Run: red on `unknownKeysAreNotAConnectionFailure` in
+    /// `SchedulerObservingTests`, which is the other half of the rule.
+    @Test("A handle that fails every key without throwing still reaches a reconnect")
+    func theStaleHandleCaseReachesAReconnect() async throws {
+        let smc = FakeSMC(handleIsStale: true)
+        let health = ConnectionHealth(clock: TestClock(), log: SafetyLog(recording: { _, _ in }))
+        let scheduler = SMCReadScheduler(provider: FakeSMCProvider(smc: smc), observer: health)
+        let plane = SMCFanControlPlane(
+            scheduler: scheduler, connection: FakeSMCConnection(smc: smc))
+        await health.start(recovering: plane)
+
+        // Exactly the threshold, so this cannot pass by driving comfortably more than the
+        // policy asks for — `ConnectionHealthTests` makes the same argument about literals.
+        for _ in 0..<3 {
+            _ = try await scheduler.read(keys: ["TC0P"], at: .snapshot)
+        }
+        await yieldUntil("the three whole-read failures to be handled") {
+            await health.observedOutcomes == 3
+        }
+
+        #expect(
+            await smc.closeCount == 1,
+            """
+            three whole reads that produced no value fired no reconnect. A stale io_connect_t \
+            fails per key and throws nothing, so a scheduler that decides blindness from a \
+            throw never reports one — which is #68 surviving every mechanism built to close it.
+            """)
+        let served = try await scheduler.read(keys: ["TC0P"], at: .snapshot)
+        #expect(!Self.everyKeyFailed(served), "the rebuilt handle still answers nothing")
+        await health.stop()
+    }
+
+    // MARK: - Discovery
+
+    /// **Ruling D22, first direction: a recycle requested during a walk lands after it.**
+    ///
+    /// `readAll()` takes no turn — holding one would be a 2.2 s, 5.9 s cold, barrier against
+    /// the safety cycle, which is worse than the contention it would arbitrate — so for one
+    /// release of `SMCReadScheduler` the exclusive turn did not exclude the longest occupation
+    /// of the connection in the process. Closing the handle mid-walk does not merely fail the
+    /// walk: `SMCSensorProvider.readAll()` skips every key that fails, and
+    /// `ReadOnlyFanAuthority` caches what comes back for the life of the daemon. The visible
+    /// symptom is a Mac permanently missing sensors, with nothing logged.
+    ///
+    /// The wait is on a disjunction for `aReconnectNeverLandsInsideAReadInFlight`'s reason:
+    /// under the mutation the recycle never parks, so waiting on the parked count alone would
+    /// time out and report a wait instead of the interleaving.
+    ///
+    /// **Mutation:** delete the `while discoveryWalksInFlight > 0` wait from
+    /// `withExclusiveAccess(_:)`. Run: red — the close lands between `.walkBegan` and
+    /// `.walkEnded`.
+    @Test("A reconnect waits for a discovery walk that is already in flight")
+    func aReconnectWaitsForADiscoveryWalkInFlight() async throws {
+        let smc = FakeSMC(holdingDiscovery: true)
+        let scheduler = SMCReadScheduler(provider: FakeSMCProvider(smc: smc))
+        let plane = SMCFanControlPlane(
+            scheduler: scheduler, connection: FakeSMCConnection(smc: smc))
+
+        let walk = observing { _ = try await scheduler.readAll() }
+        await yieldUntil("the discovery walk to reach the SMC") { await smc.walksBegun == 1 }
+
+        let reconnect = observing { try await plane.reconnect() }
+        await yieldUntil("the reconnect to park behind the walk, or to barge into it") {
+            let parked = await scheduler.recyclesWaitingForDiscovery
+            let closes = await smc.closeCount
+            return parked == 1 || closes > 0
+        }
+
+        await smc.releaseTheWalk()
+        _ = try await finished("the discovery walk", walk)
+        _ = try await finished("the reconnect", reconnect)
+
+        let events = await smc.events
+        #expect(
+            await smc.recycledInsideAWalk == false,
+            """
+            the connection was recycled in the middle of a discovery walk. The walk skips \
+            every key that fails and the authority caches what it returns for the life of \
+            the daemon, so this is a permanently short sensor set. Log: \(events)
+            """)
+        #expect(await smc.closeCount == 1, "the reconnect did not close exactly once")
+        #expect(await smc.walksBegun == 1, "the walk did not run")
+    }
+
+    /// **Ruling D22, second direction: a walk starting inside a recycle waits for it.**
+    ///
+    /// The mirror of the test above, and it is not redundant with it. One wait keeps a recycle
+    /// out of a walk that started first; the other keeps a walk out of a recycle that started
+    /// first — and only the second is reachable at bring-up, where `ReadOnlyFanAuthority`'s
+    /// first discovery and a reconnect fired by a failing boot can arrive in either order.
+    ///
+    /// The recycle is held **inside** its exclusive body, at the point where the handle is
+    /// closed and not yet reopened, which is the only vantage point from which a walk starting
+    /// during it is a fact rather than a race.
+    ///
+    /// **Mutation:** delete the `while exclusiveClaims > 0` wait from
+    /// `SMCReadScheduler.readAll()`. Run: red — the walk begins against a closed handle and
+    /// the reopen lands inside it.
+    @Test("A discovery walk started during a recycle waits for the recycle")
+    func aDiscoveryWalkWaitsForARecycle() async throws {
+        let smc = FakeSMC(holdingRecycle: true)
+        let scheduler = SMCReadScheduler(provider: FakeSMCProvider(smc: smc))
+        let plane = SMCFanControlPlane(
+            scheduler: scheduler, connection: FakeSMCConnection(smc: smc))
+
+        let reconnect = observing { try await plane.reconnect() }
+        await yieldUntil("the recycle to be holding the connection closed") {
+            await smc.closeCount == 1
+        }
+
+        let walk = observing { _ = try await scheduler.readAll() }
+        await yieldUntil("the walk to park behind the recycle, or to start inside it") {
+            let parked = await scheduler.walksWaitingForARecycle
+            let walks = await smc.walksBegun
+            return parked == 1 || walks > 0
+        }
+
+        await smc.releaseTheRecycle()
+        _ = try await finished("the reconnect", reconnect)
+        _ = try await finished("the discovery walk", walk)
+
+        let events = await smc.events
+        #expect(
+            await smc.recycledInsideAWalk == false,
+            """
+            a discovery walk started while the recycle held the connection, so the reopen \
+            landed inside it. Log: \(events)
+            """)
+        #expect(await smc.walksBegun == 1, "the walk never ran")
+        #expect(await smc.openCount == 1, "the reconnect did not reopen exactly once")
     }
 
     /// A reopen that fails is reported as a read failure naming the reconnect, not as a
@@ -204,18 +369,32 @@ struct ConnectionRecoveryTests {
 /// handle is not healed by opening it again, and why the `close()` in
 /// `SMCFanControlPlane.reconnect()` is load-bearing rather than tidy. A fake whose `open()`
 /// healed unconditionally would agree with an implementation that had dropped the `close()`.
+///
+/// ## And it fails reads the way production fails them: **per key, without throwing**
+///
+/// This is the correction ruling D21 turned on. The first version of this fake threw from
+/// `read()` when the handle was stale, and nothing in the suite disagreed — but
+/// `SMCSensorProvider.read(keys:)` throws from exactly one place, `connection.open()`, and a
+/// stale-but-non-zero handle returns from that `guard` having done nothing. What follows is
+/// `SMCConnection.read(keys:)`, which is not a throwing function: it reports every key as a
+/// per-key `.readFailed` and returns normally. A fake that threw therefore agreed with a
+/// scheduler that decided blindness from a throw, and both were wrong about the one machine
+/// state #68 is.
 actor FakeSMC {
 
     /// What happened, in order. The whole point of the type.
     enum Event: Sendable, Equatable {
         case readBegan(Int)
         case readEnded(Int)
+        case walkBegan
+        case walkEnded
         case closed
         case opened
     }
 
     private(set) var events: [Event] = []
     private(set) var turnsBegun = 0
+    private(set) var walksBegun = 0
     private(set) var closeCount = 0
     private(set) var openCount = 0
 
@@ -228,9 +407,23 @@ actor FakeSMC {
     private var isHeld: Bool
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
-    init(handleIsStale: Bool = false, holdingReads: Bool = false, reopenFails: Bool = false) {
+    private var isWalkHeld: Bool
+    private var walkWaiters: [CheckedContinuation<Void, Never>] = []
+
+    private var isRecycleHeld: Bool
+    private var recycleWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(
+        handleIsStale: Bool = false,
+        holdingReads: Bool = false,
+        holdingDiscovery: Bool = false,
+        holdingRecycle: Bool = false,
+        reopenFails: Bool = false
+    ) {
         self.isStale = handleIsStale
         self.isHeld = holdingReads
+        self.isWalkHeld = holdingDiscovery
+        self.isRecycleHeld = holdingRecycle
         self.reopenFails = reopenFails
     }
 
@@ -239,12 +432,33 @@ actor FakeSMC {
     /// The assertion `aReconnectNeverLandsInsideAReadInFlight` is built on, computed here so
     /// the test reads as the property rather than as a scan.
     var recycledInsideARead: Bool {
+        recycledInsideSomethingBoundedBy(
+            begins: { if case .readBegan = $0 { true } else { false } },
+            ends: { if case .readEnded = $0 { true } else { false } })
+    }
+
+    /// Whether any close or open landed between a discovery walk beginning and that walk
+    /// ending — ruling D22's property, and the harm is sharper than a failed read: a walk
+    /// that loses keys returns a **short** set, which `ReadOnlyFanAuthority` then caches for
+    /// the life of the daemon with nothing logged.
+    var recycledInsideAWalk: Bool {
+        recycledInsideSomethingBoundedBy(
+            begins: { $0 == .walkBegan }, ends: { $0 == .walkEnded })
+    }
+
+    /// The scan both properties above are: a depth counter over the log, answering whether a
+    /// `.closed` or an `.opened` ever fell inside a span.
+    private func recycledInsideSomethingBoundedBy(
+        begins: (Event) -> Bool, ends: (Event) -> Bool
+    ) -> Bool {
         var inFlight = 0
         for event in events {
-            switch event {
-            case .readBegan: inFlight += 1
-            case .readEnded: inFlight -= 1
-            case .closed, .opened: if inFlight > 0 { return true }
+            if begins(event) {
+                inFlight += 1
+            } else if ends(event) {
+                inFlight -= 1
+            } else if inFlight > 0, event == .closed || event == .opened {
+                return true
             }
         }
         return false
@@ -252,10 +466,16 @@ actor FakeSMC {
 
     // MARK: - The connection's half
 
-    func close() {
+    /// `async` so a test can hold the recycle *inside* its exclusive body, which is the only
+    /// vantage point from which "a walk started while the recycle held the connection" is
+    /// observable rather than a race.
+    func close() async {
         closeCount += 1
         events.append(.closed)
         isOpen = false
+        if isRecycleHeld {
+            await withCheckedContinuation { recycleWaiters.append($0) }
+        }
     }
 
     func open() throws {
@@ -271,15 +491,26 @@ actor FakeSMC {
         isStale = false
     }
 
+    /// Lets a held recycle finish its body.
+    func releaseTheRecycle() {
+        isRecycleHeld = false
+        let parked = recycleWaiters
+        recycleWaiters.removeAll()
+        for waiter in parked { waiter.resume() }
+    }
+
     // MARK: - The provider's half
 
     /// One turn's worth of reading, recorded either side of whatever suspension the test
-    /// asked for.
+    /// asked for, and answered **per key**.
     ///
     /// The suspension is inside the actor, so a `close()` arriving during it is admitted by
     /// reentrancy — which is precisely what lets the interleaving be observed rather than
     /// merely reasoned about.
-    func read() async throws {
+    ///
+    /// A closed or stale handle fails every key and throws nothing. See this type's
+    /// documentation for why that, and not a throw, is what production does.
+    func read(keys: [String]) async -> [SensorReadOutcome] {
         turnsBegun += 1
         let turn = turnsBegun
         events.append(.readBegan(turn))
@@ -288,12 +519,27 @@ actor FakeSMC {
         }
         events.append(.readEnded(turn))
 
-        guard isOpen else {
-            throw FakeProviderError(description: "the connection is closed")
+        guard isOpen, !isStale else {
+            let reason = isOpen ? "the io_connect_t is stale" : "the connection is closed"
+            return keys.map {
+                SensorReadOutcome(key: $0, result: .failure(.readFailed(reason: reason)))
+            }
         }
-        guard !isStale else {
-            throw FakeProviderError(description: "the io_connect_t is stale")
+        return keys.map { SensorReadOutcome(key: $0, result: .reading($0, 1)) }
+    }
+
+    /// The discovery walk, recorded either side of whatever suspension the test asked for.
+    ///
+    /// It takes no turn — `SMCReadScheduler.readAll()` does not grant one — so the only thing
+    /// keeping a recycle out of it is ruling D22's mutual exclusion, which is exactly what
+    /// this lets a test observe.
+    func walk() async {
+        walksBegun += 1
+        events.append(.walkBegan)
+        if isWalkHeld {
+            await withCheckedContinuation { walkWaiters.append($0) }
         }
+        events.append(.walkEnded)
     }
 
     /// Stops holding reads and lets every parked one finish.
@@ -301,6 +547,14 @@ actor FakeSMC {
         isHeld = false
         let parked = waiters
         waiters.removeAll()
+        for waiter in parked { waiter.resume() }
+    }
+
+    /// Stops holding the discovery walk.
+    func releaseTheWalk() {
+        isWalkHeld = false
+        let parked = walkWaiters
+        walkWaiters.removeAll()
         for waiter in parked { waiter.resume() }
     }
 }
@@ -316,11 +570,13 @@ struct FakeSMCProvider: SensorProvider {
         get async { true }
     }
 
-    func readAll() async throws -> [SensorReading] { [] }
+    func readAll() async throws -> [SensorReading] {
+        await smc.walk()
+        return []
+    }
 
     func read(keys: [String]) async throws -> [SensorReadOutcome] {
-        try await smc.read()
-        return keys.map { SensorReadOutcome(key: $0, result: .reading($0, 1)) }
+        await smc.read(keys: keys)
     }
 }
 

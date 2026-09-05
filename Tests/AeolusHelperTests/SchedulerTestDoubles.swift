@@ -209,6 +209,36 @@ actor ThrowOnceProvider: SensorProvider {
     }
 }
 
+/// A provider that **never throws** and decides each key's outcome from a rule the test
+/// supplies.
+///
+/// The fixture ruling D21 turns on, and the one shape `ThrowOnceProvider` and
+/// `GatedSensorProvider` between them could not express: `SMCSensorProvider.read(keys:)`
+/// reports an unreadable key *per key* and returns normally — it throws from exactly one
+/// place, `SMCConnection.open()`, which a stale-but-non-zero handle never reaches. So a
+/// double that throws cannot exercise the path
+/// [#68](https://github.com/blamechris/Aeolus/issues/68) actually takes, and for one release
+/// every test of "the connection is gone" used one that did.
+struct OutcomeScriptedProvider: SensorProvider {
+
+    let identifier = "outcome-scripted"
+
+    /// What each requested key answers with. Per key rather than per request, because the
+    /// distinction the scheduler now draws — every key failed, versus one did — is not
+    /// expressible otherwise.
+    let outcome: @Sendable (String) -> Result<SensorReading, SensorReadFailure>
+
+    var isAvailable: Bool {
+        get async { true }
+    }
+
+    func readAll() async throws -> [SensorReading] { [] }
+
+    func read(keys: [String]) async throws -> [SensorReadOutcome] {
+        keys.map { SensorReadOutcome(key: $0, result: outcome($0)) }
+    }
+}
+
 /// A provider that fails on exactly one turn, counting from one, and answers every other.
 ///
 /// The multi-turn sibling of `ThrowOnceProvider`. `read(keys:at:)` holds its turn from

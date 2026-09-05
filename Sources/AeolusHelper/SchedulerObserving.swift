@@ -104,18 +104,28 @@ enum SchedulerEvent: Sendable, Hashable {
     /// has exhausted nothing.
     case quotaExhausted(waitingSupervisorTurns: Int)
 
-    /// A whole `read(keys:at:)` completed — every turn of it, in order.
+    /// A whole `read(keys:at:)` completed — every turn of it, in order — and produced at
+    /// least one reading, or failed only on keys this machine does not have.
     case wholeReadSucceeded(priority: SMCReadPriority)
 
-    /// A whole `read(keys:at:)` threw.
+    /// A whole `read(keys:at:)` produced **no reading at all**, for a reason that is not
+    /// "this machine does not have that key" — or threw.
     ///
-    /// **A whole-request failure, never a per-key one.** `SensorProvider.read(keys:)`
-    /// reports an unreadable key as a `SensorReadOutcome` and does not throw, so losing one
-    /// thermistor is not this. This is the connection failing to answer at all — the shape a
-    /// stale `io_connect_t` after wake takes
-    /// ([#68](https://github.com/blamechris/Aeolus/issues/68)) — which is why
-    /// `ConnectionHealth` can count these and reach for a reconnect, and could not if the
-    /// case were any wider.
+    /// **A whole-request failure, never a per-key one.** Losing one thermistor out of
+    /// thirty-four is not this; the request still answered. This is the connection failing to
+    /// answer at all.
+    ///
+    /// ## It is decided from the outcomes, and a throw is the rarer half
+    ///
+    /// An earlier version of this comment said the case *was* the throw, and a review
+    /// established that the failure it exists for cannot produce one.
+    /// [#68](https://github.com/blamechris/Aeolus/issues/68)'s stale `io_connect_t` is open
+    /// and non-zero, so `SMCConnection.open()` returns from its own `guard` having done
+    /// nothing and `SMCConnection.read(keys:)` — which does not throw — reports every key as
+    /// a per-key failure. The one event `ConnectionHealth` counts was therefore unreachable
+    /// on the one machine state it was written for. `SMCReadScheduler.blindnessDetail(in:)`
+    /// is the rule that replaced it, and carries the reasoning including why `.unknownKey`
+    /// sits on the success side of it.
     ///
     /// `detail` is diagnostic and is never parsed.
     case wholeReadFailed(priority: SMCReadPriority, detail: String)

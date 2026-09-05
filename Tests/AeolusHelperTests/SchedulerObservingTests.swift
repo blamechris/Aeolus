@@ -159,6 +159,102 @@ struct SchedulerObservingTests {
         #expect(withObserver.count == keys.count)
     }
 
+    // MARK: - What counts as a whole read having failed
+
+    /// **The rule ruling D21 put in the scheduler, and the half that was missing entirely.**
+    ///
+    /// A request in which no key produced a value, for a reason that is not "this machine
+    /// does not have that key", is the connection failing to answer — and it reaches the
+    /// scheduler as a **normal return**, not a throw. That is #68's actual shape:
+    /// `SMCConnection.open()` returns from its own `guard` on a stale-but-non-zero handle and
+    /// `SMCConnection.read(keys:)` does not throw at all.
+    ///
+    /// The provider here therefore never throws, which is the whole point of it — a double
+    /// that threw would agree with the version of `read(keys:at:)` this replaces.
+    ///
+    /// **Mutation:** delete the `blindnessDetail(in:)` branch from
+    /// `SMCReadScheduler.read(keys:at:)` and report `.wholeReadSucceeded` whenever nothing
+    /// threw. Run: red here, and red on
+    /// `ConnectionRecoveryTests.theStaleHandleCaseReachesAReconnect`.
+    @Test("A request in which no key produced a value is a whole-read failure")
+    func aRequestThatProducesNothingIsAWholeReadFailure() async throws {
+        let observer = RecordingSchedulerObserver()
+        let scheduler = SMCReadScheduler(
+            provider: OutcomeScriptedProvider {
+                .failure(.readFailed(reason: "the SMC did not answer \($0)"))
+            },
+            observer: observer)
+
+        let outcomes = try await scheduler.read(keys: ["TC0P", "TC1P"], at: .snapshot)
+
+        #expect(outcomes.count == 2, "the request answered per key, as it must")
+        #expect(Self.count(of: .wholeReadFailed, in: observer) == 1)
+        #expect(
+            Self.count(of: .wholeReadSucceeded, in: observer) == 0,
+            """
+            a read that produced no value at all was reported as a success. Nothing then \
+            counts the failure, and the helper sits blind holding nothing — #68 exactly.
+            """)
+    }
+
+    /// **The false-positive guard, and it is the reason the rule is not simply "no value".**
+    ///
+    /// `CriticalSensorSet` deliberately asks every Mac for keys some Macs do not have, and
+    /// `SMCConnection.read(keys:)` answers a key a completed walk never saw with
+    /// `.keyNotFound` at zero round trips. A subset made entirely of keys this firmware lacks
+    /// is therefore a perfectly healthy request that produces nothing — and counting it would
+    /// rebuild a working connection every 1.5 s for ever, on the machines least able to
+    /// afford it.
+    ///
+    /// **Mutation:** in `blindnessDetail(in:)`, remove the `case .failure(.unknownKey):
+    /// continue` arm so every failure counts. Run: red.
+    @Test("A request whose only failures are absent keys is a success")
+    func unknownKeysAreNotAConnectionFailure() async throws {
+        let observer = RecordingSchedulerObserver()
+        let scheduler = SMCReadScheduler(
+            provider: OutcomeScriptedProvider { .failure(.unknownKey($0)) },
+            observer: observer)
+
+        _ = try await scheduler.read(keys: ["TZ99", "TZ98"], at: .supervisor)
+
+        #expect(Self.count(of: .wholeReadSucceeded, in: observer) == 1)
+        #expect(
+            Self.count(of: .wholeReadFailed, in: observer) == 0,
+            """
+            keys this machine does not expose were reported as the connection failing. That \
+            is a fact about the Mac, not about the handle, and reconnecting over it recycles \
+            a connection that is answering perfectly.
+            """)
+    }
+
+    /// One reading is enough. Losing thirty-three of thirty-four curated keys is a degraded
+    /// cycle — `SafetyLog.degradedCycle`'s subject — and it is emphatically not the
+    /// connection being gone, because the connection just answered.
+    ///
+    /// **Mutation:** in `blindnessDetail(in:)`, return the detail whenever *any* failure is
+    /// present rather than only when nothing succeeded. Run: red.
+    @Test("One readable key is enough to make the request a success")
+    func oneReadingIsEnoughToSucceed() async throws {
+        let observer = RecordingSchedulerObserver()
+        let scheduler = SMCReadScheduler(
+            provider: OutcomeScriptedProvider { key in
+                key == "TC0P"
+                    ? .reading(key, 42) : .failure(.readFailed(reason: "no answer for \(key)"))
+            },
+            observer: observer)
+
+        _ = try await scheduler.read(keys: ["TC0P", "TC1P", "TC2P"], at: .supervisor)
+
+        #expect(Self.count(of: .wholeReadSucceeded, in: observer) == 1)
+        #expect(Self.count(of: .wholeReadFailed, in: observer) == 0)
+    }
+
+    private static func count(
+        of kind: SchedulerEvent.Kind, in observer: RecordingSchedulerObserver
+    ) -> Int {
+        observer.events.filter { $0.kind == kind }.count
+    }
+
     /// The exclusive turn is an ordinary turn as far as the hook is concerned — granted at
     /// `.supervisor`, and ended.
     ///
