@@ -349,17 +349,37 @@ path.
 ## 4. Sleep and wake supervision
 
 The helper registers for system power notifications through `IORegisterForSystemPower` —
-in the helper's own context, not the app's, because the app may not be running.
+in the helper's own context, not the app's, because the app may not be running. Callbacks
+are delivered with `IONotificationPortSetDispatchQueue` and **never** through a CFRunLoop
+source: `AeolusHelper`'s `main()` ends in `dispatchMain()`, which parks the main thread
+rather than running a run loop, so a run-loop source there is added to a loop nothing will
+ever run. That failure is silent — registration succeeds, the daemon looks healthy, and no
+notification ever arrives.
 
-- Before sleep: release control and restore automatic mode.
-- After wake: **nothing.** The helper does not re-assert.
+- Before sleep, in this order: **release every lease**, **restore `.everyFan`** through the
+  keystone verb (which also clears the Apple Silicon force key), and only **then**
+  acknowledge the power change.
+- After wake: **nothing.** The helper does not re-assert, and does not reconcile either.
 
 **Release-before-sleep is the load-bearing half**; the continuous-clock TTL is the backstop,
 for a sleep that arrives without a completed notification round trip. Whether
 `ContinuousClock` advances across sleep is unverified on this machine and unverifiable
 without sleeping it — if it does not, the backstop degrades to "the lease survives with its
 remaining TTL", which bounds post-wake exposure rather than eliminating it, and makes
-release-before-sleep matter more, not less.
+release-before-sleep matter more, not less. What that bound *is*, exactly: the lease's own
+remaining TTL, so at most `AeolusXPCValidation.leaseTTLRange.upperBound` — 120 s — and 30 s
+for a client taking `Lease.defaultTimeToLive`. Composition either way, as ADR 0007 requires:
+nothing in the helper changes on the answer, and #68's lid-close row records the measured
+delta.
+
+**The handback is bounded, and overrunning the bound is not a safety failure.** The
+acknowledgement waits at most `SystemPowerLimits.acknowledgementBudget` — 5 s — after which
+the helper allows the sleep anyway and logs at `.fault`. The case it exists for is a wedged
+`io_connect_t` (#68) where a synchronous IOKit write never returns at all: `FanRestoreAttempting`
+records that no attempt budget can bound that, and `BoundedFanRestorer` deliberately makes
+each attempt uncancellable. Holding the sleep open instead would buy nothing — the kernel
+sleeps the machine on its own timeout regardless — and the TTL above is what covers the fan
+that did not come back.
 
 **The helper never silently re-asserts manual control on wake.** This section instructed the
 opposite until #119 — "re-acquire, and re-run the Apple Silicon unlock sequence", called not
@@ -379,10 +399,18 @@ The stale-connection question — whether `io_connect_t` survives sleep/wake at 
 (#68), and reconnect-or-release is the answer either way: a helper that cannot read after
 wake is the blindness case in § 5.
 
-*Tested by (pending #103):* integration tests simulating the notification sequence,
-asserting a restore before sleep and **no write at all** on wake; a manual hardware check
-that closing the lid returns the fans to automatic and that reopening it leaves them there
-until a client asks again.
+*Tested by:* `SystemPowerTests`, which drives `.willSleep` and `.didWake` through the
+composed helper against a scripted `SystemPowerObserving` — asserting the restore is on the
+wire **before** the acknowledgement (observed from inside the acknowledgement, because
+afterwards the two orders are indistinguishable), **no firmware call at all** on wake, that
+the budget releases the system when the handback does not return, and that neither event
+stops a supervisor.
+
+*Not tested by anything automated, and cannot be:* `IOKitSystemPowerObserver` itself. No test
+can register with a real power management root and then sleep the machine. The hardware rows
+are what prove it — closing the lid returns the fans to automatic, reopening leaves them there
+until a client asks again, the `ContinuousClock` delta across a real sleep, and whether
+`io_connect_t` survives (#68).
 
 ## 5. Reclamation watchdog
 
