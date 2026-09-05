@@ -61,6 +61,22 @@ struct SupervisedFanAuthority: FanAuthority {
 
     private let leases: LeaseAuthority
 
+    /// E5.4d's teardown gate, closed by `SignalTeardown` before it hands the fans back.
+    ///
+    /// **Owned here and exposed, rather than injected**, which is the opposite of the rule
+    /// `LeaseAuthority` states about its latch — *"a defaulted latch would compile and
+    /// report a bit nothing sets"* — and the difference is worth stating rather than
+    /// leaving to be re-derived. That hazard is a *second instance*: two mechanisms each
+    /// holding a private latch, one setting a bit the other cannot see. Here there is
+    /// exactly one gate, it is the one the refusals below read, and `HelperComposition`
+    /// hands *this* instance to the teardown. A constructor parameter would let a caller
+    /// build an authority whose gate nothing closes, which is the same defect through the
+    /// other door.
+    ///
+    /// It is deliberately not `private`: the composition root has to reach it, and a gate
+    /// nothing outside this type could close would be a gate that never closes.
+    let controlGate = ControlMessageGate()
+
     private let log: HelperLog
 
     init(reading: ReadOnlyFanAuthority, leases: LeaseAuthority, log: HelperLog) {
@@ -127,11 +143,13 @@ struct SupervisedFanAuthority: FanAuthority {
         _ request: LeaseRequest,
         from connection: ConnectionID
     ) async throws -> Lease {
-        try await leases.acquireLease(request, from: connection)
+        try await refuseIfShuttingDown(connection, message: "acquireLease")
+        return try await leases.acquireLease(request, from: connection)
     }
 
     func renewLease(id: UUID, from connection: ConnectionID) async throws -> Lease {
-        try await leases.renewLease(id: id, from: connection)
+        try await refuseIfShuttingDown(connection, message: "renewLease")
+        return try await leases.renewLease(id: id, from: connection)
     }
 
     func releaseLease(id: UUID, from connection: ConnectionID) async throws {
@@ -159,6 +177,7 @@ struct SupervisedFanAuthority: FanAuthority {
         leaseID: UUID,
         from connection: ConnectionID
     ) async throws {
+        try await refuseIfShuttingDown(connection, message: "apply")
         _ = try await leases.heldLease(id: leaseID, from: connection)
         throw AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
     }
@@ -187,4 +206,44 @@ struct SupervisedFanAuthority: FanAuthority {
     func connectionDidInvalidate(_ connection: ConnectionID) async {
         await leases.connectionDidInvalidate(connection)
     }
+
+    // MARK: - The teardown gate
+
+    /// Refuses a control verb once `SignalTeardown` has begun.
+    ///
+    /// ## Which verbs, and why not all of them
+    ///
+    /// The three verbs that call this are the three that can leave a fan off automatic
+    /// control, now or once E3 supplies a control loop: `acquireLease` creates the lease
+    /// that authorises a write, `renewLease` extends one, and `apply` is the write. Nothing
+    /// else is gated, and each exemption is a decision:
+    ///
+    /// - `releaseLease` and `restoreAllToAutomatic` move *toward* the safe state.
+    ///   `HelperConnectionSession.restoreAllToAutomatic()` already argues the general case —
+    ///   refusing to hand fans back because the connection is dying would be a safety
+    ///   mechanism defeating safety — and it reads the same with "the helper" in place of
+    ///   "the connection".
+    /// - `connectionDidInvalidate` is a teardown, not a request. A client dying during the
+    ///   helper's shutdown must still have its leases released.
+    /// - `snapshot` writes nothing. A client watching the helper go down is entitled to see
+    ///   what it sees, and refusing would tell it less than the truth.
+    ///
+    /// ## The refusal is `helperFailed`, and no new fault case was added
+    ///
+    /// `AeolusXPCFault.helperFailed(detail:)` is the vocabulary's stated home for "the
+    /// helper could not carry out the request, for a reason no other code here names", and
+    /// no other code names this one. Every alternative asserts something false:
+    /// `manualControlUnavailable(.writePathNotBuilt)` blames the build for a refusal that
+    /// would stand on a build with a write path, and `thermalEmergencyActive` would send a
+    /// client looking at temperatures. `AeolusXPCVersion` therefore does not move.
+    private func refuseIfShuttingDown(_ connection: ConnectionID, message: String) async throws {
+        guard await controlGate.isClosed else { return }
+        log.refusedDuringTeardown(connection, message: message)
+        throw Self.shuttingDown
+    }
+
+    /// The refusal a control verb gets once the teardown has begun. Fixed text: it describes
+    /// the helper and never quotes anything a client sent.
+    private static let shuttingDown = AeolusXPCFault.helperFailed(
+        detail: "the helper is shutting down")
 }
