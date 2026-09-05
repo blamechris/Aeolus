@@ -44,13 +44,19 @@ import Testing
 ///   this bullet said five and called them all supervisors — which was both the wrong number
 ///   and the wrong description, so the containment argument it offered was not the one the
 ///   tree supports. The real one, asserted by `everyUnstructuredTaskHandsOffToThePopulation`
-///   below: **every spawn site's body is a single `await` of an `async` method that is
-///   itself in this population.** Seven are `HelperXPCService`'s XPC entry points hopping a
-///   message onto `HelperConnectionSession`; one is `HelperListenerDelegate`'s invalidation
-///   hop onto the same actor; three are the supervisors' `Task.detached` handing control to
-///   an `async run(…)`; one is `ReadOnlyFanAuthority`'s single-flight sensor walk. None of
-///   the twelve writes in its own body, so the verb that could reach a write is acknowledged
-///   even though the spawning function is not.
+///   below: **no spawn site writes in its own body; each hands off to an `async` method that
+///   is itself in this population.** Seven are `HelperXPCService`'s XPC entry points hopping
+///   a message onto `HelperConnectionSession`; one is `HelperListenerDelegate`'s invalidation
+///   hop onto the same actor; one is `ReadOnlyFanAuthority`'s single-flight sensor walk;
+///   three are the supervisors' `Task.detached` handing control to an `async run(…)`.
+///
+///   An earlier draft of this bullet said each body was *a single* `await` of a population
+///   member. That is true of nine of the twelve and **false of the three supervisors**, whose
+///   bodies await `run(…)` and then `loopEnded(generation:)` — a private, synchronous,
+///   actor-isolated method whose entire body is `task = nil`, so it is in no population here
+///   and could not be: it is neither `async` nor permit-bearing. It touches no fan, which is
+///   why the containment still holds; but "a single await" was a stronger sentence than the
+///   tree supports, and this suite exists to stop exactly that.
 /// - **A verb listed on the wrong list on purpose.** Putting a writer in
 ///   `permitFreeFunctions` is a lie a reviewer can read, which is the trade every allowlist
 ///   makes; what it buys is that the lie has to be written down.
@@ -400,8 +406,10 @@ struct WriteVerbAllowlistTests {
     ///
     /// An unstructured `Task` lets a synchronous function reach an `async` write, so every
     /// spawn site is a hole in the population — unless what it spawns is itself acknowledged.
-    /// That is what holds here: each of the twelve bodies is one `await` of an `async` method
-    /// in the population, and none writes in its own body.
+    /// That is what holds here: none of the twelve bodies writes, and each hands off to an
+    /// `async` method in the population. (The three supervisors also await a synchronous
+    /// `loopEnded(generation:)` that only clears a task handle — see the suite doc, which
+    /// says so rather than rounding it off.)
     ///
     /// The count is asserted per file so it cannot drift silently. A thirteenth spawn site
     /// fails this with the file it was added to, and the maintainer either shows it hands off
