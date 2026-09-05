@@ -92,6 +92,19 @@ enum SeamScanner {
             .appendingPathComponent("Sources")
     }
 
+    /// The sibling of `sourcesRoot`, for the tripwires whose subject is the **suite** rather
+    /// than the tree it scans.
+    ///
+    /// There is one such invariant today — nothing under `Tests/` may construct the real
+    /// signal sources, because doing so would `SIG_IGN` this process's `SIGTERM` permanently
+    /// — and it was enforced by a doc comment until #197's review pointed out that a doc
+    /// comment is not enforcement.
+    static var testsRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // Tests/AeolusHelperTests
+            .deletingLastPathComponent()  // Tests
+    }
+
     static func swiftFiles() throws -> [URL] {
         try swiftFiles(under: nil)
     }
@@ -99,6 +112,15 @@ enum SeamScanner {
     /// Every `.swift` file under `Sources`, or under one target directory of it.
     static func swiftFiles(under target: String?) throws -> [URL] {
         let root = target.map { sourcesRoot.appendingPathComponent($0) } ?? sourcesRoot
+        return try swiftFiles(beneath: root)
+    }
+
+    /// Every `.swift` file under one target directory of `Tests`.
+    static func swiftFiles(underTests target: String) throws -> [URL] {
+        try swiftFiles(beneath: testsRoot.appendingPathComponent(target))
+    }
+
+    private static func swiftFiles(beneath root: URL) throws -> [URL] {
         let enumerator = try #require(
             FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
         let files = enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
