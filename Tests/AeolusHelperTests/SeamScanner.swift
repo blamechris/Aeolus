@@ -108,46 +108,71 @@ enum SeamScanner {
 
     /// Every `func` declared in one target, parsed rather than pattern-matched.
     ///
-    /// The three limits, stated rather than discovered later:
+    /// The limits, stated rather than discovered later — and each of them checked against
+    /// the parser rather than assumed of it, in `SeamScannerParsingTests`:
     ///
-    /// - Comment lines are dropped first, as everywhere else here, so a declaration inside a
-    ///   block comment is invisible.
-    /// - Two declarations in one file that agree on name and labels — a protocol requirement
-    ///   and its conformer in the same file, which is how `LeaseClock` and
+    /// - Comments are dropped first, as everywhere else here, so a declaration inside a
+    ///   `//` line **or a `/* … */` span** is invisible. An earlier version of this bullet
+    ///   claimed the same of block comments while `strippingCommentLines` removed only whole
+    ///   `//` lines, which had it exactly backwards: prose showing a forbidden signature
+    ///   inside `/* … */` was scanned as a declaration.
+    /// - A comment **trailing** a declaration on its own line is not dropped, so it reaches
+    ///   the effects clause of a protocol requirement (which has no `{` to stop at). Naming
+    ///   a permit there would read as naming one in the return type. Nothing in `Sources`
+    ///   does it, and the whole-line rule is what keeps the prose explaining a rule from
+    ///   tripping the rule.
+    /// - Two declarations in one file with byte-identical signatures — a protocol
+    ///   requirement and its conformer in the same file, which is how `LeaseClock` and
     ///   `CriticalTemperatureSensing` are written — share a `key` and collapse when the
-    ///   caller puts them in a `Set`.
+    ///   caller puts them in a `Set`. An *overload* no longer collapses: `key` carries the
+    ///   parameter types.
+    /// - `func <name>` is what is scanned, so an **operator** declaration is not here:
+    ///   `SafetyPrecedence.swift`'s `static func < (lhs:rhs:)` is the one in this target.
+    ///   It is synchronous and takes no permit, so it is outside the population either way;
+    ///   an operator that took one would be invisible.
     /// - `func` is what is scanned, so a computed property is not here. The permit mint is a
     ///   computed `var`; what confines it is `FanWriteAuthorisation.swift`'s access levels,
     ///   asserted by `anAuthorisationTypeCannotBeMintedElsewhere`.
     static func functions(in target: String) throws -> [Function] {
-        let expression = try NSRegularExpression(
-            pattern: #"func\s+([A-Za-z_]\w*)\s*(<[^>]*>)?\s*\("#)
+        var found: [Function] = []
+        for file in try swiftFiles(under: target) {
+            found += try functions(
+                inSource: try String(contentsOf: file, encoding: .utf8),
+                file: file.lastPathComponent)
+        }
+        return found
+    }
+
+    /// `functions(in:)`'s parser, over one file's text.
+    ///
+    /// Separated from the enumeration so the limits above can be asserted against fixtures
+    /// rather than against whatever `Sources` happens to contain today — a parser tested
+    /// only through the tree it scans is tested only for the shapes already written.
+    static func functions(inSource source: String, file: String) throws -> [Function] {
+        let expression = try NSRegularExpression(pattern: #"func\s+([A-Za-z_]\w*)"#)
+        let code = strippingComments(source)
+        let range = NSRange(code.startIndex..<code.endIndex, in: code)
         var found: [Function] = []
 
-        for file in try swiftFiles(under: target) {
-            let code = strippingCommentLines(try String(contentsOf: file, encoding: .utf8))
-            let range = NSRange(code.startIndex..<code.endIndex, in: code)
+        for match in expression.matches(in: code, range: range) {
+            guard let whole = Range(match.range, in: code),
+                let nameRange = Range(match.range(at: 1), in: code),
+                let open = parameterListStart(in: code, after: whole.upperBound),
+                let close = closingParenthesis(in: code, openingAt: open)
+            else { continue }
 
-            for match in expression.matches(in: code, range: range) {
-                guard let whole = Range(match.range, in: code),
-                    let nameRange = Range(match.range(at: 1), in: code),
-                    let close = closingParenthesis(
-                        in: code, openingAt: code.index(before: whole.upperBound))
-                else { continue }
-
-                let clause = String(code[whole.upperBound..<close])
-                let parameters = topLevelComponents(of: clause).map(splitOnFirstColon(_:))
-                let effects = effectsClause(of: code, after: close)
-                found.append(
-                    Function(
-                        file: file.lastPathComponent,
-                        name: String(code[nameRange]),
-                        labels: parameters.map(\.label),
-                        parameterTypes: parameters.map(\.type),
-                        effects: effects,
-                        text: collapsingWhitespace(
-                            String(code[whole.lowerBound...close]) + " " + effects)))
-            }
+            let clause = String(code[code.index(after: open)..<close])
+            let parameters = topLevelComponents(of: clause).map(splitOnFirstColon(_:))
+            let effects = effectsClause(of: code, after: close)
+            found.append(
+                Function(
+                    file: file,
+                    name: String(code[nameRange]),
+                    labels: parameters.map(\.label),
+                    parameterTypes: parameters.map(\.type),
+                    effects: effects,
+                    text: collapsingWhitespace(
+                        String(code[whole.lowerBound...close]) + " " + effects)))
         }
         return found
     }
@@ -176,17 +201,17 @@ enum SeamScanner {
 
     /// Every declaration under `Sources` matching `pattern`.
     ///
-    /// Comment lines are dropped first, for the reason `WritePathAbsenceTests` records: the
+    /// Comments are dropped first, for the reason `WritePathAbsenceTests` records: the
     /// prose describing a forbidden signature is not that signature, and a tripwire that
     /// fires on the sentence explaining the rule is a tripwire nobody keeps. The trade is
-    /// that a declaration inside a block comment is invisible — contrived, where an added
-    /// verb is not.
+    /// that a declaration inside a comment is invisible — contrived, where an added verb is
+    /// not.
     static func declarations(matching pattern: String) throws -> [Declaration] {
         let expression = try NSRegularExpression(pattern: pattern)
         var found: [Declaration] = []
 
         for file in try swiftFiles() {
-            let code = strippingCommentLines(try String(contentsOf: file, encoding: .utf8))
+            let code = strippingComments(try String(contentsOf: file, encoding: .utf8))
             let range = NSRange(code.startIndex..<code.endIndex, in: code)
             for match in expression.matches(in: code, range: range) {
                 guard let matched = Range(match.range, in: code) else { continue }
@@ -201,15 +226,144 @@ enum SeamScanner {
 
     // MARK: - Parsing
 
-    /// Source with whole-line comments removed.
+    /// Source with comments removed: every `/* … */` span, and then every whole line that is
+    /// a `//` comment.
     ///
     /// The prose describing a forbidden signature is not that signature, and a tripwire that
-    /// fires on the sentence explaining the rule is a tripwire nobody keeps.
-    private static func strippingCommentLines(_ source: String) -> String {
-        source
+    /// fires on the sentence explaining the rule is a tripwire nobody keeps. That argument
+    /// applies to a block comment exactly as it applies to a line comment, and until #177
+    /// only the line half was implemented while three doc comments claimed both — so a
+    /// signature quoted inside `/* … */` was scanned as a declaration and would have
+    /// reddened the tripwire it was explaining.
+    ///
+    /// `internal` rather than `private` so `SeamScannerParsingTests` can put a fixture
+    /// through it. Nothing in `Sources` contains a block comment today, so the tree cannot
+    /// exercise this and a test that only scans the tree cannot know it works.
+    static func strippingComments(_ source: String) -> String {
+        strippingBlockComments(source)
             .split(separator: "\n", omittingEmptySubsequences: false)
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
             .joined(separator: "\n")
+    }
+
+    /// Every `/* … */` span removed, newlines kept so the line-comment filter still sees the
+    /// lines it must judge.
+    ///
+    /// Swift nests block comments, so the depth is counted rather than the first `*/` taken.
+    /// String literals — `"""` spans included — and `//` comments are copied through
+    /// untouched: a `/*` inside either opens nothing, and treating one as an opener would
+    /// swallow the rest of the file.
+    ///
+    /// The string handling is a quote-counter, not a lexer, so a `"` inside an
+    /// interpolation — `"\(row["key"])"` — ends the literal early and the remainder is read
+    /// as code. That can only matter alongside a `/*`, and it cannot silently weaken a scan
+    /// today: with no block comment anywhere in `Sources`, `depth` never rises, every branch
+    /// copies what it consumes, and the result is the input character for character.
+    private static func strippingBlockComments(_ source: String) -> String {
+        var output = ""
+        var index = source.startIndex
+        var depth = 0
+
+        func matches(_ token: String, at position: String.Index) -> Bool {
+            source[position...].hasPrefix(token)
+        }
+
+        while index < source.endIndex {
+            if depth > 0 {
+                if matches("/*", at: index) {
+                    depth += 1
+                    index = source.index(index, offsetBy: 2)
+                } else if matches("*/", at: index) {
+                    depth -= 1
+                    index = source.index(index, offsetBy: 2)
+                } else {
+                    if source[index] == "\n" { output.append("\n") }
+                    index = source.index(after: index)
+                }
+                continue
+            }
+
+            if matches("/*", at: index) {
+                depth = 1
+                index = source.index(index, offsetBy: 2)
+            } else if matches("//", at: index) {
+                while index < source.endIndex, source[index] != "\n" {
+                    output.append(source[index])
+                    index = source.index(after: index)
+                }
+            } else if matches("\"\"\"", at: index) {
+                index = copyDelimited(source, from: index, delimiter: "\"\"\"", into: &output)
+            } else if source[index] == "\"" {
+                index = copyDelimited(source, from: index, delimiter: "\"", into: &output)
+            } else {
+                output.append(source[index])
+                index = source.index(after: index)
+            }
+        }
+        return output
+    }
+
+    /// Copies an opening `delimiter`, everything up to the matching closing one, and that
+    /// one too — honouring `\` escapes — and answers where to carry on.
+    private static func copyDelimited(
+        _ source: String, from open: String.Index, delimiter: String, into output: inout String
+    ) -> String.Index {
+        var index = source.index(open, offsetBy: delimiter.count)
+        output.append(delimiter)
+
+        while index < source.endIndex {
+            if source[index] == "\\", source.index(after: index) < source.endIndex {
+                output.append(source[index])
+                index = source.index(after: index)
+                output.append(source[index])
+                index = source.index(after: index)
+                continue
+            }
+            if source[index...].hasPrefix(delimiter) {
+                output.append(delimiter)
+                return source.index(index, offsetBy: delimiter.count)
+            }
+            output.append(source[index])
+            index = source.index(after: index)
+        }
+        return index
+    }
+
+    /// The `(` that opens a declaration's parameter list, skipping a generic clause.
+    ///
+    /// A regex spelling of that clause as `<[^>]*>` cannot span a nested `>`, so
+    /// `func read<T: Decoding<Wire>>(…)` matched nothing at all and went **silently
+    /// uncounted** — the same failure mode as `\([^)]*\)` on a nested `)`, and the reason an
+    /// allowlist cannot be built on either.
+    private static func parameterListStart(
+        in code: String, after name: String.Index
+    ) -> String.Index? {
+        var index = name
+        while index < code.endIndex, code[index].isWhitespace {
+            index = code.index(after: index)
+        }
+        guard index < code.endIndex else { return nil }
+
+        if code[index] == "<" {
+            var depth = 0
+            while index < code.endIndex {
+                switch code[index] {
+                case "<": depth += 1
+                case ">": depth -= 1
+                // A generic parameter list contains neither; either one means this `<` was
+                // never opening one, so give up rather than run to the end of the file.
+                case "{", ";": return nil
+                default: break
+                }
+                index = code.index(after: index)
+                if depth == 0 { break }
+            }
+            while index < code.endIndex, code[index].isWhitespace {
+                index = code.index(after: index)
+            }
+        }
+        guard index < code.endIndex, code[index] == "(" else { return nil }
+        return index
     }
 
     /// The `)` that closes the `(` at `open`, at the correct nesting depth.
