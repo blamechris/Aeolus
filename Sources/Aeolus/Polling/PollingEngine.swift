@@ -44,9 +44,15 @@ enum PollingEngine {
         discovery: [DiscoveredSensor],
         now: @autoclosure () -> Date = Date()
     ) async throws -> Snapshot {
-        guard await provider.isAvailable else {
-            throw PollingError.noSMC
-        }
+        // No separate `provider.isAvailable` guard here: `FanPoller.poll(provider:)`
+        // — via `SMCFanEnumeration.enumerate(provider:)` — already checks it and throws
+        // `PollingError.noSMC` before issuing a single read, and it runs first, ahead of
+        // `SensorPoller.discover(provider:)`'s `readAll()`. A second, independent check
+        // at this level would call `isAvailable` twice per tick for no behavioural gain
+        // on real hardware — and on a provider whose availability can change between
+        // calls (a real failure mode this loop must survive), a second call could
+        // observe a *different* answer than the first within the same tick.
+        let fans = try await FanPoller.poll(provider: provider)
 
         let resolvedDiscovery: [DiscoveredSensor]
         if discovery.isEmpty {
@@ -61,7 +67,6 @@ enum PollingEngine {
             resolvedDiscovery = discovery
         }
 
-        let fans = try await FanPoller.poll(provider: provider)
         let sensors = try await SensorPoller.refresh(
             discovered: resolvedDiscovery, provider: provider, labelSource: labelSource)
 

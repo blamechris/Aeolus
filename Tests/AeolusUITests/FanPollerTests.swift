@@ -95,6 +95,53 @@ struct FanPollerTests {
         }
     }
 
+    // MARK: - Classified-error surfacing (proving the shared enumeration's error is not
+    // flattened or re-derived on its way through FanPoller)
+
+    @Test("No SMC on this machine surfaces as PollingError.noSMC specifically")
+    func unavailableProviderThrowsClassifiedNoSMC() async {
+        let provider = FakeSensorProvider(isAvailable: false)
+
+        let error = await #expect(throws: PollingError.self) {
+            _ = try await FanPoller.poll(provider: provider)
+        }
+        #expect(error == .noSMC)
+    }
+
+    @Test("An implausible FNum surfaces as PollingError.implausibleFanCount specifically")
+    func implausibleFanCountThrowsClassifiedCase() async {
+        let provider = FakeSensorProvider(
+            keyedResults: [
+                "FNum": .success(.fake(key: "FNum", value: 999_999))
+            ])
+
+        let error = await #expect(throws: PollingError.self) {
+            _ = try await FanPoller.poll(provider: provider)
+        }
+        guard case .implausibleFanCount(let declared) = error else {
+            Issue.record("expected .implausibleFanCount, got \(String(describing: error))")
+            return
+        }
+        #expect(declared == 999_999)
+    }
+
+    @Test("An FNum read failure that is not absence surfaces as PollingError.readFailed")
+    func fnumReadFailureThrowsClassifiedReadFailed() async {
+        let provider = FakeSensorProvider(
+            keyedResults: [
+                "FNum": .failure(.readFailed(reason: "firmware rejected the read"))
+            ])
+
+        let error = await #expect(throws: PollingError.self) {
+            _ = try await FanPoller.poll(provider: provider)
+        }
+        guard case .readFailed(_, let reason) = error else {
+            Issue.record("expected .readFailed, got \(String(describing: error))")
+            return
+        }
+        #expect(reason == "firmware rejected the read")
+    }
+
     @Test("Every fan carries the hardcoded-safe honesty flags: automatic, never reclaimed")
     func honestyFlagsAreHardcodedSafe() async throws {
         let provider = FakeSensorProvider(

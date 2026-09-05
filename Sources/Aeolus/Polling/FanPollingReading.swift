@@ -6,11 +6,11 @@ import Foundation
 /// ## No `{fds` on Apple Silicon
 ///
 /// There is no fan descriptor struct to enumerate. Fans are discovered via `FNum` plus
-/// `F<n>Ac`/`Mn`/`Mx` per index — see `FanPoller`, which follows the exact enumeration
-/// `fanctl`'s `ListCommand` already validated. `displayName` ("Fan 0") is synthesised by
-/// this layer for a human to read; it is never presented as something the firmware
-/// reported, and `actual.key`/`minimum.key`/`maximum.key` are always available alongside
-/// it so a view can show the raw key too.
+/// `F<n>Ac`/`Mn`/`Mx` per index — see `SMCCore.SMCFanEnumeration`, the shared enumeration
+/// `FanPoller` wraps for presentation. `displayName` ("Fan 0") is synthesised by this
+/// layer for a human to read; it is never presented as something the firmware reported,
+/// and `actual.key`/`minimum.key`/`maximum.key` are always available alongside it so a
+/// view can show the raw key too.
 ///
 /// ## The honesty flags, hardcoded safe
 ///
