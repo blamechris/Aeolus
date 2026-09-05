@@ -125,8 +125,16 @@ struct HelperCompositionTests {
     /// caught by type: `HelperComposition.init` takes a `SensorProvider`, and a plane is not
     /// one.
     ///
-    /// **Mutation:** build a second `SnapshotFanModeReads(provider:)` anywhere in `Sources`.
-    /// Run: red.
+    /// **Mutation (the second assertion):** build a second `SnapshotFanModeReads(provider:)`
+    /// anywhere in `Sources`. Run: red.
+    ///
+    /// **Mutation (the first assertion):** in `HelperComposition.init`, build the mode reader
+    /// from a fresh provider — `SnapshotFanModeReads(provider: SMCSensorProvider())`. Run:
+    /// red here on the first assertion, with the construction count still exactly one, and
+    /// red in `nothingInTheHelperReadsAroundTheGate`. Two failures for one edit is the pair
+    /// working rather than a duplicate: the assertions fail on different edits — the first on
+    /// a mode reader pointed elsewhere, the second on one built twice — and an earlier review
+    /// was right that the first had no mutation of its own named against it.
     @Test("The fan mode is read through the one provider the snapshot was given")
     func theModeReadIsBuiltFromTheSameProviderAsTheFanRead() throws {
         let readsThroughTheOneProvider = Self.strippingWhitespace(try Self.compositionSource())
@@ -236,25 +244,41 @@ struct HelperCompositionTests {
     /// no resume at all; `bringUp` must contain exactly one; and inside `bringUp` nothing may
     /// follow it.
     ///
-    /// ## "Last statement", not "after the call" — the first version of this was wrong
+    /// ## Two halves, because "last statement" is only half the contract
     ///
-    /// It asserted that `listener.resume()` came after `helper.bringUp()` in the text, and
-    /// **mutation B below survived it**: `helper.bringUp()` sits inside the `Task { … }` that
-    /// *starts* the asynchronous half, so it is textually above the `broughtUp.wait()` that
-    /// makes it *complete*. Hoisting the resume above the wait therefore left it after the
-    /// call, and the suite stayed green while the daemon advertised its Mach service with the
-    /// safety registries unbound.
+    /// The first version of this test asserted that `listener.resume()` came after
+    /// `helper.bringUp()` in the text, and mutation B below survived it: `helper.bringUp()`
+    /// sits inside the `Task { … }` that *starts* the asynchronous half, so it is textually
+    /// above the `broughtUp.wait()` that makes it *complete*. Hoisting the resume above the
+    /// wait therefore left it after the call, and the suite stayed green while the daemon
+    /// advertised its Mach service with the safety registries unbound.
     ///
-    /// So the assertion is the contract itself: the resume is the **last** statement in the
-    /// function body, with nothing but the closing brace after it. That holds however the
-    /// bring-up is spelled — awaited, blocked on, or restructured by whichever of #164 to
-    /// #168 gets here next — because the property is about what may follow it, not about what
-    /// precedes it.
+    /// The second version fixed that by asserting the resume is the **last** statement in
+    /// the body, and a later review found that hole too: nothing follows the resume in a
+    /// `bringUp` whose `broughtUp.wait()` has simply been **deleted**, so mutation C left the
+    /// whole suite green while producing decision A1's exact failure — a Mach service
+    /// advertised over a graph still being bound.
+    ///
+    /// So the contract is asserted in two parts, and both are needed:
+    ///
+    /// - **Nothing follows the resume** — it is the last statement in the body. This is
+    ///   about what may run *after* the service is advertised.
+    /// - **A completion barrier separates the spawn from the resume** — after the `Task`
+    ///   block closes there is exactly one `.wait()`. This is about what must have *finished*
+    ///   before it.
+    ///
+    /// The second names a spelling, and that is deliberate rather than brittle: this
+    /// function's whole job is to convert an asynchronous bring-up into a synchronous
+    /// precondition, and there are two ways to spell that — block on it, or `await` it. A
+    /// restructuring that leaves neither has removed the precondition, so a test that fails
+    /// on it is the test working. Whichever of #164 to #168 restructures this owes the
+    /// barrier a new name here, in one line, in a test whose failure message says so.
     ///
     /// **Mutation A:** move `listener.resume()` into `main()`, beside `listener.delegate`.
     /// Run: red on the first two.
     /// **Mutation B:** inside `bringUp`, move `listener.resume()` above `broughtUp.wait()`.
-    /// Run: red on the third.
+    /// Run: red on the last-statement assertion.
+    /// **Mutation C:** delete `broughtUp.wait()` entirely. Run: red on the barrier.
     @Test("The Mach service is advertised only after bring-up, as the last statement")
     func theServiceIsAdvertisedOnlyAfterBringUp() throws {
         let code = try Self.mainSource()
@@ -285,6 +309,29 @@ struct HelperCompositionTests {
             """
             something runs after the Mach service is advertised. Whatever it is, a client \
             can now be answered before it has happened — which is the whole of decision A1.
+            """)
+
+        // The completion edge. Everything above is about statement *order*, and order alone
+        // cannot express "the bring-up finished" once its asynchronous half runs in a `Task`
+        // the enclosing function does not await.
+        #expect(
+            Self.occurrences(of: "Task {", in: bringUpBody) == 1,
+            "bring-up no longer spawns exactly one asynchronous half")
+        let spawned = try #require(
+            Self.body(ofFunctionMatching: "Task", in: bringUpBody),
+            "the bring-up Task's body could not be brace-matched")
+        let afterTheSpawn = try #require(
+            bringUpBody.range(of: spawned).map { String(bringUpBody[$0.upperBound...]) },
+            "the bring-up Task's body is not a substring of the function it was taken from")
+
+        #expect(
+            Self.occurrences(of: ".wait()", in: afterTheSpawn) == 1,
+            """
+            nothing between the bring-up Task and the resume waits for it to finish, so the \
+            Mach service is advertised while the safety registries are still being bound. \
+            That is decision A1's failure reached by deleting a line rather than by moving \
+            one, and the last-statement rule above cannot see it. An awaited restructuring \
+            is welcome and owes this assertion a new name.
             """)
     }
 
