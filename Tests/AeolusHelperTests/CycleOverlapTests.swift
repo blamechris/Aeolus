@@ -109,6 +109,81 @@ struct CycleOverlapTests {
     }
 }
 
+/// A supervisor that has stopped does not acquire a fan on its way out.
+///
+/// [#144](https://github.com/blamechris/Aeolus/issues/144)'s second side effect, and the
+/// same `stop()` shape as the overlap above: `ReclamationSupervisor.stop()` cancels without
+/// awaiting, so a sweep suspended inside a read resumes inside a supervisor that has already
+/// stopped. `reassert(_:fanAt:attempt:)`'s first write is the only one in § 5 that moves a
+/// fan in the unsafe direction — off Apple's thermal management and onto a target with
+/// nothing watching it, because the loop that would have watched it is the one that was just
+/// cancelled.
+///
+/// ## Two tests, because one of them cannot fail alone
+///
+/// The negative assertion — "no `engageManualControl`" — is true of any scenario that never
+/// reaches the write, including a scenario wired wrongly enough that no divergence is ever
+/// detected. The control below runs the identical fixture without the cancellation and
+/// asserts the write **does** happen, so the pair says "this path reaches the write, and
+/// cancelling it is what stops it" rather than "nothing happened".
+@Suite("A cancelled sweep does not acquire a fan")
+struct CancelledSweepTests {
+
+    /// **Kills:** deleting `guard !Task.isCancelled` from `reassert(_:fanAt:attempt:)`. The
+    /// outgoing sweep then re-engages manual control on fan 0 from a supervisor that has
+    /// stopped, and `attempts` contains `.engageManualControl(fan: 0)`.
+    @Test("A sweep cancelled inside its read never re-engages manual control")
+    func aCancelledSweepDoesNotReEngage() async throws {
+        let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
+        let sensing = GatedFanStateSensing(plane)
+        let machine = ReclamationMachine(
+            plane: plane, fans: [0: .held(at: 1_800)], sensing: sensing)
+        try await machine.hold(fan: 0, commanding: 2_400)
+
+        let sweep = Task { await machine.watchdog.cycle() }
+        #expect(
+            await yieldUntil("the sweep's control-state read") {
+                await sensing.controlStateRequests.isEmpty == false
+            })
+
+        // What `stop()` does: cancel, and do not await. The read is gated rather than
+        // cancellable, so the sweep resumes *after* the cancellation and runs on into the
+        // divergence it was about to find — which is the interleaving the guard exists for.
+        sweep.cancel()
+        await sensing.open()
+        await sweep.value
+
+        #expect(
+            await machine.attempts.contains(.engageManualControl(fan: 0)) == false,
+            "a cancelled sweep took fan 0 off automatic control")
+        #expect(await machine.commandedRPMs.isEmpty, "a cancelled sweep wrote a target")
+        #expect(
+            machine.safetyLog.lines(containing: "stopped short of re-asserting fan 0").count == 1,
+            "§ 5 abandoned the write without saying so")
+    }
+
+    /// The control: the same fixture, not cancelled, reaches the write.
+    @Test("The same divergence re-engages manual control when nothing was cancelled")
+    func anUncancelledSweepDoesReEngage() async throws {
+        let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
+        let sensing = GatedFanStateSensing(plane)
+        let machine = ReclamationMachine(
+            plane: plane, fans: [0: .held(at: 1_800)], sensing: sensing)
+        try await machine.hold(fan: 0, commanding: 2_400)
+
+        let sweep = Task { await machine.watchdog.cycle() }
+        #expect(
+            await yieldUntil("the sweep's control-state read") {
+                await sensing.controlStateRequests.isEmpty == false
+            })
+        await sensing.open()
+        await sweep.value
+
+        #expect(await machine.attempts.contains(.engageManualControl(fan: 0)))
+        #expect(await machine.commandedRPMs == [2_400])
+    }
+}
+
 /// Holds every critical-temperature sample open until the test lets it go, and records how
 /// many were in flight at once.
 ///

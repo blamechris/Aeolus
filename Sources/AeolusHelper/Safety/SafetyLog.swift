@@ -446,6 +446,24 @@ extension SafetyLog {
         )
     }
 
+    /// The supervisor was cancelled while § 5 was mid-re-assert, so the write did not happen.
+    ///
+    /// `ReclamationSupervisor.stop()` cancels without awaiting, so a sweep can resume from a
+    /// read inside a supervisor that has already stopped. Re-engaging manual control from
+    /// there would leave a fan off Apple's thermal management with nothing left watching it
+    /// ([#144](https://github.com/blamechris/Aeolus/issues/144)).
+    func reclamationAbandonedOnCancellation(fan: Int) {
+        emit(
+            .notice,
+            """
+            § 5 stopped short of re-asserting fan \(fan): the supervisor driving this sweep \
+            was cancelled before the write. The fan is left on automatic control, which is \
+            where a mechanism that has stopped watching should leave it — the lease TTL is \
+            the surviving backstop until the supervisor is started again.
+            """
+        )
+    }
+
     /// The mode write landed and the target write did not.
     ///
     /// The worst reachable state in the project — a fan off Apple's thermal management

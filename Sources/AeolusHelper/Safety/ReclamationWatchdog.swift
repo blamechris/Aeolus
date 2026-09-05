@@ -263,10 +263,19 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// dwell that elapses in half the cycles it should is how the secondary signal starts
     /// reading a ramp as a reclamation.
     ///
-    /// A second entrant therefore returns having done nothing, rather than waiting its turn:
-    /// this loop is driven at a fixed cadence, so a queued sweep would run against readings
-    /// from an interval that has already passed, and the next scheduled cycle is a better
-    /// answer than a late one.
+    /// A second entrant therefore returns having done nothing, rather than waiting its
+    /// turn — dropped to serialise the mechanism, not because its readings are stale. The
+    /// sweep in flight is acting on a control state it has already read; the entrant has
+    /// read nothing yet, so an entrant that queued would read *after* the incumbent finished
+    /// and would hold the fresher view of the fan. What makes dropping it right is that it
+    /// has nothing to add: this loop runs at a fixed cadence, an entrant exists only because
+    /// a stop-then-start overlapped two loops, and queueing would run two sweeps back to
+    /// back inside one interval — spending two supervisor-priority turns on the single SMC
+    /// connection where the cadence budgets one.
+    ///
+    /// Nothing is carried past the return: every sweep re-reads each fan below, and the
+    /// per-fan state that made the overlap consequential — the budget, the dwell — is what
+    /// the next scheduled sweep will read fresh anyway.
     func cycle() async {
         guard !isSweeping else { return }
         isSweeping = true
@@ -527,6 +536,33 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             return
         }
         held[index]?.permit = permit
+
+        // **A cancelled sweep does not take a fan off automatic control.** The other half of
+        // #144's `stop()` shape: the in-flight guard on `cycle()` makes the *incoming* loop
+        // harmless, and this makes the *outgoing* one harmless.
+        // `ReclamationSupervisor.stop()` cancels without awaiting, so a sweep suspended
+        // inside a read resumes inside a supervisor that has already stopped — and the write
+        // below is the only one in this file that moves a fan in the unsafe direction: off
+        // Apple's thermal management and onto a target with nothing watching it, because the
+        // loop that would have watched it is the loop that was just cancelled. `stop()`
+        // documents that it leaves already-held fans held; acquiring a *new* one on the way
+        // out is not covered by that reasoning, it runs against it.
+        //
+        // Only this write is guarded. The restores below resolve *towards* automatic
+        // control, which is where a stopping supervisor wants a fan it can no longer see,
+        // and § 3 needs no counterpart at all — `bridgeToMaximumThenRelease` ends on
+        // `restoreToAutomatic` whether it is cancelled or not.
+        //
+        // Read from the task, because cancellation is the supervisor's stop signal and
+        // `cycle()` runs on the supervisor's task; placed immediately before the write for
+        // this file's own rule, that a check separated from the act it guards is not a
+        // check. The attempt `diverged(_:fanAt:)` spent to get here is not refunded — the
+        // budget bounds the trying, and restarting with one fewer attempt gives the fan back
+        // to automatic control sooner, which is the direction this mechanism fails in.
+        guard !Task.isCancelled else {
+            log.reclamationAbandonedOnCancellation(fan: index)
+            return
+        }
 
         do {
             // Re-engage before re-commanding. The system took this fan back, so it is on
