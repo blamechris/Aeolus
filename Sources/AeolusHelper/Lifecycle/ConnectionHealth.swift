@@ -1,3 +1,5 @@
+import os
+
 /// The lifecycle owner's answer to *"the helper is blind, and nothing is doing anything
 /// about it"*.
 ///
@@ -28,8 +30,14 @@
 ///
 /// ## What it is not
 ///
-/// - **Not a retry.** It rebuilds the handle once and stops. Whether reading works again is
-///   answered by the next read, which arrives on its own from a path that is already polling.
+/// - **Not a retry loop, though it is not a single attempt either.** One rebuild per run of
+///   failures, and at most one per `ConnectionHealthLimits.minimumInterval`. On a machine
+///   whose SMC is genuinely gone that is one attempt every thirty seconds for as long as
+///   reads keep failing — bounded in *rate*, never in total, because an SMC that comes back
+///   on its own has to be noticed and nothing else here would notice it. This bullet said
+///   "rebuilds the handle once and stops" until a review pointed out that the thirty-second
+///   window is precisely what makes that false. Whether reading works again is answered by
+///   the next read, which arrives on its own from a path that is already polling.
 /// - **Not a recovery announcement.** Nothing here says the SMC is back. A clean
 ///   `reconnect()` means the handle was rebuilt and no more — `CLAUDE.md` rule 6.
 /// - **Not a safety mechanism.** It restores no fan and revokes no lease. A fan Aeolus is
@@ -61,19 +69,72 @@ actor ConnectionHealth: SchedulerObserving {
     private let clock: any MonotonicClock
     private let log: SafetyLog
 
-    private let events: AsyncStream<SchedulerEvent>
+    private let events: AsyncStream<SequencedOutcome>
 
     /// Written from inside the scheduler's actor, so it is `nonisolated` and must stay that
     /// way: an `await` here would put a hop between the scheduler and its own report.
-    nonisolated private let continuation: AsyncStream<SchedulerEvent>.Continuation
+    nonisolated private let continuation: AsyncStream<SequencedOutcome>.Continuation
+
+    /// The numbering that makes a buffer eviction visible. See `eventBuffer`.
+    ///
+    /// It cannot be actor state: `schedulerDidObserve(_:)` assigns it and is `nonisolated`,
+    /// because it is called from inside `SMCReadScheduler`'s own isolation and an `await`
+    /// there would put a hop between the scheduler and its own report.
+    ///
+    /// `OSAllocatedUnfairLock` rather than a hand-written box, and that is `CLAUDE.md` rule 10
+    /// deciding rather than a preference. The two alternatives both fail on their own terms: a
+    /// final class round an `NSLock` needs a `Sendable` conformance the compiler cannot check,
+    /// which is exactly the claim this target's lint rule refuses in privileged code, and
+    /// `Synchronization.Atomic` needs macOS 15 against this package's macOS 13 floor. This one
+    /// is audited by the SDK rather than asserted by us, and it satisfies `SchedulerObserving`'s
+    /// obligation exactly: held across one increment, never across an `await`, and nothing else
+    /// in the process can be holding it.
+    ///
+    /// `UInt64` so "could it wrap" has an answer that is arithmetic rather than judgement: at
+    /// the corrected steady state of ~8 outcomes a second, about seventy billion years.
+    nonisolated private let sequence = OSAllocatedUnfairLock<UInt64>(initialState: 0)
 
     private var pump: Task<Void, Never>?
+
+    /// Whether this instance is draining events right now.
+    ///
+    /// `false` before `start(recovering:)`, after `stop()`, and after a `start(recovering:)`
+    /// that `stop()` refused. It is the sentinel that keeps the last of those from being the
+    /// "looks started, observes nothing" shape `stop()`'s own documentation says this
+    /// repository refuses — a `pump != nil` test could not tell it apart, because a pump over
+    /// a finished stream is a non-`nil` task that has already returned.
+    private(set) var isObserving = false
+
+    /// Whether `stop()` has been called. One-way, like `stop()` itself.
+    private var hasStopped = false
 
     /// Whole reads that have failed since the last one that succeeded.
     private var consecutiveFailures = 0
 
+    /// The sequence number of the last outcome handled, or `nil` before the first.
+    private var lastHandledSequence: UInt64?
+
+    /// Forwarded outcomes the buffer threw away before the pump could reach them.
+    ///
+    /// Here for the tests, like `reconnectAttempts` and `observedOutcomes`, and it is the only
+    /// way an eviction is observable at all: the effect of one is that a run *ends*, which is
+    /// indistinguishable from the run having ended for the ordinary reason. The count is
+    /// exact rather than a flag because the gap says how many went missing, and a fixture that
+    /// overflowed the buffer by more than it meant to should say so rather than pass.
+    private(set) var outcomesLostToTheBuffer = 0
+
     /// When the last reconnect was attempted, or `nil` if none has been.
     private var lastAttemptAt: ContinuousClock.Instant?
+
+    /// Whether the refusal has already been logged for the window `lastAttemptAt` opened.
+    ///
+    /// The line is a `.fault`, and a machine whose `open()` keeps failing produces a run every
+    /// ~1.5 s for the whole thirty seconds — so logging the *state* would put twenty fault
+    /// lines in `log show` per window saying the same thing. It is logged as a **transition**
+    /// instead, once when the helper first refuses inside a window, which is the discipline
+    /// `ReclamationWatchdog` already uses. Cleared when a rebuild is actually attempted,
+    /// because that is what opens the next window.
+    private var hasLoggedRefusalInThisWindow = false
 
     /// How many reconnects have been attempted.
     ///
@@ -95,21 +156,41 @@ actor ConnectionHealth: SchedulerObserving {
     init(clock: some MonotonicClock = SystemMonotonicClock(), log: SafetyLog = SafetyLog()) {
         self.clock = clock
         self.log = log
-        let (events, continuation) = AsyncStream<SchedulerEvent>.makeStream(
+        let (events, continuation) = AsyncStream<SequencedOutcome>.makeStream(
             bufferingPolicy: .bufferingNewest(Self.eventBuffer))
         self.events = events
         self.continuation = continuation
     }
 
-    /// How many unhandled events are kept before the oldest are dropped.
+    /// How many unhandled outcomes are kept before the oldest are dropped.
     ///
     /// Bounded rather than unbounded, because an observer wired to a scheduler that is never
     /// started — or one whose pump is stuck inside a slow `reconnect()` — must not grow a
-    /// queue in a root daemon that never exits. Dropping is safe for what is counted here: a
-    /// dropped failure can only *delay* a reconnect that the next failure asks for again, and
-    /// the run being counted is one the machine keeps producing. Two forwarded events per
-    /// second is the steady state (one snapshot, one supervisor cycle), so this is about half
-    /// a minute of backlog.
+    /// queue in a root daemon that never exits.
+    ///
+    /// ## The hazard runs both ways, and an earlier version of this comment saw one of them
+    ///
+    /// `.bufferingNewest` drops the **oldest** unhandled outcome. In the direction that was
+    /// documented, a dropped *failure* can only delay a reconnect the next failure asks for
+    /// again. In the direction that was not, a dropped *success* joins two runs of failures
+    /// that were never consecutive into one that looks it — and produces a rebuild of a handle
+    /// that is working. That is the worse of the two and it was the one being argued away.
+    ///
+    /// So an eviction is made **detectable** rather than reasoned about: every forwarded
+    /// outcome carries a `SequencedOutcome.sequence`, the pump compares it against the last it
+    /// handled, and a gap ends the run — because a run with a hole in it is not a fact about
+    /// three consecutive reads, whatever was in the hole. `outcomesLostToTheBuffer` records
+    /// how many went missing.
+    ///
+    /// ## The backlog this buys, corrected
+    ///
+    /// It is not the half-minute an earlier draft claimed. A `snapshot()` is **three** reads,
+    /// not one (see `SMCReadScheduler`), the supervisor cycle is one per second, and
+    /// `LeaseAuthority.refuseIfBlind` issues one per `acquireLease` off any cycle at all — so
+    /// a machine with a client attached forwards roughly four to eight outcomes a second, and
+    /// 64 slots is **eight to sixteen seconds**. Still far longer than a pump that is merely
+    /// hopping actors needs, which is the case the bound exists for; the number is quoted
+    /// honestly because the previous one was quoted as a safety argument.
     private static let eventBuffer = 64
 
     // MARK: - Observing
@@ -125,7 +206,13 @@ actor ConnectionHealth: SchedulerObserving {
     nonisolated func schedulerDidObserve(_ event: SchedulerEvent) {
         switch event {
         case .wholeReadSucceeded, .wholeReadFailed:
-            continuation.yield(event)
+            // Numbered here rather than in the pump, because a number assigned after the
+            // buffer could not describe what the buffer threw away.
+            let next = sequence.withLock { issued -> UInt64 in
+                issued += 1
+                return issued
+            }
+            continuation.yield(SequencedOutcome(sequence: next, event: event))
         case .waiterParked, .turnGranted, .turnEnded, .overtakeTaken, .quotaExhausted:
             break
         }
@@ -138,8 +225,14 @@ actor ConnectionHealth: SchedulerObserving {
     ///
     /// Events yielded before this are buffered and handled on start, which is deliberate:
     /// the scheduler is constructed before the composition and the very first reads of the
-    /// process — reconciliation's, and discovery's — happen during bring-up. A failure there
-    /// is exactly the case worth counting.
+    /// process — reconciliation's — happen during bring-up. A failure there is exactly the
+    /// case worth counting.
+    ///
+    /// **Discovery's walk is not among them**, and this comment named it until a review
+    /// checked. `SMCReadScheduler.readAll()` emits no scheduler event at all, so a walk that
+    /// fails during bring-up is counted by nothing here. Reporting it would need a decision
+    /// this change does not take: whether a 2.2 s — 5.9 s cold — walk's outcome belongs in the
+    /// same run as reads issued at 1 Hz.
     ///
     /// **`recovery` is carried by the pump rather than stored**, and that is what removes the
     /// unbound state entirely. Late binding is forced by the graph — the plane holds the
@@ -149,11 +242,22 @@ actor ConnectionHealth: SchedulerObserving {
     /// would be unreachable: nothing is handled before the pump exists, and the pump does not
     /// exist before this call. Passing it down the one path that can reach a reconnect makes
     /// "not yet bound" mean "not yet draining", which is true.
+    /// A `start(recovering:)` after `stop()` is **refused**, loudly and observably, rather
+    /// than accepted. Accepting it used to build a pump over a finished stream: the `for
+    /// await` returns at once, `pump` is left holding a task that has already exited, and the
+    /// instance looks started while observing nothing — the exact shape `stop()`'s own
+    /// documentation says is refused, one method away from where it says it. `isObserving`
+    /// is what makes the refusal a fact a caller can read.
     func start(recovering recovery: some SMCConnectionRecovering) {
+        guard !hasStopped else {
+            log.connectionHealthRestartRefused()
+            return
+        }
         guard pump == nil else { return }
+        isObserving = true
         pump = Task { [events] in
-            for await event in events {
-                await self.handle(event, recovering: recovery)
+            for await outcome in events {
+                await self.handle(outcome, recovering: recovery)
             }
         }
     }
@@ -165,8 +269,11 @@ actor ConnectionHealth: SchedulerObserving {
     /// one iterator, so a "restart" would have to build a second stream — and the continuation
     /// the scheduler holds is `nonisolated let`, captured at construction, so it would keep
     /// yielding into the first one. A stop that silently stopped observing while looking
-    /// started is the shape this repository keeps refusing.
+    /// started is the shape this repository keeps refusing — which is why `start(recovering:)`
+    /// refuses after this rather than obliging.
     func stop() {
+        hasStopped = true
+        isObserving = false
         continuation.finish()
         pump?.cancel()
         pump = nil
@@ -175,9 +282,19 @@ actor ConnectionHealth: SchedulerObserving {
     // MARK: - The count
 
     private func handle(
-        _ event: SchedulerEvent, recovering recovery: some SMCConnectionRecovering
+        _ outcome: SequencedOutcome, recovering recovery: some SMCConnectionRecovering
     ) async {
-        switch event {
+        // A hole in the numbering means the buffer evicted something, and a run counted
+        // across a hole is not a run. Ending it here is the conservative direction: the
+        // machine that is really failing keeps producing failures and asks again a second and
+        // a half later, whereas a manufactured run rebuilds a working handle immediately.
+        if let lastHandledSequence, outcome.sequence > lastHandledSequence + 1 {
+            outcomesLostToTheBuffer += Int(outcome.sequence - lastHandledSequence - 1)
+            consecutiveFailures = 0
+        }
+        lastHandledSequence = outcome.sequence
+
+        switch outcome.event {
         case .wholeReadSucceeded:
             consecutiveFailures = 0
         case .wholeReadFailed:
@@ -207,12 +324,16 @@ actor ConnectionHealth: SchedulerObserving {
 
         let now = clock.now
         if let lastAttemptAt, now - lastAttemptAt < ConnectionHealthLimits.minimumInterval {
+            // Once per window, not once per refused run: see `hasLoggedRefusalInThisWindow`.
+            guard !hasLoggedRefusalInThisWindow else { return }
+            hasLoggedRefusalInThisWindow = true
             log.connectionReconnectRateLimited(
                 consecutiveFailures: run, sinceLastAttempt: now - lastAttemptAt)
             return
         }
 
         lastAttemptAt = now
+        hasLoggedRefusalInThisWindow = false
         reconnectAttempts += 1
         log.connectionReconnecting(consecutiveFailures: run)
 
@@ -223,6 +344,19 @@ actor ConnectionHealth: SchedulerObserving {
             log.connectionReconnectFailed(detail: String(describing: error))
         }
     }
+}
+
+// MARK: - What travels through the stream
+
+/// One forwarded whole-read outcome, and its place in the order the scheduler reported it.
+///
+/// The sequence number is the whole reason this type exists rather than a bare
+/// `SchedulerEvent`: it is what makes a buffer eviction observable to the pump, and an
+/// eviction that is not observable is a run the buffer can manufacture. See
+/// `ConnectionHealth.eventBuffer`.
+private struct SequencedOutcome: Sendable {
+    let sequence: UInt64
+    let event: SchedulerEvent
 }
 
 // MARK: - The two numbers

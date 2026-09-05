@@ -315,7 +315,7 @@ struct WriteVerbAllowlistTests {
         // `open()` are `SMCConnectionRecycling`'s two verbs: connection lifecycle, no key, no
         // fan, no value on the wire.
         "ConnectionHealth.swift: attemptReconnect(through: some SMCConnectionRecovering)",
-        "ConnectionHealth.swift: handle(_: SchedulerEvent, "
+        "ConnectionHealth.swift: handle(_: SequencedOutcome, "
             + "recovering: some SMCConnectionRecovering)",
         "SMCFanControlPlane.swift: close()",
         "SMCFanControlPlane.swift: open()",

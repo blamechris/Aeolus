@@ -810,6 +810,13 @@ extension SafetyLog {
     /// Logged rather than passed over in silence, because "still blind, and deliberately
     /// doing nothing about it" is precisely the state an operator reading `log show` needs
     /// to be able to tell apart from "nothing noticed".
+    ///
+    /// **Emitted once per window, not once per refused run.** A machine whose `open()` keeps
+    /// failing produces a run every ~1.5 s for the whole thirty seconds, so the state would be
+    /// twenty identical `.fault` lines per window — the per-tick logging this subsystem
+    /// refuses everywhere else. `ConnectionHealth.hasLoggedRefusalInThisWindow` is what makes
+    /// this a transition; the caller owns that, because only the caller knows where the window
+    /// boundary is.
     func connectionReconnectRateLimited(consecutiveFailures: Int, sinceLastAttempt: Duration) {
         emit(
             .fault,
@@ -818,6 +825,25 @@ extension SafetyLog {
             \(sinceLastAttempt) after the last rebuild. Not rebuilding: a connection that is \
             genuinely gone is not fixed by attempting it every second, and each attempt \
             holds the turn the safety cycle needs to notice that reading works again.
+            """
+        )
+    }
+
+    /// Something asked the connection-health observer to start after it had been stopped.
+    ///
+    /// Unreachable through the composition root, which starts once in `bringUp()` and stops
+    /// once in `shutDown()` — so this is a programming error rather than a machine state, and
+    /// it is logged rather than trapped because a root daemon that is holding fans must not be
+    /// killed by a lifecycle mistake it could survive. `ConnectionHealth.isObserving` is the
+    /// half a test reads; this is the half an operator does.
+    func connectionHealthRestartRefused() {
+        emit(
+            .fault,
+            """
+            The connection-health observer was asked to start again after being stopped, and \
+            refused. Its event stream is finished, so a restarted pump would observe nothing \
+            while looking started — nothing is counting whole-read failures until the helper \
+            is restarted.
             """
         )
     }

@@ -209,6 +209,156 @@ struct ConnectionHealthTests {
         await health.stop()
     }
 
+    /// The refusal is logged **once per window**, not once per refused run.
+    ///
+    /// `connectionReconnectRateLimited` is a `.fault`, and a machine whose `open()` keeps
+    /// failing produces a run every ~1.5 s for the whole thirty seconds — so logging the
+    /// *state* puts twenty identical fault lines in `log show` per window, which is the
+    /// per-tick logging this subsystem refuses everywhere else. It is a transition instead,
+    /// the discipline `ReclamationWatchdog` already uses.
+    ///
+    /// Both halves are here, because a flag that is set and never cleared is silent for the
+    /// rest of the process: the second window must produce a second line.
+    ///
+    /// **Mutation A:** drop the `guard !hasLoggedRefusalInThisWindow` from
+    /// `attemptReconnect()` and log every refusal. Run: red — four lines, not two.
+    /// **Mutation B:** delete `hasLoggedRefusalInThisWindow = false` from the attempt path,
+    /// so the flag is never cleared. Run: red — one line, not two.
+    @Test("The rate-limited refusal is logged once per window")
+    func theRefusalIsLoggedOncePerWindow() async throws {
+        let recovery = RecordingReconnector()
+        let clock = TestClock()
+        let recorded = RecordedLog()
+        let health = ConnectionHealth(
+            clock: clock,
+            log: SafetyLog(recording: { [recorded] in recorded.append($0, $1) }))
+        await health.start(recovering: recovery)
+
+        // A rebuild, then two further runs inside the window it opened — two refusals, one
+        // line. Six rather than three, because one refused run cannot tell "once per window"
+        // from "once per run".
+        await Self.drive(health, Array(repeating: Self.failure(), count: 3))
+        await Self.drive(health, Array(repeating: Self.failure(), count: 6))
+        #expect(recorded.lines(containing: "Not rebuilding").count == 1)
+
+        // The window reopens, a second rebuild happens, and the next refusal inside *that*
+        // window is a new transition.
+        clock.advance(by: ConnectionHealthLimits.minimumInterval + .seconds(1))
+        await Self.drive(health, Array(repeating: Self.failure(), count: 3))
+        await Self.drive(health, Array(repeating: Self.failure(), count: 6))
+
+        #expect(await recovery.attempts == 2)
+        #expect(
+            recorded.lines(containing: "Not rebuilding").count == 2,
+            """
+            the rate-limited refusal was logged \
+            \(recorded.lines(containing: "Not rebuilding").count) times across two windows \
+            with two refusals in each. Once per window is a transition; more is the state, \
+            and the state is a fault line every second and a half for as long as the SMC is \
+            gone.
+            """)
+        await health.stop()
+    }
+
+    /// **The reset happens before the window is consulted**, which `attemptReconnect()`'s own
+    /// comment calls "the whole of the rate limit" and which nothing tested.
+    ///
+    /// Moving `consecutiveFailures = 0` below the window check leaves the run standing on the
+    /// refused path — so every subsequent failure asks again, and the *next* open window is
+    /// spent by a single failure rather than by a fresh run of three. The limiter would then
+    /// be the only thing between the helper and a reconnect attempt per read, which is a check
+    /// nothing may depend on alone.
+    ///
+    /// The assertion is deliberately on the far side of the window rather than on the log:
+    /// with the refusal now logged once per window, a log-based test cannot see this mutation
+    /// at all.
+    ///
+    /// **Mutation:** in `attemptReconnect()`, move `consecutiveFailures = 0` below the
+    /// `if let lastAttemptAt …` block. Run: red — the single failure after the window reopens
+    /// reconnects, because the refused run was never cleared.
+    @Test("A refused run is cleared before the window is checked, not after")
+    func theRunIsResetBeforeTheWindowIsChecked() async throws {
+        let recovery = RecordingReconnector()
+        let clock = TestClock()
+        let health = ConnectionHealth(clock: clock, log: SafetyLog(recording: { _, _ in }))
+        await health.start(recovering: recovery)
+
+        await Self.drive(health, Array(repeating: Self.failure(), count: 3))
+        #expect(await recovery.attempts == 1)
+
+        // Refused, and the run it was refused for must not survive the refusal.
+        await Self.drive(health, Array(repeating: Self.failure(), count: 3))
+        #expect(await recovery.attempts == 1)
+
+        clock.advance(by: ConnectionHealthLimits.minimumInterval + .seconds(1))
+        await Self.drive(health, [Self.failure()])
+
+        #expect(
+            await recovery.attempts == 1,
+            """
+            one failure after the window reopened was enough to reconnect, so the run refused \
+            inside the window was still standing. Three consecutive failures is the policy; a \
+            run that survives a refusal makes it one.
+            """)
+        await health.stop()
+    }
+
+    // MARK: - The buffer
+
+    /// An outcome the buffer threw away is **noticed**, and the run it was in ends.
+    ///
+    /// `.bufferingNewest` drops the oldest unhandled outcome, and the doc argued only the
+    /// harmless direction of that: a dropped *failure* delays a reconnect the next failure
+    /// asks for again. The direction it did not argue is the dangerous one — a dropped
+    /// *success* joins two runs that were never consecutive into one that looks it, and
+    /// rebuilds a handle that is working. So the gap is made visible rather than reasoned
+    /// about.
+    ///
+    /// The pump is parked inside a reconnect while the flood arrives, which is the only place
+    /// it can be parked deliberately; everything yielded during the park piles up in the
+    /// 64-slot buffer, and the sixty-fifth arrival evicts the oldest — the success.
+    ///
+    /// **The assertion is the drop count rather than a reconnect that did not happen**, and
+    /// that is a limit worth stating plainly rather than dressing up. A run only ever survives
+    /// a suspension of the pump if the pump suspended mid-run, and the sole suspension point
+    /// is `attemptReconnect`, which resets the run before it suspends — so no fixture can put
+    /// the pump to sleep holding a run of two. What is asserted is therefore that the
+    /// eviction was seen, exactly, and by how much; the reset it drives is one line away from
+    /// it in `handle(_:recovering:)`.
+    ///
+    /// **Mutation:** delete the `if let lastHandledSequence, outcome.sequence >
+    /// lastHandledSequence + 1` block from `ConnectionHealth.handle(_:recovering:)`. Run: red
+    /// — nothing notices, which is the state this test exists to end.
+    @Test("An outcome evicted by the buffer is counted rather than silently absorbed")
+    func anEvictedOutcomeIsNoticed() async throws {
+        let recovery = HoldingReconnector()
+        let health = ConnectionHealth(clock: TestClock(), log: SafetyLog(recording: { _, _ in }))
+        await health.start(recovering: recovery)
+
+        for _ in 0..<3 { health.schedulerDidObserve(Self.failure()) }
+        await yieldUntil("the pump to park inside the reconnect") { await recovery.isHolding }
+
+        // One success, then a full buffer behind it. The success is the oldest unhandled
+        // outcome, so it is the one thrown away — the eviction the doc used to argue was
+        // harmless.
+        health.schedulerDidObserve(.wholeReadSucceeded(priority: .snapshot))
+        for _ in 0..<64 { health.schedulerDidObserve(Self.failure()) }
+
+        await recovery.release()
+        await yieldUntil("everything the buffer kept to be handled") {
+            await health.observedOutcomes == 3 + 64
+        }
+
+        #expect(
+            await health.outcomesLostToTheBuffer == 1,
+            """
+            the buffer dropped an outcome and nothing noticed. A dropped success joins two \
+            runs that were never consecutive, and the reconnect that follows rebuilds a \
+            handle that is working.
+            """)
+        await health.stop()
+    }
+
     // MARK: - Binding, and what is not counted
 
     /// Failures that arrive **before** the observer is bound are handled once it is.
@@ -235,6 +385,51 @@ struct ConnectionHealthTests {
 
         #expect(await recovery.attempts == 1)
         await health.stop()
+    }
+
+    /// A `start(recovering:)` after `stop()` is refused, and says so.
+    ///
+    /// It used to succeed and observe nothing: `stop()` finishes the stream and clears `pump`,
+    /// so the `guard pump == nil` let a second start through, the `for await` returned at
+    /// once, and the instance was left holding a completed task. Looking started while
+    /// observing nothing is the precise shape `stop()`'s own documentation says this
+    /// repository refuses, one method away from where it says it.
+    ///
+    /// Refused rather than trapped: this is unreachable through the composition root, which
+    /// starts once in `bringUp()` and stops once in `shutDown()`, and a root daemon holding
+    /// fans must not be killed by a lifecycle mistake it can survive. `isObserving` is what
+    /// makes the refusal a fact rather than a silence.
+    ///
+    /// **Mutation:** delete the `guard !hasStopped` from `start(recovering:)`. Run: red —
+    /// `isObserving` is `true` on an instance whose stream is finished.
+    @Test("A start after a stop is refused rather than quietly observing nothing")
+    func aRestartAfterStopIsRefused() async throws {
+        let recovery = RecordingReconnector()
+        let recorded = RecordedLog()
+        let health = ConnectionHealth(
+            clock: TestClock(),
+            log: SafetyLog(recording: { [recorded] in recorded.append($0, $1) }))
+
+        await health.start(recovering: recovery)
+        #expect(await health.isObserving)
+
+        await health.stop()
+        #expect(await health.isObserving == false)
+
+        await health.start(recovering: recovery)
+        #expect(
+            await health.isObserving == false,
+            """
+            a restarted observer reports that it is observing. Its stream is finished, so it \
+            will count no failure for the life of the process while every caller believes \
+            something is watching.
+            """)
+        #expect(!recorded.lines(containing: "refused").isEmpty)
+
+        // And the refusal is real, not merely reported: nothing is handled afterwards.
+        for _ in 0..<3 { health.schedulerDidObserve(Self.failure()) }
+        #expect(await health.observedOutcomes == 0)
+        #expect(await recovery.attempts == 0)
     }
 
     /// A reconnect that throws is not a crash and is not a retry: the run is already reset,
@@ -313,5 +508,36 @@ actor RecordingReconnector: SMCConnectionRecovering {
     func reconnect() async throws {
         attempts += 1
         if failing { throw FakeProviderError(description: "the SMC did not come back") }
+    }
+}
+
+/// A reconnector that parks inside its first attempt until the test lets it go.
+///
+/// It exists so a test can put the pump to sleep on purpose. `ConnectionHealth.handle` has
+/// exactly one suspension point — `attemptReconnect` — so this is the only way to hold the
+/// pump still while the event buffer is deliberately overflowed, which is what
+/// `anEvictedOutcomeIsNoticed` needs and what nothing else could arrange.
+actor HoldingReconnector: SMCConnectionRecovering {
+
+    private(set) var attempts = 0
+    private(set) var isHolding = false
+
+    private var isHeld = true
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    func reconnect() async throws {
+        attempts += 1
+        guard isHeld else { return }
+        isHolding = true
+        await withCheckedContinuation { waiter = $0 }
+        isHolding = false
+    }
+
+    /// Lets the parked attempt finish, and waves every later one straight through.
+    func release() {
+        isHeld = false
+        guard let parked = waiter else { return }
+        waiter = nil
+        parked.resume()
     }
 }
