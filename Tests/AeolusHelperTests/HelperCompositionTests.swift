@@ -264,8 +264,8 @@ struct HelperCompositionTests {
     /// - **Nothing follows the resume** — it is the last statement in the body. This is
     ///   about what may run *after* the service is advertised.
     /// - **A completion barrier separates the spawn from the resume** — after the `Task`
-    ///   block closes there is exactly one `.wait()`. This is about what must have *finished*
-    ///   before it.
+    ///   block closes there is exactly one `.wait()`, and the semaphore it waits on starts
+    ///   at zero. This is about what must have *finished* before it.
     ///
     /// The second names a spelling, and that is deliberate rather than brittle: this
     /// function's whole job is to convert an asynchronous bring-up into a synchronous
@@ -279,6 +279,8 @@ struct HelperCompositionTests {
     /// **Mutation B:** inside `bringUp`, move `listener.resume()` above `broughtUp.wait()`.
     /// Run: red on the last-statement assertion.
     /// **Mutation C:** delete `broughtUp.wait()` entirely. Run: red on the barrier.
+    /// **Mutation D:** `DispatchSemaphore(value: 0)` becomes `value: 1`. Run: red on the
+    /// initial value — and green on everything else here, which is why it needs its own.
     @Test("The Mach service is advertised only after bring-up, as the last statement")
     func theServiceIsAdvertisedOnlyAfterBringUp() throws {
         let code = try Self.mainSource()
@@ -332,6 +334,17 @@ struct HelperCompositionTests {
             That is decision A1's failure reached by deleting a line rather than by moving \
             one, and the last-statement rule above cannot see it. An awaited restructuring \
             is welcome and owes this assertion a new name.
+            """)
+
+        // The barrier's *initial value*, which the statement above cannot see. A semaphore
+        // constructed at 1 is already signalled, so its `wait()` returns without waiting and
+        // the spawned bring-up races the resume it exists to gate — mutation C's failure
+        // reached without deleting anything, and every assertion above stays green.
+        #expect(
+            bringUpBody.contains("DispatchSemaphore(value: 0)"),
+            """
+            the bring-up barrier does not start closed, so its wait returns at once and the \
+            Mach service is advertised over registries that are still being bound.
             """)
     }
 

@@ -88,10 +88,18 @@ struct SupervisedFanAuthorityTests {
 
     /// Renewal moves the deadline, and release empties the table and both registries.
     ///
-    /// The clock is advanced ten seconds between the grant and the renewal so that a renewal
-    /// which merely *authorised* — returning the record it found, rather than extending it —
-    /// is distinguishable from one that renewed. Without that advance both leases carry the
-    /// same `expiresAt` and the assertion cannot fail.
+    /// The asserted field is `expiresAt`, and it moves on the **real wall clock**:
+    /// `LeaseAuthority` derives it from its injected `wallClock()`, which
+    /// `HelperComposition` does not override, while only `deadline` is taken from the
+    /// injected `clock`. So the advance below separates the two *deadlines*; it is not what
+    /// makes this assertion able to fail, and deleting it leaves the suite green. What makes
+    /// it able to fail is that a renewal which merely *authorised* — returning the record it
+    /// found rather than extending it — returns the record's original `expiresAt`, which is
+    /// not greater than its own.
+    ///
+    /// That the renewed **deadline** is the one expiry honours is
+    /// `LeaseExpiryTests.renewalRestartsTheTimeToLive`'s, against the lease core directly.
+    /// This test's subject is the forward: that the authority reaches that core at all.
     ///
     /// **Mutation:** replace `renewLease`'s forward with
     /// `try await leases.heldLease(id: id, from: connection).asLease()`. Run: red on the
