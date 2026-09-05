@@ -121,7 +121,8 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// The fan is mid-handback: a previous lease has ended and the restore-to-automatic
         /// write for this fan has not completed yet.
         ///
-        /// Transient, and the only reason here that is. Granting during the window would
+        /// Transient, and the shortest-lived reason here — `systemSleeping` is the other
+        /// transient one, and it lasts until the machine wakes. Granting during the window would
         /// hand a client a lease over a fan that is about to be returned to the system
         /// underneath it — the client writes a target, the in-flight restore lands, and the
         /// client holds a live lease over a fan nothing is honouring. Refusing for a few
@@ -148,6 +149,19 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// re-registration. Until it lands, the refusal is for the life of the helper
         /// process and `docs/RECOVERY.md` is the user's route out.
         case restoreToAutomaticFailed
+        /// The machine is going to sleep, and the helper has already handed every fan back.
+        ///
+        /// `docs/SAFETY.md` § 4 drops every lease and returns every fan to automatic control
+        /// in the window `kIOMessageSystemWillSleep` opens, and refuses new leases for the
+        /// duration. Without the refusal, a request that was already in flight when the sleep
+        /// arrived could resume after the teardown, find an empty table, and engage manual
+        /// control on a machine that is about to stop running the helper — a fan pinned
+        /// across a sleep by the one path § 4 does not otherwise close.
+        ///
+        /// Transient, and the advice is to retry after the machine wakes rather than
+        /// immediately: nothing the client does shortens it, and the helper clears it on
+        /// `kIOMessageSystemHasPoweredOn`.
+        case systemSleeping
         /// The helper cannot currently see any critical temperature, so the mechanism
         /// that would protect a leased fan is blind.
         ///
@@ -195,6 +209,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case .selfRenewalNotBuilt: return "selfRenewalNotBuilt"
             case .releaseInProgress: return "releaseInProgress"
             case .restoreToAutomaticFailed: return "restoreToAutomaticFailed"
+            case .systemSleeping: return "systemSleeping"
             case .noThermalTelemetry: return "noThermalTelemetry"
             case .supervisorBlind: return "supervisorBlind"
             case .unknown(let raw): return raw
@@ -213,6 +228,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case Reason.selfRenewalNotBuilt.wireValue: self = .selfRenewalNotBuilt
             case Reason.releaseInProgress.wireValue: self = .releaseInProgress
             case Reason.restoreToAutomaticFailed.wireValue: self = .restoreToAutomaticFailed
+            case Reason.systemSleeping.wireValue: self = .systemSleeping
             case Reason.noThermalTelemetry.wireValue: self = .noThermalTelemetry
             case Reason.supervisorBlind.wireValue: self = .supervisorBlind
             default: self = .unknown(wireValue)

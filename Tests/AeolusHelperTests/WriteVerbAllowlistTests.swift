@@ -40,21 +40,31 @@ import Testing
 ///
 /// - **A synchronous function that spawns an unstructured `Task` and writes inside it.**
 ///   That is the one route around "a synchronous function cannot `await`".
-///   `Sources/AeolusHelper` has **fifteen** such spawn sites today, and an earlier draft of
+///   `Sources/AeolusHelper` has **seventeen** such spawn sites today, and an earlier draft of
 ///   this bullet said five and called them all supervisors — which was both the wrong number
 ///   and the wrong description, so the containment argument it offered was not the one the
-///   tree supports. The real one, asserted by `everyUnstructuredTaskHandsOffToThePopulation`
-///   below: **no spawn site writes in its own body; each hands off to an `async` method that
-///   is itself in this population.** Seven are `HelperXPCService`'s XPC entry points hopping
-///   a message onto `HelperConnectionSession`; one is `HelperListenerDelegate`'s invalidation
-///   hop onto the same actor; one is `ReadOnlyFanAuthority`'s single-flight sensor walk;
-///   three are the supervisors' `Task.detached` handing control to an `async run(…)`; one
-///   is `BoundedFanRestorer.attemptUncancellably(fanAt:)`, added by
+///   tree supports. The count then said fourteen for one wave after
+///   [#167](https://github.com/blamechris/Aeolus/issues/167) added two and updated only the
+///   dictionary below, which is the same defect one layer up: the enforced number moved and
+///   the argument that justifies it did not. The real one, asserted by
+///   `everyUnstructuredTaskHandsOffToThePopulation` below: **no spawn site writes in its own
+///   body; each hands off to an `async` method that is itself in this population.** Seven are
+///   `HelperXPCService`'s XPC entry points hopping a message onto `HelperConnectionSession`;
+///   one is `HelperListenerDelegate`'s invalidation hop onto the same actor; one is
+///   `ReadOnlyFanAuthority`'s single-flight sensor walk; three are the supervisors'
+///   `Task.detached` handing control to an `async run(…)`; one is
+///   `BoundedFanRestorer.attemptUncancellably(fanAt:)`, added by
 ///   [#175](https://github.com/blamechris/Aeolus/pull/175); one is
 ///   `AeolusHelperMain.bringUp(_:advertising:log:)`, added by
-///   [#163](https://github.com/blamechris/Aeolus/issues/163); and one is
+///   [#163](https://github.com/blamechris/Aeolus/issues/163); one is
 ///   `CriticalTemperatureCache.sighting()`, added by
-///   [#134](https://github.com/blamechris/Aeolus/issues/134).
+///   [#134](https://github.com/blamechris/Aeolus/issues/134); one is
+///   `SystemPowerRegistration.deliver(_:acknowledging:)`, the only route from a
+///   `@convention(c)` IOKit callback — which cannot capture, let alone `await` — to an
+///   `async` handler; and one is `SystemPowerResponder.allowSleepAfterHandback(_:)`'s
+///   acknowledgement budget, which runs beside a handback `BoundedFanRestorer` makes
+///   uncancellable and therefore cannot be a task group, since a group waits for every child.
+///   The last two are #167's.
 ///
 ///   **The `CriticalTemperatureCache` one is `BoundedFanRestorer`'s shape, not this bullet's
 ///   hazard.** Its spawner is already `async`, so it is not a synchronous function reaching a
@@ -82,14 +92,15 @@ import Testing
 ///   acknowledges, so the containment argument holds for it by the same route as the rest.
 ///
 ///   An earlier draft of this bullet said each body was *a single* `await` of a population
-///   member. That is true of eleven of the fifteen and **false of the three supervisors**,
+///   member. That is true of twelve of the seventeen and **false of the three supervisors**,
 ///   whose bodies await `run(…)` and then `loopEnded(generation:)` — a private, synchronous,
 ///   actor-isolated method whose entire body is `task = nil`, so it is in no population here
-///   and could not be: it is neither `async` nor permit-bearing — **and false of
-///   `AeolusHelperMain`'s**, which awaits one population member and then signals a semaphore.
-///   None of the four touches a fan, which is why the containment still holds; but "a single
-///   await" was a stronger sentence than the tree supports, and this suite exists to stop
-///   exactly that.
+///   and could not be: it is neither `async` nor permit-bearing — **false of
+///   `AeolusHelperMain`'s**, which awaits one population member and then signals a semaphore,
+///   **and false of `SystemPowerResponder`'s budget**, which awaits `MonotonicClock.sleep`
+///   and then `SleepAcknowledgement.acknowledge(_:)`. None of the five touches a fan, which
+///   is why the containment still holds; but "a single await" was a stronger sentence than
+///   the tree supports, and this suite exists to stop exactly that.
 /// - **A verb listed on the wrong list on purpose.** Putting a writer in
 ///   `permitFreeFunctions` is a lie a reviewer can read, which is the trade every allowlist
 ///   makes; what it buys is that the lie has to be written down.
@@ -229,6 +240,19 @@ struct WriteVerbAllowlistTests {
     /// are on this list for exactly that reason. What it adds is a `Task` that does not
     /// inherit cancellation, not a decision about whether the restore may happen — so
     /// `restoreVerbs`, whose entries are the verbs ADR 0007 names, would be the misfiling.
+    ///
+    /// [#167](https://github.com/blamechris/Aeolus/issues/167)'s five entries are filed here
+    /// on the same rule, and the one worth defending is
+    /// `SystemPowerResponder.handBackEveryFan()`. It drops every lease and then issues the
+    /// machine-wide keystone, so it *causes* two writes — and causing a write is not what the
+    /// restore list is for. Its entries are the verbs ADR 0007 names, spelled as ADR 0007
+    /// spells them; this one reaches the firmware only through
+    /// `SafetyActorWriter.restoreToAutomatic(_:)` and `LeaseAuthority.releaseEveryLease()`,
+    /// both already acknowledged, which is exactly the shape of `revokeEveryLease(because:)`
+    /// and `ReclamationWatchdog.finaliseRelease(fanAt:because:)` here. `allowSleepAfterHandback`
+    /// and `respond(to:)` are its callers, and the two `acknowledge` verbs put no fan write on
+    /// any wire at all — one of them calls `IOAllowPowerChange`, which is a kernel message
+    /// about power state and nothing to do with a fan.
     private static let permitFreeFunctions: Set<String> = [
         "BoundedFanRestorer.swift: attemptUncancellably(fanAt: Int)",
         // `CriticalTemperatureRecording`'s single requirement, declared beside the cache in
@@ -314,6 +338,11 @@ struct WriteVerbAllowlistTests {
         "SupervisedFanAuthority.swift: releaseLease(id: UUID, from: ConnectionID)",
         "SupervisedFanAuthority.swift: renewLease(id: UUID, from: ConnectionID)",
         "SupervisedFanAuthority.swift: snapshot()",
+        "SystemPowerObserver.swift: acknowledge()",
+        "SystemPowerResponder.swift: acknowledge(_: Outcome)",
+        "SystemPowerResponder.swift: allowSleepAfterHandback(_: SystemPowerNotification)",
+        "SystemPowerResponder.swift: handBackEveryFan()",
+        "SystemPowerResponder.swift: respond(to: SystemPowerNotification)",
         "ThermalEmergency.swift: cycle()",
         "ThermalEmergency.swift: cycleSawNothing(_: String)",
         "ThermalEmergency.swift: fire(_: CriticalTemperature, from: CriticalTemperatureReport)",
@@ -487,7 +516,7 @@ struct WriteVerbAllowlistTests {
     ///
     /// An unstructured `Task` lets a synchronous function reach an `async` write, so every
     /// spawn site is a hole in the population — unless what it spawns is itself acknowledged.
-    /// That is what holds here: none of the fifteen bodies writes, and each hands off to an
+    /// That is what holds here: none of the seventeen bodies writes, and each hands off to an
     /// `async` method in the population. (The three supervisors also await a synchronous
     /// `loopEnded(generation:)` that only clears a task handle; `BoundedFanRestorer`'s and
     /// `CriticalTemperatureCache`'s spawners are themselves `async`, so their `Task`s shield
@@ -496,7 +525,16 @@ struct WriteVerbAllowlistTests {
     /// is how the listener stays off the task that cannot safely carry it — see the suite
     /// doc, which says all four rather than rounding them off.)
     ///
-    /// The count is asserted per file so it cannot drift silently. A sixteenth spawn site
+    /// [#167](https://github.com/blamechris/Aeolus/issues/167) added the last two, and they
+    /// are the two shapes this rule is about. `SystemPowerObserver`'s is the *only* route from
+    /// a `@convention(c)` IOKit callback — which cannot capture, let alone `await` — to an
+    /// `async` handler, and its body is one `await` of `respond(to:)`.
+    /// `SystemPowerResponder`'s is not a bridge from synchronous code at all: it runs § 4's
+    /// acknowledgement budget beside a handback that `BoundedFanRestorer` makes uncancellable,
+    /// so a task group — which waits for every child — could not express it. Its body sleeps
+    /// and then awaits `SleepAcknowledgement.acknowledge(_:)`, and writes nothing.
+    ///
+    /// The count is asserted per file so it cannot drift silently. An eighteenth spawn site
     /// fails this with the file it was added to, and the maintainer either shows it hands off
     /// the same way and updates the number, or has found the hole.
     ///
@@ -521,6 +559,8 @@ struct WriteVerbAllowlistTests {
             "LeaseExpirySupervisor.swift": 1,
             "ReadOnlyFanAuthority.swift": 1,
             "ReclamationSupervisor.swift": 1,
+            "SystemPowerObserver.swift": 1,
+            "SystemPowerResponder.swift": 1,
             "ThermalSupervisor.swift": 1,
         ]
 

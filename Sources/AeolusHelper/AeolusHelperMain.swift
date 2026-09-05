@@ -20,9 +20,10 @@ import SMCCore
 // The graph this file used to build inline is now `HelperComposition`. What is left here is
 // the *lifecycle*: resolve who to obey, build the graph, bring it up, advertise the service,
 // and never return. Startup reconciliation (#164), the restart policy (#165), the signal
-// handlers (#166), sleep/wake (#167) and connection health (#168) each add one step to the
-// bring-up below and nothing to the listener, the admission policy, the handshake gate, or
-// the contract.
+// handlers (#166) and connection health (#168) each add one step to the bring-up below and
+// nothing to the listener, the admission policy, the handshake gate, or the contract.
+// Sleep/wake (#167) took that shape too and has landed: it is a step inside
+// `HelperComposition.bringUp()`, so nothing in this file changed for it.
 
 /// The helper's entry point: resolve who this daemon will obey, bring the safety subsystem
 /// up, stand up the listener, and wait.

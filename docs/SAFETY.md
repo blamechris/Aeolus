@@ -18,11 +18,14 @@ a fan index to the bounds a read established, is in
 monotonic expiry, tombstones and the teardown paths — is in `Sources/AeolusHelper/Lease`,
 driven against in-memory doubles. § 3's override, § 5's reclamation watchdog and § 8's ramp
 governor are in `Sources/AeolusHelper/Safety` and `Sources/FanKit/RampGovernor.swift`, with
-the precedence engine that composes them, driven against the scripted SMC. **§ 5 was in the
-not-built list until it merged, and this line was stale for one wave** — the sentence is
-corrected in place rather than quietly rewritten, because a status paragraph nobody re-reads
-is how a coverage claim outlives its subject. Not built: § 4's power notifications, § 6's
-signal teardown and startup reconciliation, § 7's body, and § 8's hysteresis. All of it is
+the precedence engine that composes them, driven against the scripted SMC. § 4's sleep and
+wake supervision is in `Sources/AeolusHelper/Lifecycle`, behind a `SystemPowerObserving` seam
+so everything above the IOKit registration is driven with no hardware. **§ 5 was in the
+not-built list until it merged, and this line was stale for one wave; § 4 was listed there in
+the very PR that built it, which is the same failure caught one wave earlier** — both
+sentences are corrected in place rather than quietly rewritten, because a status paragraph
+nobody re-reads is how a coverage claim outlives its subject. Not built: § 6's signal
+teardown and startup reconciliation, § 7's body, and § 8's hysteresis. All of it is
 tracked as epic E5, and E5 blocks the write-path epics E3 and E4. No code that writes to the
 SMC merges before the safety subsystem exists and is tested.
 
@@ -349,17 +352,68 @@ path.
 ## 4. Sleep and wake supervision
 
 The helper registers for system power notifications through `IORegisterForSystemPower` —
-in the helper's own context, not the app's, because the app may not be running.
+in the helper's own context, not the app's, because the app may not be running. Callbacks
+are delivered with `IONotificationPortSetDispatchQueue` and **never** through a CFRunLoop
+source: `AeolusHelper`'s `main()` ends in `dispatchMain()`, which parks the main thread
+rather than running a run loop, so a run-loop source there is added to a loop nothing will
+ever run. That failure is silent — registration succeeds, the daemon looks healthy, and no
+notification ever arrives.
 
-- Before sleep: release control and restore automatic mode.
-- After wake: **nothing.** The helper does not re-assert.
+- Before sleep, in this order: **seal acquisition** so no new lease can be granted until the
+  machine wakes, **release every lease**, **restore `.everyFan`** through the keystone verb
+  (which also clears the Apple Silicon force key), and only **then** acknowledge the power
+  change.
+- After wake: **nothing** written. The helper does not re-assert, and does not reconcile
+  either. It clears the seal, which touches no fan.
+
+**The seal is what closes the door the other three leave open.** Without it, a request
+already parked on the helper's 34-key telemetry read when `.willSleep` arrived resumes after
+the table has been emptied and every fan restored, finds no lease and no fan mid-handback,
+and engages manual control on a machine that is about to stop running the helper — a fan
+pinned across a sleep by the one path the ordering above does not cover. A client that asks
+in the window is refused `ManualControlAvailability.Reason.systemSleeping` and told to ask
+again after the wake. A helper that hears a sleep and never hears the wake refuses manual
+control for the rest of its life, which is the fail-safe direction and is deliberately not
+guarded against.
 
 **Release-before-sleep is the load-bearing half**; the continuous-clock TTL is the backstop,
 for a sleep that arrives without a completed notification round trip. Whether
 `ContinuousClock` advances across sleep is unverified on this machine and unverifiable
 without sleeping it — if it does not, the backstop degrades to "the lease survives with its
 remaining TTL", which bounds post-wake exposure rather than eliminating it, and makes
-release-before-sleep matter more, not less.
+release-before-sleep matter more, not less. What that bound *is*, exactly: the lease's own
+remaining TTL, so at most `AeolusXPCValidation.leaseTTLRange.upperBound` — 120 s — and 30 s
+for a client taking `Lease.defaultTimeToLive`. Composition either way, as ADR 0007 requires:
+nothing in the helper changes on the answer, and #68's lid-close row records the measured
+delta.
+
+**The handback is bounded, and overrunning the bound is not a safety failure.** The
+acknowledgement waits at most `SystemPowerLimits.acknowledgementBudget` — 5 s — after which
+the helper allows the sleep anyway and logs at `.fault`. The case it exists for is a wedged
+`io_connect_t` (#68) where a synchronous IOKit write never returns at all: `FanRestoreAttempting`
+records that no attempt budget can bound that, and `BoundedFanRestorer` deliberately makes
+each attempt uncancellable. Holding the sleep open instead would buy nothing — the kernel
+sleeps the machine on its own timeout regardless.
+
+**This paragraph named the TTL as what covers the fan that did not come back, and that was
+wrong.** It is corrected in place rather than quietly rewritten, for the same reason the
+status block above records its own staleness. The bullet list is the order of events: the
+handback drops every lease *before* it restores, so by the instant the budget can fire there
+is no lease left to expire and § 1 has nothing to be the backstop of. What actually covers
+the fan, in the order it can act:
+
+- **The parked restore may still land.** Nothing cancels it; § 4 stops waiting, and
+  `BoundedFanRestorer` keeps attempting inside a task that does not inherit cancellation.
+- **Every fan still outstanding is recorded as an abandoned handback before the sleep is
+  acknowledged** (`LeaseAuthority.abandonOutstandingHandbacks()`, decision D17). That is the
+  durable `restoreToAutomaticFailed` refusal of § 1, so no client can take a lease over a fan
+  the helper never saw return to automatic control.
+- **§ 3 still acts on it above the ceiling.** The thermal override's registry entry is
+  deliberately retained across the handback, so such a fan coming back hot is taken to full
+  scale. Above the ceiling only — that is an override, not a restore.
+- **Startup reconciliation at the next helper start** (#164) is what actually returns it to
+  automatic, and it is not built yet. Until it is, a fan in this state stays manual until
+  something else moves it, and [RECOVERY.md](RECOVERY.md) is the user's route out.
 
 **The helper never silently re-asserts manual control on wake.** This section instructed the
 opposite until #119 — "re-acquire, and re-run the Apple Silicon unlock sequence", called not
@@ -379,10 +433,24 @@ The stale-connection question — whether `io_connect_t` survives sleep/wake at 
 (#68), and reconnect-or-release is the answer either way: a helper that cannot read after
 wake is the blindness case in § 5.
 
-*Tested by (pending #103):* integration tests simulating the notification sequence,
-asserting a restore before sleep and **no write at all** on wake; a manual hardware check
-that closing the lid returns the fans to automatic and that reopening it leaves them there
-until a client asks again.
+*Tested by:* `SystemPowerTests`, which drives `.willSleep` and `.didWake` through the
+composed helper against a scripted `SystemPowerObserving` — asserting the restore is on the
+wire **before** the acknowledgement (observed from inside the acknowledgement, because
+afterwards the two orders are indistinguishable), **no firmware call at all** on wake, that
+the budget releases the system when the handback does not return, and that neither event
+stops a supervisor. Four further properties, each with a mutation named against it: on a
+wedged connection the lease table is empty at the acknowledgement (so the keystone cannot
+precede the teardown), the outstanding fan is durably refused a new lease afterwards, a
+refused restore still lets the machine sleep and says at `.fault` that it did not land, and a
+lease request arriving inside the sleep window is refused `systemSleeping` until the wake
+clears it. `HelperCompositionTests` asserts that the shipped `production(log:)` graph is the
+one that carries an `IOKitSystemPowerObserver`.
+
+*Not tested by anything automated, and cannot be:* `IOKitSystemPowerObserver` itself. No test
+can register with a real power management root and then sleep the machine. The hardware rows
+are what prove it — closing the lid returns the fans to automatic, reopening leaves them there
+until a client asks again, the `ContinuousClock` delta across a real sleep, and whether
+`io_connect_t` survives (#68).
 
 ## 5. Reclamation watchdog
 

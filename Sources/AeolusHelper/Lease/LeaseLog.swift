@@ -217,6 +217,43 @@ struct LeaseLog: Sendable {
         )
     }
 
+    /// A client asked for a fan while `docs/SAFETY.md` § 4's sleep window was open.
+    ///
+    /// `.notice`, and it is the line that distinguishes the two ways a lease can go missing
+    /// across a sleep: this one says the helper refused to grant it, which is the mechanism
+    /// working. A client that sees this and never sees the unseal line below is looking at a
+    /// helper that heard a sleep and never heard the wake.
+    func refusedSystemSleeping(_ connection: ConnectionID) {
+        log.notice(
+            """
+            Connection \(connection.logDescription, privacy: .public) asked for manual \
+            control while the machine is going to sleep. Refused: every fan has already been \
+            handed back for this sleep, and a lease granted now would engage manual control \
+            on a machine that is about to stop running this helper. Ask again after the wake.
+            """
+        )
+    }
+
+    /// § 4 closed the table for a sleep.
+    func sealedForSleep() {
+        log.notice(
+            """
+            No further manual control will be granted until this machine wakes: the system \
+            is going to sleep and docs/SAFETY.md § 4 is handing every fan back.
+            """
+        )
+    }
+
+    /// § 4 reopened the table after a wake. No fan was touched to do it.
+    func unsealedAfterWake() {
+        log.notice(
+            """
+            Manual control may be acquired again: the machine woke and the sleep window is \
+            closed. Nothing was written to reopen it, and no previous lease came back.
+            """
+        )
+    }
+
     func refusedConcurrentLease(_ connection: ConnectionID) {
         log.info(
             """
