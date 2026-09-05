@@ -112,6 +112,59 @@ struct SMCFanControlPlaneTests {
         #expect(state.target == .rpm(2_400))
     }
 
+    /// **Three keys, three distinct values, three fields.** The assertion the suite went
+    /// without.
+    ///
+    /// `readControlState(ofFan:)` reads `F<n>Md`, `F<n>Tg` and `F<n>Ac` in one turn and
+    /// distributes them into `FanControlState`. Nothing checked where the last of them
+    /// landed: swapping `actualKey` for `targetKey` on the `actualRPM: ` line left the
+    /// entire suite green, including the hardware suite. That mutant is not a cosmetic one.
+    /// `ReclamationWatchdog.actualShortfall(of:against:)` computes `commanded − actual`, and
+    /// the secondary signal is only *evaluated* once the primary has converged — so under
+    /// the mutant `actual` carries the target read-back, the difference is zero on every
+    /// fan on every machine, and `docs/SAFETY.md` § 5's secondary signal is permanently
+    /// dead with nothing to show for it.
+    ///
+    /// The values are deliberately pairwise distinct and none of them is derivable from
+    /// another: a fixture where the target and the actual speed agreed would pass under
+    /// exactly the mutant this exists to kill.
+    @Test("Mode, target and actual speed each land in their own field")
+    func controlStateKeepsTheThreeKeysApart() async throws {
+        let state = try await Self.plane([
+            "F0Md": .reading("F0Md", 1),
+            "F0Tg": .reading("F0Tg", 2_400),
+            "F0Ac": .reading("F0Ac", 2_380),
+        ]).readControlState(ofFan: 0)
+
+        #expect(state.index == 0)
+        #expect(state.mode == .manual)
+        #expect(state.target == .rpm(2_400))
+        #expect(state.actualRPM == .rpm(2_380))
+    }
+
+    /// The `F<n>Ac` half of `anUnreadableTargetIsCarriedNotDiscarded`.
+    ///
+    /// Losing the secondary signal is a degraded cycle and nothing more — § 5's shortfall
+    /// check returns `nil` for an unreadable actual speed on purpose — so the read must not
+    /// fail over it, and the mode and target must still arrive. The reason is carried rather
+    /// than flattened to `nil` for `FanRPMReadback`'s reason: "no reading" and "could not
+    /// read" are different facts about a fan.
+    @Test("An unreadable actual speed is carried while the mode and target still arrive")
+    func anUnreadableActualIsCarriedNotDiscarded() async throws {
+        let state = try await Self.plane([
+            "F0Md": .reading("F0Md", 1),
+            "F0Tg": .reading("F0Tg", 2_400),
+        ]).readControlState(ofFan: 0)
+
+        #expect(state.mode == .manual)
+        #expect(state.target == .rpm(2_400))
+        guard case .unreadable(let reason) = state.actualRPM else {
+            Issue.record("an absent F0Ac produced \(state.actualRPM)")
+            return
+        }
+        #expect(reason.contains("F0Ac"))
+    }
+
     @Test("A mode of zero is automatic")
     func aModeOfZeroIsAutomatic() async throws {
         let state = try await Self.plane([
