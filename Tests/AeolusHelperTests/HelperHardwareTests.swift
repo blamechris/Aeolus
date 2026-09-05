@@ -342,11 +342,17 @@ struct HelperHardwareTests {
     @Test("A helper composed with the real control plane serves a snapshot and refuses a lease")
     func theComposedHelperServesRealHardware() async throws {
         let composingStarted = ContinuousClock.now
-        // The bring-up below installs E5.4d's signal teardown, and the shipping source
-        // would `SIG_IGN` this process's `SIGTERM`, `SIGINT` and `SIGHUP` and then `exit(0)`
-        // the test runner on the next one. Everything else here is production's.
+        // Both teardown seams are the test's, and neither is fastidiousness. The shipping
+        // source would `SIG_IGN` this process's `SIGTERM`, `SIGINT` and `SIGHUP` and then
+        // `exit(0)` the test runner on the next one; the shipping terminator would end this
+        // process outright when the teardown is run at the end of the test. Everything else
+        // here is production's.
+        let teardown = TeardownJournal()
         let helper = HelperComposition.production(
-            log: Self.log, teardown: TeardownSeams(sources: RecordingSignalSources()))
+            log: Self.log,
+            teardown: TeardownSeams(
+                sources: RecordingSignalSources(),
+                terminate: { outcome in await teardown.record(.exited(outcome)) }))
         let composed = ContinuousClock.now - composingStarted
 
         // The three supervisors this bring-up starts are 1 Hz loops on the real SMC, so
@@ -403,7 +409,32 @@ struct HelperHardwareTests {
             throw error
         }
 
-        await helper.shutDown()
+        // § 6's orderly teardown, run against the **real** plane rather than a scripted one.
+        //
+        // This is the hardware row E5.4d can execute today, and it is worth being exact
+        // about what it does and does not show. `SMCFanControlPlane.restoreToAutomatic(_:)`
+        // throws `.controlPathNotBuilt` before touching IOKit, so what is demonstrated on
+        // this machine is the **failure** half of the exit-code contract: the keystone is
+        // issued, it is refused by the build rather than by the firmware, and the process
+        // would exit non-zero so that launchd starts it again. The row that matters more —
+        // `launchctl bootout` or `kill -TERM` with a lease held, and a fan that actually
+        // comes back — needs a signed daemon and a write path, and belongs to E3/E4
+        // bring-up.
+        //
+        // It also doubles as this test's `shutDown()`: stopping the supervisors is the
+        // teardown's own fourth step, and running it here rather than beside it is the point.
+        await helper.signalTeardown.run(stoppingSupervisorsWith: { await helper.shutDown() })
+
+        #expect(
+            await teardown.events == [.exited(.restoreFailed)],
+            """
+            the orderly teardown claimed it had handed the fans back on a build whose \
+            keystone write cannot reach the firmware. launchd would not restart the helper, \
+            and nothing else would clear a fan left in manual.
+            """)
+        #expect(await helper.thermalSupervisor.isRunning == false, "§ 3 outlived the teardown")
+        #expect(await helper.reclamationSupervisor.isRunning == false, "§ 5 outlived it")
+        #expect(await helper.leaseExpirySupervisor.isRunning == false, "§ 1's TTL loop did")
     }
 
     /// What the composed helper must answer about one real fan, in **either** state this
