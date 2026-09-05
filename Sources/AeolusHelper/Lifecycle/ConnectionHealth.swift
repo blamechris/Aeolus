@@ -196,16 +196,42 @@ actor ConnectionHealth: SchedulerObserving {
     /// three consecutive reads, whatever was in the hole. `outcomesLostToTheBuffer` records
     /// how many went missing.
     ///
-    /// ## The backlog this buys, corrected
+    /// ## The backlog this buys, and what it is sized against
     ///
     /// It is not the half-minute an earlier draft claimed. A `snapshot()` is **three** reads,
     /// not one (see `SMCReadScheduler`), the supervisor cycle is one per second, and
     /// `LeaseAuthority.refuseIfBlind` issues one per `acquireLease` off any cycle at all — so
-    /// a machine with a client attached forwards roughly four to eight outcomes a second, and
-    /// 64 slots is **eight to sixteen seconds**. Still far longer than a pump that is merely
-    /// hopping actors needs, which is the case the bound exists for; the number is quoted
-    /// honestly because the previous one was quoted as a safety argument.
-    private static let eventBuffer = 64
+    /// a machine with a client attached forwards roughly four to `peakOutcomesPerSecond`
+    /// outcomes a second, and 64 slots is **eight to sixteen seconds**. (A fanless Mac's
+    /// absent-only fan-count read is one of the snapshot's three, not a fourth: it was
+    /// forwarded before ruling D25 too, as a success.)
+    ///
+    /// What it has to outlast is the pump's longest expected park. The pump's one suspension
+    /// point is `attemptReconnect`, and a reconnect waits — ruling D22 — for a discovery walk
+    /// already in flight before it takes its turn, so the longest expected park is
+    /// `SMCReadScheduler.longestMeasuredDiscoveryWalk`: 5.9 s cold, which at the peak rate is
+    /// 5.9 × 8 ≈ 47 outcomes, and 64 holds them with a third to spare. The two figures were
+    /// quoted in two files with nothing relating them until a review noticed;
+    /// `ConnectionHealthTests.theBufferOutlastsAColdDiscoveryWalk` asserts the inequality,
+    /// so a re-measured walk or a resized buffer fails in one place.
+    ///
+    /// ## What no size can cover
+    ///
+    /// The park is *expected* to end when the walk does, and nothing bounds the walk. A walk
+    /// in which IOKit wedges parks the pump indefinitely — the buffer fills, every further
+    /// outcome evicts the oldest, and `outcomesLostToTheBuffer` climbs with nothing draining
+    /// it — and leaves `SMCReadScheduler`'s `exclusiveClaims` at 1 for the life of the
+    /// process. That is a documented limitation of D22, recorded on
+    /// [#205](https://github.com/blamechris/Aeolus/issues/205), and **not** a bug a timeout
+    /// would fix: a recycle that gave up waiting would close the handle underneath the walk
+    /// still reading through it, which is the hazard D22 closed. Reads keep flowing
+    /// throughout, because no turn is held.
+    static let eventBuffer = 64
+
+    /// The most whole-read outcomes a second this observer is expected to be sent, on a
+    /// machine with a client attached. See `eventBuffer` for the arithmetic; it is a named
+    /// number so the derivation is a fact a test can check rather than a sentence.
+    static let peakOutcomesPerSecond = 8
 
     // MARK: - Observing
 
@@ -246,7 +272,9 @@ actor ConnectionHealth: SchedulerObserving {
     /// checked. `SMCReadScheduler.readAll()` emits no scheduler event at all, so a walk that
     /// fails during bring-up is counted by nothing here. Reporting it would need a decision
     /// this change does not take: whether a 2.2 s — 5.9 s cold — walk's outcome belongs in the
-    /// same run as reads issued at 1 Hz.
+    /// same run as reads issued at 1 Hz. Recorded on
+    /// [#205](https://github.com/blamechris/Aeolus/issues/205), with the other limit the
+    /// walk imposes on this type — see `eventBuffer`.
     ///
     /// **`recovery` is carried by the pump rather than stored**, and that is what removes the
     /// unbound state entirely. Late binding is forced by the graph — the plane holds the

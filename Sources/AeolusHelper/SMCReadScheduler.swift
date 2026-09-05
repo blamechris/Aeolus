@@ -188,6 +188,24 @@ actor SMCReadScheduler {
     /// are. It says nothing about how long any one of them waits; see the class doc.
     static let maxConsecutiveOvertakes = 2
 
+    /// The longest occupation of the connection anything in the helper waits behind: a
+    /// **cold** discovery walk, as measured in the table in this type's documentation.
+    ///
+    /// Named rather than quoted, for the one thing that is sized from it.
+    /// `withExclusiveAccess(_:)` waits for a walk already in flight before taking its turn
+    /// (ruling D22), and `ConnectionHealth`'s pump is parked inside that wait for as long as
+    /// the walk runs — so its event buffer has to hold a cold walk's worth of outcomes at
+    /// the peak rate. `ConnectionHealth.eventBuffer` derives from this figure, and
+    /// `ConnectionHealthTests.theBufferOutlastsAColdDiscoveryWalk` pins the inequality. Two
+    /// numbers that live apart drift apart, which is how "5.9 s" and "eight to sixteen
+    /// seconds" came to be quoted in two files with nothing relating them.
+    ///
+    /// **Not a timeout, and it must never become one.** It says how long the wait is
+    /// expected to be; it does not bound it. See `readAll()` for what a wedged walk does,
+    /// and [#205](https://github.com/blamechris/Aeolus/issues/205) for why the bound cannot
+    /// be added on the waiter's side.
+    static let longestMeasuredDiscoveryWalk: Duration = .milliseconds(5900)
+
     /// The single provider every read here goes to. `SMCSensorProvider` in the daemon, a
     /// double under test.
     private let provider: any SensorProvider
@@ -400,7 +418,10 @@ actor SMCReadScheduler {
     /// #103's ruling D22 is the two waits below: this body waits for a walk that is already
     /// running, and `readAll()` waits for a body that is already running. Neither ever holds a
     /// turn while waiting for the other, which is what keeps reads flowing throughout and what
-    /// makes the pair deadlock-free — a walk that is already counted never waits.
+    /// makes the pair deadlock-free — a walk that is already counted never waits. **Neither
+    /// wait is bounded**, and the one this body makes is expected to last at most
+    /// `longestMeasuredDiscoveryWalk`; what a walk that never ends does to it is recorded at
+    /// `readAll()`, with why a timeout here would be the wrong fix.
     ///
     /// `ConnectionRecoveryTests` scripts both directions against an ordered log the provider
     /// and the connection share: `aReconnectNeverLandsInsideAReadInFlight`,
@@ -438,6 +459,26 @@ actor SMCReadScheduler {
     /// It is still excluded against `withExclusiveAccess(_:)`, which is a different claim from
     /// taking a turn and is the whole of ruling D22: a walk waits for a recycle that is
     /// already claimed, and is counted for as long as it runs so a recycle waits for it.
+    ///
+    /// ## Two limits, recorded on [#205](https://github.com/blamechris/Aeolus/issues/205)
+    ///
+    /// **It emits no scheduler event.** A walk that fails — or, worse, returns a short set,
+    /// because `SMCSensorProvider.readAll()` skips every key that fails and returns normally
+    /// — is counted by nothing: `ConnectionHealth` sees the snapshot and supervisor paths
+    /// only, and a dead connection at bring-up is noticed by the next 1 Hz subset read rather
+    /// than by the walk. Reporting it needs a decision this file does not take, which is
+    /// whether a 5.9 s walk's outcome belongs in the same run as reads issued at 1 Hz.
+    ///
+    /// **The wait a recycle makes for it has no bound, by design.** A walk in which IOKit
+    /// wedges — the round trip under `SMCConnection` never returns — leaves
+    /// `discoveryWalksInFlight` at 1 for the life of the process; the recycle waiting behind
+    /// it never takes its turn and leaves `exclusiveClaims` at 1, so every later walk parks
+    /// too; and `ConnectionHealth`'s pump, which is inside that recycle, is parked
+    /// indefinitely — nothing is counted, and its buffer evicts. Reads keep flowing, because
+    /// no turn is held. This is a documented limitation of D22 and **not** a bug a timeout
+    /// would fix: a recycle that stopped waiting and took its turn would close the handle
+    /// underneath the walk still reading through it, which is the exact hazard D22 exists to
+    /// prevent. The bound has to come from the walk's side, and that is #205's subject.
     func readAll() async throws -> [SensorReading] {
         while exclusiveClaims > 0 {
             await withCheckedContinuation { waitingForExclusive.append($0) }

@@ -75,6 +75,40 @@ struct ConnectionHealthTests {
         #expect(ConnectionHealthLimits.minimumInterval == .seconds(30))
     }
 
+    /// The buffer is sized against the pump's longest expected park, and the two numbers are
+    /// related here rather than quoted in two files.
+    ///
+    /// The pump's one suspension point is `attemptReconnect`, and a reconnect waits — ruling
+    /// D22 — for a discovery walk already in flight before taking its turn, so the longest
+    /// the pump is expected to sit is a cold walk, `SMCReadScheduler.longestMeasuredDiscoveryWalk`,
+    /// during which outcomes arrive at up to `ConnectionHealth.peakOutcomesPerSecond`. A
+    /// review found the two figures — 5.9 s and "eight to sixteen seconds" — living apart with
+    /// nothing relating them; this is what relates them. What it does not cover is a walk that
+    /// never ends, which is #205 and is documented at both sites rather than bounded here.
+    ///
+    /// **Mutation:** halve `ConnectionHealth.eventBuffer`, or raise
+    /// `SMCReadScheduler.longestMeasuredDiscoveryWalk` past eight seconds. Run: red.
+    @Test("The event buffer outlasts a cold discovery walk at the peak outcome rate")
+    func theBufferOutlastsAColdDiscoveryWalk() {
+        let walk = SMCReadScheduler.longestMeasuredDiscoveryWalk
+        let seconds =
+            Double(walk.components.seconds) + Double(walk.components.attoseconds) / 1e18
+        let outcomesDuringAColdWalk = seconds * Double(ConnectionHealth.peakOutcomesPerSecond)
+
+        #expect(
+            Double(ConnectionHealth.eventBuffer) >= outcomesDuringAColdWalk,
+            """
+            a cold walk of \(seconds) s at \(ConnectionHealth.peakOutcomesPerSecond) outcomes \
+            a second is \(outcomesDuringAColdWalk) outcomes, and the buffer holds \
+            \(ConnectionHealth.eventBuffer). A reconnect parked behind a cold walk would \
+            evict outcomes on a machine that is working exactly as measured.
+            """)
+        // The figures the documentation quotes, pinned so the prose and the code agree.
+        #expect(ConnectionHealth.eventBuffer == 64)
+        #expect(ConnectionHealth.peakOutcomesPerSecond == 8)
+        #expect(walk == .milliseconds(5900))
+    }
+
     // MARK: - The count
 
     /// Three consecutive whole-read failures fire exactly one reconnect.
