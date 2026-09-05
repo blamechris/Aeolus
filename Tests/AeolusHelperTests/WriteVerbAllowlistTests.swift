@@ -1,8 +1,6 @@
 import Foundation
 import Testing
 
-@testable import AeolusHelper
-
 /// The inverted write-verb tripwire: an allowlist of every verb in the helper, rather than a
 /// pattern that recognises the ones somebody thought to name.
 ///
@@ -281,6 +279,14 @@ struct WriteVerbAllowlistTests {
     /// #141's point is that the honest response to that is to say what a companion may be
     /// rather than to stop looking. So: at most one permit, and every other parameter drawn
     /// from a vocabulary that cannot name a fan or its bounds.
+    ///
+    /// **The two matches are deliberately different strengths, and the asymmetry is the
+    /// point.** Deciding *whether a verb must be acknowledged* is a substring match, so a
+    /// parameter of type `AuthorisedFanTargetPair` pulls its verb into the population rather
+    /// than out of it. Deciding *whether a parameter is a permit* is exact equality, because
+    /// that impersonating type is freely constructible and is the second draft `ADR 0008`
+    /// records passing a "names a permit" check while naming no permit — so it counts as a
+    /// companion here, and fails as one.
     @Test("A permit travels beside nothing that can name a different fan")
     func aPermitTravelsBesideNothingThatNamesAFan() throws {
         let bearing = try population().filter { $0.mentions(anyOf: Self.permits) }
@@ -290,24 +296,23 @@ struct WriteVerbAllowlistTests {
             "this scan is looking at \(bearing.count) verbs, not the acknowledged list")
 
         for verb in bearing {
-            let permitParameters = verb.parameterTypes.filter { type in
-                Self.permits.contains { type.contains($0) }
-            }
+            let permits = verb.parameterTypes.filter(Self.permits.contains)
             #expect(
-                permitParameters.count <= 1,
+                permits.count <= 1,
                 """
-                \(verb.file) declares `\(verb.text)`, taking \(permitParameters.count) \
-                permits. Two permits are two fans that can disagree — ADR 0008.
+                \(verb.file) declares `\(verb.text)`, taking \(permits.count) permits. Two \
+                permits are two fans that can disagree — ADR 0008.
                 """
             )
-            for type in verb.parameterTypes where !permitParameters.contains(type) {
+            for type in verb.parameterTypes where !Self.permits.contains(type) {
                 #expect(
                     Self.clampedCompanions.contains(type),
                     """
                     \(verb.file) declares `\(verb.text)`, passing a `\(type)` beside a \
                     permit. Only \(Self.clampedCompanions) may travel with one: they name \
                     no fan and no bounds, and a speed among them is clamped through the \
-                    permit's own envelope. An index is exactly what ADR 0008 removed.
+                    permit's own envelope. An index is exactly what ADR 0008 removed, and a \
+                    type whose name merely contains a permit's is not a permit.
                     """
                 )
             }
