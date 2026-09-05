@@ -20,7 +20,7 @@ struct ReadOnlyFanAuthorityTests {
         reason: .writePathNotBuilt)
 
     private func authority(
-        provider: FakeSensorProvider,
+        provider: some SensorProvider,
         thermalEmergency: ThermalEmergencyLatch = ThermalEmergencyLatch(),
         reclamation: ReclamationLedger = ReclamationLedger()
     ) -> ReadOnlyFanAuthority {

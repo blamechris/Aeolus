@@ -106,6 +106,32 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// again rather than caching a machine with no sensors on it.
     private var discoveredSensors: [DiscoveredSensorKey]?
 
+    /// The discovery that is running right now, held so that a snapshot arriving during one
+    /// **awaits it** instead of starting a second.
+    ///
+    /// The task, not just its result. `discoveredSensors` above is only assigned when a walk
+    /// *completes*, so it stays `nil` for the whole 2.2 s (warm) to 5.9 s (cold) index-table
+    /// walk and a check-then-act around it lets every snapshot arriving in that window start
+    /// its own — [#149](https://github.com/blamechris/Aeolus/issues/149). At daemon launch
+    /// that window is exactly when two clients connect, so the racing case is the ordinary
+    /// one: `AeolusHelperMain` builds one authority for every connection, and `snapshot()`
+    /// suspends inside an actor and is therefore reentrant.
+    ///
+    /// It bounds three separate harms, and the count is only the first. `SMCReadScheduler`
+    /// exempts `readAll()` from taking a turn, and justifies the exemption with "its only
+    /// caller … runs once for the life of the process" — N walks spend that exemption N
+    /// times over. The second is worse and is silent: two walks can return **different key
+    /// sets**, because `SMCSensorProvider.readAll()` skips a key whose value read or scalar
+    /// decode fails without failing the walk, and the cache took whichever finished last —
+    /// so a short set was kept for the life of the daemon, under-reporting the machine's
+    /// sensors with no error and no reconciliation. The third is that a *failed* second walk
+    /// returned `[]` to its client while the first client got the full set from the same
+    /// instant.
+    ///
+    /// Cleared when the walk ends, so the retry-after-failure rule below still holds: the
+    /// next snapshot starts a fresh discovery rather than awaiting a task that already threw.
+    private var discovery: Task<[DiscoveredSensorKey], Error>?
+
     init(
         provider: some SensorProvider,
         log: HelperLog,
@@ -134,7 +160,9 @@ actor ReadOnlyFanAuthority: FanAuthority {
         let reclamationCauses = await reclamation.causes
 
         return SystemSnapshot(
-            fans: fans.fans.map { Self.fanState(for: $0, reclamation: reclamationCauses) },
+            fans: fans.fans.map {
+                ReadOnlyFanReport.fanState(for: $0, reclamation: reclamationCauses)
+            },
             sensors: sensors,
             // No lease can exist: every path that would grant one refuses below.
             activeLease: nil,
@@ -215,7 +243,6 @@ actor ReadOnlyFanAuthority: FanAuthority {
         } else {
             do {
                 discovered = try await discoverSensorKeys()
-                discoveredSensors = discovered
             } catch {
                 log.sensorDiscoveryFailed(reason: String(describing: error))
                 return []
@@ -265,14 +292,46 @@ actor ReadOnlyFanAuthority: FanAuthority {
                 label: nil,
                 labelConfidence: nil,
                 value: reading.value,
-                unit: Self.unit(for: kindsByKey[reading.key] ?? reading.kind)
+                unit: ReadOnlyFanReport.unit(for: kindsByKey[reading.key] ?? reading.kind)
             )
         }
     }
 
-    /// The one `readAll()` in the helper. Called at most once per process, on the first
-    /// snapshot.
+    /// The one `readAll()` in the helper: **at most one walk is ever in flight**, and after
+    /// a successful one there are no more for the life of the process.
+    ///
+    /// Stated as two claims because they are enforced in two places and one of them used to
+    /// be a habit rather than an invariant. The cache below is what stops a *later* snapshot
+    /// walking again; `discovery` is what stops a *concurrent* one, by handing the arrival
+    /// the running task to await. A snapshot that arrives during a walk therefore gets the
+    /// same key set as the snapshot that started it, from the same walk, rather than a
+    /// second opinion about the machine — and a walk that throws is not cached, so the next
+    /// snapshot tries again.
+    ///
+    /// The task is cleared here, on the actor, after it completes: an awaiter that resumes
+    /// later finds either the cache or a cleared slot, never a finished task it would await
+    /// forever the answer of.
     private func discoverSensorKeys() async throws -> [DiscoveredSensorKey] {
+        let walk: Task<[DiscoveredSensorKey], Error>
+        if let discovery {
+            walk = discovery
+        } else {
+            walk = Task { [self] in try await walkEveryKey() }
+            discovery = walk
+        }
+
+        // Cleared however this ends, including a throw: a walk that failed must not be the
+        // thing every later snapshot awaits the answer of. `==` rather than an unconditional
+        // clear because the caller that merely *joined* this walk must not wipe a newer one.
+        defer { if discovery == walk { discovery = nil } }
+
+        let discovered = try await walk.value
+        discoveredSensors = discovered
+        return discovered
+    }
+
+    /// The walk itself, and the only call to `SensorProvider.readAll()` in the helper.
+    private func walkEveryKey() async throws -> [DiscoveredSensorKey] {
         let started = ContinuousClock.now
         let readings = try await provider.readAll()
 
@@ -287,101 +346,6 @@ actor ReadOnlyFanAuthority: FanAuthority {
 
         log.discoveredSensors(count: discovered.count, duration: ContinuousClock.now - started)
         return discovered
-    }
-
-    // MARK: - Mapping
-
-    /// One enumerated fan as the wire reports it.
-    ///
-    /// Nothing here is clamped, floored, or nudged: `F0Ac` was measured at 1343.07 against
-    /// a declared `F0Mn` of 1350 on this project's development machine, so a reading below
-    /// the declared minimum is a legitimate observation. Clamping governs targets on the
-    /// write path, never observations — see `SMCFanEnumeration`.
-    private static func fanState(
-        for fan: SMCFanEnumeration.Fan, reclamation: [Int: ReclamationLedger.Cause]
-    ) -> FanState {
-        let cause = reclamation[fan.index]
-        return FanState(
-            index: fan.index,
-            // `{fds`, the firmware fan-descriptor struct, is absent on this project's
-            // development machine and is not read anywhere in the tree. No name is
-            // honest; an invented one is not.
-            firmwareName: nil,
-            actualRPM: reading(for: fan.actual),
-            minimumRPM: reading(for: fan.minimum),
-            maximumRPM: reading(for: fan.maximum),
-            // "No target is set" rather than "the target could not be read": this helper
-            // is asking for nothing, and that is an answer.
-            targetRPM: nil,
-            mode: .automatic,
-            // From § 5's ledger, never a literal — see `reclamation`. Always `false` in
-            // this build because no fan is ever off automatic control here, but the field
-            // now moves when the mechanism does.
-            //
-            // **`.systemReclaimed` and nothing else.** The ledger's other cause is a helper
-            // that went blind on the fan, which is not a statement about the operating
-            // system at all, and this field's contract — rendered verbatim as "Reclaimed by
-            // system" — cannot carry it. #140.
-            isReclaimedBySystem: cause == .systemReclaimed,
-            manualControlAvailability: availability(whenLedgerSays: cause)
-        )
-    }
-
-    /// What a fan's disposition means for whether it could be leased.
-    ///
-    /// `.writePathNotBuilt` is the build-level answer, and it stays the answer for every
-    /// fan whose bounds this executable could not judge either: E5's bounds gate —
-    /// `FanKit.FanControlEnvelope.validating(declaredMinimumRPM:declaredMaximumRPM:)`,
-    /// whose failures map to `.boundsImplausible` — is deliberately not consulted here,
-    /// because a build-level fact outranks a per-fan one. No fan in this build can be
-    /// controlled, so reporting `.boundsImplausible` on one would imply that better bounds
-    /// would grant control, which is false of every fan this executable serves. The gate
-    /// plugs in here in the epic that also brings the write path it guards.
-    ///
-    /// **Blindness is the exception, and it is not one of those per-fan facts.** It is § 5
-    /// saying it gave a fan up because it could not see it — a claim about the supervisor,
-    /// not about what stands between a client and a lease, so it cannot imply that anything
-    /// would grant control. It is also the only honest thing the snapshot can say about
-    /// such a fan, `isReclaimedBySystem` having said it wrongly as a system reclamation. In
-    /// this build it is unreachable for the ledger's own reason — nothing is ever held, so
-    /// nothing can go blind — and what changed is where the answer comes from.
-    private static func availability(
-        whenLedgerSays cause: ReclamationLedger.Cause?
-    ) -> ManualControlAvailability {
-        switch cause {
-        case .supervisorBlind: return .unavailable(.supervisorBlind)
-        case .systemReclaimed, nil: return .unavailable(.writePathNotBuilt)
-        }
-    }
-
-    private static func reading(for outcome: SensorReadOutcome) -> FanReading {
-        switch outcome.result {
-        case .success(let value):
-            return .measured(value.value)
-        case .failure(.unknownKey(let key)):
-            return .unavailable(reason: "\(key) is not present on this machine")
-        case .failure(.readFailed(let reason)), .failure(.notDecodable(let reason)):
-            return .unavailable(reason: reason)
-        }
-    }
-
-    /// Maps `SMCCore`'s physical kind onto the wire's unit vocabulary.
-    ///
-    /// `SMCSensorProvider` classifies conservatively — only the fan-key naming convention
-    /// is treated as known, everything else is `.unknown` — and that conservatism is
-    /// carried across the boundary rather than improved on here. A helper guessing
-    /// "starts with T, therefore Celsius" would be inventing the decoration this type has
-    /// just finished declining to attach.
-    private static func unit(for kind: SensorReading.Kind) -> SensorSample.Unit {
-        switch kind {
-        case .temperatureCelsius: return .celsius
-        case .rpm: return .rpm
-        case .watts: return .watts
-        case .volts: return .volts
-        case .amps: return .amps
-        case .percent: return .percent
-        case .unknown: return .unknown
-        }
     }
 }
 

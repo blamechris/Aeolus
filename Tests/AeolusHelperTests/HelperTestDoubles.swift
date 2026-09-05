@@ -158,6 +158,80 @@ actor FakeSensorProvider: SensorProvider {
     }
 }
 
+/// A `SensorProvider` whose `readAll()` **suspends** until the test releases it, and which
+/// answers a different key set to each call.
+///
+/// Separate from `FakeSensorProvider` rather than a flag on it, because the two doubles
+/// answer different questions. `FakeSensorProvider` returns immediately, so a test driven
+/// through it can only ever observe callers arriving one after another — a double with no
+/// suspension in it cannot exhibit the interleaving, and a "discovery runs once" assertion
+/// made against one is a claim about caching, never about concurrency.
+///
+/// The per-call key sets are what makes the *second* half of
+/// [#149](https://github.com/blamechris/Aeolus/issues/149) visible. `SMCSensorProvider`
+/// skips a key whose value read or scalar decode fails without failing the walk, so two
+/// concurrent walks can legitimately return different-sized sets; whichever finishes last
+/// wins a `discoveredSensors = discovered` assignment, and a short set cached there is
+/// cached for the life of the daemon.
+actor GatedDiscoveryProvider: SensorProvider {
+    nonisolated let identifier = "gated-discovery"
+
+    private let keyedResults: [String: Result<SensorReading, SensorReadFailure>]
+    private let readingsPerCall: [[SensorReading]]
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var isReleased = false
+
+    /// How many times `readAll()` has been entered. The number #149 is about: the cache
+    /// makes the *result* of a second walk invisible, so the count is the only thing that
+    /// can see one happening.
+    private(set) var readAllCount = 0
+
+    /// How many subset reads have been issued. `snapshot()` enumerates fans through two of
+    /// these — `FNum`, then the fan keys — before it reaches discovery, so this is how a
+    /// test waits for a caller to have arrived rather than guessing with a sleep.
+    private(set) var subsetReadCount = 0
+
+    /// `readingsPerCall` is what each successive `readAll()` returns; the last entry answers
+    /// every call beyond it.
+    init(
+        keyedResults: [String: Result<SensorReading, SensorReadFailure>],
+        readingsPerCall: [[SensorReading]]
+    ) {
+        self.keyedResults = keyedResults
+        self.readingsPerCall = readingsPerCall
+    }
+
+    var isAvailable: Bool {
+        get async { true }
+    }
+
+    func readAll() async throws -> [SensorReading] {
+        readAllCount += 1
+        let call = readAllCount
+        if !isReleased {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                waiters.append(continuation)
+            }
+        }
+        return readingsPerCall[min(call, readingsPerCall.count) - 1]
+    }
+
+    func read(keys: [String]) async throws -> [SensorReadOutcome] {
+        subsetReadCount += 1
+        return keys.map { key in
+            SensorReadOutcome(key: key, result: keyedResults[key] ?? .failure(.unknownKey(key)))
+        }
+    }
+
+    /// Lets every suspended walk — and every later one — finish.
+    func release() {
+        isReleased = true
+        let resumed = waiters
+        waiters = []
+        for waiter in resumed { waiter.resume() }
+    }
+}
+
 extension SensorReading {
     static func fake(key: String, value: Double, kind: Kind = .rpm) -> SensorReading {
         SensorReading(key: key, value: value, kind: kind, providerIdentifier: "fake")
@@ -170,13 +244,15 @@ extension Result where Success == SensorReading, Failure == SensorReadFailure {
     }
 }
 
-/// A provider stubbed to enumerate `count` fans, each with all three keys readable.
-func fanProvider(
+/// The canned outcomes for a machine with `fanCount` fans, each with all three enumeration
+/// keys readable.
+///
+/// Split out of `fanProvider(fanCount:…)` so a second double — `GatedDiscoveryProvider` —
+/// enumerates the same machine rather than carrying its own copy of the key naming.
+func fanKeyResults(
     fanCount: Int,
-    extraKeys: [String: Result<SensorReading, SensorReadFailure>] = [:],
-    allReadings: [SensorReading] = [],
-    readAllErrors: [FakeProviderError?] = []
-) -> FakeSensorProvider {
+    extraKeys: [String: Result<SensorReading, SensorReadFailure>] = [:]
+) -> [String: Result<SensorReading, SensorReadFailure>] {
     var results: [String: Result<SensorReading, SensorReadFailure>] = [
         SMCFanEnumeration.fanCountKey: .reading(SMCFanEnumeration.fanCountKey, Double(fanCount))
     ]
@@ -189,8 +265,18 @@ func fanProvider(
             SMCFanEnumeration.maximumKey(forFan: index), 5_400)
     }
     results.merge(extraKeys) { _, new in new }
-    return FakeSensorProvider(
-        keyedResults: results,
+    return results
+}
+
+/// A provider stubbed to enumerate `count` fans, each with all three keys readable.
+func fanProvider(
+    fanCount: Int,
+    extraKeys: [String: Result<SensorReading, SensorReadFailure>] = [:],
+    allReadings: [SensorReading] = [],
+    readAllErrors: [FakeProviderError?] = []
+) -> FakeSensorProvider {
+    FakeSensorProvider(
+        keyedResults: fanKeyResults(fanCount: fanCount, extraKeys: extraKeys),
         allReadings: allReadings,
         readAllErrors: readAllErrors
     )

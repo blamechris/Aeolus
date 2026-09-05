@@ -127,13 +127,17 @@ import SMCCore
 /// the choice is between a scheduling property that is very good in practice and a
 /// structural 5.9 s barrier, not between a guarantee and a hope.
 ///
-/// Its only caller is `ReadOnlyFanAuthority`'s discovery, which caches its key set and so
-/// runs once for the life of the process on the sequential path
-/// `ReadOnlyFanAuthorityTests` covers. Not *provably* once: `snapshot()` awaits inside an
-/// actor and is therefore reentrant, so two snapshots racing the very first tick can each
-/// enter discovery before either caches. That predates this type and is unchanged by it —
-/// it is written down here because "once per process" is the sentence doing the work above,
-/// and it is a habit rather than an invariant.
+/// Its only caller is `ReadOnlyFanAuthority`'s discovery, which runs at most one walk at a
+/// time and caches the key set the walk returns — so the exemption above is spent once for
+/// the life of the process rather than once per snapshot that happens to be in flight.
+///
+/// That was a habit until [#149](https://github.com/blamechris/Aeolus/issues/149) and is now
+/// an invariant. `snapshot()` awaits inside an actor and is therefore reentrant, so two
+/// snapshots racing the very first tick really could each enter discovery before either
+/// cached — the authority now holds the in-flight discovery `Task` itself, so the second
+/// arrival awaits the running walk instead of starting one.
+/// `ReadOnlyFanAuthorityTests.concurrentSnapshotsShareOneDiscovery` drives exactly that
+/// interleaving through a provider that suspends inside `readAll()`.
 ///
 /// ## Waiting is not cancellable, deliberately
 ///
