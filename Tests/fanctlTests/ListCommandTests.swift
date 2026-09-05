@@ -125,6 +125,39 @@ struct ListCommandFetchTests {
         }
     }
 
+    // MARK: - Classified-error surfacing (proving the shared enumeration's error is
+    // reclassified into FanctlError's own vocabulary, not flattened to a generic case)
+
+    @Test("An FNum read failure that is not absence surfaces as .connectionFailed, with its reason")
+    func fnumReadFailureSurfacesClassifiedConnectionFailed() async {
+        let provider = FakeSensorProvider(
+            keyedResults: [
+                "FNum": .failure(.readFailed(reason: "firmware rejected the read"))
+            ])
+
+        let error = await #expect(throws: FanctlError.self) {
+            try await ListCommand.fetch(provider: provider)
+        }
+        guard case .connectionFailed(_, let reason) = error else {
+            Issue.record("expected .connectionFailed, got \(String(describing: error))")
+            return
+        }
+        #expect(reason == "firmware rejected the read")
+    }
+
+    @Test("An implausible FNum surfaces as .implausibleFanCount carrying the decoded value")
+    func implausibleFanCountSurfacesClassifiedCase() async {
+        let provider = FakeSensorProvider(
+            keyedResults: [
+                "FNum": .success(.fake(key: "FNum", value: 9_000_000))
+            ])
+
+        let error = await #expect(throws: FanctlError.self) {
+            try await ListCommand.fetch(provider: provider)
+        }
+        #expect(error == .implausibleFanCount("9000000"))
+    }
+
     @Test("An absent FNum key (not just FNum == 0) is treated as zero fans, not an error")
     func absentFNumIsTreatedAsZeroFans() async throws {
         // FakeSensorProvider with no FNum stub reports .unknownKey for it by

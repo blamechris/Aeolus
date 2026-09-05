@@ -17,15 +17,6 @@ import SMCCore
 /// something the firmware reported, and the raw `F<n>Ac`/`Mn`/`Mx` keys are always shown
 /// alongside it, in both the table and the JSON.
 enum ListCommand {
-    /// The largest `FNum` value this project trusts as a real fan count, rather than a
-    /// decode fault.
-    ///
-    /// Reads `SMCCore`'s shared constant rather than restating the number. This and
-    /// `AeolusUI`'s `FanPoller.maxPlausibleFanCount` were two independent `64`s with
-    /// nothing enforcing that they agreed; both now read one — see
-    /// `SMCFanEnumeration.maxPlausibleFanCount` for the defence itself.
-    static let maxPlausibleFanCount = SMCFanEnumeration.maxPlausibleFanCount
-
     struct Result: Equatable {
         let fanCount: Int
         let fanCountKey: String
@@ -58,145 +49,55 @@ enum ListCommand {
         }
     }
 
-    /// Fetches every fan's current, minimum, and maximum RPM.
+    /// Fetches every fan's current, minimum, and maximum RPM via `SMCCore`'s shared
+    /// `SMCFanEnumeration`.
     ///
     /// A missing or unreadable individual key (e.g. a machine that reports `F0Mn` but not
     /// `F0Mx`) is not fatal to the whole command: it is recorded on that fan's
-    /// `KeyedValue` as an error and every other value still renders. Only a failure that
-    /// makes enumeration itself impossible — no SMC, or `FNum` unreadable — throws.
+    /// `KeyedValue` as an error and every other value still renders —
+    /// `SMCFanEnumeration`'s own contract. Only a failure that makes enumeration itself
+    /// impossible — no SMC, or `FNum` unreadable/implausible — throws, reclassified into
+    /// `FanctlError` so every `fanctl` read command keeps speaking one error type.
     static func fetch(
         provider: some SensorProvider,
         now: @autoclosure () -> Date = Date()
     ) async throws -> Result {
-        guard await provider.isAvailable else {
-            throw FanctlError.noSMC
-        }
-
-        let fanCount = try await readFanCount(provider: provider)
-        guard fanCount > 0 else {
-            return Result(fanCount: 0, fanCountKey: "FNum", fans: [], capturedAt: now())
-        }
-
-        var keys: [String] = []
-        keys.reserveCapacity(fanCount * 3)
-        for index in 0..<fanCount {
-            keys.append("F\(index)Ac")
-            keys.append("F\(index)Mn")
-            keys.append("F\(index)Mx")
-        }
-
-        let outcomes: [SensorReadOutcome]
+        let enumeration: SMCFanEnumeration
         do {
-            outcomes = try await provider.read(keys: keys)
-        } catch {
-            throw FanctlError.connectionFailed(
-                context: "read fan speeds", reason: String(describing: error))
+            enumeration = try await SMCFanEnumeration.enumerate(provider: provider)
+        } catch let error as SMCFanEnumerationError {
+            throw FanctlError(error)
         }
 
-        var outcomesByKey: [String: SensorReadOutcome] = [:]
-        outcomesByKey.reserveCapacity(outcomes.count)
-        for outcome in outcomes {
-            outcomesByKey[outcome.key] = outcome
-        }
-
-        let fans = (0..<fanCount).map { index in
+        let fans = enumeration.fans.map { fan in
             Fan(
-                index: index,
-                displayName: "Fan \(index)",
-                actual: keyedValue("F\(index)Ac", from: outcomesByKey),
-                minimum: keyedValue("F\(index)Mn", from: outcomesByKey),
-                maximum: keyedValue("F\(index)Mx", from: outcomesByKey)
+                index: fan.index,
+                displayName: "Fan \(fan.index)",
+                actual: keyedValue(fan.actual),
+                minimum: keyedValue(fan.minimum),
+                maximum: keyedValue(fan.maximum)
             )
         }
 
-        return Result(fanCount: fanCount, fanCountKey: "FNum", fans: fans, capturedAt: now())
+        return Result(
+            fanCount: enumeration.fanCount,
+            fanCountKey: SMCFanEnumeration.fanCountKey,
+            fans: fans,
+            capturedAt: now())
     }
 
-    /// Reads `FNum`, or `0` if this machine does not expose it at all.
-    ///
-    /// `.unknownKey("FNum")` — the key genuinely absent from this machine's table, not
-    /// present-and-zero — is treated the same as `FNum == 0`, not as an error: observed
-    /// (per community reports; see `docs/SMC-RESEARCH.md`) on some fanless Macs, whose
-    /// firmware does not expose a fan-count key at all. The entire point of `fanctl
-    /// list` — and of `.github/ISSUE_TEMPLATE/hardware-report.yml`, which asks for its
-    /// `--json` output — is to work on exactly this machine; a fanless Air's owner must
-    /// still be able to file that report. `.readFailed`/`.notDecodable` remain errors:
-    /// those mean the key exists but something went wrong reading it, which is worth
-    /// surfacing rather than silently treating as "no fans."
-    private static func readFanCount(provider: some SensorProvider) async throws -> Int {
-        let outcomes: [SensorReadOutcome]
-        do {
-            outcomes = try await provider.read(keys: ["FNum"])
-        } catch {
-            throw FanctlError.connectionFailed(
-                context: "read FNum", reason: String(describing: error))
-        }
-
-        guard let outcome = outcomes.first else {
-            throw FanctlError.connectionFailed(
-                context: "read FNum", reason: "no outcome returned")
-        }
-
-        let decoded: Double
+    /// Adapts one of `SMCFanEnumeration`'s raw per-key outcomes into this CLI's own
+    /// `KeyedValue` shape. `SMCFanEnumeration` has already checked a successful read for
+    /// finiteness (see its `checked(_:in:)`), so nothing here re-derives that guard —
+    /// only translates the outcome's `Result` into `KeyedValue`'s two-optional-fields
+    /// shape.
+    private static func keyedValue(_ outcome: SensorReadOutcome) -> KeyedValue {
         switch outcome.result {
         case .success(let reading):
-            decoded = reading.value
-        case .failure(.unknownKey):
-            return 0
+            return .success(key: outcome.key, value: reading.value)
         case .failure(let failure):
-            throw FanctlError.connectionFailed(
-                context: "read FNum", reason: failure.readableDescription)
+            return .failure(key: outcome.key, reason: failure.readableDescription)
         }
-
-        // Validate the raw Double *before* ever converting it: SMCValue.scalar()
-        // applies no finiteness or magnitude guard on the way out of SMCCore (see
-        // Formatting.number's documentation), so a byte-order fault could in principle
-        // hand back NaN, Inf, or a value nowhere near a real fan count. Int(exactly:)
-        // never traps regardless, but checking isFinite and the plausible range first —
-        // rather than converting and then checking the result — keeps the validation
-        // order honest about what is actually being validated.
-        guard decoded.isFinite, decoded >= 0, decoded <= Double(maxPlausibleFanCount),
-            let fanCount = Int(exactly: decoded.rounded())
-        else {
-            throw FanctlError.implausibleFanCount(Formatting.number(decoded))
-        }
-        return fanCount
-    }
-
-    private static func keyedValue(
-        _ key: String, from outcomes: [String: SensorReadOutcome]
-    ) -> KeyedValue {
-        guard let outcome = outcomes[key] else {
-            return .failure(key: key, reason: "no outcome returned")
-        }
-        switch outcome.result {
-        case .success(let reading):
-            return sanitized(key: key, value: reading.value)
-        case .failure(let failure):
-            return .failure(key: key, reason: failure.readableDescription)
-        }
-    }
-
-    /// Guards a successfully-read value before it can reach either renderer.
-    ///
-    /// `SMCValue.scalar()` applies no finiteness check on the way out of `SMCCore` —
-    /// see `Formatting.number`'s documentation for the untested byte-order branch that
-    /// can produce `±.infinity`/`.nan` for an otherwise-successful read. Treated the
-    /// same as a failed read here (`nil` value, a specific error) rather than let a
-    /// non-finite `Double` reach `FanctlJSON`: `JSONEncoder`'s default
-    /// `nonConformingFloatEncodingStrategy` throws on exactly that, which would void
-    /// the *entire* `--json` output for one bad key among however many others read
-    /// cleanly.
-    private static func sanitized(key: String, value: Double) -> KeyedValue {
-        guard value.isFinite else {
-            return .failure(
-                key: key,
-                reason:
-                    "decoded to a non-finite value (\(Formatting.number(value))) "
-                    + "— likely a byte-order fault; see docs/SMC-RESEARCH.md"
-            )
-        }
-        return .success(key: key, value: value)
     }
 }
 
@@ -330,21 +231,6 @@ extension Fanctl.List {
             output(try ListCommand.renderJSON(result))
         } else {
             output(ListCommand.renderTable(result))
-        }
-    }
-}
-
-extension SensorReadFailure {
-    /// A human-readable rendering of this failure, for `KeyedValue.error` and table
-    /// output. Never parsed or matched on — see `SensorReadFailure`'s own documentation.
-    var readableDescription: String {
-        switch self {
-        case .unknownKey(let key):
-            return "\(key) is not present on this machine"
-        case .readFailed(let reason):
-            return reason
-        case .notDecodable(let reason):
-            return reason
         }
     }
 }
