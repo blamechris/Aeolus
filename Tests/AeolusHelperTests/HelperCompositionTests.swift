@@ -129,6 +129,42 @@ struct HelperCompositionTests {
             "the plane is no longer handed the connection local the provider was built from")
     }
 
+    /// The scan above is only as good as what it does **not** count, and a block comment is
+    /// the shape it used to count wrongly.
+    ///
+    /// `theProviderAndThePlaneShareOneConnection` reads every file under
+    /// `Sources/AeolusHelper`, so a `/* … */` span quoting `SMCConnection(` — in a doc
+    /// comment explaining this very rule, most likely — would be counted as a second
+    /// construction site and turn the tripwire red for a non-reason. A tripwire that fires on
+    /// the sentence explaining it is a tripwire nobody keeps, which is the argument
+    /// `SeamScanner.strippingComments` already makes and already implements.
+    ///
+    /// A fixture rather than the tree, for `SeamScannerParsingTests`' reason: nothing in
+    /// `Sources` contains a block comment today, so a test that only scans the tree cannot
+    /// know whether this works.
+    ///
+    /// **Mutation:** drop the `SeamScanner.strippingComments(source)` call from
+    /// `strippingComments(_:)` and strip trailing `//` alone. Run: red — the fixture's
+    /// `SMCConnection(` survives.
+    @Test("A block comment naming a type is not counted as code building one")
+    func blockCommentsAreStrippedBeforeCounting() {
+        let fixture = """
+            /* The hazard this guards: a second SMCConnection( built anywhere in the helper.
+               /* Nested, because Swift nests them. */ */
+            let connection = SMCConnection()  // the only one, per ADR 0006
+            """
+
+        let code = Self.strippingComments(fixture)
+
+        #expect(
+            Self.occurrences(of: "SMCConnection(", in: code) == 1,
+            """
+            the comment stripper counted \(Self.occurrences(of: "SMCConnection(", in: code)) \
+            construction sites in a fixture that has one. Prose describing the rule is not \
+            an instance of breaking it: \(code)
+            """)
+    }
+
     /// The connection health observer is actually attached to the scheduler, and bring-up
     /// actually binds it.
     ///
@@ -678,12 +714,24 @@ struct HelperCompositionTests {
         source.filter { !$0.isWhitespace }
     }
 
-    /// Drops `//` line comments so prose naming a type is not mistaken for code building one.
+    /// Drops comments so prose naming a type is not mistaken for code building one.
     ///
-    /// Line comments only: this scans a composition root, and a block comment there would be
-    /// a stranger thing than the hazard being guarded against.
+    /// **`SeamScanner`'s stripper first, then the trailing-`//` truncation this file needs.**
+    /// The local half used to be the whole of it, and "line comments only" was defended on the
+    /// grounds that a block comment in a composition root would be a stranger thing than the
+    /// hazard — which stopped being true the moment `theProviderAndThePlaneShareOneConnection`
+    /// began scanning *every* file under `Sources/AeolusHelper` rather than one. A `/* … */`
+    /// span mentioning `SMCConnection(` anywhere in the target would have been counted as a
+    /// construction site and reddened a tripwire for a non-reason. #177 already solved that
+    /// once, nested spans and string literals included; a second implementation of it here
+    /// would be the copy that drifts.
+    ///
+    /// The truncation is still needed on top, because `SeamScanner.strippingComments` drops
+    /// only *whole* `//` lines — a deliberate choice documented there — and this file's
+    /// `contains` assertions run against source with a trailing comment on the same line as
+    /// the code they match.
     private static func strippingComments(_ source: String) -> String {
-        source
+        SeamScanner.strippingComments(source)
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map { line -> Substring in
                 guard let comment = line.range(of: "//") else { return line }
