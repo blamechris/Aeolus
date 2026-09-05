@@ -39,7 +39,14 @@ struct SignalTeardownTests {
     private static let safetyLog = SafetyLog(
         subsystem: "dev.aeolus.AeolusHelperTests", category: "Safety")
 
-    /// One composed helper over journalled scripted firmware, with fan 0 already in manual.
+    /// One composed helper over journalled scripted firmware.
+    ///
+    /// **Fan 0 starts automatic, and it used to start `.held(at: 2_400)`.** Since #164 a
+    /// fixture fan the firmware reports in manual is one `acquireLease` refuses as
+    /// `.foreignManualControl` — this process did not put it there — so the lease the order
+    /// tests hold could never be granted. `HelperRestorerTests` records the same change for
+    /// the same reason. The fan's own restore on release is still the `.fan(0)` entry: the
+    /// restorer hands back every fan a lease held, whatever mode it started in.
     ///
     /// The plane is pointed at the gate *after* construction, exactly as
     /// `RegistryObservingPlane` is pointed at the registries: the graph is circular, and the
@@ -55,7 +62,7 @@ struct SignalTeardownTests {
             journal: journal,
             restores: restores,
             wrapping: ScriptedControlPlane(
-                fans: [0: .held(at: 2_400)],
+                fans: [0: .automatic(at: 2_400)],
                 stages: [
                     .nominal(temperatures: LeaseFixture.nominalDieTemperatures, writes: writes)
                 ]))
