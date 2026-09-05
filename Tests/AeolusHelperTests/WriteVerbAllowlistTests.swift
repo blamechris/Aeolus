@@ -57,8 +57,21 @@ import Testing
 /// - **A computed property.** The permit mint is one — `FanEnvelope.commandable` — and what
 ///   confines it is the access levels
 ///   `WriteAuthorisationTests.anAuthorisationTypeCannotBeMintedElsewhere` asserts.
+/// - **A `subscript`, and its `get async throws` accessor.** `func <name>` is what is
+///   scanned. There is none in the target; one vending a permit would be as invisible as a
+///   computed property, and is confined by the same access levels.
+/// - **A stored closure.** `let write: (CommandableFan) async throws -> Void` capturing the
+///   plane is a verb by any useful definition and is not a `func`, so it is not here either.
+///   This one is worth naming separately because, unlike the two above, it needs no new type
+///   to express — only a `let`.
 /// - **An operator.** `SeamScanner.functions(in:)` scans `func <name>`, so
 ///   `SafetyPrecedence.swift`'s synchronous `static func <` is not in the population at all.
+///
+/// One gap runs the *other* way and is stated for symmetry: a `func` written inside a string
+/// literal is scanned as a declaration, because the comment stripper preserves literals
+/// rather than lexing them. That adds a phantom to the population, so it fails loudly on
+/// `everyVerbIsAcknowledged` rather than concealing anything — which is the direction a
+/// tripwire may err in.
 ///
 /// The maintenance cost is real and is the intended cost: a new `async` helper function does
 /// not compile a green suite until it is classified here.
@@ -393,6 +406,17 @@ struct WriteVerbAllowlistTests {
     /// The count is asserted per file so it cannot drift silently. A thirteenth spawn site
     /// fails this with the file it was added to, and the maintainer either shows it hands off
     /// the same way and updates the number, or has found the hole.
+    ///
+    /// **The number churns, and that is the acknowledgment discipline #120 asked for, not an
+    /// oversight.** Any helper PR that adds a `Task` reddens this until its author writes the
+    /// new count down — the failure message names the file and prints both dictionaries, so
+    /// what to update is never in doubt. A count that maintained itself would assert nothing.
+    ///
+    /// The pattern lives in `SeamScanner.unstructuredTaskSpawns(inSource:)` so a fixture can
+    /// be put through it. Written inline here, its first spelling missed
+    /// `Task<Void, Never> { … }` — a legal spelling of exactly the thing being counted — and
+    /// nothing could have noticed, because the only thing exercising it was the tree whose
+    /// shapes it already matched.
     @Test("Every unstructured Task in the helper hands off to an acknowledged verb")
     func everyUnstructuredTaskHandsOffToThePopulation() throws {
         let expected = [
@@ -404,15 +428,11 @@ struct WriteVerbAllowlistTests {
             "ThermalSupervisor.swift": 1,
         ]
 
-        let spawn = try NSRegularExpression(
-            pattern: #"\bTask(\.detached)?\s*(\([^()]*\))?\s*\{"#)
         var counted: [String: Int] = [:]
 
         for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
-            let code = SeamScanner.strippingComments(
-                try String(contentsOf: file, encoding: .utf8))
-            let matches = spawn.numberOfMatches(
-                in: code, range: NSRange(code.startIndex..<code.endIndex, in: code))
+            let matches = try SeamScanner.unstructuredTaskSpawns(
+                inSource: try String(contentsOf: file, encoding: .utf8))
             if matches > 0 { counted[file.lastPathComponent] = matches }
         }
 

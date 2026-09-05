@@ -171,4 +171,140 @@ struct SeamScannerParsingTests {
         #expect(found.first?.parameterTypes == ["CommandableFan", "() -> String"])
         #expect(found.first?.isAsync == true)
     }
+
+    /// A `//` comment trailing the parameter list did not merely reach the effects clause —
+    /// it **became** it, non-empty, so the wrapped `async throws` on the next line was never
+    /// looked at. `isAsync` came back `false` and the verb left the population without
+    /// reddening anything, which is the silent-drop failure the whole allowlist rests on not
+    /// happening.
+    @Test("A comment trailing the parameter list does not hide a wrapped effects clause")
+    func aTrailingCommentDoesNotHideTheEffectsClause() throws {
+        let found = try scan(
+            """
+            func commandUngoverned(_ requestedRPM: Double, of index: Int)  // ungoverned
+                async throws -> CommandedTarget
+            """)
+
+        #expect(found.map(\.name) == ["commandUngoverned"])
+        #expect(found.first?.isAsync == true)
+        #expect(found.first?.effects == "async throws -> CommandedTarget")
+    }
+
+    /// The same, with a `{` inside the trailing comment. The line scan stops at a `{` — that
+    /// is what keeps a body out of the clause — so a comment mentioning one would have ended
+    /// the line before the newline, and the wrapped clause would have been lost by a second
+    /// route.
+    @Test("A brace inside a trailing comment does not end the line early")
+    func aBraceInsideATrailingCommentIsIgnored() throws {
+        let found = try scan(
+            """
+            func commandUngoverned(_ requestedRPM: Double, of index: Int)  // as in { … }
+                async throws -> CommandedTarget
+            """)
+
+        #expect(found.first?.isAsync == true)
+    }
+
+    /// A comment trailing a *complete* declaration still names no effects, and the body's
+    /// `{` still stops the clause before it.
+    @Test("A comment after the body's brace is not read as an effects clause")
+    func aCommentAfterTheBodyIsNotAnEffectsClause() throws {
+        let found = try scan("func reconnect() async throws {}  // reconnects")
+
+        #expect(found.first?.effects == "async throws")
+    }
+
+    /// `parameterListStart` walked the generic clause without the return-arrow guard
+    /// `topLevelComponents` has always had, so a constraint that is itself a function type
+    /// closed the clause early, the `(` was never found, and the declaration went **silently
+    /// uncounted** — the same shape as the nested-`>` defect, one level in.
+    @Test("A generic constraint containing a function type does not hide the declaration")
+    func genericConstraintsContainingAnArrowAreParsed() throws {
+        let found = try scan(
+            "func command<T: Sequence<() -> Void>>(_ rpm: Double, of fan: CommandableFan) "
+                + "async throws {}")
+
+        #expect(found.map(\.name) == ["command"])
+        #expect(found.first?.parameterTypes == ["Double", "CommandableFan"])
+    }
+
+    /// A bare `>` in a default value is a comparison and closes nothing. Letting it drive the
+    /// depth negative put the following comma below depth zero, so every later parameter was
+    /// swallowed into the first component — and a permit in the second named no permit.
+    @Test("A comparison in a default value does not swallow the later parameters")
+    func aComparisonInADefaultValueDoesNotSwallowParameters() throws {
+        let found = try scan(
+            "func f(_ rpm: Double = 1 > 0 ? 1 : 2, of fan: CommandableFan) async throws {}")
+
+        #expect(found.first?.labels == ["_", "of"])
+        #expect(found.first?.parameterTypes == ["Double", "CommandableFan"])
+    }
+
+    // MARK: - Unstructured task spawns
+
+    /// The spelling the first pattern missed. `Task<Void, Never> { … }` is a legal way to
+    /// write exactly the thing `everyUnstructuredTaskHandsOffToThePopulation` counts, so a
+    /// pattern blind to it asserted a number that was not the number it claimed — and the
+    /// hole it left is the one route around "a synchronous function cannot `await`".
+    @Test("An explicitly generic Task is counted as a spawn site")
+    func explicitlyGenericTasksAreCounted() throws {
+        #expect(
+            try SeamScanner.unstructuredTaskSpawns(
+                inSource: "_ = Task<Void, Never> { await Task.yield() }") == 1)
+    }
+
+    /// Every other spelling in the tree, so widening the pattern for the generic case did not
+    /// quietly cost one of them.
+    @Test("The plain, detached, prioritised and self-capturing spellings are all counted")
+    func everySpawnSpellingIsCounted() throws {
+        let source = """
+            Task { await session.invalidate() }
+            Task.detached(priority: .utility) { await supervisor.run() }
+            Task<[Key], Error> { [self] in try await walkEveryKey() }
+            Task.detached { await emergency.cycle() }
+            """
+
+        #expect(try SeamScanner.unstructuredTaskSpawns(inSource: source) == 4)
+    }
+
+    /// A stored `Task` is a handle, not a spawn. The optional's `?` is what separates them,
+    /// and the pattern must not read the type annotation as a site.
+    @Test("A stored Task handle is not a spawn site")
+    func storedTaskHandlesAreNotSpawnSites() throws {
+        let source = """
+            private var discovery: Task<[DiscoveredSensorKey], Error>?
+
+            func f() {
+                let walk: Task<[DiscoveredSensorKey], Error>
+                if let discovery {
+                    walk = discovery
+                }
+            }
+            """
+
+        #expect(try SeamScanner.unstructuredTaskSpawns(inSource: source) == 0)
+    }
+
+    // MARK: - The premise the block-comment stripper rests on
+
+    /// `strippingBlockComments` argues that its quote-counter cannot weaken a scan because
+    /// `depth` never rises over this tree. That is a claim about `Sources`, not about the
+    /// code, and it was resting on nobody having checked. It is checked here, so the day a
+    /// block comment is written is the day the argument is re-read rather than the day it
+    /// quietly stops holding.
+    @Test("No block comment is written in Sources, which the stripper's argument assumes")
+    func noBlockCommentIsWrittenInSources() throws {
+        for file in try SeamScanner.swiftFiles() {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            #expect(
+                !source.contains("/*"),
+                """
+                \(file.lastPathComponent) contains a block comment. `strippingBlockComments` \
+                argues its quote-counting string handling cannot weaken a scan because \
+                `depth` never rises over this tree — re-read that argument, because it no \
+                longer holds by inspection.
+                """
+            )
+        }
+    }
 }

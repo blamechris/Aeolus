@@ -116,11 +116,23 @@ enum SeamScanner {
     ///   claimed the same of block comments while `strippingCommentLines` removed only whole
     ///   `//` lines, which had it exactly backwards: prose showing a forbidden signature
     ///   inside `/* … */` was scanned as a declaration.
-    /// - A comment **trailing** a declaration on its own line is not dropped, so it reaches
-    ///   the effects clause of a protocol requirement (which has no `{` to stop at). Naming
-    ///   a permit there would read as naming one in the return type. Nothing in `Sources`
-    ///   does it, and the whole-line rule is what keeps the prose explaining a rule from
-    ///   tripping the rule.
+    /// - A comment **trailing** a declaration is dropped from the effects clause and nowhere
+    ///   else: `effectsClause(of:after:)` truncates at `//`. Until #177 it did not, and the
+    ///   trailing comment did not merely reach the clause — it *became* the clause, so a
+    ///   wrapped `async throws` on the next line was never read and the verb dropped out of
+    ///   the population. Elsewhere the whole-line rule still stands, which is what keeps the
+    ///   prose explaining a rule from tripping the rule.
+    /// - A **`subscript`** is not `func`, so neither it nor its `get async throws` accessor
+    ///   is scanned. None in `Sources/AeolusHelper` today; one returning a permit would be
+    ///   invisible, exactly as a computed property is.
+    /// - A **stored closure** is not `func` either. A `let write: (CommandableFan) async
+    ///   throws -> Void` capturing the plane is a verb by any useful definition and is not
+    ///   here. What confines it is the same thing that confines the permit mint:
+    ///   `FanWriteAuthorisation.swift`'s access levels.
+    /// - The converse, and the direction that is safe: a `func` written **inside a string
+    ///   literal** is scanned as a declaration, because `strippingComments` preserves string
+    ///   literals rather than parsing them. That adds a phantom to the population, which
+    ///   fails loudly on the allowlist rather than hiding anything.
     /// - Two declarations in one file with byte-identical signatures — a protocol
     ///   requirement and its conformer in the same file, which is how `LeaseClock` and
     ///   `CriticalTemperatureSensing` are written — share a `key` and collapse when the
@@ -224,6 +236,32 @@ enum SeamScanner {
         return found
     }
 
+    /// The unstructured `Task { … }` and `Task.detached { … }` spawn sites in one file's
+    /// text.
+    ///
+    /// An unstructured task is the one route around "a synchronous function cannot `await`",
+    /// so `WriteVerbAllowlistTests` counts the sites to keep a new one from arriving
+    /// unremarked. It lives here, taking source rather than a URL, for the reason every other
+    /// primitive does: the first spelling of the pattern —
+    /// `\bTask(\.detached)?\s*(\([^()]*\))?\s*\{` — did not match `Task<Void, Never> { … }`,
+    /// which is a **legal spelling of exactly the thing being counted** and is already
+    /// written in `ThermalSupervisor.swift`'s neighbourhood, so the count it asserted was not
+    /// the count it claimed. A pattern nothing puts a fixture through is a pattern whose
+    /// misses are invisible.
+    ///
+    /// An explicit generic clause and an argument list are both optional. Reading a `Task`
+    /// *type* as a spawn is possible in principle — a protocol's `var t: Task<Void, Never> {`
+    /// would match — and is **fail-loud**: the count rises, the message names the file, and a
+    /// maintainer looks. A missed spawn is the direction that fails silently, so the pattern
+    /// errs wide.
+    static func unstructuredTaskSpawns(inSource source: String) throws -> Int {
+        let spawn = try NSRegularExpression(
+            pattern: #"\bTask(\.detached)?\s*(<[^<>]*>)?\s*(\([^()]*\))?\s*\{"#)
+        let code = strippingComments(source)
+        return spawn.numberOfMatches(
+            in: code, range: NSRange(code.startIndex..<code.endIndex, in: code))
+    }
+
     // MARK: - Parsing
 
     /// Source with comments removed: every `/* … */` span, and then every whole line that is
@@ -258,7 +296,10 @@ enum SeamScanner {
     /// interpolation — `"\(row["key"])"` — ends the literal early and the remainder is read
     /// as code. That can only matter alongside a `/*`, and it cannot silently weaken a scan
     /// today: with no block comment anywhere in `Sources`, `depth` never rises, every branch
-    /// copies what it consumes, and the result is the input character for character.
+    /// copies what it consumes, and the result is the input character for character. That
+    /// premise is **asserted rather than assumed** — `SeamScannerParsingTests`'
+    /// `noBlockCommentIsWrittenInSources` fails the day one is written, which is the day this
+    /// paragraph stops being true.
     private static func strippingBlockComments(_ source: String) -> String {
         var output = ""
         var index = source.startIndex
@@ -346,15 +387,23 @@ enum SeamScanner {
 
         if code[index] == "<" {
             var depth = 0
+            var previous: Character = " "
             while index < code.endIndex {
                 switch code[index] {
                 case "<": depth += 1
-                case ">": depth -= 1
+                // The `>` of a return arrow closes nothing, so a constraint that is itself a
+                // function type — `func command<T: Sequence<() -> Void>>(…)` — must not read
+                // as closing the clause early. `topLevelComponents` has carried this guard
+                // from the start; without it here the `(` was never found, the declaration
+                // went **silently uncounted**, and a permit-bearing verb written that way was
+                // invisible to the whole allowlist.
+                case ">" where previous != "-": depth -= 1
                 // A generic parameter list contains neither; either one means this `<` was
                 // never opening one, so give up rather than run to the end of the file.
                 case "{", ";": return nil
                 default: break
                 }
+                previous = code[index]
                 index = code.index(after: index)
                 if depth == 0 { break }
             }
@@ -406,13 +455,36 @@ enum SeamScanner {
     /// all — from swallowing the declaration beneath it. A clause the formatter has wrapped
     /// onto its own line is picked up from there instead, and only when that line begins
     /// with a keyword that can legally start one.
+    ///
+    /// A `//` comment **trailing** the parameter list is dropped here, because
+    /// `strippingComments` removes only whole `//` lines. Until #177 it was not, and the
+    /// consequence was not cosmetic: a comment on the parameter-list line made the clause
+    /// look non-empty, so the wrapped line beneath it was never read, and
+    /// `func commandUngoverned(_ rpm: Double, of index: Int)  // ungoverned` carrying its
+    /// `async throws -> CommandedTarget` on the next line parsed as **not `async`** and left
+    /// the population altogether. Nothing that may legally follow a parameter list contains
+    /// `//`, so truncating there costs nothing — and a `{` inside that comment must not end
+    /// the line either, or the wrapped clause is lost by the same route.
     private static func effectsClause(of code: String, after close: String.Index) -> String {
         func line(from start: String.Index) -> (text: String, end: String.Index) {
             var text = ""
             var index = start
-            while index < code.endIndex, code[index] != "\n", code[index] != "{" {
+            var commented = false
+
+            while index < code.endIndex, code[index] != "\n" {
+                if commented {
+                    index = code.index(after: index)
+                    continue
+                }
+                if code[index] == "{" { break }
+                let next = code.index(after: index)
+                if code[index] == "/", next < code.endIndex, code[next] == "/" {
+                    commented = true
+                    index = next
+                    continue
+                }
                 text.append(code[index])
-                index = code.index(after: index)
+                index = next
             }
             return (text.trimmingCharacters(in: .whitespaces), index)
         }
@@ -437,9 +509,15 @@ enum SeamScanner {
         for character in clause {
             switch character {
             case "(", "[", "<": depth += 1
-            case ")", "]": depth -= 1
+            // Clamped at zero, because a default value may carry a bare `>` that closes
+            // nothing: `_ rpm: Double = 1 > 0 ? 1 : 2` drove the depth negative, so the comma
+            // after it was no longer at depth zero and every later parameter was swallowed
+            // into the first component. A verb written that way reported **one** parameter —
+            // so a permit in its second named no permit, and the verb was invisible to
+            // `onlyAcknowledgedVerbsNameAPermit`.
+            case ")", "]": depth = max(0, depth - 1)
             // The `>` of a return arrow closes nothing; only a generic bracket's does.
-            case ">" where previous != "-": depth -= 1
+            case ">" where previous != "-": depth = max(0, depth - 1)
             default: break
             }
             if character == "," && depth == 0 {
@@ -470,8 +548,11 @@ enum SeamScanner {
             let character = parameter[index]
             switch character {
             case "(", "[", "<": depth += 1
-            case ")", "]": depth -= 1
-            case ">" where previous != "-": depth -= 1
+            // Clamped for `topLevelComponents`' reason: a bare `>` in a default value closes
+            // nothing, and a negative depth here would hide the colon that separates the
+            // label from the type.
+            case ")", "]": depth = max(0, depth - 1)
+            case ">" where previous != "-": depth = max(0, depth - 1)
             case ":" where depth == 0:
                 let names = parameter[..<index].split(separator: " ")
                 var type = String(parameter[parameter.index(after: index)...])
