@@ -443,6 +443,59 @@ struct HelperCompositionTests {
             "the helper's authority is composed in exactly one place")
     }
 
+    /// Reconciliation runs after the registries are bound and before any supervisor starts.
+    ///
+    /// A source tripwire, because the property is about statement *order* inside a function
+    /// the daemon calls once in a process that never returns — the same reason the rest of
+    /// this suite is one. Both edges are load-bearing and they fail differently:
+    ///
+    /// - **Before the bind**, a fan reconciliation restores is handed back with neither
+    ///   safety registry told. `HelperFanRestorer` logs that at fault and restores anyway,
+    ///   so nothing is left pinned — but § 5's first cycle then reads a fan Aeolus itself
+    ///   returned as a system reclamation.
+    /// - **After a supervisor starts**, § 5's first cycle can land on a fan the previous
+    ///   process left in manual, before the pass has had a chance to hand it back.
+    ///
+    /// **Mutation:** move `await reconcileFans()` above `await bindSafetyRegistries()`, or
+    /// below `await thermalSupervisor.start()`. Run: red on the position it moved past.
+    @Test("Reconciliation runs between the registry bind and the first supervisor")
+    func reconciliationSitsBetweenTheBindAndTheSupervisors() throws {
+        let code = try Self.compositionSource()
+        let body = try #require(
+            Self.body(ofFunctionMatching: "func bringUp", in: code),
+            "HelperComposition no longer has a bring-up function to order the pass against")
+
+        let bind = try #require(
+            body.range(of: "bindSafetyRegistries()"),
+            "bring-up no longer binds the safety registries")
+        let reconcile = try #require(
+            body.range(of: "reconcileFans()"),
+            """
+            bring-up no longer reconciles the fans. A helper that serves without reading \
+            F<n>Md first cannot clear what a dead predecessor left in manual, which is the \
+            whole of docs/SAFETY.md § 6's crash coverage and the precondition ADR 0007 puts \
+            on the plist's KeepAlive keys.
+            """)
+        let firstSupervisor = try #require(
+            body.range(of: "Supervisor.start()"),
+            "bring-up no longer starts a supervisor")
+
+        #expect(
+            bind.upperBound < reconcile.lowerBound,
+            """
+            Reconciliation now runs before the safety registries are bound, so a fan it \
+            hands back is returned with § 5 never told — and § 5's first cycle reads Aeolus's \
+            own restore as the operating system taking the fan.
+            """)
+        #expect(
+            reconcile.upperBound < firstSupervisor.lowerBound,
+            """
+            A supervisor now starts before reconciliation has run. § 5's first cycle can \
+            land on a fan the previous process left in manual before anything has handed it \
+            back, and § 3's can read a machine whose fans are in a mode nothing established.
+            """)
+    }
+
     // MARK: - Scanning
 
     /// The body of the first function whose declaration matches `marker`, by brace matching.

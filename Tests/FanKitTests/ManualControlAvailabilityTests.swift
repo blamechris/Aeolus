@@ -35,6 +35,7 @@ struct ManualControlAvailabilityTests {
             .unavailable(.systemSleeping),
             .unavailable(.noThermalTelemetry),
             .unavailable(.supervisorBlind),
+            .unavailable(.foreignManualControl),
             .unavailable(.unknown("somethingFromAFutureHelper")),
         ]
     )
@@ -48,6 +49,23 @@ struct ManualControlAvailabilityTests {
     func unrecognisedReasonDecodesToUnknown() throws {
         let decoded = try decode(#"{"state":"unavailable","reason":"firmwareLocked"}"#)
         #expect(decoded == .unavailable(.unknown("firmwareLocked")))
+    }
+
+    /// The case #164 added, decoded from the wire it will actually arrive on.
+    ///
+    /// `AeolusXPCVersion` stays at 1 for it, and this is the assertion that makes that
+    /// legal in both directions. A *newer* helper naming a reason an older client has never
+    /// heard of lands in `.unknown(_)` rather than failing the whole snapshot — that is
+    /// `unrecognisedReasonDecodesToUnknown` above. This is the other direction, and it is
+    /// the one that would otherwise need the bump: a client of *this* version must resolve
+    /// the value to the case rather than to `.unknown("foreignManualControl")`, which would
+    /// render as an opaque string exactly where the user needs to be told that another
+    /// program is holding the fan.
+    @Test("foreignManualControl arrives as itself, not as an unrecognised reason")
+    func foreignManualControlDecodesToItsOwnCase() throws {
+        let decoded = try decode(#"{"state":"unavailable","reason":"foreignManualControl"}"#)
+        #expect(decoded == .unavailable(.foreignManualControl))
+        #expect(decoded != .unavailable(.unknown("foreignManualControl")))
     }
 
     /// The direction of the guess is the whole point. If a future version grows a third
@@ -91,6 +109,7 @@ struct ManualControlAvailabilityTests {
             .systemSleeping,
             .noThermalTelemetry,
             .supervisorBlind,
+            .foreignManualControl,
         ]
     )
     func knownWireValuesResolveToKnownCases(_ reason: ManualControlAvailability.Reason) {
@@ -129,6 +148,9 @@ struct ManualControlAvailabilityTests {
         #expect(
             ManualControlAvailability.Reason.supervisorBlind.wireValue
                 == "supervisorBlind")
+        #expect(
+            ManualControlAvailability.Reason.foreignManualControl.wireValue
+                == "foreignManualControl")
         #expect(ManualControlAvailability.Reason.unknown("xyz").wireValue == "xyz")
     }
 

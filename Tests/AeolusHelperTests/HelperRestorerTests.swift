@@ -34,8 +34,8 @@ struct HelperRestorerTests {
     static let safetyLog = SafetyLog(
         subsystem: "dev.aeolus.AeolusHelperTests", category: "Safety")
 
-    /// One composed helper over the scripted firmware, with one fan already under manual
-    /// control at a plausible speed.
+    /// One composed helper over the scripted firmware, with one fan spinning at a plausible
+    /// speed under Apple's own thermal management.
     ///
     /// `writes` is the firmware's answer to the keystone mode write, which is the whole of
     /// the difference between a fan that came back and a fan that was abandoned.
@@ -46,6 +46,17 @@ struct HelperRestorerTests {
     /// second fixture so that every test in both suites composes the identical graph: a
     /// paraphrased composition is the defect #163 exists to end, and it would be a strange
     /// place to reintroduce it.
+    ///
+    /// **Fan 0 starts automatic, and it used to start `.held(at: 2_400)`.** That fixture
+    /// meant "the firmware reports fan 0 in manual", which since #164 is a statement with
+    /// consequences: startup reconciliation restores such a fan, and `acquireLease` refuses
+    /// one it did not put there as `.foreignManualControl`. Every test here acquires a lease
+    /// *after* calling `engage(fan:in:)`, which is the reverse of the real order — E3
+    /// acquires first and engages second — so a manual fan in the fixture would be
+    /// indistinguishable from another program holding it, and correctly refused. Starting
+    /// automatic keeps the fixture's meaning ("Aeolus is about to hold this fan") rather
+    /// than accidentally asserting the opposite. The target and actual RPM stay where they
+    /// were: `F<n>Tg` carries whatever Apple's thermal manager last asked for.
     static func composed(
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
         clock: some MonotonicClock = SystemMonotonicClock(),
@@ -53,7 +64,7 @@ struct HelperRestorerTests {
     ) -> HelperComposition<ScriptedControlPlane> {
         HelperComposition(
             plane: ScriptedControlPlane(
-                fans: [0: .held(at: 2_400)],
+                fans: [0: .automatic(at: 2_400)],
                 stages: [
                     .nominal(temperatures: LeaseFixture.nominalDieTemperatures, writes: writes)
                 ]),
@@ -254,7 +265,7 @@ struct HelperRestorerTests {
     func theRegistriesAreToldOnOppositeSidesOfTheWrite() async throws {
         let plane = RegistryObservingPlane(
             ScriptedControlPlane(
-                fans: [0: .held(at: 2_400)],
+                fans: [0: .automatic(at: 2_400)],
                 stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)]))
         let helper = HelperComposition(
             plane: plane,

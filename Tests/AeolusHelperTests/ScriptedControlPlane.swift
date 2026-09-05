@@ -213,6 +213,16 @@ actor ScriptedControlPlane: FanControlPlane {
             FanCondition(mode: .manual, targetRPM: rpm, actualRPM: rpm)
         }
 
+        /// On Apple's thermal management, at `rpm`.
+        ///
+        /// `held(at:)`'s counterpart, and worth having by name since #164: a fan's *mode*
+        /// now decides whether startup reconciliation restores it and whether the lease core
+        /// calls it foreign control, so a fixture that only wanted "spinning at 2400" must be
+        /// able to say so without also saying "somebody is holding it".
+        static func automatic(at rpm: Double) -> FanCondition {
+            FanCondition(mode: .automatic, targetRPM: rpm, actualRPM: rpm)
+        }
+
         /// A fan under manual control that has been *told* `target` and is still turning at
         /// `actual` — a ramp in flight.
         ///
@@ -282,6 +292,18 @@ actor ScriptedControlPlane: FanControlPlane {
     /// Moves to the next stage. The last one repeats.
     func advance() {
         stageIndex += 1
+    }
+
+    /// Moves a fan's mode without recording an attempt, as a writer outside Aeolus would.
+    ///
+    /// `engageManualControl(of:)` is the *helper's* write verb: it appends to `attempts` and
+    /// goes through the stage's `WriteBehaviour`, which is exactly right when the test is
+    /// about Aeolus writing. A test about a **third party** taking a fan needs the firmware
+    /// to change underneath the helper with nothing in Aeolus having asked, and a recorded
+    /// attempt would put the change on Aeolus's own ledger — which is the very
+    /// misattribution ADR 0011 exists to prevent.
+    func setMode(_ mode: FirmwareFanMode, ofFan index: Int) {
+        fans[index]?.mode = mode
     }
 
     private var stage: Stage { stages[min(stageIndex, stages.count - 1)] }
