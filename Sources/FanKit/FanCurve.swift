@@ -39,6 +39,15 @@ public struct FanCurve: Sendable, Hashable, Codable {
     public let source: SensorGroup
     /// Degrees of hysteresis applied when the temperature is falling, so a reading
     /// hovering on a point boundary cannot cause the fan to hunt.
+    ///
+    /// **Never NaN, infinite, or negative, whatever a configuration asked for.** `min`/
+    /// `max` propagate NaN, and every comparison against NaN is false — so a NaN here
+    /// would not raise or lower the falling-temperature margin, it would silently remove
+    /// it, exactly the way an unguarded `ThermalCeiling.effective(requested:default:)`
+    /// removed a thermal ceiling in #101. Both initialisers route the requested value
+    /// through `effectiveHysteresisCelsius(requested:)`, which falls back to
+    /// `defaultHysteresisCelsius` rather than admitting anything that would disable the
+    /// mechanism this field bounds.
     public let hysteresisCelsius: Double
     /// Maximum change in target speed per second. Protects both the user's ears and the
     /// fan bearings.
@@ -53,17 +62,37 @@ public struct FanCurve: Sendable, Hashable, Codable {
     /// to bite (`CLAUDE.md` rule 7).
     public let maximumRampRPMPerSecond: Double
 
+    /// The margin used when a configuration does not ask for one, and the value
+    /// `effectiveHysteresisCelsius(requested:)` falls back to when what was asked for
+    /// cannot be honoured.
+    public static let defaultHysteresisCelsius: Double = 2.0
+
     public init(
         points: [Point],
         source: SensorGroup,
-        hysteresisCelsius: Double = 2.0,
+        hysteresisCelsius: Double = FanCurve.defaultHysteresisCelsius,
         maximumRampRPMPerSecond: Double = FanSafetyLimits.maximumRampRPMPerSecond
     ) {
         self.points = points.sorted()
         self.source = source
-        self.hysteresisCelsius = hysteresisCelsius
+        self.hysteresisCelsius = FanCurve.effectiveHysteresisCelsius(
+            requested: hysteresisCelsius)
         self.maximumRampRPMPerSecond = FanSafetyLimits.effectiveRampRPMPerSecond(
             requested: maximumRampRPMPerSecond)
+    }
+
+    /// The hysteresis margin actually used, given what a configuration asked for.
+    ///
+    /// Mirrors `FanSafetyLimits.effectiveRampRPMPerSecond(requested:)`: a request that is
+    /// not a usable margin at all — negative, `-.infinity`, or NaN — falls back to
+    /// `defaultHysteresisCelsius` rather than being honoured. `requested >= 0` is false
+    /// for NaN as well, since every comparison with NaN is false, so one condition
+    /// covers all three cases without a separate finiteness check beside it.
+    /// `+.infinity` is refused too — an unbounded margin never releases, which disables
+    /// the mechanism exactly as completely as NaN does, just at the other end.
+    public static func effectiveHysteresisCelsius(requested: Double) -> Double {
+        guard requested.isFinite, requested >= 0 else { return defaultHysteresisCelsius }
+        return requested
     }
 }
 
