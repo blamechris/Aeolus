@@ -253,17 +253,38 @@ extension ManualControlAvailability: Codable {
 /// behaviour is structured — that is `ManualControlAvailability`'s job, and a client
 /// deciding what it may do consults that, not this string.
 public enum FanReading: Sendable, Hashable {
-    /// A value was read and decoded to a finite `Double`. **Never clamped, floored, or
-    /// adjusted** from what the hardware reported. `F0Ac` was measured at 1343.07 against
-    /// a declared `F0Mn` of 1350 on this project's development machine: a reading below
-    /// the declared minimum is a legitimate observation, not a fault. Clamping governs
-    /// targets — `FanControlEnvelope.target(for:)`, on the write path — and never
-    /// observations.
-    case measured(Double)
+    /// A value that has already passed the `isFinite` guard in `measured(_:)`. Never
+    /// constructed directly — go through `measured(_:)`, which is the only place that
+    /// guard lives, so it cannot be bypassed by a call site that forgot it exists.
+    case measuredFinite(Double)
 
     /// The key is absent on this machine, the read failed, or it decoded to something
     /// unusable including a non-finite `Double`.
     case unavailable(reason: String)
+
+    /// Constructs a measured reading, or `.unavailable` when there is nothing finite to
+    /// carry.
+    ///
+    /// A value that was read and decoded to a finite `Double` is **never clamped,
+    /// floored, or adjusted** from what the hardware reported. `F0Ac` was measured at
+    /// 1343.07 against a declared `F0Mn` of 1350 on this project's development machine: a
+    /// reading below the declared minimum is a legitimate observation, not a fault.
+    /// Clamping governs targets — `FanControlEnvelope.target(for:)`, on the write path —
+    /// and never observations.
+    ///
+    /// `init(from:)` below has always refused a non-finite value; this is the
+    /// construction-side twin of that guard. Without it, a producer that never goes
+    /// through JSON — the control loop computing a target from curve arithmetic, for
+    /// instance — could still hand a NaN or infinite `Double` to `AeolusXPCCoding`'s
+    /// encoder, whose `nonConformingFloatEncodingStrategy` is `.throw`: one bad field then
+    /// refuses the entire snapshot, every tick, rather than costing the one row it
+    /// actually poisoned.
+    public static func measured(_ value: Double) -> FanReading {
+        guard value.isFinite else {
+            return .unavailable(reason: "a fan reading must be finite, got \(value)")
+        }
+        return .measuredFinite(value)
+    }
 
     /// The finite `Double`, or `nil` when unavailable.
     ///
@@ -271,7 +292,7 @@ public enum FanReading: Sendable, Hashable {
     /// should switch on the case instead, so it still has "why is it missing" available at
     /// the point that has to say so.
     public var value: Double? {
-        if case .measured(let value) = self { return value }
+        if case .measuredFinite(let value) = self { return value }
         return nil
     }
 }
@@ -285,7 +306,7 @@ extension FanReading: Codable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .measured(let value):
+        case .measuredFinite(let value):
             try container.encode(value, forKey: .value)
         case .unavailable(let reason):
             try container.encode(reason, forKey: .unavailableReason)
@@ -312,7 +333,7 @@ extension FanReading: Codable {
                     debugDescription: "a fan reading must be finite, got \(value)"
                 )
             }
-            self = .measured(value)
+            self = .measuredFinite(value)
         case (nil, let reason?):
             self = .unavailable(reason: reason)
         case (nil, nil):
@@ -364,6 +385,12 @@ public struct FanState: Sendable, Hashable, Codable {
     /// nothing. Distinct from an unavailable reading: "no target is set" is an answer,
     /// "the target could not be read" is not, and conflating them would let a fan under
     /// nobody's control render identically to one whose state is unknown.
+    ///
+    /// A non-finite value is never stored here: both initialisers route it through
+    /// `FanState.normalizedTargetRPM(_:)`, which lands it on `nil` — "asking for nothing"
+    /// is already this field's safe shape, so a NaN or infinite target from an arithmetic
+    /// producer costs this one field, never the whole snapshot at
+    /// `AeolusXPCCoding`'s encoder.
     public let targetRPM: Double?
     public let mode: FanControlMode
     /// `true` when the helper asked for manual control but the system has taken the fan
@@ -436,9 +463,55 @@ public struct FanState: Sendable, Hashable, Codable {
         self.actualRPM = actualRPM
         self.minimumRPM = minimumRPM
         self.maximumRPM = maximumRPM
-        self.targetRPM = targetRPM
+        self.targetRPM = FanState.normalizedTargetRPM(targetRPM)
         self.mode = mode
         self.isReclaimedBySystem = isReclaimedBySystem
         self.manualControlAvailability = manualControlAvailability
+    }
+
+    /// `nil` when there is no target, and `nil` again when the target given is not
+    /// finite — the two cases this field is meant to be unable to distinguish, because
+    /// "no target is set" is the honest description of both. A NaN or infinite target
+    /// reaching `AeolusXPCCoding`'s encoder would refuse the entire snapshot; landing it
+    /// here instead means it never gets that far.
+    private static func normalizedTargetRPM(_ value: Double?) -> Double? {
+        guard let value, value.isFinite else { return nil }
+        return value
+    }
+}
+
+extension FanState {
+    private enum CodingKeys: String, CodingKey {
+        case index
+        case firmwareName
+        case actualRPM
+        case minimumRPM
+        case maximumRPM
+        case targetRPM
+        case mode
+        case isReclaimedBySystem
+        case manualControlAvailability
+    }
+
+    /// Routed through the memberwise initialiser so `targetRPM` gets the same
+    /// `normalizedTargetRPM(_:)` guard here as it does in code — `AeolusXPCCoding`'s
+    /// bare `JSONEncoder`/`JSONDecoder` cannot carry a literal NaN or infinity in valid
+    /// JSON, but nothing says every future decoder configuration will share that
+    /// property, and a synthesised `init(from:)` would have assigned the stored property
+    /// directly, same as it did before this fix.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            index: try container.decode(Int.self, forKey: .index),
+            firmwareName: try container.decodeIfPresent(String.self, forKey: .firmwareName),
+            actualRPM: try container.decode(FanReading.self, forKey: .actualRPM),
+            minimumRPM: try container.decode(FanReading.self, forKey: .minimumRPM),
+            maximumRPM: try container.decode(FanReading.self, forKey: .maximumRPM),
+            targetRPM: try container.decodeIfPresent(Double.self, forKey: .targetRPM),
+            mode: try container.decode(FanControlMode.self, forKey: .mode),
+            isReclaimedBySystem: try container.decode(Bool.self, forKey: .isReclaimedBySystem),
+            manualControlAvailability: try container.decode(
+                ManualControlAvailability.self, forKey: .manualControlAvailability)
+        )
     }
 }
