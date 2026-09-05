@@ -86,15 +86,57 @@ The launchd job named in the paragraph above is itself part of what must be veri
 something that exists: `KeepAlive` and `RunAtLoad` are absent from the plist today. § 6 says
 what is scheduled to put them back — #86 holds that gap open and #103 closes it.
 
+**The handback is bounded, and a handback that fails is terminal** (#110). "Restores every
+affected fan" above is what the helper *attempts*; what it guarantees is that it stops
+attempting. A restorer makes `RestoreLimits.attemptBudget` attempts per fan — three, § 5's
+number — and then returns, naming the fans whose mode write was refused every time. It may
+not retry forever: `LeaseAuthority` awaits the restore from every teardown path, and since
+#136 one of those is `ReclamationWatchdog.cycle()`, so a restorer parked in a retry loop
+parks a safety supervisor's loop for the life of the process, for every fan.
+
+The fan it gave up on then enters a **permanent terminal state**, and it is the only one in
+this document:
+
+- Manual control over it is refused with `.restoreToAutomaticFailed` — durable, and
+  deliberately distinct from the transient `.releaseInProgress`, so a client can tell
+  *retrying* from *gave up*. `CLAUDE.md` rule 6 is the whole of it: the helper asked for
+  automatic, was refused, and stopped asking, so it does not know what mode the fan is in.
+- **Nothing watches it.** Every path that reaches this state has already cleared § 5's
+  registry, so § 5 has no entry left to cycle over — see § 5 and #181, which owns
+  re-registration.
+- **Nothing clears it.** The ledger is append-only for the life of the helper process, so a
+  later restore the firmware *does* accept leaves the refusal standing. #189 owns the
+  clearing path; § 7's panic restore is the first caller that will need it.
+
+A helper restart is the intended route out, and § 6's reconciliation is what would make that
+route safe. **Not built — #103 (E5.4b, #164)**, on the same terms as the `KeepAlive`
+paragraph in § 6. Until it lands there is no route out at all: a fan this refusal names stays
+named for the life of the process, and a restart hands the next process a fan whose mode
+nothing has read. `docs/RECOVERY.md` is the user-facing version.
+
 *Tested by:* unit tests on expiry arithmetic, including a wall clock moved in either
 direction and a monotonic jump (`LeaseExpiryTests`); tests on the supervisor's *schedule* as
 distinct from that arithmetic — no sleep outruns the shortest TTL the helper will grant, so a
 lease taken while a pass is parked is still swept at its own deadline rather than at the
 stale one the pass went to sleep on (`LeaseExpirySupervisorScheduleTests`, #151); tests
 against a recording restorer double covering connection death, an invalidation that never
-arrives at all, and a repeated one (`LeaseTeardownTests`). Not against the scripted mock
-control plane — that is what § 3's, § 5's and § 6's pending lines will be driven through, and
-naming it here would have claimed a fidelity these tests do not have.
+arrives at all, and a repeated one (`LeaseTeardownTests`); and the bound above
+(`HandbackBoundTests`). Not against the scripted mock control plane for the first three —
+that is what § 3's, § 5's and § 6's pending lines will be driven through, and naming it there
+would have claimed a fidelity those tests do not have.
+
+`HandbackBoundTests` is split across two fidelities, and which property gets which is worth
+naming rather than averaging. **Through the shipped `ScriptedControlPlane`** (bridged to the
+attempt seam, and wrapped in `CeilingedRefusal` so a lost bound fails red instead of hanging):
+that the call comes back at all after a firmware that refuses every mode write, that a
+firmware which takes the write abandons nothing, and that a fan the restorer gave up on is
+then refused durably through the lease core. **Against bespoke in-memory doubles**, because
+the scripted plane's `WriteBehaviour` is a property of the stage and cannot express these:
+that the budget is spent per fan (`PartiallyRefusingRestore` — one fan refused, its sibling
+not), that a fan the firmware takes back on a later attempt is not abandoned
+(`RefusesThenSucceeds`), and that a cancelled teardown still lands the write
+(`CancellationSensitiveRestore` — a seam that fails only because the task was cancelled). The
+durable refusal's ordering against a concurrent lease uses the in-memory double too.
 
 *Tested by (pending #104):* a manual hardware check that `kill -9` on the app returns the
 fans to automatic. It cannot run until a write path exists to put them anywhere else, which
@@ -487,6 +529,23 @@ ADR 0007 reinstates them **in the same change that ships reconciliation, never b
 #103 — because a restart policy without reconciliation restarts a helper that then serves
 without checking what the SMC still holds. Until that lands, the paragraph above describes a
 decision rather than a mechanism, which is what #86 exists to hold open.
+
+**"On every exit path" is a guarantee about *attempting*, not about the firmware agreeing.**
+Every mechanism in this section ends in the same mode write, and the firmware can refuse it.
+When it does, § 1's bounded handback (#110) is what happens next: attempts are spent, the fan
+is named in a `.fault` line, and manual control over it is refused for the life of the helper
+process. The honest statement of this section's guarantee is therefore *every exit path
+attempts a restore, stops attempting, and says which fans it could not put back* — a fan may
+still be pinned at a speed Aeolus is no longer tracking, and no in-process mechanism will
+take it back. That is not a weakening of the intent below; it is the same reason § 5 logs
+`reclamationFanMayStillBePinned` rather than asserting a destination it did not reach.
+
+Restart plus reconciliation is the intended cover for that case as much as for a crash: on
+the next start the helper would read fan mode state and restore anything found in manual with
+no live lease, which is the one path that can clear a fan the previous process gave up on.
+**Not built — #103 (E5.4b, #164)**, the same issue the `KeepAlive` paragraph above is waiting
+on, so today nothing clears such a fan and the paragraph describes a decision rather than a
+mechanism.
 
 The guarantee to match is Macs Fan Control's: quitting always returns the fans to Apple's
 control. Anything less and users are right not to trust the software.

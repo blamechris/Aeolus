@@ -207,7 +207,10 @@ actor RecordingFanRestorer: FanRestoring {
         self.release = release
     }
 
-    func restoreToAutomatic(fans: Set<Int>, because cause: FanRestoreCause) async {
+    /// Restores everything it is asked for: it is the double for the paths that are about
+    /// *which* mechanism restored, not about a firmware that will not take the write. The
+    /// abandoning case has its own doubles, in `HandbackBoundTests`.
+    func restoreToAutomatic(fans: Set<Int>, because cause: FanRestoreCause) async -> Set<Int> {
         restores.append(Restore(fans: fans, cause: cause))
         if let entered { await entered.signal() }
         // `restoreToAutomatic` is not `throws` — `FanRestoring` is production-frozen — so
@@ -216,6 +219,7 @@ actor RecordingFanRestorer: FanRestoring {
         // `.timeLimit` unblock the *awaiting test*, not to make this double report the
         // cancellation itself.
         if let release { try? await release.wait() }
+        return []
     }
 
     var causes: [FanRestoreCause] { restores.map(\.cause) }
@@ -312,7 +316,7 @@ enum LeaseFixture {
     /// fixture default nobody reads.
     static func authority(
         enumeration: ScriptedFanEnumeration = ScriptedFanEnumeration(),
-        restorer: RecordingFanRestorer = RecordingFanRestorer(),
+        restorer: any FanRestoring = RecordingFanRestorer(),
         telemetry: any CriticalTemperatureSensing = sightedTelemetry(),
         thermalEmergency: ThermalEmergencyLatch = ThermalEmergencyLatch(),
         clock: TestClock = TestClock(),

@@ -97,6 +97,20 @@ actor LeaseAuthority {
     /// is still on the wire.
     private var releasing: [Int: Int] = [:]
 
+    /// Fans a restorer gave up on: the attempts are spent and the firmware never took the
+    /// write. The durable half of the same ledger `releasing` holds the transient half of —
+    /// see `BoundedFanRestorer` for the bound, and #110 for why there is one.
+    ///
+    /// **Append-only, and nothing clears it.** A fan that enters stays refused for the life
+    /// of the helper process. That is #110's decided outcome and is correct while nothing in
+    /// `Sources/` restores a fan outside lease teardown — a clearing path would be code no
+    /// test could drive. It stops being correct as soon as one exists, and § 7's panic path
+    /// is the first: a fan whose mode write is accepted on that pass is still refused on the
+    /// strength of an older failure. [#189](https://github.com/blamechris/Aeolus/issues/189)
+    /// owns that, including the harder half — whether a write that merely did not throw is
+    /// enough to clear a refusal set by three that did.
+    private var restoreAbandoned: Set<Int> = []
+
     init(
         enumeration: some FanEnumerating,
         restorer: some FanRestoring,
@@ -170,6 +184,22 @@ actor LeaseAuthority {
         try AeolusXPCValidation.validateFanIndices(
             request.fanIndices, enumeratedFanIndices: enumerated)
         try refuseIfInvalidated(connection)
+        // The three refusals in this straight-line region are ordered by how long they last,
+        // most durable first, for the reason the next comment gives at length. This one is
+        // the most durable *of the three*: a fan whose handback was given up on is not coming
+        // back on its own, so a client told either of the others retries — past the other
+        // client's release, past the handback window — into this refusal in the end.
+        //
+        // It is not the first refusal in the method, and that is not an inconsistency.
+        // `refuseIfThermalEmergencyActive` and `refuseIfBlind` run above, both transient,
+        // because both need a suspension point and everything here is below every await by
+        // construction — the same "a consequence rather than a choice" `refuseIfBlind`
+        // documents about its own position relative to `validateFanIndices`.
+        let abandoned = request.fanIndices.filter { restoreAbandoned.contains($0) }
+        guard abandoned.isEmpty else {
+            log.refusedAbandonedHandback(connection, fans: Set(abandoned))
+            throw AeolusXPCFault.manualControlUnavailable(reason: .restoreToAutomaticFailed)
+        }
         // The durable refusal is checked first, deliberately. Both can apply at once — a
         // dying holder's fan is mid-handback while a second client legitimately holds
         // another — and `.releaseInProgress` documents itself as "retry in a moment". A
@@ -282,11 +312,13 @@ actor LeaseAuthority {
     ///   emptied table is exactly what makes `acquireLease`'s liveness check pass, so a new
     ///   lease **can** be granted over a fan whose restore is still parked inside
     ///   `FanRestoring`. Demonstrated against this code, not theorised. It is harmless today
-    ///   because `FanRestoring` has no conformer and nothing writes — but once #102 wires
-    ///   the control plane, the losing order is: A's connection dies, A's restore is
-    ///   enqueued, B acquires and writes a target, A's restore lands and returns the fan to
-    ///   automatic. B then holds a live lease over a fan nothing is honouring, which is
-    ///   `CLAUDE.md` rule 6 arriving through a door this comment used to claim was shut.
+    ///   because nothing in `Sources/` constructs a restorer over a plane that writes —
+    ///   `BoundedFanRestorer` is the conformer, and #110 gave it a bound, not a caller — but
+    ///   once #102 wires the control plane, the losing order is: A's connection dies, A's
+    ///   restore is enqueued, B acquires and writes a target, A's restore lands and returns
+    ///   the fan to automatic. B then holds a live lease over a fan nothing is honouring,
+    ///   which is `CLAUDE.md` rule 6 arriving through a door this comment used to claim was
+    ///   shut.
     ///   **#102 owns the interlock**, and the reclamation watchdog is a backstop for it
     ///   rather than a substitute.
     func expireLapsedLeases() async {
@@ -564,6 +596,11 @@ actor LeaseAuthority {
                 releasing[fan] = outstanding > 1 ? outstanding - 1 : nil
             }
         }
-        await restorer.restoreToAutomatic(fans: fans, because: cause)
+        // Whatever came back was not handed back. Recorded rather than dropped: the fan is
+        // in a mode nothing has confirmed, so the next `acquireLease` over it is refused
+        // durably instead of being told to retry a window that has closed. Additive, so the
+        // actor being reentrant across the await above cannot lose an entry.
+        restoreAbandoned.formUnion(
+            await restorer.restoreToAutomatic(fans: fans, because: cause))
     }
 }

@@ -127,6 +127,27 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// client holds a live lease over a fan nothing is honouring. Refusing for a few
         /// milliseconds is the honest answer; a client may simply retry.
         case releaseInProgress
+        /// The handback failed: the helper spent its attempts trying to return this fan to
+        /// automatic control and the firmware never took the write.
+        ///
+        /// The durable counterpart to `releaseInProgress`, and the distinction is the
+        /// point — that one means *retrying*, this one means *gave up*. A client that
+        /// cannot tell them apart retries forever against a fan whose handback is over.
+        ///
+        /// Manual control is refused because the helper no longer knows what mode the fan
+        /// is in: it asked for automatic, was refused, and stopped asking. Granting a lease
+        /// over it would be `CLAUDE.md` rule 6 — claiming control of a fan nothing has
+        /// confirmed is listening.
+        ///
+        /// The fan may still be pinned at a speed Aeolus is no longer tracking, and nothing
+        /// is watching it: every path that reaches this state clears `docs/SAFETY.md` § 5's
+        /// registry — `ReclamationWatchdog.finaliseRelease(fanAt:because:)` empties it before
+        /// it revokes, and `manualControlReleased(fanAt:)` drops the entry — so § 5 has no
+        /// entry left to cycle over. That gap is
+        /// [#181](https://github.com/blamechris/Aeolus/issues/181)'s, which owns
+        /// re-registration. Until it lands, the refusal is for the life of the helper
+        /// process and `docs/RECOVERY.md` is the user's route out.
+        case restoreToAutomaticFailed
         /// The helper cannot currently see any critical temperature, so the mechanism
         /// that would protect a leased fan is blind.
         ///
@@ -173,6 +194,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case .leaseHeldByAnotherClient: return "leaseHeldByAnotherClient"
             case .selfRenewalNotBuilt: return "selfRenewalNotBuilt"
             case .releaseInProgress: return "releaseInProgress"
+            case .restoreToAutomaticFailed: return "restoreToAutomaticFailed"
             case .noThermalTelemetry: return "noThermalTelemetry"
             case .supervisorBlind: return "supervisorBlind"
             case .unknown(let raw): return raw
@@ -190,6 +212,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case Reason.leaseHeldByAnotherClient.wireValue: self = .leaseHeldByAnotherClient
             case Reason.selfRenewalNotBuilt.wireValue: self = .selfRenewalNotBuilt
             case Reason.releaseInProgress.wireValue: self = .releaseInProgress
+            case Reason.restoreToAutomaticFailed.wireValue: self = .restoreToAutomaticFailed
             case Reason.noThermalTelemetry.wireValue: self = .noThermalTelemetry
             case Reason.supervisorBlind.wireValue: self = .supervisorBlind
             default: self = .unknown(wireValue)
