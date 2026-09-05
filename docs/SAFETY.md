@@ -26,11 +26,20 @@ signal teardown and startup reconciliation, § 7's body, and § 8's hysteresis. 
 tracked as epic E5, and E5 blocks the write-path epics E3 and E4. No code that writes to the
 SMC merges before the safety subsystem exists and is tested.
 
-**Built does not mean running.** Every mechanism below writes through `FanControlPlane`,
-whose production conformer answers `controlPathNotBuilt` until E3 and E4 exist, and the
-helper still serves `ReadOnlyFanAuthority`, which grants no lease at all. So § 3 is a
-complete, tested mechanism with nothing yet to protect — deliberately, because E5 is what
-gates the epics that give it something.
+**Built does not mean writing, and since #163 it does mean running.** This paragraph said
+*"the helper still serves `ReadOnlyFanAuthority`, which grants no lease at all"*, and it was
+stale for one wave — the same failure the § 5 sentence above records, in the same block,
+recorded again rather than quietly rewritten, because a status paragraph nobody re-reads is
+how a coverage claim outlives its subject. What is true now: `AeolusHelperMain` builds
+`HelperComposition` and serves `SupervisedFanAuthority`, so the lease table, both teardown
+paths, § 3, § 5 and § 1's TTL loop are **running in the daemon**. What has not changed is
+that nothing can write: every mechanism below writes through `FanControlPlane`, whose
+production conformer answers `controlPathNotBuilt` until E3 and E4 exist, and it reports that
+as `FanWriteCapability.notBuilt` — which `LeaseAuthority.acquireLease` reads first, so every
+lease request on real hardware is refused before anything else is attempted. The refusal is
+now a gate on the seam rather than a literal in the type serving clients. So § 3 is a
+complete, tested mechanism that runs every second with nothing yet to protect —
+deliberately, because E5 is what gates the epics that give it something.
 
 **How to read the *Tested by:* lines.** A bare *Tested by:* is a claim that those tests
 exist and pass today. Where a mechanism is not built, the line reads
@@ -120,10 +129,17 @@ distinct from that arithmetic — no sleep outruns the shortest TTL the helper w
 lease taken while a pass is parked is still swept at its own deadline rather than at the
 stale one the pass went to sleep on (`LeaseExpirySupervisorScheduleTests`, #151); tests
 against a recording restorer double covering connection death, an invalidation that never
-arrives at all, and a repeated one (`LeaseTeardownTests`); and the bound above
-(`HandbackBoundTests`). Not against the scripted mock control plane for the first three —
-that is what § 3's, § 5's and § 6's pending lines will be driven through, and naming it there
-would have claimed a fidelity those tests do not have.
+arrives at all, and a repeated one (`LeaseTeardownTests`); the bound above
+(`HandbackBoundTests`); and, since #163, the whole lease core **through the composed daemon
+graph** over the scripted SMC — `HelperRestorerTests` acquires and tears down a real lease
+against the real `LeaseAuthority` and asserts on both safety registries, and
+`SupervisedFanAuthorityTests` does the same reaching the core only through the type the
+listener is handed, covering acquisition, renewal, release, connection death and § 7's panic
+verb. **The line above these two used to read "Not against the scripted mock control plane
+for the first three", and that is no longer true**; it is corrected here rather than deleted,
+because it was accurate when written and the change is what #163 was for. What those suites
+still cannot do is write to a fan: the composed plane can, the real one cannot, and § 4's and
+§ 6's pending lines below are where the remaining fidelity is owed.
 
 `HandbackBoundTests` is split across two fidelities, and which property gets which is worth
 naming rather than averaging. **Through the shipped `ScriptedControlPlane`** (bridged to the

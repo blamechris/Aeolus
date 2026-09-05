@@ -155,6 +155,42 @@ struct LeaseLog: Sendable {
         )
     }
 
+    /// The build has no write path, so nothing can be granted. `.info`, like the other
+    /// build-level refusal below it: it is the ordinary answer of a helper that ships the
+    /// safety subsystem ahead of the write path E3/E4 gate on, not a machine in trouble.
+    ///
+    /// It says *build* rather than *machine* deliberately. A user reading `log show` after
+    /// finding the fan slider inert needs to know that nothing about their Mac is wrong.
+    func refusedNoWritePath(_ connection: ConnectionID) {
+        log.info(
+            """
+            Connection \(connection.logDescription, privacy: .public) asked for manual \
+            control. Refused: this build has no SMC write path at all, so there is nothing a \
+            lease could grant. Nothing is wrong with this machine — see docs/SAFETY.md.
+            """
+        )
+    }
+
+    /// A restore ran before the safety registries were bound to the restorer.
+    ///
+    /// `.fault`, and it should never appear: `HelperComposition.bringUp()` binds them as its
+    /// first act, before either supervisor starts and long before `listener.resume()`
+    /// advertises the Mach service, so nothing can reach a teardown path in the window this
+    /// line describes. It exists because the alternative to logging an impossible state is
+    /// not noticing it — the restore itself still runs, because
+    /// [ADR 0007](../../../docs/ADR/0007-safety-composition.md)'s keystone must never be
+    /// gated on bookkeeping.
+    func restoredWithoutSafetyRegistries(fans: Set<Int>, because cause: FanRestoreCause) {
+        log.fault(
+            """
+            Fan(s) \(Self.describe(fans), privacy: .public) were restored \
+            (\(Self.describe(cause), privacy: .public)) before the safety registries were \
+            bound. The restore ran; §3 and §5 were not told, so a fan may be left in a \
+            registry it has already gone back to automatic from.
+            """
+        )
+    }
+
     func refusedSelfRenewal(_ connection: ConnectionID) {
         log.info(
             """

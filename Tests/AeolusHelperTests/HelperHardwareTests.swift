@@ -304,4 +304,103 @@ struct HelperHardwareTests {
         #expect(!snapshot.fans.isEmpty)
         #expect(snapshot.protocolVersion == AeolusXPCVersion.current)
     }
+
+    /// The **whole composed helper** — the graph `main()` builds — against the real SMC.
+    ///
+    /// ## In this suite rather than a suite of its own, deliberately
+    ///
+    /// Swift Testing's `.serialized` orders a suite's own tests; separate suites still run in
+    /// parallel, and this file's own header records what that costs against one piece of
+    /// hardware — *"three concurrent `readAll()` enumerations against the same SMC turned a
+    /// 5.9 s cold discovery into 24.9 s"*. Measured again while writing this: the same test in
+    /// a sibling suite put its first snapshot at **22.0 s**, against **3.3 s** when run inside
+    /// this one. A seventh concurrent hardware suite would also have been new load underneath
+    /// `warmSnapshotIsCheap`'s two-second threshold, which is the assertion in this file most
+    /// likely to go flaky for reasons nobody chose.
+    ///
+    /// ## Read-only, and structurally so
+    ///
+    /// The test process runs as the user and cannot register a launch daemon. It does not
+    /// need to: every write verb on `SMCFanControlPlane` throws `.controlPathNotBuilt` before
+    /// touching IOKit, and `writeCapability` refuses the lease before anything gets that far.
+    /// The supervisors started below really do read — § 3 samples the curated thirty-four keys
+    /// once per second — and really cannot write.
+    ///
+    /// ## The bring-up latency #103 asked for
+    ///
+    /// #103 left *"bring-up latency vs. launchd on-demand connect"* unsettled and assigned
+    /// the measurement to E5.4a. The number a client actually experiences is bring-up **plus**
+    /// the first snapshot, because `main()` advertises the Mach service only after bring-up
+    /// returns — so a connection that triggers an on-demand launch waits for both. Printed
+    /// rather than asserted, for the reason every measured figure in this suite is printed: a
+    /// figure that drifts with the machine is a measurement, not a budget.
+    ///
+    /// The three claims share one bring-up because composing the graph twice would put two
+    /// `SMCReadScheduler`s on this machine's single connection — the hazard the whole
+    /// composition-root suite exists to prevent, and the thing the timing would then be
+    /// measured against.
+    @Test("A helper composed with the real control plane serves a snapshot and refuses a lease")
+    func theComposedHelperServesRealHardware() async throws {
+        let composingStarted = ContinuousClock.now
+        let helper = HelperComposition.production(log: Self.log)
+        let composed = ContinuousClock.now - composingStarted
+
+        // The three supervisors this bring-up starts are 1 Hz loops on the real SMC, so
+        // they have to be stopped however this test leaves — a `snapshot()` that throws
+        // included. `defer` cannot do it: a `defer` body may not `await`, which is a
+        // compiler rule and not a style choice, so the catch below is the same guarantee
+        // spelled the way Swift allows. Leaking them is the concurrent-load hazard this
+        // suite's header names, and this test is the only one here that starts any.
+        do {
+            let bringUpStarted = ContinuousClock.now
+            await helper.bringUp()
+            let broughtUp = ContinuousClock.now - bringUpStarted
+
+            let snapshotStarted = ContinuousClock.now
+            let snapshot = try await helper.authority.snapshot()
+            let firstSnapshot = ContinuousClock.now - snapshotStarted
+
+            print(
+                """
+                helper bring-up on Mac16,5: composing the graph \(composed); \
+                bringUp() — the registries bound and three supervisors started — \(broughtUp); \
+                first snapshot, which pays for sensor discovery, \(firstSnapshot); \
+                total before a first client could be answered \
+                \(composed + broughtUp + firstSnapshot)
+                """)
+
+            #expect(!snapshot.fans.isEmpty, "the composed helper enumerated no fans")
+            #expect(!snapshot.sensors.isEmpty, "the composed helper discovered no sensors")
+            #expect(snapshot.activeLease == nil, "no lease can be granted in this build")
+            #expect(snapshot.isThermalEmergencyActive == false)
+            for fan in snapshot.fans {
+                #expect(fan.manualControlAvailability == .unavailable(.writePathNotBuilt))
+            }
+
+            // The capability gate, end to end: no double anywhere between this call and
+            // `SMCFanControlPlane.writeCapability`.
+            await #expect(
+                throws: AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
+            ) {
+                _ = try await helper.authority.acquireLease(
+                    LeaseFixture.request(fans: [snapshot.fans[0].index]), from: ConnectionID())
+            }
+
+            // Both safety mechanisms are running against this machine rather than merely
+            // constructed, which is the whole of #163 stated as a fact a test can read.
+            #expect(await helper.restorer.isBound)
+            #expect(await helper.thermalSupervisor.isRunning)
+            #expect(await helper.reclamationSupervisor.isRunning)
+            #expect(await helper.leaseExpirySupervisor.isRunning)
+            #expect(
+                await helper.thermalEmergency.fansUnderManualControl.isEmpty,
+                "nothing can be off automatic control in a build with no write path")
+
+        } catch {
+            await helper.shutDown()
+            throw error
+        }
+
+        await helper.shutDown()
+    }
 }

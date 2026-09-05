@@ -163,15 +163,21 @@ actor ThermalEmergency<Plane: FanControlPlane> {
 
     /// Forgets a fan that has gone back to Apple's thermal management.
     ///
-    /// **Nothing calls this yet, and that is an obligation on E3 rather than dead code.**
-    /// `fire(_:)` clears the registry for every fan it takes back, so the registry cannot
-    /// grow without bound today; but a lease released, expired, or torn down by connection
-    /// death restores its fans through `LeaseAuthority` without telling this actor, so a
-    /// stale permit can sit here for a fan that is already automatic. The consequence is
-    /// bounded and in the safe direction — the emergency would bridge a fan that is already
-    /// on Apple's management, which is a redundant write and then a redundant restore, not
-    /// an unsafe state — but it makes `fire(_:)`'s "every fan under manual control" read
-    /// more precisely than the registry can currently deliver.
+    /// **Called by `HelperFanRestorer.restoreToAutomatic(fans:because:)` since #163**, which
+    /// is the wire this comment previously said was missing. Every lease teardown path —
+    /// released, expired, connection death, revoked, the panic verb — ends in that restorer,
+    /// so a fan handed back leaves this registry as part of the handback rather than sitting
+    /// here as a stale permit for a fan that is already automatic.
+    ///
+    /// It is told **after** the write and **only** about the fans the firmware took. A fan
+    /// the firmware refused stays registered on purpose: it is still off automatic control,
+    /// possibly pinned low, and is therefore precisely the fan an emergency must be able to
+    /// bridge to maximum. `HelperFanRestorer` argues that asymmetry against § 5's, which is
+    /// told first and unconditionally.
+    ///
+    /// The bound that made a missing caller survivable still holds: `fire(_:)` clears the
+    /// registry for every fan it takes back, so it cannot grow without bound, and a stale
+    /// entry would only cost a redundant bridge and a redundant restore.
     ///
     /// `LeaseAuthority` deliberately holds no reference to the emergency (see
     /// `ThermalEmergencyLatch`), so the notification belongs to whoever owns both: E3's

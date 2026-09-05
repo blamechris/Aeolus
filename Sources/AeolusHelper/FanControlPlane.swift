@@ -138,7 +138,14 @@ protocol FanStateSensing: FanModeSensing {
     func reconnect() async throws
 }
 
-protocol FanControlPlane: FanStateSensing {
+/// The seam itself: reads, the keystone, the write verbs — and, since
+/// [#103](https://github.com/blamechris/Aeolus/issues/103), whether the writes are there at
+/// all.
+///
+/// `FanWriteCapabilityReporting` is refined rather than restated, so every plane answers
+/// `writeCapability` and the lease core can be handed *only* that question. See that
+/// protocol for why the answer is synchronous and why it must be asked before any read.
+protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting {
 
     // MARK: - Reads
 

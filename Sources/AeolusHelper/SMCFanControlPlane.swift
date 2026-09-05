@@ -174,6 +174,17 @@ struct SMCFanControlPlane: FanControlPlane {
 
     // MARK: - Writes, all refused
 
+    /// `.notBuilt`, and it is the same fact the three verbs below throw — stated once, where
+    /// a mechanism can ask it **before** spending an SMC read on a grant it will refuse.
+    ///
+    /// Computed rather than stored so no initialiser can be given a different answer. It
+    /// moves to `.built` in the change that gives `restoreToAutomatic(_:)`,
+    /// `engageManualControl(of:)` and `commandTarget(_:)` bodies, and not before: a plane
+    /// that claims a write path it does not have would have `LeaseAuthority` grant a lease
+    /// over a fan nothing can command, which is `CLAUDE.md` rule 6 reached through a
+    /// one-line lie.
+    var writeCapability: FanWriteCapability { .notBuilt }
+
     /// Refuses **without reading anything.** See this type's documentation: the absence of
     /// a read here is the part that ships today.
     func restoreToAutomatic(_ scope: FanRestoreScope) async throws {

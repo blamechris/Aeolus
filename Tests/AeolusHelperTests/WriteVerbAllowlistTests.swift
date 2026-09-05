@@ -40,7 +40,7 @@ import Testing
 ///
 /// - **A synchronous function that spawns an unstructured `Task` and writes inside it.**
 ///   That is the one route around "a synchronous function cannot `await`".
-///   `Sources/AeolusHelper` has **thirteen** such spawn sites today, and an earlier draft of
+///   `Sources/AeolusHelper` has **fourteen** such spawn sites today, and an earlier draft of
 ///   this bullet said five and called them all supervisors — which was both the wrong number
 ///   and the wrong description, so the containment argument it offered was not the one the
 ///   tree supports. The real one, asserted by `everyUnstructuredTaskHandsOffToThePopulation`
@@ -48,27 +48,38 @@ import Testing
 ///   is itself in this population.** Seven are `HelperXPCService`'s XPC entry points hopping
 ///   a message onto `HelperConnectionSession`; one is `HelperListenerDelegate`'s invalidation
 ///   hop onto the same actor; one is `ReadOnlyFanAuthority`'s single-flight sensor walk;
-///   three are the supervisors' `Task.detached` handing control to an `async run(…)`; and one
+///   three are the supervisors' `Task.detached` handing control to an `async run(…)`; one
 ///   is `BoundedFanRestorer.attemptUncancellably(fanAt:)`, added by
-///   [#175](https://github.com/blamechris/Aeolus/pull/175).
+///   [#175](https://github.com/blamechris/Aeolus/pull/175); and one is
+///   `AeolusHelperMain.bringUp(_:advertising:log:)`, added by
+///   [#163](https://github.com/blamechris/Aeolus/issues/163).
 ///
-///   **That thirteenth one is not an instance of this bullet's hazard at all, and saying so
-///   is worth more than the tidier sentence.** Its spawner is already `async`, so it is not
-///   a synchronous function reaching a write; the `Task` is there because an unstructured one
-///   does not inherit cancellation, and ADR 0007's keystone must not be abandoned because the
-///   caller went away. It is counted here anyway, because the count is of the *shape* the
-///   scanner can see — a body that could write out of the population's reach — and exempting
-///   a spawn site on the strength of what its author meant is how a count stops being a
-///   guard. Its body awaits `restoreOnce(fanAt:)`, which `restoreVerbs` acknowledges, so the
-///   containment argument holds for it by the same route as the rest.
+///   **The `AeolusHelperMain` one is the only site that is this bullet's hazard exactly**:
+///   `main()` is synchronous and cannot `await`, `NSXPCListener` is not `Sendable` so the
+///   listener may not cross into the task, and the body therefore spawns, awaits
+///   `HelperComposition.bringUp()` — which `permitFreeFunctions` acknowledges — and signals a
+///   `DispatchSemaphore`. Neither statement touches a fan, and the composition's own
+///   `bringUp()` binds registries and starts supervisors rather than writing.
+///
+///   **The `BoundedFanRestorer` one is not an instance of this bullet's hazard at all, and
+///   saying so is worth more than the tidier sentence.** Its spawner is already `async`, so
+///   it is not a synchronous function reaching a write; the `Task` is there because an
+///   unstructured one does not inherit cancellation, and ADR 0007's keystone must not be
+///   abandoned because the caller went away. It is counted here anyway, because the count is
+///   of the *shape* the scanner can see — a body that could write out of the population's
+///   reach — and exempting a spawn site on the strength of what its author meant is how a
+///   count stops being a guard. Its body awaits `restoreOnce(fanAt:)`, which `restoreVerbs`
+///   acknowledges, so the containment argument holds for it by the same route as the rest.
 ///
 ///   An earlier draft of this bullet said each body was *a single* `await` of a population
-///   member. That is true of ten of the thirteen and **false of the three supervisors**,
+///   member. That is true of ten of the fourteen and **false of the three supervisors**,
 ///   whose bodies await `run(…)` and then `loopEnded(generation:)` — a private, synchronous,
 ///   actor-isolated method whose entire body is `task = nil`, so it is in no population here
-///   and could not be: it is neither `async` nor permit-bearing. It touches no fan, which is
-///   why the containment still holds; but "a single await" was a stronger sentence than the
-///   tree supports, and this suite exists to stop exactly that.
+///   and could not be: it is neither `async` nor permit-bearing — **and false of
+///   `AeolusHelperMain`'s**, which awaits one population member and then signals a semaphore.
+///   None of the four touches a fan, which is why the containment still holds; but "a single
+///   await" was a stronger sentence than the tree supports, and this suite exists to stop
+///   exactly that.
 /// - **A verb listed on the wrong list on purpose.** Putting a writer in
 ///   `permitFreeFunctions` is a lie a reviewer can read, which is the trade every allowlist
 ///   makes; what it buys is that the lie has to be written down.
@@ -171,6 +182,10 @@ struct WriteVerbAllowlistTests {
     /// without consulting a lease, a sensor or a permit.
     private static let restoreVerbs: Set<String> = [
         "BoundedFanRestorer.swift: restoreOnce(fanAt: Int)",
+        "HelperFanRestorer.swift: restoreOnce(fanAt: Int)",
+        "HelperFanRestorer.swift: restoreToAutomatic(fans: Set<Int>, "
+            + "because: FanRestoreCause)",
+        "SupervisedFanAuthority.swift: restoreAllToAutomatic(from: ConnectionID)",
         "BoundedFanRestorer.swift: restoreToAutomatic(fans: Set<Int>, "
             + "because: FanRestoreCause)",
         "FanControlPlane.swift: restoreToAutomatic(_: FanRestoreScope)",
@@ -220,6 +235,9 @@ struct WriteVerbAllowlistTests {
         "FanModeSensing.swift: modes(ofFans: [Int])",
         "FanModeSensing.swift: readMode(ofFan: Int)",
         "FanRestoring.swift: enumeratedFanIndices()",
+        "HelperComposition.swift: bindSafetyRegistries()",
+        "HelperComposition.swift: bringUp()",
+        "HelperComposition.swift: shutDown()",
         "HelperConnectionSession.swift: acquireLease(payload: Data)",
         "HelperConnectionSession.swift: apply(settings: Data, leaseID: String)",
         "HelperConnectionSession.swift: hello(payload: Data)",
@@ -272,6 +290,13 @@ struct WriteVerbAllowlistTests {
         "SMCReadScheduler.swift: yieldTurn(at: SMCReadPriority)",
         "SnapshotSensorReads.swift: read(keys: [String])",
         "SnapshotSensorReads.swift: readAll()",
+        "SupervisedFanAuthority.swift: acquireLease(_: LeaseRequest, from: ConnectionID)",
+        "SupervisedFanAuthority.swift: apply(_: [FanSetting], leaseID: UUID, "
+            + "from: ConnectionID)",
+        "SupervisedFanAuthority.swift: connectionDidInvalidate(_: ConnectionID)",
+        "SupervisedFanAuthority.swift: releaseLease(id: UUID, from: ConnectionID)",
+        "SupervisedFanAuthority.swift: renewLease(id: UUID, from: ConnectionID)",
+        "SupervisedFanAuthority.swift: snapshot()",
         "ThermalEmergency.swift: cycle()",
         "ThermalEmergency.swift: cycleSawNothing(_: String)",
         "ThermalEmergency.swift: fire(_: CriticalTemperature, from: CriticalTemperatureReport)",
@@ -445,13 +470,15 @@ struct WriteVerbAllowlistTests {
     ///
     /// An unstructured `Task` lets a synchronous function reach an `async` write, so every
     /// spawn site is a hole in the population — unless what it spawns is itself acknowledged.
-    /// That is what holds here: none of the thirteen bodies writes, and each hands off to an
+    /// That is what holds here: none of the fourteen bodies writes, and each hands off to an
     /// `async` method in the population. (The three supervisors also await a synchronous
-    /// `loopEnded(generation:)` that only clears a task handle, and `BoundedFanRestorer`'s
+    /// `loopEnded(generation:)` that only clears a task handle; `BoundedFanRestorer`'s
     /// spawner is itself `async` so its `Task` shields cancellation rather than bridging from
-    /// synchronous code — see the suite doc, which says both rather than rounding them off.)
+    /// synchronous code; and `AeolusHelperMain`'s also signals a `DispatchSemaphore`, which
+    /// is how the listener stays off the task that cannot safely carry it — see the suite
+    /// doc, which says all three rather than rounding them off.)
     ///
-    /// The count is asserted per file so it cannot drift silently. A fourteenth spawn site
+    /// The count is asserted per file so it cannot drift silently. A fifteenth spawn site
     /// fails this with the file it was added to, and the maintainer either shows it hands off
     /// the same way and updates the number, or has found the hole.
     ///
@@ -468,6 +495,7 @@ struct WriteVerbAllowlistTests {
     @Test("Every unstructured Task in the helper hands off to an acknowledged verb")
     func everyUnstructuredTaskHandsOffToThePopulation() throws {
         let expected = [
+            "AeolusHelperMain.swift": 1,
             "BoundedFanRestorer.swift": 1,
             "HelperListenerDelegate.swift": 1,
             "HelperXPCService.swift": 7,

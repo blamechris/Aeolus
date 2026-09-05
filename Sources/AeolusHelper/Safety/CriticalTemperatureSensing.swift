@@ -118,13 +118,15 @@ struct CuratedCriticalTemperatures<Plane: FanControlPlane>: CriticalTemperatureS
 /// needs.
 ///
 /// - Note: state is per instance, so the collapse is only global if the lease core and the
-///   supervisor are handed the **same** `CuratedCriticalTemperatures`. Nothing in
-///   `Sources/` constructs one yet — the composition root still serves
-///   `ReadOnlyFanAuthority`, which grants no lease — so today that sharing exists only in
-///   `ThermalMachine`. Stated in the future tense on purpose: an earlier draft said the
-///   composition root "shares one", which was true of no code, and is the same defect as the
-///   `isThermalEmergencyActive: false` literal this wave is correcting. Whoever wires E3
-///   owns making it true.
+///   supervisor are handed the **same** `CuratedCriticalTemperatures`. **They are, since
+///   #163:** `HelperComposition` builds exactly one and hands it to both `LeaseAuthority`
+///   and `ThermalEmergency`, and its own field documentation names this sentence as the
+///   obligation it was discharging. Until then this note read in the future tense, because
+///   the composition root served `ReadOnlyFanAuthority` and nothing in `Sources/`
+///   constructed one at all — an earlier draft than *that* said the composition root
+///   "shares one", which was true of no code, and is the same defect as the
+///   `isThermalEmergencyActive: false` literal that wave was correcting. Anyone adding a
+///   third consumer owes it the same instance rather than a fresh one.
 actor DegradationMemo {
 
     private var silent: Set<SMCKey> = []
