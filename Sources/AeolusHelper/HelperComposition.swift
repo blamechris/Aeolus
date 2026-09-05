@@ -332,7 +332,16 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// scripted firmware underneath its assertions — the same reason
     /// `bindSafetyRegistries()` is its own method.
     func observeSystemPower() {
-        guard let powerObserver else { return }
+        guard let powerObserver else {
+            // Said out loud rather than returned from silently. The doc above promises three
+            // distinguishable states — observing, refused, absent — and a bare `return` gave
+            // the third no line at all: a graph composed with no observer looked in `log show`
+            // exactly like one whose registration succeeded. That is the "fails silently and
+            // completely" shape this file's own comments name as the reason the IOKit message
+            // numbers are derived rather than written down, one layer up.
+            powerResponder.wasGivenNothingToObserve()
+            return
+        }
         let responder = powerResponder
         do {
             try powerObserver.observe { notification in

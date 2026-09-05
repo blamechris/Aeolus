@@ -473,6 +473,47 @@ struct HelperCompositionTests {
         return nil
     }
 
+    /// The **shipped** graph is the one that can hear a sleep.
+    ///
+    /// `powerObserver` is optional, because most tests compose this graph to drive something
+    /// else and the production conformer registers with the real power management root the
+    /// moment it is asked to observe. The cost of that convenience is that the single line
+    /// giving the daemon a § 4 at all — `powerObserver: IOKitSystemPowerObserver()` inside
+    /// `production(log:)` — was guarded by nothing: deleting it left the whole suite green,
+    /// twice measured, and `observeSystemPower()`'s `nil` branch then returned in silence. § 4
+    /// could vanish from every shipped helper and be invisible in CI *and* in `log show`. (The
+    /// silence is fixed too — `SystemPowerTests.aMissingPowerObserverIsAFaultRatherThanASilentReturn`
+    /// — but a fault line at runtime is not a failing test, and this is the failing test.)
+    ///
+    /// **Behavioural rather than a source tripwire, unlike the rest of this suite**, and the
+    /// reason is the one the suite header gives for preferring one where it can: there is
+    /// something to observe. `production(log:)` only *constructs* — no `open()`, no read, no
+    /// registration — so a test may build it, look at what it holds and throw it away, on a
+    /// machine with no SMC. `observe(_:)` is what touches IOKit, and nothing here calls it.
+    ///
+    /// **Mutation:** delete `powerObserver: IOKitSystemPowerObserver(),` from
+    /// `HelperComposition.production(log:)`. Run: red.
+    @Test("The shipped daemon's graph carries a real power observer")
+    func theProductionGraphIsGivenASystemPowerObserver() {
+        let observer = HelperComposition.production(log: Self.silentLog).powerObserver
+        let held = observer.map { String(describing: type(of: $0)) } ?? "nothing at all"
+
+        #expect(
+            observer is IOKitSystemPowerObserver,
+            """
+            the shipped helper's power observer is \(held). Nothing registers for \
+            kIOMessageSystemWillSleep, so no fan is handed back before this machine sleeps \
+            and § 1's TTL — whose clock may not advance across a sleep — is the only path \
+            back. docs/SAFETY.md § 4.
+            """)
+    }
+
+    /// Its own logger, so building the production graph in a test does not write into the
+    /// daemon's subsystem. Nothing here emits — the construction is inert — but a shared
+    /// subsystem between a test and a root daemon is worth not having by accident.
+    private static let silentLog = HelperLog(
+        subsystem: "dev.aeolus.AeolusHelperTests", category: "Composition")
+
     /// Which files in `Sources` construct `needle`, and how many times each.
     private static func constructionSites(of needle: String) throws -> [String] {
         var sites: [String] = []

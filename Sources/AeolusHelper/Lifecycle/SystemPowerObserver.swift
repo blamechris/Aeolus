@@ -166,6 +166,20 @@ struct IOKitSystemPowerObserver: SystemPowerObserving {
             // episode — and that pattern does not read the receiver, so `Unmanaged`'s own
             // `release()` trips it. Consuming the retain by taking the value is the same act.
             _ = Unmanaged<SystemPowerRegistration>.fromOpaque(context).takeRetainedValue()
+
+            // The two halves of the guard fail differently, and the second half leaks unless
+            // it is unwound. `IORegisterForSystemPower` is documented to produce the
+            // connection, the notification port and the notifier together, so a non-null
+            // connection with a nil port should be unreachable — but "should be" is what this
+            // repository does not accept from an IOKit call it cannot test, and the daemon
+            // this runs in never exits, so a leaked `io_connect_t` is leaked for the life of
+            // the machine's uptime. Deregistering is the documented teardown for a successful
+            // registration and is harmless on one that is half-formed.
+            if connection != MACH_PORT_NULL {
+                IODeregisterForSystemPower(&notifier)
+                IOServiceClose(connection)
+            }
+            if let notificationPort { IONotificationPortDestroy(notificationPort) }
             throw SystemPowerObservationFailure.registrationRefused
         }
 
