@@ -268,6 +268,75 @@ struct HelperLog: Sendable {
             """
         )
     }
+
+    // MARK: - Orderly teardown
+
+    /// A control verb arrived after `SignalTeardown` closed the gate.
+    ///
+    /// `info`, not `error`: the client did nothing wrong and the refusal is the mechanism
+    /// working. It is logged at all because an operator watching a client fail during a
+    /// shutdown is entitled to know that the helper refused it *on purpose*, which is the
+    /// one thing the generic `helperFailed` code on the wire cannot say.
+    func refusedDuringTeardown(_ connection: ConnectionID, message: String) {
+        log.info(
+            """
+            Connection \(connection.logDescription, privacy: .public) was refused \
+            \(message, privacy: .public): the helper is shutting down and is handing every \
+            fan back to the system.
+            """
+        )
+    }
+
+    /// A second orderly signal arrived while the first was still being served.
+    func teardownAlreadyRunning() {
+        log.notice(
+            """
+            A second orderly signal arrived while the teardown was still running. It is \
+            ignored: the teardown in flight restores every fan and ends the process.
+            """
+        )
+    }
+
+    /// The machine-wide restore threw. `detail` is this module's own error description.
+    ///
+    /// `fault` level, because this is the line that says fans may still be off automatic
+    /// control — the failure `docs/SAFETY.md` opens with.
+    func teardownRestoreFailed(detail: String) {
+        log.fault(
+            """
+            The orderly teardown could not restore every fan to automatic control \
+            (\(detail, privacy: .public)). The helper will exit non-zero so that launchd \
+            starts it again and reconciliation can clear anything left in manual.
+            """
+        )
+    }
+
+    /// The keystone was refused because this build has no write path at all.
+    ///
+    /// `notice` rather than `fault`, which is ruling D15's whole point: a build that cannot
+    /// write cannot have put a fan into manual, so there is nothing here for an operator to
+    /// act on. It is logged rather than passed over in silence because it is also the line
+    /// that explains a zero exit on a helper that wrote nothing.
+    func teardownFoundNothingToRestore() {
+        log.notice(
+            """
+            The orderly teardown's machine-wide restore was refused: this build has no SMC \
+            write path, so no fan can be off automatic control because of Aeolus. The helper \
+            exits zero and launchd leaves it down.
+            """
+        )
+    }
+
+    /// The last line the process writes.
+    func teardownFinished(outcome: TeardownOutcome) {
+        log.notice(
+            """
+            Orderly teardown finished (\(String(describing: outcome), privacy: .public)); \
+            exiting \(outcome.exitCode, privacy: .public). Every lease was released and a \
+            machine-wide restore was attempted.
+            """
+        )
+    }
 }
 
 extension Duration {

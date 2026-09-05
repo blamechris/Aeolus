@@ -26,10 +26,12 @@ the very PR that built it, which is the same failure caught one wave earlier** �
 sentences are corrected in place rather than quietly rewritten, because a status paragraph
 nobody re-reads is how a coverage claim outlives its subject. **§ 6's startup reconciliation
 left that list in #164**, along with the launchd restart policy ADR 0007 made conditional on
-it, and the same correction-in-place rule applies here as above. Not built: § 6's signal
-teardown, § 7's body, and § 8's hysteresis. All of it is tracked as epic E5, and E5 blocks
-the write-path epics E3 and E4. No code that writes to the SMC merges before the safety
-subsystem exists and is tested.
+it, and the same correction-in-place rule applies here as above. § 6's orderly signal
+teardown joined the built list in E5.4d (#166) and is corrected here for the same reason.
+Not built: § 7's body, § 8's hysteresis, and the connection health and reconnect of
+[#168](https://github.com/blamechris/Aeolus/issues/168). All of it is tracked as epic E5,
+and E5 blocks the write-path epics E3 and E4. No code that writes to the SMC merges before
+the safety subsystem exists and is tested.
 
 **Built does not mean writing, and since #163 it does mean running.** This paragraph said
 *"the helper still serves `ReadOnlyFanAuthority`, which grants no lease at all"*, and it was
@@ -147,7 +149,16 @@ verb. **The line above these two used to read "Not against the scripted mock con
 for the first three", and that is no longer true**; it is corrected here rather than deleted,
 because it was accurate when written and the change is what #163 was for. What those suites
 still cannot do is write to a fan: the composed plane can, the real one cannot, and § 4's and
-§ 6's pending lines below are where the remaining fidelity is owed.
+§ 6's pending hardware lines below are where the remaining fidelity is owed. § 6's
+**handler body** is covered end to end over the scripted plane by
+`SignalTeardownTests`, which drives it through the composed graph with a real lease held —
+including the delivery seam, so the handler the source was given really is the one that runs
+the teardown. **Signal delivery itself is reviewed, not tested**, and the sentence here used
+to elide that: installing the real `DispatchSourceSignal` applies `SIG_IGN` to the `swift
+test` runner permanently and would then end it with a zero exit on the next `SIGTERM`, so the
+three lines that ignore, resume and retain are asserted at the source instead. Their hardware
+row is deferred to E3/E4 with the other one this section owes — proving a real firmware takes
+the mode write.
 
 `HandbackBoundTests` is split across two fidelities, and which property gets which is worth
 naming rather than averaging. **Through the shipped `ScriptedControlPlane`** (bridged to the
@@ -604,9 +615,25 @@ handler plus `atexit`" — and that one is undefined behaviour on the path it wa
 
 - **Orderly signals** — `SIGTERM`, `SIGINT`, `SIGHUP`, which is how launchd shuts the helper
   down. `DispatchSourceSignal` with the signal itself ignored, so the handler body runs in
-  normal execution context and not in signal context. Full restore, then `exit(0)`.
-- **Orderly exits** — explicit teardown. `atexit` may stay as a cheap belt, since it too
-  runs in normal context, but nothing may be load-bearing on it.
+  normal execution context and not in signal context. The body, in order: refuse new control
+  messages, release every lease, restore every fan, stop the supervisors, restore every fan
+  once more, then exit `0` — **or a non-zero exit if that last restore failed**, which is what
+  makes the exit code the contract `KeepAlive = { SuccessfulExit = false }` reads. The restore
+  is issued twice because stopping a supervisor does not await a cycle already in flight: a
+  § 3 fire or a § 5 re-assert can land after the first one, and the exit code is taken from
+  the write that comes after them. That narrows the window rather than closing it: a write
+  landing between that last restore and the exit is still possible, and nothing in this
+  process is left to see it. **A restore refused with `controlPathNotBuilt` — this
+  build, which has no SMC write path — exits `0`, because a helper that cannot write cannot
+  have left a fan in manual, and restarting it after every quit would tell the user nothing.**
+  Built in E5.4d (#166): `Sources/AeolusHelper/Lifecycle/SignalTeardown.swift`.
+- **Orderly exits** — explicit teardown, and **no `atexit` belt**. This bullet used to offer
+  one as "a cheap belt, since it too runs in normal context". Running in normal context was
+  never the objection; being *synchronous* is. Every step of the restore above is `async`, so
+  an `atexit` body could reach it only by blocking an exiting process on a semaphore — a belt
+  that can hang the shutdown it was added to insure. E5.4d's PR records the correction as an
+  amendment in [ADR 0007](ADR/0007-safety-composition.md), and #104 carries it into the
+  rewrite of this section.
 - **Crash signals** — **no in-process restore at all.** `IOConnectCallStructMethod` is not
   async-signal-safe, and a crash is exactly when heap and lock state are unknown. A signal
   handler that calls into IOKit is undefined behaviour on the one path it exists to serve.
@@ -633,10 +660,11 @@ documented implication, because boot-start is what covers manual mode persisting
 `SuccessfulExit = false` makes the exit code a contract: a zero exit means "the fans are back
 and nobody needs to check", so it belongs on the orderly-teardown path and nowhere else, and
 anything that dies another way is restarted and reconciles.
-`LaunchDaemonPlistTests.theOrderlyExitIsCountedNotAssumed` counts `exit(0)` across
-`Sources/AeolusHelper` — **zero today**, because `AeolusHelperMain` ends in `dispatchMain()`
-and the teardown that restores and then exits is E5.4d (#166), which raises the expected count
-to one in the same change that adds the path.
+`SignalTeardownTripwireTests.theOrderlyPathIsTheOnlyExit` counts the `exit` call sites across
+`Sources/AeolusHelper`, comments stripped — **exactly one**, the teardown's, and no exit code
+written as a literal anywhere, because the one mapping from outcome to code is
+`TeardownOutcome.exitCode`. Until E5.4d (#166) landed, `LaunchDaemonPlistTests` asserted the
+same count at zero; the two were reconciled into this one on #197 (ruling D20).
 
 The plist's key set is an allowlist of exactly six with an exact-member count, so a seventh —
 `StartInterval` (#84's named gap), `WatchPaths`, `StartCalendarInterval` — fails the suite
@@ -717,10 +745,18 @@ somebody else's: one under a live lease, one whose handback was abandoned, and o
 diagnosed as reclaimed by the system.
 `HelperCompositionTests.reconciliationSitsBetweenTheBindAndTheSupervisors` holds the pass in
 its position. `LaunchDaemonPlistTests` holds the restart keys and the exit-code contract.
-*Pending #166:* an integration test per orderly exit path. *Pending hardware:* the checklist
-rows for a helper restarted with a fan left in manual, boot-start, `kill -9`, and
-`SMAppService` accepting the two keys — all of which need the signing identity and E3/E4's
-write path.
+*Pending hardware:* the checklist rows for a helper restarted with a fan left in manual,
+boot-start, `kill -9`, quit, logout, and `SMAppService` accepting the two keys — all of which
+need the signing identity and E3/E4's write path.
+
+*Tested by:* `SignalTeardownTests` and `SignalTeardownTripwireTests` drive the orderly-signal
+bullet through the composed helper — the ordering of all five steps, the exit code for each
+outcome, the three gated control verbs, the second signal being dropped, and a fan put into
+manual while the supervisors are stopping still being handed back — plus source tripwires for
+the absence of crash handling and for the three lines of `DispatchSignalSources.serve` that
+nothing else can reach. `HelperHardwareTests` runs the same teardown against the real SMC on
+`Mac16,5`. **What none of them does is deliver a real signal**, and no test proves a real
+firmware takes the mode write; both belong to E3/E4 bring-up.
 
 ## 7. Panic path
 

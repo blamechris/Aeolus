@@ -33,16 +33,19 @@ import SMCCore
 ///
 /// ## What it deliberately does not do
 ///
-/// No signal handlers ([#166](https://github.com/blamechris/Aeolus/issues/166)) and no
-/// connection health or reconnect ([#168](https://github.com/blamechris/Aeolus/issues/168)).
+/// No connection health or reconnect ([#168](https://github.com/blamechris/Aeolus/issues/168)).
 /// Startup reconciliation ([#164](https://github.com/blamechris/Aeolus/issues/164)) is no
 /// longer on that list — `bringUp()` runs it as its second step, and the restart policy that
 /// makes it load-bearing ([#165](https://github.com/blamechris/Aeolus/issues/165)) ships in
 /// the same change, because ADR 0007 forbids the `KeepAlive` keys landing first.
 ///
 /// Sleep and wake ([#167](https://github.com/blamechris/Aeolus/issues/167)) *is* here, and is
-/// the one lifecycle event this graph acts on: `powerObserver` and `powerResponder`, wired
-/// last in `bringUp()`. See `SystemPowerResponder` for why it holds no supervisor.
+/// one of the two lifecycle events this graph acts on: `powerObserver` and `powerResponder`,
+/// wired after the supervisors in `bringUp()`. See `SystemPowerResponder` for why it holds no
+/// supervisor.
+///
+/// The orderly signal teardown ([#166](https://github.com/blamechris/Aeolus/issues/166)) is
+/// the other, here as of E5.4d — `signalTeardown`, installed last in `bringUp()`.
 struct HelperComposition<Plane: FanControlPlane>: Sendable {
 
     /// The single control plane. Every safety mechanism's reads and writes go through it, at
@@ -138,13 +141,22 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// is the same state as a machine that never sleeps.
     let powerObserver: (any SystemPowerObserving)?
 
+    /// § 6's orderly exit path, and the object that keeps its signal sources alive.
+    ///
+    /// Stored rather than built inside `bringUp()`, because a `DispatchSourceSignal`
+    /// released by ARC is cancelled: a teardown owned by a function's frame is a `SIGTERM`
+    /// nobody serves, and the failure is silent at the moment the machine is shutting down.
+    /// `main()` holds this graph in a frame that never returns, which is what makes storing
+    /// it here sufficient.
+    let signalTeardown: SignalTeardown<Plane>
+
     /// Wires the graph. Constructs nothing that touches hardware — see `production(log:)`.
     ///
     /// The order below is A1's, and it is the order of the dependencies rather than a
     /// preference: plane, then the latch and the ledger both the snapshot and the mechanisms
     /// read, then the sightings cache, then the restorer, then reconciliation, then the
     /// lease core, then the two safety actors, then the loops, then the authority, then the
-    /// power responder.
+    /// power responder, then the teardown.
     ///
     /// `snapshotProvider` is the reader the client-facing snapshot takes its turns from, and
     /// it is the one parameter worth a paragraph. The fan read and the `F<n>Md` read are both
@@ -164,6 +176,10 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// was a source tripwire on statement order, which is what this repository reaches for
     /// when there is no seam; here one defaulted parameter buys the behavioural test instead,
     /// and `CLAUDE.md` rule 6 is worth that much.
+    ///
+    /// `teardown` is E5.4d's pair of seams — where signals come from, and what ends the
+    /// process — defaulted to the shipping ones. See `TeardownSeams` for why both have to be
+    /// overridable at all.
     init(
         plane: Plane,
         snapshotProvider: some SensorProvider,
@@ -174,7 +190,8 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         acknowledgementBudget: Duration = SystemPowerLimits.acknowledgementBudget,
         log: HelperLog = HelperLog(),
         leaseLog: LeaseLog = LeaseLog(),
-        safetyLog: SafetyLog = SafetyLog()
+        safetyLog: SafetyLog = SafetyLog(),
+        teardown: TeardownSeams = TeardownSeams()
     ) {
         self.plane = plane
         self.powerObserver = powerObserver
@@ -272,7 +289,8 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             watchdog: reclamationWatchdog, log: safetyLog)
         leaseExpirySupervisor = LeaseExpirySupervisor(authority: leases, log: leaseLog)
 
-        authority = SupervisedFanAuthority(reading: reading, leases: leases, log: log)
+        let authority = SupervisedFanAuthority(reading: reading, leases: leases, log: log)
+        self.authority = authority
 
         // § 4, at ADR 0007's level 4 and through `SafetyActorWriter` like every other
         // ungoverned actor. It is handed the lease core and a writer and **no supervisor**,
@@ -281,6 +299,34 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         powerResponder = SystemPowerResponder(
             leases: leases, writer: SafetyActorWriter(plane: plane, level: .sleepWake),
             clock: clock, acknowledgementBudget: acknowledgementBudget, log: safetyLog)
+
+        signalTeardown = Self.orderlyTeardown(
+            for: authority, leases: leases, plane: plane, seams: teardown, log: log)
+    }
+
+    /// § 6's orderly exit path, built from the graph above rather than beside it.
+    ///
+    /// Its own function so that this file's one contribution to E5.4d stays four lines long
+    /// in `init` — four sibling PRs are editing this initialiser at the same time — and so
+    /// that the one thing worth reading twice sits on its own: the gate is **the authority's
+    /// own**, never a fresh one. Two gates would be a teardown closing a bit nothing
+    /// consults, which is the defect `LeaseAuthority` records against a defaulted latch.
+    ///
+    /// The writer is at `.panicRestore`, § 7's level, which is what a machine-wide restore
+    /// issued on the way out is.
+    private static func orderlyTeardown(
+        for authority: SupervisedFanAuthority,
+        leases: LeaseAuthority,
+        plane: Plane,
+        seams: TeardownSeams,
+        log: HelperLog
+    ) -> SignalTeardown<Plane> {
+        SignalTeardown(
+            gate: authority.controlGate,
+            leases: leases,
+            restore: SafetyActorWriter(plane: plane, level: .panicRestore),
+            seams: seams,
+            log: log)
     }
 
     // MARK: - Bring-up
@@ -301,12 +347,18 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     ///    a reclamation, and because the restore it performs needs the registries bound.
     /// 3. **Start the supervisors.** § 3 first: it is the higher-precedence actor, and its
     ///    first cycle is what establishes whether this machine can be seen at all.
-    /// 4. **Hear the system's power events** — `#167`, E5.4e. Last, because § 4's first act
-    ///    on a `.willSleep` is to drop every lease and restore, and both need the registries
-    ///    bound; and because a sleep arriving before the supervisors are running would leave
-    ///    the handback unwatched by § 5. It is also the one step allowed to fail and carry
-    ///    on: a helper that cannot hear the system still has § 1's TTL, which is the backstop
-    ///    § 4 was always measured against.
+    /// 4. **Hear the system's power events** — `#167`, E5.4e. After the supervisors, because
+    ///    § 4's first act on a `.willSleep` is to drop every lease and restore, and both need
+    ///    the registries bound; and because a sleep arriving before the supervisors are
+    ///    running would leave the handback unwatched by § 5. It is also the one step allowed
+    ///    to fail and carry on: a helper that cannot hear the system still has § 1's TTL,
+    ///    which is the backstop § 4 was always measured against.
+    /// 5. **Install the orderly signal teardown** — `#166`, E5.4d. Last, and after the
+    ///    supervisors rather than before them, because its final step *stops* them: a
+    ///    `SIGTERM` served before they started would stop loops that are not running and
+    ///    then leave them started by the lines below it. Still before `listener.resume()`,
+    ///    which is the caller's, so no client can be answered by a helper that would not
+    ///    hand the fans back if it were killed a moment later.
     ///
     /// A1 states the property this buys: *"an advertised Mach service is a client that can
     /// acquire a lease over a fan whose reconciliation restore is still in flight."*
@@ -326,6 +378,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         await leaseExpirySupervisor.start()
 
         observeSystemPower()
+        await signalTeardown.install(stoppingSupervisorsWith: { await shutDown() })
     }
 
     /// Points § 4 at the system, if this graph was given something to hear it through.
@@ -399,9 +452,11 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// fan is restored: `ThermalSupervisor.stop()` and `ReclamationSupervisor.stop()` each
     /// document at length why their own mechanism's state must survive being stopped, and
     /// those arguments run in opposite directions on purpose. The teardown that *does*
-    /// restore is E5.4d's signal path
-    /// ([#166](https://github.com/blamechris/Aeolus/issues/166)); this is what a test uses to
-    /// leave no loops running behind it.
+    /// restore is `SignalTeardown`
+    /// ([#166](https://github.com/blamechris/Aeolus/issues/166)), which calls **this** as
+    /// its fourth step, after both writes — so the restore and the stop stay separable and
+    /// the order between them is stated in one place. It is also what a test uses to leave
+    /// no loops running behind it.
     func shutDown() async {
         await thermalSupervisor.stop()
         await reclamationSupervisor.stop()
@@ -425,7 +480,16 @@ extension HelperComposition where Plane == SMCFanControlPlane {
     /// cycle. That is the documented steady state for an unmeasured machine rather than an
     /// edge case: § 3 being a precondition of § 1 means such a machine refuses leases, which
     /// is the honest answer and not a degradation to be papered over.
-    static func production(log: HelperLog = HelperLog()) -> HelperComposition<SMCFanControlPlane> {
+    /// `teardown` is defaulted to the shipping seams and is overridden by exactly one
+    /// caller: `HelperHardwareTests`, which composes this graph over the real SMC and calls
+    /// `bringUp()`. That bring-up installs the signal teardown, and the shipping source
+    /// would `SIG_IGN` `SIGTERM`, `SIGINT` and `SIGHUP` in the `swift test` process and then
+    /// end it with the successful-exit call on the next one — a test run that reports
+    /// success without finishing.
+    static func production(
+        log: HelperLog = HelperLog(),
+        teardown: TeardownSeams = TeardownSeams()
+    ) -> HelperComposition<SMCFanControlPlane> {
         let scheduler = SMCReadScheduler(provider: SMCSensorProvider())
         let plane = SMCFanControlPlane(scheduler: scheduler)
         return HelperComposition(
@@ -433,6 +497,7 @@ extension HelperComposition where Plane == SMCFanControlPlane {
             snapshotProvider: scheduler.snapshotReader,
             criticalSensors: CriticalSensorSet.resolve(for: .current()),
             powerObserver: IOKitSystemPowerObserver(),
-            log: log)
+            log: log,
+            teardown: teardown)
     }
 }
