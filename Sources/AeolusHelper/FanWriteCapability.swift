@@ -55,8 +55,10 @@ enum FanWriteCapability: Sendable, Hashable {
 /// ## It is synchronous, and that is the guarantee
 ///
 /// `docs/SAFETY.md` § 3 is a precondition of § 1, so `LeaseAuthority.acquireLease` already
-/// pays for a real 34-key SMC read (`refuseIfBlind`) before it grants. The capability
-/// refusal must come **first**, before that read, because a build that cannot write has
+/// proves the helper is sighted (`refuseIfBlind`) before it grants — a real 34-key SMC read
+/// whenever § 3's own last reading has aged out, and an actor hop otherwise, since
+/// [#134](https://github.com/blamechris/Aeolus/issues/134). The capability
+/// refusal must come **first**, before that proof, because a build that cannot write has
 /// nothing to learn from the machine — and a client on a blind machine told
 /// `noThermalTelemetry` would retry, forever, into a refusal that was never about the
 /// machine.

@@ -66,6 +66,20 @@ import SMCCore
 actor ThermalEmergency<Plane: FanControlPlane> {
 
     private let telemetry: any CriticalTemperatureSensing
+
+    /// Where every cycle's reading is left for the grant path to prove sightedness from.
+    ///
+    /// **Write-only from here.** This actor never asks the cache what it holds: a cycle
+    /// decides whether to take a user's fans away, and it must decide on a temperature it
+    /// measured itself rather than on one up to a second old. The type enforces that in the
+    /// other direction too — `CriticalTemperatureCache` is not a `CriticalTemperatureSensing`,
+    /// so it cannot be handed to `telemetry` above by mistake. See `SightednessProving` and
+    /// [ADR 0010](../../../docs/ADR/0010-coalesced-supervisor-reads.md).
+    ///
+    /// **Required, with no default**, for the reason `LeaseAuthority` gives about its latch:
+    /// a defaulted cache would compile and record into something no grant reads, which is a
+    /// coalescing mechanism that silently does nothing while every test still passes.
+    private let sightings: CriticalTemperatureCache
     private let writer: SafetyActorWriter<Plane>
     private let leases: LeaseAuthority
     private let latch: ThermalEmergencyLatch
@@ -114,6 +128,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// false at every temperature.
     init(
         telemetry: some CriticalTemperatureSensing,
+        sightings: CriticalTemperatureCache,
         writer: SafetyActorWriter<Plane>,
         leases: LeaseAuthority,
         latch: ThermalEmergencyLatch,
@@ -121,6 +136,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         log: SafetyLog = SafetyLog()
     ) {
         self.telemetry = telemetry
+        self.sightings = sightings
         self.writer = writer
         self.leases = leases
         self.latch = latch
@@ -243,10 +259,17 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         // episode-boundary guard.
         let episodeBeforeRead = await latch.holding
 
+        // Every real read of the curated set is left where the grant path can prove
+        // sightedness from it — **successes and failures both**, which is what makes a retry
+        // storm free during blindness as well as during health. A cache written only on
+        // success would leave every retry issuing its own read on precisely the machine that
+        // can least afford one, and each of those reads would fail. See ADR 0010.
         let report: CriticalTemperatureReport
         do {
             report = try await telemetry.readCriticalTemperatures()
+            await sightings.record(.sighted(report))
         } catch {
+            await sightings.record(.blind(error))
             await cycleSawNothing(String(describing: error))
             return
         }

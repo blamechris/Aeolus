@@ -51,15 +51,35 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// the fan set a lease is validated against is the same one a client is shown.
     let reading: ReadOnlyFanAuthority
 
-    /// § 3's curated critical set, **shared** between the lease core's grant-time blindness
-    /// gate and the thermal emergency's cycle.
+    /// § 3's curated critical set, **shared** between the thermal emergency's cycle and the
+    /// cache the lease core's grant-time blindness gate proves sightedness from.
     ///
     /// One instance, deliberately. `DegradationMemo` is per instance, so two of these would
     /// each log the same partial sensor loss on their own schedule — the collapse
     /// `CuratedCriticalTemperatures` documents *"is only global if the lease core and the
     /// supervisor are handed the same `CuratedCriticalTemperatures`"*, stated there in the
     /// future tense because no code did it. This is the code.
+    ///
+    /// Since #134 the lease core reaches it **through `sightings`** rather than directly, so
+    /// the sharing runs one level deeper rather than being given up: a grant that finds no
+    /// fresh reading reads through this same instance, memo and all.
     let telemetry: CuratedCriticalTemperatures<Plane>
+
+    /// § 3's most recent reading, written by the cycle and read by the grant-time
+    /// sightedness check — **one instance, handed to both**.
+    ///
+    /// A second cache would be a grant path proving sightedness from a reading no cycle ever
+    /// wrote, so every grant would read the SMC for itself and #134's storm would be back
+    /// with the coalescing machinery present, tested and bypassed. That is the same hazard
+    /// shape as two `SMCReadScheduler`s, and `HelperCompositionTests` guards it the same way:
+    /// at the source, because `main()` ends in `dispatchMain()` and there is nothing to
+    /// observe this from at runtime.
+    ///
+    /// The two consumers cannot be swapped: `LeaseAuthority` takes `SightednessProving` and
+    /// `ThermalEmergency`'s `telemetry:` takes `CriticalTemperatureSensing`, and this type
+    /// conforms only to the first. See
+    /// [ADR 0010](../../docs/ADR/0010-coalesced-supervisor-reads.md).
+    let sightings: CriticalTemperatureCache
 
     /// § 3's bit. Read by the snapshot, by `acquireLease`, and by § 5 to decide the
     /// incumbent; written only by `ThermalEmergency`.
@@ -150,6 +170,14 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             plane: plane, set: criticalSensors, log: safetyLog)
         self.telemetry = telemetry
 
+        // The one cache. `source:` is the same curated conformer § 3's cycle reads through,
+        // so a grant that finds nothing fresh asks the machine the identical question the
+        // cycle would have. `maxAge` is not passed: its default is derived from
+        // `ThermalSupervisor.defaultInterval`, and a value supplied here would be the second
+        // constant ADR 0010 forbids.
+        let sightings = CriticalTemperatureCache(source: telemetry)
+        self.sightings = sightings
+
         // The keystone write, bounded per #110, at the lease core's own actor level.
         //
         // `.leaseExpiry` is ADR 0007's level for the lease core, and it is **provenance that
@@ -167,7 +195,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             enumeration: reading,
             restorer: restorer,
             writeCapability: plane,
-            telemetry: telemetry,
+            telemetry: sightings,
             thermalEmergency: latch,
             clock: clock,
             log: leaseLog)
@@ -175,6 +203,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
 
         let thermalEmergency = ThermalEmergency(
             telemetry: telemetry,
+            sightings: sightings,
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
             leases: leases,
             latch: latch,
