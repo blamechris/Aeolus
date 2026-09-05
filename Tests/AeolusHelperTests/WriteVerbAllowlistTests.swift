@@ -162,8 +162,9 @@ struct WriteVerbAllowlistTests {
     /// `BoundedFanRestorer.restoreToAutomatic(fans:because:)` is the shipped `FanRestoring`
     /// conformer — [#110](https://github.com/blamechris/Aeolus/issues/110)'s bound — and
     /// `restoreOnce(fanAt:)` is the `FanRestoreAttempting` requirement it spends that budget
-    /// against: the keystone at its narrowest, one fan and one attempt. Both take an index
-    /// and a cause and nothing else, which is the property this list holds them to. **A
+    /// against: the keystone at its narrowest, one fan and one attempt.
+    /// `restoreToAutomatic` takes a set of indices and a cause, `restoreOnce` a single index
+    /// — and neither takes anything else, which is the property this list holds them to. **A
     /// bound on the attempts is not authorisation**, and the distinction is the reason they
     /// belong here rather than reading as a hedged keystone: the budget decides how many
     /// times to try the write, never whether the caller is entitled to it, and it is spent
