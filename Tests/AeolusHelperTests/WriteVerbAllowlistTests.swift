@@ -40,7 +40,7 @@ import Testing
 ///
 /// - **A synchronous function that spawns an unstructured `Task` and writes inside it.**
 ///   That is the one route around "a synchronous function cannot `await`".
-///   `Sources/AeolusHelper` has **twelve** such spawn sites today, and an earlier draft of
+///   `Sources/AeolusHelper` has **thirteen** such spawn sites today, and an earlier draft of
 ///   this bullet said five and called them all supervisors — which was both the wrong number
 ///   and the wrong description, so the containment argument it offered was not the one the
 ///   tree supports. The real one, asserted by `everyUnstructuredTaskHandsOffToThePopulation`
@@ -48,11 +48,23 @@ import Testing
 ///   is itself in this population.** Seven are `HelperXPCService`'s XPC entry points hopping
 ///   a message onto `HelperConnectionSession`; one is `HelperListenerDelegate`'s invalidation
 ///   hop onto the same actor; one is `ReadOnlyFanAuthority`'s single-flight sensor walk;
-///   three are the supervisors' `Task.detached` handing control to an `async run(…)`.
+///   three are the supervisors' `Task.detached` handing control to an `async run(…)`; and one
+///   is `BoundedFanRestorer.attemptUncancellably(fanAt:)`, added by
+///   [#175](https://github.com/blamechris/Aeolus/pull/175).
+///
+///   **That thirteenth one is not an instance of this bullet's hazard at all, and saying so
+///   is worth more than the tidier sentence.** Its spawner is already `async`, so it is not
+///   a synchronous function reaching a write; the `Task` is there because an unstructured one
+///   does not inherit cancellation, and ADR 0007's keystone must not be abandoned because the
+///   caller went away. It is counted here anyway, because the count is of the *shape* the
+///   scanner can see — a body that could write out of the population's reach — and exempting
+///   a spawn site on the strength of what its author meant is how a count stops being a
+///   guard. Its body awaits `restoreOnce(fanAt:)`, which `restoreVerbs` acknowledges, so the
+///   containment argument holds for it by the same route as the rest.
 ///
 ///   An earlier draft of this bullet said each body was *a single* `await` of a population
-///   member. That is true of nine of the twelve and **false of the three supervisors**, whose
-///   bodies await `run(…)` and then `loopEnded(generation:)` — a private, synchronous,
+///   member. That is true of ten of the thirteen and **false of the three supervisors**,
+///   whose bodies await `run(…)` and then `loopEnded(generation:)` — a private, synchronous,
 ///   actor-isolated method whose entire body is `task = nil`, so it is in no population here
 ///   and could not be: it is neither `async` nor permit-bearing. It touches no fan, which is
 ///   why the containment still holds; but "a single await" was a stronger sentence than the
@@ -144,7 +156,22 @@ struct WriteVerbAllowlistTests {
     /// population in both directions — an unlisted restore verb fails there, not here. An
     /// earlier version of this comment claimed this list "asserts what there is to find",
     /// which is a claim about a test that does not exist.
+    ///
+    /// [#175](https://github.com/blamechris/Aeolus/pull/175) added the first two entries
+    /// naming neither a plane nor an authority.
+    /// `BoundedFanRestorer.restoreToAutomatic(fans:because:)` is the shipped `FanRestoring`
+    /// conformer — [#110](https://github.com/blamechris/Aeolus/issues/110)'s bound — and
+    /// `restoreOnce(fanAt:)` is the `FanRestoreAttempting` requirement it spends that budget
+    /// against: the keystone at its narrowest, one fan and one attempt. Both take an index
+    /// and a cause and nothing else, which is the property this list holds them to. **A
+    /// bound on the attempts is not authorisation**, and the distinction is the reason they
+    /// belong here rather than reading as a hedged keystone: the budget decides how many
+    /// times to try the write, never whether the caller is entitled to it, and it is spent
+    /// without consulting a lease, a sensor or a permit.
     private static let restoreVerbs: Set<String> = [
+        "BoundedFanRestorer.swift: restoreOnce(fanAt: Int)",
+        "BoundedFanRestorer.swift: restoreToAutomatic(fans: Set<Int>, "
+            + "because: FanRestoreCause)",
         "FanControlPlane.swift: restoreToAutomatic(_: FanRestoreScope)",
         "SMCFanControlPlane.swift: restoreToAutomatic(_: FanRestoreScope)",
         "SafetyWriters.swift: restoreToAutomatic(_: FanRestoreScope)",
@@ -166,7 +193,18 @@ struct WriteVerbAllowlistTests {
     ///
     /// The list is long on purpose. Its job is not to be read, it is to make a new verb
     /// impossible to add silently.
+    ///
+    /// `BoundedFanRestorer.attemptUncancellably(fanAt:)` is the entry most likely to be
+    /// read as misfiled, so the reason is written down rather than left to be re-derived. It
+    /// sits *between* two entries on the restore list — `restoreToAutomatic(fans:because:)`
+    /// calls it and it calls `restoreOnce(fanAt:)` — and holds no permit, which is the same
+    /// shape as every other function here that reaches the keystone: `LeaseAuthority`'s
+    /// `revokeEveryLease(because:)` and `ReclamationWatchdog.finaliseRelease(fanAt:because:)`
+    /// are on this list for exactly that reason. What it adds is a `Task` that does not
+    /// inherit cancellation, not a decision about whether the restore may happen — so
+    /// `restoreVerbs`, whose entries are the verbs ADR 0007 names, would be the misfiling.
     private static let permitFreeFunctions: Set<String> = [
+        "BoundedFanRestorer.swift: attemptUncancellably(fanAt: Int)",
         "CriticalTemperatureSensing.swift: readCriticalTemperatures()",
         "FanAuthority.swift: acquireLease(_: LeaseRequest, from: ConnectionID)",
         "FanAuthority.swift: apply(_: [FanSetting], leaseID: UUID, from: ConnectionID)",
@@ -406,12 +444,13 @@ struct WriteVerbAllowlistTests {
     ///
     /// An unstructured `Task` lets a synchronous function reach an `async` write, so every
     /// spawn site is a hole in the population — unless what it spawns is itself acknowledged.
-    /// That is what holds here: none of the twelve bodies writes, and each hands off to an
+    /// That is what holds here: none of the thirteen bodies writes, and each hands off to an
     /// `async` method in the population. (The three supervisors also await a synchronous
-    /// `loopEnded(generation:)` that only clears a task handle — see the suite doc, which
-    /// says so rather than rounding it off.)
+    /// `loopEnded(generation:)` that only clears a task handle, and `BoundedFanRestorer`'s
+    /// spawner is itself `async` so its `Task` shields cancellation rather than bridging from
+    /// synchronous code — see the suite doc, which says both rather than rounding them off.)
     ///
-    /// The count is asserted per file so it cannot drift silently. A thirteenth spawn site
+    /// The count is asserted per file so it cannot drift silently. A fourteenth spawn site
     /// fails this with the file it was added to, and the maintainer either shows it hands off
     /// the same way and updates the number, or has found the hole.
     ///
@@ -428,6 +467,7 @@ struct WriteVerbAllowlistTests {
     @Test("Every unstructured Task in the helper hands off to an acknowledged verb")
     func everyUnstructuredTaskHandsOffToThePopulation() throws {
         let expected = [
+            "BoundedFanRestorer.swift": 1,
             "HelperListenerDelegate.swift": 1,
             "HelperXPCService.swift": 7,
             "LeaseExpirySupervisor.swift": 1,
