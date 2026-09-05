@@ -100,23 +100,44 @@ Three consequences follow, and each is implemented:
    triage predicted cannot start. This is not an omission to be corrected later — putting a
    foreign fan in that registry is precisely the defect.
 
-### D3 — A whole-read failure falls back to the machine-wide restore
+### D3 — Wherever the pass cannot see, the machine-wide restore is issued
 
-If a mode read throws, the per-fan pass is abandoned and one unconditional
-`restoreToAutomatic(.everyFan)` is issued. ADR 0007's assumption table already decided this —
-*"`F0Md`/`Ftst` are readable for reconciliation … If it fails: reconciliation falls back to
-unconditional restore-to-automatic at startup — safe either way"* — and the keystone is what
-makes it available: the machine-wide verb needs no bounds, no sensor, no lease and no data of
-any kind, which is the entire reason ADR 0007 elevates it.
+**Three branches, one rule** (ruling D24, 2026-09-05). If a mode read throws, if the fan
+*enumeration* throws, or if the budget runs out with fans still unread, the per-fan pass
+stops and one unconditional `restoreToAutomatic(.everyFan)` is issued. ADR 0007's assumption
+table already decided the first — *"`F0Md`/`Ftst` are readable for reconciliation … If it
+fails: reconciliation falls back to unconditional restore-to-automatic at startup — safe
+either way"* — and the keystone is what makes it available: the machine-wide verb needs no
+bounds, no sensor, no lease and no data of any kind, which is the entire reason ADR 0007
+elevates it.
+
+The rule is applied **uniformly**, and an earlier draft of this ADR did not apply it that
+way. An enumeration failure abandoned the pass and restored nothing — no per-fan restore, no
+keystone, and no fan recorded as unreconciled, because no index existed to record. The
+argument offered for it was that nothing was lost, since `acquireLease` enumerates through
+the same seam and throws before it could grant anything. That is an argument about *grants*,
+and this pass is not about grants: a fan the previous helper left pinned stays pinned, and
+refusing a lease over it does not spin it back down. It is also the branch most likely to be
+taken on exactly the cold restart § 6 exists to cover.
+
+Since no fan index is knowable on that branch, "nothing was established" is recorded as a
+flag rather than as a set of indices, and every grant is refused `.supervisorBlind` until a
+keystone write lands. A budget expiry gets the keystone for the same reason: a fan nobody
+looked at and a fan whose read threw are the same state, and there is no fact one has that
+the other lacks.
 
 It is issued through a `SafetyActorWriter` at `.panicRestore`, not through
 `HelperFanRestorer`, which documents at length why it emits `.fan(n)` and never `.everyFan`.
+Issuing it over fans the pass *did* reach and found automatic costs nothing: the verb is
+idempotent over them.
 
 ### D4 — The pass is bounded, and the listener resumes either way
 
 `ReconciliationLimits.budget` (5 s) is checked between fans. When it runs out, the fans not
-yet read go into a durable set and the pass returns; the helper serves clients, and refuses a
-lease over any of those fans for the life of the process as `.supervisorBlind`.
+yet read go into a durable set, the keystone is issued for them (D3), and the pass returns;
+the helper serves clients, and refuses a lease over any of those fans for the life of the
+process as `.supervisorBlind` — unless that machine-wide write lands, in which case no fan is
+in an unknown mode and there is nothing left to refuse over.
 
 **`.supervisorBlind` rather than a second new reason**, and the fit is exact rather than
 convenient. That reason's own contract is *"nobody has been able to look"*, written to
@@ -154,10 +175,20 @@ verified cannot happen — and that is too load-bearing to rest on a manual page
   attempts and both registries are told. A new `FanRestoreCause.startupReconciliation` names
   it in the log — the one cause that names no lease.
 - `LeaseAuthority` gains one narrow seam, `ForeignManualControlSensing`, asked immediately
-  after the blindness gate and last of the four suspending refusals because it is the only
-  one whose cost scales with the number of fans requested. Fans Aeolus is accountable for —
-  under a live lease, mid-handback, or abandoned — are excluded rather than judged, because
-  each already has a more precise refusal further down the method.
+  after the blindness gate and last of the four things `acquireLease` suspends on — the fan
+  enumeration, § 3's latch, the telemetry read and it, three of which are refusals — because
+  it is the only one whose cost scales with the number of fans requested. Fans Aeolus is
+  accountable for — under a live lease, mid-handback, or abandoned — are excluded rather than
+  judged, because each already has a more precise refusal further down the method.
+- **The snapshot judges "foreign" against that same set**, `fansAeolusIsAccountableFor`, read
+  in one hop with the lease through `LeaseAuthority.activeLeaseView()`. Two definitions of
+  "Aeolus's own fan" would disagree the moment either moved, and the way they disagreed
+  before was the snapshot naming a fan Aeolus had pinned and could not hand back as another
+  program's — which sends a user to quit software that is not holding their fan.
+- **A system reclamation outranks the baseline, keyed on § 5's ledger cause** rather than on
+  an availability value. `.reclaimedBySystem` is deliberately never published as an
+  availability in this build (#140), so a guard looking for one matched nothing; the check is
+  on `FanState.isReclaimedBySystem`, which comes straight from the ledger.
 
 **On today's helper none of the restores can land.** `SMCFanControlPlane` answers
 `FanWriteCapability.notBuilt` and every write verb throws `.controlPathNotBuilt`, so the pass
@@ -202,23 +233,51 @@ reach and would force every lease test through three 1 Hz supervisor loops it do
   This needs to be in the release notes rather than discovered.
 - **A fan another program holds is permanently uncontrollable by Aeolus** until that program
   hands it back. That is the intended outcome, and the snapshot says so.
-- **A fan whose reconciliation restore the firmware refuses** is not added to the
-  unreconciled set: its mode *was* established — it reads manual — so the grant-time read
-  refuses it as `.foreignManualControl`, which is the more precise of the two answers. That
-  is technically a misattribution when the previous holder was Aeolus itself, and it is
-  accepted: the helper genuinely cannot tell, which is D1 all over again.
+- **A fan whose reconciliation restore the firmware refuses is watched by nothing — § 3
+  included — and that is stated here rather than left to be discovered** (ruling D23,
+  2026-09-05). It is in neither safety registry: § 5's holds fans *Aeolus engaged*, and
+  reconciliation engaged nothing, so the restorer's deregistration steps find no entry to
+  remove and there is none to leave behind either. A thermal emergency will therefore not
+  bridge that fan to maximum, and the pass is one-shot so nothing retries the write. The
+  fan may be pinned at a speed nothing is tracking, and `docs/RECOVERY.md` is the user's
+  route out.
+
+  It is **not** fixed by registering the fan with § 3. That needs a `CommandableFan` — an
+  envelope read and a permit reconciliation does not hold — and minting one for a fan that
+  may belong to another program means writing to that program's fan during an emergency,
+  which is the contest D1 and D2 exist to decline. What happens instead is the honest
+  half: the fan goes into a durable set and every later grant over it is refused
+  `.restoreToAutomaticFailed` — *"it asked for automatic, was refused, and stopped asking"*,
+  the reason's own words — so nothing is *claimed* over a fan nothing is watching.
+  [#201](https://github.com/blamechris/Aeolus/issues/201) holds the gap open against E3/E4
+  bring-up, where #168's reconnect-then-retry is the likely closer.
+
+  **The snapshot answers differently, and the difference is deliberate.** A client reading
+  that fan sees `.foreignManualControl`, because the snapshot judges by what `F<n>Md` says
+  and who Aeolus is accountable for, and reconciliation's own set is not the lease core's.
+  That is a misattribution when the previous holder was in fact a dead Aeolus helper, and it
+  is accepted: the helper genuinely cannot tell, which is D1 all over again. The grant path
+  can be more precise because it knows one thing the report does not — that *this* process
+  asked for the fan back and was refused — and it says so.
 - **§ 5 will never watch a foreign fan**, so nothing notices if that fan is later pinned at a
   dangerous speed by the other program. Aeolus is not that machine's only fan authority and
   does not claim to be; § 3's thermal override still fires on temperature, and its bridge
   covers fans Aeolus engaged.
+- **The pass refuses to run twice.** One-shot is the property every durable refusal above
+  rests on, so it is enforced in the mechanism rather than assumed of the one call site that
+  exists today: a second `reconcile()` logs and returns, because running it again would
+  discard what the first established and hand a fan back a second time — the first move of
+  the contest D2 declines.
 
 ## Assumptions and what would invalidate them
 
 | Assumption | Basis | If it fails |
 |---|---|---|
-| `F<n>Md` is readable at helper start | Observed on `Mac16,5`, both fans reading 0 with another tool running but not holding | D3's machine-wide fallback, which needs no read |
-| A foreign tool does not re-assert within one cycle of the startup restore | **Unverified** — needs E3/E4 bring-up with the tool running | The one-time restore becomes a visible flap; the decision does not change, because the alternative is the standing fight |
-| `F<n>Md == 1` means somebody is holding the fan | Community-reported, and the basis of every mechanism here | Reconciliation restores fans nobody held — harmless, and indistinguishable from the healthy case |
+| `F<n>Md` is readable at helper start | Observed on `Mac16,5`, both fans, 2026-09-05 — reading `0` at ~16:40, `1` at ~17:06, `0` again at ~17:50 | D3's machine-wide fallback, which needs no read |
+| `F<n>Md` actually takes the value `1` on this hardware | **Observed 2026-09-05, first sighting**: both fans read `1` with a competing tool holding them, then `0` again with that tool still running. Read-only, through the production scheduler; nothing in this build can write. See `docs/SMC-RESEARCH.md` | Nothing — the mechanisms keyed on it were resting on a value nobody had witnessed, and now one has been |
+| A foreign tool does not re-assert within one cycle of the startup restore | **Unverified** — needs E3/E4 bring-up with the tool actually holding a fan | The one-time restore becomes a visible flap; the decision does not change, because the alternative is the standing fight |
+| `F<n>Md == 1` means somebody is holding the fan | Community-reported, and the basis of every mechanism here. Consistent with the 2026-09-05 pair of readings, which moved with a competing tool's behaviour and with nothing else | Reconciliation restores fans nobody held — harmless, and indistinguishable from the healthy case |
+| Whether a fan reads manual is a property of the *machine at that instant*, not of the machine | **Observed 2026-09-05**: the same two fans read `1` and then `0` within an hour, with the same tool running throughout | Nothing here; but a hardware test pinning either value is a report about the reviewer's desktop, which is why `HelperHardwareTests` now asserts the pair |
 | `SMAppService` accepts `KeepAlive`/`RunAtLoad` in a daemon plist | Documented-plausible; unverifiable until a signing identity exists | Restart policy needs another mechanism, and reconciliation only runs when a client connects — escalate before shipping self-renewal |
 
 Every hardware observation above is `Mac16,5` on macOS 26.6.2. Intel and M1/M2 ship

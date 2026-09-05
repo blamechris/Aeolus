@@ -681,7 +681,20 @@ machine's cooling — so instead the fan is reported as
 The pass runs on a bounded budget (`ReconciliationLimits.budget`). If it runs out, the helper
 serves clients anyway and refuses manual control of the fans it never reached, as
 `.supervisorBlind` — nobody has looked at them, and nothing will, because reconciliation is
-one-shot.
+one-shot. **Wherever the pass cannot see, the machine-wide restore is issued anyway**: on a
+failed mode read, on a failed fan enumeration, and on that budget expiry. The keystone needs
+no data, which is the whole reason ADR 0007 makes it the keystone, and a fan nobody looked at
+is not less pinned than one whose read threw (ADR 0011 D3). Being one-shot is enforced rather
+than assumed — a second `reconcile()` is declined, because it would discard those refusals
+and hand a fan back a second time.
+
+**A fan the firmware refuses to hand back is refused a lease durably**, as
+`.restoreToAutomaticFailed` — this process asked for automatic, spent #110's attempts, and
+stopped asking. It is watched by nothing, § 3 included, because it was never in either
+registry: reconciliation engaged nothing, so there is no entry for the emergency bridge to
+find. That gap is deliberate rather than overlooked — registering a possibly-foreign fan with
+§ 3 means writing to another program's fan during an emergency — and
+[#201](https://github.com/blamechris/Aeolus/issues/201) holds it open against E3/E4 bring-up.
 
 The guarantee to match is Macs Fan Control's: quitting always returns the fans to Apple's
 control. Anything less and users are right not to trust the software.
@@ -694,9 +707,14 @@ enforcer is the casualty: the TTL is not counted by anything, the watchdog is no
 and the SMC keeps the last value written. Only a restart can notice.
 
 *Tested by:* `StartupReconciliationTests` drives the composed helper over scripted firmware —
-a fan starting in manual is restored exactly once, a failed mode read falls back to the
-machine-wide verb, a fan taken afterwards is refused and not restored, an exhausted budget
-still returns and refuses durably, and the snapshot reports the firmware's own mode.
+a fan starting in manual is restored exactly once, a failed mode read and a failed
+enumeration both fall back to the machine-wide verb, a second pass is declined, a fan taken
+afterwards is refused and not restored, a fan the firmware would not hand back is refused
+`.restoreToAutomaticFailed`, an exhausted budget takes the keystone and still refuses
+durably, and the snapshot reports the firmware's own mode.
+`ForeignManualControlReportingTests` covers the three fans the snapshot must **not** call
+somebody else's: one under a live lease, one whose handback was abandoned, and one § 5
+diagnosed as reclaimed by the system.
 `HelperCompositionTests.reconciliationSitsBetweenTheBindAndTheSupervisors` holds the pass in
 its position. `LaunchDaemonPlistTests` holds the restart keys and the exit-code contract.
 *Pending #166:* an integration test per orderly exit path. *Pending hardware:* the checklist
