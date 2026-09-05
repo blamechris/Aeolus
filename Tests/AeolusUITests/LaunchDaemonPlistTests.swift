@@ -81,22 +81,136 @@ struct LaunchDaemonPlistTests {
         #expect(plist["ProgramArguments"] == nil)
     }
 
-    @Test("The daemon is launched on demand and never kept alive")
-    func noBootLaunchOrRestartPolicy() throws {
+    /// Every key this daemon declares, and nothing else.
+    ///
+    /// The allowlist replaces `noBootLaunchOrRestartPolicy`, which named the two keys
+    /// somebody had thought of — `RunAtLoad` and `KeepAlive` — and was therefore blind to
+    /// every other way of starting a root process at a time nobody argued for.
+    /// [#84](https://github.com/blamechris/Aeolus/issues/84) named `StartInterval` as the
+    /// gap; `WatchPaths`, `StartCalendarInterval`, `StartOnMount` and `QueueDirectories` are
+    /// the same shape. This is `WriteVerbAllowlistTests`' discipline applied to a plist: a
+    /// new key has to be **acknowledged** by whoever adds it, rather than merely spelled
+    /// outside a list of prohibitions.
+    private static let allowedKeys: Set<String> = [
+        "Label",
+        "BundleProgram",
+        "MachServices",
+        "ProcessType",
+        "KeepAlive",
+        "RunAtLoad",
+    ]
+
+    @Test("The plist declares exactly the six keys the restart policy argued for")
+    func onlyTheAllowlistedKeysArePresent() throws {
         let plist = try loadPlist()
-        // `KeepAlive = { SuccessfulExit = false }` restarts a job in the *inverse*
-        // condition — whenever it exits non-zero — and launchd.plist(5) records that the
-        // key also implies `RunAtLoad`. The helper is still a scaffold that exits
-        // non-zero on purpose, so those two keys would convert its refusal to run into a
-        // root process restarted on launchd's throttle forever, at approval time and at
-        // every boot, while `SMAppService.Status` reported `.enabled` the whole time.
-        //
-        // `MachServices` alone gives on-demand launch, which is all E2 needs. When #72
-        // makes this a real daemon, a restart policy has to be argued for against the
-        // lease semantics E5 implements — and re-adding either key has to be a decision
-        // someone takes deliberately, which means failing here first.
-        #expect(plist["RunAtLoad"] == nil)
-        #expect(plist["KeepAlive"] == nil)
+        let declared = Set(plist.keys)
+
+        let unlisted = declared.subtracting(Self.allowedKeys).sorted()
+        #expect(
+            unlisted.isEmpty,
+            """
+            The launch daemon declares \(unlisted), which nothing in ADR 0007 or #103's \
+            decision A3 argued for. Every key here starts or restarts a root process, so \
+            this is a safety decision: add it to `allowedKeys` deliberately, with the \
+            argument, or take it out of the plist.
+            """)
+
+        let missing = Self.allowedKeys.subtracting(declared).sorted()
+        #expect(
+            missing.isEmpty,
+            """
+            The launch daemon no longer declares \(missing). Losing `KeepAlive` or \
+            `RunAtLoad` silently removes the restart half of docs/SAFETY.md § 6's crash \
+            coverage — the helper stops being restarted after a SIGKILL, so nothing ever \
+            reconciles the fans it died holding.
+            """)
+
+        // The count, separately from the two set comparisons above, because a dictionary
+        // cannot hold a duplicate key but a *rename* can pass both of them while changing
+        // what ships: `allowedKeys` and the plist would agree with each other and disagree
+        // with launchd. Six is the number A3 decided.
+        #expect(
+            plist.count == 6,
+            "the launch daemon declares \(plist.count) keys; decision A3 settled on six")
+    }
+
+    @Test("KeepAlive restarts the helper only when it exits non-zero")
+    func keepAliveIsExactlySuccessfulExitFalse() throws {
+        let plist = try loadPlist()
+        let keepAlive = try #require(
+            plist["KeepAlive"] as? [String: Any],
+            """
+            `KeepAlive` is not a dictionary. A bare `<true/>` restarts the helper whenever \
+            it exits for any reason, including a deliberate orderly teardown — which turns \
+            `exit(0)` from "do not restart me" into a request launchd ignores.
+            """)
+
+        #expect(
+            keepAlive.count == 1,
+            "`KeepAlive` carries \(keepAlive.count) conditions; A3 decided on exactly one")
+        #expect(
+            keepAlive["SuccessfulExit"] as? Bool == false,
+            """
+            `KeepAlive` is not `{ SuccessfulExit = false }`. That value is what makes the \
+            exit code a contract: a teardown that could not restore the fans exits non-zero \
+            so launchd restarts the helper and startup reconciliation runs (ADR 0007, \
+            docs/SAFETY.md § 6). Any other value breaks the contract in one direction or \
+            the other.
+            """)
+    }
+
+    @Test("RunAtLoad is written explicitly rather than left to KeepAlive's implication")
+    func runAtLoadIsExplicitAndTrue() throws {
+        let plist = try loadPlist()
+        #expect(
+            plist["RunAtLoad"] as? Bool == true,
+            """
+            `RunAtLoad` is not explicitly `true`. launchd.plist(5) records that `KeepAlive` \
+            implies it, and #103's decision A3 declines to rest boot-time reconciliation on \
+            an implication in a manual page: manual mode persisting across a reboot is the \
+            case this key covers, and nobody has verified it cannot happen.
+            """)
+    }
+
+    /// `exit(0)` is the helper's "do not restart me", so it may exist in exactly one place.
+    ///
+    /// `KeepAlive = { SuccessfulExit = false }` gives the exit code meaning: non-zero means
+    /// launchd restarts the helper and startup reconciliation runs. A zero exit therefore
+    /// asserts *"the fans are back on automatic control and nobody needs to check"*, and it
+    /// is only ever true of the orderly-teardown path that performed the restore. A second
+    /// one — an early return from a failed bring-up, say, or a guard that gives up — would
+    /// be a root daemon exiting silently with fans in an unknown mode and nothing scheduled
+    /// to look at them.
+    ///
+    /// **The expected count is 0 today, and it is 0 because the orderly path does not
+    /// exist yet.** `AeolusHelperMain` ends in `dispatchMain()` and never returns; the
+    /// teardown that restores and then exits is E5.4d's
+    /// ([#166](https://github.com/blamechris/Aeolus/issues/166)). That change raises this
+    /// number to 1 in the same commit that adds the path, deliberately — which is the whole
+    /// point of asserting a count rather than a location.
+    @Test("`exit(0)` appears in the helper exactly as many times as a path has argued for")
+    func theOrderlyExitIsCountedNotAssumed() throws {
+        let helper = Self.repositoryRoot.appendingPathComponent("Sources/AeolusHelper")
+        let enumerator = try #require(
+            FileManager.default.enumerator(at: helper, includingPropertiesForKeys: nil),
+            "Sources/AeolusHelper was not found")
+
+        var occurrences: [String: Int] = [:]
+        for case let file as URL in enumerator where file.pathExtension == "swift" {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            let count = source.components(separatedBy: "exit(0)").count - 1
+            if count > 0 { occurrences[file.lastPathComponent] = count }
+        }
+
+        #expect(
+            occurrences.values.reduce(0, +) == 0,
+            """
+            `exit(0)` occurs in \(occurrences.sorted { $0.key < $1.key }). Under \
+            `KeepAlive = { SuccessfulExit = false }` a zero exit tells launchd not to \
+            restart the helper, which asserts the fans are back on automatic control. \
+            Exactly one path may say that, and E5.4d (#166) is the change that adds it — \
+            raise the expected count to 1 there, with the restore in front of it.
+            """)
     }
 
     @Test("Every `launchctl bootout` in RECOVERY.md names the label this daemon registers")

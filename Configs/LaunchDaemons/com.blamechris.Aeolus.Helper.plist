@@ -14,26 +14,37 @@
   connecting process's code-signing requirement — see docs/SECURITY-adjacent notes in
   SECURITY.md and epic E2.
 
-  ## On-demand launch only, and why there is no RunAtLoad or KeepAlive
+  ## The restart policy, and why it is here now
 
-  MachServices is the entire launch policy: launchd starts the helper when a client
-  connects to the mach service, and at no other time. That is all E2 needs.
+  Six keys, and every one of them is asserted by
+  Tests/AeolusUITests/LaunchDaemonPlistTests.swift as an allowlist with an exact member
+  count — a seventh key fails the build before it starts a root process nobody argued for.
 
-  Sources/AeolusHelper/AeolusHelperMain.swift is still a scaffold — it writes to stderr
-  and exits non-zero, deliberately, so that a do-nothing process never holds root. Under
-  KeepAlive = { SuccessfulExit = false } launchd restarts a job "in the inverse
-  condition", i.e. whenever it exits non-zero, and launchd.plist(5) notes that key also
-  implies RunAtLoad. Together those turn the scaffold's refusal into a root process
-  started at approval time and at every boot, exiting 1, and restarted on launchd's
-  throttle indefinitely — while SMAppService.Status reports .enabled throughout, so the
-  app would say "Helper installed and enabled" about a daemon that cannot run at all.
-  A refusal to run is only a refusal if nothing restarts it.
+  KeepAlive = { SuccessfulExit = false } restarts the job "in the inverse condition":
+  whenever it exits non-zero. That makes the exit code a contract. docs/SAFETY.md § 6 is
+  explicit that crash coverage is *restart plus reconciliation*, uniformly, for every way
+  the helper can die — including SIGKILL, a kernel panic and a power loss, which no signal
+  handler could ever reach. A helper that dies while a fan is in manual leaves the SMC
+  holding that mode with nothing counting a TTL; only a new process reading F<n>Md can
+  notice.
 
-  TODO(#72): revisit boot-launch and restart policy when the helper becomes a real daemon
-  with an NSXPCListener. Decide it against the self-renewing-lease semantics E5 actually
-  implements — whether a lease is meant to survive a reboot, and what a crash while one is
-  held should do — rather than assuming a daemon wants to be kept alive. Every key added
-  here starts a root process, so this is a safety decision and not a convenience one.
+  RunAtLoad = true is written explicitly even though launchd.plist(5) records that
+  KeepAlive implies it. Boot-time reconciliation is too load-bearing to rest on an
+  implication in a manual page (#103, decision A3): manual mode persisting across a reboot
+  is a case nobody has verified cannot happen, and the fix for it is this key.
+
+  #81 removed both keys for a reason that was correct at the time and is not any more:
+  AeolusHelperMain was a scaffold that exited non-zero on purpose, so KeepAlive would have
+  turned its refusal to run into a root process restarted on launchd's throttle forever
+  while SMAppService.Status reported .enabled throughout. That helper is now a real daemon
+  that ends in dispatchMain() and does not exit at all. ADR 0007 required these keys to
+  land in the same change as unconditional startup reconciliation and never before, and
+  that change is #164/#165 — a restart policy without reconciliation restarts a helper
+  that then serves without checking what the SMC still holds.
+
+  Unverified until a signing identity exists: whether SMAppService accepts either key in a
+  daemon plist. ADR 0007 lists it as an assumption, and the hardware checklist carries the
+  row.
 -->
 <plist version="1.0">
 <dict>
@@ -51,5 +62,14 @@
 
 	<key>ProcessType</key>
 	<string>Adaptive</string>
+
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<true/>
 </dict>
 </plist>
