@@ -32,6 +32,7 @@ struct ManualControlAvailabilityTests {
             .unavailable(.selfRenewalNotBuilt),
             .unavailable(.releaseInProgress),
             .unavailable(.noThermalTelemetry),
+            .unavailable(.supervisorBlind),
             .unavailable(.unknown("somethingFromAFutureHelper")),
         ]
     )
@@ -85,6 +86,7 @@ struct ManualControlAvailabilityTests {
             .selfRenewalNotBuilt,
             .releaseInProgress,
             .noThermalTelemetry,
+            .supervisorBlind,
         ]
     )
     func knownWireValuesResolveToKnownCases(_ reason: ManualControlAvailability.Reason) {
@@ -114,6 +116,9 @@ struct ManualControlAvailabilityTests {
         #expect(
             ManualControlAvailability.Reason.noThermalTelemetry.wireValue
                 == "noThermalTelemetry")
+        #expect(
+            ManualControlAvailability.Reason.supervisorBlind.wireValue
+                == "supervisorBlind")
         #expect(ManualControlAvailability.Reason.unknown("xyz").wireValue == "xyz")
     }
 
@@ -137,6 +142,43 @@ struct ManualControlAvailabilityTests {
 
         #expect(decoded == state)
         #expect(decoded.manualControlAvailability == .unavailable(.writePathNotBuilt))
+    }
+
+    /// Blindness travels on the availability vocabulary and nowhere else — #140.
+    ///
+    /// The wire claim this change rests on: a new `Reason` is additive within protocol
+    /// version 1, because an older peer decodes an unrecognised reason to `.unknown(_)` and
+    /// renders it generically. That is what `AeolusXPCVersion`'s bump policy permits without
+    /// a bump, and it is why no `FanState` field was grown to carry this: a new required
+    /// field would be a bump, and an optional one would put a third state on a question that
+    /// has two answers.
+    ///
+    /// `isReclaimedBySystem` stays `false` on the same payload. A fan given up because the
+    /// helper went blind on it is not a fan the system took.
+    @Test("Supervisor blindness crosses the wire as a reason, not as a reclamation")
+    func supervisorBlindnessCrossesTheWire() throws {
+        let state = FanState(
+            index: 0,
+            actualRPM: .unavailable(reason: "F0Ac: the read did not answer"),
+            minimumRPM: .measured(1200),
+            maximumRPM: .measured(5400),
+            targetRPM: nil,
+            mode: .automatic,
+            isReclaimedBySystem: false,
+            manualControlAvailability: .unavailable(.supervisorBlind)
+        )
+
+        let decoded = try JSONDecoder().decode(
+            FanState.self, from: try JSONEncoder().encode(state))
+
+        #expect(decoded == state)
+        #expect(decoded.manualControlAvailability == .unavailable(.supervisorBlind))
+        #expect(decoded.isReclaimedBySystem == false)
+        // The wire string is the contract, so it is asserted against the literal a peer
+        // would actually send rather than against this build's own encoder.
+        #expect(
+            try decode(#"{"state":"unavailable","reason":"supervisorBlind"}"#)
+                == .unavailable(.supervisorBlind))
     }
 
     /// A required field, and required on the wire too: a snapshot that omits it must not

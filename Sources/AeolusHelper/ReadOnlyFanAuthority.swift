@@ -128,11 +128,13 @@ actor ReadOnlyFanAuthority: FanAuthority {
         let isThermalEmergencyActive = await thermalEmergency.isActive
         // One read of the ledger per snapshot rather than one per fan: a snapshot carries a
         // single `capturedAt`, and two fans answered from two different views of who holds
-        // them would be one instant's report built from two.
-        let reclaimedFans = await reclamation.reclaimedFans
+        // them would be one instant's report built from two. The causes travel together for
+        // the same reason — reading "which fans are reclaimed" and "which are blind" as two
+        // hops could observe one fan in neither set or in both.
+        let reclamationCauses = await reclamation.causes
 
         return SystemSnapshot(
-            fans: fans.fans.map { Self.fanState(for: $0, reclaimedFans: reclaimedFans) },
+            fans: fans.fans.map { Self.fanState(for: $0, reclamation: reclamationCauses) },
             sensors: sensors,
             // No lease can exist: every path that would grant one refuses below.
             activeLease: nil,
@@ -296,9 +298,10 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// the declared minimum is a legitimate observation. Clamping governs targets on the
     /// write path, never observations — see `SMCFanEnumeration`.
     private static func fanState(
-        for fan: SMCFanEnumeration.Fan, reclaimedFans: Set<Int>
+        for fan: SMCFanEnumeration.Fan, reclamation: [Int: ReclamationLedger.Cause]
     ) -> FanState {
-        FanState(
+        let cause = reclamation[fan.index]
+        return FanState(
             index: fan.index,
             // `{fds`, the firmware fan-descriptor struct, is absent on this project's
             // development machine and is not read anywhere in the tree. No name is
@@ -314,17 +317,41 @@ actor ReadOnlyFanAuthority: FanAuthority {
             // From § 5's ledger, never a literal — see `reclamation`. Always `false` in
             // this build because no fan is ever off automatic control here, but the field
             // now moves when the mechanism does.
-            isReclaimedBySystem: reclaimedFans.contains(fan.index),
-            // `.writePathNotBuilt` regardless of what this fan's bounds look like, and
-            // deliberately so. E5's bounds gate — `FanKit.FanControlEnvelope.validating(
-            // declaredMinimumRPM:declaredMaximumRPM:)`, whose failures map to
-            // `.boundsImplausible` — is not consulted here, because a build-level fact
-            // outranks a per-fan one: no fan in this build can be controlled, so reporting
-            // `.boundsImplausible` on one would imply that better bounds would grant
-            // control, which is false of every fan this executable serves. The gate plugs
-            // in at this line in the epic that also brings the write path it guards.
-            manualControlAvailability: .unavailable(.writePathNotBuilt)
+            //
+            // **`.systemReclaimed` and nothing else.** The ledger's other cause is a helper
+            // that went blind on the fan, which is not a statement about the operating
+            // system at all, and this field's contract — rendered verbatim as "Reclaimed by
+            // system" — cannot carry it. #140.
+            isReclaimedBySystem: cause == .systemReclaimed,
+            manualControlAvailability: availability(whenLedgerSays: cause)
         )
+    }
+
+    /// What a fan's disposition means for whether it could be leased.
+    ///
+    /// `.writePathNotBuilt` is the build-level answer, and it stays the answer for every
+    /// fan whose bounds this executable could not judge either: E5's bounds gate —
+    /// `FanKit.FanControlEnvelope.validating(declaredMinimumRPM:declaredMaximumRPM:)`,
+    /// whose failures map to `.boundsImplausible` — is deliberately not consulted here,
+    /// because a build-level fact outranks a per-fan one. No fan in this build can be
+    /// controlled, so reporting `.boundsImplausible` on one would imply that better bounds
+    /// would grant control, which is false of every fan this executable serves. The gate
+    /// plugs in here in the epic that also brings the write path it guards.
+    ///
+    /// **Blindness is the exception, and it is not one of those per-fan facts.** It is § 5
+    /// saying it gave a fan up because it could not see it — a claim about the supervisor,
+    /// not about what stands between a client and a lease, so it cannot imply that anything
+    /// would grant control. It is also the only honest thing the snapshot can say about
+    /// such a fan, `isReclaimedBySystem` having said it wrongly as a system reclamation. In
+    /// this build it is unreachable for the ledger's own reason — nothing is ever held, so
+    /// nothing can go blind — and what changed is where the answer comes from.
+    private static func availability(
+        whenLedgerSays cause: ReclamationLedger.Cause?
+    ) -> ManualControlAvailability {
+        switch cause {
+        case .supervisorBlind: return .unavailable(.supervisorBlind)
+        case .systemReclaimed, nil: return .unavailable(.writePathNotBuilt)
+        }
     }
 
     private static func reading(for outcome: SensorReadOutcome) -> FanReading {

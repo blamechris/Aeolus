@@ -123,6 +123,23 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// retrying is not the advice — blindness lasts until the SMC answers again, and
         /// nothing the client does affects that.
         case noThermalTelemetry
+        /// The helper cannot read *this fan's* control state, so the mechanism that would
+        /// notice it being taken back is blind on it.
+        ///
+        /// `.noThermalTelemetry`'s argument one cardinality down: that one is the machine's
+        /// temperature going unreadable, this one is a single fan's state going unreadable
+        /// for `ReclamationLimits.blindCyclesBeforeDivergence` consecutive cycles, after
+        /// which § 5 reconnects, restores the fan and revokes the lease. ADR 0007's hole 2,
+        /// with [#68](https://github.com/blamechris/Aeolus/issues/68) — a stale
+        /// `io_connect_t` after wake — as the motivating case.
+        ///
+        /// **Emphatically not `.reclaimedBySystem`.** That reason says the operating system
+        /// took the fan, which is a diagnosis; this one says nobody has been able to look.
+        /// Reporting the two as one sent a user to investigate macOS's thermal behaviour
+        /// when what had happened was Aeolus's own SMC connection dying, and it claimed a
+        /// loss of control that nothing had established — `CLAUDE.md` rule 6 in the
+        /// direction that is easy to miss.
+        case supervisorBlind
         /// A reason this build does not recognise, carried verbatim so a newer helper
         /// can explain itself to an older client without a protocol bump. Render it
         /// generically; never treat it as equivalent to `available`.
@@ -138,6 +155,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case .selfRenewalNotBuilt: return "selfRenewalNotBuilt"
             case .releaseInProgress: return "releaseInProgress"
             case .noThermalTelemetry: return "noThermalTelemetry"
+            case .supervisorBlind: return "supervisorBlind"
             case .unknown(let raw): return raw
             }
         }
@@ -154,6 +172,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case Reason.selfRenewalNotBuilt.wireValue: self = .selfRenewalNotBuilt
             case Reason.releaseInProgress.wireValue: self = .releaseInProgress
             case Reason.noThermalTelemetry.wireValue: self = .noThermalTelemetry
+            case Reason.supervisorBlind.wireValue: self = .supervisorBlind
             default: self = .unknown(wireValue)
             }
         }
@@ -350,6 +369,14 @@ public struct FanState: Sendable, Hashable, Codable {
     /// `true` when the helper asked for manual control but the system has taken the fan
     /// back — the reclamation case from `docs/SAFETY.md`. Surfaced honestly rather than
     /// papered over: the UI must never claim control it does not have.
+    ///
+    /// **Narrower than "the helper lost this fan", and the narrowness is the contract.**
+    /// § 5 also gives a fan up when it has gone blind on it, and that is not this: a helper
+    /// that cannot read has learned nothing about who holds the fan, so reporting it here
+    /// would claim a loss of control nothing has established and point the user at macOS's
+    /// thermal behaviour instead of at a dead SMC connection. Blindness travels as
+    /// `manualControlAvailability == .unavailable(.supervisorBlind)`. Any producer of this
+    /// field that has both conditions in hand sets it for the reclamation alone.
     public let isReclaimedBySystem: Bool
     /// Whether this fan could be taken under a lease at all, and if not, why.
     ///

@@ -594,7 +594,14 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // to have fixed anything — only the next read is evidence of that, and waiting for
         // it is another cycle with a fan pinned on a machine nobody can see. § 5 says
         // reconnect **then** restore and report, not reconnect and hope.
-        await ledger.markReclaimed(fanAt: index)
+        //
+        // **Recorded as blindness, not as a reclamation** — #140. This path calls
+        // `markReclaimed(fanAt:)` nowhere: nothing here has been learned about who holds the
+        // fan, only that the helper cannot read it, and the ledger's reclaimed set is what
+        // becomes `FanState.isReclaimedBySystem`. Setting that bit told the user the system
+        // had taken a fan while `finaliseRelease` in the next line told the lease core the
+        // supervisor had gone blind.
+        await ledger.markSupervisorBlind(fanAt: index)
         log.reclamationRestoredBlindFan(fan: index)
         await finaliseRelease(fanAt: index, because: .supervisorBlind)
     }
@@ -627,8 +634,19 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     ///
     /// The restore is attempted whatever else failed, and consumes nothing a failing
     /// machine might be unable to supply — ADR 0007's keystone. The ledger entry for `index`
-    /// is **kept**: the system does hold this fan now, that is what the user should be told,
-    /// and it stays true until something deliberately takes it off automatic control again.
+    /// is **kept**, and what it says depends on which caller got here, because since #140
+    /// the two are no longer one bit:
+    ///
+    /// - `.systemReclaimed` — the system does hold this fan now, that is what the user
+    ///   should be told, and it stays true until something deliberately takes it off
+    ///   automatic control again.
+    /// - `.supervisorBlind` — the helper could not read the fan, so this entry asserts
+    ///   **nothing** about who holds it. It records that § 5 gave the fan up and why, which
+    ///   is what `ManualControlAvailability.Reason.supervisorBlind` reports and what
+    ///   `FanState.isReclaimedBySystem` deliberately does not.
+    ///
+    /// Either way it is kept rather than cleared, for the reason `clearReclaimed(fanAt:)`
+    /// states: a fan this mechanism has just handed back is not a fan known to be fine.
     ///
     /// Every lease is revoked rather than the one covering this fan, for
     /// `ThermalEmergency.fire(_:from:)`'s reason: a lease is a claim over a *set* of fans,
