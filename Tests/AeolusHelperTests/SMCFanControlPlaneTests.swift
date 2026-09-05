@@ -183,6 +183,27 @@ struct SMCFanControlPlaneTests {
         #expect(error?.isReadFailure == true, "an absent F0Md produced \(describe(error))")
     }
 
+    /// A per-key provider failure's detail text comes from `SensorReadFailure`'s one
+    /// shared `readableDescription` — not a second, independently-maintained copy of the
+    /// same switch living in this file. `HelperTestDoubles.swift` defaults any key absent
+    /// from `keyedResults` to `.unknownKey(key)`, which is what "F0Md" missing here
+    /// produces; if this seam ever grew its own diverging rendering again, the detail text
+    /// would drift from `readableDescription`'s and this assertion would catch it.
+    @Test("A per-key read failure's detail reuses SensorReadFailure's shared description")
+    func perKeyReadFailureReusesSharedDescription() async throws {
+        let plane = Self.plane(["F0Tg": .reading("F0Tg", 1_800)])
+
+        let error = await #expect(throws: FanControlPlaneError.self) {
+            try await plane.readControlState(ofFan: 0)
+        }
+
+        guard case .readFailed(let detail)? = error else {
+            Issue.record("an absent F0Md produced \(describe(error))")
+            return
+        }
+        #expect(detail.contains(SensorReadFailure.unknownKey("F0Md").readableDescription))
+    }
+
     // MARK: - Addressability
 
     /// `F10Md` is five characters and is not a well-formed SMC key, so a tenth fan has no

@@ -226,7 +226,7 @@ struct SMCFanControlPlane: FanControlPlane {
         }
         switch outcome.result {
         case .failure(let failure):
-            return .failure(.readFailed(detail: "\(key): \(describe(failure))"))
+            return .failure(.readFailed(detail: "\(key): \(failure.readableDescription)"))
         case .success(let reading):
             return FanControlPlaneValue.finite(reading.value, describing: key.rawValue)
         }
@@ -250,18 +250,5 @@ struct SMCFanControlPlane: FanControlPlane {
             byKey[outcome.key] = outcome
         }
         return byKey
-    }
-
-    /// Diagnostic rendering of a per-key failure. Never parsed or matched on.
-    ///
-    /// A private function rather than an `extension SensorReadFailure` property because
-    /// `fanctl` and `AeolusUI` each already declare a `readableDescription` of their own,
-    /// and `SMCFanEnumeration` keeps its copy private for the same reason.
-    private static func describe(_ failure: SensorReadFailure) -> String {
-        switch failure {
-        case .unknownKey(let key): return "\(key) is not present on this machine"
-        case .readFailed(let reason): return reason
-        case .notDecodable(let reason): return reason
-        }
     }
 }
