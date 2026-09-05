@@ -75,9 +75,11 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// at the source, because `main()` ends in `dispatchMain()` and there is nothing to
     /// observe this from at runtime.
     ///
-    /// The two consumers cannot be swapped: `LeaseAuthority` takes `SightednessProving` and
-    /// `ThermalEmergency`'s `telemetry:` takes `CriticalTemperatureSensing`, and this type
-    /// conforms only to the first. See
+    /// Nothing here can be swapped, and each exclusion is the compiler's rather than a
+    /// reviewer's. `LeaseAuthority` takes `SightednessProving`; `ThermalEmergency`'s
+    /// `telemetry:` takes `CriticalTemperatureSensing`, which this type is not; and its
+    /// `sightings:` takes `CriticalTemperatureRecording`, which has no `sighting()` — so the
+    /// cycle can write here and cannot read from here. See
     /// [ADR 0010](../../docs/ADR/0010-coalesced-supervisor-reads.md).
     let sightings: CriticalTemperatureCache
 
@@ -175,7 +177,14 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         // cycle would have. `maxAge` is not passed: its default is derived from
         // `ThermalSupervisor.defaultInterval`, and a value supplied here would be the second
         // constant ADR 0010 forbids.
-        let sightings = CriticalTemperatureCache(source: telemetry)
+        //
+        // `clock` is the lease core's, and it is passed for the reason the parameter's own
+        // documentation gives: an age bound nothing composed can advance is an age bound no
+        // composed test can exercise. Before this the cache built its own
+        // `SystemMonotonicClock` and the staleness rule was reachable only by constructing a
+        // cache by hand — so the graph the daemon runs had no test that a sighting ages out
+        // at all. `HelperSightednessTests` is the one that needs it.
+        let sightings = CriticalTemperatureCache(source: telemetry, clock: clock)
         self.sightings = sightings
 
         // The keystone write, bounded per #110, at the lease core's own actor level.

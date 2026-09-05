@@ -231,6 +231,12 @@ struct WriteVerbAllowlistTests {
     /// `restoreVerbs`, whose entries are the verbs ADR 0007 names, would be the misfiling.
     private static let permitFreeFunctions: Set<String> = [
         "BoundedFanRestorer.swift: attemptUncancellably(fanAt: Int)",
+        // `CriticalTemperatureRecording`'s single requirement, declared beside the cache in
+        // the same file. The scan sees it because the requirement is `async` — an actor's
+        // isolated method witnesses it — and it is permit-free for the same reason
+        // `sighting()` below is: the type holds no writer and no plane, and the whole of the
+        // conformer's body is an assignment to a stored property.
+        "CriticalTemperatureCache.swift: record(_: CriticalTemperatureSighting)",
         "CriticalTemperatureCache.swift: sighting()",
         "CriticalTemperatureSensing.swift: readCriticalTemperatures()",
         "FanAuthority.swift: acquireLease(_: LeaseRequest, from: ConnectionID)",

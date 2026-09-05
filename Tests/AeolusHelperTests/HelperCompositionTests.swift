@@ -244,20 +244,33 @@ struct HelperCompositionTests {
     /// each cache behaves correctly in isolation, `GrantStormTests` composes its own graph,
     /// and every unit test in `CriticalTemperatureCacheTests` builds exactly one.
     ///
-    /// Three assertions, because "one is constructed" and "that one reaches both consumers"
+    /// Four assertions, because "one is constructed" and "that one reaches both consumers"
     /// are different edits away from each other. The construction count catches a second
     /// `CriticalTemperatureCache(` anywhere in `Sources`; the two hand-off assertions catch a
     /// consumer pointed at a fresh one inline, which keeps the count at one.
     ///
-    /// The types make the *third* mistake impossible rather than merely detectable: passing
+    /// The fourth is one layer down and was missing until an adversarial review ran the
+    /// mutation. `HelperComposition.telemetry` claims the grant path reads *"through this same
+    /// instance, memo and all"* — the sharing `CuratedCriticalTemperatures` says its
+    /// `DegradationMemo` collapse depends on. Giving the cache its own
+    /// `CuratedCriticalTemperatures(plane: plane, set: criticalSensors, log: safetyLog)` keeps
+    /// one cache, satisfies both hand-off assertions, and leaves the whole suite green — while
+    /// § 3 and the grant path each log the same partial sensor loss on their own schedule,
+    /// which is the defect this composition was written to end.
+    ///
+    /// The types make the *last* mistake impossible rather than merely detectable: passing
     /// `telemetry` where `sightings` belongs does not compile, because
-    /// `CuratedCriticalTemperatures` is no `SightednessProving` — see that protocol.
+    /// `CuratedCriticalTemperatures` is no `SightednessProving`, and the cycle cannot read from
+    /// the cache it writes to because `CriticalTemperatureRecording` has no `sighting()` — see
+    /// both protocols.
     ///
     /// **Mutation A:** construct a second cache — give `ThermalEmergency`
     /// `sightings: CriticalTemperatureCache(source: telemetry)` inline. Run: red on the count
     /// and on the emergency's hand-off.
     /// **Mutation B:** pass the emergency a fresh cache while deleting the shared local. Run:
     /// red on the hand-off assertions.
+    /// **Mutation C:** give the cache a second `CuratedCriticalTemperatures` of its own. Run:
+    /// red on the curated count, and green on everything else in the repository.
     @Test("Exactly one sighting cache is constructed, and both consumers are given it")
     func onlyOneSightingCacheIsEverBuilt() throws {
         #expect(
@@ -267,6 +280,16 @@ struct HelperCompositionTests {
             § 3's reading is cached in one place or in none. A second cache is a grant path \
             proving sightedness from a reading no cycle ever wrote, which is #134's storm \
             with the mechanism present and bypassed.
+            """)
+
+        #expect(
+            try Self.constructionSites(of: "CuratedCriticalTemperatures(")
+                == ["HelperComposition.swift x1"],
+            """
+            the curated critical set is built in one place or in none. A second one is a \
+            second DegradationMemo, so § 3 and the grant path each log the same partial \
+            sensor loss on their own schedule — the collapse HelperComposition.telemetry \
+            claims, one level below where the cache count can see it.
             """)
 
         // Bound to `Bool`s before the expectations, for this file's usual reason: `#expect`

@@ -168,6 +168,38 @@ struct CriticalTemperatureCacheTests {
         #expect(await machine.sightings.coalescedSightings == 1)
     }
 
+    /// The same property on the **success** path, which is where ADR 0010's headline claim
+    /// is actually delivered.
+    ///
+    /// `aBlindCycleLeavesTheGrantPathRefusing` above covers the cycle's `catch`. Its twin on
+    /// the `do` branch — `await sightings.record(.sighted(report))` — had no test at all: an
+    /// adversarial review deleted that one line and the whole suite stayed green, while it is
+    /// the line that makes the grant path free in the daemon's *steady state*. Every other
+    /// test in this file reaches the recording through `record(_:)` by hand, and none of them
+    /// goes near `ThermalEmergency`.
+    ///
+    /// 44 °C is `LeaseFixture.nominalDieTemperatures`' idle band, so the cycle sees a healthy
+    /// machine, records a sighting, and latches nothing.
+    ///
+    /// **Mutation (M2c):** delete `await sightings.record(.sighted(report))` from
+    /// `ThermalEmergency.cycle()`'s `do` branch. Run: red — the grant re-reads a machine § 3
+    /// had just seen, which is one supervisor turn per `acquireLease` and #134 exactly.
+    @Test("A sighted cycle leaves the grant path proving from § 3's own reading")
+    func aSightedCycleLeavesTheGrantPathProving() async throws {
+        let machine = ThermalMachine(stages: [.at(44)])
+
+        await machine.emergency.cycle()
+        _ = try await machine.acquireWithoutEngaging(fans: [0])
+
+        #expect(
+            await machine.sightings.readsIssued == 0,
+            "the grant issued a read of its own on a machine § 3 had just seen")
+        #expect(await machine.sightings.coalescedSightings == 1)
+        #expect(
+            await machine.latch.holding == nil,
+            "44 °C is an idle machine: this scenario is about the cycle's success path")
+    }
+
     // MARK: - The age bound
 
     /// **Acceptance criterion 3.** A reading older than one cycle period is not served.

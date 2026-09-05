@@ -15,7 +15,7 @@ import SMCCore
 /// answer to that is the cycle's own last reading — sharing it is not an approximation of
 /// the answer, it **is** the answer.
 ///
-/// ## The compile error is the point, in both directions
+/// ## The compile error is the point, in every direction
 ///
 /// `CriticalTemperatureCache` conforms to this and **not** to `CriticalTemperatureSensing`;
 /// `CuratedCriticalTemperatures` conforms to that and **not** to this. So handing the cycle
@@ -24,6 +24,12 @@ import SMCCore
 /// cycle old — the staleness this design deliberately accepts on the grant path and must
 /// never accept on the decision path. The second would silently reinstate the storm this
 /// exists to bound.
+///
+/// A third direction was missing until an adversarial review pointed at it, and it is the
+/// one a *future edit* reaches rather than a present call site: `ThermalEmergency` has to
+/// hold the cache in order to write to it, and while it held the concrete type `sighting()`
+/// was one line away from the cycle. `CriticalTemperatureRecording` closes that, so the
+/// cycle can write to the cache and cannot read from it.
 ///
 /// It is `FanStateSensing`'s trick, applied to a read rather than a write: *what a consumer
 /// can be given* is expressed as a type, so the exclusion is a thing the compiler refuses
@@ -49,6 +55,25 @@ protocol SightednessProving: Sendable {
     ///   *remembered* failure. Blindness is the fail-safe answer and it is served from
     ///   memory exactly as a sighting is.
     func sighting() async throws -> CriticalTemperatureReport
+}
+
+/// **Where a real reading is left**, as opposed to where one is asked for.
+///
+/// The other half of `SightednessProving`'s trick, and it is needed for the same reason in
+/// the mirror direction. `ThermalEmergency` holds the cache only to *write* to it: a cycle
+/// decides whether to take a user's fans away, and it must decide on a temperature it
+/// measured itself rather than on one up to `maxAge` old. Holding the concrete
+/// `CriticalTemperatureCache` there left `sighting()` in reach of a future edit, with nothing
+/// but a doc comment between the cycle and the exact outcome `SightednessProving` says must
+/// never happen.
+///
+/// Narrowing the field to this makes that a compile error rather than a thing to remember —
+/// symmetric with the exclusion already enforced on the reading side, and for the same
+/// argument: *what a consumer may be given* is expressed as a type.
+protocol CriticalTemperatureRecording: Sendable {
+
+    /// Remembers what a real read of the curated set produced.
+    func record(_ sighting: CriticalTemperatureSighting) async
 }
 
 /// What one real read of the curated critical set produced — the unit this cache remembers.
@@ -133,7 +158,7 @@ enum CriticalTemperatureSighting: Sendable {
 /// It is not § 3's telemetry, and `SightednessProving` is what stops it being mistaken for
 /// it. The cycle reads for itself, every cycle, and hands the outcome here on its way past —
 /// so this type is *downstream* of every decision § 3 makes and upstream of none.
-actor CriticalTemperatureCache: SightednessProving {
+actor CriticalTemperatureCache: SightednessProving, CriticalTemperatureRecording {
 
     /// How long a sighting is worth serving: **one § 3 cycle period**.
     ///
@@ -238,6 +263,9 @@ actor CriticalTemperatureCache: SightednessProving {
         }
 
         let source = self.source
+        // Stamped **before** the flight, and the only thing this caller's own recording is
+        // allowed to be newer than. See `record(_:unlessSupersededSince:)`.
+        let startedAt = clock.now
         let flight = Task<CriticalTemperatureReport, any Error> {
             try await source.readCriticalTemperatures()
         }
@@ -252,12 +280,42 @@ actor CriticalTemperatureCache: SightednessProving {
 
         do {
             let report = try await flight.value
-            record(.sighted(report))
+            record(.sighted(report), unlessSupersededSince: startedAt)
             return report
         } catch {
-            record(.blind(error))
+            record(.blind(error), unlessSupersededSince: startedAt)
             throw error
         }
+    }
+
+    /// The flight's own outcome, dropped if anything landed on this actor while it was away.
+    ///
+    /// `record(_:)` stamps with `clock.now`, which for a flight is the instant the caller
+    /// **resumes** rather than the instant its read finished — and nothing orders a resumed
+    /// continuation against a fresh call arriving at the same actor. So a flight that began
+    /// before § 3's cycle can resume after it and stamp the older of the two readings as the
+    /// newer one.
+    ///
+    /// That is not merely a stale answer. The reading is then served for a full `maxAge`
+    /// measured from a moment it was never taken at, so the bound ADR 0010 promises — *"at
+    /// most one cycle period old"* — is quietly exceeded, and the direction that matters is
+    /// the unsafe one: a sighting overwriting a blindness the cycle recorded in the interval
+    /// grants leases on a helper that has already been found unable to see.
+    ///
+    /// The test is the flight's **start**, not its finish, because the start is the only
+    /// instant this actor knows the flight to be no fresher than. Anything recorded at or
+    /// after it came from a mechanism that looked at the machine no earlier, so it stays.
+    ///
+    /// `>=` rather than `>`: a record landed at exactly `startedAt` would have been unexpired
+    /// when `sighting()` looked, so it cannot be a leftover this flight was started to
+    /// replace — under any clock whose resolution makes the two instants equal, keeping it is
+    /// the correct answer and dropping the flight's costs one read.
+    private func record(
+        _ sighting: CriticalTemperatureSighting,
+        unlessSupersededSince startedAt: ContinuousClock.Instant
+    ) {
+        if let recorded, recorded.at >= startedAt { return }
+        record(sighting)
     }
 
     /// The recorded outcome, if it is still inside the age bound.

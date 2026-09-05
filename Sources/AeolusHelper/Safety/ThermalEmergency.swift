@@ -69,17 +69,23 @@ actor ThermalEmergency<Plane: FanControlPlane> {
 
     /// Where every cycle's reading is left for the grant path to prove sightedness from.
     ///
-    /// **Write-only from here.** This actor never asks the cache what it holds: a cycle
-    /// decides whether to take a user's fans away, and it must decide on a temperature it
-    /// measured itself rather than on one up to a second old. The type enforces that in the
-    /// other direction too — `CriticalTemperatureCache` is not a `CriticalTemperatureSensing`,
-    /// so it cannot be handed to `telemetry` above by mistake. See `SightednessProving` and
+    /// **Write-only from here, and the type is what makes that true.**
+    /// `CriticalTemperatureRecording` has one method, `record(_:)`, so `sighting()` is not
+    /// reachable from this actor at all. Declaring the concrete `CriticalTemperatureCache`
+    /// here — as this field first did — left the cycle one line away from deciding a thermal
+    /// emergency on a reading up to `maxAge` old, with only a doc comment in the way: exactly
+    /// the outcome `SightednessProving` says must never happen, arrived at from the side the
+    /// original trick did not cover.
+    ///
+    /// The exclusion runs in the other direction too: `CriticalTemperatureCache` is not a
+    /// `CriticalTemperatureSensing`, so it cannot be handed to `telemetry` above by mistake.
+    /// See `SightednessProving`, `CriticalTemperatureRecording`, and
     /// [ADR 0010](../../../docs/ADR/0010-coalesced-supervisor-reads.md).
     ///
     /// **Required, with no default**, for the reason `LeaseAuthority` gives about its latch:
     /// a defaulted cache would compile and record into something no grant reads, which is a
     /// coalescing mechanism that silently does nothing while every test still passes.
-    private let sightings: CriticalTemperatureCache
+    private let sightings: any CriticalTemperatureRecording
     private let writer: SafetyActorWriter<Plane>
     private let leases: LeaseAuthority
     private let latch: ThermalEmergencyLatch
@@ -128,7 +134,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// false at every temperature.
     init(
         telemetry: some CriticalTemperatureSensing,
-        sightings: CriticalTemperatureCache,
+        sightings: some CriticalTemperatureRecording,
         writer: SafetyActorWriter<Plane>,
         leases: LeaseAuthority,
         latch: ThermalEmergencyLatch,

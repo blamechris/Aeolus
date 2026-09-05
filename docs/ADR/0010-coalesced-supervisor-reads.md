@@ -148,6 +148,20 @@ The mechanism:
   `FanStateSensing`'s trick applied to a read: what a consumer may be given is expressed as a
   type, so the exclusion is a thing the compiler refuses rather than a thing a future edit
   must remember.
+- **Written through a third.** `ThermalEmergency` has to hold the cache in order to record
+  into it, and while it held the concrete type `sighting()` was one line away from the cycle —
+  which is the staleness this ADR accepts on the grant path arriving on the decision path by a
+  route the trick above does not cover. `CriticalTemperatureRecording` has one method,
+  `record(_:)`, so the cycle can write to the cache and **cannot read from it**.
+- **A flight never overwrites what landed while it was away.** `sighting()` stamps its outcome
+  when the caller *resumes*, not when its read finished, and nothing orders a resumed
+  continuation against a fresh `record(_:)` on the same actor — so without a guard a flight
+  that began before § 3's cycle can stamp the older of two readings as the newer one, and a
+  sighting can replace a blindness the cycle recorded in the interval. The recorded stamp is
+  compared against the flight's own start instead, which is the only instant the actor knows
+  the flight to be no fresher than. Dropping the flight's reading costs one later read; keeping
+  it would serve a reading for a full `maxAge` measured from a moment it was never taken at,
+  which is outside the bound below rather than at its edge.
 - **A cold cache, or a stopped supervisor, degrades to one real read per grant** — still
   single-flight. Nothing here can answer "sighted" without evidence.
 
@@ -156,6 +170,16 @@ The mechanism:
 one would be strictly worse in the cache than at the seam: it would be replayed as a
 cancellation to *other* clients, none of whom was cancelled, for up to a cycle. Not
 recording it costs one real read on the next grant, which is the fail-safe direction.
+
+The single-flight join is the **residual case** of that same argument, and it is named here so
+the next reader need not re-derive it: a joiner waits on the starter's task, so if the flight
+throws `CancellationError` every joiner is handed one it did not cause. It cannot fire today —
+the flight is an unstructured `Task`, so a cancelled grant does not cancel it, and nothing
+under `source` throws a cancellation of its own, `SMCReadScheduler`'s wait for a turn being
+deliberately uncancellable. It is bounded even if it does: one flight rather than a cycle, and
+nothing is recorded, so the next caller reads. Pinned by
+`CriticalTemperatureCacheFlightTests.aJoinerReceivesTheFlightsCancellation`, which will go red
+the day a conformer beneath `source` starts throwing one.
 
 ## Alternatives considered
 
@@ -178,9 +202,10 @@ recording it costs one real read on the next grant, which is the fail-safe direc
 - **`LeaseAuthority` no longer accepts a `CriticalTemperatureSensing`.** Every construction
   site supplies a `SightednessProving`. That is a compile error rather than a behaviour
   change, which is the point of the split.
-- **`ThermalEmergency` takes a required `CriticalTemperatureCache`.** Required rather than
+- **`ThermalEmergency` takes a required `CriticalTemperatureRecording`.** Required rather than
   defaulted, for the reason `LeaseAuthority` gives about its latch: a defaulted one would
-  record into something no grant reads, and every test would still pass.
+  record into something no grant reads, and every test would still pass. The parameter is the
+  narrow protocol rather than the cache, so the cycle cannot read what it writes.
 - **No XPC version bump.** Nothing here crosses the boundary; `AeolusXPCVersion` stays 1.
 - **The counter for #133 exists but is not surfaced.** `CriticalTemperatureCache` counts
   coalesced sightings and reads issued; E5.4f's `SchedulerObserving` hook is where they
@@ -199,6 +224,7 @@ recording it costs one real read on the next grant, which is the fail-safe direc
 | Blindness persists for at least one cycle | `docs/SMC-RESEARCH.md`: read failure on this machine is a stale `io_connect_t` or a powered-down cluster, not a single-sample glitch | A sub-cycle blindness flicker is missed by the grant path. Fail-safe direction only if the flicker is *toward* sighted; a flicker toward blind is now recorded and refuses |
 | Outstanding supervisor reads, not read length, is the cost | Derived from `SMCReadScheduler`'s ~0.17 ms/key and the 64-key turn, same basis as #134's N=12 figure | Unchanged conclusion — coalescing reduces both |
 | At most one watchdog read is outstanding | #126 made the sweep sequential, pinned by `ReclamationWatchdogTests` | *N* grows again and D1's arithmetic needs redoing; D3 is unaffected |
+| `ContinuousClock` advances across system sleep | [ADR 0007](0007-safety-composition.md), documented but **unverified** on `Mac16,5` | A sighting taken before sleep reads as unexpired on wake, so the bound degrades from one cycle period to one cycle period *of awake time*. Mitigated by the supervisor's first post-wake cycle overwriting it, and the direction is the unsafe one only while that cycle has not yet run. ADR 0007 records the same assumption for the lease TTL; this ADR is the first to rest a **safety** bound on it. [#103](https://github.com/blamechris/Aeolus/issues/103) owns sleep/wake |
 
 Every hardware observation here is `Mac16,5` on macOS 26.6.2, and the 31.3 ms contention
 figure is the only measured one — the 29 ms at N=3 is derived from the pinned formula. No
