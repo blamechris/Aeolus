@@ -182,7 +182,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// automatic control, so the ledger's claim that the system holds it is now false, and
     /// a stale `true` there would report a fan as lost that a client is about to command.
     func manualControlEngaged(_ fan: CommandableFan) async {
-        held[fan.index] = HeldFan(permit: fan)
+        held[fan.index] = HeldFan()
         if await ledger.clearReclaimed(fanAt: fan.index) {
             log.reclamationResolved(fan: fan.index)
         }
@@ -455,7 +455,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     ///
     /// ## It reads a fresh envelope, and that is deliberate
     ///
-    /// Not the permit taken when the fan came off automatic control. Permits do not expire
+    /// Not the permit taken when the fan came off automatic control — and `HeldFan` keeps no
+    /// permit at all, so there is not one to reach for. Permits do not expire
     /// — `FanWriteAuthorisation.swift` is explicit that freshness is *"policy held by
     /// review, not by the type"* — and § 3 depends on that, because its maximum write has
     /// to be available while the machine is above ceiling and reading may be what has
@@ -503,7 +504,6 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             log.reclamationFanReleasedMidExamination(fan: index, during: "its envelope read")
             return
         }
-        held[index]?.permit = permit
 
         do {
             // Re-engage before re-commanding. The system took this fan back, so it is on
@@ -756,10 +756,19 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     // MARK: - Per-fan state
 
     /// What this mechanism knows about one fan it is watching.
+    ///
+    /// **No write permit is kept here, deliberately.** One was, and it was read nowhere: a
+    /// `CommandableFan` stored at registration and overwritten by every envelope read. The
+    /// hazard was not the dead field, it was the sentence attached to it — *"replaced by
+    /// every successful re-assert, so it is never older than the last envelope actually
+    /// read"* — which is both inaccurate on its own terms and an argument, handed to the next
+    /// editor, for deleting `reassert(_:fanAt:attempt:)`'s fresh `readEnvelope(ofFan:)` and
+    /// passing the stored permit instead. That would remove the bounds check the branch
+    /// exists to perform and the "no envelope → restore, not command" failure path with it.
+    /// ADR 0008's context is the same defect: a comment telling an editor that load-bearing
+    /// code was redundant. The field is gone rather than re-documented, because there is
+    /// nothing to reuse if nothing is kept.
     private struct HeldFan: Sendable {
-        /// The write permit. Replaced by every successful re-assert, so it is never older
-        /// than the last envelope actually read.
-        var permit: CommandableFan
         /// The step last put on the wire, or `nil` when nothing has been commanded yet.
         var commanded: CommandedTarget?
         /// Cycles in a row that could not read this fan. Reset by any successful read.
