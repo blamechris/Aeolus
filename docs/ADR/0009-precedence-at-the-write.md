@@ -153,8 +153,10 @@ mechanism merged and a reader will otherwise assume the decision and the tree ag
 decision above is normative and is left as the #136 review settled it; this section is the
 audit against the tree, and where the two disagree the disagreement is recorded here rather
 than by quietly editing the decision down to what shipped.** Every `file:line` below was read
-against `main` at `456124f` — the base this branch merges onto — not taken from #136's
-description.
+against `main` at `456124f`, not taken from #136's description; the six files they land in are
+unchanged since, so a reader can check them against the tip. Naming the sha is the point — the
+citations in the version of this section written at `c913448` had already drifted by one
+merge.
 
 **Landed.** `currentRuling()`
 (`Sources/AeolusHelper/Safety/ReclamationWatchdog.swift:289`) reads the latch and asks
