@@ -158,13 +158,13 @@ actor ThermalEmergencyLatch {
 
     /// Releases the latch, and with it the key set that qualified the episode.
     ///
-    /// **`ThermalEmergency` does not call this**, and neither should any future mechanism
-    /// that decided to release across a suspension point: use `release(ifStill:)`, which
-    /// cannot clear an episode other than the one the decision was made about. This form
-    /// stays because the transition contract above — release reports the transition, not the
-    /// state — is a property of the latch worth testing on its own, and because a scenario
-    /// scripting an episode boundary needs to end an episode without pretending to have
-    /// judged it.
+    /// **Nothing in `Sources/` calls this** — `ThermalEmergency.cycle()` is the only thing
+    /// that clears the latch and it does so through `release(ifStill:)`, which cannot clear
+    /// an episode other than the one the decision was made about. Neither should any future
+    /// mechanism that decided to release across a suspension point. This form stays for the
+    /// tests: the transition contract above — release reports the transition, not the state
+    /// — is a property of the latch worth asserting on its own, and a scenario scripting an
+    /// episode boundary needs to end an episode without pretending to have judged it.
     ///
     /// - Returns: `true` when this call released a latch that was engaged. `false` when it
     ///   was already clear.

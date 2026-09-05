@@ -244,9 +244,10 @@ struct SafetyLog: Sendable {
     ///
     /// `LeaseExpirySupervisor` logs its own stop because "a lease enforcer that went quiet
     /// without saying so would be the worst silent failure in the project". The same is
-    /// true here and more so: `ThermalEmergency.cycle()` is the **only** caller of
-    /// `ThermalEmergencyLatch.release()` anywhere in `Sources/`, so a loop that stops while
-    /// latched leaves the latch engaged for the life of the process — `acquireLease`
+    /// true here and more so: nothing in `Sources/` clears `ThermalEmergencyLatch` except
+    /// `ThermalEmergency.cycle()`, and it clears it through `release(ifStill:)` — the
+    /// no-argument `release()` has no caller there at all. So a loop that stops while
+    /// latched leaves the latch engaged for the life of the process: `acquireLease`
     /// refusing `.thermalEmergencyActive` forever and every snapshot reporting a thermal
     /// emergency that is no longer happening, which is `CLAUDE.md` rule 6 reached through a
     /// lifecycle event. `stop()` deliberately does not clear the latch (releasing § 3 on a

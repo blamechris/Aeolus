@@ -247,6 +247,13 @@ override engages, writes maximum in one step, restores, revokes the whole lease,
 refuses the next `acquireLease` while latched. `ThermalSupervisorTests` drives the same
 mechanism through its own loop.
 
+*Tested by:* `ThermalEmergencyStalenessTests` covers the same mechanism across a suspension
+point, where the facts a cycle gathered stop being true before it acts on them: the latch is
+never released against a temperature report older than the episode holding, the qualifying
+key set that arms the degraded-view guard belongs to the episode that is holding rather than
+one that has ended, a release clears the episode it was judged against and no other, and a
+cycle that could not read at all still revokes whatever lease it finds.
+
 **What the user is actually told.** `isThermalEmergencyActive` on the snapshot, which the
 app renders at 1 Hz, and a `.fault` line in the log. That is the whole of it: a root daemon
 cannot post a user notification, so a `fanctl`-held lease with no app running gets no visual
