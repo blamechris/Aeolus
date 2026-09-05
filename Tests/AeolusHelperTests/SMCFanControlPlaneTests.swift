@@ -67,6 +67,30 @@ struct SMCFanControlPlaneTests {
         }
     }
 
+    /// The recovery verb refuses, and refuses with **its own case**.
+    ///
+    /// `.reconnectNotBuilt`'s entire justification is that a reconnect that was never built
+    /// and a reconnect that failed send `ReclamationWatchdog` down the same branch, and an
+    /// operator reading `log show` is *"entitled to know which happened"*. Nothing asserted
+    /// it: `everyWriteVerbRefuses` did not cover this verb, `reconnectNotBuilt` appeared
+    /// nowhere under `Tests/`, and `ScriptedControlPlane.reconnect()`'s refused branch
+    /// throws a `.readFailed` of its own — so the value this build actually ships was never
+    /// observed by a test at all.
+    ///
+    /// The failure that leaves open is quiet: someone stubbing this to return successfully
+    /// would put a `.notice` line in front of an operator saying the helper reconnected to
+    /// the SMC, on a build with no reconnect in it, with the suite green.
+    ///
+    /// Asserted apart from `everyWriteVerbRefuses` because it is not a write verb and does
+    /// not throw that suite's `.controlPathNotBuilt`. Folding it in would have meant relaxing
+    /// that test's error expectation, which is the assertion doing the work there.
+    @Test("Reconnecting refuses with the case that says the reconnect is what is missing")
+    func reconnectRefusesAsUnbuilt() async throws {
+        await #expect(throws: FanControlPlaneError.reconnectNotBuilt) {
+            try await Self.plane([:]).reconnect()
+        }
+    }
+
     // MARK: - Reads are subset reads
 
     /// ADR 0006 puts the helper's 1 Hz snapshot on the same single SMC connection, and a
