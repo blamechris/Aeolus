@@ -830,16 +830,44 @@ extension SafetyLog {
     /// indefinitely is not the safer option — the kernel would sleep the machine on its own
     /// timeout and this process would learn nothing — so the helper gives up the wait
     /// deliberately and says so, which is the difference between a bound and a hang.
-    func allowingSleepWithHandbackOutstanding(after budget: Duration) {
+    ///
+    /// **This line named § 1's TTL as the backstop until a review showed it could not be.**
+    /// `handBackEveryFan()` empties the lease table before it restores, so by the time this
+    /// line can be written there is no lease left to expire. Corrected in place rather than
+    /// quietly rewritten: an operator reading a root daemon's log on a hot laptop is owed the
+    /// mechanism that will actually act, and there is no worse place for a comforting name.
+    /// `SystemPowerLimits.acknowledgementBudget` carries the full account.
+    ///
+    /// - Parameters:
+    ///   - budget: how long the handback was waited for before the wait was given up.
+    ///   - abandoned: the fans recorded as abandoned handbacks by decision D17, named rather
+    ///     than counted so the line identifies which fan to go and look at.
+    func allowingSleepWithHandbackOutstanding(
+        after budget: Duration, abandoning abandoned: Set<Int>
+    ) {
         emit(
             .fault,
             """
             Allowing the system to sleep with the handback still outstanding after \
-            \(budget). A fan may cross the sleep still under manual control; § 1's TTL is \
-            the backstop, and docs/SAFETY.md § 4 records what that bounds if ContinuousClock \
-            does not advance while the machine is asleep.
+            \(budget). Fan(s) \(Self.describeFans(abandoned)) may cross the sleep still under \
+            manual control, and are now refused a new lease durably. What can still act: \
+            the parked restore may yet land, § 3 takes any such fan to full scale if it \
+            comes back above the thermal ceiling, and startup reconciliation returns it to \
+            automatic at the next helper start. § 1's TTL cannot — this handback dropped \
+            every lease before it wrote. See docs/SAFETY.md § 4 and docs/RECOVERY.md.
             """
         )
+    }
+
+    /// Fan indices for a log line, or a phrase for the empty set.
+    ///
+    /// "none" rather than an empty list, because the empty case is meaningful here: the
+    /// budget expired with nothing outstanding at the lease core, which means whatever is
+    /// parked is the machine-wide keystone rather than a fan this helper held.
+    private static func describeFans(_ fans: Set<Int>) -> String {
+        fans.isEmpty
+            ? "none (the keystone restore is what is outstanding)"
+            : fans.sorted().map(String.init).joined(separator: ", ")
     }
 
     /// The machine woke, and the helper wrote nothing.
@@ -864,6 +892,26 @@ extension SafetyLog {
     /// `.fault`, because § 4 is now absent rather than degraded: nothing will hand the fans
     /// back before a sleep, and the TTL — which counts time asleep only if `ContinuousClock`
     /// advances across it — is all that is left.
+    /// This process was never given anything to hear the system's power events through.
+    ///
+    /// `.fault`, and the same level as a refused registration deliberately: the consequence
+    /// is identical — nothing returns the fans to automatic control before a sleep — and a
+    /// quieter level would make the *absence* of § 4 the one state in this mechanism that
+    /// does not announce itself. The sentence differs because the remedy does: a refusal is
+    /// the system's answer, and this is the composition root's.
+    func noSystemPowerObserver() {
+        emit(
+            .fault,
+            """
+            This helper was composed with no system power observer, so § 4 is absent rather \
+            than degraded: nothing will return the fans to automatic control before this \
+            machine sleeps. Every shipped daemon is built by HelperComposition.production, \
+            which supplies one; a build reaching this line is a wiring fault, not a machine \
+            that refused.
+            """
+        )
+    }
+
     func systemPowerObserverUnavailable(_ error: any Error) {
         emit(
             .fault,

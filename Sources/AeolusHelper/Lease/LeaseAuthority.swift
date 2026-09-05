@@ -128,6 +128,27 @@ actor LeaseAuthority {
     /// enough to clear a refusal set by three that did.
     private var restoreAbandoned: Set<Int> = []
 
+    /// Whether `docs/SAFETY.md` § 4 has closed this table for a sleep that is under way.
+    ///
+    /// § 4 empties the table and hands every fan back in the window `.willSleep` opens, and
+    /// nothing in that sequence stops a *new* lease being taken while it runs. The hazard is
+    /// the one `acquireLease` already documents about its own straight-line region, arriving
+    /// from outside: a request parked on `refuseIfBlind`'s 34-key read resumes after § 4 has
+    /// emptied the table and restored, finds an empty table and no fan mid-handback, and
+    /// engages manual control as the machine stops running this process. The lease then
+    /// crosses the sleep with nothing having handed its fan back, which is the exact failure
+    /// § 4 exists to prevent, reached through the one door it does not close.
+    ///
+    /// **Set before the teardown and cleared on `.didWake`.** Clearing it is not a write —
+    /// § 4's "after wake: nothing" is about the firmware, and this touches no fan — so the
+    /// wake branch stays the absence it is documented to be.
+    ///
+    /// A helper that hears `.willSleep` and never hears the wake refuses every lease for the
+    /// life of the process. That is the fail-safe direction and is deliberately not guarded
+    /// against: refusing manual control is safe, and a lease taken on a machine this process
+    /// believes is asleep is not.
+    private var sleepSeal = false
+
     init(
         enumeration: some FanEnumerating,
         restorer: some FanRestoring,
@@ -225,6 +246,19 @@ actor LeaseAuthority {
         guard abandoned.isEmpty else {
             log.refusedAbandonedHandback(connection, fans: Set(abandoned))
             throw AeolusXPCFault.manualControlUnavailable(reason: .restoreToAutomaticFailed)
+        }
+        // Second, by the same durability ordering: the seal lifts on the next `.didWake`,
+        // where an abandoned handback never lifts. A client told `.systemSleeping` retries
+        // after the wake — and if this fan's handback was also abandoned, that retry has to
+        // land on the durable answer rather than being told to wait for a wake that has
+        // already happened.
+        //
+        // Above both lease-table refusals, though, and that is not a durability judgement:
+        // neither of those is worth telling a client about a machine that is going to stop
+        // running this process before it can act on the answer.
+        guard !sleepSeal else {
+            log.refusedSystemSleeping(connection)
+            throw AeolusXPCFault.manualControlUnavailable(reason: .systemSleeping)
         }
         // The durable refusal is checked first, deliberately. Both can apply at once — a
         // dying holder's fan is mid-handback while a second client legitimately holds
@@ -482,6 +516,51 @@ actor LeaseAuthority {
         for entry in dropped {
             await restore(entry.fanIndices, because: .allLeasesDropped)
         }
+    }
+
+    // MARK: - The sleep window
+
+    /// Refuses every new lease until the machine wakes. `docs/SAFETY.md` § 4's first act.
+    ///
+    /// Synchronous, and called *before* the teardown rather than after it, so there is no
+    /// instant at which the table is empty and unsealed — which is the whole window. See
+    /// `sleepSeal`.
+    func sealForSleep() {
+        guard !sleepSeal else { return }
+        sleepSeal = true
+        log.sealedForSleep()
+    }
+
+    /// Reopens acquisition after a wake. Touches no fan and issues no write.
+    func unsealAfterWake() {
+        guard sleepSeal else { return }
+        sleepSeal = false
+        log.unsealedAfterWake()
+    }
+
+    /// Records every handback still in flight as one the helper stopped waiting for.
+    ///
+    /// § 4's budget path, and the reason it is here rather than in `SystemPowerResponder`:
+    /// `releasing` is this actor's own, and the set of fans whose restore has been *issued
+    /// and has not come back* exists nowhere else. When § 4 gives up its wait, those fans are
+    /// in a mode nothing has confirmed and this process has stopped tracking them — which is
+    /// precisely `restoreAbandoned`'s meaning, arrived at by a bound expiring rather than by
+    /// a restorer spending its attempts.
+    ///
+    /// **Additive and idempotent**, like every other write to that set. The parked restore
+    /// may still land afterwards; the refusal it leaves behind is deliberately not undone by
+    /// that, for the reason `restoreAbandoned` gives at length — the helper asked, was not
+    /// answered in the window it had, and `CLAUDE.md` rule 6 forbids granting a lease over a
+    /// fan whose mode nothing has confirmed. [#189](https://github.com/blamechris/Aeolus/issues/189)
+    /// owns clearing it.
+    ///
+    /// - Returns: the fans newly or already recorded, so § 4 can name them in its own log
+    ///   line rather than asserting that some existed.
+    @discardableResult
+    func abandonOutstandingHandbacks() -> Set<Int> {
+        let outstanding = Set(releasing.keys)
+        restoreAbandoned.formUnion(outstanding)
+        return outstanding
     }
 
     // MARK: - State, for the control plane and for tests

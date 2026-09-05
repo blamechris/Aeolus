@@ -26,9 +26,36 @@ enum SystemPowerLimits {
     /// keeps the acknowledgement well inside the kernel's window with the decision this
     /// helper's own, rather than taken from it by a timeout it cannot see.
     ///
-    /// Overrunning it is **not** a safety failure, and that is why acknowledging anyway is
-    /// the right answer: § 1's TTL is the backstop, on a clock that runs whether or not
-    /// `ContinuousClock` advances across sleep — see `docs/SAFETY.md` § 4.
+    /// **What covers the fan when the budget wins, stated exactly, because the obvious
+    /// answer is wrong.** This paragraph said "§ 1's TTL is the backstop" until a review
+    /// showed it could not be: `handBackEveryFan()` calls `releaseEveryLease()` first, which
+    /// empties the table *synchronously*, so by the time the budget can fire there is no
+    /// lease left to expire and no TTL to expire it. The sentence named a mechanism the same
+    /// function had already dismantled. Recorded in place rather than rewritten, because a
+    /// justification nobody re-reads is how a safety claim outlives its subject.
+    ///
+    /// The real cover, in the order it can act:
+    ///
+    /// - **The parked restore may still land.** Nothing cancels it; § 4 stops *waiting*, and
+    ///   `BoundedFanRestorer` keeps attempting inside a task that does not inherit
+    ///   cancellation. On a machine that only sleeps slowly, the write arrives.
+    /// - **Every fan still outstanding is recorded as an abandoned handback before the
+    ///   acknowledgement** — `LeaseAuthority.abandonOutstandingHandbacks()`, decision D17 on
+    ///   this PR. That is the durable `.restoreToAutomaticFailed` refusal, so the fan cannot
+    ///   be leased again on a machine that never confirmed it went back to automatic.
+    /// - **§ 3 acts above the ceiling.** Its registry entry is deliberately retained across
+    ///   the handback, so a fan that crossed the sleep in manual and comes back hot is taken
+    ///   to full scale by the thermal override. Above the ceiling only — it is not a restore.
+    /// - **Startup reconciliation at the next helper start**
+    ///   ([#164](https://github.com/blamechris/Aeolus/issues/164)), which is what actually
+    ///   returns such a fan to automatic. It is not built yet, and until it is, a fan in this
+    ///   state stays manual until something else moves it — `docs/RECOVERY.md` is the user's
+    ///   route out.
+    ///
+    /// Acknowledging anyway is still the right answer, and the argument is unchanged by the
+    /// correction: holding the sleep open buys nothing, because the kernel sleeps the machine
+    /// on its own timeout and this process learns less by being cut off than by giving up
+    /// deliberately and writing the fault line.
     static let acknowledgementBudget: Duration = .seconds(5)
 }
 
@@ -56,13 +83,20 @@ actor SleepAcknowledgement {
     }
 
     private let notification: SystemPowerNotification
+    private let leases: LeaseAuthority
     private let budget: Duration
     private let log: SafetyLog
 
     private var settledOutcome: Outcome?
 
-    init(_ notification: SystemPowerNotification, budget: Duration, log: SafetyLog) {
+    init(
+        _ notification: SystemPowerNotification,
+        leases: LeaseAuthority,
+        budget: Duration,
+        log: SafetyLog
+    ) {
         self.notification = notification
+        self.leases = leases
         self.budget = budget
         self.log = log
     }
@@ -77,6 +111,18 @@ actor SleepAcknowledgement {
     /// stops running it, and `os_log` on the far side of that is a line that may not survive
     /// to be read — which would leave the budget-expiry fault, the one line § 4 has that says
     /// the fans may not have been handed back, as the least likely of all to be recorded.
+    ///
+    /// **The abandonment is recorded before the acknowledgement too, and for a stronger
+    /// reason than the log line's.** Decision D17: a fan whose handback has not landed when
+    /// the budget fires is a fan in a mode nothing confirmed, and `restoreAbandoned` is the
+    /// durable refusal that says so. Recording it after the acknowledgement would put the one
+    /// piece of state that survives the sleep on the far side of the instant the machine
+    /// stops running this process — the same argument, applied to something a reader cannot
+    /// merely miss.
+    ///
+    /// It sits inside the once-only guard rather than in the budget task, so it happens on
+    /// the path that actually answers the system and on no other: a budget that fires while
+    /// the handback is completing must not record an abandonment for a fan that went back.
     func acknowledge(_ outcome: Outcome) async {
         guard settledOutcome == nil else { return }
         settledOutcome = outcome
@@ -85,7 +131,8 @@ actor SleepAcknowledgement {
         case .handedBack:
             log.allowingSleepAfterHandback()
         case .budgetExpired:
-            log.allowingSleepWithHandbackOutstanding(after: budget)
+            let abandoned = await leases.abandonOutstandingHandbacks()
+            log.allowingSleepWithHandbackOutstanding(after: budget, abandoning: abandoned)
         }
 
         await notification.acknowledge()
@@ -114,6 +161,33 @@ actor SleepAcknowledgement {
 ///   of the first: the keystone "consumes no bounds, no clamp, no sensor reading, no lease and
 ///   no prior call of any kind", so a fan left in manual by something this process no longer
 ///   has a lease for is still covered.
+///
+/// **The lease teardown is first, and that ordering is the one a test pins.** On a wedged
+/// connection the keystone never returns, so a version that issued it first would sleep the
+/// machine with every lease still live and every fan still in manual — and on a healthy one
+/// it would clear `F<n>Md` underneath § 5, whose next cycle reads a mode key it did not
+/// expect as a reclamation and re-asserts on the way into sleep.
+/// `SystemPowerTests.aWedgedHandbackTearsTheLeaseDownFirstAndRecordsTheFanAsAbandoned`
+/// asserts `leaseCount == 0` from **inside** the acknowledgement, so a keystone that never
+/// returns cannot precede the teardown.
+///
+/// ## Acquisition is sealed for the duration
+///
+/// `LeaseAuthority.sealForSleep()` runs before the teardown and `unsealAfterWake()` on
+/// `.didWake`. Without it the two halves above leave a door open that everything else here
+/// closes: a request already parked on `refuseIfBlind`'s 34-key read resumes after the table
+/// is emptied, sees no lease and no fan mid-handback, and engages manual control as the
+/// machine stops running this process. Clearing the seal on wake writes nothing.
+///
+/// ## What the lease lines say in `log show`
+///
+/// § 4's teardown goes through `releaseEveryLease()`, so each fan is logged with
+/// `FanRestoreCause.allLeasesDropped` — the same attribution § 7's panic verb uses, because
+/// it is the same verb. What tells them apart is this section's own `SafetyLog` line
+/// (*"System will sleep: dropping every lease…"*) immediately above them. A dedicated
+/// `FanRestoreCause` case would make the `LeaseLog` line self-describing and is deliberately
+/// not added here: it would be a second name for one mechanism, which is the thing
+/// `revokeEveryLease(because:)`'s own doc argues against.
 ///
 /// ## Wake: nothing, and the absence is the feature
 ///
@@ -175,12 +249,27 @@ struct SystemPowerResponder<Plane: FanControlPlane>: Sendable {
         log.systemPowerObserverUnavailable(error)
     }
 
+    /// Reports that this graph was composed with no seam to hear the system through.
+    ///
+    /// The third of the three states `HelperComposition.observeSystemPower()`'s doc claims are
+    /// distinguishable, and the one that had no line: a `nil` observer returned silently, so a
+    /// helper built without § 4 read exactly like one whose registration succeeded. It is the
+    /// same consequence as `couldNotObserve(_:)` — nothing hands the fans back before a sleep
+    /// — reached by a different route, so it is the same level with a different sentence.
+    func wasGivenNothingToObserve() {
+        log.noSystemPowerObserver()
+    }
+
     /// Acts on one power event.
     func respond(to notification: SystemPowerNotification) async {
         switch notification.event {
         case .willSleep:
             await allowSleepAfterHandback(notification)
         case .didWake:
+            // Clearing the seal is not a write and does not make this branch one. It touches
+            // no fan, issues no read, and reaches no plane — it reopens acquisition, which is
+            // the only thing about a wake this helper acts on. See `LeaseAuthority.sleepSeal`.
+            await leases.unsealAfterWake()
             log.wokeWithoutWriting()
         }
     }
@@ -205,8 +294,14 @@ struct SystemPowerResponder<Plane: FanControlPlane>: Sendable {
     private func allowSleepAfterHandback(_ notification: SystemPowerNotification) async {
         log.sleepIsComing(budget: acknowledgementBudget)
 
+        // Before anything is torn down, so there is no instant at which the table is empty
+        // and still open. A request parked on `refuseIfBlind`'s 34-key read that resumes into
+        // the window would otherwise find an empty table, take a lease, and engage manual
+        // control on a machine that is about to stop running this process.
+        await leases.sealForSleep()
+
         let acknowledgement = SleepAcknowledgement(
-            notification, budget: acknowledgementBudget, log: log)
+            notification, leases: leases, budget: acknowledgementBudget, log: log)
 
         let budget = Task { [clock, acknowledgementBudget, acknowledgement] in
             try await clock.sleep(until: clock.now.advanced(by: acknowledgementBudget))

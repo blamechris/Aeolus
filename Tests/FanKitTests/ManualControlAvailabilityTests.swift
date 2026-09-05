@@ -32,6 +32,7 @@ struct ManualControlAvailabilityTests {
             .unavailable(.selfRenewalNotBuilt),
             .unavailable(.releaseInProgress),
             .unavailable(.restoreToAutomaticFailed),
+            .unavailable(.systemSleeping),
             .unavailable(.noThermalTelemetry),
             .unavailable(.supervisorBlind),
             .unavailable(.unknown("somethingFromAFutureHelper")),
@@ -87,6 +88,7 @@ struct ManualControlAvailabilityTests {
             .selfRenewalNotBuilt,
             .releaseInProgress,
             .restoreToAutomaticFailed,
+            .systemSleeping,
             .noThermalTelemetry,
             .supervisorBlind,
         ]
@@ -118,6 +120,9 @@ struct ManualControlAvailabilityTests {
         #expect(
             ManualControlAvailability.Reason.restoreToAutomaticFailed.wireValue
                 == "restoreToAutomaticFailed")
+        #expect(
+            ManualControlAvailability.Reason.systemSleeping.wireValue
+                == "systemSleeping")
         #expect(
             ManualControlAvailability.Reason.noThermalTelemetry.wireValue
                 == "noThermalTelemetry")
