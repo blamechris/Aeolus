@@ -16,7 +16,11 @@ import Testing
 ///
 /// Its own file rather than another block in that suite: those tests are about what one
 /// snapshot says, and this one is about what two of them do to each other.
-@Suite("ReadOnlyFanAuthority discovery, concurrently")
+/// `.timeLimit` is the backstop the rendezvous below needs, for `LeaseTestDoubles`' reason:
+/// `waitUntilSubsetReads(reach:)` waits without a deadline because the arrival it waits for
+/// is a precondition rather than a race, so an arrival that never comes must be caught here
+/// rather than by a stopwatch inside the test.
+@Suite("ReadOnlyFanAuthority discovery, concurrently", .timeLimit(.minutes(1)))
 struct ReadOnlyFanAuthorityDiscoveryTests {
 
     private static let log = HelperLog(
@@ -75,13 +79,19 @@ struct ReadOnlyFanAuthorityDiscoveryTests {
             group.addTask { try await authority.snapshot() }
             group.addTask { try await authority.snapshot() }
 
-            // **A precondition that must hold**, so its result is asserted. Each caller
-            // issues three subset reads before it can reach discovery — `FNum`, the batch of
-            // fan keys, and this fan's `F0Md`, the last of which #148 added — so six is
-            // "both callers have arrived", where the four this once waited for was reachable
-            // with one caller done and the other one read in. Waiting rather than sleeping on
-            // faith.
-            #expect(await Self.waitUntil { await provider.subsetReadCount >= 6 })
+            // **A precondition that must hold**, so it is a rendezvous with no deadline at
+            // all. Each caller issues three subset reads before it can reach discovery —
+            // `FNum`, the batch of fan keys, and this fan's `F0Md`, the last of which #148
+            // added — so six is "both callers have arrived", where the four this once waited
+            // for was reachable with one caller done and the other one read in.
+            //
+            // It was a 500 ms wall-clock poll until
+            // [#192](https://github.com/blamechris/Aeolus/issues/192), which is a bet on
+            // scheduling rather than a synchronisation: the budget bought no correctness, and
+            // it collected a false red twice on a loaded CI runner while every local run
+            // passed. If the arrival genuinely never happens the suite's `.timeLimit` says
+            // so, which is a truer failure than an expectation about a stopwatch.
+            await provider.waitUntilSubsetReads(reach: 6)
             // **A grace period that must expire**, so its result is deliberately discarded.
             // It gives a second walk every chance to start: a build with the defect reaches
             // `readAllCount == 2` here, before anything is released, and the fixed build burns
