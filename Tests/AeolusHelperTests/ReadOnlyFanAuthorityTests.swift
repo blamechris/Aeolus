@@ -26,6 +26,7 @@ struct ReadOnlyFanAuthorityTests {
     ) -> ReadOnlyFanAuthority {
         ReadOnlyFanAuthority(
             provider: provider,
+            fanMode: SnapshotFanModeReads(provider: provider),
             log: Self.log,
             thermalEmergency: thermalEmergency,
             reclamation: reclamation,

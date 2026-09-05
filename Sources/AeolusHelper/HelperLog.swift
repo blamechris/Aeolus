@@ -177,6 +177,27 @@ struct HelperLog: Sendable {
         )
     }
 
+    // MARK: - Fans
+
+    /// `F<n>Md` did not answer for one fan, so the snapshot could not say who owns it.
+    ///
+    /// The wire has no way to report "not known" at protocol version 1 — see
+    /// `ReadOnlyFanReport.controlMode(_:)` — so this line is the only place the gap is
+    /// visible. It is `error` rather than `info` for that reason: what reaches the client is
+    /// a fallback, and an operator diagnosing "why does Aeolus say this fan is automatic"
+    /// needs to find this. Expected on every Intel Mac, which expresses fan mode as a
+    /// bitmask rather than as this key.
+    func fanModeUnreadable(fanIndex: Int, reason: String) {
+        log.error(
+            """
+            Fan \(fanIndex, privacy: .public)'s mode key could not be read \
+            (\(reason, privacy: .public)). This snapshot reports it as automatic, which is a \
+            fallback and not an observation: the wire has no way to say "not known" at \
+            protocol version 1.
+            """
+        )
+    }
+
     // MARK: - Lifecycle
 
     func listening(machServiceName: String, build: String) {

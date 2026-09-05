@@ -53,6 +53,32 @@ struct HelperCompositionTests {
             "the scheduler is no longer the thing holding the real provider")
     }
 
+    /// The mode read goes through the **same** reader as the fans beside it, at snapshot
+    /// priority.
+    ///
+    /// Two ways this line can regress and neither shows up at runtime here. Dropping the
+    /// argument is impossible — the initialiser requires it — but wiring it to a *second*
+    /// source would make one snapshot a composite of two connections, and wiring it to an
+    /// `SMCFanControlPlane` would issue a client's 1 Hz reporting at `.supervisor`, which is
+    /// the priority § 3's safety cycle is meant to have to itself. `main()` ends in
+    /// `dispatchMain()` and has no seam to drive, so this is asserted at the source for the
+    /// reason the whole suite exists.
+    ///
+    /// **Mutation:** change `main()` to
+    /// `fanMode: SnapshotFanModeReads(provider: SMCSensorProvider())`. Run: red here — and
+    /// red in `nothingInTheHelperReadsAroundTheGate` too, which is the pair working.
+    @Test("The mode read is wired to the scheduler's snapshot reader, like the fan read")
+    func theModeReadTakesTheSameTurnsAsTheFanRead() throws {
+        let source = Self.strippingComments(try Self.mainSource())
+
+        #expect(
+            source.contains("fanMode: SnapshotFanModeReads(provider: scheduler.snapshotReader)"),
+            """
+            F<n>Md is either read through the scheduler's snapshot reader or it is a second \
+            source, or a supervisor-priority read on a client's reporting path.
+            """)
+    }
+
     /// Nothing in the helper may hold a raw `SMCSensorProvider`, anywhere.
     ///
     /// **Scoped to the whole of `Sources/AeolusHelper`, and it was one file until a review

@@ -9,10 +9,17 @@ import SMCCore
 /// ## What it serves, and what it refuses
 ///
 /// `snapshot` returns **real data** — fans through `SMCFanEnumeration`, sensors through
-/// `SMCCore`'s public read API — with `activeLease: nil`, every fan `.automatic`, and
-/// every fan `manualControlAvailability: .unavailable(.writePathNotBuilt)`. That makes E2
-/// demonstrable end to end on hardware, app to XPC to root helper to SMC and back, with no
-/// write existing anywhere in the tree.
+/// `SMCCore`'s public read API, each fan's mode through `F<n>Md` — with `activeLease: nil`
+/// and every fan `manualControlAvailability: .unavailable(.writePathNotBuilt)`. That makes
+/// E2 demonstrable end to end on hardware, app to XPC to root helper to SMC and back, with
+/// no write existing anywhere in the tree.
+///
+/// The mode is **read, not assumed** — a literal `.automatic` until
+/// [#148](https://github.com/blamechris/Aeolus/issues/148). Nothing in this build can take a
+/// fan off automatic control, so "every fan is automatic" was true of the executable and
+/// never a statement about the machine; a fan left in manual by a crashed helper, a reboot,
+/// or another vendor's tool is exactly the case a user needs to be told about. See `fanMode`
+/// below and `ReadOnlyFanReport.controlMode(_:)`.
 ///
 /// `acquireLease`, `renewLease`, `releaseLease` and `apply` **refuse** with
 /// `.manualControlUnavailable(.writePathNotBuilt)`. Never a stubbed success: a lease a
@@ -55,9 +62,8 @@ import SMCCore
 /// cold one; every snapshot after it costs **~0.5 s**. Keeping discovery off the hot path
 /// is therefore doing its job — and half a second per second is still a great deal of a
 /// root daemon's time, plus a 2929-sample payload of **~138 KB** crossing the boundary every
-/// tick.
-/// ADR 0006's "snapshot cost at 1 Hz is accepted" was written before anyone measured it;
-/// the remedy it names, and the only one it permits, is an additive subset-request
+/// tick. ADR 0006's "snapshot cost at 1 Hz is accepted" was written before anyone measured
+/// it; the remedy it names, and the only one it permits, is an additive subset-request
 /// capability within v1 — never a second continuous reader. Not built in #72, which has no
 /// app-side client to ask for a subset.
 /// `Tests/AeolusHelperTests/HelperHardwareTests` re-measures it on every hardware run.
@@ -110,36 +116,50 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// **awaits it** instead of starting a second.
     ///
     /// The task, not just its result. `discoveredSensors` above is only assigned when a walk
-    /// *completes*, so it stays `nil` for the whole 2.2 s (warm) to 5.9 s (cold) index-table
-    /// walk and a check-then-act around it lets every snapshot arriving in that window start
-    /// its own — [#149](https://github.com/blamechris/Aeolus/issues/149). At daemon launch
-    /// that window is exactly when two clients connect, so the racing case is the ordinary
-    /// one: `AeolusHelperMain` builds one authority for every connection, and `snapshot()`
-    /// suspends inside an actor and is therefore reentrant.
+    /// *completes*, so it stays `nil` for the whole 2.2 s (warm) to 5.9 s (cold) walk, and a
+    /// check-then-act around it let every snapshot arriving in that window start its own —
+    /// [#149](https://github.com/blamechris/Aeolus/issues/149). At daemon launch that window
+    /// is exactly when both clients connect, and `snapshot()` suspends inside an actor and is
+    /// therefore reentrant, so the race was the ordinary case rather than an exotic one.
     ///
-    /// It bounds three separate harms, and the count is only the first. `SMCReadScheduler`
-    /// exempts `readAll()` from taking a turn, and justifies the exemption with "its only
-    /// caller … runs once for the life of the process" — N walks spend that exemption N
-    /// times over. The second is worse and is silent: two walks can return **different key
-    /// sets**, because `SMCSensorProvider.readAll()` skips a key whose value read or scalar
-    /// decode fails without failing the walk, and the cache took whichever finished last —
-    /// so a short set was kept for the life of the daemon, under-reporting the machine's
-    /// sensors with no error and no reconciliation. The third is that a *failed* second walk
-    /// returned `[]` to its client while the first client got the full set from the same
-    /// instant.
+    /// Three harms, of which the count is only the first: `SMCReadScheduler` exempts
+    /// `readAll()` from taking a turn on the grounds that it "runs once for the life of the
+    /// process". The second is silent — two walks can return **different key sets**, because
+    /// `SMCSensorProvider.readAll()` skips a key whose read or decode fails without failing
+    /// the walk, and the cache took whichever finished last, so a short set was kept for the
+    /// life of the daemon. The third: a *failed* second walk returned `[]` to its client
+    /// while the first got the full set from the same instant.
     ///
     /// Cleared when the walk ends, so the retry-after-failure rule below still holds: the
     /// next snapshot starts a fresh discovery rather than awaiting a task that already threw.
     private var discovery: Task<[DiscoveredSensorKey], Error>?
 
+    /// `F<n>Md`, read once per fan per snapshot, so that who owns a fan is **observed rather
+    /// than assumed**.
+    ///
+    /// **Required, with no default**, for the latch's and the ledger's reason — and this is
+    /// the third instance of the same defect, which is why the rule is stated three times in
+    /// this file. `mode: .automatic` was a literal: true of every fan this build can
+    /// *produce*, and not a statement about the machine, which is what a client reads it as
+    /// ([#148](https://github.com/blamechris/Aeolus/issues/148)).
+    ///
+    /// Narrow on purpose: `FanModeSensing` has one read verb and no write side, so nothing
+    /// reachable from the snapshot path can command a fan. `FanStateSensing` refines it, so
+    /// [#103](https://github.com/blamechris/Aeolus/issues/103) can hand the supervisor's own
+    /// control plane here without changing anything above — see `FanModeSensing` for why the
+    /// snapshot does not simply take one today.
+    private let fanMode: any FanModeSensing
+
     init(
         provider: some SensorProvider,
+        fanMode: some FanModeSensing,
         log: HelperLog,
         thermalEmergency: ThermalEmergencyLatch,
         reclamation: ReclamationLedger,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.provider = provider
+        self.fanMode = fanMode
         self.log = log
         self.thermalEmergency = thermalEmergency
         self.reclamation = reclamation
@@ -150,6 +170,7 @@ actor ReadOnlyFanAuthority: FanAuthority {
 
     func snapshot() async throws -> SystemSnapshot {
         let fans = try await SMCFanEnumeration.enumerate(provider: provider)
+        let modes = await observedModes(ofFans: fans.fanIndices)
         let sensors = await readSensors()
         let isThermalEmergencyActive = await thermalEmergency.isActive
         // One read of the ledger per snapshot rather than one per fan: a snapshot carries a
@@ -161,7 +182,8 @@ actor ReadOnlyFanAuthority: FanAuthority {
 
         return SystemSnapshot(
             fans: fans.fans.map {
-                ReadOnlyFanReport.fanState(for: $0, reclamation: reclamationCauses)
+                ReadOnlyFanReport.fanState(
+                    for: $0, reclamation: reclamationCauses, mode: modes[$0.index])
             },
             sensors: sensors,
             // No lease can exist: every path that would grant one refuses below.
@@ -169,6 +191,29 @@ actor ReadOnlyFanAuthority: FanAuthority {
             isThermalEmergencyActive: isThermalEmergencyActive,
             capturedAt: now()
         )
+    }
+
+    /// Who owns each enumerated fan, as `F<n>Md` answered this tick.
+    ///
+    /// Never throws, and a fan whose mode did not read is **absent from the result** rather
+    /// than defaulted into it: `ReadOnlyFanReport` decides what to say about a gap, and can
+    /// only decide it if it can tell a gap from an answer. One key that disappeared must not
+    /// cost the client the whole snapshot, exactly as in `readSensors()`.
+    ///
+    /// One read per fan rather than a batched one, because `FanModeSensing` is per-fan so
+    /// that E5's control plane satisfies it unchanged — one or two extra turns against the 48
+    /// a full snapshot already takes.
+    private func observedModes(ofFans indices: [Int]) async -> [Int: FirmwareFanMode] {
+        var modes: [Int: FirmwareFanMode] = [:]
+        modes.reserveCapacity(indices.count)
+        for index in indices {
+            do {
+                modes[index] = try await fanMode.readMode(ofFan: index)
+            } catch {
+                log.fanModeUnreadable(fanIndex: index, reason: String(describing: error))
+            }
+        }
+        return modes
     }
 
     /// The fans this authority enumerated, for the fan-index check that decides which fans
@@ -300,17 +345,12 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// The one `readAll()` in the helper: **at most one walk is ever in flight**, and after
     /// a successful one there are no more for the life of the process.
     ///
-    /// Stated as two claims because they are enforced in two places and one of them used to
-    /// be a habit rather than an invariant. The cache below is what stops a *later* snapshot
-    /// walking again; `discovery` is what stops a *concurrent* one, by handing the arrival
-    /// the running task to await. A snapshot that arrives during a walk therefore gets the
-    /// same key set as the snapshot that started it, from the same walk, rather than a
-    /// second opinion about the machine — and a walk that throws is not cached, so the next
-    /// snapshot tries again.
-    ///
-    /// The task is cleared here, on the actor, after it completes: an awaiter that resumes
-    /// later finds either the cache or a cleared slot, never a finished task it would await
-    /// forever the answer of.
+    /// Two claims because they are enforced in two places, and one of them used to be a habit
+    /// rather than an invariant. The cache stops a *later* snapshot walking again;
+    /// `discovery` stops a *concurrent* one, by handing the arrival the running task to
+    /// await. A snapshot arriving during a walk therefore gets the key set of the walk that
+    /// was already running rather than a second opinion about the machine — and a walk that
+    /// throws is not cached, so the next snapshot tries again.
     private func discoverSensorKeys() async throws -> [DiscoveredSensorKey] {
         let walk: Task<[DiscoveredSensorKey], Error>
         if let discovery {

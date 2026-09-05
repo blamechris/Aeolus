@@ -32,8 +32,12 @@ struct HelperHardwareTests {
 
     @Test("A snapshot from real hardware reports real fans, controllable by nothing")
     func snapshotFromRealHardware() async throws {
+        // One provider, read through twice: the fans and the mode key must come from the
+        // same source, or a snapshot is one instant's report assembled from two.
+        let provider = SMCSensorProvider()
         let authority = ReadOnlyFanAuthority(
-            provider: SMCSensorProvider(), log: Self.log,
+            provider: provider,
+            fanMode: SnapshotFanModeReads(provider: provider), log: Self.log,
             thermalEmergency: ThermalEmergencyLatch(),
             reclamation: ReclamationLedger())
 
@@ -129,7 +133,8 @@ struct HelperHardwareTests {
     func warmSnapshotIsCheap() async throws {
         let provider = ReadAllCountingProvider(wrapping: SMCSensorProvider())
         let authority = ReadOnlyFanAuthority(
-            provider: provider, log: Self.log,
+            provider: provider,
+            fanMode: SnapshotFanModeReads(provider: provider), log: Self.log,
             thermalEmergency: ThermalEmergencyLatch(),
             reclamation: ReclamationLedger())
 
@@ -217,7 +222,8 @@ struct HelperHardwareTests {
     func theSafetyCycleStaysPromptDuringARealSnapshot() async throws {
         let scheduler = SMCReadScheduler(provider: SMCSensorProvider())
         let authority = ReadOnlyFanAuthority(
-            provider: scheduler.snapshotReader, log: Self.log,
+            provider: scheduler.snapshotReader,
+            fanMode: SnapshotFanModeReads(provider: scheduler.snapshotReader), log: Self.log,
             thermalEmergency: ThermalEmergencyLatch(),
             reclamation: ReclamationLedger())
         let plane = SMCFanControlPlane(scheduler: scheduler)
@@ -276,8 +282,12 @@ struct HelperHardwareTests {
     /// authority to SMC and back, with no write path anywhere in it.
     @Test("A real snapshot crosses a real connection and decodes")
     func snapshotCrossesTheBoundary() async throws {
+        // One provider, read through twice: the fans and the mode key must come from the
+        // same source, or a snapshot is one instant's report assembled from two.
+        let provider = SMCSensorProvider()
         let authority = ReadOnlyFanAuthority(
-            provider: SMCSensorProvider(), log: Self.log,
+            provider: provider,
+            fanMode: SnapshotFanModeReads(provider: provider), log: Self.log,
             thermalEmergency: ThermalEmergencyLatch(),
             reclamation: ReclamationLedger())
         let harness = AnonymousListenerHarness(authority: authority)

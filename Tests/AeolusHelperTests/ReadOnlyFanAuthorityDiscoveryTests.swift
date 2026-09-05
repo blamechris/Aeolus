@@ -25,6 +25,7 @@ struct ReadOnlyFanAuthorityDiscoveryTests {
     private func authority(provider: some SensorProvider) -> ReadOnlyFanAuthority {
         ReadOnlyFanAuthority(
             provider: provider,
+            fanMode: SnapshotFanModeReads(provider: provider),
             log: Self.log,
             thermalEmergency: ThermalEmergencyLatch(),
             reclamation: ReclamationLedger(),
