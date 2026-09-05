@@ -73,7 +73,11 @@ struct HelperRestorerTests {
             clock: clock,
             log: helperLog,
             leaseLog: LeaseFixture.log,
-            safetyLog: safetyLog)
+            safetyLog: safetyLog,
+            // `bringUpBindsTheRegistries` calls `bringUp()`, which installs E5.4d's signal
+            // teardown. The shipping source would `SIG_IGN` this process's `SIGTERM`,
+            // `SIGINT` and `SIGHUP` and then `exit(0)` the test runner on the next one.
+            teardown: TeardownSeams(sources: RecordingSignalSources()))
     }
 
     /// Puts fan 0 into both registries, the way E3's control plane will once it exists.

@@ -342,7 +342,11 @@ struct HelperHardwareTests {
     @Test("A helper composed with the real control plane serves a snapshot and refuses a lease")
     func theComposedHelperServesRealHardware() async throws {
         let composingStarted = ContinuousClock.now
-        let helper = HelperComposition.production(log: Self.log)
+        // The bring-up below installs E5.4d's signal teardown, and the shipping source
+        // would `SIG_IGN` this process's `SIGTERM`, `SIGINT` and `SIGHUP` and then `exit(0)`
+        // the test runner on the next one. Everything else here is production's.
+        let helper = HelperComposition.production(
+            log: Self.log, teardown: TeardownSeams(sources: RecordingSignalSources()))
         let composed = ContinuousClock.now - composingStarted
 
         // The three supervisors this bring-up starts are 1 Hz loops on the real SMC, so
