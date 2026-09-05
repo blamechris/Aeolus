@@ -403,15 +403,20 @@ This is a correctness rule as much as a safety one. A UI that lies about fan sta
 worse than a UI that reports an error, because the user acts on it.
 
 *Tested by:* `Tests/AeolusHelperTests/ReclamationWatchdogTests.swift`,
-`ReclamationWatchdogRecoveryTests.swift`, `ReclamationWatchdogStalenessTests.swift` and
-`ReclamationSupervisorTests.swift` — mostly through `ScriptedControlPlane`, with three
-bespoke read seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express:
-a refused envelope, a read held open so overlapping reads would be visible, and a read that
-runs a side effect while it is suspended. § 1's line makes the same distinction for the same
-reason, and it is drawn rather than rounded off because "entirely through the scripted plane"
-is a claim about how much of the mechanism one shared double can reach.
+`ReclamationWatchdogRecoveryTests.swift`, `ReclamationWatchdogStalenessTests.swift`,
+`ReclamationLimitsTests.swift` and `ReclamationSupervisorTests.swift` — mostly through
+`ScriptedControlPlane`, with three bespoke read seams in `ReclamationWatchdogFixture.swift`
+for what its stages cannot express: a refused envelope, a read held open so overlapping reads
+would be visible, and a read that runs a side effect while it is suspended. § 1's line makes
+the same distinction for the same reason, and it is drawn rather than rounded off because
+"entirely through the scripted plane" is a claim about how much of the mechanism one shared
+double can reach.
 Several of these tests are mutation checks rather than examples, and each names the mutation
 it kills; every one was run against its mutant in an isolated worktree.
+`ReclamationLimitsTests` is the exception to "driven, not asserted against the constant": it
+bounds three constants from **above** with literals, because a test that derives its own loop
+bound from the constant it exercises moves with that constant and catches nothing. The floors
+are open, and #185 owns them.
 
 Four of them exist because an adversarial review found that nothing in the original suite
 could see a value read before an `await` and acted on after it — the watchdog is a reentrant

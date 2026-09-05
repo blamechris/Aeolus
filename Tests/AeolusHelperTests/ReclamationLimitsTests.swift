@@ -15,10 +15,26 @@ import Testing
 /// a full green suite: `reassertAttemptBudget` 3 → 300, `blindCyclesBeforeDivergence`
 /// 3 → 300 and `actualDwellCycles` 5 → 300 each survived.
 ///
-/// The downward direction is already pinned by those driven tests, and upward is the
-/// safety-relevant direction. At the supervisor's 1 Hz a constant of 300 is **five minutes**
-/// fighting the operating system for a fan, or five minutes blind with a fan pinned before
-/// it is handed back. Only a literal catches that, because only a literal fails to move.
+/// Upward is the safety-relevant direction, and it is the one this file covers. At the
+/// supervisor's 1 Hz a constant of 300 is **five minutes** fighting the operating system for
+/// a fan, or five minutes blind with a fan pinned before it is handed back. Only a literal
+/// catches that, because only a literal fails to move.
+///
+/// ## What the driven tests pin, stated exactly, because an earlier draft got it wrong
+///
+/// It said *"the downward direction is already pinned by those driven tests"*. It is not,
+/// and not for any of the three. A driven loop derives its bound **and** its expectation
+/// from the constant, so it moves with a change in either direction: measured, dropping
+/// `actualDwellCycles` from 5 to 1 leaves the whole suite green, and the same is true of the
+/// other two. What those tests pin is that the mechanism *honours* whatever the constant
+/// says — which is worth having and is not a bound at all.
+///
+/// So the floors are open, and [#185](https://github.com/blamechris/Aeolus/issues/185) owns
+/// them. The ceilings came first because the two directions are not equally dangerous: a
+/// constant lowered towards 1 makes this mechanism noisier and quicker to hand a fan back,
+/// which is the direction `ReclamationWatchdog`'s failure asymmetry already resolves
+/// towards, while a constant raised towards 300 is minutes of a pinned fan nobody is
+/// watching.
 ///
 /// ## Ceilings, not restatements
 ///
@@ -32,7 +48,7 @@ import Testing
 @Suite("§ 5's constants, bounded from above")
 struct ReclamationLimitsTests {
 
-    /// Three attempts, five seconds of fighting at most.
+    /// Five seconds of fighting at most, whatever the shipped value is.
     ///
     /// Each attempt is a fresh envelope read plus two writes on the same cycle, so the
     /// budget is the number of consecutive 1 Hz cycles § 5 will contest a fan before
@@ -49,7 +65,7 @@ struct ReclamationLimitsTests {
             """)
     }
 
-    /// Three blind cycles, five seconds at most.
+    /// Five seconds of a fan pinned and unseen at most, whatever the shipped value is.
     ///
     /// The threshold buys tolerance of noise — one missed read, or two, must not take a fan
     /// from a client. What it spends is time with a fan pinned at a speed nobody can any
@@ -65,7 +81,7 @@ struct ReclamationLimitsTests {
             """)
     }
 
-    /// Five cycles, ten seconds at most.
+    /// Ten seconds before the user is told at most, whatever the shipped value is.
     ///
     /// The dwell only ever delays a **report** — the secondary signal reaches no terminal
     /// action — so the cost of raising it is that the user is told later, not that anything
