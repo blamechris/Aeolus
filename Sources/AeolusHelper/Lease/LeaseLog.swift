@@ -1,3 +1,4 @@
+import FanKit
 import Foundation
 import os
 
@@ -195,8 +196,32 @@ struct LeaseLog: Sendable {
         log.info(
             """
             Connection \(connection.logDescription, privacy: .public) asked for a \
-            self-renewing lease. Refused: this build has no startup reconciliation, which is \
-            the whole of a self-renewing lease's safety story.
+            self-renewing lease. Refused: restart plus startup reconciliation is the whole \
+            of a self-renewing lease's safety story, and it is not hardware-verified yet \
+            (ADR 0007).
+            """
+        )
+    }
+
+    /// A grant was refused because something outside Aeolus holds the fan, or because
+    /// nothing has established what mode it is in.
+    ///
+    /// `.notice` rather than `.info`, for `refusedMidHandback`'s reason: `.info` is not
+    /// persisted by default, and this is precisely the line a user reaches for after finding
+    /// the slider inert with another fan-control app open. It names neither the holder nor a
+    /// remedy Aeolus could apply, because `F<n>Md` carries neither.
+    func refusedForeignManualControl(
+        _ connection: ConnectionID, fans: Set<Int>,
+        reason: ManualControlAvailability.Reason
+    ) {
+        log.notice(
+            """
+            Connection \(connection.logDescription, privacy: .public) asked for manual \
+            control of fan(s) \(Self.describe(fans), privacy: .public). Refused: \
+            \(reason.wireValue, privacy: .public). Either something outside Aeolus is \
+            holding a named fan, or startup reconciliation never established its mode — \
+            see docs/ADR/0011-reconciliation-and-foreign-manual-control.md. Aeolus does not \
+            take a fan back from another writer.
             """
         )
     }
@@ -325,6 +350,8 @@ struct LeaseLog: Sendable {
         case .connectionInvalidated: return "the holding connection died"
         case .leaseReleased: return "the client released the lease"
         case .allLeasesDropped: return "every lease was dropped"
+        case .startupReconciliation:
+            return "startup reconciliation found the fan in manual — docs/SAFETY.md § 6"
         }
     }
 }

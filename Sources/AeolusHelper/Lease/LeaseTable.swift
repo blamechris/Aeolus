@@ -98,6 +98,20 @@ struct LeaseTable: Sendable {
         entries.values.map(\.deadline).min()
     }
 
+    /// Every fan a live entry covers.
+    ///
+    /// The lease core's answer to "which fans is Aeolus itself holding", asked by the
+    /// foreign-control gate so that a fan Aeolus put into manual is not reported as somebody
+    /// else's. `F<n>Md` names no owner, so this table is the only thing that can.
+    ///
+    /// Reads the table as it stands, lapsed entries included. The two callers each sweep
+    /// first — `acquireLease` via `expireLapsedLeases()`, the snapshot via `activeLease` —
+    /// and the failure direction if one ever did not is a fan being called Aeolus's for one
+    /// more instant, which under-reports foreign control rather than claiming it falsely.
+    var fansUnderLease: Set<Int> {
+        entries.values.reduce(into: Set<Int>()) { $0.formUnion($1.fanIndices) }
+    }
+
     func entry(id: UUID) -> LeaseRecord? { entries[id] }
 
     mutating func insert(_ entry: LeaseRecord) {

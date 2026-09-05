@@ -85,6 +85,52 @@ enum ReadOnlyFanReport {
     /// such a fan, `isReclaimedBySystem` having said it wrongly as a system reclamation. In
     /// this build it is unreachable for the ledger's own reason — nothing is ever held, so
     /// nothing can go blind — and what changed is where the answer comes from.
+    /// Re-states one fan's availability once the lease core has been consulted.
+    ///
+    /// `ReadOnlyFanAuthority` cannot answer this. It reads the machine and knows nothing
+    /// about leases, and `SupervisedFanAuthority.snapshot()` reads the lease **after** the
+    /// machine on purpose — so the composition is: the read path produces the fan, this
+    /// re-states one field of it, and the ordering that makes a lapsing lease honest is
+    /// preserved.
+    ///
+    /// ## The rule, and the two fans it leaves alone
+    ///
+    /// A fan whose firmware mode is not automatic, that no live lease covers, is under
+    /// somebody else's control — startup reconciliation restored anything it found in manual
+    /// before this process served a single client, so a fan in manual now was put there
+    /// afterwards and not by Aeolus. See
+    /// [ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md).
+    ///
+    /// It is **not** applied over § 5's two causes. `.supervisorBlind` and
+    /// `.reclaimedBySystem` are statements about a fan Aeolus *engaged* — the ledger's
+    /// registry holds nothing else — and both are more specific than this one. Overwriting
+    /// either would replace a diagnosis with a guess, and in the `.reclaimedBySystem` case
+    /// would blame a third party for the operating system's act.
+    ///
+    /// Everything else is overwritten, including `.available`. Writing the guard as "only
+    /// when the read path said `.writePathNotBuilt`" would pass today and silently stop
+    /// applying on the day E3 makes that answer something else.
+    static func reportingForeignControl(
+        of fan: FanState, heldByAeolus held: Set<Int>
+    ) -> FanState {
+        guard fan.mode != .automatic, !held.contains(fan.index) else { return fan }
+        switch fan.manualControlAvailability {
+        case .unavailable(.supervisorBlind), .unavailable(.reclaimedBySystem): return fan
+        default: break
+        }
+        return FanState(
+            index: fan.index,
+            firmwareName: fan.firmwareName,
+            actualRPM: fan.actualRPM,
+            minimumRPM: fan.minimumRPM,
+            maximumRPM: fan.maximumRPM,
+            targetRPM: fan.targetRPM,
+            mode: fan.mode,
+            isReclaimedBySystem: fan.isReclaimedBySystem,
+            manualControlAvailability: .unavailable(.foreignManualControl)
+        )
+    }
+
     private static func availability(
         whenLedgerSays cause: ReclamationLedger.Cause?
     ) -> ManualControlAvailability {

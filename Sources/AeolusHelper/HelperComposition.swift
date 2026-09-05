@@ -33,11 +33,12 @@ import SMCCore
 ///
 /// ## What it deliberately does not do
 ///
-/// No startup reconciliation ([#164](https://github.com/blamechris/Aeolus/issues/164)), no
-/// restart policy ([#165](https://github.com/blamechris/Aeolus/issues/165)), no signal
-/// handlers ([#166](https://github.com/blamechris/Aeolus/issues/166)) and no connection
-/// health or reconnect ([#168](https://github.com/blamechris/Aeolus/issues/168)). `bringUp()`
-/// names where the first of those goes.
+/// No signal handlers ([#166](https://github.com/blamechris/Aeolus/issues/166)) and no
+/// connection health or reconnect ([#168](https://github.com/blamechris/Aeolus/issues/168)).
+/// Startup reconciliation ([#164](https://github.com/blamechris/Aeolus/issues/164)) is no
+/// longer on that list — `bringUp()` runs it as its second step, and the restart policy that
+/// makes it load-bearing ([#165](https://github.com/blamechris/Aeolus/issues/165)) ships in
+/// the same change, because ADR 0007 forbids the `KeepAlive` keys landing first.
 ///
 /// Sleep and wake ([#167](https://github.com/blamechris/Aeolus/issues/167)) *is* here, and is
 /// the one lifecycle event this graph acts on: `powerObserver` and `powerResponder`, wired
@@ -95,6 +96,14 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
 
     /// The lease core's terminal action, and the only `FanRestoring` in `Sources/`.
     let restorer: HelperFanRestorer<Plane>
+
+    /// `docs/SAFETY.md` § 6's one-shot pass, and the post-reconciliation baseline it leaves
+    /// behind.
+    ///
+    /// Constructed before `LeaseAuthority` because the lease core consults it on every
+    /// grant, and it outlives `bringUp()` for the same reason: the pass runs once, and the
+    /// question *"is somebody else holding this fan?"* is asked for the life of the process.
+    let reconciliation: StartupReconciliation<Plane>
 
     let leases: LeaseAuthority
     let thermalEmergency: ThermalEmergency<Plane>
@@ -159,6 +168,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         snapshotProvider: some SensorProvider,
         criticalSensors: CriticalSensorSet,
         clock: some MonotonicClock = SystemMonotonicClock(),
+        reconciliationBudget: Duration = ReconciliationLimits.budget,
         powerObserver: (any SystemPowerObserving)? = nil,
         acknowledgementBudget: Duration = SystemPowerLimits.acknowledgementBudget,
         log: HelperLog = HelperLog(),
@@ -219,11 +229,21 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             writer: SafetyActorWriter(plane: plane, level: .leaseExpiry), log: leaseLog)
         self.restorer = restorer
 
+        // § 6's pass, and § 7's writer for the one restore it may need to issue
+        // machine-wide. `.panicRestore` rather than the restorer's `.leaseExpiry`: this is
+        // the level ADR 0007 gives the restore verbs themselves, and reconciliation is § 6.
+        let reconciliation = StartupReconciliation(
+            plane: plane, enumeration: reading, restorer: restorer,
+            panic: SafetyActorWriter(plane: plane, level: .panicRestore),
+            clock: clock, budget: reconciliationBudget, log: safetyLog)
+        self.reconciliation = reconciliation
+
         let leases = LeaseAuthority(
             enumeration: reading,
             restorer: restorer,
             writeCapability: plane,
             telemetry: sightings,
+            foreignControl: reconciliation,
             thermalEmergency: latch,
             clock: clock,
             log: leaseLog)
@@ -275,11 +295,9 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     ///    advertised service can be handed one to release. `HelperFanRestorer` explains why
     ///    the binding is late at all — the graph is circular, and this is the edge that is
     ///    safest to close last.
-    /// 2. **Startup reconciliation goes here** — `#164`, E5.4b. Between the bind and the
-    ///    supervisors, because a fan restored by reconciliation must not be read by § 5's
-    ///    first cycle as a reclamation, and because the restore it performs needs the
-    ///    registries bound. It is a seam and not a call: nothing reconciles yet, and an empty
-    ///    method that looks like it does would be worse than a marker that says it does not.
+    /// 2. **Startup reconciliation** — `#164`, E5.4b. Between the bind and the supervisors,
+    ///    because a fan restored by reconciliation must not be read by § 5's first cycle as
+    ///    a reclamation, and because the restore it performs needs the registries bound.
     /// 3. **Start the supervisors.** § 3 first: it is the higher-precedence actor, and its
     ///    first cycle is what establishes whether this machine can be seen at all.
     /// 4. **Hear the system's power events** — `#167`, E5.4e. Last, because § 4's first act
@@ -301,12 +319,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// ([#165](https://github.com/blamechris/Aeolus/issues/165)).
     func bringUp() async {
         await bindSafetyRegistries()
-
-        // TODO(E5): startup reconciliation — #164 restores any fan found in manual with no
-        // live lease, exactly once, before either supervisor starts. See A2 on #103 for why
-        // it is unconditional and why a fan later observed manual is foreign control rather
-        // than a reclamation.
-
+        await reconcileFans()
         await thermalSupervisor.start()
         await reclamationSupervisor.start()
         await leaseExpirySupervisor.start()
@@ -363,6 +376,20 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     func bindSafetyRegistries() async {
         await restorer.bind(
             thermalEmergency: thermalEmergency, reclamationWatchdog: reclamationWatchdog)
+    }
+
+    /// `docs/SAFETY.md` § 6's one-shot pass, over the fans this machine enumerates.
+    ///
+    /// Its own method for `bindSafetyRegistries()`'s reason — a test drives it without also
+    /// starting three loops that would read the same scripted firmware underneath its
+    /// assertions — and because the two halves fail in different directions and should be
+    /// legible apart.
+    ///
+    /// The enumeration it runs over is `reading` — the same `SMCFanEnumeration` the snapshot
+    /// uses, held by the pass itself so that a `FNum` that will not read is handled where
+    /// the log is rather than swallowed here.
+    func reconcileFans() async {
+        await reconciliation.reconcile()
     }
 
     /// Stops the three loops.
