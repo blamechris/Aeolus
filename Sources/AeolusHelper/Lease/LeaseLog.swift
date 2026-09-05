@@ -59,6 +59,51 @@ struct LeaseLog: Sendable {
         )
     }
 
+    /// The restore did not take, the attempts are spent, and the helper has stopped asking.
+    ///
+    /// `.fault`, and it is the line `restored(fans:because:)` above must be read against:
+    /// that one is written before the write is attempted, so for this fan it says something
+    /// that turned out not to be true. Correcting the record is exactly what this level is
+    /// for — a user asking why a fan can no longer be controlled has this line as the
+    /// answer, and nothing else in the log says it.
+    ///
+    /// **It states the helper's uncertainty rather than a destination.** An earlier version
+    /// closed by asserting the fan was under the system's own thermal management — the very
+    /// state the write that just failed was trying to establish, and a claim `CLAUDE.md`
+    /// rule 6 forbids. `SafetyLog.reclamationFanMayStillBePinned` already says the true
+    /// thing about the identical event next door, so the two now agree.
+    func abandonedHandback(
+        fanAt index: Int, because cause: FanRestoreCause, after attempts: Int, error: any Error
+    ) {
+        log.fault(
+            """
+            Fan \(index, privacy: .public) could not be returned to automatic control \
+            (\(Self.describe(cause), privacy: .public)) after \(attempts, privacy: .public) \
+            attempts: \(String(describing: error), privacy: .public). Aeolus has stopped \
+            trying and will refuse manual control of this fan. It may still be under manual \
+            control at a speed Aeolus is no longer tracking. Check the fan physically, and \
+            see docs/RECOVERY.md.
+            """
+        )
+    }
+
+    /// A client asked for a fan whose handback was given up on.
+    ///
+    /// `.notice` rather than `.fault`: the fault was logged once, where it happened. This is
+    /// a client meeting the consequence, and it is worth persisting because a client that
+    /// sees it repeatedly is the evidence that the durable refusal is durable — which is the
+    /// half of [#110](https://github.com/blamechris/Aeolus/issues/110) a client can see.
+    func refusedAbandonedHandback(_ connection: ConnectionID, fans: Set<Int>) {
+        log.notice(
+            """
+            Connection \(connection.logDescription, privacy: .public) asked for fan(s) \
+            \(Self.describe(fans), privacy: .public) that Aeolus could not return to \
+            automatic control. Refused: their mode is not what the helper last asked for, \
+            and a lease over one would be claiming control nothing has confirmed.
+            """
+        )
+    }
+
     /// A lease was taken from a client that had done nothing wrong.
     ///
     /// `.fault` — the level this type reserves for "a safety mechanism decided the machine
