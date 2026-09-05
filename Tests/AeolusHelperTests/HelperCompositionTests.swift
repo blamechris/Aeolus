@@ -75,11 +75,133 @@ struct HelperCompositionTests {
             readsThroughTheScheduler,
             "the snapshot path no longer takes its turns from the scheduler")
 
-        let schedulerHoldsTheProvider =
-            source.contains("SMCReadScheduler(") && source.contains("SMCSensorProvider()")
+        let schedulerHoldsTheProvider = Self.strippingWhitespace(source)
+            .contains("SMCReadScheduler(provider:SMCSensorProvider(connection:connection)")
         #expect(
             schedulerHoldsTheProvider,
             "the scheduler is no longer the thing holding the real provider")
+    }
+
+    /// The provider the reads go through and the plane that recycles the connection hold the
+    /// **same** `SMCConnection`.
+    ///
+    /// Added by [#168](https://github.com/blamechris/Aeolus/issues/168), which is what made
+    /// this a hazard at all: `SMCFanControlPlane.reconnect()` closes and reopens a connection,
+    /// and `SensorProvider` is a public protocol that discloses none — so a plane built over a
+    /// second connection compiles, recycles a handle nothing reads through, and **reports that
+    /// it worked**. That is `CLAUDE.md` rule 6 one level below the fans, and nothing in the
+    /// type system can catch it.
+    ///
+    /// Two assertions, because the failure has two shapes. The count catches a second
+    /// connection constructed anywhere in the helper; the literal catches the likelier slip of
+    /// building the plane over a fresh one at the same site.
+    ///
+    /// **Mutation A:** in `production(log:)`, pass `connection: SMCConnection()` to the plane.
+    /// Run: red on both.
+    /// **Mutation B:** give `SMCFanControlPlane.init` a defaulted `connection` and drop the
+    /// argument. Run: red on the literal.
+    @Test("The provider and the plane are given one connection, not two")
+    func theProviderAndThePlaneShareOneConnection() throws {
+        // Scoped to the helper, not the whole of `Sources`: `SMCSensorProvider.init` defaults
+        // its parameter to `SMCConnection()`, and the app and `fanctl` are direct readers in
+        // their own processes by ADR 0006. The corollary — one connection per process — binds
+        // this target and not theirs.
+        var sites: [String] = []
+        for file in try SeamScanner.swiftFiles()
+        where file.pathComponents.contains("AeolusHelper") {
+            let code = Self.strippingComments(try String(contentsOf: file, encoding: .utf8))
+            let count = Self.occurrences(of: "SMCConnection(", in: code)
+            if count > 0 { sites.append("\(file.lastPathComponent) x\(count)") }
+        }
+
+        #expect(
+            sites == ["HelperComposition.swift x1"],
+            """
+            the helper builds more than one SMC connection: \(sites). The plane's reconnect \
+            closes and reopens the connection the provider reads through — a second one is a \
+            recycle that fixes nothing and says it worked.
+            """)
+
+        let source = Self.strippingWhitespace(try Self.compositionSource())
+        let planeTakesTheLocal = source.contains("connection:connection)")
+        #expect(
+            planeTakesTheLocal,
+            "the plane is no longer handed the connection local the provider was built from")
+    }
+
+    /// The scan above is only as good as what it does **not** count, and a block comment is
+    /// the shape it used to count wrongly.
+    ///
+    /// `theProviderAndThePlaneShareOneConnection` reads every file under
+    /// `Sources/AeolusHelper`, so a `/* … */` span quoting `SMCConnection(` — in a doc
+    /// comment explaining this very rule, most likely — would be counted as a second
+    /// construction site and turn the tripwire red for a non-reason. A tripwire that fires on
+    /// the sentence explaining it is a tripwire nobody keeps, which is the argument
+    /// `SeamScanner.strippingComments` already makes and already implements.
+    ///
+    /// A fixture rather than the tree, for `SeamScannerParsingTests`' reason: nothing in
+    /// `Sources` contains a block comment today, so a test that only scans the tree cannot
+    /// know whether this works.
+    ///
+    /// **Mutation:** drop the `SeamScanner.strippingComments(source)` call from
+    /// `strippingComments(_:)` and strip trailing `//` alone. Run: red — the fixture's
+    /// `SMCConnection(` survives.
+    @Test("A block comment naming a type is not counted as code building one")
+    func blockCommentsAreStrippedBeforeCounting() {
+        let fixture = """
+            /* The hazard this guards: a second SMCConnection( built anywhere in the helper.
+               /* Nested, because Swift nests them. */ */
+            let connection = SMCConnection()  // the only one, per ADR 0006
+            """
+
+        let code = Self.strippingComments(fixture)
+
+        #expect(
+            Self.occurrences(of: "SMCConnection(", in: code) == 1,
+            """
+            the comment stripper counted \(Self.occurrences(of: "SMCConnection(", in: code)) \
+            construction sites in a fixture that has one. Prose describing the rule is not \
+            an instance of breaking it: \(code)
+            """)
+    }
+
+    /// The connection health observer is actually attached to the scheduler, and bring-up
+    /// actually binds it.
+    ///
+    /// A source tripwire for this suite's usual reason — `main()` never returns and there is
+    /// nothing to observe the daemon's graph from at runtime — and the hazard it guards is the
+    /// one #103's A6 exists to close: an observer that is constructed, held, started, and
+    /// **reports to nothing** counts no failures and reconnects nothing, on a helper that is
+    /// blind holding nothing. Every mechanism in the chain would still be present and tested.
+    ///
+    /// The behavioural half is elsewhere and does not overlap: `ConnectionHealthTests` drives
+    /// the observer directly and `SchedulerObservingTests` drives the scheduler's emission.
+    /// Neither can see whether the daemon connects them.
+    ///
+    /// **Mutation A:** drop `observer: connectionHealth` from the scheduler in
+    /// `production(log:)`. Run: red on the first.
+    /// **Mutation B:** delete `await connectionHealth.start(recovering: plane)` from
+    /// `bringUp()`. Run: red on the second — and nothing else in the repository notices,
+    /// because an unstarted pump simply buffers for ever.
+    @Test("The scheduler reports to the connection health observer, and bring-up binds it")
+    func connectionHealthIsWiredToTheScheduler() throws {
+        let source = Self.strippingWhitespace(try Self.compositionSource())
+
+        let schedulerReportsToIt = source.contains("observer:connectionHealth")
+        #expect(
+            schedulerReportsToIt,
+            """
+            the scheduler no longer reports to the connection health observer, so nothing \
+            counts whole-read failures and the helper can sit blind holding nothing.
+            """)
+
+        let bringUpBinds = source.contains("connectionHealth.start(recovering:plane)")
+        #expect(
+            bringUpBinds,
+            "bring-up no longer binds the connection health observer to the control plane")
+
+        let shutDownStops = source.contains("connectionHealth.stop()")
+        #expect(shutDownStops, "shut-down no longer stops the connection health observer")
     }
 
     /// The control plane every safety mechanism reads and writes through is built from the
@@ -98,7 +220,8 @@ struct HelperCompositionTests {
     @Test("The control plane is built from the one scheduler, not a second one")
     func thePlaneIsBuiltFromTheOneScheduler() throws {
         let source = Self.strippingWhitespace(try Self.compositionSource())
-        let builtFromTheOneScheduler = source.contains("SMCFanControlPlane(scheduler:scheduler)")
+        let builtFromTheOneScheduler = source.contains(
+            "SMCFanControlPlane(scheduler:scheduler,connection:connection)")
 
         #expect(
             builtFromTheOneScheduler,
@@ -591,12 +714,24 @@ struct HelperCompositionTests {
         source.filter { !$0.isWhitespace }
     }
 
-    /// Drops `//` line comments so prose naming a type is not mistaken for code building one.
+    /// Drops comments so prose naming a type is not mistaken for code building one.
     ///
-    /// Line comments only: this scans a composition root, and a block comment there would be
-    /// a stranger thing than the hazard being guarded against.
+    /// **`SeamScanner`'s stripper first, then the trailing-`//` truncation this file needs.**
+    /// The local half used to be the whole of it, and "line comments only" was defended on the
+    /// grounds that a block comment in a composition root would be a stranger thing than the
+    /// hazard — which stopped being true the moment `theProviderAndThePlaneShareOneConnection`
+    /// began scanning *every* file under `Sources/AeolusHelper` rather than one. A `/* … */`
+    /// span mentioning `SMCConnection(` anywhere in the target would have been counted as a
+    /// construction site and reddened a tripwire for a non-reason. #177 already solved that
+    /// once, nested spans and string literals included; a second implementation of it here
+    /// would be the copy that drifts.
+    ///
+    /// The truncation is still needed on top, because `SeamScanner.strippingComments` drops
+    /// only *whole* `//` lines — a deliberate choice documented there — and this file's
+    /// `contains` assertions run against source with a trailing comment on the same line as
+    /// the code they match.
     private static func strippingComments(_ source: String) -> String {
-        source
+        SeamScanner.strippingComments(source)
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map { line -> Substring in
                 guard let comment = line.range(of: "//") else { return line }

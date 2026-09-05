@@ -68,7 +68,7 @@ struct SMCReadSchedulerTests {
     func theSafetyCycleOvertakesAnInFlightSnapshot() async throws {
         let provider = GatedSensorProvider(holdingSubsetReads: true)
         let scheduler = SMCReadScheduler(provider: provider)
-        let plane = SMCFanControlPlane(scheduler: scheduler)
+        let plane = SMCFanControlPlane(scheduler: scheduler, connection: InertSMCConnection())
         let firstKeys = Self.snapshotKeys()
         let secondKeys = ["Q0", "Q1"]
 

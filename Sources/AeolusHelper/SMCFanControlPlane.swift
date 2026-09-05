@@ -49,14 +49,34 @@ struct SMCFanControlPlane: FanControlPlane {
 
     private let scheduler: SMCReadScheduler
 
+    /// The connection underneath the scheduler's provider — held only so `reconnect()` can
+    /// recycle it.
+    ///
+    /// **It must be the same one the provider reads through**, and nothing in the type
+    /// system says so: `SMCReadScheduler` holds a `SensorProvider`, which is a public
+    /// protocol that discloses no connection. Recycling a connection the reads do not use
+    /// would be a reconnect that fixes nothing while reporting that it worked —
+    /// `CLAUDE.md` rule 6 at the level below the fans. What holds it is the composition
+    /// root building both from one local, and
+    /// `HelperCompositionTests.theProviderAndThePlaneShareOneConnection` failing if a second
+    /// one is ever constructed in the helper.
+    private let connection: any SMCConnectionRecycling
+
     /// Takes the scheduler rather than a `SensorProvider`, so that **this type names its
     /// own priority** at the point each read is issued. A `SensorProvider` carries no
     /// priority in its signature, so a prioritised one would be a value whose behaviour
     /// cannot be read off its type — and the safety path is the one place that matters.
     /// Passing this plane a snapshot-priority reader is not a mistake there is a way to
     /// make.
-    init(scheduler: SMCReadScheduler) {
+    ///
+    /// `connection` is separate and is deliberately **not** defaulted. A defaulted
+    /// `SMCConnection()` would compile everywhere and be wrong everywhere: it would be a
+    /// second connection, so the recycle would leave the one being read through untouched.
+    /// Making the caller name it is what forces the composition root to have one local to
+    /// name.
+    init(scheduler: SMCReadScheduler, connection: some SMCConnectionRecycling) {
         self.scheduler = scheduler
+        self.connection = connection
     }
 
     // MARK: - Reads
@@ -150,26 +170,55 @@ struct SMCFanControlPlane: FanControlPlane {
             actualRPM: Self.readback(for: actualKey, in: outcomes))
     }
 
-    // MARK: - Recovery, not built
+    // MARK: - Recovery
 
-    /// Throws `.reconnectNotBuilt`, always.
+    /// Recycles the `io_connect_t`: `close()`, then `open()`, under an **exclusive**
+    /// scheduler turn.
     ///
-    /// Rebuilding the connection is `SMCConnection.close()` then `open()`, and neither is
-    /// reachable from here: this type holds an `SMCReadScheduler`, which holds a
-    /// `SensorProvider`, which is a **public** protocol every unprivileged client links.
-    /// Widening it to carry a reconnect verb — for one helper-internal caller, on a path
-    /// nothing has yet exercised on hardware — is a decision about a shipped public API,
-    /// and `SMCConnection`'s own cache note already assigns it: wiring recovery to a
-    /// lifecycle event "is a decision for whoever owns that lifecycle, not this cache."
-    /// [#103](https://github.com/blamechris/Aeolus/issues/103) owns sleep/wake and therefore
-    /// owns [#68](https://github.com/blamechris/Aeolus/issues/68), the stale `io_connect_t`
-    /// this verb exists for.
+    /// [#103](https://github.com/blamechris/Aeolus/issues/103)'s decision A6, and the answer
+    /// to [#68](https://github.com/blamechris/Aeolus/issues/68) — the stale handle after
+    /// wake, where every read fails, nothing else about the machine is wrong, and the fans
+    /// stay wherever a lease left them.
     ///
-    /// What ships today is that `ReclamationWatchdog` really does attempt the reconnect,
-    /// really does see it fail, and really does go on to restore and report — the branch is
-    /// written and covered rather than deferred with the mechanism.
+    /// ## The exclusive turn is the whole of the difficulty
+    ///
+    /// Closing a handle another task is reading through invalidates it *mid-request*, and
+    /// the read reports a firmware failure nothing on this machine caused — a fault that
+    /// looks exactly like the one being recovered from, produced by the recovery. So the
+    /// recycle takes a turn like any other read, and holds it across both calls:
+    /// `SMCReadScheduler.withExclusiveAccess(_:)` is that verb, and its documentation is
+    /// precise about what it does and does not hold off.
+    ///
+    /// Neither call is reachable through `SensorProvider`, which is a **public** protocol
+    /// every unprivileged client links; widening it to carry a recycle verb, for one
+    /// helper-internal caller, would be a decision about a shipped public API taken for a
+    /// private need. This type holds the connection directly instead, and
+    /// `SMCConnectionRecycling` is the two verbs it needs and nothing else.
+    ///
+    /// ## What a clean return proves
+    ///
+    /// That the handle was rebuilt. Not that reading works — no read has been issued since,
+    /// and `SMCConnection.close()` deliberately keeps its metadata cache, so a reopen that
+    /// succeeds says nothing about whether the firmware is answering. Every caller treats it
+    /// that way: `ReclamationWatchdog` restores and reports regardless, and `ConnectionHealth`
+    /// waits for the next read rather than declaring recovery.
+    ///
+    /// - Throws: `FanControlPlaneError.readFailed` when the reopen fails, carrying the
+    ///   underlying `SMCError`. Not its own case: the attempt was made and the machine did
+    ///   not come back, which is exactly what `.readFailed` means here — and the case that
+    ///   used to mean "no attempt was possible", `.reconnectNotBuilt`, is gone rather than
+    ///   left to be thrown by nothing.
     func reconnect() async throws {
-        throw FanControlPlaneError.reconnectNotBuilt
+        let connection = self.connection
+        do {
+            try await scheduler.withExclusiveAccess {
+                await connection.close()
+                try await connection.open()
+            }
+        } catch {
+            throw FanControlPlaneError.readFailed(
+                detail: "reconnect: \(String(describing: error))")
+        }
     }
 
     // MARK: - Writes, all refused
@@ -260,3 +309,45 @@ struct SMCFanControlPlane: FanControlPlane {
         return byKey
     }
 }
+
+// MARK: - The connection, at its narrowest
+
+/// The two lifecycle verbs `SMCFanControlPlane.reconnect()` needs of an SMC connection, and
+/// nothing else.
+///
+/// ## Why not just hold an `SMCConnection`
+///
+/// Because then the reconnect path could only be exercised on hardware. `SMCConnection.open()`
+/// is `IOServiceGetMatchingService` plus `IOServiceOpen`; CI runs on GitHub's macOS VMs, which
+/// have no SMC at all, so a test of "the recycle is serialised against a read in flight" or of
+/// "a stale handle reads again after a reconnect" would be a test that never runs where it
+/// matters. Behind this protocol both are ordinary, deterministic tests — see
+/// `ConnectionRecoveryTests`, whose fake SMC is one actor recording an ordered log.
+///
+/// ## It is deliberately two verbs, not one `recycle()`
+///
+/// A single verb would put the close-then-open sequence inside the `SMCConnection`
+/// conformance, where a test double replaces it wholesale — so the *order* would be asserted
+/// against a double's copy of the sequence rather than against the code that ships.
+/// `reconnect()` performing both calls is what makes "skip the `open()`" and "skip the
+/// `close()`" mutations of the production body, each red in `ConnectionRecoveryTests`.
+///
+/// ## The idempotence of `open()` is load-bearing
+///
+/// `SMCConnection.open()` returns without doing anything when a connection is already open,
+/// and `SMCSensorProvider.read(keys:)` calls it before every subset read. So the recycle is
+/// only a recycle because the `close()` comes first: an `open()` on its own is a no-op against
+/// a live-but-stale handle. The fake in `ConnectionRecoveryTests` models that exactly, which
+/// is what makes the skipped-`close()` mutation red rather than merely redundant.
+protocol SMCConnectionRecycling: Sendable {
+
+    /// Releases the `io_connect_t`. Safe when already closed.
+    func close() async
+
+    /// Opens a connection, or returns unchanged if one is already open.
+    func open() async throws
+}
+
+/// The production conformance. Both verbs already exist and are `public`; this states that
+/// the pair of them is what a recycle means, without adding anything to `SMCCore`.
+extension SMCConnection: SMCConnectionRecycling {}

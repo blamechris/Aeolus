@@ -33,7 +33,6 @@ import SMCCore
 ///
 /// ## What it deliberately does not do
 ///
-/// No connection health or reconnect ([#168](https://github.com/blamechris/Aeolus/issues/168)).
 /// Startup reconciliation ([#164](https://github.com/blamechris/Aeolus/issues/164)) is no
 /// longer on that list — `bringUp()` runs it as its second step, and the restart policy that
 /// makes it load-bearing ([#165](https://github.com/blamechris/Aeolus/issues/165)) ships in
@@ -46,6 +45,10 @@ import SMCCore
 ///
 /// The orderly signal teardown ([#166](https://github.com/blamechris/Aeolus/issues/166)) is
 /// the other, here as of E5.4d — `signalTeardown`, installed last in `bringUp()`.
+///
+/// Connection health ([#168](https://github.com/blamechris/Aeolus/issues/168)) is here as of
+/// E5.4f — `connectionHealth`, observing the scheduler and rebuilding the connection after a
+/// run of whole-read failures on either read path. `bringUp()` names where it starts.
 struct HelperComposition<Plane: FanControlPlane>: Sendable {
 
     /// The single control plane. Every safety mechanism's reads and writes go through it, at
@@ -128,6 +131,16 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// What the listener is given. Replaces `ReadOnlyFanAuthority` in that role.
     let authority: SupervisedFanAuthority
 
+    /// #103's A6: one rate-limited reconnect after a run of whole-read failures on either
+    /// path, so the helper never sits blind holding nothing.
+    ///
+    /// Passed **in** rather than built here, because it has to exist before the scheduler
+    /// does — the scheduler reports to it, the plane holds the scheduler, and this holds the
+    /// plane. `production(log:)` is where that knot is tied; every other composition gets a
+    /// fresh one that no scheduler reports to, which counts nothing and is exactly right for
+    /// a graph composed over `ScriptedControlPlane`.
+    let connectionHealth: ConnectionHealth
+
     /// § 4's responder: release, restore, then allow the power change. See
     /// `SystemPowerResponder`.
     let powerResponder: SystemPowerResponder<Plane>
@@ -185,6 +198,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         snapshotProvider: some SensorProvider,
         criticalSensors: CriticalSensorSet,
         clock: some MonotonicClock = SystemMonotonicClock(),
+        connectionHealth: ConnectionHealth = ConnectionHealth(),
         reconciliationBudget: Duration = ReconciliationLimits.budget,
         powerObserver: (any SystemPowerObserving)? = nil,
         acknowledgementBudget: Duration = SystemPowerLimits.acknowledgementBudget,
@@ -194,6 +208,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         teardown: TeardownSeams = TeardownSeams()
     ) {
         self.plane = plane
+        self.connectionHealth = connectionHealth
         self.powerObserver = powerObserver
 
         // Built as locals and then handed round, because each is read by several mechanisms
@@ -345,15 +360,20 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// 2. **Startup reconciliation** — `#164`, E5.4b. Between the bind and the supervisors,
     ///    because a fan restored by reconciliation must not be read by § 5's first cycle as
     ///    a reclamation, and because the restore it performs needs the registries bound.
-    /// 3. **Start the supervisors.** § 3 first: it is the higher-precedence actor, and its
+    /// 3. **Start observing the connection for whole-read failures** — `#168`, E5.4f. The
+    ///    second circular edge, closed for the same reason as the first: the scheduler
+    ///    reports to this observer and this observer reconnects through the plane the
+    ///    scheduler is underneath. Before the supervisors, so that a failing read from the
+    ///    very first supervisor cycle is already being counted.
+    /// 4. **Start the supervisors.** § 3 first: it is the higher-precedence actor, and its
     ///    first cycle is what establishes whether this machine can be seen at all.
-    /// 4. **Hear the system's power events** — `#167`, E5.4e. After the supervisors, because
+    /// 5. **Hear the system's power events** — `#167`, E5.4e. After the supervisors, because
     ///    § 4's first act on a `.willSleep` is to drop every lease and restore, and both need
     ///    the registries bound; and because a sleep arriving before the supervisors are
     ///    running would leave the handback unwatched by § 5. It is also the one step allowed
     ///    to fail and carry on: a helper that cannot hear the system still has § 1's TTL,
     ///    which is the backstop § 4 was always measured against.
-    /// 5. **Install the orderly signal teardown** — `#166`, E5.4d. Last, and after the
+    /// 6. **Install the orderly signal teardown** — `#166`, E5.4d. Last, and after the
     ///    supervisors rather than before them, because its final step *stops* them: a
     ///    `SIGTERM` served before they started would stop loops that are not running and
     ///    then leave them started by the lines below it. Still before `listener.resume()`,
@@ -373,6 +393,13 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     func bringUp() async {
         await bindSafetyRegistries()
         await reconcileFans()
+
+        // The second circular edge, closed for `bindSafetyRegistries()`'s reason: the
+        // scheduler reports to this observer and this observer reconnects through the plane
+        // the scheduler is underneath. Before the supervisors, so that a failing read from
+        // the very first cycle is already being counted.
+        await connectionHealth.start(recovering: plane)
+
         await thermalSupervisor.start()
         await reclamationSupervisor.start()
         await leaseExpirySupervisor.start()
@@ -461,6 +488,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         await thermalSupervisor.stop()
         await reclamationSupervisor.stop()
         await leaseExpirySupervisor.stop()
+        await connectionHealth.stop()
     }
 }
 
@@ -486,16 +514,30 @@ extension HelperComposition where Plane == SMCFanControlPlane {
     /// would `SIG_IGN` `SIGTERM`, `SIGINT` and `SIGHUP` in the `swift test` process and then
     /// end it with the successful-exit call on the next one — a test run that reports
     /// success without finishing.
+    ///
+    /// ## One connection, named once, so the reconnect recycles the one being read through
+    ///
+    /// `connection` is a local rather than an `SMCSensorProvider()` default, because two
+    /// things need the *same* one and only one of them can reach it through the other:
+    /// `SMCSensorProvider` reads through it, and `SMCFanControlPlane.reconnect()` closes and
+    /// reopens it. A plane built over a second connection would recycle a handle nothing
+    /// reads and report that it worked. `SensorProvider` is public and discloses no
+    /// connection, so nothing in the type system says these are the same one —
+    /// `HelperCompositionTests.theProviderAndThePlaneShareOneConnection` is what does.
     static func production(
         log: HelperLog = HelperLog(),
         teardown: TeardownSeams = TeardownSeams()
     ) -> HelperComposition<SMCFanControlPlane> {
-        let scheduler = SMCReadScheduler(provider: SMCSensorProvider())
-        let plane = SMCFanControlPlane(scheduler: scheduler)
+        let connection = SMCConnection()
+        let connectionHealth = ConnectionHealth()
+        let scheduler = SMCReadScheduler(
+            provider: SMCSensorProvider(connection: connection), observer: connectionHealth)
+        let plane = SMCFanControlPlane(scheduler: scheduler, connection: connection)
         return HelperComposition(
             plane: plane,
             snapshotProvider: scheduler.snapshotReader,
             criticalSensors: CriticalSensorSet.resolve(for: .current()),
+            connectionHealth: connectionHealth,
             powerObserver: IOKitSystemPowerObserver(),
             log: log,
             teardown: teardown)

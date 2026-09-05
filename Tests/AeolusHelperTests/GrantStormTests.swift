@@ -77,7 +77,7 @@ struct GrantStormTests {
     func theSafetyCycleIsNotDelayedByAGrantStorm() async throws {
         let provider = GatedSensorProvider(holdingSubsetReads: true)
         let scheduler = SMCReadScheduler(provider: provider)
-        let plane = SMCFanControlPlane(scheduler: scheduler)
+        let plane = SMCFanControlPlane(scheduler: scheduler, connection: InertSMCConnection())
         let telemetry = CuratedCriticalTemperatures(plane: plane, set: .mac16x5)
         let sightings = CriticalTemperatureCache(source: telemetry)
         let latch = ThermalEmergencyLatch()

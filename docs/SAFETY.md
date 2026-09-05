@@ -28,8 +28,10 @@ nobody re-reads is how a coverage claim outlives its subject. **§ 6's startup r
 left that list in #164**, along with the launchd restart policy ADR 0007 made conditional on
 it, and the same correction-in-place rule applies here as above. § 6's orderly signal
 teardown joined the built list in E5.4d (#166) and is corrected here for the same reason.
-Not built: § 7's body, § 8's hysteresis, and the connection health and reconnect of
-[#168](https://github.com/blamechris/Aeolus/issues/168). All of it is tracked as epic E5,
+The connection health and reconnect of
+[#168](https://github.com/blamechris/Aeolus/issues/168) left that list in E5.4f, and the
+same correction-in-place rule applies here as above.
+Not built: § 7's body and § 8's hysteresis. All of it is tracked as epic E5,
 and E5 blocks the write-path epics E3 and E4. No code that writes to the SMC merges before
 the safety subsystem exists and is tested.
 

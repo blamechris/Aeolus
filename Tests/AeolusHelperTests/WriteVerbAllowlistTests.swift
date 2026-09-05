@@ -40,7 +40,7 @@ import Testing
 ///
 /// - **A synchronous function that spawns an unstructured `Task` and writes inside it.**
 ///   That is the one route around "a synchronous function cannot `await`".
-///   `Sources/AeolusHelper` has **eighteen** such spawn sites today, and an earlier draft of
+///   `Sources/AeolusHelper` has **nineteen** such spawn sites today, and an earlier draft of
 ///   this bullet said five and called them all supervisors — which was both the wrong number
 ///   and the wrong description, so the containment argument it offered was not the one the
 ///   tree supports. The count then said fourteen for one wave after
@@ -64,8 +64,10 @@ import Testing
 ///   `async` handler; and one is `SystemPowerResponder.allowSleepAfterHandback(_:)`'s
 ///   acknowledgement budget, which runs beside a handback `BoundedFanRestorer` makes
 ///   uncancellable and therefore cannot be a task group, since a group waits for every child;
-///   and one is `SignalTeardown.install(stoppingSupervisorsWith:)`, added by
-///   [#166](https://github.com/blamechris/Aeolus/issues/166). The two before it are #167's.
+///   one is `SignalTeardown.install(stoppingSupervisorsWith:)`, added by
+///   [#166](https://github.com/blamechris/Aeolus/issues/166) — the two before it are #167's —
+///   and one is `ConnectionHealth.start(recovering:)`'s event pump, added by
+///   [#168](https://github.com/blamechris/Aeolus/issues/168).
 ///
 ///   **The `CriticalTemperatureCache` one is `BoundedFanRestorer`'s shape, not this bullet's
 ///   hazard.** Its spawner is already `async`, so it is not a synchronous function reaching a
@@ -81,6 +83,15 @@ import Testing
 ///   way across. Its body is one `await` of `run(stoppingSupervisorsWith:)`, which
 ///   `permitFreeFunctions` acknowledges, and it touches no fan of its own.
 ///   `SystemPowerRegistration`'s is the IOKit one described above.
+///
+///   **The `ConnectionHealth` one is not this bullet's hazard either**, and for a further
+///   distinct reason worth writing down rather than rounding off. Its spawner is
+///   actor-isolated and not `async`, so it *is* a synchronous function spawning a task — but
+///   the task's body is an `AsyncStream` loop whose only statement awaits
+///   `handle(_:recovering:)`, which `permitFreeFunctions` acknowledges. The `Task` is there
+///   because the work has to leave the scheduler's call stack: `SchedulerObserving` is
+///   reported synchronously from inside `SMCReadScheduler`'s actor, and a reconnect takes a
+///   scheduler turn.
 ///
 ///   **The `AeolusHelperMain` one is the third**:
 ///   `main()` is synchronous and cannot `await`, `NSXPCListener` is not `Sendable` so the
@@ -100,7 +111,7 @@ import Testing
 ///   acknowledges, so the containment argument holds for it by the same route as the rest.
 ///
 ///   An earlier draft of this bullet said each body was *a single* `await` of a population
-///   member. That is true of thirteen of the eighteen and **false of the three supervisors**,
+///   member. That is true of fourteen of the nineteen and **false of the three supervisors**,
 ///   whose bodies await `run(…)` and then `loopEnded(generation:)` — a private, synchronous,
 ///   actor-isolated method whose entire body is `task = nil`, so it is in no population here
 ///   and could not be: it is neither `async` nor permit-bearing — **false of
@@ -297,6 +308,18 @@ struct WriteVerbAllowlistTests {
         "StartupReconciliation.swift: reconcile()",
         "StartupReconciliation.swift: refusalForGrant(overFans: Set<Int>, "
             + "heldByAeolus: Set<Int>)",
+        // #168's five. None of them can express a fan write: `withExclusiveAccess` runs an
+        // arbitrary body under a scheduler turn and could in principle carry one — but the
+        // body is supplied by the caller, so what it may do is the *caller's* classification,
+        // and its one caller is `SMCFanControlPlane.reconnect()` on this list. `close()` and
+        // `open()` are `SMCConnectionRecycling`'s two verbs: connection lifecycle, no key, no
+        // fan, no value on the wire.
+        "ConnectionHealth.swift: attemptReconnect(through: some SMCConnectionRecovering)",
+        "ConnectionHealth.swift: handle(_: SequencedOutcome, "
+            + "recovering: some SMCConnectionRecovering)",
+        "SMCFanControlPlane.swift: close()",
+        "SMCFanControlPlane.swift: open()",
+        "SMCReadScheduler.swift: withExclusiveAccess(_: @Sendable () async throws -> T)",
         "CriticalTemperatureSensing.swift: readCriticalTemperatures()",
         "FanAuthority.swift: acquireLease(_: LeaseRequest, from: ConnectionID)",
         "FanAuthority.swift: apply(_: [FanSetting], leaseID: UUID, from: ConnectionID)",
@@ -556,14 +579,15 @@ struct WriteVerbAllowlistTests {
     ///
     /// An unstructured `Task` lets a synchronous function reach an `async` write, so every
     /// spawn site is a hole in the population — unless what it spawns is itself acknowledged.
-    /// That is what holds here: none of the eighteen bodies writes, and each hands off to an
+    /// That is what holds here: none of the nineteen bodies writes, and each hands off to an
     /// `async` method in the population. (The three supervisors also await a synchronous
     /// `loopEnded(generation:)` that only clears a task handle; `BoundedFanRestorer`'s and
     /// `CriticalTemperatureCache`'s spawners are themselves `async`, so their `Task`s shield
-    /// cancellation and share one read rather than bridging from synchronous code; and
-    /// `AeolusHelperMain`'s also signals a `DispatchSemaphore`, which
-    /// is how the listener stays off the task that cannot safely carry it — see the suite
-    /// doc, which says all four rather than rounding them off.)
+    /// cancellation and share one read rather than bridging from synchronous code;
+    /// `AeolusHelperMain`'s also signals a `DispatchSemaphore`, which is how the listener
+    /// stays off the task that cannot safely carry it; and `ConnectionHealth`'s is an
+    /// `AsyncStream` loop whose one statement awaits a population member — see the suite
+    /// doc, which says all five rather than rounding them off.)
     ///
     /// [#167](https://github.com/blamechris/Aeolus/issues/167) added the last two, and they
     /// are the two shapes this rule is about. `SystemPowerObserver`'s is the *only* route from
@@ -574,7 +598,7 @@ struct WriteVerbAllowlistTests {
     /// so a task group — which waits for every child — could not express it. Its body sleeps
     /// and then awaits `SleepAcknowledgement.acknowledge(_:)`, and writes nothing.
     ///
-    /// The count is asserted per file so it cannot drift silently. A nineteenth spawn site
+    /// The count is asserted per file so it cannot drift silently. A twentieth spawn site
     /// fails this with the file it was added to, and the maintainer either shows it hands off
     /// the same way and updates the number, or has found the hole.
     ///
@@ -593,6 +617,7 @@ struct WriteVerbAllowlistTests {
         let expected = [
             "AeolusHelperMain.swift": 1,
             "BoundedFanRestorer.swift": 1,
+            "ConnectionHealth.swift": 1,
             "CriticalTemperatureCache.swift": 1,
             "HelperListenerDelegate.swift": 1,
             "HelperXPCService.swift": 7,

@@ -120,7 +120,15 @@ import SMCCore
 /// from here. Held as a single turn it would be a **guaranteed 2.2 s — 5.9 s cold — with
 /// the supervisor locked out**, which is far worse than the defect being fixed.
 ///
-/// So it takes no turn at all. Ungated, `readAll()`'s own walk hops the `SMCConnection`
+/// So it takes no turn at all — with **one** exclusion kept, because one hazard survives the
+/// argument above. A recycle closing the `io_connect_t` mid-walk does not merely slow the walk
+/// down: `SMCSensorProvider.readAll()` skips every key that fails, and `ReadOnlyFanAuthority`
+/// caches what comes back for the life of the daemon, so the machine would run on a silently
+/// truncated sensor set until the next boot. `withExclusiveAccess(_:)` and `readAll()`
+/// therefore wait for each other, without either holding a turn while it waits; ruling D22 and
+/// that method's documentation have the shape.
+///
+/// Ungated against *reads*, `readAll()`'s own walk hops the `SMCConnection`
 /// actor twice per key, ~2929 times, and a supervisor read enqueued there is serviced
 /// within about one round trip. That is a property of how the walk is written rather than a
 /// guarantee the language makes about actor fairness, and it is stated that way on purpose:
@@ -180,6 +188,24 @@ actor SMCReadScheduler {
     /// are. It says nothing about how long any one of them waits; see the class doc.
     static let maxConsecutiveOvertakes = 2
 
+    /// The longest occupation of the connection anything in the helper waits behind: a
+    /// **cold** discovery walk, as measured in the table in this type's documentation.
+    ///
+    /// Named rather than quoted, for the one thing that is sized from it.
+    /// `withExclusiveAccess(_:)` waits for a walk already in flight before taking its turn
+    /// (ruling D22), and `ConnectionHealth`'s pump is parked inside that wait for as long as
+    /// the walk runs — so its event buffer has to hold a cold walk's worth of outcomes at
+    /// the peak rate. `ConnectionHealth.eventBuffer` derives from this figure, and
+    /// `ConnectionHealthTests.theBufferOutlastsAColdDiscoveryWalk` pins the inequality. Two
+    /// numbers that live apart drift apart, which is how "5.9 s" and "eight to sixteen
+    /// seconds" came to be quoted in two files with nothing relating them.
+    ///
+    /// **Not a timeout, and it must never become one.** It says how long the wait is
+    /// expected to be; it does not bound it. See `readAll()` for what a wedged walk does,
+    /// and [#205](https://github.com/blamechris/Aeolus/issues/205) for why the bound cannot
+    /// be added on the waiter's side.
+    static let longestMeasuredDiscoveryWalk: Duration = .milliseconds(5900)
+
     /// The single provider every read here goes to. `SMCSensorProvider` in the daemon, a
     /// double under test.
     private let provider: any SensorProvider
@@ -191,20 +217,55 @@ actor SMCReadScheduler {
 
     /// Waiters, FIFO within each priority, so equal-priority reads cannot starve each
     /// other either.
-    private var supervisorWaiters: [CheckedContinuation<Void, Never>] = []
-    private var snapshotWaiters: [CheckedContinuation<Void, Never>] = []
+    private var supervisorWaiters: [ParkedTurn] = []
+    private var snapshotWaiters: [ParkedTurn] = []
 
     /// Supervisor turns admitted in a row while a snapshot turn was waiting. Reset by every
     /// snapshot turn, which is what makes "consecutive" mean what it says.
     private var consecutiveOvertakes = 0
 
+    /// Discovery walks running right now — see `withExclusiveAccess(_:)` for what this
+    /// excludes and why a turn could not express it.
+    ///
+    /// A count rather than a flag because this type does not enforce `ReadOnlyFanAuthority`'s
+    /// at-most-one-walk invariant and must not quietly depend on it: that invariant lives one
+    /// layer up, is stated there, and a second walk arriving here has to be waited out rather
+    /// than lose the first one's exclusion.
+    private var discoveryWalksInFlight = 0
+
+    /// Exclusive bodies claimed right now, counted from the moment one starts waiting for a
+    /// walk rather than from the moment it holds a turn.
+    ///
+    /// Also a count, and for a sharper reason: two recycles overlapping is ordinary — the
+    /// second waits at the gate for the first's turn — and a flag the first cleared on its way
+    /// out would let a walk start inside the second one's body.
+    private var exclusiveClaims = 0
+
+    /// Exclusive bodies parked until the last discovery walk ends.
+    private var waitingForDiscovery: [CheckedContinuation<Void, Never>] = []
+
+    /// Discovery walks parked until the last exclusive claim ends.
+    private var waitingForExclusive: [CheckedContinuation<Void, Never>] = []
+
     /// The underlying provider's identifier, carried so a prioritised view can answer
     /// `SensorProvider.identifier` without an `await`.
     nonisolated let identifier: String
 
-    init(provider: some SensorProvider) {
+    /// Who is told what this scheduler did, or nobody.
+    ///
+    /// `nonisolated` and reported synchronously, so a report costs no actor hop and no task —
+    /// see `SchedulerObserving`, which also carries the rule that buys: a conformer must
+    /// return promptly, because this call happens inside the turn it is describing.
+    ///
+    /// Optional because the daemon is the only composition that has one: every scheduler
+    /// built under `Tests/` for a reason other than observing passes nothing, and gets the
+    /// same code path with the reports discarded at the `?.`.
+    nonisolated private let observer: (any SchedulerObserving)?
+
+    init(provider: some SensorProvider, observer: (any SchedulerObserving)? = nil) {
         self.provider = provider
         self.identifier = provider.identifier
+        self.observer = observer
     }
 
     /// Whether the machine has a readable SMC at all. Takes no turn: it is a static IOKit
@@ -231,20 +292,204 @@ actor SMCReadScheduler {
         await takeTurn(at: priority)
         // Holds on every exit, including a throw from the provider: the turn is held from
         // `takeTurn` above or from the last `yieldTurn` below, and never anywhere else.
-        defer { endTurn() }
+        defer { endTurn(at: priority) }
 
-        for (offset, turn) in Self.turns(over: keys).enumerated() {
-            if offset > 0 { await yieldTurn(at: priority) }
-            outcomes.append(contentsOf: try await provider.read(keys: Array(turn)))
+        do {
+            for (offset, turn) in Self.turns(over: keys).enumerated() {
+                if offset > 0 { await yieldTurn(at: priority) }
+                outcomes.append(contentsOf: try await provider.read(keys: Array(turn)))
+            }
+        } catch {
+            // Reported here rather than in the `defer`, because the `defer` cannot see the
+            // error and a "the read ended" event that could not say whether it ended well is
+            // exactly the successful-report-of-nothing shape this repository keeps refusing.
+            report(.wholeReadFailed(priority: priority, detail: String(describing: error)))
+            throw error
         }
 
+        // A throw is not the only way a whole read fails, and for the case this hook exists
+        // for it is not even the usual one. See `wholeReadEvent(for:at:)`.
+        report(Self.wholeReadEvent(for: outcomes, at: priority))
         return outcomes
+    }
+
+    /// What this request says about the connection: it answered; it answered nothing for a
+    /// reason that is the handle's; or it was never asked anything the handle could answer.
+    ///
+    /// ## Deciding from the outcomes rather than from a throw, and why that is the whole fix
+    ///
+    /// The first version of this type reported `.wholeReadFailed` only when
+    /// `provider.read(keys:)` threw, and a review established that
+    /// [#68](https://github.com/blamechris/Aeolus/issues/68)'s stale `io_connect_t` **cannot
+    /// reach that path**: `SMCSensorProvider.read(keys:)` throws from exactly one place,
+    /// `SMCConnection.open()`, and `open()` is `guard connection == 0 else { return }` — a
+    /// handle that is stale but non-zero returns from it having done nothing. What follows is
+    /// `SMCConnection.read(keys:)`, which is `keys.map(readOutcome(for:))` and is **not
+    /// throwing**: it reports every key as a per-key `.readFailed` and returns normally. So
+    /// the exact failure `ConnectionHealth` was built to notice arrived here as a *successful*
+    /// read of nothing, and the only test that said otherwise was a double that threw where
+    /// production does not. #103's ruling D21 is this method.
+    ///
+    /// ## The three-way rule, and why `.unknownKey` is on neither side of it
+    ///
+    /// - A request in which **any** key produced a value is `wholeReadSucceeded`. One
+    ///   thermistor going quiet is not the connection, and never was — that is the
+    ///   distinction the `wholeReadFailed` case's documentation has always drawn.
+    /// - A request with no value and **at least one failure that is not `.unknownKey`** is
+    ///   `wholeReadFailed`: the connection failing to answer at all.
+    /// - A request whose failures are **all** `.unknownKey` is `wholeReadAbsentOnly`, and
+    ///   ruling D25 is why that is a third answer rather than either of the first two. It is
+    ///   not a failure: an absent key is a fact about the *machine*, not about the handle —
+    ///   `SMCFanEnumeration` asks every Mac for `FNum` and a fanless one has none, and
+    ///   `CriticalSensorSet` deliberately asks for keys a given Mac may not expose — so
+    ///   counting it would reconnect the helper, on a connection that is answering perfectly,
+    ///   once every 1.5 s for ever. But it is not a success either, and D21's first draft
+    ///   said it was: `SMCConnection.read(keys:)` answers a key outside `knownKeys` with
+    ///   `.keyNotFound` at **zero round trips**, so no IOKit call happened and nothing proved
+    ///   the handle alive. Reported as a success it reset `ConnectionHealth`'s run, and on a
+    ///   fanless Mac with a stale handle — where the fan-count read is absent-only on every
+    ///   snapshot — the pump saw success, failure, success, failure for ever and the run
+    ///   peaked at one. `ConnectionRecoveryTests.theFanlessMacCaseReachesAReconnect` is that
+    ///   machine, driven through this graph.
+    ///
+    /// An empty `outcomes` array reports success. It is unreachable through
+    /// `SensorProvider`'s contract (one outcome per requested key, and `read(keys:at:)`
+    /// returns early on an empty request), and inventing a connection failure out of a
+    /// provider returning nothing would be claiming a fault that nothing observed.
+    private static func wholeReadEvent(
+        for outcomes: [SensorReadOutcome], at priority: SMCReadPriority
+    ) -> SchedulerEvent {
+        var firstFailure: SensorReadOutcome?
+        var sawAbsentKey = false
+        for outcome in outcomes {
+            switch outcome.result {
+            case .success:
+                return .wholeReadSucceeded(priority: priority)
+            case .failure(.unknownKey):
+                sawAbsentKey = true
+            case .failure:
+                if firstFailure == nil { firstFailure = outcome }
+            }
+        }
+
+        guard let failed = firstFailure, case .failure(let reason) = failed.result else {
+            return sawAbsentKey
+                ? .wholeReadAbsentOnly(priority: priority)
+                : .wholeReadSucceeded(priority: priority)
+        }
+        return .wholeReadFailed(
+            priority: priority,
+            detail: """
+                no key in a \(outcomes.count)-key request produced a value: \(failed.key) \
+                reported \(reason.readableDescription)
+                """)
+    }
+
+    // MARK: - Exclusive access
+
+    /// Runs `body` with no read and no discovery walk touching the connection: an ordinary
+    /// turn, plus mutual exclusion against the one occupation of the connection that takes no
+    /// turn at all.
+    ///
+    /// It exists for exactly one caller — `SMCFanControlPlane.reconnect()`, which closes the
+    /// `io_connect_t` and opens a new one — and the reason it must be a scheduler verb rather
+    /// than something the plane does on its own is that **a close racing a read invalidates
+    /// the handle the read is holding.** `SMCSensorProvider.read(keys:)` opens idempotently
+    /// and then issues its round trips against whatever handle it found; a recycle landing in
+    /// the middle of that is a read against a closed connection, reported as a firmware
+    /// failure that nothing on this machine caused.
+    ///
+    /// ## What it does and does not serialise
+    ///
+    /// A **multi-turn read is not held off end to end**: a 46-turn snapshot yields between
+    /// slices, and this may be admitted in one of those gaps. That is correct rather than a
+    /// gap in the exclusion — the provider reopens on the next slice, and a snapshot's
+    /// readings were never simultaneous anyway (see this type's documentation on splitting).
+    /// What must never happen is a recycle *inside* one `provider.read(keys:)` call, and that
+    /// is precisely what a turn prevents.
+    ///
+    /// **`readAll()` is the exception a turn cannot cover, so it is covered separately.**
+    /// Discovery takes no turn by design — holding one would be a 2.2 s, 5.9 s cold, barrier
+    /// against the safety cycle — so for one release of this file "an ordinary turn and
+    /// nothing more" meant a recycle could close the handle in the middle of the walk. The
+    /// walk skips every key that fails (`SMCSensorProvider.readAll()` is a chain of `try?`s)
+    /// and `ReadOnlyFanAuthority` caches what it returns for the life of the daemon, so the
+    /// visible result would have been a permanently truncated sensor set with nothing logged.
+    /// #103's ruling D22 is the two waits below: this body waits for a walk that is already
+    /// running, and `readAll()` waits for a body that is already running. Neither ever holds a
+    /// turn while waiting for the other, which is what keeps reads flowing throughout and what
+    /// makes the pair deadlock-free — a walk that is already counted never waits. **Neither
+    /// wait is bounded**, and the one this body makes is expected to last at most
+    /// `longestMeasuredDiscoveryWalk`; what a walk that never ends does to it is recorded at
+    /// `readAll()`, with why a timeout here would be the wrong fix.
+    ///
+    /// `ConnectionRecoveryTests` scripts both directions against an ordered log the provider
+    /// and the connection share: `aReconnectNeverLandsInsideAReadInFlight`,
+    /// `aReconnectWaitsForADiscoveryWalkInFlight`, and `aDiscoveryWalkWaitsForARecycle`.
+    ///
+    /// - Important: `body` is run **while this actor is suspended and the turn is held**, so
+    ///   it must not issue a read through this scheduler. It would queue behind a turn only
+    ///   its own caller can release.
+    func withExclusiveAccess<T: Sendable>(
+        _ body: @Sendable () async throws -> T
+    ) async rethrows -> T {
+        // Claimed *before* the wait, so a walk arriving while this one waits queues behind it
+        // rather than joining the set being waited on — otherwise a machine discovering in a
+        // loop could defer a recycle indefinitely.
+        exclusiveClaims += 1
+        defer { endExclusiveClaim() }
+
+        // `while`, not `if`: being resumed only means the count was zero at the instant the
+        // waiter was woken, and re-entering this actor is a second hop.
+        while discoveryWalksInFlight > 0 {
+            await withCheckedContinuation { waitingForDiscovery.append($0) }
+        }
+
+        // The turn is taken after the walk, never before it: holding one across a 5.9 s cold
+        // walk would lock the safety cycle out for exactly the span this type exists to stop
+        // anything holding.
+        await takeTurn(at: .supervisor)
+        defer { endTurn(at: .supervisor) }
+        return try await body()
     }
 
     /// Discovery. **Takes no turn** — see this type's documentation for why holding one
     /// would be worse than the contention it would be trying to arbitrate.
+    ///
+    /// It is still excluded against `withExclusiveAccess(_:)`, which is a different claim from
+    /// taking a turn and is the whole of ruling D22: a walk waits for a recycle that is
+    /// already claimed, and is counted for as long as it runs so a recycle waits for it.
+    ///
+    /// ## Two limits, recorded on [#205](https://github.com/blamechris/Aeolus/issues/205)
+    ///
+    /// **It emits no scheduler event.** A walk that fails — or, worse, returns a short set,
+    /// because `SMCSensorProvider.readAll()` skips every key that fails and returns normally
+    /// — is counted by nothing: `ConnectionHealth` sees the snapshot and supervisor paths
+    /// only, and a dead connection at bring-up is noticed by the next 1 Hz subset read rather
+    /// than by the walk. Reporting it needs a decision this file does not take, which is
+    /// whether a 5.9 s walk's outcome belongs in the same run as reads issued at 1 Hz.
+    ///
+    /// **The wait a recycle makes for it has no bound, by design.** A walk in which IOKit
+    /// wedges — the round trip under `SMCConnection` never returns — leaves
+    /// `discoveryWalksInFlight` at 1 for the life of the process; the recycle waiting behind
+    /// it never takes its turn and leaves `exclusiveClaims` at 1, so every later walk parks
+    /// too; and `ConnectionHealth`'s pump, which is inside that recycle, is parked
+    /// indefinitely — nothing is counted, and its buffer evicts. Reads keep flowing, because
+    /// no turn is held. This is a documented limitation of D22 and **not** a bug a timeout
+    /// would fix: a recycle that stopped waiting and took its turn would close the handle
+    /// underneath the walk still reading through it, which is the exact hazard D22 exists to
+    /// prevent. The bound has to come from the walk's side, and that is #205's subject.
     func readAll() async throws -> [SensorReading] {
-        try await provider.readAll()
+        while exclusiveClaims > 0 {
+            await withCheckedContinuation { waitingForExclusive.append($0) }
+        }
+
+        discoveryWalksInFlight += 1
+        // Holds on a throwing walk too, which is the path that matters: a walk that failed
+        // and left the count raised would refuse every future recycle for the life of the
+        // process, and #68 is exactly the case where walks are failing.
+        defer { endDiscoveryWalk() }
+        return try await provider.readAll()
     }
 
     /// How many turns are queued at `priority`.
@@ -260,6 +505,35 @@ actor SMCReadScheduler {
         }
     }
 
+    /// How many exclusive bodies are waiting for a discovery walk to finish.
+    ///
+    /// `queuedTurns(at:)`'s sibling and there for the same #109 reason: without it, "the
+    /// recycle is waiting rather than barging in" is a fact a test can only infer from
+    /// timing, and a regression then arrives as a killed CI job instead of a red line.
+    var recyclesWaitingForDiscovery: Int { waitingForDiscovery.count }
+
+    /// How many discovery walks are waiting for an exclusive body to finish. The mirror of
+    /// `recyclesWaitingForDiscovery`, for the other direction of the same exclusion.
+    var walksWaitingForARecycle: Int { waitingForExclusive.count }
+
+    /// Ends this walk and, if it was the last, wakes everything waiting for one.
+    private func endDiscoveryWalk() {
+        discoveryWalksInFlight -= 1
+        guard discoveryWalksInFlight == 0 else { return }
+        let parked = waitingForDiscovery
+        waitingForDiscovery.removeAll()
+        for waiter in parked { waiter.resume() }
+    }
+
+    /// Ends this claim and, if it was the last, wakes every walk waiting for one.
+    private func endExclusiveClaim() {
+        exclusiveClaims -= 1
+        guard exclusiveClaims == 0 else { return }
+        let parked = waitingForExclusive
+        waitingForExclusive.removeAll()
+        for waiter in parked { waiter.resume() }
+    }
+
     // MARK: - Turns
 
     /// Consecutive slices of at most `maxKeysPerTurn` keys, in request order.
@@ -273,6 +547,10 @@ actor SMCReadScheduler {
     private func takeTurn(at priority: SMCReadPriority) async {
         if !isTurnInFlight && supervisorWaiters.isEmpty && snapshotWaiters.isEmpty {
             isTurnInFlight = true
+            // `queuedAt` is now, because this turn queued for nothing. A consumer computing
+            // a wait therefore gets zero rather than a missing value, which is what lets
+            // `turnGranted` be one case instead of two.
+            report(.turnGranted(priority: priority, queuedAt: ContinuousClock.now))
             return
         }
         await withCheckedContinuation { continuation in
@@ -305,32 +583,38 @@ actor SMCReadScheduler {
     /// `maxConsecutiveOvertakes + 1`.
     private func yieldTurn(at priority: SMCReadPriority) async {
         isTurnInFlight = false
+        report(.turnEnded(priority: priority))
         await withCheckedContinuation { continuation in
             enqueue(continuation, at: priority)
             admitNext()
         }
     }
 
-    /// Releases the connection at the end of a read.
-    private func endTurn() {
+    /// Releases the connection at the end of a read, or of an exclusive body.
+    private func endTurn(at priority: SMCReadPriority) {
         isTurnInFlight = false
+        report(.turnEnded(priority: priority))
         admitNext()
     }
 
     private func enqueue(
         _ continuation: CheckedContinuation<Void, Never>, at priority: SMCReadPriority
     ) {
+        let parked = ParkedTurn(
+            continuation: continuation, priority: priority, queuedAt: ContinuousClock.now)
         switch priority {
-        case .supervisor: supervisorWaiters.append(continuation)
-        case .snapshot: snapshotWaiters.append(continuation)
+        case .supervisor: supervisorWaiters.append(parked)
+        case .snapshot: snapshotWaiters.append(parked)
         }
+        report(.waiterParked(priority: priority, queuedAt: parked.queuedAt))
     }
 
     /// Hands the connection to whichever waiter the policy chooses, if any.
     private func admitNext() {
         guard !isTurnInFlight, let next = nextTurn() else { return }
         isTurnInFlight = true
-        next.resume()
+        report(.turnGranted(priority: next.priority, queuedAt: next.queuedAt))
+        next.continuation.resume()
     }
 
     /// The policy itself: strict supervisor priority, spent down by a quota.
@@ -339,7 +623,7 @@ actor SMCReadScheduler {
     /// a plain two-queue FIFO that compiles, answers every key correctly, and orders the
     /// supervisor behind the snapshot again. Run: the three ordering tests go red and the
     /// read-correctness ones stay green, which is the split worth having.
-    private func nextTurn() -> CheckedContinuation<Void, Never>? {
+    private func nextTurn() -> ParkedTurn? {
         // Nobody to starve: the quota has nothing to protect, so it does not run down.
         guard !snapshotWaiters.isEmpty else {
             consecutiveOvertakes = 0
@@ -348,10 +632,48 @@ actor SMCReadScheduler {
 
         if !supervisorWaiters.isEmpty, consecutiveOvertakes < Self.maxConsecutiveOvertakes {
             consecutiveOvertakes += 1
+            report(.overtakeTaken(consecutive: consecutiveOvertakes))
             return supervisorWaiters.removeFirst()
         }
 
+        // Only when something was actually overtaken. A snapshot admitted with no supervisor
+        // waiting has spent no quota, so reporting one here would make the event mean "a
+        // snapshot went next" — which is every ordinary turn and therefore nothing.
+        if !supervisorWaiters.isEmpty {
+            report(.quotaExhausted(waitingSupervisorTurns: supervisorWaiters.count))
+        }
         consecutiveOvertakes = 0
         return snapshotWaiters.removeFirst()
+    }
+
+    // MARK: - Reporting
+
+    /// Tells the observer, if there is one.
+    ///
+    /// `nonisolated` because it touches no state of this actor: the observer is a
+    /// `nonisolated let` and the call is synchronous, so a report costs neither a hop nor a
+    /// task and cannot reorder against the state change it describes. See
+    /// `SchedulerObserving` for the obligation that puts on a conformer.
+    nonisolated private func report(_ event: SchedulerEvent) {
+        observer?.schedulerDidObserve(event)
+    }
+
+    // MARK: - Values
+
+    /// A turn waiting for the connection: who to resume, at what priority, and since when.
+    ///
+    /// The `queuedAt` instant is the whole reason this is a struct rather than the bare
+    /// continuation it was: it travels with the waiter so `turnGranted` can report what the
+    /// turn waited from, which is what [#135](https://github.com/blamechris/Aeolus/issues/135)
+    /// needs and what no consumer could reconstruct from outside.
+    ///
+    /// `ContinuousClock` directly rather than the helper's `MonotonicClock` seam, because
+    /// this value is carried and reported and **never compared against a deadline here**. A
+    /// clock seam on the scheduler would be a knob on the one type whose subject is ordering,
+    /// bought for a timestamp nothing in this file reads.
+    private struct ParkedTurn {
+        let continuation: CheckedContinuation<Void, Never>
+        let priority: SMCReadPriority
+        let queuedAt: ContinuousClock.Instant
     }
 }
