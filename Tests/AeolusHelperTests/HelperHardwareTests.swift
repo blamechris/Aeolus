@@ -30,7 +30,18 @@ struct HelperHardwareTests {
     private static let log = HelperLog(
         subsystem: "dev.aeolus.AeolusHelperTests", category: "Hardware")
 
-    @Test("A snapshot from real hardware reports real fans, controllable by nothing")
+    /// A foreign tool holding a fan in manual is a legitimate state of this development
+    /// machine, not a regression in it. Macs Fan Control was observed holding both fans on
+    /// 2026-09-05 (`docs/SMC-RESEARCH.md` § "`F0Md`/`F1Md` have now been observed reading
+    /// `1`"), releasing them again within the hour while still running. `#expect(fan.mode ==
+    /// .automatic)` conflated two different claims: "controllable by nothing" is a fact about
+    /// `manualControlAvailability`, which this build's write path makes true regardless of
+    /// what else is running; "the firmware reports automatic" is a fact about the machine's
+    /// *current* state, which depends on what else is running. This test reports the helper,
+    /// not whatever the reviewer's desktop happened to be doing.
+    @Test(
+        "A snapshot from real hardware reports real fans in whatever mode the firmware declares, controllable by nothing"
+    )
     func snapshotFromRealHardware() async throws {
         // One provider, read through twice: the fans and the mode key must come from the
         // same source, or a snapshot is one instant's report assembled from two.
@@ -48,7 +59,24 @@ struct HelperHardwareTests {
         #expect(snapshot.activeLease == nil)
         #expect(snapshot.isThermalEmergencyActive == false)
         for fan in snapshot.fans {
-            #expect(fan.mode == .automatic)
+            // `F<n>Md` on this machine legitimately declares either `.automatic` (nothing
+            // is holding the fan) or `.manualFixed` (something is) — see
+            // `ReadOnlyFanReport.controlMode(_:)` — and which one this run observes is a
+            // fact about the machine, not about this build. Printed rather than pinned to
+            // one value, for the same reason `everyFanIsOnAutomaticControlAtStart` pins it
+            // deliberately: that test is the executable checklist row that wants `0`
+            // specifically; this one is not.
+            print(
+                "fan \(fan.index) reads .\(fan.mode.rawValue) "
+                    + "(F\(fan.index)Md == \(fan.mode == .manualFixed ? 1 : 0))")
+            // Still not a tautology: this excludes `.manualCurve`, which nothing outside
+            // Aeolus can produce and which this build grants no lease to reach, so any
+            // fan reporting one would mean a lease was live in a build with no write path.
+            // It does not separately exclude "the mode key was unreadable" as a third wrong
+            // answer, because `controlMode(_:)` folds a `nil` read into `.automatic` as a
+            // documented compromise (#178) rather than a distinct case — there is no third
+            // representation here to pin against, and this test cannot see that gap either.
+            #expect(fan.mode == .automatic || fan.mode == .manualFixed)
             #expect(fan.targetRPM == nil)
             #expect(fan.manualControlAvailability == .unavailable(.writePathNotBuilt))
         }
