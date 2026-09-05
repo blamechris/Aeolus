@@ -754,3 +754,124 @@ extension SafetyLog {
         )
     }
 }
+
+// MARK: - docs/SAFETY.md § 4
+
+// § 4's lines, in a third extension for the two reasons the § 5 block above states: the
+// struct body is already at SwiftLint's `type_body_length` limit, and `emit` is `private`,
+// which in Swift is file-scoped — so these have to be *here* and cannot be *in the body*.
+//
+// They are `SafetyLog` lines rather than `LeaseLog` ones because they answer this log's
+// question rather than that one's. A reader looking at § 4 is not asking "why are the fans
+// not where I left them" — `releaseEveryLease()` already writes that answer through
+// `LeaseLog`. They are asking whether the mechanism that hands the fans back before a sleep
+// ran at all, which is *"was the mechanism that protects them actually watching?"*.
+//
+// The interpolation rule is the same and is met the same way: a `Duration` this module chose
+// and an error's own description. Nothing a client wrote reaches a line here.
+
+extension SafetyLog {
+
+    /// The system is going to sleep and is waiting on this process.
+    ///
+    /// `.notice`, and it is the line that makes the budget legible afterwards: an operator
+    /// reading a `.fault` five seconds later needs to be able to see when the clock started.
+    func sleepIsComing(budget: Duration) {
+        emit(
+            .notice,
+            """
+            System will sleep: dropping every lease and returning every fan to automatic \
+            control before allowing the power change. The system waits at most \(budget) \
+            for this, after which it is allowed to sleep regardless and the lease TTL is \
+            the only surviving backstop.
+            """
+        )
+    }
+
+    /// The machine-wide keystone restore landed before the sleep.
+    func handedEveryFanBackBeforeSleep() {
+        emit(
+            .notice,
+            "Every fan returned to automatic control before sleep, and the Apple Silicon "
+                + "force key cleared with them."
+        )
+    }
+
+    /// The machine-wide keystone restore did not land.
+    ///
+    /// `.fault` — `SafetyLog.Level`'s own definition of the level is *"§ 3 engaged or
+    /// released, or a write on its path did not land"*, and this is the second half of that
+    /// for § 4. On a build with no SMC write path this fires on **every** sleep with
+    /// `controlPathNotBuilt`, truthfully: the helper really cannot hand a fan back, and a
+    /// log that said otherwise would be the claim `FanWriteCapability` exists to stop making.
+    func couldNotHandEveryFanBackBeforeSleep(_ error: any Error) {
+        emit(
+            .fault,
+            """
+            The machine-wide restore before sleep did not land: \
+            \(String(describing: error)). Any fan still off automatic control stays there \
+            across the sleep, and the lease TTL is what takes it back.
+            """
+        )
+    }
+
+    /// The system was allowed to sleep with the handback complete.
+    func allowingSleepAfterHandback() {
+        emit(
+            .notice,
+            "Allowing the system to sleep: the handback finished inside its budget."
+        )
+    }
+
+    /// The budget ran out with the handback still in flight, and the system was allowed to
+    /// sleep anyway.
+    ///
+    /// `.fault`, and it is the line § 4 exists to be able to write. Holding the sleep open
+    /// indefinitely is not the safer option — the kernel would sleep the machine on its own
+    /// timeout and this process would learn nothing — so the helper gives up the wait
+    /// deliberately and says so, which is the difference between a bound and a hang.
+    func allowingSleepWithHandbackOutstanding(after budget: Duration) {
+        emit(
+            .fault,
+            """
+            Allowing the system to sleep with the handback still outstanding after \
+            \(budget). A fan may cross the sleep still under manual control; § 1's TTL is \
+            the backstop, and docs/SAFETY.md § 4 records what that bounds if ContinuousClock \
+            does not advance while the machine is asleep.
+            """
+        )
+    }
+
+    /// The machine woke, and the helper wrote nothing.
+    ///
+    /// Logged precisely because nothing happened. `docs/SAFETY.md` § 4's *"After wake:
+    /// **nothing.** The helper does not re-assert"* is a claim about an absence, and an
+    /// absence with no line in `log show` is indistinguishable from a helper that never
+    /// heard the wake at all.
+    func wokeWithoutWriting() {
+        emit(
+            .notice,
+            """
+            System woke. Writing nothing: a client that still wants the fans asks for them \
+            again through the ordinary acquisition path, with the same authorisation check, \
+            the same bounds gate and a fresh lease.
+            """
+        )
+    }
+
+    /// This process cannot hear the system's power events at all.
+    ///
+    /// `.fault`, because § 4 is now absent rather than degraded: nothing will hand the fans
+    /// back before a sleep, and the TTL — which counts time asleep only if `ContinuousClock`
+    /// advances across it — is all that is left.
+    func systemPowerObserverUnavailable(_ error: any Error) {
+        emit(
+            .fault,
+            """
+            Could not register for system power notifications: \
+            \(String(describing: error)). Nothing will return the fans to automatic control \
+            before this machine sleeps, and § 1's TTL is the only remaining path back.
+            """
+        )
+    }
+}
