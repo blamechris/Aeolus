@@ -114,6 +114,15 @@ enum ReclamationLimits {
     /// loop is that a machine whose firmware silently discards every write must end up on
     /// automatic control with the user told, not in a contest it cannot win —
     /// `ScriptedControlPlane.WriteBehaviour.reverted` is exactly that machine.
+    ///
+    /// **It counts writes attempted, not sweeps entered.** `ReclamationWatchdog` spends an
+    /// attempt at the point it decides to re-assert, which is before the envelope read that
+    /// suspends, so an exit taken between the two has to give it back or the budget starts
+    /// measuring something else. The cancellation guard in
+    /// `ReclamationWatchdog.reassert(_:fanAt:attempt:)` is the only such exit and it refunds;
+    /// every other early return there has either already written or has resolved the fan.
+    /// The distinction is what stops repeated sleep/wake stop-starts exhausting a budget
+    /// without a single `F<n>Md` reaching the firmware.
     static let reassertAttemptBudget = 3
 
     /// How many consecutive unreadable cycles make a fan's read failure persistent.
