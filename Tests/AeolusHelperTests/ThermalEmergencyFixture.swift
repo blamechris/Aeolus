@@ -32,6 +32,22 @@ struct ThermalMachine {
     let leases: LeaseAuthority
     let emergency: ThermalEmergency<ScriptedControlPlane>
 
+    /// The seam a staleness scenario acts inside, on § 3's own read.
+    ///
+    /// The real curated conformer with one suspension a test can act at. With no effect
+    /// installed it delegates and returns, so every scenario that does not ask for
+    /// interference behaves exactly as it did before this existed.
+    let emergencyTelemetry: InterferingCriticalTemperatures
+
+    /// The same seam on the lease core's blindness check.
+    ///
+    /// Separate from `emergencyTelemetry` because the two reads are the two halves of the
+    /// grant-time window `LeaseAuthority.revokeEveryLease(because:)` documents: the latch is
+    /// read, and then a real 34-key read is awaited, and § 3 can engage across it. One shared
+    /// interferer could not fire inside the lease core's read without also firing inside the
+    /// emergency's, which is the cycle the scenario is trying to script.
+    let leaseTelemetry: InterferingCriticalTemperatures
+
     /// Everything § 3 said about itself, with levels. Empty unless a test asked for it.
     let safetyLog = RecordedLog()
 
@@ -50,11 +66,13 @@ struct ThermalMachine {
         latch = ThermalEmergencyLatch()
         restorer = RecordingFanRestorer()
 
-        let telemetry = CuratedCriticalTemperatures(plane: plane, set: .mac16x5)
+        let curated = CuratedCriticalTemperatures(plane: plane, set: .mac16x5)
+        emergencyTelemetry = InterferingCriticalTemperatures(curated)
+        leaseTelemetry = InterferingCriticalTemperatures(curated)
         leases = LeaseFixture.authority(
-            restorer: restorer, telemetry: telemetry, thermalEmergency: latch)
+            restorer: restorer, telemetry: leaseTelemetry, thermalEmergency: latch)
         emergency = ThermalEmergency(
-            telemetry: telemetry,
+            telemetry: emergencyTelemetry,
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
             leases: leases,
             latch: latch,
@@ -120,6 +138,67 @@ struct ThermalMachine {
                 }
             }
         }
+    }
+}
+
+/// Runs an arbitrary side effect **inside** a critical-temperature read, so that "§ 3 changed
+/// episode while this cycle was reading" is a scenario rather than an argument.
+///
+/// The § 5 twin is `InterferingFanStateSensing`, and the argument for both is the same:
+/// `ScriptedControlPlane`'s methods contain no suspension point a test can act inside, so a
+/// scenario built on stages alone can only change the machine *between* cycles, while every
+/// staleness defect happens *within* one. A repeat-until-it-races loop would be the flakiness
+/// [#109](https://github.com/blamechris/Aeolus/issues/109) is open about.
+///
+/// **The effect fires after the delegated read, not before**, which is where it differs from
+/// its § 5 twin. The scenarios here are about a report gathered *before* an episode boundary
+/// and acted on *after* it, so the report has to be taken first and the world has to move
+/// second. Firing first would hand the caller a report of the post-boundary machine, which is
+/// a different — and harmless — story. It fires on the throwing path too, because "the
+/// machine moved while the SMC was refusing to answer" is one of the scenarios.
+///
+/// It fires **once**, on the first read. An effect that ran on every read would make a
+/// scenario that loops untestable, and would recurse the moment the effect drove a cycle of
+/// its own.
+actor InterferingCriticalTemperatures: CriticalTemperatureSensing {
+
+    private let wrapped: any CriticalTemperatureSensing
+    private var effect: (@Sendable () async -> Void)?
+    private var hasFired = false
+
+    /// Whether the effect actually ran.
+    ///
+    /// Asserted by every test using this type. A double whose interference silently never
+    /// fired would leave the test passing for the wrong reason — the "test that cannot fail"
+    /// shape this repository keeps producing — so the scenario proves its own setup happened.
+    private(set) var didFire = false
+
+    init(_ wrapped: any CriticalTemperatureSensing) {
+        self.wrapped = wrapped
+    }
+
+    /// Sets what happens inside the read. Assigned after construction because the effect
+    /// usually needs the machine, which needs this.
+    func interfere(with effect: @escaping @Sendable () async -> Void) {
+        self.effect = effect
+    }
+
+    func readCriticalTemperatures() async throws -> CriticalTemperatureReport {
+        do {
+            let report = try await wrapped.readCriticalTemperatures()
+            await fireOnce()
+            return report
+        } catch {
+            await fireOnce()
+            throw error
+        }
+    }
+
+    private func fireOnce() async {
+        guard !hasFired, let effect else { return }
+        hasFired = true
+        await effect()
+        didFire = true
     }
 }
 

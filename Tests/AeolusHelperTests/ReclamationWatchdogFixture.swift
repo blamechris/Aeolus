@@ -116,7 +116,9 @@ struct ReclamationMachine {
 
     /// Engages § 3's latch, which is what makes level 2 the incumbent.
     func engageThermalEmergency(atCelsius celsius: Double = 99) async {
-        await latch.engage(by: CriticalTemperature(key: smcKey("Tp01"), celsius: celsius))
+        await latch.engage(
+            by: CriticalTemperature(key: smcKey("Tp01"), celsius: celsius),
+            answering: [smcKey("Tp01")])
     }
 
     /// Every call the firmware saw, in order.

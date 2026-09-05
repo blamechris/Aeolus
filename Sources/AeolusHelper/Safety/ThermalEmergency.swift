@@ -86,29 +86,6 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// that can disagree with itself.
     nonisolated let releaseThresholdCelsius: Double
 
-    /// The curated keys that answered on the cycle that engaged the latch.
-    ///
-    /// **The latch does not let go on a view that has shrunk since it fired.** `cycle()`
-    /// releases on `max(...)` over whatever answered, and it used to ask nothing about what
-    /// did *not* — so losing the hot keys and keeping the cool ones read as "the machine
-    /// cooled down". That is not hypothetical on this hardware:
-    /// `CriticalSensorSet` records the curated cluster spanning 55.85–62.40 °C at peak heat
-    /// soak, a ~6.5 °C spread, against a 5 °C `releaseHysteresisCelsius`. So a cluster whose
-    /// spread exceeds the margin is the **measured** case, and the failure is concrete —
-    /// hottest die key at 95.5 °C, coolest at 89 °C, hot half silent, latch releases,
-    /// `acquireLease` stops refusing, and the client that was revoked retries into the same
-    /// overheating workload. Exactly the loop the refusal exists to prevent.
-    ///
-    /// Comparing against the engaging cycle's key set rather than requiring a *complete*
-    /// read is deliberate. `CriticalSensorSet`'s whole justification for a compiled-in key
-    /// list is that a key this firmware never exposes is not a failure, so demanding
-    /// `unreadableKeys.isEmpty` would strand the latch forever on any machine that
-    /// permanently lacks one of the 34 — permanent refusal of manual control, which is
-    /// `CLAUDE.md` rule 6 reached from the safe-looking direction. A key absent at engage
-    /// time is absent from this set and cannot block the release; a key that *was* answering
-    /// and has since gone quiet can, and should.
-    private var keysAnsweringAtEngage: Set<SMCKey> = []
-
     /// Whether the previous cycle failed to read anything at all.
     ///
     /// Collapses the blind path to one line per transition. `DegradationMemo` sits inside
@@ -223,7 +200,10 @@ actor ThermalEmergency<Plane: FanControlPlane> {
             log.thermalEmergencyTelemetryRecovered(answered: report.readings.count)
         }
 
-        guard await latch.isActive else {
+        // The bit and the key set qualifying it come out of the latch **together**, in one
+        // isolated step. Two hops, or a qualifier cached here while the bit lived over
+        // there, is #150's shape exactly.
+        guard let episode = await latch.holding else {
             if hottest.celsius > ceilingCelsius { await fire(hottest, from: report) }
             return
         }
@@ -231,8 +211,9 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         // Latched. Before asking whether it is cool enough to let go, ask whether this
         // cycle can still see everything it could see when it fired. A shrinking view reads
         // exactly like a cooling machine, and only one of those is safe to act on — see
-        // `keysAnsweringAtEngage`.
+        // `ThermalEmergencyLatch.Episode.keysAnsweringAtEngage`.
         let answeringNow = Set(report.readings.map(\.key))
+        let keysAnsweringAtEngage = episode.keysAnsweringAtEngage
         guard keysAnsweringAtEngage.isSubset(of: answeringNow) else {
             log.thermalEmergencyHeldThroughDegradedCycle(
                 missing: keysAnsweringAtEngage.subtracting(answeringNow).count,
@@ -242,10 +223,10 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         }
 
         // Asked against a *fresh* reading — a latch tested against the reading that engaged
-        // it would never release.
+        // it would never release. Nothing is cleared here: the key set went with the episode
+        // inside `release()`, which is the whole of #150's fix.
         if hottest.celsius <= releaseThresholdCelsius {
             if await latch.release() {
-                keysAnsweringAtEngage = []
                 log.thermalEmergencyReleased(
                     hottest: hottest, threshold: releaseThresholdCelsius)
             }
@@ -356,8 +337,9 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         // the latch actor, so exactly one of any number of concurrent callers is told
         // `true`. `LeaseAuthority.restore(_:because:)` carries the same admission about its
         // `releasing` count, for the same reason and in the same words.
-        guard await latch.engage(by: hottest) else { return }
-        keysAnsweringAtEngage = Set(report.readings.map(\.key))
+        guard
+            await latch.engage(by: hottest, answering: Set(report.readings.map(\.key)))
+        else { return }
         log.thermalEmergencyEngaged(
             hottest: hottest, ceiling: ceilingCelsius, fansHeld: engagedFans.count)
 

@@ -53,8 +53,8 @@ struct ThermalEmergencyReportingTests {
         let hot = CriticalTemperature(key: smcKey("Tp01"), celsius: 99)
         let hotter = CriticalTemperature(key: smcKey("Tp01"), celsius: 101)
 
-        #expect(await latch.engage(by: hot))
-        #expect(await latch.engage(by: hotter) == false)
+        #expect(await latch.engage(by: hot, answering: [hot.key]))
+        #expect(await latch.engage(by: hotter, answering: [hotter.key]) == false)
         // The most recent reading wins: a reader watching a machine that is still climbing
         // wants the latest number, not the one that happened to cross first.
         #expect(await latch.engagedBy == hotter)
