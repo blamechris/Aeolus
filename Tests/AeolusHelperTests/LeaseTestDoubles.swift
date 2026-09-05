@@ -314,11 +314,17 @@ enum LeaseFixture {
     /// lease test is about. Blindness is opted into — `blindTelemetry()` — so that a test
     /// asserting the grant-time gate says so at its call site rather than relying on a
     /// fixture default nobody reads.
+    ///
+    /// It is a `SightednessProving` since #134, and every default below hands over a real
+    /// `CriticalTemperatureCache`: the shipped cache is on the path of every lease test, so
+    /// a coalescing bug shows up in the suite that grants leases rather than only in the one
+    /// that tests the cache. Cold at construction, so the first grant in any test still
+    /// performs a real read.
     static func authority(
         enumeration: ScriptedFanEnumeration = ScriptedFanEnumeration(),
         restorer: any FanRestoring = RecordingFanRestorer(),
         writeCapability: any FanWriteCapabilityReporting = writePathBuilt(),
-        telemetry: any CriticalTemperatureSensing = sightedTelemetry(),
+        telemetry: any SightednessProving = sightedTelemetry(),
         thermalEmergency: ThermalEmergencyLatch = ThermalEmergencyLatch(),
         clock: TestClock = TestClock(),
         wallClock: TestWallClock = TestWallClock(),
@@ -353,14 +359,32 @@ enum LeaseFixture {
     /// bespoke `CriticalTemperatureSensing` double means the curated key list and the
     /// plausibility gate are on the path every lease test exercises. A hand-rolled double
     /// would answer "sighted" without either of them ever running.
-    static func sightedTelemetry() -> any CriticalTemperatureSensing {
-        CuratedCriticalTemperatures(
-            plane: ScriptedControlPlane(
+    static func sightedTelemetry() -> any SightednessProving {
+        cache(
+            over: ScriptedControlPlane(
                 fans: [:],
                 stages: [.nominal(temperatures: nominalDieTemperatures)]
-            ),
-            set: .mac16x5
-        )
+            ))
+    }
+
+    /// The shipped cache over the real curated conformer over `plane`.
+    ///
+    /// One helper rather than the three-line expression at each call site, because the
+    /// nesting is the thing a reader has to get right: the cache's `source` must be a
+    /// `CriticalTemperatureSensing`, and the lease core must be handed the cache. A call site
+    /// that got it backwards would not compile — which is the design — but it would also be
+    /// a call site somebody had to think about.
+    ///
+    /// `clock` is exposed because staleness is now a property a lease test can need: a
+    /// machine that goes blind *while a sighting is unexpired* is refused only after the
+    /// sighting ages out, and demonstrating that needs time to pass without wall time
+    /// passing.
+    static func cache(
+        over plane: ScriptedControlPlane,
+        clock: any MonotonicClock = SystemMonotonicClock()
+    ) -> CriticalTemperatureCache {
+        CriticalTemperatureCache(
+            source: CuratedCriticalTemperatures(plane: plane, set: .mac16x5), clock: clock)
     }
 
     /// A build that can write — the **real** scripted firmware, not a stand-in.
@@ -379,10 +403,7 @@ enum LeaseFixture {
     }
 
     /// Telemetry that cannot see: the SMC answers nothing, for every stage, forever.
-    static func blindTelemetry() -> any CriticalTemperatureSensing {
-        CuratedCriticalTemperatures(
-            plane: ScriptedControlPlane(fans: [:], stages: [.blind()]),
-            set: .mac16x5
-        )
+    static func blindTelemetry() -> any SightednessProving {
+        cache(over: ScriptedControlPlane(fans: [:], stages: [.blind()]))
     }
 }

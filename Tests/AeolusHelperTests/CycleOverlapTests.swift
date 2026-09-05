@@ -82,6 +82,7 @@ struct CycleOverlapTests {
         let latch = ThermalEmergencyLatch()
         let emergency = ThermalEmergency(
             telemetry: telemetry,
+            sightings: CriticalTemperatureCache(source: telemetry),
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
             leases: LeaseFixture.authority(thermalEmergency: latch),
             latch: latch)
