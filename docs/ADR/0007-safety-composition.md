@@ -26,6 +26,16 @@ conflict, and one mechanism that cannot be implemented as written:
    wake ([#68](https://github.com/blamechris/Aeolus/issues/68)), a persistent read failure, or an
    empty critical-sensor set silently blinds §3 and §5 while a lease keeps fans pinned. §5 covers
    divergence of *values*, not inability to obtain them.
+
+   **The grant-time half of this hole is answered, and the answer had a cost of its own.**
+   [#124](https://github.com/blamechris/Aeolus/issues/124) added `LeaseAuthority.refuseIfBlind`:
+   a lease is refused while the helper cannot read a critical temperature. It paid for that with
+   one 34-key `.supervisor` read per `acquireLease`, unpaced — which made a retrying client the
+   fastest supervisor-priority reader on the machine and put §3's own cycle behind it in FIFO
+   order ([#134](https://github.com/blamechris/Aeolus/issues/134)).
+   [ADR 0010](0010-coalesced-supervisor-reads.md) keeps the refusal and removes the cost: the
+   grant path proves sightedness from §3's own most recent reading, coalesced and bounded by one
+   cycle period, and reads for itself only when there is nothing fresh to serve.
 3. **The lease-binding race** ([#95](https://github.com/blamechris/Aeolus/issues/95)): connection
    death releases immediately, but a message already in flight can bind a lease to a dead
    `ConnectionID` afterwards, leaving only the TTL where ADR 0005 promises two independent paths.
