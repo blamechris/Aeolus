@@ -70,7 +70,7 @@ import SMCCore
 /// `FanControlPlane` refines this, so every conformer answers both and no separate
 /// production type is needed — the split is about what a *consumer* can be given, not
 /// about what the hardware offers.
-protocol FanStateSensing: Sendable {
+protocol FanStateSensing: FanModeSensing {
 
     /// Reads one fan's firmware-declared envelope, `F<n>Mn` and `F<n>Mx`.
     ///

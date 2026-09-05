@@ -16,13 +16,15 @@ downward-only limits — is in `Sources/FanKit`. § 2's write authorisation, the
 a fan index to the bounds a read established, is in
 `Sources/AeolusHelper/FanWriteAuthorisation.swift` (ADR 0008). § 1's lease — the table,
 monotonic expiry, tombstones and the teardown paths — is in `Sources/AeolusHelper/Lease`,
-driven against in-memory doubles. § 3's override and § 8's ramp governor are in
-`Sources/AeolusHelper/Safety` and `Sources/FanKit/RampGovernor.swift`, with the precedence
-engine that composes them, driven against the scripted SMC. Not built: § 5's watchdog,
-§ 4's power notifications, § 6's signal teardown and startup reconciliation, § 7's body,
-and § 8's hysteresis. All of it is tracked as epic E5, and E5 blocks the write-path epics
-E3 and E4. No code that writes to the SMC merges before the safety subsystem exists and is
-tested.
+driven against in-memory doubles. § 3's override, § 5's reclamation watchdog and § 8's ramp
+governor are in `Sources/AeolusHelper/Safety` and `Sources/FanKit/RampGovernor.swift`, with
+the precedence engine that composes them, driven against the scripted SMC. **§ 5 was in the
+not-built list until it merged, and this line was stale for one wave** — the sentence is
+corrected in place rather than quietly rewritten, because a status paragraph nobody re-reads
+is how a coverage claim outlives its subject. Not built: § 4's power notifications, § 6's
+signal teardown and startup reconciliation, § 7's body, and § 8's hysteresis. All of it is
+tracked as epic E5, and E5 blocks the write-path epics E3 and E4. No code that writes to the
+SMC merges before the safety subsystem exists and is tested.
 
 **Built does not mean running.** Every mechanism below writes through `FanControlPlane`,
 whose production conformer answers `controlPathNotBuilt` until E3 and E4 exist, and the
@@ -44,8 +46,9 @@ relative to § 3. **§ 5's primary signal is #102's ruling, not the ADR's** — 
 exact about, in a document whose whole subject this round is not stating things more
 strongly than the source does. This document was amended to match in #119; the paragraphs
 that changed say so, in place, rather than quietly reading as though they had always said
-it. ADR 0007 is still `Proposed`, as are ADR 0006 and ADR 0008 — the latter implemented and
-merged — so that field lags practice here rather than signalling doubt.
+it. ADR 0007 is still `Proposed`, as are ADR 0006, ADR 0008 and
+[ADR 0009](ADR/0009-precedence-at-the-write.md) — the middle one implemented and merged, the
+last one implemented in half — so that field lags practice here rather than signalling doubt.
 
 ---
 
@@ -247,6 +250,18 @@ override engages, writes maximum in one step, restores, revokes the whole lease,
 refuses the next `acquireLease` while latched. `ThermalSupervisorTests` drives the same
 mechanism through its own loop.
 
+*Tested by:* `ThermalEmergencyStalenessTests` covers the same mechanism across a suspension
+point, where the facts a cycle gathered stop being true before it acts on them: the latch is
+never released against a temperature report older than the episode holding, the qualifying
+key set that arms the degraded-view guard belongs to the episode that is holding rather than
+one that has ended, a release clears the episode it was judged against and no other, and a
+cycle that could not read at all still revokes whatever lease it finds.
+
+The compare-and-clear is additionally asserted against the **source tree**, because under a
+single supervisor no runtime scenario separates it from a bare release: the same suite checks
+that nothing in `Sources/` clears the latch except the supervised cycle, and that the cycle
+names the episode it judged when it does.
+
 **What the user is actually told.** `isThermalEmergencyActive` on the snapshot, which the
 app renders at 1 Hz, and a `.fault` line in the log. That is the whole of it: a root daemon
 cannot post a user notification, so a `fanctl`-held lease with no app running gets no visual
@@ -352,13 +367,51 @@ competent authority — one that can also throttle the SoC, which Aeolus never c
 the same destination first. Aeolus does not fight the system for the fans while any
 temperature is above ceiling.
 
+**That rule is asked before the write path, and again after the writes land — with one
+supervisor SMC turn still inside that window** —
+[ADR 0009](ADR/0009-precedence-at-the-write.md). The re-assert is the first ordinary safety
+write in this project that moves a fan **away** from the safe state, so the question of when
+precedence is read stopped being academic with it. An answer obtained once per sweep and
+spent several SMC turns later authorised a write § 3 had already forbidden, and the failure
+was permanent: a re-pinned fan reads as converged on both of this section's own signals
+forever, so nothing revisits it.
+
+The window is narrowed rather than shut, and the bolded sentence above is worded to say so
+rather than to reassure. ADR 0009 prescribes a second precedence read after the envelope read
+and before manual control is re-engaged; **that read did not ship**, so § 3 can still latch
+during the envelope read and both writes will land above the ceiling. What corrects it is the
+check *after* the writes, which restores the fan in the safe direction — acting and then
+checking, because the check cannot be made atomic with the act across two actors. The residual
+that leaves is disclosed rather than rounded off: the undo is itself a restore, a restore can
+be refused, and a refused undo leaves the fan pinned with a log line and no mechanism watching
+it — § 3's registry is not told about the re-assert either.
+[#181](https://github.com/blamechris/Aeolus/issues/181) carries all three — the missing read,
+the § 3 registration, and the refused undo — and ADR 0009's "As built, and what did not land"
+section is the audit of which parts of that ruling are in the tree.
+
+**A write away from the safe state requires a live lease, checked at the write.** ADR 0009's
+second ruling: this section's registry of held fans is a hint, and the lease table is the
+authority. A held fan with no live lease is its own divergence class, restored and forgotten,
+and never reported as a system reclamation — nobody took that fan, Aeolus simply stopped
+being entitled to it. **That half is decided and not yet built**
+([#180](https://github.com/blamechris/Aeolus/issues/180)), and the line is written this way
+deliberately: until it exists, § 1's guarantee that manual control is a lease rather than a
+setting rests on the control plane remembering to say when a lease ended, which is a
+discipline that has already been forgotten twice in shipped code.
+
 This is a correctness rule as much as a safety one. A UI that lies about fan state is
 worse than a UI that reports an error, because the user acts on it.
 
-*Tested by:* `Tests/AeolusHelperTests/ReclamationWatchdogTests.swift` and
-`ReclamationSupervisorTests.swift`, entirely through `ScriptedControlPlane`. Several of those
-tests are mutation checks rather than examples, and each names the mutation it kills; every
-one was run against its mutant in an isolated worktree.
+*Tested by:* `Tests/AeolusHelperTests/ReclamationWatchdogTests.swift`,
+`ReclamationWatchdogRecoveryTests.swift`, `ReclamationWatchdogStalenessTests.swift` and
+`ReclamationSupervisorTests.swift` — mostly through `ScriptedControlPlane`, with three
+bespoke read seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express:
+a refused envelope, a read held open so overlapping reads would be visible, and a read that
+runs a side effect while it is suspended. § 1's line makes the same distinction for the same
+reason, and it is drawn rather than rounded off because "entirely through the scripted plane"
+is a claim about how much of the mechanism one shared double can reach.
+Several of these tests are mutation checks rather than examples, and each names the mutation
+it kills; every one was run against its mutant in an isolated worktree.
 
 Four of them exist because an adversarial review found that nothing in the original suite
 could see a value read before an `await` and acted on after it — the watchdog is a reentrant

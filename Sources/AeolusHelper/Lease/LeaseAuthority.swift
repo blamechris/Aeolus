@@ -375,6 +375,16 @@ actor LeaseAuthority {
     /// ([#95](https://github.com/blamechris/Aeolus/issues/95) is the same shape). What
     /// closes it is the emergency taking back whatever it finds, every cycle it holds.
     ///
+    /// **"Every cycle" includes the cycles that can see nothing**, which is the half that
+    /// was not true when this paragraph was written. `ThermalEmergency.cycle()` used to
+    /// return on a failed read before reaching any revocation, so a lease granted in the
+    /// window survived for as long as the SMC stayed quiet — and `renewLease` consults
+    /// neither the latch nor telemetry, so its holder renewed indefinitely. See
+    /// `ThermalEmergency.cycleSawNothing(_:)`, which is where the claim above is now
+    /// honoured, and [#152](https://github.com/blamechris/Aeolus/issues/152) for the rest.
+    /// The releasing branch reaches no revocation either, and needs none: it is the branch
+    /// on which § 3 has stopped holding.
+    ///
     /// Deliberately **not** shared with `releaseEveryLease()`, which drops the same table
     /// for § 7's panic verb. They are different actors — levels 1 and 2 — and
     /// `LeaseTable`'s own selectors are written out for exactly this reason: a shared

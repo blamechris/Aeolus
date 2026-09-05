@@ -41,12 +41,31 @@ public struct Fan: Sendable, Hashable, Codable, Identifiable {
 }
 
 /// What is currently driving a fan.
+///
+/// These cases describe the **fan**, not Aeolus. "Who is holding it" is a separate question
+/// answered by `SystemSnapshot.activeLease` and `ManualControlAvailability`, and a client that
+/// conflates the two will attribute another tool's manual hold to Aeolus — see `manualFixed`.
 public enum FanControlMode: String, Sendable, Hashable, Codable {
     /// Apple's thermal management owns the fan. The default and the safe state.
     case automatic
-    /// Aeolus is holding the fan at a constant speed under an active lease.
+    /// The fan is off the system's thermal management and is being held at a fixed speed.
+    ///
+    /// **By Aeolus under a lease, or by something else.** This case said "Aeolus is holding
+    /// the fan at a constant speed under an active lease" until the helper began reporting the
+    /// mode `F<n>Md` actually declares
+    /// ([#148](https://github.com/blamechris/Aeolus/issues/148)); a fan another vendor's tool
+    /// or a crashed previous helper left in manual now arrives here with `activeLease: nil`,
+    /// which the old sentence made unreadable. Read `activeLease` and
+    /// `manualControlAvailability` to tell the two apart: a fan Aeolus holds has a lease
+    /// naming it, and one it merely observes does not.
+    ///
+    /// A clarification of what the firmware bit means, not a new meaning for the field — the
+    /// wire value and its decoding are unchanged, so `AeolusXPCVersion` does not move.
     case manualFixed
     /// Aeolus is driving the fan from a curve under an active lease.
+    ///
+    /// Unlike `manualFixed` this one really is about Aeolus: a curve is Aeolus's own intent
+    /// and no firmware bit expresses it, so nothing outside this project can put a fan here.
     case manualCurve
 }
 
@@ -253,17 +272,46 @@ extension ManualControlAvailability: Codable {
 /// behaviour is structured — that is `ManualControlAvailability`'s job, and a client
 /// deciding what it may do consults that, not this string.
 public enum FanReading: Sendable, Hashable {
-    /// A value was read and decoded to a finite `Double`. **Never clamped, floored, or
-    /// adjusted** from what the hardware reported. `F0Ac` was measured at 1343.07 against
-    /// a declared `F0Mn` of 1350 on this project's development machine: a reading below
-    /// the declared minimum is a legitimate observation, not a fault. Clamping governs
-    /// targets — `FanControlEnvelope.target(for:)`, on the write path — and never
-    /// observations.
-    case measured(Double)
+    /// A value that has already passed the `isFinite` guard in `measured(_:)`. By
+    /// **convention**, constructed only through `measured(_:)` — go there for the guard.
+    ///
+    /// That convention is not enforced by the type system: `measuredFinite` is a public
+    /// enum case, and Swift cannot restrict a case's access below the enum's own level,
+    /// so `FanReading.measuredFinite(.nan)` compiles from any module today, this one
+    /// included. What enforces it is `MeasuredFiniteConstructionSiteTests` in
+    /// `FanKitTests`, which fails the moment `measuredFinite(` is constructed anywhere
+    /// under `Sources/` outside this file — a source-tripwire test, not a compiler
+    /// guarantee. #96's acceptance criterion ("a test that fails if a producer is added
+    /// without it") is that test, not this doc comment.
+    case measuredFinite(Double)
 
     /// The key is absent on this machine, the read failed, or it decoded to something
     /// unusable including a non-finite `Double`.
     case unavailable(reason: String)
+
+    /// Constructs a measured reading, or `.unavailable` when there is nothing finite to
+    /// carry.
+    ///
+    /// A value that was read and decoded to a finite `Double` is **never clamped,
+    /// floored, or adjusted** from what the hardware reported. `F0Ac` was measured at
+    /// 1343.07 against a declared `F0Mn` of 1350 on this project's development machine: a
+    /// reading below the declared minimum is a legitimate observation, not a fault.
+    /// Clamping governs targets — `FanControlEnvelope.target(for:)`, on the write path —
+    /// and never observations.
+    ///
+    /// `init(from:)` below has always refused a non-finite value; this is the
+    /// construction-side twin of that guard. Without it, a producer that never goes
+    /// through JSON — the control loop computing a target from curve arithmetic, for
+    /// instance — could still hand a NaN or infinite `Double` to `AeolusXPCCoding`'s
+    /// encoder, whose `nonConformingFloatEncodingStrategy` is `.throw`: one bad field then
+    /// refuses the entire snapshot, every tick, rather than costing the one row it
+    /// actually poisoned.
+    public static func measured(_ value: Double) -> FanReading {
+        guard value.isFinite else {
+            return .unavailable(reason: "a fan reading must be finite, got \(value)")
+        }
+        return .measuredFinite(value)
+    }
 
     /// The finite `Double`, or `nil` when unavailable.
     ///
@@ -271,7 +319,7 @@ public enum FanReading: Sendable, Hashable {
     /// should switch on the case instead, so it still has "why is it missing" available at
     /// the point that has to say so.
     public var value: Double? {
-        if case .measured(let value) = self { return value }
+        if case .measuredFinite(let value) = self { return value }
         return nil
     }
 }
@@ -285,7 +333,7 @@ extension FanReading: Codable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .measured(let value):
+        case .measuredFinite(let value):
             try container.encode(value, forKey: .value)
         case .unavailable(let reason):
             try container.encode(reason, forKey: .unavailableReason)
@@ -312,7 +360,7 @@ extension FanReading: Codable {
                     debugDescription: "a fan reading must be finite, got \(value)"
                 )
             }
-            self = .measured(value)
+            self = .measuredFinite(value)
         case (nil, let reason?):
             self = .unavailable(reason: reason)
         case (nil, nil):
@@ -361,9 +409,23 @@ public struct FanState: Sendable, Hashable, Codable {
     public let minimumRPM: FanReading
     public let maximumRPM: FanReading
     /// The speed the helper is currently asking for, or `nil` when it is asking for
-    /// nothing. Distinct from an unavailable reading: "no target is set" is an answer,
-    /// "the target could not be read" is not, and conflating them would let a fan under
-    /// nobody's control render identically to one whose state is unknown.
+    /// nothing. That distinction (an unset target vs. a reading that could not be
+    /// produced) is what `FanReading` exists to make for `actualRPM`/`minimumRPM`/
+    /// `maximumRPM`, each of which carries its `unavailable(reason:)` separately from
+    /// `nil`-shaped "no value".
+    ///
+    /// `targetRPM` deliberately does **not** make that distinction. It is a bare
+    /// `Double?`, and a non-finite value given to either initialiser is normalised to
+    /// `nil` by `FanState.normalizedTargetRPM(_:)` rather than carried or reported —  so
+    /// "no target is set" and "a producer computed a target that came out NaN or
+    /// infinite" are indistinguishable on the wire, on purpose. The alternative is
+    /// `AeolusXPCCoding`'s bare `JSONEncoder`, whose `nonConformingFloatEncodingStrategy`
+    /// is `.throw`: a poisoned target that reached the encoder would refuse the *entire*
+    /// snapshot, every tick, over one field nobody can currently act on anyway (there is
+    /// no wire-level "target unavailable" state for a client to render). Diagnosing *why*
+    /// a producer computed a non-finite target belongs at the producer's own call site —
+    /// E5's control loop, once it is arithmetic rather than a fixed value — not on this
+    /// field, which only has room to say "nothing" either way.
     public let targetRPM: Double?
     public let mode: FanControlMode
     /// `true` when the helper asked for manual control but the system has taken the fan
@@ -436,9 +498,55 @@ public struct FanState: Sendable, Hashable, Codable {
         self.actualRPM = actualRPM
         self.minimumRPM = minimumRPM
         self.maximumRPM = maximumRPM
-        self.targetRPM = targetRPM
+        self.targetRPM = FanState.normalizedTargetRPM(targetRPM)
         self.mode = mode
         self.isReclaimedBySystem = isReclaimedBySystem
         self.manualControlAvailability = manualControlAvailability
+    }
+
+    /// `nil` when there is no target, and `nil` again when the target given is not
+    /// finite — the two cases this field is meant to be unable to distinguish, because
+    /// "no target is set" is the honest description of both. A NaN or infinite target
+    /// reaching `AeolusXPCCoding`'s encoder would refuse the entire snapshot; landing it
+    /// here instead means it never gets that far.
+    private static func normalizedTargetRPM(_ value: Double?) -> Double? {
+        guard let value, value.isFinite else { return nil }
+        return value
+    }
+}
+
+extension FanState {
+    private enum CodingKeys: String, CodingKey {
+        case index
+        case firmwareName
+        case actualRPM
+        case minimumRPM
+        case maximumRPM
+        case targetRPM
+        case mode
+        case isReclaimedBySystem
+        case manualControlAvailability
+    }
+
+    /// Routed through the memberwise initialiser so `targetRPM` gets the same
+    /// `normalizedTargetRPM(_:)` guard here as it does in code — `AeolusXPCCoding`'s
+    /// bare `JSONEncoder`/`JSONDecoder` cannot carry a literal NaN or infinity in valid
+    /// JSON, but nothing says every future decoder configuration will share that
+    /// property, and a synthesised `init(from:)` would have assigned the stored property
+    /// directly, same as it did before this fix.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            index: try container.decode(Int.self, forKey: .index),
+            firmwareName: try container.decodeIfPresent(String.self, forKey: .firmwareName),
+            actualRPM: try container.decode(FanReading.self, forKey: .actualRPM),
+            minimumRPM: try container.decode(FanReading.self, forKey: .minimumRPM),
+            maximumRPM: try container.decode(FanReading.self, forKey: .maximumRPM),
+            targetRPM: try container.decodeIfPresent(Double.self, forKey: .targetRPM),
+            mode: try container.decode(FanControlMode.self, forKey: .mode),
+            isReclaimedBySystem: try container.decode(Bool.self, forKey: .isReclaimedBySystem),
+            manualControlAvailability: try container.decode(
+                ManualControlAvailability.self, forKey: .manualControlAvailability)
+        )
     }
 }
