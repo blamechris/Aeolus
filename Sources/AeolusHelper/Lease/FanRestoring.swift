@@ -23,14 +23,42 @@ import Foundation
 /// full today — every teardown path below is exercised against a recording double — and
 /// means the control plane inherits a contract it cannot widen by accident.
 ///
-/// ## Why it cannot fail
+/// ## Why it cannot fail, and why it must still come back
 ///
-/// No `throws`, no return value, for the same reason
-/// `FanAuthority.connectionDidInvalidate(_:)` has neither: the callers are teardown paths
-/// with nobody to report to. A lease that expired has no live client, and a connection that
-/// died has no port. An implementation that cannot complete the write must log it and keep
-/// trying — surfacing it to a caller that can do nothing with it would be a failure
+/// No `throws`, for the same reason `FanAuthority.connectionDidInvalidate(_:)` has none:
+/// the callers are teardown paths with nobody to report to. A lease that expired has no
+/// live client, and a connection that died has no port. Throwing at them would be a failure
 /// dressed as a decision.
+///
+/// **It must nevertheless return, and returning is a hard contract rather than a courtesy**
+/// ([#110](https://github.com/blamechris/Aeolus/issues/110)). An implementation that cannot
+/// complete the write makes **bounded** attempts — `RestoreLimits.attemptBudget`, spent per
+/// fan — and then gives up and says which fans it gave up on. It must never keep trying
+/// forever. This contract used to say the opposite, and what that costs was the whole of
+/// #110: `LeaseAuthority` awaits this from every teardown path, and since
+/// [#136](https://github.com/blamechris/Aeolus/issues/136) one of those paths is
+/// `ReclamationWatchdog.cycle()` by way of `revokeEveryLease(because:)`. A conformer parked
+/// inside a retry loop therefore parks `ReclamationSupervisor`'s loop for the life of the
+/// process — silently, and for every other fan, not only the one that would not go back.
+/// A guarantee of return is what makes awaiting this from a safety actor's cycle legal at
+/// all.
+///
+/// `docs/SAFETY.md` § 5 already settled the same question the same way for the mechanism
+/// next door: `ReclamationWatchdog.finaliseRelease(fanAt:because:)` attempts the restore,
+/// logs a fault if it throws, and drops the fan from its registry **regardless** — bounded,
+/// then report, never "keep trying". Two mechanisms in one subsystem must not disagree
+/// about what a failed restore means.
+///
+/// ## Giving up is reported, never swallowed
+///
+/// The returned set is the fans this call could not put back. `LeaseAuthority` keeps them,
+/// and refuses a later lease over one with
+/// `ManualControlAvailability.Reason.restoreToAutomaticFailed` — durable, and deliberately
+/// distinct from the transient `.releaseInProgress`, so a client can tell *retrying* from
+/// *gave up*. Returning an empty set from a restore that failed is the inversion this whole
+/// subsystem exists to prevent: it converts "the fans are still pinned" into "the teardown
+/// completed", and the next client is then handed a lease over a fan in a mode nothing has
+/// confirmed. `BoundedFanRestorer` is the shipped implementation of all of this.
 ///
 /// ## Its relationship to `FanControlPlane`
 ///
@@ -47,17 +75,28 @@ import Foundation
 /// the answer cannot be "nobody", because ADR 0007's keystone makes restore the terminal
 /// action every other mechanism falls back to.
 ///
-/// **#102 owns that adapter**, and owns it explicitly: it catches, logs at fault level, and
-/// keeps retrying. What it must never do is swallow the error to satisfy this signature —
-/// a `try?` here would convert "the fans are still pinned" into "the teardown completed",
-/// which is the exact inversion this whole subsystem exists to prevent.
+/// `BoundedFanRestorer` is that answer, and it ships here rather than with #102 because
+/// #110 is a liveness property of the *lease core*, not of whichever plane ends up behind
+/// it: the bound has to exist in code the lease core's tests can drive, or "the caller
+/// cannot be parked" is an assertion about a comment. **#102 still owns the wiring** — which
+/// `FanRestoreScope` a production adapter uses per attempt, and whether the Apple Silicon
+/// force key is cleared on the way — and conforms its plane to `FanRestoreAttempting` to
+/// get the bound.
 protocol FanRestoring: Sendable {
 
     /// Returns `fans` to the system's own thermal management.
     ///
     /// Must be idempotent: every teardown path may run for fans that are already automatic,
     /// and two paths may name the same fan in the same instant.
-    func restoreToAutomatic(fans: Set<Int>, because cause: FanRestoreCause) async
+    ///
+    /// Must also **terminate**: bounded attempts, then report. See "Why it cannot fail, and
+    /// why it must still come back" above; a conformer that retries forever is a defect
+    /// whatever its tests say, because its caller is a teardown path with no timeout of its
+    /// own.
+    ///
+    /// - Returns: the subset of `fans` this call gave up on — empty when every fan is back
+    ///   under the system's thermal management. Never the fans it restored.
+    func restoreToAutomatic(fans: Set<Int>, because cause: FanRestoreCause) async -> Set<Int>
 }
 
 /// Which mechanism asked for the restore.
