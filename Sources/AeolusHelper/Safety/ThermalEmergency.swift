@@ -381,23 +381,46 @@ actor ThermalEmergency<Plane: FanControlPlane> {
 
     /// A cycle that obtained no temperature at all.
     ///
-    /// It changes nothing. A latch stays latched — the asymmetry's second branch — and a
-    /// clear latch stays clear, because firing on one unreadable cycle would take the fans
-    /// from a client on a transient. Persistent read failure is divergence, and the
-    /// reconnect-then-restore-and-report escalation belongs to
+    /// It changes **the latch** not at all. A latch stays latched — the asymmetry's second
+    /// branch — and a clear latch stays clear, because firing on one unreadable cycle would
+    /// take the fans from a client on a transient. Persistent read failure is divergence,
+    /// and the reconnect-then-restore-and-report escalation belongs to
     /// [#126](https://github.com/blamechris/Aeolus/issues/126); until then this is the line
     /// that makes the condition visible rather than silent.
+    ///
+    /// ## It does still take back what it finds, and that is not the same thing
+    ///
+    /// `LeaseAuthority.revokeEveryLease(because:)` names a grant-time window it cannot close
+    /// from its own side, and the mitigation it names is *"the emergency taking back whatever
+    /// it finds, every cycle it holds."* This branch used to return before reaching that, so
+    /// the sentence was false on exactly the machine where it matters most: the SMC stops
+    /// answering, every cycle returns here, and the lease granted in the window survives —
+    /// renewed indefinitely, because `renewLease` consults neither the latch nor telemetry.
+    /// A client holding manual control through an emergency the mechanism believes it took
+    /// back is `CLAUDE.md` rule 6.
+    ///
+    /// It needs no reading to do it, and `revokeEveryLease` is idempotent and silent on an
+    /// empty table, so the steady blind state costs nothing and logs nothing. The latch read
+    /// can go stale across its hop like any other; the direction it can be wrong in is
+    /// over-firing, against declining to take back on a machine nobody can read.
+    ///
+    /// - Note: [#152](https://github.com/blamechris/Aeolus/issues/152).
     private func cycleSawNothing(_ detail: String) async {
         let wasAlreadyUnreadable = lastCycleWasUnreadable
         lastCycleWasUnreadable = true
-        // Log the transition, not the state. See `lastCycleWasUnreadable`.
-        guard !wasAlreadyUnreadable else { return }
+        let holding = await latch.isActive
 
-        if await latch.isActive {
-            log.thermalEmergencyHeldThroughUnreadableCycle(detail: detail)
-        } else {
-            log.thermalEmergencyCycleUnreadable(detail: detail)
+        // Log the transition, not the state. See `lastCycleWasUnreadable`.
+        if !wasAlreadyUnreadable {
+            if holding {
+                log.thermalEmergencyHeldThroughUnreadableCycle(detail: detail)
+            } else {
+                log.thermalEmergencyCycleUnreadable(detail: detail)
+            }
         }
+
+        guard holding else { return }
+        await takeBackAnythingEngagedSinceFiring()
     }
 
     /// Whether § 3 is currently holding, for a supervisor that needs to say so on its way
