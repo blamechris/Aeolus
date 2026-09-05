@@ -1,3 +1,4 @@
+import AeolusXPC
 import Foundation
 
 /// The TTL supervisor: the lease's **independent** path back to automatic control.
@@ -19,14 +20,34 @@ import Foundation
 /// ## What it does, and why the schedule is safe
 ///
 /// Each pass expires whatever has lapsed, then sleeps until the earliest remaining deadline
-/// — or for `idleInterval` when the table is empty.
+/// — or for `idleInterval` when the table is empty — and in **neither** case for longer
+/// than `maximumWake`.
 ///
-/// The idle interval is **shorter than the shortest TTL the helper will grant**
-/// (`AeolusXPCValidation.leaseTTLRange` starts at 5 seconds), which is what makes an idle
-/// sleep unable to make an expiry late: a lease acquired during an idle sleep is seen at the
-/// next wake, at most `idleInterval` later, and its deadline is still at least four seconds
-/// away at that point. If the floor of that range is ever lowered, this constant has to come
-/// down with it — the two are coupled, and this sentence is the coupling.
+/// That cap is the safety argument, and it is one sentence: **a lease granted during a
+/// sleep has at least the shortest grantable TTL still to run at the moment it is
+/// granted**, so a pass that wakes within that span cannot be late for it. `LeaseRecord`
+/// lapses on `>=`, so even a lease granted in the same instant the pass parked is swept
+/// exactly at its deadline rather than one wake after it.
+///
+/// The cap is what the deadline branch was missing. The table is free to change while a
+/// pass is parked — a holder releases, and a second client takes a five-second lease — and
+/// the deadline a pass sleeps to was read before any of that happened. Sleeping to lease
+/// A's deadline is not a bound on lease B's, and the direction that hurts is a *shorter*
+/// lease replacing a longer one, which made the TTL arbitrarily late rather than merely
+/// imprecise: ~115 seconds of a lapsed lease still holding the fans with no live claim
+/// behind it ([#151](https://github.com/blamechris/Aeolus/issues/151)). `maximumWake` is a
+/// bound on both branches because it does not consult the table at all.
+///
+/// It is **derived** from `AeolusXPCValidation.leaseTTLRange` rather than restated against
+/// it, so if the floor of that range is ever lowered the cap comes down with it and no
+/// comment has to be believed. The idle interval keeps its own coupling to the same floor —
+/// it is far below the cap, so nothing about the idle branch changes — but it is no longer
+/// the only thing standing between a table change and a late expiry.
+///
+/// What it costs is one wake every five seconds while a lease is outstanding, against a
+/// client that is already renewing on a heartbeat of a third of its TTL, and nothing at all
+/// when the table is empty. What it buys is the property `docs/SAFETY.md` § 1 claims
+/// outright: the TTL backstops every other mechanism for as long as the helper is alive.
 ///
 /// ## Precedence
 ///
@@ -40,6 +61,11 @@ actor LeaseExpirySupervisor {
     /// How long a pass waits when no lease is outstanding. See the type's documentation for
     /// why this is coupled to `AeolusXPCValidation.leaseTTLRange`'s lower bound.
     static let defaultIdleInterval: Duration = .seconds(1)
+
+    /// The longest a pass will sleep for, whatever the table says — the shortest TTL the
+    /// helper will grant, read from the validator that enforces it rather than written out
+    /// here. See the type's documentation for why every sleep is bounded by it.
+    static let maximumWake: Duration = .seconds(AeolusXPCValidation.leaseTTLRange.lowerBound)
 
     /// The soonest a pass will sleep for. A sweep leaves no lapsed lease behind, so a
     /// deadline in the past should be unreachable — this is what stops "should be" from
@@ -125,9 +151,13 @@ actor LeaseExpirySupervisor {
 
             let earliest = await authority.nextExpiryDeadline()
             let candidate = earliest ?? clock.now.advanced(by: idleInterval)
+            // The cap applies to both branches, and it is the one part of the wake that is
+            // not derived from state another actor can invalidate while this pass is parked.
+            let capped = min(candidate, clock.now.advanced(by: maximumWake))
             // The floor applies to both branches. A misconfigured idle interval is as good
-            // a way to spin a core as a deadline in the past.
-            let wake = max(candidate, clock.now.advanced(by: minimumWake))
+            // a way to spin a core as a deadline in the past, and it is applied after the
+            // cap so that a floor above the cap still refuses to spin.
+            let wake = max(capped, clock.now.advanced(by: minimumWake))
 
             do {
                 try await clock.sleep(until: wake)

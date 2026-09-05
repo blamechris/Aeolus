@@ -182,7 +182,9 @@ struct LeaseExpirySupervisorTests {
 
     @Test("The loop expires a lease with no connection event of any kind")
     func loopExpiresALeaseUnprompted() async throws {
-        let clock = TestClock(sleepBudget: 4)
+        // Seven passes because no sleep may outrun `maximumWake` — a 30 s lease is reached
+        // in six five-second wakes, and the seventh pass is the one that sweeps it.
+        let clock = TestClock(sleepBudget: 7)
         let restorer = RecordingFanRestorer()
         let authority = LeaseFixture.authority(restorer: restorer, clock: clock)
 
@@ -205,6 +207,11 @@ struct LeaseExpirySupervisorTests {
     /// the lease eventually, so a test that only checked the outcome would pass on a
     /// supervisor that polled — and polling a root daemon awake every second forever is not
     /// what this is.
+    ///
+    /// The clock is advanced to within `maximumWake` of the deadline first, so that the cap
+    /// #151 added is not the thing being measured: this is the case where the deadline is
+    /// the sooner of the two, and the pass must sleep to it exactly. `maximumWake` itself is
+    /// covered by `LeaseExpirySupervisorScheduleTests`.
     @Test("A pass sleeps to the outstanding deadline, not to the idle interval")
     func sleepsToTheDeadline() async throws {
         let start = ContinuousClock.now
@@ -213,6 +220,7 @@ struct LeaseExpirySupervisorTests {
 
         _ = try await authority.acquireLease(
             LeaseFixture.request(timeToLive: 45), from: ConnectionID())
+        clock.advance(by: .seconds(43))
 
         await LeaseExpirySupervisor.run(
             authority: authority,
