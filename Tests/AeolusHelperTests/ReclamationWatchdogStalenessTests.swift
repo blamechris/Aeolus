@@ -23,7 +23,18 @@ import Testing
 /// Each test asserts `didFire`, so a scenario that silently failed to arrange its own
 /// interleaving is a failure rather than a pass. That guard is the difference between this
 /// suite and one that would go green against the very code it was written to condemn.
-@Suite("The reclamation watchdog, across a suspension point")
+/// `itExaminesFansSequentially` runs `machine.watchdog.cycle()`, gated by
+/// `GatedFanStateSensing`, as an *observed* task rather than an awaited one —
+/// `finished(_:_:)`'s bounded poll-and-cancel is what is load-bearing here, the same
+/// pattern `SchedulerTurnLifecycleTests` uses for its own unbounded reads. A bare `await` on
+/// the task would not be saved by `.timeLimit`: cancelling *this test's* task, which is all
+/// `.timeLimit` can do, does not reach a suspension inside a separate unstructured
+/// `Task { ... }` this test only joins — confirmed against `GatedFanStateSensing.open()`
+/// replaced with a no-op, which left the run recording `.timeLimit`'s issue and then never
+/// exiting. `.timeLimit` on this `@Suite` remains the backstop for everything else here —
+/// the class of defect [#109](https://github.com/blamechris/Aeolus/issues/109) is about,
+/// the same fix `AnonymousListenerTests` and `SMCReadSchedulerTests` already carry.
+@Suite("The reclamation watchdog, across a suspension point", .timeLimit(.minutes(1)))
 struct ReclamationWatchdogStalenessTests {
 
     /// **The rule-2 defect.** A fan released while the envelope read is in flight must not
@@ -197,7 +208,15 @@ struct ReclamationWatchdogStalenessTests {
         try await machine.hold(fan: 0, commanding: 2_400)
         try await machine.hold(fan: 1, commanding: 2_400)
 
-        let sweep = Task { await machine.watchdog.cycle() }
+        // Observed rather than awaited directly: `cycle()` runs as its own unstructured
+        // task, and `GatedFanStateSensing`'s continuation being cancellation-aware does not
+        // by itself help a bare `await sweep.value` here — cancelling *this* test's task
+        // (what `.timeLimit` does) never reaches an unrelated `Task { ... }` this test
+        // merely joins. `finished(_:_:)` is what makes a mutation that never calls `open()`
+        // a red assertion in milliseconds instead of a hang `.timeLimit` can only report on,
+        // not end — confirmed against `GatedFanStateSensing.open()` replaced with a no-op:
+        // without this, the run recorded the time-limit issue and then never exited.
+        let sweep = observing { await machine.watchdog.cycle() }
 
         let arrived = await yieldUntil("the first fan's control-state read") {
             await sensing.controlStateRequests.isEmpty == false
@@ -211,7 +230,7 @@ struct ReclamationWatchdogStalenessTests {
             "fan 1 was asked about while fan 0's read was still in flight")
 
         await sensing.open()
-        await sweep.value
+        try await finished("the sequential sweep", sweep)
 
         #expect(await sensing.controlStateRequests == [0, 1])
         #expect(await sensing.peakOutstanding == 1)

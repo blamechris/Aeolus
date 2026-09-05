@@ -167,7 +167,14 @@ struct LeaseReleaseTests {
 /// Reported independently by two reviewers of #107, which is why it is closed here rather
 /// than deferred to E5.3 — the interlock needs nothing from the control plane, and a core
 /// that ships with a known rule-6 window is a worse foundation than one that does not.
-@Suite("The handback window")
+/// Every test here awaits `AsyncSignal.wait()` on a gate the test itself must open. The
+/// assertion after that `wait()` is what is load-bearing — a mutation that never reaches
+/// the release point is the actual defect this suite exists to name, the class
+/// [#109](https://github.com/blamechris/Aeolus/issues/109) is about. `.timeLimit` is the
+/// backstop, the same one `LeaseBindingRaceTests` carries for its own `AsyncSignal` use;
+/// `wait()`'s cancellation-awareness is what lets that backstop's cancellation resume a
+/// parked waiter instead of leaving the run hung after recording its issue.
+@Suite("The handback window", .timeLimit(.minutes(1)))
 struct LeaseHandbackWindowTests {
 
     /// The interleaving stated as the failure it produces, not as the mechanism: while fan
@@ -186,7 +193,7 @@ struct LeaseHandbackWindowTests {
 
         // Park the teardown inside the restore, which is exactly where the window is.
         let dying = Task { await authority.connectionDidInvalidate(holder) }
-        await entered.wait()
+        try await entered.wait()
 
         // The table is already empty here — that is the condition `acquireLease` checks, and
         // why an emptied table alone cannot close this.
@@ -217,7 +224,7 @@ struct LeaseHandbackWindowTests {
         let holder = ConnectionID()
         _ = try await authority.acquireLease(LeaseFixture.request(fans: [0]), from: holder)
         let dying = Task { await authority.connectionDidInvalidate(holder) }
-        await entered.wait()
+        try await entered.wait()
         await release.signal()
         await dying.value
 
@@ -247,7 +254,7 @@ struct LeaseHandbackWindowTests {
         let holder = ConnectionID()
         _ = try await authority.acquireLease(LeaseFixture.request(fans: [0]), from: holder)
         let dying = Task { await authority.connectionDidInvalidate(holder) }
-        await entered.wait()
+        try await entered.wait()
 
         let lease = try await authority.acquireLease(
             LeaseFixture.request(fans: [1]), from: ConnectionID())
@@ -268,7 +275,11 @@ struct LeaseHandbackWindowTests {
 /// for the #95 liveness check — "a test could stay green on the early refusal while the
 /// guarded region below was unprotected, which is exactly how a guard survives being
 /// deleted" — so the new guard gets the same treatment the old one has.
-@Suite("The handback guard sits after the last suspension point")
+/// Same reasoning as `LeaseHandbackWindowTests`: this suite gates on `AsyncSignal.wait()`
+/// and `ScriptedFanEnumeration.Gate`. The assertion is load-bearing; `.timeLimit` is the
+/// backstop for a guard that never releases, and relies on `wait()`'s cancellation-aware
+/// continuation to actually end the run rather than merely record an issue against it.
+@Suite("The handback guard sits after the last suspension point", .timeLimit(.minutes(1)))
 struct LeaseHandbackGuardPlacementTests {
 
     /// The interleaving a hoisted guard admits: the acquirer suspends in the hardware round
@@ -295,11 +306,11 @@ struct LeaseHandbackGuardPlacementTests {
         let acquiring = Task {
             try await authority.acquireLease(LeaseFixture.request(fans: [0]), from: newcomer)
         }
-        await gate.entered.wait()
+        try await gate.entered.wait()
 
         // Only now does fan 0 start being handed back.
         let dying = Task { await authority.connectionDidInvalidate(holder) }
-        await restoreEntered.wait()
+        try await restoreEntered.wait()
 
         // Let the acquirer resume into an empty table and a fan mid-handback.
         await gate.release.signal()
