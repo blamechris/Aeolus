@@ -339,10 +339,13 @@ against. `HelperHardwareTests.snapshotFromRealHardware` now tolerates either val
 is to say when this machine is *not* in the "nothing holding the fans" state, and loosening
 it would make it stop recording anything.
 
-At the fourth reading, `Ftst` read `0` (`ui8`, raw `00`) — the first `Ftst` reading taken
-alongside the mode keys in this series — and the full suite (1172 tests, 174 suites) passed
-on this machine with the tool quit, including both hardware assertions that had failed while
-it held the fans.
+At the fourth reading, `Ftst` read `0` (`ui8`, raw `00`) — the first `Ftst` reading in this
+series, taken by a separate `fanctl dump --key Ftst` in the same minute as the mode keys,
+**not** through the test's path: `SMCFanControlPlane.readControlState` deliberately refuses
+to read `Ftst`, so no co-read of the two happened. And the full suite (1172 tests, 174
+suites) passed on this machine with the tool quit — on `main` at `c8fb218`, before this
+change, so with `snapshotFromRealHardware` still pinning `.automatic` — including both
+hardware assertions that had failed while it held the fans.
 
 Still not verified: that writing `1` to `F<n>Md` engages manual control, or that writing `0`
 returns a held fan to Apple's management. Both are writes and belong to E4. What is settled

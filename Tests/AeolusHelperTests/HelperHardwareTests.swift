@@ -35,7 +35,7 @@ struct HelperHardwareTests {
     /// 2026-09-05 (`docs/SMC-RESEARCH.md` § "`F0Md`/`F1Md` have now been observed reading
     /// `1`"), releasing them again within the hour while still running. `#expect(fan.mode ==
     /// .automatic)` conflated two different claims: "controllable by nothing" is a fact about
-    /// `manualControlAvailability`, which this build's write path makes true regardless of
+    /// `manualControlAvailability`, which this build's absent write path makes true regardless of
     /// what else is running; "the firmware reports automatic" is a fact about the machine's
     /// *current* state, which depends on what else is running. This test reports the helper,
     /// not whatever the reviewer's desktop happened to be doing.
@@ -63,19 +63,25 @@ struct HelperHardwareTests {
             // is holding the fan) or `.manualFixed` (something is) — see
             // `ReadOnlyFanReport.controlMode(_:)` — and which one this run observes is a
             // fact about the machine, not about this build. Printed rather than pinned to
-            // one value, for the same reason `everyFanIsOnAutomaticControlAtStart` pins it
-            // deliberately: that test is the executable checklist row that wants `0`
-            // specifically; this one is not.
+            // one value; `everyFanIsOnAutomaticControlAtStart` is the checklist row that
+            // wants `0` specifically, and it keeps pinning it.
+            //
+            // Printed as what this test actually observed — the decoded mode — and never
+            // as a raw `F<n>Md` byte, because nothing here reads one: `.automatic` covers
+            // both "firmware declared 0" and "the key could not be read" (`controlMode(_:)`
+            // folds a `nil` read into `.automatic`, #178), and `.manualFixed` covers any
+            // non-zero value, not only `1`. A register value in this line would be a
+            // number nobody read (#208).
             print(
                 "fan \(fan.index) reads .\(fan.mode.rawValue) "
-                    + "(F\(fan.index)Md == \(fan.mode == .manualFixed ? 1 : 0))")
-            // Still not a tautology: this excludes `.manualCurve`, which nothing outside
-            // Aeolus can produce and which this build grants no lease to reach, so any
-            // fan reporting one would mean a lease was live in a build with no write path.
-            // It does not separately exclude "the mode key was unreadable" as a third wrong
-            // answer, because `controlMode(_:)` folds a `nil` read into `.automatic` as a
-            // documented compromise (#178) rather than a distinct case — there is no third
-            // representation here to pin against, and this test cannot see that gap either.
+                    + "(the decoded mode; the raw F\(fan.index)Md byte is not read here)")
+            // A tripwire on `controlMode(_:)`'s codomain, not on machine state: on this
+            // path `mode` comes only from that function, which maps onto exactly
+            // `{.automatic, .manualFixed}`, so no hardware state can fail this line and a
+            // `.manualCurve` here would mean the mapping itself had grown a third case.
+            // "No lease is live" is `#expect(snapshot.activeLease == nil)` above, not this
+            // line. Hardware coverage of the mode read is the checklist row and, over doubles,
+            // in `ReadOnlyFanAuthorityModeTests`.
             #expect(fan.mode == .automatic || fan.mode == .manualFixed)
             #expect(fan.targetRPM == nil)
             #expect(fan.manualControlAvailability == .unavailable(.writePathNotBuilt))
