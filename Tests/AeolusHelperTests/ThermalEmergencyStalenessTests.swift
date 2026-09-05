@@ -289,6 +289,59 @@ struct ThermalEmergencyStalenessTests {
         #expect(await machine.restorer.causes == [.thermalEmergency])
     }
 
+    /// **The compare-and-clear is asserted against the source tree, because no test can
+    /// reach the difference at runtime.**
+    ///
+    /// Swapping `release(ifStill:)` back for `release()` in `cycle()` reinstates
+    /// [#152](https://github.com/blamechris/Aeolus/issues/152) exactly — a cycle clearing an
+    /// episode whose temperature it never read — and the whole 963-test suite stays green,
+    /// because the two spellings differ only when a second cycle moves the latch inside that
+    /// one actor hop and `ThermalSupervisor` is the sole driver until
+    /// [#127](https://github.com/blamechris/Aeolus/issues/127) arrives to contend with it.
+    /// A property that only concurrency can observe is still a property of the source, so it
+    /// is asserted there, the way `WritePathAbsenceTests` asserts E2's.
+    ///
+    /// It also mechanises a claim four comments make in prose — `ThermalSupervisor.stop()`,
+    /// `SafetyLog.thermalSupervisorStopped(whileLatched:)`, `ReclamationWatchdog.latch` and
+    /// this suite's sibling all argue from "nothing else in `Sources/` clears the latch", and
+    /// all four said `release()` for a while after `cycle()` had stopped calling it. A claim
+    /// load-bearing enough to justify stranding § 3 for the life of the process should not be
+    /// checkable only by grep.
+    ///
+    /// The first assertion is the positive control, and it is not decoration: without it a
+    /// scanner that silently matched nothing would report the second assertion as a pass and
+    /// this would be a test that cannot fail.
+    ///
+    /// Mutation-checked: rewrite `cycle()`'s clear as `await latch.release()` — it compiles,
+    /// and the rest of the suite stays green — and both assertions below go red.
+    @Test("Only cycle() clears the latch, and only by naming the episode it judged")
+    func onlyCycleClearsTheLatchAndOnlyByNamingTheEpisode() throws {
+        // Comment lines are stripped by the scanner, so the prose above and the block in
+        // `cycle()` that discusses `release()` are invisible to both patterns.
+        let compareAndClear = try SeamScanner.declarations(matching: #"\brelease\(ifStill:"#)
+        #expect(
+            Set(compareAndClear.map(\.file)) == ["ThermalEmergency.swift"],
+            """
+            the scanner found the compare-and-clear in \(compareAndClear.map(\.file)) rather \
+            than in ThermalEmergency.swift alone. Either another mechanism now releases § 3 — \
+            which retires the argument ThermalSupervisor.stop() makes for stranding the latch \
+            — or the scanner matched nothing, in which case the assertion below means nothing.
+            """
+        )
+
+        let unqualified = try SeamScanner.declarations(matching: #"(?<!func )\brelease\(\s*\)"#)
+        #expect(
+            unqualified.isEmpty,
+            """
+            \(unqualified.map(\.file).joined(separator: ", ")) clears the latch without naming \
+            an episode. A release decided against a temperature report and landing an actor hop \
+            later can clear an episode that began in between, whose temperature nothing read — \
+            #152, reached through the release rather than through the guard. Use \
+            release(ifStill:); release() exists for scenarios that script an episode boundary.
+            """
+        )
+    }
+
     /// The control that keeps the branch above from becoming "a blind cycle revokes".
     ///
     /// With the latch clear, an unreadable cycle changes nothing — firing or revoking on one
