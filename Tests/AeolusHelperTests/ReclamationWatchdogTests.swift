@@ -102,26 +102,37 @@ struct ReclamationWatchdogTests {
     /// The dwell is real: the shortfall is present from the first cycle and reports on the
     /// fifth.
     ///
-    /// **Driven rather than asserted against the constant.** The loop runs
-    /// `ReclamationLimits.actualDwellCycles` times and checks that nothing was said until
-    /// the last of them, so lowering the constant to 1 turns the "not yet" assertion red
-    /// rather than quietly agreeing with a new number.
+    /// **Driven rather than asserted against the constant**, and the loop covers the
+    /// threshold cycle rather than stopping short of it.
+    ///
+    /// It ran `1..<ReclamationLimits.actualDwellCycles` and asserted the report separately
+    /// afterwards, with a comment claiming that lowering the constant to 1 would turn the
+    /// "not yet" assertion red. It would not: at 1 the range is empty, the loop body never
+    /// runs, and the only surviving assertion is the one that agrees with whatever the
+    /// constant became. A loop whose body a plausible edit can empty is a loop that asserts
+    /// nothing about that edit.
+    ///
+    /// `1...N` with the expectation derived per cycle says the same thing and is non-vacuous
+    /// at every value of the constant, including 1 — where it asserts that the very first
+    /// short cycle reports.
+    ///
+    /// The *upward* direction is not this test's to catch, and cannot be: raising the
+    /// constant lengthens the loop and the test agrees with it. `ReclamationLimitsTests` is
+    /// the literal ceiling that does.
     @Test("The secondary signal says nothing before its dwell has elapsed")
     func theSecondarySignalWaitsForItsDwell() async throws {
         let machine = ReclamationMachine(
             fans: [0: .ramping(target: 2_400, actual: 1_000)])
         try await machine.hold(fan: 0, commanding: 2_400)
 
-        for cycle in 1..<ReclamationLimits.actualDwellCycles {
+        for cycle in 1...ReclamationLimits.actualDwellCycles {
             await machine.watchdog.cycle()
+            let reports = machine.safetyLog.lines(containing: "has turned at").count
+            let expected = cycle == ReclamationLimits.actualDwellCycles ? 1 : 0
             #expect(
-                machine.safetyLog.lines(containing: "has turned at").isEmpty,
-                "the secondary signal reported on cycle \(cycle), before its dwell elapsed")
+                reports == expected,
+                "the secondary signal had reported \(reports) times by cycle \(cycle)")
         }
-
-        await machine.watchdog.cycle()
-
-        #expect(machine.safetyLog.lines(containing: "has turned at").count == 1)
     }
 
     /// **The defect this rework exists for.** A sustained shortfall reports and does

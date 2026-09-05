@@ -160,6 +160,14 @@ struct ReclamationWatchdogRecoveryTests {
     /// ADR 0007's hole 2 — `SAFETY.md` § 5 covered divergence of values and nothing covered
     /// the inability to obtain them, while a lease keeps the fans pinned. Driven to the
     /// threshold rather than asserted against it.
+    ///
+    /// The loop runs `1...N` and derives its expectation per cycle, rather than running
+    /// `1..<N` and asserting the escalation separately afterwards. At `N == 1` the old range
+    /// was empty and the "it gave up too early" assertion disappeared with it, leaving a test
+    /// that agreed with whatever the constant had become — the same vacuity as
+    /// `ReclamationWatchdogTests.theSecondarySignalWaitsForItsDwell`. Raising the constant is
+    /// not catchable here at all, for the same reason; `ReclamationLimitsTests` holds the
+    /// literal ceiling that catches it.
     @Test("Persistent read failure attempts a reconnect and then restores")
     func persistentBlindnessReconnectsThenRestores() async throws {
         let machine = ReclamationMachine(
@@ -168,14 +176,14 @@ struct ReclamationWatchdogRecoveryTests {
         try await machine.lease(fans: [0])
         try await machine.hold(fan: 0, commanding: 2_400)
 
-        for cycle in 1..<ReclamationLimits.blindCyclesBeforeDivergence {
+        for cycle in 1...ReclamationLimits.blindCyclesBeforeDivergence {
             await machine.watchdog.cycle()
+            let restored = await machine.didRestore(fan: 0)
+            let expected = cycle == ReclamationLimits.blindCyclesBeforeDivergence
             #expect(
-                await machine.didRestore(fan: 0) == false,
-                "it gave up on cycle \(cycle), before the failure was persistent")
+                restored == expected,
+                "the fan was \(restored ? "given up on" : "still held") on cycle \(cycle)")
         }
-
-        await machine.watchdog.cycle()
 
         #expect(await machine.attempts.contains(ScriptedControlPlane.Attempt.reconnect))
         #expect(await machine.didRestore(fan: 0))
