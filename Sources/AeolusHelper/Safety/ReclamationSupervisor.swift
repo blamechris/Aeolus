@@ -54,6 +54,9 @@ actor ReclamationSupervisor<Plane: FanControlPlane> {
 
     private var task: Task<Void, Never>?
 
+    /// Which loop `task` refers to. See `loopEnded(generation:)`.
+    private var generation: UInt64 = 0
+
     init(
         watchdog: ReclamationWatchdog<Plane>,
         clock: some MonotonicClock = SystemMonotonicClock(),
@@ -78,18 +81,36 @@ actor ReclamationSupervisor<Plane: FanControlPlane> {
     @discardableResult
     func start() -> Bool {
         guard task == nil else { return false }
+        generation &+= 1
+        let generation = self.generation
         let watchdog = self.watchdog
         let clock = self.clock
         let interval = self.interval
         let log = self.log
-        task = Task.detached {
+        task = Task.detached { [weak self] in
             await Self.run(watchdog: watchdog, clock: clock, interval: interval, log: log)
+            await self?.loopEnded(generation: generation)
         }
         return true
     }
 
     /// Whether a loop is running.
+    ///
+    /// The loop, not the handle — `ThermalSupervisor.isRunning` states the defect
+    /// ([#131](https://github.com/blamechris/Aeolus/issues/131)) this shape shared with both
+    /// its siblings, and the fix is identical here.
     var isRunning: Bool { task != nil }
+
+    /// Clears the handle when the loop ends, whichever exit it took.
+    ///
+    /// Generation-checked rather than an unconditional `task = nil`, for the reason
+    /// `ThermalSupervisor.loopEnded(generation:)` gives in full: `stop()` cancels without
+    /// awaiting, so a superseded loop can finish after its replacement has started, and
+    /// clearing the handle from there would let two supervisors run against one mechanism.
+    private func loopEnded(generation: UInt64) {
+        guard generation == self.generation else { return }
+        task = nil
+    }
 
     /// Stops the loop.
     ///
@@ -107,6 +128,16 @@ actor ReclamationSupervisor<Plane: FanControlPlane> {
     /// The loop says so at `.fault` on its way out when any fan is still held.
     /// [#103](https://github.com/blamechris/Aeolus/issues/103) owns the restart policy that
     /// makes it recoverable.
+    ///
+    /// **Nothing is acquired on the way out.** `stop()` cancels without awaiting, so a
+    /// sweep suspended inside a read finishes after this returns —
+    /// [#144](https://github.com/blamechris/Aeolus/issues/144)'s second side effect, where
+    /// that sweep could still take a fan *off* automatic control from a supervisor that had
+    /// stopped watching. `ReclamationWatchdog.reassert(_:fanAt:attempt:)` now checks
+    /// cancellation immediately before that write, so the outgoing sweep can read, log and
+    /// restore, and can no longer acquire. What it does **not** do is make `isRunning` wait
+    /// for that sweep: the handle is cleared here and the cycle may still be running when it
+    /// reads `false`.
     func stop() {
         task?.cancel()
         task = nil

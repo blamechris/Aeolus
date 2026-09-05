@@ -310,6 +310,9 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
 
     // MARK: - One cycle
 
+    /// Whether a sweep is in flight. See `cycle()`'s "one sweep at a time".
+    private var isSweeping = false
+
     /// Examines every held fan once and acts on what it finds.
     ///
     /// Never throws, for `ThermalEmergency.cycle()`'s reason: the driver is a loop in a
@@ -331,7 +334,36 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// vanish silently while the code around it goes on acting as though the fan were still
     /// registered, which is exactly how `reassert(_:fanAt:attempt:)` came to write `F<n>Md`
     /// to a fan whose lease had just been released.
+    ///
+    /// ## One sweep at a time, by construction
+    ///
+    /// The sequential examination below is a property of *one* invocation, and until
+    /// [#144](https://github.com/blamechris/Aeolus/issues/144) nothing made it a property of
+    /// the mechanism. `ReclamationSupervisor.stop()` cancels without awaiting, so a
+    /// stop-then-start — what a sleep/wake cycle does — starts a second loop whose first act
+    /// is a `cycle()` while the outgoing one is still suspended inside a read. Two sweeps of
+    /// the same fan then spend one re-assert budget twice and count one dwell twice, and a
+    /// dwell that elapses in half the cycles it should is how the secondary signal starts
+    /// reading a ramp as a reclamation.
+    ///
+    /// A second entrant therefore returns having done nothing, rather than waiting its
+    /// turn — dropped to serialise the mechanism, not because its readings are stale. The
+    /// sweep in flight is acting on a control state it has already read; the entrant has
+    /// read nothing yet, so an entrant that queued would read *after* the incumbent finished
+    /// and would hold the fresher view of the fan. What makes dropping it right is that it
+    /// has nothing to add: this loop runs at a fixed cadence, an entrant exists only because
+    /// a stop-then-start overlapped two loops, and queueing would run two sweeps back to
+    /// back inside one interval — spending two supervisor-priority turns on the single SMC
+    /// connection where the cadence budgets one.
+    ///
+    /// Nothing is carried past the return: every sweep re-reads each fan below, and the
+    /// per-fan state that made the overlap consequential — the budget, the dwell — is what
+    /// the next scheduled sweep will read fresh anyway.
     func cycle() async {
+        guard !isSweeping else { return }
+        isSweeping = true
+        defer { isSweeping = false }
+
         guard !held.isEmpty else { return }
 
         // Sorted and sequential. Sorted so a scenario's log and attempt order are
@@ -670,6 +702,57 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // nothing left watching. `CLAUDE.md` rule 2.
         guard held[index] != nil else {
             log.reclamationFanReleasedMidExamination(fan: index, during: "its envelope read")
+            return
+        }
+
+        // **A cancelled sweep does not take a fan off automatic control.** The other half of
+        // #144's `stop()` shape: the in-flight guard on `cycle()` makes the *incoming* loop
+        // harmless, and this makes the *outgoing* one harmless.
+        // `ReclamationSupervisor.stop()` cancels without awaiting, so a sweep suspended
+        // inside a read resumes inside a supervisor that has already stopped — and the write
+        // below is the only one in this file that moves a fan in the unsafe direction: off
+        // Apple's thermal management and onto a target with nothing watching it, because the
+        // loop that would have watched it is the loop that was just cancelled. `stop()`
+        // documents that it leaves already-held fans held; acquiring a *new* one on the way
+        // out is not covered by that reasoning, it runs against it.
+        //
+        // Only this write is guarded. The restores below resolve *towards* automatic
+        // control, which is where a stopping supervisor wants a fan it can no longer see,
+        // and § 3 needs no counterpart at all — `bridgeToMaximumThenRelease` ends on
+        // `restoreToAutomatic` whether it is cancelled or not.
+        //
+        // Read from the task, because cancellation is the supervisor's stop signal and
+        // `cycle()` runs on the supervisor's task; placed immediately before the write for
+        // this file's own rule, that a check separated from the act it guards is not a
+        // check.
+        //
+        // **The attempt is refunded, because the budget counts writes and this branch
+        // performs none.** `diverged(_:fanAt:)` spends the attempt before the envelope read
+        // that suspends, so the cost is booked at the point of *intent* and this is the one
+        // exit that never converts it into a write. Leaving it spent made a sleep/wake cycle
+        // — `stop()` then `start()` — able to burn the whole budget without a single
+        // `F<n>Md` reaching the firmware: three stop-starts catching one diverged fan inside
+        // its read, and the next real sweep skips straight to `finaliseRelease` with cause
+        // `.systemReclaimed`. The direction is safe and the account is false, which is
+        // exactly what rule 6 forbids — the operator is told the system took a fan Aeolus
+        // never once tried to take back, and loses control it could have had.
+        //
+        // An earlier version of this comment argued the other way, that "restarting with one
+        // fewer attempt gives the fan back to automatic control sooner, which is the
+        // direction this mechanism fails in". Failing safe is not a licence to mis-attribute:
+        // the budget exists to stop Aeolus *fighting* firmware that discards its writes, and
+        // an attempt that never reached the wire is not a round of that fight. Refunding
+        // keeps the budget measuring the thing it was sized against.
+        //
+        // Decremented rather than assigned back to `attempt - 1`: `held[index]` is re-fetched
+        // above but is not proven to be the same episode, and a decrement is correct for
+        // whatever count is actually there. Floored at zero so a concurrent reset —
+        // `convergence` zeroes this — cannot leave it negative and hand the fan an extra try.
+        guard !Task.isCancelled else {
+            if let spent = held[index]?.reassertAttempts {
+                held[index]?.reassertAttempts = max(0, spent - 1)
+            }
+            log.reclamationAbandonedOnCancellation(fan: index)
             return
         }
 

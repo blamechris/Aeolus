@@ -473,6 +473,36 @@ extension SafetyLog {
         )
     }
 
+    /// The supervisor was cancelled while § 5 was mid-re-assert, so the write did not happen.
+    ///
+    /// `ReclamationSupervisor.stop()` cancels without awaiting, so a sweep can resume from a
+    /// read inside a supervisor that has already stopped. Re-engaging manual control from
+    /// there would leave a fan off Apple's thermal management with nothing left watching it
+    /// ([#144](https://github.com/blamechris/Aeolus/issues/144)).
+    ///
+    /// **This line says what is known and stops there, because it once said more.** It read
+    /// "the fan is left on automatic control", which is true of exactly one of the three
+    /// divergences that reach here. `ReclamationDivergence.modeReclaimed` is the firmware
+    /// reporting automatic control, so for that case it held; `.targetDiverged` is a fan
+    /// still *off* automatic control holding a target Aeolus never commanded, and
+    /// `.targetUnreadable` is a fan whose state could not be read at all. On a sleep/wake
+    /// stop-start catching a diverged fan, the old wording told an operator the fan had been
+    /// handed back to the system while it was pinned at a speed nobody chose — a claim of
+    /// control state that nothing had verified, which is `CLAUDE.md` rule 6 read from the
+    /// other side.
+    func reclamationAbandonedOnCancellation(fan: Int) {
+        emit(
+            .notice,
+            """
+            § 5 stopped short of re-asserting fan \(fan): the supervisor driving this sweep \
+            was cancelled before the write, so nothing was written. The fan is in whatever \
+            state the firmware last put it in — which is not necessarily automatic control, \
+            since a fan whose target diverged is still off it — and the lease TTL is the \
+            surviving backstop until the supervisor is started again.
+            """
+        )
+    }
+
     /// The mode write landed and the target write did not.
     ///
     /// The worst reachable state in the project — a fan off Apple's thermal management

@@ -88,6 +88,9 @@ actor LeaseExpirySupervisor {
 
     private var task: Task<Void, Never>?
 
+    /// Which loop `task` refers to. See `loopEnded(generation:)`.
+    private var generation: UInt64 = 0
+
     init(
         authority: LeaseAuthority,
         clock: some MonotonicClock = SystemMonotonicClock(),
@@ -114,19 +117,37 @@ actor LeaseExpirySupervisor {
     @discardableResult
     func start() -> Bool {
         guard task == nil else { return false }
+        generation &+= 1
+        let generation = self.generation
         let authority = self.authority
         let clock = self.clock
         let idleInterval = self.idleInterval
         let log = self.log
-        task = Task.detached {
+        task = Task.detached { [weak self] in
             await Self.run(
                 authority: authority, clock: clock, idleInterval: idleInterval, log: log)
+            await self?.loopEnded(generation: generation)
         }
         return true
     }
 
     /// Whether a loop is running. Diagnostics, and what makes `stop()` checkable.
+    ///
+    /// The loop, not the handle — `ThermalSupervisor.isRunning` states the defect
+    /// ([#131](https://github.com/blamechris/Aeolus/issues/131)) this shape, which
+    /// originated here, shared with both its siblings. The fix is identical in all three.
     var isRunning: Bool { task != nil }
+
+    /// Clears the handle when the loop ends, whichever exit it took.
+    ///
+    /// Generation-checked rather than an unconditional `task = nil`, for the reason
+    /// `ThermalSupervisor.loopEnded(generation:)` gives in full: `stop()` cancels without
+    /// awaiting, so a superseded loop can finish after its replacement has started, and
+    /// clearing the handle from there would let two supervisors sweep one lease table.
+    private func loopEnded(generation: UInt64) {
+        guard generation == self.generation else { return }
+        task = nil
+    }
 
     /// Stops the loop.
     ///
