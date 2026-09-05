@@ -116,7 +116,9 @@ struct LaunchDaemonPlistTests {
             contentsOf: Self.repositoryRoot.appendingPathComponent("docs/RECOVERY.md"),
             encoding: .utf8)
 
-        let afterCommand = recovery.components(separatedBy: "launchctl bootout").dropFirst()
+        let components = recovery.components(separatedBy: "launchctl bootout")
+        let beforeCommand = components.dropLast()
+        let afterCommand = components.dropFirst()
         #expect(
             afterCommand.count >= 2,
             """
@@ -133,6 +135,21 @@ struct LaunchDaemonPlistTests {
                 """
                 A `launchctl bootout` in RECOVERY.md targets '\(target)', but the daemon \
                 registers as '\(AeolusXPCService.machServiceName)'.
+                """)
+        }
+
+        // `launchctl bootout` without `sudo` fails with a permissions error rather than
+        // silently doing nothing — a milder failure than the wrong-label case above, but
+        // still a broken recovery step for someone copying the command verbatim.
+        for head in beforeCommand {
+            let reversedTail = head.reversed().drop(while: { $0.isWhitespace })
+            let precedingWord = reversedTail.prefix(while: { !$0.isWhitespace })
+            let precedingToken = String(precedingWord.reversed())
+            #expect(
+                precedingToken == "sudo",
+                """
+                A `launchctl bootout` in RECOVERY.md is preceded by '\(precedingToken)' \
+                instead of 'sudo'; it needs root to unload a system-domain daemon.
                 """)
         }
 
