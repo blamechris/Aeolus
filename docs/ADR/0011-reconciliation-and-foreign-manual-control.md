@@ -129,7 +129,11 @@ the other lacks.
 It is issued through a `SafetyActorWriter` at `.panicRestore`, not through
 `HelperFanRestorer`, which documents at length why it emits `.fan(n)` and never `.everyFan`.
 Issuing it over fans the pass *did* reach and found automatic costs nothing: the verb is
-idempotent over them.
+idempotent over them. A fan the pass found in manual and restored by name may therefore be
+restored a second time **in the same pass**, by the keystone — the same instant, the same
+safe direction, and no standing fight, which is the only thing D2's one-shot rule forbids —
+and "lands", for the keystone, means the write did not throw: read-back verification is
+[#204](https://github.com/blamechris/Aeolus/issues/204).
 
 ### D4 — The pass is bounded, and the listener resumes either way
 

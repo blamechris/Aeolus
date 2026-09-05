@@ -36,7 +36,10 @@ import Foundation
 /// **And then it stops.** After this one pass, a fan found in manual that Aeolus did not
 /// engage is foreign control, reported as
 /// `ManualControlAvailability.Reason.foreignManualControl` and refused a lease — never
-/// restored a second time. A restore loop against a live writer *is* the fight: two programs
+/// restored again by a later grant, and there is no second pass. Within the one pass a fan
+/// restored by name may be restored once more by the keystone ADR 0011's D3 issues wherever
+/// the pass could not see: the same instant, the same safe direction, and no standing fight.
+/// A restore loop against a live writer *is* the fight: two programs
 /// undoing each other's mode write several times a second over a machine's cooling. That is
 /// what `refusalForGrant(overFans:heldByAeolus:)` below is for, and it is why this type
 /// outlives the bring-up that ran it.
