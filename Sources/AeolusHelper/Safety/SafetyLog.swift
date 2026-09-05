@@ -760,6 +760,68 @@ extension SafetyLog {
         )
     }
 
+    // MARK: - The connection itself
+
+    /// A run of whole-read failures long enough to suspect the connection.
+    ///
+    /// `.fault`, because a helper that cannot read is a helper that cannot see a fan get
+    /// hot. The count is in the line rather than only a threshold name, so a reader can tell
+    /// a tripped limit from an edited one without having the source open.
+    func connectionReconnecting(consecutiveFailures: Int) {
+        emit(
+            .fault,
+            """
+            \(consecutiveFailures) whole SMC reads have failed in a row, across both read \
+            paths. Rebuilding the connection once. No fan is restored or revoked by this — \
+            a fan Aeolus is holding while blind is the reclamation watchdog's, not this.
+            """
+        )
+    }
+
+    /// The rebuild returned.
+    ///
+    /// Deliberately **not** phrased as a recovery, for `reclamationReconnected(fan:)`'s
+    /// reason: no read has been issued since, so the only available claim is that the call
+    /// did not throw.
+    func connectionReconnected() {
+        emit(
+            .notice,
+            """
+            The SMC connection was rebuilt. Whether reading works again is answered by the \
+            next read and by nothing here.
+            """
+        )
+    }
+
+    /// The rebuild threw.
+    func connectionReconnectFailed(detail: String) {
+        emit(
+            .fault,
+            """
+            Rebuilding the SMC connection failed: \(detail). The helper stays blind until a \
+            read succeeds or the rate limit allows another attempt.
+            """
+        )
+    }
+
+    /// A run long enough to act on arrived inside the rate-limiting window, so nothing was
+    /// done.
+    ///
+    /// Logged rather than passed over in silence, because "still blind, and deliberately
+    /// doing nothing about it" is precisely the state an operator reading `log show` needs
+    /// to be able to tell apart from "nothing noticed".
+    func connectionReconnectRateLimited(consecutiveFailures: Int, sinceLastAttempt: Duration) {
+        emit(
+            .fault,
+            """
+            \(consecutiveFailures) whole SMC reads failed in a row again, \
+            \(sinceLastAttempt) after the last rebuild. Not rebuilding: a connection that is \
+            genuinely gone is not fixed by attempting it every second, and each attempt \
+            holds the turn the safety cycle needs to notice that reading works again.
+            """
+        )
+    }
+
     // MARK: - docs/SAFETY.md § 6 — startup reconciliation
 
     /// The pass ran to completion. `.notice`: the ordinary start.
