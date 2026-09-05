@@ -61,9 +61,40 @@ enum RestoreLimits {
 /// in the same teardown, and the fans that were never tried would then be reported as
 /// abandoned — a lie in the safe direction, which is still a lie a client acts on.
 ///
+/// **Giving up here is durable and nothing takes it back.** The set this returns lands in
+/// `LeaseAuthority.restoreAbandoned`, which is append-only: a later restore that the firmware
+/// *does* accept leaves the refusal standing. #110 decided that, and it is the honest answer
+/// while no code path restores a fan outside lease teardown.
+/// [#189](https://github.com/blamechris/Aeolus/issues/189) owns the clearing path for when
+/// one arrives — § 7's panic restore first.
+///
 /// A `struct` over a `Sendable` attempt seam: it holds no mutable state of its own, so two
 /// teardown paths restoring the same fan at the same instant need no isolation here. The
 /// overlap they can produce is handled where it matters, in `LeaseAuthority.restore`.
+///
+/// ## The restore is not cancellable, deliberately
+///
+/// Each attempt runs inside an unstructured `Task`, which does not inherit the caller's
+/// cancellation. That is the mirror image of `LeaseAuthority.refuseIfBlind`'s rule and rests
+/// on the same distinction: a `CancellationError` is **not a statement about the machine**.
+/// It says the caller went away; it says nothing about whether the firmware took the mode
+/// write. Counting one against the budget would spend all three attempts without a write
+/// ever reaching the wire, then mark the fan abandoned and write a `.fault` line into a root
+/// daemon's log claiming three firmware refusals that never happened — a false entry in the
+/// record a user reaches for when asking why a fan can no longer be controlled.
+///
+/// The two differ in what follows from that, because the fail-safe direction is opposite.
+/// `refuseIfBlind` re-throws, and not granting a lease is safe. Here the *write itself* is
+/// the safe direction — ADR 0007's keystone: restore-to-automatic is the terminal action
+/// every other mechanism falls back to — so abandoning it on cancellation would leave a fan
+/// pinned. Hence uncancellable rather than re-thrown.
+///
+/// Merely catching `CancellationError` and retrying without counting it would be worse than
+/// either: on a task that stays cancelled the attempt throws it every time, and the loop
+/// never terminates — which is #110 itself, reintroduced by the fix for it.
+///
+/// No caller runs a teardown on a cancellable task today. This is the guarantee that a
+/// future one may.
 struct BoundedFanRestorer<Attempting: FanRestoreAttempting>: FanRestoring {
 
     private let attempting: Attempting
@@ -82,7 +113,11 @@ struct BoundedFanRestorer<Attempting: FanRestoreAttempting>: FanRestoring {
             var lastFailure: (any Error)?
             for _ in 0..<RestoreLimits.attemptBudget {
                 do {
-                    try await attempting.restoreOnce(fanAt: fan)
+                    try await attemptUncancellably(fanAt: fan)
+                    // Cleared, not merely unread: a fan that came back on a later attempt
+                    // must not be reported on the strength of an earlier one that failed.
+                    // Leaving the previous error here turns a fan that *did* go back into
+                    // one refused for the life of the process.
                     lastFailure = nil
                     break
                 } catch {
@@ -99,5 +134,15 @@ struct BoundedFanRestorer<Attempting: FanRestoreAttempting>: FanRestoring {
             )
         }
         return abandoned
+    }
+
+    /// One attempt, run where the caller's cancellation cannot reach it.
+    ///
+    /// An unstructured `Task` inherits priority, actor context and task-local values, and
+    /// deliberately **not** cancellation. See this type's "The restore is not cancellable"
+    /// note for why that is the behaviour the safe-direction write needs.
+    private func attemptUncancellably(fanAt fan: Int) async throws {
+        let attempting = self.attempting
+        try await Task { try await attempting.restoreOnce(fanAt: fan) }.value
     }
 }
