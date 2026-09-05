@@ -40,7 +40,7 @@ import Testing
 ///
 /// - **A synchronous function that spawns an unstructured `Task` and writes inside it.**
 ///   That is the one route around "a synchronous function cannot `await`".
-///   `Sources/AeolusHelper` has **eleven** such spawn sites today, and an earlier draft of
+///   `Sources/AeolusHelper` has **twelve** such spawn sites today, and an earlier draft of
 ///   this bullet said five and called them all supervisors — which was both the wrong number
 ///   and the wrong description, so the containment argument it offered was not the one the
 ///   tree supports. The real one, asserted by `everyUnstructuredTaskHandsOffToThePopulation`
@@ -48,8 +48,9 @@ import Testing
 ///   itself in this population.** Seven are `HelperXPCService`'s XPC entry points hopping a
 ///   message onto `HelperConnectionSession`; one is `HelperListenerDelegate`'s invalidation
 ///   hop onto the same actor; three are the supervisors' `Task.detached` handing control to
-///   an `async run(…)`. None of the eleven writes in its own body, so the verb that could
-///   reach a write is acknowledged even though the spawning function is not.
+///   an `async run(…)`; one is `ReadOnlyFanAuthority`'s single-flight sensor walk. None of
+///   the twelve writes in its own body, so the verb that could reach a write is acknowledged
+///   even though the spawning function is not.
 /// - **A verb listed on the wrong list on purpose.** Putting a writer in
 ///   `permitFreeFunctions` is a lie a reviewer can read, which is the trade every allowlist
 ///   makes; what it buys is that the lie has to be written down.
@@ -158,6 +159,8 @@ struct WriteVerbAllowlistTests {
         "FanControlPlane.swift: readCriticalTemperatures(_: [SMCKey])",
         "FanControlPlane.swift: readEnvelope(ofFan: Int)",
         "FanControlPlane.swift: reconnect()",
+        "FanModeSensing.swift: modes(ofFans: [Int])",
+        "FanModeSensing.swift: readMode(ofFan: Int)",
         "FanRestoring.swift: enumeratedFanIndices()",
         "HelperConnectionSession.swift: acquireLease(payload: Data)",
         "HelperConnectionSession.swift: apply(settings: Data, leaseID: String)",
@@ -188,6 +191,7 @@ struct WriteVerbAllowlistTests {
         "ReadOnlyFanAuthority.swift: releaseLease(id: UUID, from: ConnectionID)",
         "ReadOnlyFanAuthority.swift: renewLease(id: UUID, from: ConnectionID)",
         "ReadOnlyFanAuthority.swift: snapshot()",
+        "ReadOnlyFanAuthority.swift: walkEveryKey()",
         "ReclamationSupervisor.swift: run(watchdog: ReclamationWatchdog<Plane>, "
             + "clock: some MonotonicClock, interval: Duration, log: SafetyLog)",
         "ReclamationWatchdog.swift: currentRuling()",
@@ -383,18 +387,19 @@ struct WriteVerbAllowlistTests {
     ///
     /// An unstructured `Task` lets a synchronous function reach an `async` write, so every
     /// spawn site is a hole in the population — unless what it spawns is itself acknowledged.
-    /// That is what holds here: each of the eleven bodies is one `await` of an `async` method
+    /// That is what holds here: each of the twelve bodies is one `await` of an `async` method
     /// in the population, and none writes in its own body.
     ///
-    /// The count is asserted per file so it cannot drift silently. A twelfth spawn site fails
-    /// this with the file it was added to, and the maintainer either shows it hands off the
-    /// same way and updates the number, or has found the hole.
+    /// The count is asserted per file so it cannot drift silently. A thirteenth spawn site
+    /// fails this with the file it was added to, and the maintainer either shows it hands off
+    /// the same way and updates the number, or has found the hole.
     @Test("Every unstructured Task in the helper hands off to an acknowledged verb")
     func everyUnstructuredTaskHandsOffToThePopulation() throws {
         let expected = [
             "HelperListenerDelegate.swift": 1,
             "HelperXPCService.swift": 7,
             "LeaseExpirySupervisor.swift": 1,
+            "ReadOnlyFanAuthority.swift": 1,
             "ReclamationSupervisor.swift": 1,
             "ThermalSupervisor.swift": 1,
         ]
