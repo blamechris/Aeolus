@@ -44,11 +44,39 @@ import SMCCore
 /// qualifying keys" unrepresentable rather than merely avoided: one assignment publishes
 /// both and one assignment clears both, inside the actor, with nothing in between for a
 /// second cycle to slip through.
+///
+/// ## Why an episode is numbered
+///
+/// Publishing the bit and its qualifier together fixes what a cycle *reads*. It does not fix
+/// what a cycle *clears*: a release is decided against a temperature report, and an episode
+/// can begin after that report was gathered and still be sitting in `holding` when the
+/// decision arrives. The releasing cycle would then clear an episode whose temperature it
+/// never read — the same defect one link further down the chain. `Episode.sequence` names
+/// the episode, `release(ifStill:)` compares and clears in one step, and
+/// `ThermalEmergency.cycle()` refuses to judge an episode that was not already holding when
+/// it took its report.
 actor ThermalEmergencyLatch {
 
     /// One episode of § 3 holding: what engaged it, and what the machine could see when it
     /// did.
     struct Episode: Sendable, Hashable {
+
+        /// Which episode this is, counting from one, over the life of the latch.
+        ///
+        /// Identity, and nothing else. A cycle decides whether to let go against a report it
+        /// gathered earlier, and both of the awaits between the gathering and the clearing
+        /// are points at which this episode can end and a new one begin. The number is what
+        /// lets such a cycle notice it is judging an episode it never read the temperature of
+        /// — see `ThermalEmergency.cycle()` and `release(ifStill:)`.
+        ///
+        /// **Structural equality would not do**, which is the reason this field exists rather
+        /// than the episodes being compared whole. A machine sitting on its ceiling engages,
+        /// dips a hysteresis margin, and engages again on the same key at the same quantised
+        /// temperature over the same 34 answering keys — and the SMC quantises, so an
+        /// identical `Double` for the second episode is ordinary rather than exotic. Two
+        /// episodes that compare equal are two episodes an identity check cannot separate,
+        /// which is the ABA problem with the fans still spinning.
+        let sequence: UInt64
 
         /// The reading that engaged this episode.
         ///
@@ -89,6 +117,10 @@ actor ThermalEmergencyLatch {
     /// the bit and the keys qualifying it cannot come from two different moments.
     private(set) var holding: Episode?
 
+    /// How many episodes this latch has engaged, ever. Only ever increases, and only inside
+    /// this actor, which is what makes `Episode.sequence` an identity rather than a hint.
+    private var episodesEngaged: UInt64 = 0
+
     /// The reading that engaged the current latch, or `nil` when it is clear.
     var engagedBy: CriticalTemperature? { holding?.engagedBy }
 
@@ -109,7 +141,9 @@ actor ThermalEmergencyLatch {
     @discardableResult
     func engage(by reading: CriticalTemperature, answering keys: Set<SMCKey>) -> Bool {
         guard var episode = holding else {
-            holding = Episode(engagedBy: reading, keysAnsweringAtEngage: keys)
+            episodesEngaged += 1
+            holding = Episode(
+                sequence: episodesEngaged, engagedBy: reading, keysAnsweringAtEngage: keys)
             return true
         }
         // The reading is overwritten on every cycle above the ceiling, deliberately: the
@@ -124,11 +158,43 @@ actor ThermalEmergencyLatch {
 
     /// Releases the latch, and with it the key set that qualified the episode.
     ///
+    /// **`ThermalEmergency` does not call this**, and neither should any future mechanism
+    /// that decided to release across a suspension point: use `release(ifStill:)`, which
+    /// cannot clear an episode other than the one the decision was made about. This form
+    /// stays because the transition contract above — release reports the transition, not the
+    /// state — is a property of the latch worth testing on its own, and because a scenario
+    /// scripting an episode boundary needs to end an episode without pretending to have
+    /// judged it.
+    ///
     /// - Returns: `true` when this call released a latch that was engaged. `false` when it
     ///   was already clear.
     @discardableResult
     func release() -> Bool {
         guard holding != nil else { return false }
+        holding = nil
+        return true
+    }
+
+    /// Releases the latch **only if `episode` is still the one holding** — the compare and
+    /// the clear in one isolated step.
+    ///
+    /// A release is decided against a temperature report, and the decision and the act are
+    /// separated by an actor hop that `ThermalEmergency` is reentrant across. An episode that
+    /// began after that report was gathered has never had its temperature read by the cycle
+    /// about to clear it, and clearing it would put the machine back on automatic lease
+    /// grants while it sits above its ceiling — the loop the refusal exists to prevent,
+    /// reached through the release rather than through the guard.
+    ///
+    /// Comparing on `Episode.sequence` and not on the whole episode is deliberate; that
+    /// field says why.
+    ///
+    /// - Parameter episode: the episode the caller judged.
+    /// - Returns: `true` when this call released exactly that episode. `false` when the latch
+    ///   is clear or has moved on, in which case nothing was changed and the caller's
+    ///   decision was about an episode that no longer exists.
+    @discardableResult
+    func release(ifStill episode: Episode) -> Bool {
+        guard holding?.sequence == episode.sequence else { return false }
         holding = nil
         return true
     }

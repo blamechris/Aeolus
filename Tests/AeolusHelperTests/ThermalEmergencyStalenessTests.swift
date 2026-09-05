@@ -43,6 +43,15 @@ struct ThermalEmergencyStalenessTests {
     /// episode's thirty-four it is a machine that has lost most of its sensors, which is not
     /// evidence of anything.
     ///
+    /// **The judged cycle is the one after the boundary, deliberately.** The cycle the
+    /// boundary lands inside is refused by the episode-boundary guard below — its report
+    /// predates the episode entirely, so no comparison it makes means anything — and a
+    /// scenario that stopped there would be asserting that guard twice and the degraded-view
+    /// guard never. What makes the ownership question real is that the stale fact *outlives*
+    /// the boundary: the third cycle takes a fresh report of the same eight cool keys against
+    /// an episode that has been holding the whole time, and only the qualifying set decides
+    /// it.
+    ///
     /// Mutation-checked: give `ThermalEmergency` back a `keysAnsweringAtEngage` field
     /// assigned in `fire(_:from:)` and read by the subset guard — the pre-fix design — and
     /// this goes red on the latch assertion.
@@ -73,6 +82,12 @@ struct ThermalEmergencyStalenessTests {
         }
 
         await machine.plane.advance()
+        // The cycle the boundary lands inside. Its report was taken before the episode it
+        // finds, so it declines to judge at all — see the episode-boundary test below.
+        await machine.emergency.cycle()
+        // The cycle that judges. Its report is taken *after* the episode began, so the only
+        // thing standing between eight cool keys and a release is whose key set the guard is
+        // armed by.
         await machine.emergency.cycle()
 
         #expect(
@@ -83,12 +98,113 @@ struct ThermalEmergencyStalenessTests {
             "the holding episode qualified on 34 keys and 8 answered: not a machine that cooled")
         // What makes this discriminate rather than merely agree: the latch could also still
         // be active because the release comparison failed, and it did not — 60 °C is below
-        // the release threshold. The hold has to be the degraded-view guard's doing.
+        // the release threshold. And it is not the boundary guard holding either, which fired
+        // on the previous cycle and is asserted separately. The hold has to be the
+        // degraded-view guard's doing.
         #expect(machine.safetyLog.lines(containing: "have gone silent").count == 1)
+        #expect(machine.safetyLog.lines(containing: "across an episode boundary").count == 1)
         await #expect(throws: AeolusXPCFault.thermalEmergencyActive) {
             _ = try await machine.leases.acquireLease(
                 LeaseFixture.request(fans: [0]), from: ConnectionID())
         }
+    }
+
+    /// **A release is never decided on a report older than the episode it would release.**
+    ///
+    /// The sibling of the scenario above, at the other end of the same window. There the
+    /// episode boundary landed inside the read and the *qualifying keys* were the stale fact;
+    /// here it lands inside the read and the **temperature** is the stale fact. `cycle()`
+    /// gathers its report and only then looks at the latch, so an episode that engaged in
+    /// between is younger than the reading in hand — and that reading describes the machine
+    /// before it went over its ceiling.
+    ///
+    /// So: the latch is clear, the machine reads a comfortable 60 °C, and § 3 fires at 99 °C
+    /// inside the read. A cycle that judges the new episode against its own report finds
+    /// 60 °C ≤ the 90 °C release threshold and lets go — of an emergency one millisecond old,
+    /// on a machine at 99 °C. `acquireLease` stops refusing and the client that was just
+    /// revoked retries into the workload that fired it.
+    ///
+    /// The lease is the teeth. It is granted while the latch is clear, which is legal, and
+    /// the cycle that declines to judge takes it back as an engagement it cannot account for;
+    /// a cycle that releases instead leaves it live over an overheating machine.
+    ///
+    /// Mutation-checked: delete the `episode.sequence == episodeBeforeRead?.sequence` guard
+    /// from `cycle()` — the pre-fix control flow — and this goes red on the latch assertion
+    /// and on the lease count.
+    @Test("A release is never judged on a report older than the episode holding")
+    func aReleaseIsNeverJudgedOnAReportOlderThanTheEpisode() async throws {
+        let machine = ThermalMachine(stages: [.at(44), .at(60)])
+        try await machine.acquireWithoutEngaging(fans: [0])
+        await machine.plane.advance()
+
+        // 60 °C everywhere, comfortably below the 90 °C release threshold — and § 3 engages
+        // on the whole curated set *after* that report is in hand, so the subset guard has
+        // nothing to catch and only the episode's age separates the two.
+        let everyCuratedKey = Set(CriticalSensorSet.mac16x5.keys)
+        await machine.emergencyTelemetry.interfere { [latch = machine.latch] in
+            #expect(
+                await latch.engage(
+                    by: CriticalTemperature(key: smcKey("Tp01"), celsius: 99),
+                    answering: everyCuratedKey))
+        }
+
+        await machine.emergency.cycle()
+
+        #expect(
+            await machine.emergencyTelemetry.didFire,
+            "the scenario never arranged the episode boundary")
+        #expect(
+            await machine.latch.isActive,
+            "a 60 °C report taken before the episode engaged is not evidence it has passed")
+        #expect(machine.safetyLog.lines(containing: "across an episode boundary").count == 1)
+        #expect(
+            await machine.leases.leaseCount == 0,
+            "the cycle held but left a lease live over a machine at 99 °C")
+    }
+
+    /// The latch's half of that contract: a release names the episode it judged, and clears
+    /// nothing else.
+    ///
+    /// `cycle()`'s guard establishes that the episode is older than the report; there is one
+    /// more suspension point between that decision and the clear landing, and `release()`
+    /// would clear whatever it found across it. `release(ifStill:)` compares and clears in
+    /// one isolated step instead.
+    ///
+    /// The second half is why `Episode` carries a sequence rather than being compared whole:
+    /// the re-engage below is structurally identical to the episode that ended — same key,
+    /// same temperature, same answering set — and the SMC quantises, so an identical `Double`
+    /// across a dip and a re-engage is ordinary rather than exotic. Structural equality would
+    /// release it.
+    ///
+    /// Mutation-checked: make `release(ifStill:)` ignore its argument and clear whatever is
+    /// holding, and both assertions below go red.
+    @Test("A release clears the episode it was judged against, and no other")
+    func aReleaseClearsOnlyTheEpisodeItJudged() async throws {
+        let latch = ThermalEmergencyLatch()
+        let hot = CriticalTemperature(key: smcKey("Tp01"), celsius: 99)
+        let keys: Set<SMCKey> = [smcKey("Tp01"), smcKey("Tp09")]
+
+        #expect(await latch.engage(by: hot, answering: keys))
+        let judged = try #require(await latch.holding)
+
+        // The episode ends and a new one begins, exactly as it would while a cycle sat in
+        // `await latch.release(...)`.
+        #expect(await latch.release())
+        #expect(await latch.engage(by: hot, answering: keys))
+        let live = try #require(await latch.holding)
+        // Everything a structural comparison could look at is identical across the boundary.
+        // Only the sequence separates them, which is the ABA case stated as an assertion.
+        #expect(live.engagedBy == judged.engagedBy)
+        #expect(live.keysAnsweringAtEngage == judged.keysAnsweringAtEngage)
+        #expect(live.sequence == judged.sequence + 1)
+
+        #expect(
+            await latch.release(ifStill: judged) == false,
+            "a decision about episode 1 cleared episode 2")
+        #expect(await latch.isActive, "the episode nobody judged was released")
+
+        #expect(await latch.release(ifStill: live))
+        #expect(await latch.isActive == false)
     }
 
     /// The latch's half of the same contract: the qualifying set is the episode's, and it
