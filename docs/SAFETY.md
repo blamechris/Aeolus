@@ -26,10 +26,12 @@ the very PR that built it, which is the same failure caught one wave earlier** �
 sentences are corrected in place rather than quietly rewritten, because a status paragraph
 nobody re-reads is how a coverage claim outlives its subject. **§ 6's startup reconciliation
 left that list in #164**, along with the launchd restart policy ADR 0007 made conditional on
-it, and the same correction-in-place rule applies here as above. Not built: § 6's signal
-teardown, § 7's body, and § 8's hysteresis. All of it is tracked as epic E5, and E5 blocks
-the write-path epics E3 and E4. No code that writes to the SMC merges before the safety
-subsystem exists and is tested.
+it, and the same correction-in-place rule applies here as above. § 6's orderly signal
+teardown joined the built list in E5.4d (#166) and is corrected here for the same reason.
+Not built: § 7's body, § 8's hysteresis, and the connection health and reconnect of
+[#168](https://github.com/blamechris/Aeolus/issues/168). All of it is tracked as epic E5,
+and E5 blocks the write-path epics E3 and E4. No code that writes to the SMC merges before
+the safety subsystem exists and is tested.
 
 **Built does not mean writing, and since #163 it does mean running.** This paragraph said
 *"the helper still serves `ReadOnlyFanAuthority`, which grants no lease at all"*, and it was
@@ -147,7 +149,11 @@ verb. **The line above these two used to read "Not against the scripted mock con
 for the first three", and that is no longer true**; it is corrected here rather than deleted,
 because it was accurate when written and the change is what #163 was for. What those suites
 still cannot do is write to a fan: the composed plane can, the real one cannot, and § 4's and
-§ 6's pending lines below are where the remaining fidelity is owed.
+§ 6's remaining pending line — startup reconciliation — is where the remaining fidelity is
+owed. § 6's signal path is covered end to end over the scripted plane by
+`SignalTeardownTests`, which drives the handler body through the composed graph with a real
+lease held; what it cannot do is prove a real firmware takes the mode write, which is the
+hardware row E3/E4 owes.
 
 `HandbackBoundTests` is split across two fidelities, and which property gets which is worth
 naming rather than averaging. **Through the shipped `ScriptedControlPlane`** (bridged to the
@@ -604,9 +610,18 @@ handler plus `atexit`" — and that one is undefined behaviour on the path it wa
 
 - **Orderly signals** — `SIGTERM`, `SIGINT`, `SIGHUP`, which is how launchd shuts the helper
   down. `DispatchSourceSignal` with the signal itself ignored, so the handler body runs in
-  normal execution context and not in signal context. Full restore, then `exit(0)`.
-- **Orderly exits** — explicit teardown. `atexit` may stay as a cheap belt, since it too
-  runs in normal context, but nothing may be load-bearing on it.
+  normal execution context and not in signal context. The body, in order: refuse new control
+  messages, release every lease, restore every fan, stop the supervisors, then `exit(0)` —
+  **or a non-zero exit if the restore failed**, which is what makes the exit code the
+  contract `KeepAlive = { SuccessfulExit = false }` reads. Built in E5.4d (#166):
+  `Sources/AeolusHelper/Lifecycle/SignalTeardown.swift`.
+- **Orderly exits** — explicit teardown, and **no `atexit` belt**. This bullet used to offer
+  one as "a cheap belt, since it too runs in normal context". Running in normal context was
+  never the objection; being *synchronous* is. Every step of the restore above is `async`, so
+  an `atexit` body could reach it only by blocking an exiting process on a semaphore — a belt
+  that can hang the shutdown it was added to insure. E5.4d's PR records the correction as an
+  amendment in [ADR 0007](ADR/0007-safety-composition.md), and #104 carries it into the
+  rewrite of this section.
 - **Crash signals** — **no in-process restore at all.** `IOConnectCallStructMethod` is not
   async-signal-safe, and a crash is exactly when heap and lock state are unknown. A signal
   handler that calls into IOKit is undefined behaviour on the one path it exists to serve.

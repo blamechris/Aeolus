@@ -115,6 +115,33 @@ eviction in the same change — it is the one configuration where the TTL does n
 - **Crash signals:** **no in-process restore at all.** Crash coverage is restart plus reconciliation,
   uniformly, for every way the helper can die.
 
+#### Amendment, 2026-09-05 (E5.4d, [#166](https://github.com/blamechris/Aeolus/issues/166)) — the
+`atexit` belt is removed, not merely made optional
+
+The "orderly exits" bullet above permits `atexit` as a cheap belt on the grounds that *"it runs in
+normal context"*. That grounds is correct and it is not the whole test. **An `atexit` body is
+synchronous, and every step of the teardown it would back up is `async`** — the gate, the lease
+core's `releaseEveryLease()`, the keystone `restoreToAutomatic(.everyFan)` and the supervisor stops
+are all actor-isolated. The only way to reach them from an `atexit` handler is to spawn a `Task` and
+block the exiting process on a semaphore, which converts a belt into a mechanism that can hang the
+shutdown it was added to insure — and it would do so at exactly the moment launchd is counting down
+to `SIGKILL`, so the failure it introduces is *worse* than the one it covers.
+
+Nor is there anything left for it to cover. The belt was imagined as insurance against the signal
+path not running. The signal path is now the process's only exit, asserted at the source: `exit(0)`
+is written once in `Sources/AeolusHelper`, on that path
+(`SignalTeardownTests.theOrderlyPathIsTheOnlyExit`). A helper that ends any other way ended by
+`SIGKILL`, a panic or a power loss, and no `atexit` handler runs for any of those either.
+
+So the rule is: **no `atexit`, no crash-signal handler, and no mach exception port anywhere in
+`Sources/AeolusHelper`** — a tripwire, not a convention. The `atexit` half is ruled out for the
+reason above; the crash-signal half stays ruled out for the original one, and the two must not be
+collapsed into "signal handling is unsafe", because they fail differently.
+
+This amendment corrects a clause of a Proposed ADR rather than the decision it sits under. **Status
+stays Proposed.** `docs/SAFETY.md` §6's own bullet is corrected in place by the same PR;
+[#104](https://github.com/blamechris/Aeolus/issues/104) carries it into that section's rewrite.
+
 ### Sleep
 
 Release-before-sleep is **load-bearing**; the continuous-clock TTL is the **backstop**, for a sleep
