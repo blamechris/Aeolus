@@ -124,7 +124,8 @@ enum ReadOnlyFanReport {
     /// would report every fan on an entire family as held by something, permanently. That is
     /// a false claim about far more machines than the one this change fixes. The helper logs
     /// the reason for every fan it could not read — `HelperLog.fanModeUnreadable` — so the
-    /// gap is visible in `log show` rather than only here.
+    /// gap is visible in `log show` rather than only here, and
+    /// [#178](https://github.com/blamechris/Aeolus/issues/178) holds it open.
     ///
     /// Note the asymmetry with `FirmwareFanMode(declaredByFirmware:)`, which resolves an
     /// *ambiguous value* toward manual. That is a different question: there, the machine

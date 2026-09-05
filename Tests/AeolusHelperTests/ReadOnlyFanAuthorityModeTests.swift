@@ -106,8 +106,8 @@ struct ReadOnlyFanAuthorityModeTests {
     /// instead would tell every user of every Intel Mac that every fan is being held by
     /// something, which is a false claim at a far larger scale than the one being fixed here.
     ///
-    /// See #148's follow-on for the honest answer, which needs the wire to be able to say
-    /// "not known".
+    /// [#178](https://github.com/blamechris/Aeolus/issues/178) holds the honest answer,
+    /// which needs the wire to be able to say "not known".
     @Test("A mode that cannot be read falls back to automatic, and the fan is still reported")
     func unreadableModeFallsBackToAutomatic() async throws {
         let machine = fixture(modeKey: nil)
