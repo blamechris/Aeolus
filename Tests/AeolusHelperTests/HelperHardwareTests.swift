@@ -345,49 +345,61 @@ struct HelperHardwareTests {
         let helper = HelperComposition.production(log: Self.log)
         let composed = ContinuousClock.now - composingStarted
 
-        let bringUpStarted = ContinuousClock.now
-        await helper.bringUp()
-        let broughtUp = ContinuousClock.now - bringUpStarted
+        // The three supervisors this bring-up starts are 1 Hz loops on the real SMC, so
+        // they have to be stopped however this test leaves — a `snapshot()` that throws
+        // included. `defer` cannot do it: a `defer` body may not `await`, which is a
+        // compiler rule and not a style choice, so the catch below is the same guarantee
+        // spelled the way Swift allows. Leaking them is the concurrent-load hazard this
+        // suite's header names, and this test is the only one here that starts any.
+        do {
+            let bringUpStarted = ContinuousClock.now
+            await helper.bringUp()
+            let broughtUp = ContinuousClock.now - bringUpStarted
 
-        let snapshotStarted = ContinuousClock.now
-        let snapshot = try await helper.authority.snapshot()
-        let firstSnapshot = ContinuousClock.now - snapshotStarted
+            let snapshotStarted = ContinuousClock.now
+            let snapshot = try await helper.authority.snapshot()
+            let firstSnapshot = ContinuousClock.now - snapshotStarted
 
-        print(
-            """
-            helper bring-up on Mac16,5: composing the graph \(composed); \
-            bringUp() — the registries bound and three supervisors started — \(broughtUp); \
-            first snapshot, which pays for sensor discovery, \(firstSnapshot); \
-            total before a first client could be answered \
-            \(composed + broughtUp + firstSnapshot)
-            """)
+            print(
+                """
+                helper bring-up on Mac16,5: composing the graph \(composed); \
+                bringUp() — the registries bound and three supervisors started — \(broughtUp); \
+                first snapshot, which pays for sensor discovery, \(firstSnapshot); \
+                total before a first client could be answered \
+                \(composed + broughtUp + firstSnapshot)
+                """)
 
-        #expect(!snapshot.fans.isEmpty, "the composed helper enumerated no fans")
-        #expect(!snapshot.sensors.isEmpty, "the composed helper discovered no sensors")
-        #expect(snapshot.activeLease == nil, "no lease can be granted in this build")
-        #expect(snapshot.isThermalEmergencyActive == false)
-        for fan in snapshot.fans {
-            #expect(fan.manualControlAvailability == .unavailable(.writePathNotBuilt))
+            #expect(!snapshot.fans.isEmpty, "the composed helper enumerated no fans")
+            #expect(!snapshot.sensors.isEmpty, "the composed helper discovered no sensors")
+            #expect(snapshot.activeLease == nil, "no lease can be granted in this build")
+            #expect(snapshot.isThermalEmergencyActive == false)
+            for fan in snapshot.fans {
+                #expect(fan.manualControlAvailability == .unavailable(.writePathNotBuilt))
+            }
+
+            // The capability gate, end to end: no double anywhere between this call and
+            // `SMCFanControlPlane.writeCapability`.
+            await #expect(
+                throws: AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
+            ) {
+                _ = try await helper.authority.acquireLease(
+                    LeaseFixture.request(fans: [snapshot.fans[0].index]), from: ConnectionID())
+            }
+
+            // Both safety mechanisms are running against this machine rather than merely
+            // constructed, which is the whole of #163 stated as a fact a test can read.
+            #expect(await helper.restorer.isBound)
+            #expect(await helper.thermalSupervisor.isRunning)
+            #expect(await helper.reclamationSupervisor.isRunning)
+            #expect(await helper.leaseExpirySupervisor.isRunning)
+            #expect(
+                await helper.thermalEmergency.fansUnderManualControl.isEmpty,
+                "nothing can be off automatic control in a build with no write path")
+
+        } catch {
+            await helper.shutDown()
+            throw error
         }
-
-        // The capability gate, end to end: no double anywhere between this call and
-        // `SMCFanControlPlane.writeCapability`.
-        await #expect(
-            throws: AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
-        ) {
-            _ = try await helper.authority.acquireLease(
-                LeaseFixture.request(fans: [snapshot.fans[0].index]), from: ConnectionID())
-        }
-
-        // Both safety mechanisms are running against this machine rather than merely
-        // constructed, which is the whole of #163 stated as a fact a test can read.
-        #expect(await helper.restorer.isBound)
-        #expect(await helper.thermalSupervisor.isRunning)
-        #expect(await helper.reclamationSupervisor.isRunning)
-        #expect(await helper.leaseExpirySupervisor.isRunning)
-        #expect(
-            await helper.thermalEmergency.fansUnderManualControl.isEmpty,
-            "nothing can be off automatic control in a build with no write path")
 
         await helper.shutDown()
     }
