@@ -244,10 +244,12 @@ enum SeamScanner {
     /// unremarked. It lives here, taking source rather than a URL, for the reason every other
     /// primitive does: the first spelling of the pattern —
     /// `\bTask(\.detached)?\s*(\([^()]*\))?\s*\{` — did not match `Task<Void, Never> { … }`,
-    /// which is a **legal spelling of exactly the thing being counted** and is already
-    /// written in `ThermalSupervisor.swift`'s neighbourhood, so the count it asserted was not
-    /// the count it claimed. A pattern nothing puts a fixture through is a pattern whose
-    /// misses are invisible.
+    /// which is a **legal spelling of exactly the thing being counted**, so the count it
+    /// asserted was not the count it claimed. No spawn site in the target is written that way
+    /// today; the *type* is — `ThermalSupervisor.swift`'s `private var task: Task<Void,
+    /// Never>?` — which is the whole difficulty, since the spelling is already in the
+    /// maintainer's hand and nothing would have reported the site it hid. A pattern nothing
+    /// puts a fixture through is a pattern whose misses are invisible.
     ///
     /// An explicit generic clause and an argument list are both optional. Reading a `Task`
     /// *type* as a spawn is possible in principle — a protocol's `var t: Task<Void, Never> {`
