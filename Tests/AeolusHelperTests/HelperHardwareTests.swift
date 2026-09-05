@@ -40,7 +40,7 @@ struct HelperHardwareTests {
     /// *current* state, which depends on what else is running. This test reports the helper,
     /// not whatever the reviewer's desktop happened to be doing.
     @Test(
-        "A snapshot from real hardware reports real fans in whatever mode the firmware declares, controllable by nothing"
+        "Real hardware: real fans, in whatever mode the firmware declares, controllable by nothing"
     )
     func snapshotFromRealHardware() async throws {
         // One provider, read through twice: the fans and the mode key must come from the
