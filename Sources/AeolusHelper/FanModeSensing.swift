@@ -95,6 +95,66 @@ struct SnapshotFanModeReads: FanModeSensing {
     }
 }
 
+// MARK: - Every fan's mode, for one snapshot
+
+/// `F<n>Md` for every enumerated fan, and the throttle on saying that one could not be read.
+///
+/// **An actor of its own rather than three members on `ReadOnlyFanAuthority`.** The
+/// already-reported set is the only mutable state the mode read needs and it is unrelated to
+/// everything else that authority holds; keeping the two together is what makes the throttle a
+/// property of the reader rather than a habit of one call site. It is also what keeps
+/// `ReadOnlyFanAuthority.swift` inside the 400-line limit, the trade `ReadOnlyFanReport` names
+/// for the same reason.
+///
+/// Narrow on purpose: it holds a `FanModeSensing`, which has one read verb and no write side,
+/// so nothing reachable from the snapshot path can command a fan. `FanStateSensing` refines
+/// that protocol, so [#103](https://github.com/blamechris/Aeolus/issues/103) can hand the
+/// supervisor's own control plane in here without changing anything above — see the protocol
+/// for why the snapshot does not simply take one today.
+actor ObservedFanModes {
+
+    private let source: any FanModeSensing
+    private let log: HelperLog
+
+    /// The fans whose mode has already been reported unreadable at error level, so that a
+    /// 1 Hz path cannot log one non-fault 86,400 times a day per fan — see
+    /// `HelperLog.fanModeUnreadable(fanIndex:reason:alreadyReported:)`. Per fan and for the
+    /// life of the process: `AeolusHelperMain` builds one authority for every connection.
+    private var reportedUnreadable: Set<Int> = []
+
+    init(reading source: some FanModeSensing, log: HelperLog) {
+        self.source = source
+        self.log = log
+    }
+
+    /// Who owns each of `indices`, as `F<n>Md` answered this tick.
+    ///
+    /// Never throws, and a fan whose mode did not read is **absent from the result** rather
+    /// than defaulted into it: `ReadOnlyFanReport` decides what to say about a gap, and can
+    /// only decide it if it can tell a gap from an answer. One key that disappeared must not
+    /// cost the client the whole snapshot, exactly as in `ReadOnlyFanAuthority.readSensors()`.
+    ///
+    /// One read per fan rather than a batched one, because `FanModeSensing` is per-fan so that
+    /// E5's control plane satisfies it unchanged — one or two extra turns against the 48 a
+    /// full snapshot already takes.
+    func modes(ofFans indices: [Int]) async -> [Int: FirmwareFanMode] {
+        var modes: [Int: FirmwareFanMode] = [:]
+        modes.reserveCapacity(indices.count)
+        for index in indices {
+            do {
+                modes[index] = try await source.readMode(ofFan: index)
+            } catch {
+                // `insert` answers "was this new" in the same statement that records it, so
+                // the check and the record cannot drift apart.
+                let isNew = reportedUnreadable.insert(index).inserted
+                log.fanModeUnreadable(
+                    fanIndex: index, reason: String(describing: error), alreadyReported: !isNew)
+            }
+        }
+        return modes
+    }
+}
+
 // MARK: - The decode
 
 extension FirmwareFanMode {

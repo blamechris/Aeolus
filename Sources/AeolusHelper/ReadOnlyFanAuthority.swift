@@ -18,8 +18,8 @@ import SMCCore
 /// [#148](https://github.com/blamechris/Aeolus/issues/148). Nothing in this build can take a
 /// fan off automatic control, so "every fan is automatic" was true of the executable and
 /// never a statement about the machine; a fan left in manual by a crashed helper, a reboot,
-/// or another vendor's tool is exactly the case a user needs to be told about. See `fanMode`
-/// below and `ReadOnlyFanReport.controlMode(_:)`.
+/// or another vendor's tool is exactly the case a user needs to be told about. See
+/// `ObservedFanModes` and `ReadOnlyFanReport.controlMode(_:)`.
 ///
 /// `acquireLease`, `renewLease`, `releaseLease` and `apply` **refuse** with
 /// `.manualControlUnavailable(.writePathNotBuilt)`. Never a stubbed success: a lease a
@@ -27,10 +27,13 @@ import SMCCore
 /// rule 6's exact shape. A UI shown that lease would draw a slider that moves and does
 /// nothing.
 ///
-/// `restoreAllToAutomatic` **succeeds, truthfully**: in E2 every fan is already automatic,
-/// because nothing here can make one anything else. That is a real answer rather than a
-/// stub, and it wires and tests the panic path from the day the boundary exists rather
-/// than the day the write path does.
+/// `restoreAllToAutomatic` **succeeds as a no-op this build cannot verify.** It read
+/// "succeeds, truthfully: in E2 every fan is already automatic" until the mode paragraph
+/// above falsified the premise: a firmware-manual fan is now observable in the same snapshot,
+/// and nothing here can clear it. The verb still succeeds: the panic path keeps the fewest
+/// preconditions it can have and is frozen at v1 ([#159](https://github.com/blamechris/Aeolus/issues/159)),
+/// and clearing such a fan is startup reconciliation's job
+/// ([#164](https://github.com/blamechris/Aeolus/issues/164)). See the method for the rest.
 ///
 /// ## Sensor labels are `nil`, permanently — a rule, not a `TODO`
 ///
@@ -134,21 +137,14 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// next snapshot starts a fresh discovery rather than awaiting a task that already threw.
     private var discovery: Task<[DiscoveredSensorKey], Error>?
 
-    /// `F<n>Md`, read once per fan per snapshot, so that who owns a fan is **observed rather
-    /// than assumed**.
+    /// `F<n>Md` for every enumerated fan, read once per fan per snapshot, so that who owns a
+    /// fan is **observed rather than assumed** — see `ObservedFanModes`.
     ///
-    /// **Required, with no default**, for the latch's and the ledger's reason — and this is
-    /// the third instance of the same defect, which is why the rule is stated three times in
-    /// this file. `mode: .automatic` was a literal: true of every fan this build can
-    /// *produce*, and not a statement about the machine, which is what a client reads it as
-    /// ([#148](https://github.com/blamechris/Aeolus/issues/148)).
-    ///
-    /// Narrow on purpose: `FanModeSensing` has one read verb and no write side, so nothing
-    /// reachable from the snapshot path can command a fan. `FanStateSensing` refines it, so
-    /// [#103](https://github.com/blamechris/Aeolus/issues/103) can hand the supervisor's own
-    /// control plane here without changing anything above — see `FanModeSensing` for why the
-    /// snapshot does not simply take one today.
-    private let fanMode: any FanModeSensing
+    /// **Required, with no default**, for the latch's and the ledger's reason, and this is the
+    /// third instance of that defect: `mode: .automatic` was a literal, true of every fan this
+    /// build can *produce* and not a statement about the machine, which is what a client reads
+    /// it as ([#148](https://github.com/blamechris/Aeolus/issues/148)).
+    private let fanModes: ObservedFanModes
 
     init(
         provider: some SensorProvider,
@@ -159,7 +155,7 @@ actor ReadOnlyFanAuthority: FanAuthority {
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.provider = provider
-        self.fanMode = fanMode
+        self.fanModes = ObservedFanModes(reading: fanMode, log: log)
         self.log = log
         self.thermalEmergency = thermalEmergency
         self.reclamation = reclamation
@@ -170,7 +166,7 @@ actor ReadOnlyFanAuthority: FanAuthority {
 
     func snapshot() async throws -> SystemSnapshot {
         let fans = try await SMCFanEnumeration.enumerate(provider: provider)
-        let modes = await observedModes(ofFans: fans.fanIndices)
+        let modes = await fanModes.modes(ofFans: fans.fanIndices)
         let sensors = await readSensors()
         let isThermalEmergencyActive = await thermalEmergency.isActive
         // One read of the ledger per snapshot rather than one per fan: a snapshot carries a
@@ -191,29 +187,6 @@ actor ReadOnlyFanAuthority: FanAuthority {
             isThermalEmergencyActive: isThermalEmergencyActive,
             capturedAt: now()
         )
-    }
-
-    /// Who owns each enumerated fan, as `F<n>Md` answered this tick.
-    ///
-    /// Never throws, and a fan whose mode did not read is **absent from the result** rather
-    /// than defaulted into it: `ReadOnlyFanReport` decides what to say about a gap, and can
-    /// only decide it if it can tell a gap from an answer. One key that disappeared must not
-    /// cost the client the whole snapshot, exactly as in `readSensors()`.
-    ///
-    /// One read per fan rather than a batched one, because `FanModeSensing` is per-fan so
-    /// that E5's control plane satisfies it unchanged — one or two extra turns against the 48
-    /// a full snapshot already takes.
-    private func observedModes(ofFans indices: [Int]) async -> [Int: FirmwareFanMode] {
-        var modes: [Int: FirmwareFanMode] = [:]
-        modes.reserveCapacity(indices.count)
-        for index in indices {
-            do {
-                modes[index] = try await fanMode.readMode(ofFan: index)
-            } catch {
-                log.fanModeUnreadable(fanIndex: index, reason: String(describing: error))
-            }
-        }
-        return modes
     }
 
     /// The fans this authority enumerated, for the fan-index check that decides which fans
@@ -251,12 +224,14 @@ actor ReadOnlyFanAuthority: FanAuthority {
         throw Self.noWritePath
     }
 
-    /// Succeeds as a truthful no-op.
+    /// Succeeds as a no-op — one this build has no way to verify.
     ///
-    /// Not a stub. In E2 every fan really is under Apple's thermal management, because
-    /// nothing in this build can take one off it — so "every fan is now automatic" is a
-    /// correct statement about the machine after this call, which is the only thing the
-    /// caller was promised.
+    /// Not a stub: nothing here can take a fan off Apple's thermal management, so the call
+    /// really does leave the machine as it found it. What it may no longer claim is that the
+    /// machine was *already* automatic. Since #148 the snapshot reads `F<n>Md`, so a fan
+    /// another tool left in manual is observable and unclearable here — and a refusal would
+    /// restore it no better than this success does. Shape frozen at v1: see the type doc,
+    /// #159 and #164.
     func restoreAllToAutomatic(from connection: ConnectionID) async throws {
         log.restoredAllToAutomatic(connection: connection)
     }
@@ -361,8 +336,15 @@ actor ReadOnlyFanAuthority: FanAuthority {
         }
 
         // Cleared however this ends, including a throw: a walk that failed must not be the
-        // thing every later snapshot awaits the answer of. `==` rather than an unconditional
-        // clear because the caller that merely *joined* this walk must not wipe a newer one.
+        // thing every later snapshot awaits the answer of. `==` — an identity comparison,
+        // `Task` being `Equatable` — so a caller that merely *joined* this walk cannot wipe a
+        // newer one. That is **defence against a future shape, not a reachable interleaving
+        // today**, and saying so is the point: on the success path `discoveredSensors` is
+        // assigned below with no suspension in between, so no later snapshot re-enters this
+        // method at all; on the failure path every joiner registered on `walk.value` before
+        // the walk ended, so FIFO actor scheduling runs all their `defer`s before any job
+        // that could create a newer walk. Both facts are properties of this method's current
+        // body — move the cache assignment and an unconditional clear starts losing walks.
         defer { if discovery == walk { discovery = nil } }
 
         let discovered = try await walk.value

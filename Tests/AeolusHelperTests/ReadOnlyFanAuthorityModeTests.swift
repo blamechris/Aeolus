@@ -36,7 +36,20 @@ struct ReadOnlyFanAuthorityModeTests {
     private func fixture(modeKey: Result<SensorReading, SensorReadFailure>?) -> Fixture {
         var extraKeys: [String: Result<SensorReading, SensorReadFailure>] = [:]
         if let modeKey { extraKeys["F0Md"] = modeKey }
-        let provider = fanProvider(fanCount: 1, extraKeys: extraKeys)
+        return fixture(fanCount: 1, modeKeys: extraKeys)
+    }
+
+    /// `fanCount` fans, each with its three enumeration keys readable, and whatever `F<n>Md`
+    /// keys the case supplies.
+    ///
+    /// Parameterised on the fan count so a case can give **two** fans different modes. Every
+    /// single-fan case above is blind to which fan a mode was read for — see
+    /// `eachFanReportsItsOwnMode`.
+    private func fixture(
+        fanCount: Int,
+        modeKeys: [String: Result<SensorReading, SensorReadFailure>]
+    ) -> Fixture {
+        let provider = fanProvider(fanCount: fanCount, extraKeys: modeKeys)
         let authority = ReadOnlyFanAuthority(
             provider: provider,
             fanMode: SnapshotFanModeReads(provider: provider),
@@ -140,6 +153,80 @@ struct ReadOnlyFanAuthorityModeTests {
         #expect(fan.mode != .manualFixed)
     }
 
+    /// The per-fan association, which no single-fan case can make.
+    ///
+    /// #148's claim is not "a mode is read" but "**this** fan's mode is reported on this
+    /// fan", and every other case in this suite builds a one-fan machine, where
+    /// `modes[$0.index]` and `modes[anything]` are the same expression. On a two-fan Mac with
+    /// another vendor's tool holding fan 1, an index-binding regression reports fan 0 as held
+    /// and fan 1 as automatic — pointing #164's startup reconciliation at the wrong fan and
+    /// telling the user the wrong thing about both.
+    ///
+    /// The two fans are given **asymmetric** modes so the assertion distinguishes fan from
+    /// fan in either direction: a mutant that reports fan 0's mode everywhere fails on
+    /// `fans[1]`, and one that reports fan 1's fails on `fans[0]`.
+    ///
+    /// **Mutation:** in `ReadOnlyFanAuthority.snapshot()`, replace `mode: modes[$0.index]`
+    /// with `mode: modes[0]`. Run: red here, on `fans[1].mode == .manualFixed`.
+    @Test("Each fan is reported with its own F<n>Md, not with some other fan's")
+    func eachFanReportsItsOwnMode() async throws {
+        let machine = fixture(
+            fanCount: 2,
+            modeKeys: [
+                "F0Md": .reading("F0Md", 0),
+                "F1Md": .reading("F1Md", 1),
+            ])
+
+        let snapshot = try await machine.authority.snapshot()
+
+        #expect(snapshot.fans.count == 2)
+        let byIndex = Dictionary(uniqueKeysWithValues: snapshot.fans.map { ($0.index, $0) })
+        #expect(byIndex[0]?.mode == .automatic)
+        #expect(byIndex[1]?.mode == .manualFixed)
+        // Both keys really were asked for, so neither answer came from a default.
+        #expect(await machine.provider.subsetRequests.contains(["F0Md"]))
+        #expect(await machine.provider.subsetRequests.contains(["F1Md"]))
+    }
+
+    /// The log line is a diagnostic, not a heartbeat.
+    ///
+    /// `F<n>Md` does not exist on Intel Macs, which express the same fact as bit *n* of the
+    /// `FS! ` bitmask, so "the mode could not be read" is the **normal** state of a whole
+    /// architecture rather than a fault. `snapshot()` is on a 1 Hz path, so an unthrottled
+    /// error-level line here is on the order of 86,400 entries per fan per day, permanently —
+    /// which drowns the very signal the line was written to preserve, on the one architecture
+    /// this project cannot test. The first occurrence per fan carries the whole diagnostic;
+    /// the repeats carry nothing new.
+    ///
+    /// The wording does not change with the level, so this asserts the **levels** — the level
+    /// is the distinction, and it is the half a log assertion usually forgets to make.
+    ///
+    /// **Mutation:** in `ObservedFanModes.modes(ofFans:)`, pass
+    /// `alreadyReported: false` unconditionally. Run: red here, on both fans.
+    @Test("An unreadable mode is an error once per fan, and a debug line every time after")
+    func unreadableModeIsReportedOncePerFanAtErrorLevel() async throws {
+        let recorder = RecordedHelperFanLines()
+        // Two fans and no `F<n>Md` for either: every mode read fails, on every snapshot.
+        let provider = fanProvider(fanCount: 2)
+        let authority = ReadOnlyFanAuthority(
+            provider: provider,
+            fanMode: SnapshotFanModeReads(provider: provider),
+            log: HelperLog(
+                subsystem: "dev.aeolus.AeolusHelperTests",
+                category: "Mode",
+                recordingFanLines: { recorder.append($0, $1) }),
+            thermalEmergency: ThermalEmergencyLatch(),
+            reclamation: ReclamationLedger(),
+            now: { Date(timeIntervalSince1970: 1_000_000) }
+        )
+
+        for _ in 0..<3 { _ = try await authority.snapshot() }
+
+        // Per fan, not per process: a second fan going unreadable is news about that fan.
+        #expect(recorder.levels(containing: "Fan 0's mode key") == [.error, .debug, .debug])
+        #expect(recorder.levels(containing: "Fan 1's mode key") == [.error, .debug, .debug])
+    }
+
     /// The other half of #148's title, and the one that stays a literal — deliberately.
     ///
     /// `FanState.targetRPM` is documented as *"the speed the helper is currently asking
@@ -158,5 +245,32 @@ struct ReadOnlyFanAuthorityModeTests {
 
         #expect(fan.mode == .manualFixed)
         #expect(fan.targetRPM == nil)
+    }
+}
+
+/// A `HelperLog` fan-line sink a test can read back, **with the level**.
+///
+/// `NSLock` rather than an actor so an assertion can read it without an `await`, matching
+/// `RecordedLog` in `CriticalSensorSetTests.swift`, which does the same job for `SafetyLog`.
+///
+/// The level is the whole point. `HelperLog.fanModeUnreadable` reports a condition that is
+/// normal for an entire architecture family, so whether the tenth occurrence is an error or a
+/// debug line is the difference between a diagnostic and a denial of service against whoever
+/// reads the log — and before this sink existed that choice was a claim no test could observe.
+final class RecordedHelperFanLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [(level: HelperLog.FanLineLevel, line: String)] = []
+
+    func append(_ level: HelperLog.FanLineLevel, _ line: String) {
+        lock.withLock { recorded.append((level, line)) }
+    }
+
+    /// The levels of the lines containing `needle`, in order.
+    ///
+    /// Substring matching on a phrase only the intended line can produce: asserting a whole
+    /// prose line is a test that fails on a comma, and matching text a *different* line could
+    /// also satisfy is a test that passes for the wrong reason.
+    func levels(containing needle: String) -> [HelperLog.FanLineLevel] {
+        lock.withLock { recorded.filter { $0.line.contains(needle) }.map(\.level) }
     }
 }
