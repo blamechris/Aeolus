@@ -51,6 +51,9 @@ actor ThermalSupervisor<Plane: FanControlPlane> {
 
     private var task: Task<Void, Never>?
 
+    /// Which loop `task` refers to. See `loopEnded(generation:)`.
+    private var generation: UInt64 = 0
+
     init(
         emergency: ThermalEmergency<Plane>,
         clock: some MonotonicClock = SystemMonotonicClock(),
@@ -75,18 +78,41 @@ actor ThermalSupervisor<Plane: FanControlPlane> {
     @discardableResult
     func start() -> Bool {
         guard task == nil else { return false }
+        generation &+= 1
+        let generation = self.generation
         let emergency = self.emergency
         let clock = self.clock
         let interval = self.interval
         let log = self.log
-        task = Task.detached {
+        task = Task.detached { [weak self] in
             await Self.run(emergency: emergency, clock: clock, interval: interval, log: log)
+            await self?.loopEnded(generation: generation)
         }
         return true
     }
 
     /// Whether a loop is running.
+    ///
+    /// The loop, not the handle. `run` has a second exit — the `break` its sleep takes when
+    /// the clock throws — and until [#131](https://github.com/blamechris/Aeolus/issues/131)
+    /// only `stop()` cleared `task`, so a loop that ended any other way left this reporting
+    /// `true` forever and `start()`'s guard refusing to replace it for the life of the
+    /// process. See `loopEnded(generation:)`.
     var isRunning: Bool { task != nil }
+
+    /// Clears the handle when the loop ends, whichever exit it took.
+    ///
+    /// **Why a generation and not an unconditional `task = nil`.** `stop()` cancels without
+    /// awaiting, so an outgoing loop routinely finishes *after* a replacement has started —
+    /// which is exactly what a stop-then-start across sleep/wake does. Clearing the handle
+    /// unconditionally from a superseded loop would report `isRunning == false` for a loop
+    /// that is running, and the next `start()` would then run two supervisors against one
+    /// mechanism: the state `start()`'s guard exists to prevent, arrived at through the fix
+    /// for the state it did not.
+    private func loopEnded(generation: UInt64) {
+        guard generation == self.generation else { return }
+        task = nil
+    }
 
     /// Stops the loop.
     ///
@@ -105,6 +131,23 @@ actor ThermalSupervisor<Plane: FanControlPlane> {
     /// loop now says so at `.fault` on its way out.
     /// [#103](https://github.com/blamechris/Aeolus/issues/103) owns the restart policy that
     /// makes it recoverable.
+    ///
+    /// **What a stopped-while-latched supervisor does about the stranded latch**, which
+    /// [#131](https://github.com/blamechris/Aeolus/issues/131) asked to be decided and
+    /// written down. Three candidates, and the reasons two of them lose:
+    ///
+    /// 1. *Release the latch on the way out* — **rejected.** It hands the fans back on a
+    ///    machine nobody has read since it was above its ceiling, which is the failure
+    ///    asymmetry's unsafe branch reached through a lifecycle event.
+    /// 2. *Refuse to stop while latched* — **rejected.** `stop()` is called by teardown, and
+    ///    a teardown that a safety mechanism can veto is a daemon that will not exit. It
+    ///    also gets the direction wrong: the risk is not that the loop stops, it is that
+    ///    nothing starts it again.
+    /// 3. *Stay stoppable, and make restart possible and then mandatory* — **chosen.**
+    ///    Possible is this file's half, and was the missing half: until #131 a supervisor
+    ///    that stopped could never be started again, so no restart policy #103 wrote could
+    ///    have worked. Mandatory is #103's — a helper that stops § 3 for sleep must start it
+    ///    on wake, and the `.fault` line below is what makes a failure to do so visible.
     func stop() {
         task?.cancel()
         task = nil
