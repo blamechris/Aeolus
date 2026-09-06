@@ -49,7 +49,7 @@ struct MessageOrderingTests {
         }
 
         try await firstHasStarted.wait()
-        await Self.settle()
+        await MessageOrderingFixtures.settle()
 
         let ranWhileTheFirstWasParked = record.entries
         #expect(
@@ -96,39 +96,45 @@ struct MessageOrderingTests {
     /// A fast message sent after a slow one is answered after it — which is the ordering
     /// property stated in terms a client can observe.
     ///
-    /// `restoreAllToAutomatic` is the slow one because it is the only message that reaches
-    /// the authority without a handshake, so the gate this test is *not* about does not
-    /// have to be opened first. `hello` is the fast one: it touches no authority and would
-    /// finish immediately if it were allowed to start.
+    /// `snapshot` is the slow one, parked in the authority; `renewLease` is the fast one,
+    /// refused by the lease core without touching hardware and so ready to finish the
+    /// instant it is allowed to start. Both are gated, so the handshake is completed first
+    /// — the gate this test is *not* about has to be open for either message to reach the
+    /// authority at all.
+    ///
+    /// **The pair used to be `restoreAllToAutomatic` and `hello`**, which needed no
+    /// handshake and kept the two messages adjacent. That stopped being a test of ordering
+    /// when the panic path was exempted from the sequencer (D27): it is now the one message
+    /// that is *allowed* to overtake, and `OrderingExemptionTests` asserts exactly that.
     ///
     /// Both calls are made synchronously from this test's thread, one after the other,
     /// which is exactly how libxpc invokes the exported object.
     ///
     /// **Mutation:** delete `await predecessor?.value` from `MessageSequencer.enqueue(_:)`.
-    /// Run: red — the replies come back `["hello", "restoreAllToAutomatic"]`.
+    /// Run: red — the replies come back `["renewLease", "snapshot"]`.
     @Test("A fast message does not overtake the slow one sent before it")
     func aFastMessageIsAnsweredAfterTheSlowOneBeforeIt() async throws {
         let gate = AsyncSignal()
-        let authority = GatedPanicAuthority(gate: gate)
-        let service = HelperXPCService(session: Self.session(over: authority))
+        let authority = GatedSnapshotAuthority(gate: gate)
+        let service = HelperXPCService(session: MessageOrderingFixtures.session(over: authority))
         let replies = OrderRecord<String>()
 
-        service.restoreAllToAutomatic { _ in replies.append("restoreAllToAutomatic") }
-        service.hello(request: (try? helloPayload()) ?? Data()) { _, _ in
-            replies.append("hello")
-        }
+        try await MessageOrderingFixtures.handshake(on: service)
+
+        service.snapshot { _, _ in replies.append("snapshot") }
+        service.renewLease(id: UUID().uuidString) { _, _ in replies.append("renewLease") }
 
         try await waitUntil("the slow message reached the authority") {
             await authority.hasBeenAsked
         }
-        await Self.settle()
+        await MessageOrderingFixtures.settle()
         #expect(
             replies.entries.isEmpty,
             "a reply arrived while the message sent before it was still being handled")
 
         await gate.signal()
         try await waitUntil("both messages were answered") { replies.entries.count == 2 }
-        #expect(replies.entries == ["restoreAllToAutomatic", "hello"])
+        #expect(replies.entries == ["snapshot", "renewLease"])
     }
 
     // MARK: - The wire
@@ -154,10 +160,9 @@ struct MessageOrderingTests {
             let authority = RecordingFanAuthority()
             let harness = AnonymousListenerHarness(authority: authority)
 
+            let request = try helloPayload()
             let (hello, snapshot) = await harness.pipelinedPayloadMessages(
-                { proxy, reply in
-                    proxy.hello(request: (try? helloPayload()) ?? Data(), reply: reply)
-                },
+                { proxy, reply in proxy.hello(request: request, reply: reply) },
                 { proxy, reply in proxy.snapshot(reply: reply) }
             )
 
@@ -178,39 +183,87 @@ struct MessageOrderingTests {
     /// `MessageSequencer.enqueue(_:)` is a second route around *"a synchronous function
     /// cannot `await`"*, and `WriteVerbAllowlistTests` cannot see it.
     ///
-    /// That suite counts unstructured `Task` spawn sites, and after #90 the helper's seven
-    /// XPC entry points reach `async` code through `enqueue` instead — a call the spawn
-    /// scanner does not match. Left there, the sequencer would be a hole in the population
-    /// exactly the size of the one the spawn count was watching. So the call sites are
-    /// pinned here for the same reason and with the same discipline: each of the seven is a
-    /// single `await` of a `HelperConnectionSession` method, and a new one somewhere else
-    /// reddens this until its author has shown it is the same shape.
+    /// That suite counts unstructured `Task` spawn sites, and after #90 six of the helper's
+    /// seven XPC entry points reach `async` code through `enqueue` instead — a call the
+    /// spawn scanner does not match. Left there, the sequencer would be a hole in the
+    /// population exactly the size of the one the spawn count was watching. So the call
+    /// sites are pinned here for the same reason and with the same discipline.
+    ///
+    /// **The count is not enough on its own, and this is the second thing it asserts.** The
+    /// re-pin in `WriteVerbAllowlistTests` is justified by a containment argument — no spawn
+    /// site writes in its own body; each hands off to a method that suite acknowledges — and
+    /// `MessageSequencer.enqueue(_:)` awaits an opaque `@Sendable` closure that is in no
+    /// allowlist and cannot be. A count alone leaves the argument unverifiable: rewriting one
+    /// of the six closures to `sequencer.enqueue { await somethingThatWrites() }` keeps the
+    /// count at six and keeps the spawn dictionary unchanged, and the containment the re-pin
+    /// rested on is gone with nothing red. So each closure's **shape** is pinned too: a
+    /// `[session] in` capture and a single `await` of a `HelperConnectionSession` method
+    /// delivered to `reply`, and nothing else in the body.
+    ///
+    /// Six, not seven: `restoreAllToAutomatic` keeps its own `Task` (D27), and that spawn
+    /// site is visible to `WriteVerbAllowlistTests` in the ordinary way.
     ///
     /// **Mutation:** add `sequencer.enqueue { }` to any file under `Sources/AeolusHelper`.
-    /// Run: red, naming the file.
+    /// Run: red, naming the file. **Second mutation:** change one existing closure's body to
+    /// anything but the pinned shape. Run: red on the shape count with the count unchanged.
     @Test("The message sequencer is called only from the XPC entry points")
     func theSequencerIsCalledOnlyFromTheXPCEntryPoints() throws {
         var sites: [String] = []
+        var shaped = 0
         for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
             let code = SeamScanner.strippingComments(
                 try String(contentsOf: file, encoding: .utf8))
             let count = code.components(separatedBy: ".enqueue").count - 1
             if count > 0 { sites.append("\(file.lastPathComponent) x\(count)") }
+            shaped += Self.handoffShapedEnqueueSites(inSource: code)
         }
 
         #expect(
-            sites == ["HelperXPCService.swift x7"],
+            sites == ["HelperXPCService.swift x6"],
             """
             the message sequencer's call sites changed: \(sites). Each existing one is a \
             single `await` of a `HelperConnectionSession` method — the same acknowledgement \
             `WriteVerbAllowlistTests` requires of an unstructured `Task`, which is what \
             `enqueue` replaced and what its spawn scanner can no longer see here.
             """)
+        #expect(
+            shaped == 6,
+            """
+            \(shaped) of the enqueued closures are a single `await session.<method>(…)\
+            .deliver(to: reply)`; six are expected. A body that does anything else is work \
+            running inside the one spawn site `WriteVerbAllowlistTests` cannot look into, \
+            which is the containment its re-pin from nineteen to fourteen rests on.
+            """)
     }
 
-    // MARK: - Fixtures
+    /// Counts `sequencer.enqueue` call sites whose whole body is one hand-off to the
+    /// session, over comment-stripped source with its whitespace collapsed.
+    ///
+    /// Collapsing first is what lets one pattern match both the one-line and the wrapped
+    /// spellings in `HelperXPCService`, which `swift format` chooses between by line width
+    /// rather than by anything meaningful. `[^{}]*` in the argument list is what keeps the
+    /// match to a body containing no second closure.
+    private static func handoffShapedEnqueueSites(inSource source: String) -> Int {
+        let collapsed = source.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let pattern =
+            #"sequencer\.enqueue \{ \[session\] in await session\.[A-Za-z]+\([^{}]*\)"#
+            + #"\.deliver\(to: reply\) \}"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return -1 }
+        return regex.numberOfMatches(
+            in: collapsed, range: NSRange(collapsed.startIndex..., in: collapsed))
+    }
 
-    private static func session(over authority: any FanAuthority) -> HelperConnectionSession {
+}
+
+/// Fixtures shared with `OrderingExemptionTests`, which asserts the other half of the
+/// contract — what is *not* sequenced, and what one connection cannot do to another.
+///
+/// A namespace rather than free functions: `settle` and `handshake` are words this test
+/// target would otherwise have two of, and Swift resolves a global by overload rather than
+/// by file, so the only symptom of a collision is a warning somewhere else.
+enum MessageOrderingFixtures {
+
+    static func session(over authority: any FanAuthority) -> HelperConnectionSession {
         HelperConnectionSession(
             id: ConnectionID(),
             authority: authority,
@@ -219,13 +272,25 @@ struct MessageOrderingTests {
         )
     }
 
+    /// Opens the handshake gate, and does not return until the reply block has run.
+    ///
+    /// Every gated message needs this first, and the ordering assertions that follow it
+    /// need the handshake to be *finished* rather than merely sent — a `hello` still in the
+    /// queue is a message the later ones are ordered behind, which would make the property
+    /// under test hold for the wrong reason.
+    static func handshake(on service: HelperXPCService) async throws {
+        let answered = OrderRecord<String>()
+        service.hello(request: try helloPayload()) { _, _ in answered.append("hello") }
+        try await waitUntil("the handshake was answered") { answered.entries == ["hello"] }
+    }
+
     /// Gives anything that is ready to run a real chance to run.
     ///
     /// Every "it has *not* happened" assertion here needs one: without it the expectation
     /// is satisfied by the scheduler simply not having got round to the work yet, which is
     /// a test that passes for a reason nobody chose. The yields drain the cooperative
     /// pool's ready queues and the sleep covers a thread that had not been woken at all.
-    private static func settle() async {
+    static func settle() async {
         for _ in 0..<100 { await Task.yield() }
         try? await Task.sleep(for: .milliseconds(100))
     }
@@ -239,7 +304,7 @@ struct MessageOrderingTests {
 /// would put the two records back in whatever order the pool started them and make an
 /// ordering assertion assert nothing. The state is one array behind one lock with no path
 /// that touches it outside.
-private final class OrderRecord<Entry: Sendable & Equatable>: @unchecked Sendable {
+final class OrderRecord<Entry: Sendable & Equatable>: @unchecked Sendable {
 
     private let lock = NSLock()
     private var recorded: [Entry] = []
@@ -257,22 +322,33 @@ private final class OrderRecord<Entry: Sendable & Equatable>: @unchecked Sendabl
     }
 }
 
-/// A `FanAuthority` whose panic path parks until a signal fires, and answers everything
-/// else the way `ReadOnlyFanAuthority` does.
+/// A `FanAuthority` whose `snapshot` parks until a signal fires, and answers everything
+/// else immediately.
 ///
-/// The panic path rather than `snapshot`, because it is the one message that reaches the
-/// authority with no handshake behind it — so a test about ordering does not have to open
-/// the handshake gate first and can keep its two messages adjacent.
-private actor GatedPanicAuthority: FanAuthority {
+/// `snapshot` rather than the panic path, which is where the gate used to be: since D27 the
+/// panic path is dispatched outside the sequencer, so parking it would park nothing that
+/// any later message waits for. It is the message these tests need to come back *while*
+/// something else is stuck, so it must be the one that does not stick.
+actor GatedSnapshotAuthority: FanAuthority {
 
     private let gate: AsyncSignal
+
+    /// Set when `snapshot` has reached this authority — before it parks, so "the slow
+    /// message has started" is observable rather than inferred from a sleep.
     private(set) var hasBeenAsked = false
+
+    /// Set when the panic path has run to completion.
+    private(set) var hasRestored = false
 
     init(gate: AsyncSignal) {
         self.gate = gate
     }
 
-    func snapshot() async throws -> SystemSnapshot { .empty }
+    func snapshot() async throws -> SystemSnapshot {
+        hasBeenAsked = true
+        try? await gate.wait()
+        return .empty
+    }
 
     func acquireLease(
         _ request: LeaseRequest, from connection: ConnectionID
@@ -295,8 +371,7 @@ private actor GatedPanicAuthority: FanAuthority {
     }
 
     func restoreAllToAutomatic(from connection: ConnectionID) async throws {
-        hasBeenAsked = true
-        try? await gate.wait()
+        hasRestored = true
     }
 
     func connectionDidInvalidate(_ connection: ConnectionID) async {}

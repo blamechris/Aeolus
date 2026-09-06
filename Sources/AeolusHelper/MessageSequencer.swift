@@ -60,6 +60,12 @@ import os
 ///
 /// ## What it does not do
 ///
+/// It does not carry `restoreAllToAutomatic`. `HelperXPCService` dispatches the panic path
+/// on its own task: an operation queued here waits for everything handed over before it, and
+/// waiting is a precondition ADR 0005 forbids that one message to have. Nothing in this type
+/// knows that — the exemption is one method's body upstairs, because a sequencer that could
+/// tell a `hello` from a panic would be the judgement this type is defined by not having.
+///
 /// It does not order a message against `connectionDidInvalidate`, which is not a message at
 /// all: `invalidationHandler` spawns its own detached task and can interleave anywhere. That
 /// race is closed by the teardown gate on `HelperConnectionSession`, which is a different

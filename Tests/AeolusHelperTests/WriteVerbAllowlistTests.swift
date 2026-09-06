@@ -40,7 +40,7 @@ import Testing
 ///
 /// - **A synchronous function that spawns an unstructured `Task` and writes inside it.**
 ///   That is the one route around "a synchronous function cannot `await`".
-///   `Sources/AeolusHelper` has **thirteen** such spawn sites today, and an earlier draft of
+///   `Sources/AeolusHelper` has **fourteen** such spawn sites today, and an earlier draft of
 ///   this bullet said five and called them all supervisors — which was both the wrong number
 ///   and the wrong description, so the containment argument it offered was not the one the
 ///   tree supports. The count then said fourteen for one wave after
@@ -49,9 +49,13 @@ import Testing
 ///   the argument that justifies it did not. The real one, asserted by
 ///   `everyUnstructuredTaskHandsOffToThePopulation` below: **no spawn site writes in its own
 ///   body; each hands off to an `async` method that is itself in this population.** One is
-///   `MessageSequencer.enqueue(_:)`, which replaced `HelperXPCService`'s seven XPC entry
-///   points in [#90](https://github.com/blamechris/Aeolus/issues/90) and is pinned by
-///   `MessageOrderingTests`; one is `HelperListenerDelegate`'s invalidation hop; one is
+///   `MessageSequencer.enqueue(_:)`, which replaced six of `HelperXPCService`'s seven XPC
+///   entry points in [#90](https://github.com/blamechris/Aeolus/issues/90) and is pinned by
+///   `MessageOrderingTests`; one is `HelperXPCService.restoreAllToAutomatic(reply:)`, the
+///   seventh, which keeps its own `Task` because the panic path may not acquire the
+///   precondition a queue is (D27) and whose body is a single `await` of
+///   `HelperConnectionSession.restoreAllToAutomatic()`; one is `HelperListenerDelegate`'s
+///   invalidation hop; one is
 ///   `ReadOnlyFanAuthority`'s single-flight sensor walk; three are the supervisors'
 ///   `Task.detached` handing control to an `async run(…)`; one is
 ///   `BoundedFanRestorer.attemptUncancellably(fanAt:)`, added by
@@ -112,7 +116,7 @@ import Testing
 ///   acknowledges, so the containment argument holds for it by the same route as the rest.
 ///
 ///   An earlier draft of this bullet said each body was *a single* `await` of a population
-///   member. That is true of fourteen of the nineteen and **false of the three supervisors**,
+///   member. That is true of nine of the fourteen and **false of the three supervisors**,
 ///   whose bodies await `run(…)` and then `loopEnded(generation:)` — a private, synchronous,
 ///   actor-isolated method whose entire body is `task = nil`, so it is in no population here
 ///   and could not be: it is neither `async` nor permit-bearing — **false of
@@ -591,7 +595,7 @@ struct WriteVerbAllowlistTests {
     ///
     /// An unstructured `Task` lets a synchronous function reach an `async` write, so every
     /// spawn site is a hole in the population — unless what it spawns is itself acknowledged.
-    /// That is what holds here: none of the nineteen bodies writes, and each hands off to an
+    /// That is what holds here: none of the fourteen bodies writes, and each hands off to an
     /// `async` method in the population. (The three supervisors also await a synchronous
     /// `loopEnded(generation:)` that only clears a task handle; `BoundedFanRestorer`'s and
     /// `CriticalTemperatureCache`'s spawners are themselves `async`, so their `Task`s shield
@@ -611,12 +615,20 @@ struct WriteVerbAllowlistTests {
     /// and then awaits `SleepAcknowledgement.acknowledge(_:)`, and writes nothing.
     ///
     /// **Re-pinned by [#90](https://github.com/blamechris/Aeolus/issues/90):** nineteen to
-    /// thirteen, because `HelperXPCService`'s seven became one — the single spawn inside
-    /// `MessageSequencer.enqueue(_:)`, which its entry points now call instead. Those seven
-    /// call sites are still a route around `await` and this scanner cannot see them;
-    /// `MessageOrderingTests` pins them by the same discipline.
+    /// fourteen, because `HelperXPCService`'s seven became two — the single spawn inside
+    /// `MessageSequencer.enqueue(_:)`, which six of its entry points now call instead, and
+    /// the seventh's own `Task`. Those six call sites are still a route around `await` and
+    /// this scanner cannot see them; `MessageOrderingTests` pins them by the same
+    /// discipline, and pins the *shape* of each closure too, because the body
+    /// `MessageSequencer` awaits is an opaque `@Sendable` closure that no allowlist here can
+    /// name.
     ///
-    /// The count is asserted per file so it cannot drift silently. A fourteenth spawn site
+    /// The seventh is `restoreAllToAutomatic`, which keeps its `Task` because the panic path
+    /// may not wait on a message sent before it (D27). It is an ordinary member of this
+    /// population: a synchronous spawner whose body is one `await` of
+    /// `HelperConnectionSession.restoreAllToAutomatic()`.
+    ///
+    /// The count is asserted per file so it cannot drift silently. A fifteenth spawn site
     /// fails this with the file it was added to, and the maintainer either shows it hands off
     /// the same way and updates the number, or has found the hole.
     ///
@@ -638,6 +650,7 @@ struct WriteVerbAllowlistTests {
             "ConnectionHealth.swift": 1,
             "CriticalTemperatureCache.swift": 1,
             "HelperListenerDelegate.swift": 1,
+            "HelperXPCService.swift": 1,
             "LeaseExpirySupervisor.swift": 1,
             "MessageSequencer.swift": 1,
             "ReadOnlyFanAuthority.swift": 1,

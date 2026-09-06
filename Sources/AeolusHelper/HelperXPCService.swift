@@ -3,13 +3,33 @@ import Foundation
 
 /// The object `NSXPCConnection` vends to one client: seven methods, each of which does
 /// nothing except hand the message to that connection's `HelperConnectionSession` and
-/// deliver whatever comes back — in the order libxpc delivered them.
+/// deliver whatever comes back — the six gated ones in the order libxpc delivered them.
+///
+/// ## `restoreAllToAutomatic` is not sequenced, and that is deliberate
+///
+/// Six methods go through the sequencer. The panic path does not: it keeps its own
+/// unstructured `Task`, exactly as every method had before
+/// [#90](https://github.com/blamechris/Aeolus/issues/90). Ordering is a *precondition* —
+/// "every message sent earlier on this connection has returned" — and
+/// [ADR 0005](../../docs/ADR/0005-xpc-authorisation.md) says the panic path carries the
+/// fewest preconditions of anything in this protocol. It is already exempt from the
+/// handshake gate and from the teardown gate; a queue behind a `snapshot` that costs
+/// 0.9–2.9 s on this machine's own measurements — and never returns at all on the wedged
+/// `io_connect_t` of `docs/SAFETY.md` § 4 — is a third precondition, and the one that
+/// matters most in the state the user reaches for it in.
+///
+/// #90's requirement is unaffected: what it asks for is that a pipelined `snapshot` is not
+/// refused for overtaking the `hello` it was sent behind, and the panic verb is in neither
+/// role. `MessageOrderingTests.thePanicPathIsNotDelayedByAParkedMessage` is the guard.
 ///
 /// ## Deliberately empty of judgement
 ///
 /// It holds exactly one piece of state, and that state is a `MessageSequencer`. There is
-/// still no validation here and no branch that could refuse or admit anything. Every method
-/// has the same three lines, and that uniformity is the point: this is the one type in the
+/// still no validation here and no branch that could refuse or admit anything — the panic
+/// path's exemption above is a fixed property of one method's body, not a runtime decision:
+/// nothing is consulted, no message is inspected, and there is no input that changes which
+/// route a verb takes. Every method has the same three lines, and that uniformity is the
+/// point (the seventh differs in one word): this is the one type in the
 /// helper that libxpc calls directly, on threads it owns, and a decision taken here would be
 /// a decision taken outside the actor that serialises this connection's state. Anything that
 /// looks like policy appearing in this file is a bug in the layering, not a shortcut.
@@ -72,7 +92,9 @@ final class HelperXPCService: NSObject, AeolusXPCProtocol, Sendable {
         }
     }
 
+    /// Dispatched immediately, on its own task, never through the sequencer. See the type
+    /// doc: the panic path may not wait on a message sent before it.
     func restoreAllToAutomatic(reply: @escaping @Sendable (Error?) -> Void) {
-        sequencer.enqueue { [session] in await session.restoreAllToAutomatic().deliver(to: reply) }
+        Task { [session] in await session.restoreAllToAutomatic().deliver(to: reply) }
     }
 }

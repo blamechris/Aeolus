@@ -31,25 +31,54 @@ import Foundation
 ///
 /// ## Messages are processed in the order they were sent
 ///
-/// Per connection, and it is the **helper's** guarantee rather than a client's discipline.
-/// A client may pipeline `hello` and `snapshot` without awaiting the handshake's reply: the
-/// `snapshot` is answered after the `hello` it was sent behind, and never with
-/// `handshakeRequired` for having overtaken it. The helper calls message N's reply block
-/// before it begins message N+1, so the answers come back in the order the questions went
-/// out. "Fire `hello` and `snapshot` together to save a round trip at launch" is therefore a
-/// legal optimisation and not a race a client has to know about.
+/// Per connection, **every message except `restoreAllToAutomatic`**, and it is the
+/// **helper's** guarantee rather than a client's discipline. A client may pipeline `hello`
+/// and `snapshot` without awaiting the handshake's reply: the `snapshot` is answered after
+/// the `hello` it was sent behind, and never with `handshakeRequired` for having overtaken
+/// it. The helper calls message N's reply block before it begins message N+1, so the answers
+/// come back in the order the questions went out. "Fire `hello` and `snapshot` together to
+/// save a round trip at launch" is therefore a legal optimisation and not a race a client
+/// has to know about.
+///
+/// **The panic path is exempt, and the exemption is the point of it.** Ordering is a
+/// precondition — "every message sent earlier on this connection has returned" — and
+/// `restoreAllToAutomatic` carries the fewest preconditions of anything here. It is
+/// dispatched the moment it arrives, so a `snapshot` still in flight, or an operation that
+/// never returns at all, cannot delay it. A client may therefore send it at any time,
+/// including on a connection it has already pipelined work onto, and it is answered on its
+/// own schedule rather than the queue's. Its reply is the one that may arrive out of order.
+///
+/// **What ordering costs a client that pipelines.** One message at a time is one message at
+/// a time in both directions: while message N is being handled, N+1 has not started, so a
+/// message the helper is slow to answer delays every later message on that connection until
+/// it returns. There is no queue bound and no per-message deadline
+/// ([#229](https://github.com/blamechris/Aeolus/issues/229)), so a client that pipelines
+/// faster than the helper answers grows its own backlog and should treat its round-trip
+/// latency as the budget for everything behind it — a heartbeat in particular. Two
+/// connections cost nothing to hold and are the way to keep an unrelated message off a slow
+/// one's queue; the panic path needs neither, being exempt.
 ///
 /// Nothing between connections is ordered, and nothing will be: two connections are two
 /// clients as far as this boundary is concerned, and one must never be able to delay the
 /// other. Neither is `connectionDidInvalidate` a message, so a connection's death is not
 /// ordered against messages already in flight on it.
 ///
+/// **Detecting a helper that predates this.** The guarantee is only usable by pipelining
+/// ahead of the handshake's reply, and every version and capability signal arrives *in* that
+/// reply — so it cannot be gated on one, whatever the version said. A client that pipelines
+/// must therefore treat `handshakeRequired` **on the pipelined message** as a retryable
+/// stale-helper signal and re-send it after the handshake, rather than as a contract
+/// violation. `HelloReply.capabilities` carries `"ordered-messages"` from a helper that
+/// honours this, which is what lets a client confirm afterwards, remember it, and skip the
+/// fallback next time.
+///
 /// The rule is stated here, on the contract, because that is where a client can rely on it.
 /// It is kept on the helper side, because rule 7 makes client-side validation a courtesy and
 /// helper-side validation the control — the same argument applied to sequencing. This
 /// strengthens what a compliant client may do without adding a message, a field, or any
-/// change to what crosses the wire, so ``AeolusXPCVersion/current`` does not move for it.
-/// See [#90](https://github.com/blamechris/Aeolus/issues/90).
+/// change to what crosses the wire — the capability string is an added `capabilities` entry,
+/// which the bump policy below lists as additive — so ``AeolusXPCVersion/current`` does not
+/// move for it. See [#90](https://github.com/blamechris/Aeolus/issues/90).
 ///
 /// ## The lease, as the helper must implement it
 ///
@@ -200,12 +229,14 @@ import Foundation
     /// key, and drops all leases. Must succeed even when the helper's state is
     /// inconsistent — this is what `fanctl reset --all` calls.
     ///
-    /// **Exempt from the handshake gate** — never from the authorisation gate — and its
-    /// semantics are frozen at v1 permanently. Its only expressible effect is the safe
-    /// state, so a version fence that stopped a panicked user's older `fanctl` from
-    /// restoring automatic control would be a safety mechanism defeating safety. The
-    /// panic path carries the fewest preconditions of anything in this protocol, by
-    /// design.
+    /// **Exempt from the handshake gate** — never from the authorisation gate — **and from
+    /// the per-connection ordering above**, and its semantics are frozen at v1 permanently.
+    /// Its only expressible effect is the safe state, so a version fence that stopped a
+    /// panicked user's older `fanctl` from restoring automatic control would be a safety
+    /// mechanism defeating safety. The panic path carries the fewest preconditions of
+    /// anything in this protocol, by design — which is why it is not queued behind messages
+    /// sent before it: a message still in flight is a precondition, and a message that never
+    /// returns is a permanent one.
     func restoreAllToAutomatic(reply: @escaping @Sendable (Error?) -> Void)
 }
 
