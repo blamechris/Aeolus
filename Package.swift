@@ -172,5 +172,27 @@ let package = Package(
             dependencies: ["AeolusUI", "SMCCore", "FanKit", "AeolusXPC"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+
+        // A maintainer measurement tool, never shipped: a read-only `IORegisterForSystemPower`
+        // observer that answers docs/SAFETY.md row 14 (issue #209). Lives outside `Sources/`
+        // and depends on NOTHING else in this package — only Foundation and IOKit — so it
+        // cannot become a second route to the SMC or the helper. Not referenced by
+        // project.yml; the app never embeds it. See Tools/PowerObserver/README.md.
+        .executableTarget(
+            name: "power-observer",
+            path: "Tools/PowerObserver",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        // Exercises PowerObserverCore.swift's pure parts — the NDJSON encoder, the
+        // message-name table, the latency arithmetic, the per-type counters — the same
+        // "depends on the executable target directly" shape AeolusHelperTests uses for
+        // AeolusHelper, and for the same reason: keeping the IOKit wiring inside one
+        // target rather than splitting out a library just to make it importable.
+        .testTarget(
+            name: "PowerObserverTests",
+            dependencies: ["power-observer"],
+            path: "Tests/PowerObserverTests",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
     ]
 )
