@@ -1,9 +1,11 @@
 import Foundation
 
 /// Builds the code-signing requirement a **client** pins on its connection to the helper,
-/// per [ADR 0005](../../../docs/ADR/0005-xpc-authorisation.md): *"clients set the mirror
-/// requirement on their side and always connect `.privileged`, so a per-user impostor
-/// agent squatting the mach name is unreachable."*
+/// per [ADR 0005](../../../docs/ADR/0005-xpc-authorisation.md) — specifically its section
+/// *"The client-side mirror, clause by clause"*, which lists the clauses of both variants
+/// and says why each is there. That section was written for #158: until then the ADR's
+/// complete statement about this half was one sentence naming no clause, so the
+/// exact-match tests on this text were checking it against nothing but itself.
 ///
 /// The mirror of `ClientRequirementText`, and deliberately not a parameterisation of it.
 /// The two requirements answer different questions — *may this peer command root?* versus
@@ -61,9 +63,11 @@ enum HelperRequirementText {
         }
     }
 
-    /// The clauses, in the order ADR 0005 gives them. Every clause narrows; none widens. A
-    /// reader checking this against the ADR should be able to go line by line, and against
-    /// `ClientRequirementText.clauses` side by side.
+    /// The clauses, in the order ADR 0005's client-side mirror section lists them. Every
+    /// clause narrows; none widens. A reader checking this against the ADR can go line by
+    /// line, and against `ClientRequirementText.clauses` side by side — and does not have
+    /// to: `HelperMirrorSpecificationTests` reads that section and asserts this function
+    /// against it, so the two cannot drift apart silently.
     private static func clauses(
         teamIdentifier: String,
         variant: ClientRequirementVariant
