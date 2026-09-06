@@ -189,15 +189,11 @@ struct AdHocSignedFixtures {
     /// The signing tool every fixture in this file shells out to.
     static let codesignPath = "/usr/bin/codesign"
 
-    /// Whether `codesign` is present and runnable on this host.
-    ///
-    /// It ships with macOS and with the Command Line Tools, so it is there on CI and on the
-    /// maintainer's machine alike; this exists so that a host where it is genuinely absent
-    /// skips the fixtures that need it with a reason on the record, rather than failing a
-    /// suite for a reason that has nothing to do with client authorisation.
-    static var isAvailable: Bool {
-        FileManager.default.isExecutableFile(atPath: codesignPath)
-    }
+    // No availability probe: every fixture here fails loudly if `codesign` is missing or
+    // unrunnable, which is one policy for the module rather than two. A presence check could
+    // only report `isExecutableFile`, which a present-but-broken tool passes — so it would
+    // gate a suite on a weaker fact than the one that actually decides whether the fixtures
+    // work, while the suites that carry no gate went red on the same host anyway.
 
     /// Shared with `UnsignedBinaryFixture`, which strips a signature with the same tool.
     static func codesign(_ arguments: [String]) throws {
