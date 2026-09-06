@@ -17,36 +17,95 @@ enum XPCDeclarationNormaliser {
     /// caller must surface: a guard that quietly finds nothing to check passes forever.
     static func protocolBody(named name: String, in source: String) -> String? {
         let code = strippingComments(source)
-        guard let declaration = code.range(of: "protocol \(name)"),
+        guard let declaration = declarationRange(ofProtocolNamed: name, in: code),
             let open = code[declaration.upperBound...].firstIndex(of: "{"),
             let close = closingBrace(in: code, openingAt: open)
         else { return nil }
         return String(code[code.index(after: open)..<close])
     }
 
-    /// One normalised signature per `func` in the body.
+    /// The range of `protocol <name>`, with the name required to end where it says it does.
+    ///
+    /// An unanchored prefix match takes the first occurrence, so a longer name sharing the
+    /// prefix — `protocol AeolusXPCProtocolPrivileged` declared above the real one — would
+    /// be fingerprinted in its place. The consequence is a loud mismatch rather than a
+    /// vacuous pass, but the failure would list the wrong protocol's methods and send the
+    /// reader after a change that did not happen, so the match is anchored here instead.
+    private static func declarationRange(
+        ofProtocolNamed name: String, in code: String
+    ) -> Range<String.Index>? {
+        var searchStart = code.startIndex
+        while let found = code.range(of: "protocol \(name)", range: searchStart..<code.endIndex) {
+            let following = found.upperBound < code.endIndex ? code[found.upperBound] : " "
+            if !isIdentifierCharacter(following) { return found }
+            searchStart = found.upperBound
+        }
+        return nil
+    }
+
+    /// One normalised signature per `func` in the body, plus anything the body carries
+    /// before the first one.
     ///
     /// A protocol requirement has no body, so each declaration simply runs to the next
-    /// `func` or to the end — no statement parsing required, and a `func` that turned up
-    /// somewhere unexpected would produce a signature that fails the pin loudly rather than
+    /// declaration or to the end — no statement parsing required, and a `func` that turned
+    /// up somewhere unexpected produces a signature that fails the pin loudly rather than
     /// vanishing from it.
+    ///
+    /// A declaration starts at the beginning of the line its `func` sits on, not at the
+    /// `func` keyword, so `@objc optional func …` and `static func …` are inside the
+    /// fingerprinted text. Text above the first declaration's line — a property
+    /// requirement, or an attribute written on a line of its own — is emitted as an extra
+    /// entry rather than dropped: it is not a signature, it fails the pin, and that is the
+    /// point. Only whitespace is discarded.
+    ///
+    /// The residual: a modifier written on the line *above* a later `func` still lands in
+    /// the preceding declaration's slice. It is fingerprinted, so the change goes red; the
+    /// failure message names the method above it.
     static func normalisedDeclarations(inProtocolBody body: String) -> [String] {
+        let starts = declarationStarts(inProtocolBody: body)
+
+        var declarations: [String] = []
+        let preamble = normalised(String(body[body.startIndex..<(starts.first ?? body.endIndex)]))
+        if !preamble.isEmpty { declarations.append(preamble) }
+
+        for (position, start) in starts.enumerated() {
+            let end = position + 1 < starts.count ? starts[position + 1] : body.endIndex
+            declarations.append(normalised(String(body[start..<end])))
+        }
+        return declarations
+    }
+
+    /// The start of each declaration: the line start of every whole-word `func`, except
+    /// where two requirements share a line and the second keeps its own keyword position.
+    private static func declarationStarts(inProtocolBody body: String) -> [String.Index] {
         var starts: [String.Index] = []
         var index = body.startIndex
         while let found = body.range(of: "func", range: index..<body.endIndex) {
+            index = found.upperBound
             let atStart = found.lowerBound == body.startIndex
             let preceding = atStart ? " " : body[body.index(before: found.lowerBound)]
             let following = found.upperBound < body.endIndex ? body[found.upperBound] : " "
-            let isWholeWord =
-                !isIdentifierCharacter(preceding) && !isIdentifierCharacter(following)
-            if isWholeWord { starts.append(found.lowerBound) }
-            index = found.upperBound
+            guard !isIdentifierCharacter(preceding), !isIdentifierCharacter(following) else {
+                continue
+            }
+            let lineStart = startOfLine(of: found.lowerBound, in: body)
+            if let previous = starts.last, lineStart <= previous {
+                starts.append(found.lowerBound)
+            } else {
+                starts.append(lineStart)
+            }
         }
+        return starts
+    }
 
-        return starts.enumerated().map { position, start in
-            let end = position + 1 < starts.count ? starts[position + 1] : body.endIndex
-            return normalised(String(body[start..<end]))
+    private static func startOfLine(of position: String.Index, in text: String) -> String.Index {
+        var index = position
+        while index > text.startIndex {
+            let previous = text.index(before: index)
+            if text[previous] == "\n" { return index }
+            index = previous
         }
+        return text.startIndex
     }
 
     // MARK: - Normalisation
@@ -129,6 +188,8 @@ enum XPCDeclarationNormaliser {
             case "(", "[", "<": depth += 1
             case ")", "]": depth = max(0, depth - 1)
             // The `>` of a return arrow closes nothing; only a generic bracket's does.
+            // Load-bearing: `Pair<() -> Void, Data>` splits at the wrong comma without it,
+            // which is what `selectorSurvivesAFunctionTypeInsideAGeneric` holds.
             case ">" where previous != "-": depth = max(0, depth - 1)
             default: break
             }
@@ -174,7 +235,13 @@ enum XPCDeclarationNormaliser {
     /// Comments removed, string literals preserved.
     ///
     /// Swift nests block comments, so depth is counted rather than the first `*/` taken. A
-    /// `/*` inside a string literal opens nothing. This much is the same shape as
+    /// `/*` inside a string literal opens nothing — for a single-quoted `"…"` literal, which
+    /// is the only kind handled. A multi-line `"""` or raw `#"…"#` literal would be scanned
+    /// as code: `"""` opens and immediately closes an empty literal. Nothing in
+    /// `AeolusXPCProtocol.swift` is spelled that way, and if one arrives carrying a brace or
+    /// a comment token the scan breaks *loudly* — `protocolBody` returns nil and the
+    /// `#require` in the suite fails — rather than fingerprinting a truncated body.
+    /// This much is the same shape as
     /// `SeamScanner.strippingComments`, and is duplicated because the two live in different
     /// test targets; unlike that one it removes a comment *trailing* code rather than only
     /// whole comment lines, which is what lets a `// note` after a parameter list disappear.

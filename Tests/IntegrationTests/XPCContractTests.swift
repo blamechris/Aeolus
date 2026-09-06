@@ -269,14 +269,21 @@ struct XPCContractTests {
     /// It is set equality against the full selectors of every method declared *directly* on
     /// this protocol, over every quadrant, which is what makes it hold: it fails on a message
     /// added — a generic key write, an "advanced mode", a ceiling override — and equally on
-    /// one removed, renamed, moved to a class method, made optional, or re-parameterised.
-    /// That last case is why the count-plus-prefix pair this replaced was not enough: giving
-    /// `apply` an `ignoringLimits:` argument leaves the count at seven and the base name
-    /// intact while changing what the boundary can be asked to do.
+    /// one removed, renamed, or re-parameterised. That last case is why the count-plus-prefix
+    /// pair this replaced was not enough: giving `apply` an `ignoringLimits:` argument leaves
+    /// the count at seven and the base name intact while changing what the boundary can be
+    /// asked to do.
     ///
-    /// What it cannot see by itself is a message the protocol *inherits*, because nothing it
-    /// calls walks the adopted-protocol list. That half of the property is held below, by
-    /// asserting there is no adopted-protocol list to walk.
+    /// It does **not** see a message *moved between quadrants*, though an earlier version of
+    /// this comment claimed it did: `allSelectorNames()` unions all four required/optional ×
+    /// instance/class queries, so making a message optional or a class method leaves the
+    /// union byte-identical. That axis is held by
+    /// `protocolUsesOnlyTheRequiredInstanceQuadrant` below, and by nothing else — it is not
+    /// redundant with this test and must not be deleted as though it were.
+    ///
+    /// Nor does it see a message the protocol *inherits*, because nothing it calls walks the
+    /// adopted-protocol list. That half of the property is held below, by asserting there is
+    /// no adopted-protocol list to walk.
     @Test("The protocol declares exactly the messages the boundary is allowed to carry")
     func protocolDeclaresExactlyTheAllowedMessages() {
         let declared = allSelectorNames()
