@@ -40,7 +40,7 @@ import Testing
 ///
 /// - **A synchronous function that spawns an unstructured `Task` and writes inside it.**
 ///   That is the one route around "a synchronous function cannot `await`".
-///   `Sources/AeolusHelper` has **nineteen** such spawn sites today, and an earlier draft of
+///   `Sources/AeolusHelper` has **thirteen** such spawn sites today, and an earlier draft of
 ///   this bullet said five and called them all supervisors — which was both the wrong number
 ///   and the wrong description, so the containment argument it offered was not the one the
 ///   tree supports. The count then said fourteen for one wave after
@@ -48,9 +48,10 @@ import Testing
 ///   dictionary below, which is the same defect one layer up: the enforced number moved and
 ///   the argument that justifies it did not. The real one, asserted by
 ///   `everyUnstructuredTaskHandsOffToThePopulation` below: **no spawn site writes in its own
-///   body; each hands off to an `async` method that is itself in this population.** Seven are
-///   `HelperXPCService`'s XPC entry points hopping a message onto `HelperConnectionSession`;
-///   one is `HelperListenerDelegate`'s invalidation hop onto the same actor; one is
+///   body; each hands off to an `async` method that is itself in this population.** One is
+///   `MessageSequencer.enqueue(_:)`, which replaced `HelperXPCService`'s seven XPC entry
+///   points in [#90](https://github.com/blamechris/Aeolus/issues/90) and is pinned by
+///   `MessageOrderingTests`; one is `HelperListenerDelegate`'s invalidation hop; one is
 ///   `ReadOnlyFanAuthority`'s single-flight sensor walk; three are the supervisors'
 ///   `Task.detached` handing control to an `async run(…)`; one is
 ///   `BoundedFanRestorer.attemptUncancellably(fanAt:)`, added by
@@ -609,7 +610,13 @@ struct WriteVerbAllowlistTests {
     /// so a task group — which waits for every child — could not express it. Its body sleeps
     /// and then awaits `SleepAcknowledgement.acknowledge(_:)`, and writes nothing.
     ///
-    /// The count is asserted per file so it cannot drift silently. A twentieth spawn site
+    /// **Re-pinned by [#90](https://github.com/blamechris/Aeolus/issues/90):** nineteen to
+    /// thirteen, because `HelperXPCService`'s seven became one — the single spawn inside
+    /// `MessageSequencer.enqueue(_:)`, which its entry points now call instead. Those seven
+    /// call sites are still a route around `await` and this scanner cannot see them;
+    /// `MessageOrderingTests` pins them by the same discipline.
+    ///
+    /// The count is asserted per file so it cannot drift silently. A fourteenth spawn site
     /// fails this with the file it was added to, and the maintainer either shows it hands off
     /// the same way and updates the number, or has found the hole.
     ///
@@ -631,8 +638,8 @@ struct WriteVerbAllowlistTests {
             "ConnectionHealth.swift": 1,
             "CriticalTemperatureCache.swift": 1,
             "HelperListenerDelegate.swift": 1,
-            "HelperXPCService.swift": 7,
             "LeaseExpirySupervisor.swift": 1,
+            "MessageSequencer.swift": 1,
             "ReadOnlyFanAuthority.swift": 1,
             "ReclamationSupervisor.swift": 1,
             "SignalTeardown.swift": 1,

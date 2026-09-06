@@ -150,6 +150,41 @@ final class AnonymousListenerHarness {
         }
     }
 
+    /// Sends two payload-shaped messages back to back on one connection **without awaiting
+    /// the first reply**, and answers with both results.
+    ///
+    /// This is the shape `AeolusXPCProtocol` now promises is legal — pipelining `hello` and
+    /// `snapshot` to save a round trip at launch — and it cannot be expressed with two
+    /// `payloadMessage` calls, because the first of those does not return until its reply
+    /// has arrived. Both sends happen synchronously, one after the other, on this thread,
+    /// so what reaches libxpc is the order this function's arguments are in and not an
+    /// order the cooperative pool chose.
+    func pipelinedPayloadMessages(
+        _ first: (any AeolusXPCProtocol, @escaping @Sendable (Data?, Error?) -> Void) -> Void,
+        _ second: (any AeolusXPCProtocol, @escaping @Sendable (Data?, Error?) -> Void) -> Void
+    ) async -> (first: Result<Data?, Error>, second: Result<Data?, Error>) {
+        let firstReply = PendingReply<Result<Data?, Error>>(
+            ifNothingArrives: .failure(NoReplyArrived()))
+        let secondReply = PendingReply<Result<Data?, Error>>(
+            ifNothingArrives: .failure(NoReplyArrived()))
+        do {
+            let proxy = try proxy { error in
+                firstReply.deliver(.failure(error))
+                secondReply.deliver(.failure(error))
+            }
+            first(proxy) { data, error in
+                firstReply.deliver(error.map { .failure($0) } ?? .success(data))
+            }
+            second(proxy) { data, error in
+                secondReply.deliver(error.map { .failure($0) } ?? .success(data))
+            }
+        } catch {
+            firstReply.deliver(.failure(error))
+            secondReply.deliver(.failure(error))
+        }
+        return (await firstReply.answer(), await secondReply.answer())
+    }
+
     /// Sends an acknowledgement-shaped message and waits for the answer. `nil` means the
     /// helper said it succeeded.
     func acknowledgementMessage(
@@ -214,6 +249,19 @@ private final class PendingReply<Answer>: @unchecked Sendable {
         within deadline: Duration = .seconds(10),
         _ send: (@escaping @Sendable (Answer) -> Void) -> Void
     ) async -> Answer {
+        send { [self] answer in deliver(answer) }
+        return await answer(within: deadline)
+    }
+
+    /// The first half of `awaitingAnswer`, for a caller that has to get a second message
+    /// sent before it starts waiting on the first. Buffered if it beats the wait — which
+    /// is the case `attach(_:)` below already exists for.
+    func deliver(_ answer: Answer) {
+        resolve(Unchecked(value: answer))
+    }
+
+    /// The second half: waits for the first answer or for the deadline.
+    func answer(within deadline: Duration = .seconds(10)) async -> Answer {
         let deadlineTask = Task.detached { [self] in
             try? await Task.sleep(for: deadline)
             resolve(fallback)
@@ -222,7 +270,6 @@ private final class PendingReply<Answer>: @unchecked Sendable {
 
         return await withCheckedContinuation { continuation in
             attach(continuation)
-            send { [self] answer in resolve(Unchecked(value: answer)) }
         }.value
     }
 

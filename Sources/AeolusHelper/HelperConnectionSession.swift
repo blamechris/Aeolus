@@ -24,8 +24,8 @@ struct NegotiatedClient: Sendable, Hashable {
 ///
 /// The state this holds — has this connection handshaken, how many messages has it
 /// delivered — is per connection and mutable, and libxpc invokes the exported object from
-/// its own event threads with no ordering promise between messages on one connection.
-/// Under strict concurrency that state needs somewhere safe to live.
+/// its own event threads. Under strict concurrency that state needs somewhere safe to live.
+/// Ordering is separate: the `Task` hop lost it, `MessageSequencer` restores it (#90).
 ///
 /// An actor rather than a lock, and rather than an unchecked `Sendable` conformance over a
 /// mutable class: `CLAUDE.md` rule 10 makes the latter a claim requiring review, and this
@@ -49,11 +49,11 @@ struct NegotiatedClient: Sendable, Hashable {
 ///
 /// ## Why a dead connection is a gate and not bookkeeping
 ///
-/// `HelperXPCService` hops every message through a `Task {}`, and `invalidationHandler`
-/// spawns a detached one, so a message task and the invalidation task enqueue on this actor
-/// in unspecified order. That is a real interleaving, not a theoretical one: libxpc can
-/// deliver a message it already had in hand and then the kernel tears the port down because
-/// the client was `SIGKILL`ed.
+/// `MessageSequencer` orders one connection's *messages*, and `connectionDidInvalidate` is
+/// not one: `invalidationHandler` spawns its own detached task, so it and a message still
+/// enqueue on this actor in unspecified order. That is a real interleaving, not a
+/// theoretical one: libxpc can deliver a message it already had in hand and then the kernel
+/// tears the port down because the client was `SIGKILL`ed.
 ///
 /// The outcome it exists to prevent: E5's authority releases everything held by this
 /// `ConnectionID` — nothing, yet — and is *then* handed an `acquireLease` bound to that

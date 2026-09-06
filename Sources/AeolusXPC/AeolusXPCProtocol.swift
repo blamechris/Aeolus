@@ -29,6 +29,28 @@ import Foundation
 ///
 /// `restoreAllToAutomatic` is the one deliberate exemption — see its own documentation.
 ///
+/// ## Messages are processed in the order they were sent
+///
+/// Per connection, and it is the **helper's** guarantee rather than a client's discipline.
+/// A client may pipeline `hello` and `snapshot` without awaiting the handshake's reply: the
+/// `snapshot` is answered after the `hello` it was sent behind, and never with
+/// `handshakeRequired` for having overtaken it. The helper calls message N's reply block
+/// before it begins message N+1, so the answers come back in the order the questions went
+/// out. "Fire `hello` and `snapshot` together to save a round trip at launch" is therefore a
+/// legal optimisation and not a race a client has to know about.
+///
+/// Nothing between connections is ordered, and nothing will be: two connections are two
+/// clients as far as this boundary is concerned, and one must never be able to delay the
+/// other. Neither is `connectionDidInvalidate` a message, so a connection's death is not
+/// ordered against messages already in flight on it.
+///
+/// The rule is stated here, on the contract, because that is where a client can rely on it.
+/// It is kept on the helper side, because rule 7 makes client-side validation a courtesy and
+/// helper-side validation the control — the same argument applied to sequencing. This
+/// strengthens what a compliant client may do without adding a message, a field, or any
+/// change to what crosses the wire, so ``AeolusXPCVersion/current`` does not move for it.
+/// See [#90](https://github.com/blamechris/Aeolus/issues/90).
+///
 /// ## The lease, as the helper must implement it
 ///
 /// E2 defines these semantics; E5 implements them. They are written down here, on the
