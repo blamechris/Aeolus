@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import os
 
 /// A helper-pinning requirement that has been built, compiled, and survived the negative
 /// control.
@@ -35,6 +36,11 @@ public struct PinnedHelperRequirement: Sendable, Hashable {
 
     /// True when this build's requirement admits a Development-signed and debuggable
     /// helper. Always false in a Release build — see `ClientRequirementVariant`.
+    ///
+    /// That claim is asserted rather than merely stated: `theProductionEntryPointSelects…`
+    /// drives the entry point's seam with a signed inspection and compares this flag
+    /// against `ClientRequirementVariant.forRunningProcess`, and CI runs the suite in both
+    /// configurations. A Debug-only run cannot see the dangerous arm.
     public let isRelaxedForDevelopment: Bool
 
     /// Deliberately not `public`: see the type's documentation.
@@ -97,50 +103,76 @@ public enum HelperPinningRefusal: Sendable, Hashable, Error {
 /// Derives the requirement a client pins on the helper, from the client's own signature.
 ///
 /// The public face of this file, and deliberately the smallest one that lets the future
-/// `AeolusXPCClient` target work without seeing anything `internal`. Two entry points, and
-/// neither takes a Team ID or a variant: a caller cannot select the relaxed Debug shape,
-/// cannot supply a foreign team, and cannot substitute the negative control. The worst a
-/// caller can do is mishandle the answer, and the answer is a `Result` with no optional to
-/// drop and no default to fall through to.
+/// `AeolusXPCClient` target work without seeing anything `internal`. One entry point, and
+/// it takes no arguments: a caller cannot select the relaxed Debug shape, cannot supply a
+/// foreign team, and cannot substitute the negative control. The worst a caller can do is
+/// mishandle the answer, and the answer is a `Result` with no optional to drop and no
+/// default to fall through to.
+///
+/// There is deliberately **no** public "can I verify myself?" predicate beside it. It was
+/// written and then cut in review: a `String?` answer invites
+/// `if teamIdentifier != nil { … }` — a caller that satisfies itself it is signed and then
+/// builds an `NSXPCConnection` without ever holding a `PinnedHelperRequirement`, and so
+/// without ever calling `setCodeSigningRequirement`. That connection reaches exactly the
+/// per-user impostor ADR 0005 names, and the type system cannot object because a `String?`
+/// is not a requirement. A caller that wants the distinction pattern-matches
+/// `.failure(.runningProcessHasNoTeamIdentifier)`, which cannot be mistaken for permission
+/// to connect.
 ///
 /// `resolveForRunningProcess()` does file I/O for the negative control. Call it once when
 /// a connection is established and hold the result; it is not a per-message path.
 public enum HelperRequirementPinning {
 
-    /// The Team ID this process can prove, or `nil` when it can prove none.
-    ///
-    /// **`nil` is the truthful answer under a `Monitor` build, a plain `swift build`, and
-    /// `swift test`** — every build produced without a Developer ID, which is every build
-    /// on CI and most builds on the development machine. A Developer ID-signed host is the
-    /// only place this returns a value, and no test may fabricate one.
-    ///
-    /// The consequence, which ADR 0005 accepts explicitly: a client that cannot verify
-    /// itself cannot derive the helper's requirement, so it refuses to connect at all
-    /// rather than connecting unpinned. A `swift build` `fanctl` can never command an
-    /// installed helper. That is the mechanism working, and a client showing this to a user
-    /// should say so — an unsigned build, not a missing daemon.
-    ///
-    /// Deliberately collapses `SelfSigningInspection`'s two failures into one `nil`. They
-    /// differ in the log line and not in the action: whether we established that there is
-    /// no Team ID or merely failed to look, the client has nothing to pin with. A caller
-    /// wanting the distinction should use `resolveForRunningProcess()`, which keeps it.
-    public static func teamIdentifierForRunningProcess() -> String? {
-        switch HelperSigningIdentity.inspect() {
-        case .teamIdentifier(let value): return value
-        case .noTeamIdentifier, .inspectionFailed: return nil
-        }
-    }
+    private static let log = Logger(
+        subsystem: "dev.aeolus.AeolusXPC",
+        category: "HelperPinning"
+    )
 
     /// Derives, compiles and seals the requirement for this process.
     ///
     /// Refusal is the default and pinning the explicit act: there is exactly one path to a
     /// `PinnedHelperRequirement`, it runs last, and every step before it can only continue
     /// or refuse.
+    ///
+    /// **`.failure(.runningProcessHasNoTeamIdentifier)` is the truthful answer under a
+    /// `Monitor` build, a plain `swift build`, and `swift test`** — every build produced
+    /// without a Developer ID, which is every build on CI and most builds on the
+    /// development machine. That is the consequence ADR 0005 accepts explicitly: a client
+    /// that cannot verify itself cannot derive the helper's requirement, so it refuses to
+    /// connect at all rather than connecting unpinned. A client showing this to a user
+    /// should say so — an unsigned build, not a missing daemon.
     public static func resolveForRunningProcess() -> Result<
         PinnedHelperRequirement, HelperPinningRefusal
     > {
+        resolveForRunningProcess(inspection: HelperSigningIdentity.inspect())
+    }
+
+    /// The injection seam the façade above is a one-line wrapper around.
+    ///
+    /// Internal, and `SelfSigningInspection` is internal too, so nothing outside this
+    /// module can reach it and no production caller anywhere can supply a Team ID. It is
+    /// the shape `ClientAuthorisationBuilder.build(inspection:variant:negativeControl:)`
+    /// already has, and it exists for the same reason: without it the façade's *own*
+    /// choices are executed by nothing. Under `swift test` the host is always ad-hoc
+    /// signed, so control leaves at the `.noTeamIdentifier` row and the lines selecting
+    /// `.forRunningProcess` and `.system` are unreachable from every test. #220's review
+    /// measured that directly — `variant: .forRunningProcess` → `.debug` left the whole
+    /// suite green, in Debug and Release alike.
+    static func resolveForRunningProcess(
+        inspection: SelfSigningInspection
+    ) -> Result<PinnedHelperRequirement, HelperPinningRefusal> {
+        let outcome = resolve(inspection: inspection)
+        record(outcome)
+        return outcome
+    }
+
+    /// The pure half: the variant and the negative control this process uses, and nothing
+    /// ambient. The only place either is chosen for a client.
+    private static func resolve(
+        inspection: SelfSigningInspection
+    ) -> Result<PinnedHelperRequirement, HelperPinningRefusal> {
         let team: String
-        switch HelperSigningIdentity.inspect() {
+        switch inspection {
         case .teamIdentifier(let value): team = value
         case .noTeamIdentifier: return .failure(.runningProcessHasNoTeamIdentifier)
         case .inspectionFailed(let status): return .failure(.selfInspectionFailed(status))
@@ -150,6 +182,41 @@ public enum HelperRequirementPinning {
             variant: .forRunningProcess,
             negativeControl: .system
         )
+    }
+
+    /// Puts every outcome of the entry point in the log.
+    ///
+    /// The client side needs this for a reason the helper's side does not have: when a
+    /// client refuses to pin, **no connection is ever made**, so the helper cannot log the
+    /// refusal either — nothing arrives at it. Without this line the whole event is
+    /// "Aeolus does nothing", an empty `log show` on both sides, and a diagnosis resting on
+    /// some future caller happening to render `.description`. ADR 0005's fail-closed row 6
+    /// makes "did the boundary refuse?" answerable from `log show`; this is that guarantee
+    /// on the near side of the connection.
+    private static func record(
+        _ outcome: Result<PinnedHelperRequirement, HelperPinningRefusal>
+    ) {
+        switch outcome {
+        case .success(let requirement):
+            log.notice(
+                """
+                Helper requirement pinned for team \
+                \(requirement.teamIdentifier, privacy: .public), \
+                development relaxation: \
+                \(requirement.isRelaxedForDevelopment, privacy: .public)
+                """
+            )
+        case .failure(let refusal):
+            // Fault level, for the reason the sibling uses fault level: this is not a
+            // degraded mode, it is a client that will not talk to the helper at all, and
+            // someone reading `log show` after "Aeolus does nothing" must find it without
+            // knowing to look for it.
+            log.fault(
+                """
+                Refusing to connect to the helper — \(refusal.description, privacy: .public)
+                """
+            )
+        }
     }
 
     /// Validates the Team ID, builds the text, and seals it.

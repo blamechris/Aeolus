@@ -14,6 +14,13 @@ import Testing
 /// `contains` assertion cannot see a clause that was *added*. Only a whole-string
 /// comparison sees both.
 ///
+/// The literals below are checked against an external authority rather than only against
+/// themselves: ADR 0005's "client-side mirror, clause by clause" section carries the clause
+/// list for both variants, and `HelperMirrorSpecificationTests` asserts the
+/// builder against it. #220's review is why — an exact-match test whose expectation was
+/// transcribed from the implementation defends against drift and cannot defend against a
+/// requirement that was wrong on day one.
+///
 /// What no test here can establish is that the text admits the real installed helper.
 /// That needs a Developer ID signature and an installed daemon, and is E2.5's manual
 /// `Mac16,5` checklist item.
@@ -22,7 +29,7 @@ struct HelperRequirementTextTests {
 
     private static let team = ClientAuthorisationFixtures.team
 
-    @Test("The Release helper requirement is exactly the text ADR 0005 specifies")
+    @Test("The Release helper requirement is exactly the text ADR 0005's mirror section specifies")
     func releaseTextIsTheSpecifiedText() throws {
         let expected = """
             anchor apple generic \
@@ -280,27 +287,35 @@ struct HelperRequirementPinningTests {
         }
     }
 
-    /// Under `swift test` the host is ad-hoc signed, here and on CI alike, so this asserts
-    /// the truthful answer rather than a convenient one. A Developer ID-signed host is the
-    /// only place this returns a value, and no test may fake one: a fixture Team ID here
-    /// would assert that the façade lies well.
-    @Test("An ad-hoc host has no team identifier, and says so")
-    func adHocHostHasNoTeam() {
-        #expect(HelperRequirementPinning.teamIdentifierForRunningProcess() == nil)
-    }
-
     /// The consequence ADR 0005 already accepts: a client that cannot verify itself cannot
     /// pin the helper, so it refuses to connect. A `swift build` `fanctl` can never command
     /// an installed helper, and the refusal names why rather than failing at the connection.
-    @Test("A process that cannot name its own team refuses to pin")
-    func unverifiableProcessRefusesToPin() {
+    ///
+    /// Written as an exhaustive switch on the host's own signature rather than a flat
+    /// equality, for the reason `ClientAuthorisationTests.productionEntryPointMatchesTheHost`
+    /// gives: under `swift test` the host is ad-hoc signed here and on CI alike, but if this
+    /// suite is ever run from a signed test host it must assert the *other* branch rather
+    /// than go red for the mechanism working. No arm fabricates a Team ID — each one reads
+    /// the answer the host actually gives.
+    @Test("The production entry point agrees with this host's own signature")
+    func productionEntryPointMatchesTheHost() {
+        let inspection = HelperSigningIdentity.inspect()
         let outcome = HelperRequirementPinning.resolveForRunningProcess()
-        switch outcome {
-        case .success:
-            Issue.record("an ad-hoc test host produced a pinned requirement")
-        case .failure(let refusal):
-            #expect(refusal == .runningProcessHasNoTeamIdentifier)
-            #expect(refusal.description.contains("Team ID"))
+
+        switch inspection {
+        case .noTeamIdentifier:
+            #expect(outcome == .failure(.runningProcessHasNoTeamIdentifier))
+            #expect(
+                HelperPinningRefusal.runningProcessHasNoTeamIdentifier
+                    .description.contains("Team ID"))
+        case .inspectionFailed(let status):
+            #expect(outcome == .failure(.selfInspectionFailed(status)))
+        case .teamIdentifier(let team):
+            guard case .success(let requirement) = outcome else {
+                Issue.record("a host with team \(team) should pin, got \(outcome)")
+                return
+            }
+            #expect(requirement.teamIdentifier == team)
         }
     }
 }

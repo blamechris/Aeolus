@@ -58,6 +58,73 @@ fault level:
 Clients set the mirror requirement on their side and always connect `.privileged`, so a per-user
 impostor agent squatting the mach name is unreachable.
 
+### The client-side mirror, clause by clause — added 2026-09-05 (#158, D26)
+
+**Amended 2026-09-05 (#158).** The paragraph above was this ADR's *complete* statement about the
+client half, and it names no clause, no variant and no identifier. #158 builds the mirror, so what
+the mirror must contain belongs here — in the document a reviewer checks the code against — rather
+than only in the code that emits it. Until this section existed the exact-match test on that text
+was self-referential: it asserted that the builder produces the string its author wrote in the same
+commit, which defends against later drift but could never have caught a requirement that was wrong
+on day one.
+
+`HelperRequirementTextTests` reads the two blocks below and asserts the builder produces exactly
+them, so this section and `Sources/AeolusXPC/ClientAuthorisation/HelperRequirementText.swift`
+cannot drift apart silently. The `<!-- helper-requirement:… -->` markers are that test's anchors:
+moving them is fine, deleting them fails the suite.
+
+The mirror answers a different question from the requirement above — *is this peer the daemon we
+shipped?* rather than *may this peer command root?* — so it is a separate builder rather than a
+parameterisation of the same one; one function that could produce either requirement is one
+argument away from a client pinning a client. Its shape is the helper requirement's, with the set
+of two client identifiers replaced by the helper's single one:
+
+| Clause | Why it is there |
+|---|---|
+| `anchor apple generic` | The chain roots in Apple's CA. Without it, every clause below can be satisfied by a certificate the impostor minted for itself. |
+| the Developer ID intermediate and leaf OIDs | The peer was signed for distribution by a Developer ID identity — not by a development certificate, and not by an enterprise or self-issued one. Both halves of the chain are pinned, because pinning only the leaf accepts a leaf issued under a different intermediate. |
+| `certificate leaf[subject.OU] = "TEAMID"` | Same team as the client itself, read from the client's own signature at runtime — never a literal in the repository and never a value from a config file. This is the clause that makes the requirement mean *our* helper rather than *a* helper. |
+| `identifier "com.blamechris.Aeolus.Helper"` | The peer is the daemon, not some other same-team binary. Fixed by `project.yml` in two places that must agree — the helper target's `PRODUCT_BUNDLE_IDENTIFIER` and the `CFBundleIdentifier` of its embedded Info.plist — which `HelperIdentifierDriftTests` asserts against the literal in the builder. |
+| `!entitlement["com.apple.security.get-task-allow"]` — **Release only** | A debuggable root daemon is one whose task port a debugger can claim: a root process that can be puppeted. A client that pinned a debuggable helper would be trusting whatever is driving it, not the daemon we shipped. |
+
+The Debug relaxation is symmetric with the client requirement's relaxation and exists for the same
+reason: the helper a developer builds and installs locally is Apple Development-signed, and a Debug
+client that refused it could not be used at all. It admits a **second complete chain** — its own
+intermediate as well as its own leaf — rather than punching a hole in the first, and it drops the
+`get-task-allow` clause because a locally built helper carries that entitlement. It is selected by
+`ClientRequirementVariant.forRunningProcess`, a compile-time constant, so the branch that would
+select it does not exist in a Release binary. That the two arms differ is what the Release CI test
+step establishes; a Debug-only run mirrors the same `#if` and cannot see the dangerous arm.
+
+**Release** — the clauses in the order the builder emits them, joined with ` and `. `TEAMID` stands
+for the Team ID the client reads from its own signature at runtime:
+
+<!-- helper-requirement:release -->
+
+```text
+anchor apple generic
+certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13]
+certificate leaf[subject.OU] = "TEAMID"
+identifier "com.blamechris.Aeolus.Helper"
+!entitlement["com.apple.security.get-task-allow"]
+```
+
+**Debug** — the same, with the certificate clause widened to two complete chains and the debuggable
+clause absent:
+
+<!-- helper-requirement:debug -->
+
+```text
+anchor apple generic
+((certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13]) or (certificate 1[field.1.2.840.113635.100.6.2.1] and certificate leaf[field.1.2.840.113635.100.6.1.12]))
+certificate leaf[subject.OU] = "TEAMID"
+identifier "com.blamechris.Aeolus.Helper"
+```
+
+What no test can establish on either side is that this text admits the *installed* helper. That
+needs a Developer ID signature and an installed daemon, and is E2.5's manual `Mac16,5` checklist
+item, alongside "an ad-hoc-built client is refused by the installed helper".
+
 **Versioning: the helper enforces negotiation.** Every connection is refused with
 `handshakeRequired` until `hello(clientProtocolVersion:)` succeeds with a version inside
 `[minimumSupported, current]`. Out-of-range clients are refused with **both** sides' ranges in the
