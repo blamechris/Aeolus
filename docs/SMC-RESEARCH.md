@@ -245,8 +245,9 @@ this hardware. Clamping applies to *targets* written by Aeolus, never to values 
 the SMC; observed reality does not have to respect the bound the firmware itself declares.
 
 **Updated 2026-09-05: the gap is not 0.5%, it is the entire range.** The lid-close capture
-below measured `F0Ac` and `F1Ac` at **exactly 0.0 on 2,904 of 10,570 ticks** — 2,429 of them a
-single unbroken 42-minute dark wake — while `F0Mn`/`F1Mn` in those very same replies
+below measured `F0Ac` and `F1Ac` at **exactly 0.0 on 2,904 of 10,570 ticks** — 2,429 of them one
+42-minute dark wake (unbroken in the zero readings; the tick series itself has the ~2–4 %
+single-tick drops disclosed below) — while `F0Mn`/`F1Mn` in those very same replies
 read **1350** and `F0Mx`/`F1Mx` read **5777**, identical to every live tick. Across the entire
 10,570-row capture there is exactly one distinct `(F0Mn, F0Mx, F1Mn, F1Mx)` tuple. So the
 disagreement is not a rounding-scale miss on an idle machine: a healthy fan legitimately reads
@@ -879,7 +880,7 @@ have served those reads.** `Sources/fanctl/WatchCommand.swift:180` constructs ex
 forever. `SMCSensorProvider` holds `let connection: SMCConnection`, and `SMCConnection` is an
 `actor` — a reference — so even a struct copy shares one handle. `SMCSensorProvider.read(keys:)`
 does call `try await connection.open()` on every tick (`Sources/SMCCore/SensorProvider.swift:258`),
-but `open()` is `guard connection == 0 else { return }` (`SMCConnection.swift:145`): after the
+but `open()` is `guard connection == 0 else { return }` (`SMCConnection.swift:155`): after the
 first success it never re-runs `IOServiceGetMatchingService` or `IOServiceOpen`. The only writer of
 `connection = 0` is `close()`, and no `close()` or `invalidate()` call exists anywhere in
 `Sources/fanctl` or `Sources/SMCCore`. Nothing in either target registers for power notifications.
@@ -978,7 +979,7 @@ above, which is what a tachometer counting no pulses in its sampling window look
 wakes where the fans came back, the first non-zero tick is ~109–110 RPM and the climb takes about
 four seconds, overshooting the idle band before settling:
 
-| | UTC | `F0Ac` | `F1Ac` | | UTC | `F0Ac` | `F1Ac` |
+| | full lid wake (UTC) | `F0Ac` | `F1Ac` | | first dark wake (UTC) | `F0Ac` | `F1Ac` |
 |---|---|---|---|---|---|---|---|
 | last zero | 23:57:23 | 0 | 0 | | 22:28:19 | 0 | 0 |
 | +1 s | 23:57:24 | **109.13** | **109.75** | | 22:28:20 | **109.64** | **110.13** |
@@ -989,7 +990,8 @@ four seconds, overshooting the idle band before settling:
 | +6 s | 23:57:29 | 1332.81 | 1490.47 | | 22:28:25 | 1356.55 | 1487.87 |
 
 That is roughly **410 RPM/s from rest** — about twice the 200 RPM/s cap `FanKit`'s `RampGovernor`
-compiles in — with a **~21% overshoot** above the ~1350/1460 idle before it damps back. **This is
+compiles in — with an overshoot of **up to ~21%** above idle before it damps back (fan 0: 1635.56 against
+~1350; fan 1: ~13.5%, 1657.36 against ~1460; the first dark wake's replicate: ~23% and ~15%). **This is
 Apple's own controller, not a step response to a write.** No write was issued, so it must never be
 quoted as one; `ReclamationLimits`' statement that no step response has ever been observed on this
 hardware remains true. It does mean that a control loop seeding a ramp from the *measured* speed

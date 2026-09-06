@@ -66,13 +66,14 @@ public actor SMCConnection {
     //   performance optimisation only, and nothing in the write path may come to rely on
     //   it. `close()` deliberately leaves it populated (see its documentation);
     //   `invalidate()` is the explicit escape hatch for a caller who suspects staleness.
-    //   Nothing currently calls `invalidate()` automatically, and #68 is an argument
-    //   against wiring it to a wake notification rather than for it: across 10,570 ticks
-    //   and seven wakes on `Mac16,5` / macOS 26.6.2 there were zero read failures, so a
-    //   `.didWake` invalidation would pay the full rediscovery cost on every dark wake —
-    //   roughly seven per lid close on that machine — for a fault with no observed
-    //   instances. Doing it anyway remains a decision for whoever owns that lifecycle,
-    //   not this cache.
+    //   Nothing currently calls `invalidate()` automatically, and #68 — on a read-only
+    //   handle, in a CLI process that never registered for wake — is an argument against
+    //   wiring it to a wake notification rather than for it: across 10,570 ticks and seven
+    //   wakes on `Mac16,5` / macOS 26.6.2 there were zero read failures, so a `.didWake`
+    //   invalidation would pay the full rediscovery cost on every dark wake — seven in the
+    //   one lid close observed on that machine — for a fault with no observed instances
+    //   there. The helper's own write-authorised handle is unobserved. Doing it anyway
+    //   remains a decision for whoever owns that lifecycle, not this cache.
 
     /// Per-key metadata: `dataType`, `dataSize`, and the attribute byte, keyed by
     /// `SMCKey`. Populated as each key is first looked up via `keyInfo(for:)` — most

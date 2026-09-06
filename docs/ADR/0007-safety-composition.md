@@ -23,7 +23,9 @@ conflict, and one mechanism that cannot be implemented as written:
    death — for helper death, the lease's enforcer is the casualty. §1 and §6 conflate the two
    crashing processes throughout.
 2. **Supervisor blindness.** Nothing covers "the helper cannot read". A stale `io_connect_t` after
-   wake ([#68](https://github.com/blamechris/Aeolus/issues/68)), a persistent read failure, or an
+   wake (not seen on a read-only handle in one lid close,
+   [#68](https://github.com/blamechris/Aeolus/issues/68); open for the helper's own handle), a
+   persistent read failure, or an
    empty critical-sensor set silently blinds §3 and §5 while a lease keeps fans pinned. §5 covers
    divergence of *values*, not inability to obtain them.
 
@@ -206,7 +208,9 @@ exactly that one.
 | `F0Md`/`Ftst` are readable for reconciliation | Observed readable on `Mac16,5` | Reconciliation falls back to unconditional restore-to-automatic at startup — safe either way |
 | `io_connect_t` survives sleep/wake | **Observed for the read path only**, on `Mac16,5` / macOS 26.6.2 across seven Deep Idle sleep/wake transitions with zero read errors ([#68](https://github.com/blamechris/Aeolus/issues/68), `SMC-RESEARCH.md` § "Sleep/wake and the read connection — observed"). A write-authorised handle, hibernate/standby, and every other machine remain open | The reconnect-or-release rule is the answer either way, and stays: the helper's handle carries write authority and its reconnect path was not exercised |
 
-Every hardware observation above is `Mac16,5` on macOS 26.5.2. Intel and M1/M2 ship `untested`.
+Every hardware observation above is `Mac16,5`. A row that names no build was taken on macOS
+26.5.2; a row that names its own build (the `io_connect_t` row, 26.6.2) was taken on that build.
+Intel and M1/M2 ship `untested`.
 
 **Revisit when:** self-renewal ships (tombstone eviction coupling); the lid-close session contradicts
 the clock assumption; `SMAppService` rejects the restart keys; or any firmware is found to refuse a
