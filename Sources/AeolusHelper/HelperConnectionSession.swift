@@ -249,14 +249,15 @@ actor HelperConnectionSession {
 
     // MARK: - The panic path
 
-    /// Exempt from the handshake gate **and from the teardown gate**, and never from the
-    /// authorisation gate.
+    /// Exempt from the handshake gate, from the teardown gate, and — in `HelperXPCService`,
+    /// which routes it outside the sequencer — from this connection's message ordering.
+    /// Never from the authorisation gate. A message pipelined ahead of it may therefore
+    /// still complete after it.
     ///
     /// Its only expressible effect is the safe state, so a version fence that stopped a
     /// panicked user's older `fanctl` from restoring automatic control would be a safety
     /// mechanism defeating safety. The message still arrives only on a connection libxpc
-    /// admitted against the code-signing requirement — the exemption is from *versioning*,
-    /// not from *authorisation*, and those are different gates in different layers.
+    /// admitted against the code-signing requirement: the exemption is from *versioning*.
     ///
     /// ## Why the teardown gate exempts it too, deliberately
     ///
@@ -277,8 +278,7 @@ actor HelperConnectionSession {
     /// state, it needs revisiting, per [#95](https://github.com/blamechris/Aeolus/issues/95).
     ///
     /// The reply may well be undeliverable by the time this returns, because the port it
-    /// would travel on is what died. That is accepted: what matters here is the **effect**,
-    /// not the acknowledgement. Reaching the authority is the whole of the job.
+    /// would travel on is what died; what matters is the **effect**, not the reply.
     func restoreAllToAutomatic() async -> AcknowledgementReply {
         deliveredMessages += 1
         do {

@@ -20,7 +20,7 @@ import Foundation
 ///
 /// #90's requirement is unaffected: what it asks for is that a pipelined `snapshot` is not
 /// refused for overtaking the `hello` it was sent behind, and the panic verb is in neither
-/// role. `MessageOrderingTests.thePanicPathIsNotDelayedByAParkedMessage` is the guard.
+/// role. `OrderingExemptionTests.thePanicPathIsNotDelayedByAParkedMessage` is the guard.
 ///
 /// ## Deliberately empty of judgement
 ///

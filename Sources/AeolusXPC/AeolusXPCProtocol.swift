@@ -43,10 +43,23 @@ import Foundation
 /// **The panic path is exempt, and the exemption is the point of it.** Ordering is a
 /// precondition — "every message sent earlier on this connection has returned" — and
 /// `restoreAllToAutomatic` carries the fewest preconditions of anything here. It is
-/// dispatched the moment it arrives, so a `snapshot` still in flight, or an operation that
-/// never returns at all, cannot delay it. A client may therefore send it at any time,
+/// **dispatched** the moment it arrives and is never queued behind another message, so a
+/// `snapshot` still in flight, or an operation that never returns at all, cannot hold it in
+/// a queue. What that buys is promptness, not a bounded reply: the restore's own body drops
+/// every lease and writes each fan back to automatic through the same control plane, so on
+/// the wedged `io_connect_t` of `docs/SAFETY.md` § 4 it is *started* immediately and its
+/// completion is still the plane's to give. A client may therefore send it at any time,
 /// including on a connection it has already pipelined work onto, and it is answered on its
 /// own schedule rather than the queue's. Its reply is the one that may arrive out of order.
+///
+/// **The hazard the exemption creates, stated plainly.** Because it is not in the queue, a
+/// message sent *before* it on the same connection may still be executing when the restore
+/// runs — and may therefore take effect *after* it, leaving a fan in manual that the panic
+/// was meant to clear. A client that needs the restore to be the last thing that happens
+/// must await its earlier replies first; the exemption buys promptness, not ordering.
+/// [#180](https://github.com/blamechris/Aeolus/issues/180) is the mechanism that makes the
+/// interleaving harmless — a write away from the safe state requires a live lease, checked
+/// at the write — and until it is built, this ordering is the client's to manage.
 ///
 /// **What ordering costs a client that pipelines.** One message at a time is one message at
 /// a time in both directions: while message N is being handled, N+1 has not started, so a
@@ -236,7 +249,9 @@ import Foundation
     /// mechanism defeating safety. The panic path carries the fewest preconditions of
     /// anything in this protocol, by design — which is why it is not queued behind messages
     /// sent before it: a message still in flight is a precondition, and a message that never
-    /// returns is a permanent one.
+    /// returns is a permanent one. The exemption is over *dispatch*: a message pipelined
+    /// ahead of this one may still complete after it, so a client that wants this to be the
+    /// last effect on the connection awaits its earlier replies first.
     func restoreAllToAutomatic(reply: @escaping @Sendable (Error?) -> Void)
 }
 
