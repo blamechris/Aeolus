@@ -31,7 +31,11 @@ teardown joined the built list in E5.4d (#166) and is corrected here for the sam
 The connection health and reconnect of
 [#168](https://github.com/blamechris/Aeolus/issues/168) left that list in E5.4f, and the
 same correction-in-place rule applies here as above.
-Not built: § 7's body and § 8's hysteresis. All of it is tracked as epic E5,
+Not built: § 7's body and § 8's hysteresis — and **"§ 7's body" is narrower than it sounds**,
+which this line did not say until #104. The XPC message `restoreAllToAutomatic` has existed since
+E2.1, is implemented through the helper, is tested, and is the one message exempt from the version
+handshake gate. What is not built is `fanctl`'s call into it (#15) and the SMC write behind it
+(E3/E4). All of it is tracked as epic E5,
 and E5 blocks the write-path epics E3 and E4. No code that writes to the SMC merges before
 the safety subsystem exists and is tested.
 
@@ -273,9 +277,12 @@ This is defence in depth, not a substitute for correct decoding — it catches a
 error rather than a specific bug, which is what makes it worth keeping even once the codec
 is trusted.
 
-Clamping and the gate both happen in the helper, after values cross the privilege boundary.
-Client-side validation is a courtesy to the user; this is the actual control. The types
-enforce it in two halves, and the split matters — see
+Clamping and the gate are applied in the helper, after values cross the privilege boundary, and
+it is the **authorisation** half that is helper-exclusive. Client-side validation is a courtesy to
+the user; the permit is the actual control. This sentence claimed both halves for the helper until
+#104: the arithmetic is `FanControlEnvelope`, which lives in `FanKit` and is reachable from a
+client, and nothing is lost by that — an envelope produces a *speed*, and only a permit produces a
+*write*. The types enforce it in two halves, and the split matters — see
 [ADR 0008](ADR/0008-write-authorisation.md):
 
 - **The arithmetic**, in `FanKit`: only a fan whose bounds passed the gate yields a
@@ -304,10 +311,19 @@ take a permit and that the restore verb takes none.
 ## 3. Thermal emergency override
 
 The helper samples critical sensors every cycle. Above a compiled-in ceiling — 95 °C CPU,
-90 °C storage by default — it forces the affected fan to maximum, then hands back to
-automatic, revokes any lease that covered it, and reports — on the snapshot and in the log.
+90 °C storage by default — it forces **every fan currently under manual control** to maximum,
+hands each back to automatic, revokes **every live lease** — not only the ones covering a fan it
+bridged — and reports, on the snapshot and in the log.
 **Not a user notification**: a root daemon cannot post one, and this sentence said it did
 until the mechanism was built. See "what the user is actually told" below.
+
+**This paragraph described a per-fan, per-lease emergency until #104** — "the affected fan", "any
+lease that covered it" — and the built mechanism is deliberately broader in the safe direction.
+The "95 °C means the package" paragraph below is why there is no per-fan attribution to be had.
+Every *lease* rather than one per bridged fan is a separate ruling with its own history: a client
+can hold a live lease having engaged manual control under it on no fan at all, and selecting on
+the bridged set left exactly that lease alive through an emergency. A reader building a client
+must not expect to keep a lease through one.
 
 **"95 °C CPU" means the package, not a core**, and the distinction is not pedantry: on the
 one machine this project has measured, an all-core load put **27 of 45 per-core sensors above
@@ -495,8 +511,14 @@ than a matter of re-assertion winning a race against the firmware. See
 [ADR 0007](ADR/0007-safety-composition.md).
 
 The stale-connection question — whether `io_connect_t` survives sleep/wake at all — is
-answered for a read-only handle on `Mac16,5` (#68: seven wakes, no read failure) and open for
-the helper's own handle (#104's lid-close row); reconnect-or-release is the answer either way: a helper that cannot read after
+**answered for a read-only handle on `Mac16,5`**: #68 asked which of three outcomes happens, and
+the first one did. The handle survived and reads resumed on it at all seven wakes of one lid
+close, with no error and no hang (see [SMC-RESEARCH.md](SMC-RESEARCH.md)). It stays open for the
+helper's own handle, which is a genuinely different question rather than the same one at lower
+confidence: that handle carries write authority, the capture involved no
+`IORegisterForSystemPower` notification round trip, and #198's reconnect-and-health path was never
+exercised by it. Nothing in the observation licenses weakening that path.
+Reconnect-or-release is the answer either way: a helper that cannot read after
 wake is the blindness case in § 5.
 
 *Tested by:* `SystemPowerTests`, which drives `.willSleep` and `.didWake` through the
@@ -554,7 +576,14 @@ read-back target does not depend on them, which is the point.
 
 **Being unable to read is divergence too.** Nothing here covers "the helper cannot see" — a
 stale `io_connect_t` after wake (#68), a persistent read failure, an empty critical-sensor
-set — and each of them blinds this section and § 3 while a lease keeps the fans pinned.
+set — and each of them blinds this section and § 3 while a lease keeps the fans pinned. **The
+`io_connect_t` example is now half answered and is kept rather than deleted**: #68 asked which of
+three outcomes a sleep produces, and on `Mac16,5` the first one did — the read handle survived and
+reads resumed on it at all seven wakes of the lid close recorded in
+[SMC-RESEARCH.md](SMC-RESEARCH.md). The helper's own handle is a different question, and the
+[hardware checklist](#hardware-checklist) carries it. The blindness class is not retired by that:
+the same capture demonstrated a live false-positive of this section's *secondary* signal, a fan at
+rest reading exactly 0 against any commanded target after a wake.
 Persistent read failure is therefore treated as divergence: attempt a reconnect, then
 restore automatic and report. § 3 having working telemetry is a precondition of § 1 granting
 a lease at all.
@@ -622,7 +651,8 @@ worse than a UI that reports an error, because the user acts on it.
 
 *Tested by:* `Tests/AeolusHelperTests/ReclamationWatchdogTests.swift`,
 `ReclamationWatchdogRecoveryTests.swift`, `ReclamationWatchdogStalenessTests.swift`,
-`ReclamationRegistrationWindowTests.swift`, `ReclamationLimitsTests.swift` and
+`ReclamationRegistrationWindowTests.swift`, `ReclamationLimitsTests.swift`,
+`ReclamationLedgerTests.swift` and
 `ReclamationSupervisorTests.swift` — mostly through `ScriptedControlPlane`, with four bespoke
 read seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express: a refused
 envelope, a read held open so overlapping reads would be visible, a read that runs a side
@@ -650,12 +680,19 @@ The re-assert budget and the blind-cycle threshold are **driven to exhaustion** 
 tests rather than compared against their constants, so changing a constant changes what the
 test observes without changing whether it passes.
 
-*Not tested on hardware, and cannot be:* no write has ever been performed on this project's
-development machine, so real reclamation behaviour, `Ftst` semantics, and a fan's actual step
-response are unobserved. `ReclamationLimits.actualToleranceFraction` is set against a
-warm-up measurement rather than a commanded step for that reason, and the whole mechanism
-rests on the primary signal, which does not depend on fan dynamics at all. Hardware rows
-belong to [#104](https://github.com/blamechris/Aeolus/issues/104).
+*Not tested on hardware, and cannot be:* **no write has ever been performed on this project's
+development machine** — `SMCFanControlPlane` answers `FanWriteCapability.notBuilt` and every write
+verb throws — so real reclamation behaviour, `Ftst` semantics, and a fan's actual step response
+are unobserved. `ReclamationLimits.actualToleranceFraction` is set against a warm-up measurement
+rather than a commanded step for that reason, it is untouched by anything below, and the whole
+mechanism rests on the primary signal, which does not depend on fan dynamics at all.
+
+**What this paragraph also said, and no longer can, is that nothing this section reasons about is
+observable.** The read-only lid-close capture in [SMC-RESEARCH.md](SMC-RESEARCH.md) bears directly
+on the secondary signal's honesty, and it strengthens the ruling this section is defending rather
+than weakening it. The distinction worth keeping is between the two claims: no write, still true;
+nothing observable, no longer. The rows this section owes hardware are in the
+[hardware checklist](#hardware-checklist).
 
 ## 6. Restore on everything
 
@@ -821,12 +858,19 @@ command is safe to run at any time, from anywhere, including over SSH.
 [RECOVERY.md](RECOVERY.md) documents the procedure for when even that is unavailable,
 including SMC reset key combinations by Mac family.
 
-*Tested by (pending #104):* integration tests invoked against a deliberately corrupted
+*Tested by (pending #15 and E3/E4):* integration tests invoked against a deliberately corrupted
 helper state; a manual hardware check. `fanctl reset --all` parses and is wired into the
-command tree today, but its body exits with `Not implemented yet — see epic E10b`: the XPC
-call behind it is #15 and the hardening is #104. Until both land, § 7 describes the panic
-path rather than providing one — which matters more than the other pending lines here,
-because this is the section the others fall back to.
+command tree today, but its body exits with `Not implemented yet — see epic E10b`.
+
+**What is missing is the CLI's call and the firmware write, not the boundary message.** This line
+read *"the XPC call behind it is #15"* until #104, which reads as though the message did not
+exist. `restoreAllToAutomatic` has existed since E2.1: it is declared on `AeolusXPCProtocol`,
+implemented through `HelperXPCService` → `HelperConnectionSession` → the authority, tested, and is
+the one message exempt from the version handshake gate. #15 is `fanctl`'s call into it — the
+command body carries the literal `TODO` — and E3/E4 are the write, because the control-plane
+restore throws `.controlPathNotBuilt`. Until both land, § 7 describes the panic path rather than
+providing one, which matters more than the other pending lines here because this is the section
+the others fall back to.
 
 ## 8. Rate limiting and hysteresis
 
@@ -907,4 +951,8 @@ Stated so the guarantees are not read as broader than they are:
   backstop; below it, the user's choice is the user's choice.
 - Hardware faults — a failed fan, a blocked vent, a failing thermal sensor.
 - Bugs in the safety subsystem itself. Which is why it is tested first and reviewed
-  hardest, and why the panic path in §7 exists.
+  hardest, and why the panic path in §7 is designed as it is — **designed, and not built yet**.
+  Its body exits `Not implemented yet` (see § 7), so it is not a backstop a user can reach today;
+  the shape is the most heavily reviewed thing in this document, which is not the same claim.
+  This bullet ended "and why the panic path in §7 exists" until #104, which read as a present
+  mitigation.
