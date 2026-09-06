@@ -119,12 +119,24 @@ worth stating because the rest of this document leans on it — with no helper-r
 makes bounded tombstone eviction safe in #95's fix; enabling self-renewal has to revisit that
 eviction in the same change. Two conditions sit outside the backstop, and both are covered
 elsewhere rather than by the lease: helper death, where nothing is counting the TTL at all
-and § 6's reconciliation is the only cover, and possibly sleep, per § 4's clock caveat.
+and § 6's reconciliation is the only cover
+([#103](https://github.com/blamechris/Aeolus/issues/103), E5.4 — § 6 states the split in full and
+this section does not restate it), and possibly sleep, per § 4's clock caveat.
 
 The launchd job named in the paragraph above now exists — `KeepAlive = { SuccessfulExit =
 false }` and an explicit `RunAtLoad = true`, added in #165 alongside § 6's reconciliation and
 never before it, which closes #86. What is still unverified is whether `SMAppService` accepts
-either key in a daemon plist, and that needs the signing identity.
+either key in a daemon plist, and that needs the signing identity — row 16 of the
+[hardware checklist](#hardware-checklist).
+
+**A lease is also refused outright while the helper cannot currently prove it can see a critical
+temperature.** That is the grant-time half of the no-telemetry-no-lease rule, and this section
+never mentioned it until #104: `acquireLease` runs a sightedness check that is answered from § 3's
+own most recent reading, and a failure to obtain one is refused
+`.noThermalTelemetry` rather than granted and watched
+([ADR 0010](ADR/0010-coalesced-supervisor-reads.md)). § 3 having working telemetry is a
+precondition of § 1 granting a lease at all — § 5 states the same rule from the divergence side,
+where being unable to read is itself divergence.
 
 **The handback is bounded, and a handback that fails is terminal** (#110). "Restores every
 affected fan" above is what the helper *attempts*; what it guarantees is that it stops
@@ -236,16 +248,35 @@ firmware at runtime.
 ### Why the floor is not simply `F0Mn`
 
 Clamping to `[F0Mn, F0Mx]` alone does **not** deliver the second rule, and this document
-said it did until #101. [RECOVERY.md](RECOVERY.md) records that a fan reading 0 RPM at idle
-is normal on many Macs, so firmware may legitimately declare a minimum of zero — and a
-clamp whose floor is that declaration then permits commanding a stop. The floor is
+said it did until #101. Some firmware legitimately declares a minimum of zero, and a clamp whose
+floor is that declaration then permits commanding a stop. The floor is
 therefore `max(F0Mn, FanSafetyLimits.minimumManualRPM)`, with a compiled-in constant of
 **100 RPM** that no configuration can lower.
+
+**The inference offered for that until #212 was one this hardware does not support**, and it is
+corrected here rather than quietly dropped, because the conclusion is unaffected and the reasoning
+is what a future reader would reuse. This paragraph derived "firmware may declare a minimum of
+zero" from [RECOVERY.md](RECOVERY.md)'s "a fan reading 0 RPM at idle is normal on many Macs".
+Those are different facts, and `Mac16,5` decouples them: in a read-only capture of 10,570 ticks,
+**2,904 read `F0Ac = F1Ac = 0.0` while `F0Mn`/`F1Mn` in the very same replies read 1350** — one
+`(Mn, Mx)` tuple in the whole file (see [SMC-RESEARCH.md](SMC-RESEARCH.md)). A fan reading 0 says
+nothing about what its firmware declares. The compiled floor stands on the independent evidence
+that some firmware declares zero, which is what it was always for.
 
 100 separates "a fan turning slowly" from "a fan stopped", and is far below every minimum
 real hardware declares — `Mac16,5` declares 1350 — so on machines that declare a sane
 minimum the constant is inert and `F0Mn` governs. Being non-zero is the load-bearing
 property; the figure itself is a judgement.
+
+**`FanSafetyLimits.minimumManualRPM` is a *target* floor and must never be reused as an
+*observation* threshold** (#212). The distinction is stated structurally in the next subsection;
+it is worth stating against this specific constant because a § 5-style divergence check or a UI
+"is this fan stopped" heuristic would naturally reach for it. On the same read-only capture the
+slowest speed this machine was ever observed *turning* at is **109.13 RPM** — 9.13 above the
+constant, against exactly 0 for stopped — the first non-zero sample of a four-second spin-up from
+rest. "Below 100 means stopped" would therefore misclassify a fan genuinely spinning up, and would
+call a healthy fan at rest a fault. The constant is not re-tuned by that measurement and must not
+be: it bounds what Aeolus may command, and the capture contains no write.
 
 ### Clamping governs targets, never observations
 
@@ -346,6 +377,12 @@ The load was a synthetic twelve-way busy loop, held for 40 s. That is stated bec
 what was actually run: `docs/SMC-RESEARCH.md` carries the method, and an earlier draft of this
 paragraph described it as a `swift build`, which no measurement in that session was taken
 during. A number in a safety document has to be re-runnable by whoever doubts it.
+
+**The rule this check enforces is that no lease is granted while the helper is blind.** A
+grant asks whether § 3 can currently see the curated critical set, and a request that cannot be
+answered is refused `.noThermalTelemetry` — never granted and watched. The paragraph below
+described the coalescing that bounds the cost of asking without ever stating the rule being
+enforced, until #104.
 
 **A client retrying `acquireLease` cannot delay this cycle without bound.** While the
 override is latched a retry is refused from the latch alone, before any sensor is read;
@@ -471,7 +508,25 @@ close in #68 sampled no clock, and #210 asks for it alongside the critical senso
 
 **The handback is bounded, and overrunning the bound is not a safety failure.** The
 acknowledgement waits at most `SystemPowerLimits.acknowledgementBudget` — 5 s — after which
-the helper allows the sleep anyway and logs at `.fault`. The case it exists for is a wedged
+the helper allows the sleep anyway and logs at `.fault`.
+
+**The budget is spent once per sleep cycle, and a lid close is not one cycle** (#209). This
+document was shaped as though it were until then. Measured on `Mac16,5` from a `pmset` capture of
+one 1 h 29 min lid-closed window: **one clamshell sleep plus six maintenance sleeps, seven wakes**,
+a maintenance cycle roughly every 900 s while charging and a burst of much shorter ones once the
+battery reached 100 % — cycles of 9 s, 45 s, 211 s and 255 s. So the whole handback above — seal,
+release every lease, restore `.everyFan`, acknowledge — runs on the order of **four times an
+hour**, not once per lid close. That is the cadence the 5 s budget is visibly chosen against, and
+it is also the exposure arithmetic for the durable `.restoreToAutomaticFailed` refusal
+`abandonOutstandingHandbacks()` records: not one chance per lid close but on the order of **thirty
+across an overnight**, in a window with nobody watching.
+
+**One thing that capture does not establish, stated plainly rather than left to be assumed:** the
+`pmset` log proves the *machine* slept seven times. It does **not** prove IOKit delivered seven
+`.willSleep`/`.didWake` pairs to a root daemon, because the helper was not running during the
+capture. That delivery count is **unmeasured**, it is the multiplier on everything in this
+paragraph, and it is row 14 of the [hardware checklist](#hardware-checklist) — observable
+read-only today. The case it exists for is a wedged
 `io_connect_t` (#68) where a synchronous IOKit write never returns at all: `FanRestoreAttempting`
 records that no attempt budget can bound that, and `BoundedFanRestorer` deliberately makes
 each attempt uncancellable. Holding the sleep open instead would buy nothing — the kernel
@@ -517,7 +572,14 @@ the unlock re-runs is E4's to settle — `Ftst` is machine-wide rather than per-
 that matters here is that the helper does not re-run it unprompted. Whether a client
 re-acquires automatically on wake
 or waits for the user is a client-side product decision; either way it is not a helper-side
-write. That is what keeps "never claim control you do not have" a structural property rather
+write. **The measured shape that decision has to meet** is now on record and is placed here rather
+than decided ([#211](https://github.com/blamechris/Aeolus/issues/211)): seven wakes per lid close,
+several under a minute, and the fans at a true 0 RPM at every one of them — Apple's own controller
+stops them entirely, which is the coolest and quietest correct state for a sleeping machine and
+one Aeolus could never command, since 0 RPM is unreachable by hard rule 3. A default that
+re-acquires on every `.didWake` therefore spins both fans up from rest inside wake windows that
+are sometimes eight seconds long, all night, in a bag. What the app does about that is the
+maintainer's call and this document does not make it. That is what keeps "never claim control you do not have" a structural property rather
 than a matter of re-assertion winning a race against the firmware. See
 [ADR 0007](ADR/0007-safety-composition.md).
 
@@ -579,7 +641,29 @@ the same obstruction, and reporting it as reclaimed is a false statement about w
 So the secondary signal tells the user and changes nothing else. Only the primary signal
 reaches the re-assert and the fallback below.
 
-The evidence for the lag is thinner than the ruling needs, and that is an argument *for* the
+**A fan at rest reads exactly 0, and that is the shortfall case hardware has actually
+demonstrated** (#212). On the read-only lid close recorded in [SMC-RESEARCH.md](SMC-RESEARCH.md),
+`F0Ac` and `F1Ac` read a true 0 for the whole of every dark wake and for **38 s after the user
+reopened the lid**, followed by a ~4 s spin-up. Any commanded target is a 100 % shortfall against
+0, so the secondary signal's dwell — five cycles, five seconds — is crossed long before the fan is
+turning, and once it is turning the false window is bounded at about four more seconds. The line
+this produces must therefore say the fan **has not reached** its target, never that it *cannot*:
+"cannot" is a hardware diagnosis — obstruction, a failing bearing, an unreachable declared
+maximum — and a fan that simply had not started yet is none of those. **No constant is re-tuned by
+this**, `ReclamationLimits.actualDwellCycles` included; the observation is of Apple's own
+controller with no write issued anywhere in it, so it is not a step response and may not be quoted
+as one.
+
+**#119's demotion now has hardware behind it, from a different direction.** Under the
+pre-#119 design, where actual-versus-target was the primary signal and reached the terminal
+action, the first commanded cycle after each of the seven wakes in one lid close would have read 0
+against a commanded 1350-plus, confirmed reclamation, revoked every lease and restored to
+automatic — **seven times per lid close, nightly**, each with a fault line blaming the operating
+system for a reclamation that never happened. That is not a lag at all; it is a fan that is not
+turning, which is exactly the class of false positive the demotion exists to prevent, and it is
+near-impossible to reproduce at a desk with the lid open.
+
+The other evidence for the lag is thinner than the ruling needs, and that is an argument *for* the
 ruling rather than against it. [SMC-RESEARCH.md](SMC-RESEARCH.md) records `F0Tg` and `F0Ac`
 climbing together under a slow warm-up — 1350 → 2195 against 1343 → 2166, about 1% apart —
 which shows the two are coupled, not that a commanded step is followed gradually. No write
