@@ -248,7 +248,7 @@ struct WriteVerbAllowlistTests {
         "StartupReconciliation.swift: restoreEveryFan(because: SafetyLog.KeystoneReason)",
         "FanAuthority.swift: restoreAllToAutomatic(from: ConnectionID)",
         "ReadOnlyFanAuthority.swift: restoreAllToAutomatic(from: ConnectionID)",
-        "HelperConnectionSession.swift: restoreAllToAutomatic()",
+        "HelperConnectionSessionMessages.swift: restoreAllToAutomatic()",
         "SignalTeardown.swift: keystone()",
     ]
 
@@ -308,6 +308,15 @@ struct WriteVerbAllowlistTests {
     /// changes; the entries follow the declarations, and `everyVerbIsAcknowledged`'s
     /// `departed` half is what makes leaving the old key behind a failure rather than dead
     /// weight. Their classification is unchanged: both refuse, neither writes.
+    ///
+    /// **Five more moved in [#98](https://github.com/blamechris/Aeolus/issues/98)**, plus
+    /// `restoreAllToAutomatic()` on `restoreVerbs`, when `HelperConnectionSession.swift` was
+    /// split three ways at the 400-line limit. The five gated messages are declared in
+    /// `HelperConnectionSessionMessages.swift` now; `hello(payload:)` and `invalidate()` are
+    /// still in `HelperConnectionSession.swift`, because they are the two that *write* this
+    /// connection's state and the split deliberately left the storage with them. Same
+    /// re-pin, same reason as #128's — and this suite going red before the entries were
+    /// updated is the evidence that a file split in the helper cannot happen quietly.
     private static let permitFreeFunctions: Set<String> = [
         "BoundedFanRestorer.swift: attemptUncancellably(fanAt: Int)",
         // `CriticalTemperatureRecording`'s single requirement, declared beside the cache in
@@ -351,13 +360,13 @@ struct WriteVerbAllowlistTests {
         "HelperComposition.swift: bindSafetyRegistries()",
         "HelperComposition.swift: bringUp()",
         "HelperComposition.swift: shutDown()",
-        "HelperConnectionSession.swift: acquireLease(payload: Data)",
-        "HelperConnectionSession.swift: apply(settings: Data, leaseID: String)",
         "HelperConnectionSession.swift: hello(payload: Data)",
         "HelperConnectionSession.swift: invalidate()",
-        "HelperConnectionSession.swift: releaseLease(id: String)",
-        "HelperConnectionSession.swift: renewLease(id: String)",
-        "HelperConnectionSession.swift: snapshot()",
+        "HelperConnectionSessionMessages.swift: acquireLease(payload: Data)",
+        "HelperConnectionSessionMessages.swift: apply(settings: Data, leaseID: String)",
+        "HelperConnectionSessionMessages.swift: releaseLease(id: String)",
+        "HelperConnectionSessionMessages.swift: renewLease(id: String)",
+        "HelperConnectionSessionMessages.swift: snapshot()",
         "LeaseAuthority.swift: acquireLease(_: LeaseRequest, from: ConnectionID)",
         "LeaseAuthority.swift: activeLease()",
         "LeaseAuthority.swift: connectionDidInvalidate(_: ConnectionID)",
