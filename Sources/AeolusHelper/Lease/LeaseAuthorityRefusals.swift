@@ -3,7 +3,8 @@ import FanKit
 
 // The three refusals the lease core makes about the **machine and the build**, lifted out of
 // `LeaseAuthority.swift` by [#128](https://github.com/blamechris/Aeolus/issues/128). Every
-// body, every doc comment and every statement order is unchanged; only the file is.
+// body and every statement order is unchanged; each doc comment gained the paragraph
+// explaining why the member is `internal` rather than `private`.
 //
 // ## The doctrine is stated once, and it is not stated here
 //
