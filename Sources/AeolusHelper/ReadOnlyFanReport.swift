@@ -42,7 +42,7 @@ enum ReadOnlyFanReport {
             // "No target is set" rather than "the target could not be read": this helper is
             // asking for nothing, and that is an answer — a build-level fact of the same kind
             // as `activeLease: nil`, not an unconfirmed observation. `SMCConnection.write` is
-            // `package` and throws and no write selector exists in `Sources`, so there is no
+            // SPI-gated and throws and no write selector exists in `Sources`, so there is no
             // configuration of this executable in which it asks a fan for a speed.
             //
             // Deliberately **not** sourced from `F<n>Tg`, which #148 raised alongside the

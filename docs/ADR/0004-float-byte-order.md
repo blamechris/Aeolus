@@ -53,7 +53,9 @@ Mechanically: `SMCValue.integerByteOrder` becomes `byteOrder`; its initializer d
 so every construction site states the order or states that it is unresolved; `scalar()` for
 `flt`/`ioft` consumes it exactly as the integers do, returning `nil` and logging when the
 generation is undetectable. The write-path encode API becomes `encode(scalar:byteOrder:)` (still
-`package`), throwing on `nil` for multi-byte numeric types — **changed now, while it has zero
+`package` — **corrected: it is `@_spi(FanWrite) public` as of the 2026-09-06 amendment in
+[ADR 0008](0008-write-authorisation.md); `package` never reached the Xcode helper target**),
+throwing on `nil` for multi-byte numeric types — **changed now, while it has zero
 callers**, because changing it after E3/E4 means changing the write encoding of a shipped root
 helper. Writes resolve the order from a fresh `keyInfo` at write time and are followed by a
 mandatory read-back compare that aborts to automatic on mismatch. E5 plausibility-gates decoded

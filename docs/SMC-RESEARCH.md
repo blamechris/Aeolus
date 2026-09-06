@@ -368,7 +368,7 @@ rest on a value nothing had witnessed. It has now been witnessed. The convention
 automatic, 1 = held" survives its first contact with a machine where something is actually
 holding a fan.
 
-**Nothing in Aeolus wrote it.** `SMCConnection.write` is `package` and throws, no write
+**Nothing in Aeolus wrote it.** `SMCConnection.write` is SPI-gated and throws, no write
 selector appears in `Sources` (`WritePathAbsenceTests`, green), and the whole suite was
 running read-only. A third-party tool moved the key, which is precisely the case ADR 0011
 was written for and the case the 2026-09-04 triage on #103 predicted.

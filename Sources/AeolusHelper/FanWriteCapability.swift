@@ -14,7 +14,7 @@
 /// *"the read-only path survives as a capability gate on the seam, not a literal."* The
 /// answer therefore comes from the conformer that would have to perform the write —
 /// `SMCFanControlPlane` answers `.notBuilt` because `SMCConnection.write(_:to:)` is
-/// `package`-scoped and throws and no write selector exists anywhere in `Sources`, and
+/// SPI-gated and throws and no write selector exists anywhere in `Sources`, and
 /// `ScriptedControlPlane` answers `.built` because its scripted firmware really does take
 /// writes.
 ///

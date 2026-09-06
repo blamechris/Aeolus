@@ -34,7 +34,7 @@ The agent reviews against these standards:
 #### Code Quality
 **Scale depth to blast radius, not diff size.** A three-line change in `Sources/AeolusHelper` outranks a thousand-line SwiftUI refactor.
 
-Review line by line, assuming a defect is present until convinced otherwise, when the change touches `Sources/AeolusHelper/**`, the `package`-scoped write path in `Sources/SMCCore/**`, `Sources/AeolusXPC/**`, `Configs/*.entitlements`, or `Configs/LaunchDaemons/**`.
+Review line by line, assuming a defect is present until convinced otherwise, when the change touches `Sources/AeolusHelper/**`, the SPI-gated write path in `Sources/SMCCore/**`, `Sources/AeolusXPC/**`, `Configs/*.entitlements`, or `Configs/LaunchDaemons/**`.
 
 - [ ] Fan speeds clamped to firmware bounds **on the helper side**, after crossing XPC
 - [ ] No code path can reach 0 RPM

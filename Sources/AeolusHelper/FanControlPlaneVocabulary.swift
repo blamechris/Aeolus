@@ -172,7 +172,7 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
 
     /// This build has no SMC write path at all.
     ///
-    /// Not a stub and not a placeholder: `SMCConnection.write(_:to:)` is `package`-scoped
+    /// Not a stub and not a placeholder: `SMCConnection.write(_:to:)` is SPI-gated
     /// and throws, no write selector exists anywhere in `Sources`, and E5 is the epic that
     /// gates E3 and E4 rather than the one that pre-empts them. Every write verb on
     /// `SMCFanControlPlane` answers with this until those epics land.

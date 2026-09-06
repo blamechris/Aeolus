@@ -118,8 +118,10 @@ Named here so that reviewers know where to look hardest:
 
 1. **The XPC boundary** (`Sources/AeolusXPC`, and the listener in `AeolusHelper`) — the
    privilege boundary itself, and the client authorisation check that guards it.
-2. **The SMC write path** (`SMCCore`'s package-scoped write API) — deliberately not
-   `public`, so that widening its reach is a visible change rather than an accident.
+2. **The SMC write path** (`SMCCore`'s write API, behind the `FanWrite` SPI group) —
+   deliberately not reachable through a plain `import SMCCore`, so that widening its reach
+   is a visible change rather than an accident. See the 2026-09-06 amendment in
+   [ADR 0008](docs/ADR/0008-write-authorisation.md).
 3. **The Apple Silicon unlock sequence** — writing the diagnostic force key to persuade
    the thermal manager to yield the fans, and re-establishing it after every wake. The
    most fragile code in the project.

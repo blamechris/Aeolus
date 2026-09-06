@@ -21,7 +21,7 @@ firmware.
 
 | Target | What it is | Rules |
 |---|---|---|
-| `SMCCore` | IOKit connection, key enumeration, type codec | Read API `public`; write API `package`. Widening that is a safety review. |
+| `SMCCore` | IOKit connection, key enumeration, type codec | Read API `public`; write API `@_spi(FanWrite) public`, nameable only from `Sources/AeolusHelper` — see the 2026-09-06 amendment in [ADR 0008](docs/ADR/0008-write-authorisation.md) for why `package` could not do this. Widening it, or adding a third member to the group, is a safety review. |
 | `FanKit` | Models, curve engine, profiles, sensor catalog | Pure, with two named exceptions: reading the catalog file, and `sysctlbyname` for hardware identity. No IOKit. Keep it exhaustively testable. |
 | `AeolusXPC` | The `@objc` protocol and DTOs | This *is* the privilege boundary. |
 | `AeolusHelper` | Root daemon | The only writer. Highest review bar in the repo. |

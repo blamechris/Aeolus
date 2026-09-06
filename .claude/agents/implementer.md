@@ -23,7 +23,7 @@ This is most of the project. Do it well and do it completely.
 **Stop and escalate rather than proceeding** if a task requires you to:
 
 - Modify anything under `Sources/AeolusHelper`
-- Modify the write path in `SMCCore` — anything `package`-scoped, or `SMCConnection.write`
+- Modify the write path in `SMCCore` — anything behind the `FanWrite` SPI group, or `SMCConnection.write`
 - Change the XPC protocol in `Sources/AeolusXPC`, or `AeolusXPCVersion`
 - Touch entitlements, the launch daemon plist, code signing, or `SMAppService`
 - Weaken, bypass, or make configurable any safety mechanism in `docs/SAFETY.md`

@@ -13,7 +13,7 @@
   - 0 RPM is unreachable by any code path.
   - Fan speeds are clamped to firmware bounds read at runtime; configuration never widens them.
   - Thermal ceilings are tunable downward only; no XPC message may disable a safety mechanism.
-  - `SMCCore`'s write API stays `package`-scoped, reachable only from `AeolusHelper`.
+  - `SMCCore`'s write API stays behind the `FanWrite` SPI group, nameable only from `AeolusHelper`.
   - Never claim hardware support that has not been verified — the compatibility matrix says `untested`.
   - Clean room: never decompile or inspect Macs Fan Control; cite every SMC source in `docs/SMC-RESEARCH.md`.
 
@@ -37,7 +37,7 @@ targets: claude
 ## agent-review Customizations
 Scale review depth to **blast radius, not diff size**. A three-line change in `Sources/AeolusHelper` outranks a thousand-line SwiftUI refactor.
 
-Highest scrutiny, line by line: `Sources/AeolusHelper/**`, the `package`-scoped write path in `Sources/SMCCore/**`, `Sources/AeolusXPC/**`, `Configs/*.entitlements`, `Configs/LaunchDaemons/**`.
+Highest scrutiny, line by line: `Sources/AeolusHelper/**`, the SPI-gated write path in `Sources/SMCCore/**`, `Sources/AeolusXPC/**`, `Configs/*.entitlements`, `Configs/LaunchDaemons/**`.
 
 Privileged-code checklist: clamping to firmware bounds on the helper side; no path reaching 0 RPM; lease expiry on every exit including crash and `SIGKILL`; thermal ceilings unraisable by configuration; client code-signing requirement checked before the request is honoured; every XPC parameter treated as hostile input; no state reported that the helper has not confirmed; no `@unchecked Sendable` or swallowed `try?` in the helper; restore-on-exit paths present and reachable; encoding keyed on the SMC's declared type rather than the architecture.
 

@@ -35,7 +35,7 @@ import SMCCore
 /// ## What this build can and cannot do
 ///
 /// It serves `snapshot` from real hardware and refuses everything that would need a write.
-/// `SMCConnection.write(_:to:)` is still `package`-scoped and still throws, and no write
+/// `SMCConnection.write(_:to:)` is still SPI-gated and still throws, and no write
 /// selector exists anywhere in `Sources/` — the read selectors are 5, 8, and 9. **E2's
 /// strongest safety property is structural: it cannot fail open into a write, because
 /// there is no write to fail into.** Adding one "ready for E5" would spend that property

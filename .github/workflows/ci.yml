@@ -83,6 +83,15 @@ jobs:
       - name: Generate project
         run: xcodegen generate
 
+      # This scheme compiles the AeolusHelper target, and that is the point of the job as
+      # much as the app is. `swift build` compiles the helper *inside* the SwiftPM package;
+      # xcodebuild compiles it as a native target that merely depends on the SMCCore
+      # product, which is the only build where the package boundary is real. The SMC write
+      # seam is gated on that boundary — `@_spi(FanWrite) public`, reached by
+      # Sources/AeolusHelper/WriteSeamReachability.swift, see the 2026-09-06 amendment in
+      # docs/ADR/0008-write-authorisation.md — so an access level that stops resolving here
+      # fails this step and nowhere else. It was `package` until #160, and `package` did
+      # not reach this target at all; the same defect bit ClientAuthorisation once already.
       - name: Build Monitor configuration
         run: |
           set -o pipefail
@@ -94,6 +103,52 @@ jobs:
             -derivedDataPath DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             build
+
+      # The step above cannot fail *silently*, but it can stop compiling the probe — a
+      # dropped source file, a target reshuffle — and then it proves nothing while staying
+      # green. This asserts the probe reached the binary, which is the artefact, not the
+      # log. Both halves are named: the function that references `write(_:to:)`, and the one
+      # that references `encode(scalar:byteOrder:)`.
+      #
+      # The symbol table is written to a file and grepped there rather than piped into
+      # `grep -q`. Under `set -o pipefail` that pipeline returns 141 on *success*: `grep -q`
+      # exits at the first match, `nm` dies on SIGPIPE with a megabyte still buffered, and
+      # the step reports "has no ... symbol" for a binary that has it. #226's first CI run
+      # failed exactly that way, on a build that was fine.
+      #
+      # The names are compared *demangled*. Swift's mangler substitutes repeated words, so
+      # `WriteSeamReachability.namesTheWriteSeam` mangles to `...WriteSeamReachabilityO08
+      # namesThecD02on...` and the literal `namesTheWriteSeam` never appears in `nm` output.
+      # Grepping the raw table for the source spelling is a check that can only pass by
+      # accident.
+      - name: Assert the helper binary carries the write-seam probe
+        run: |
+          set -euo pipefail
+          HELPER="DerivedData/Build/Products/Monitor Debug/AeolusHelper"
+          test -x "${HELPER}" || { echo "error: no helper binary at ${HELPER}"; exit 1; }
+
+          SYMBOLS="${RUNNER_TEMP:-/tmp}/helper-symbols.txt"
+          nm "${HELPER}" > "${SYMBOLS}"
+          xcrun swift-demangle < "${SYMBOLS}" > "${SYMBOLS}.demangled"
+
+          probes=(
+              "AeolusHelper.WriteSeamReachability.namesTheWriteSeam(on:"
+              "AeolusHelper.WriteSeamReachability.namesTheEncodeSeam()"
+          )
+          for symbol in "${probes[@]}"; do
+              if ! grep -qF -- "${symbol}" "${SYMBOLS}.demangled"; then
+                  echo "error: ${HELPER} has no ${symbol} symbol."
+                  echo "The write-seam reachability probe did not reach the helper binary,"
+                  echo "so this job no longer proves the Xcode helper target can name the"
+                  echo "SMC write seam. See docs/ADR/0008-write-authorisation.md."
+                  exit 1
+              fi
+          done
+
+          # A positive signal, so a reader of the log can tell "the probe was found" from
+          # "the step ran and asserted nothing". #226's delta review caught the PR body
+          # quoting exactly this line as evidence while the step was silent on success.
+          echo "PROBE ASSERTION PASSED: both probe symbols are in ${HELPER}"
 
       # "The helper is absent from Monitor" is called a safety property in project.yml,
       # and until now nothing checked it: the embed script's Monitor branch asserts

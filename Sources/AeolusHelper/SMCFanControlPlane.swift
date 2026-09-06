@@ -8,8 +8,8 @@ import SMCCore
 /// all throw `FanControlPlaneError.controlPathNotBuilt`. That is not a stub waiting to be
 /// filled in by whoever gets here next — it is the ordering `CLAUDE.md` rule 1 mandates.
 /// E5 is the epic that gates E3 and E4, so it may not pre-empt them: `SMCConnection.write`
-/// stays `package`-scoped and keeps throwing, and no write selector exists anywhere in
-/// `Sources` (the read selectors are 5, 8 and 9, and
+/// stays behind the `FanWrite` SPI group and keeps throwing, and no write selector exists
+/// anywhere in `Sources` (the read selectors are 5, 8 and 9, and
 /// `Tests/AeolusHelperTests/WritePathAbsenceTests` is the tripwire on that).
 ///
 /// What ships today is the *shape*: every E5 mechanism can be written, reviewed and tested
