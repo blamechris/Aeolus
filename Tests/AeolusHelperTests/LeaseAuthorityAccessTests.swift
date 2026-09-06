@@ -74,6 +74,7 @@ struct LeaseAuthorityAccessTests {
         "var tombstones: ConnectionTombstones",
         "var releasing: [Int: Int] = [:]",
         "var restoreAbandoned: Set<Int> = []",
+        "var handbackUnconfirmed: Set<Int> = []",
         "var sleepSeal = false",
         "static let invalidatedInFlight",
         "func restore(_ fans: Set<Int>, because cause: FanRestoreCause) async {",
@@ -94,6 +95,18 @@ struct LeaseAuthorityAccessTests {
     /// and the lease suite read. They are listed because this assertion is exhaustive in both
     /// directions: an entry a maintainer did not have to write down is a widening this suite
     /// would not have caught.
+    ///
+    /// `fansWithUnconfirmedHandbacks` and `fansWithAbandonedHandbacks` are #209's, and they
+    /// are the same trade `fansAeolusIsAccountableFor` was allowed on: **derived, read-only
+    /// views of state that stays private**. Nothing reached through them can put a fan into
+    /// either register or take one out — `recordUnconfirmedHandbacks()` and
+    /// `restore(_:because:)` are the only writers, and the second of those is still private.
+    /// They exist because decision D33 gave a handback three distinguishable endings —
+    /// cleared, converted to the durable set, still standing — and the refusal alone cannot
+    /// tell "cleared" from "never recorded", so a test asserting only the thrown fault would
+    /// pass against a helper that recorded nothing at all. `fansMidHandback` is the third of
+    /// the same kind — `releasing`'s keys — and exists so the subset invariant the first two
+    /// rest on is asserted by a test rather than stated by a comment.
     private static let acknowledgedInternalProperties: Set<String> = [
         "writeCapability",
         "telemetry",
@@ -102,6 +115,9 @@ struct LeaseAuthorityAccessTests {
         "fansAeolusIsAccountableFor",
         "leaseCount",
         "tombstoneCount",
+        "fansWithUnconfirmedHandbacks",
+        "fansWithAbandonedHandbacks",
+        "fansMidHandback",
     ]
 
     /// Every method of `LeaseAuthority` that is not `private`, and what each of them is.
@@ -133,7 +149,7 @@ struct LeaseAuthorityAccessTests {
         "releaseEveryLease",
         "sealForSleep",
         "unsealAfterWake",
-        "abandonOutstandingHandbacks",
+        "recordUnconfirmedHandbacks",
         "activeLease",
         "activeLeaseView",
         "holdsTombstone",
