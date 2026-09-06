@@ -52,9 +52,18 @@
 /// to contain the text `write(`, and it is permitted zero *call sites* of it — a
 /// compound-name reference is allowed, an argument list is not.
 ///
-/// Neither probe function is referenced by anything. Both are functions rather than stored
-/// `let`s because a stored function value is global mutable state under strict
-/// concurrency; a function body holds the same reference with no storage at all.
+/// That rule is about the name `write`, and #226's delta review showed it is not enough on
+/// its own: the seam is bound to a *local* here, so `try! writeSeam(bytes, key)` is a live
+/// write under a name the scan does not know. `theWriteSeamProbeIsInert` closes that door
+/// by forbidding, in this file, any `try`, any `await`, and any application of a local this
+/// file binds — whatever it is named.
+///
+/// Neither probe function is referenced by anything, and
+/// `nothingOutsideTheProbeNamesIt` keeps it so: an unreferenced probe cannot become a
+/// write path however it is edited, which is what bounds the blast radius of everything
+/// above. Both are functions rather than stored `let`s because a stored function value is
+/// global mutable state under strict concurrency; a function body holds the same reference
+/// with no storage at all.
 ///
 /// ## Why the Monitor app build is the proof
 ///

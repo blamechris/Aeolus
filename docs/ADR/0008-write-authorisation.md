@@ -213,8 +213,11 @@ checkout directory basename, so it works in a clone and fails in a worktree. See
 [`ClientAuthorisation.swift`](../../Sources/AeolusXPC/ClientAuthorisation/ClientAuthorisation.swift),
 which carries the observation.
 
-**Controls.** Seven, replacing the one that `package` supplied. Three of them were added
-by #226's review, which defeated the first four:
+**Controls.** Nine, replacing the one that `package` supplied. Three of them were added by
+#226's review, which defeated the first four, and two more by the delta re-review of that
+round, which defeated the probe's own claim one indirection later — the seam is bound to a
+local inside the probe, and applying *that* name is a write no scan looking for `write(`
+can see:
 
 | Control | Where |
 |---|---|
@@ -224,6 +227,8 @@ by #226's review, which defeated the first four:
 | No helper file declares a populated `extension SMCConnection`, so the actor's isolation is never open to helper code | `WritePathAbsenceTests.noHelperFileOpensSMCConnectionsIsolation` |
 | No declaration under `Sources/` carries the `package` access level | `WriteSeamAccessTests.noSourceFileDeclaresPackageAccess` |
 | No file under `Sources/` describes the write seam as `package`-scoped | `WriteSeamAccessTests.noSourceFileCallsTheWriteSeamPackageScoped` |
+| The probe applies none of the locals it binds the seam to, and contains no `try` and no `await` | `WritePathAbsenceTests.theWriteSeamProbeIsInert` |
+| Nothing under `Sources/` references the probe, so anything smuggled into it stays dead code | `WritePathAbsenceTests.nothingOutsideTheProbeNamesIt` |
 | The `Monitor app build` job compiles the probe and asserts its demangled symbols are in the helper | `.github/workflows/ci.yml` |
 
 The probe is

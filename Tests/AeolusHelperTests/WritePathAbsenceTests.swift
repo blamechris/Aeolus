@@ -195,6 +195,121 @@ struct WritePathAbsenceTests {
         )
     }
 
+    /// The reachability probe contains no call and no effect: no `try`, no `await`, and no
+    /// application of the function values it binds.
+    ///
+    /// #226's delta review found the door D30 left ajar, one indirection later. The probe
+    /// binds the seam to a local — `let writeSeam: ([UInt8], SMCKey) throws -> Void =
+    /// connection.write(_:to:)` — and `try! writeSeam([0x01], SMCKey("F0Md")!)` on the next
+    /// line is a live SMC write that compiles, because an `isolated` parameter puts the body
+    /// inside the actor's isolation. `helperNeverCallsWrite` cannot see it: the applied name
+    /// is `writeSeam(`, and that scan's lookbehind is on the name `write`.
+    ///
+    /// The isolated-parameter shape is kept, because there is nowhere else to put the
+    /// reference — `SMCConnection.write(_:to:)` cannot be formed as an unbound function
+    /// value from a `nonisolated` context (`#ActorIsolatedCall`) — so the *call* door is
+    /// closed here instead. Applying any local the probe binds is a failure whatever it is
+    /// named, so this does not depend on the two spellings in the file today. `try` and
+    /// `await` are forbidden outright rather than only inside a call pattern: both seam
+    /// members throw, so no application of either can be written without `try`.
+    @Test("The write-seam probe contains no call, no try and no await")
+    func theWriteSeamProbeIsInert() throws {
+        let probe = try #require(
+            try Self.swiftFiles().first { $0.lastPathComponent == Self.writeSeamProbe },
+            """
+            \(Self.writeSeamProbe) was not found under Sources/; the probe is the only thing \
+            proving the Xcode helper target can name the write seam.
+            """)
+        let code = SeamScanner.strippingComments(
+            try String(contentsOf: probe, encoding: .utf8))
+        let whole = NSRange(code.startIndex..<code.endIndex, in: code)
+
+        for keyword in ["try", "await"] {
+            let effect = try NSRegularExpression(
+                pattern: #"(?<![A-Za-z0-9_])"# + keyword + #"(?![A-Za-z0-9_])"#)
+            #expect(
+                effect.firstMatch(in: code, range: whole) == nil,
+                """
+                \(Self.writeSeamProbe) contains `\(keyword)`. The probe may name the SMC \
+                write seam and must do nothing with it; both seam members throw, so an \
+                effect keyword there is a call — see docs/ADR/0008-write-authorisation.md.
+                """
+            )
+        }
+
+        let binding = try NSRegularExpression(pattern: #"(?m)^\s*let\s+([A-Za-z_]\w*)\s*:"#)
+        let bound: [String] = binding.matches(in: code, range: whole).compactMap { match in
+            Range(match.range(at: 1), in: code).map { String(code[$0]) }
+        }
+
+        // Coverage, not decoration. A binding scan that stopped matching the form actually
+        // written would leave the loop below making zero assertions and report a probe that
+        // applies its seam locals as clean. The probe binds one local per seam member, and
+        // `WriteSeamAccessTests.smcCoreDeclaresExactlyTwoSPIMembers` pins that there are two.
+        #expect(
+            bound.count == 2,
+            """
+            \(Self.writeSeamProbe) binds \(bound.count) seam locals, not 2 \
+            (\(bound.joined(separator: ", "))). Either the probe no longer names both SPI \
+            members, or this scan is not reading it.
+            """
+        )
+
+        for name in bound {
+            let applied = try NSRegularExpression(
+                pattern: #"(?<![A-Za-z0-9_])"# + NSRegularExpression.escapedPattern(for: name)
+                    + #"\s*\("#)
+            #expect(
+                applied.firstMatch(in: code, range: whole) == nil,
+                """
+                \(Self.writeSeamProbe) applies `\(name)`, the local it binds the seam to. \
+                Naming the seam proves the access level; applying it is a write, and E3/E4 \
+                do not exist — see docs/ADR/0008-write-authorisation.md.
+                """
+            )
+        }
+    }
+
+    /// Nothing under `Sources/` names the probe but the probe.
+    ///
+    /// This is what bounds the blast radius of the test above: both probe functions are
+    /// unreferenced, so anything smuggled into one is dead code until something calls the
+    /// probe. That was a fact when #226 was reviewed; here it becomes a property of the
+    /// tree. Comments are stripped, because the probe is discussed in prose —
+    /// `SMCConnection`'s own documentation points at it by name, and a tripwire that fires
+    /// on the sentence describing the thing is a tripwire nobody keeps.
+    @Test("Nothing under Sources references the write-seam reachability probe")
+    func nothingOutsideTheProbeNamesIt() throws {
+        let names = ["WriteSeamReachability", "namesTheWriteSeam", "namesTheEncodeSeam"]
+        var seenInProbe: Set<String> = []
+
+        for file in try Self.swiftFiles() {
+            let code = SeamScanner.strippingComments(
+                try String(contentsOf: file, encoding: .utf8))
+            for name in names where code.contains(name) {
+                #expect(
+                    file.lastPathComponent == Self.writeSeamProbe,
+                    """
+                    \(file.lastPathComponent) references \(name). The reachability probe \
+                    exists only to make the compiler resolve the seam's access level, and \
+                    nothing may call it: an unreferenced probe cannot become a write path \
+                    however it is edited — see docs/ADR/0008-write-authorisation.md.
+                    """
+                )
+                if file.lastPathComponent == Self.writeSeamProbe { seenInProbe.insert(name) }
+            }
+        }
+
+        #expect(
+            seenInProbe == Set(names),
+            """
+            \(Self.writeSeamProbe) names \(seenInProbe.sorted()), not \(names.sorted()). \
+            Either the probe was renamed — in which case this scan guards nothing — or the \
+            enumerator is not reading the source tree.
+            """
+        )
+    }
+
     /// `extension SMCConnection` matched by name, and only that name —
     /// `SMCConnectionRecycling` is a different type and does not count.
     private static let smcConnectionExtension = try? NSRegularExpression(
