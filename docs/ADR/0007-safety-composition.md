@@ -117,8 +117,7 @@ eviction in the same change — it is the one configuration where the TTL does n
 - **Crash signals:** **no in-process restore at all.** Crash coverage is restart plus reconciliation,
   uniformly, for every way the helper can die.
 
-#### Amendment, 2026-09-05 (E5.4d, [#166](https://github.com/blamechris/Aeolus/issues/166)) — the
-`atexit` belt is removed, not merely made optional
+#### Amendment, 2026-09-05 (E5.4d, [#166](https://github.com/blamechris/Aeolus/issues/166)) — the `atexit` belt is removed, not merely made optional
 
 The "orderly exits" bullet above permits `atexit` as a cheap belt on the grounds that *"it runs in
 normal context"*. That grounds is correct and it is not the whole test. **An `atexit` body is
@@ -155,15 +154,15 @@ The composition tolerates either answer to the unverified clock question: if `Co
 out not to advance across sleep, the backstop degrades to "the lease survives with its remaining
 TTL", bounding post-wake exposure at the TTL rather than eliminating it.
 
-#### Amendment, 2026-09-06 ([#209](https://github.com/blamechris/Aeolus/issues/209)) — a budget
-expiry is not a firmware refusal
+#### Amendment, 2026-09-06 ([#209](https://github.com/blamechris/Aeolus/issues/209)) — a budget expiry is not a firmware refusal
 
 § 4's handback runs **once per sleep cycle, not once per lid close**. The
 [#68](https://github.com/blamechris/Aeolus/issues/68) capture recorded one clamshell sleep plus six
 maintenance sleeps inside 1 h 29 min (`SMC-RESEARCH.md`, "Sleep/wake and the read connection —
 observed"), so the whole of § 4 — seal, release, keystone, acknowledge — executes several times an
 hour with nobody present. The exposure is narrower than that cadence suggests:
-`abandonOutstandingHandbacks()` reads `releasing`, which only a lease teardown populates, so a cycle
+`abandonOutstandingHandbacks()` — renamed `recordUnconfirmedHandbacks()` by the code change that
+implements this amendment — reads `releasing`, which only a lease teardown populates, so a cycle
 with no live lease records nothing. Whether cycles 2..N carry a lease is
 [#211](https://github.com/blamechris/Aeolus/issues/211)'s client policy, undecided.
 
@@ -271,4 +270,5 @@ Intel and M1/M2 ship `untested`.
 
 **Revisit when:** self-renewal ships (tombstone eviction coupling); the lid-close session contradicts
 the clock assumption; `SMAppService` rejects the restart keys; or any firmware is found to refuse a
-restore write while leaving a fan manual; or the #209 delivery count is measured.
+restore write while leaving a fan manual; or the
+[#209](https://github.com/blamechris/Aeolus/issues/209) delivery count is measured.
