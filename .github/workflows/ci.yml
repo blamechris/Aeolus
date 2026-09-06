@@ -83,6 +83,15 @@ jobs:
       - name: Generate project
         run: xcodegen generate
 
+      # This scheme compiles the AeolusHelper target, and that is the point of the job as
+      # much as the app is. `swift build` compiles the helper *inside* the SwiftPM package;
+      # xcodebuild compiles it as a native target that merely depends on the SMCCore
+      # product, which is the only build where the package boundary is real. The SMC write
+      # seam is gated on that boundary — `@_spi(FanWrite) public`, reached by
+      # Sources/AeolusHelper/WriteSeamReachability.swift, see the 2026-09-06 amendment in
+      # docs/ADR/0008-write-authorisation.md — so an access level that stops resolving here
+      # fails this step and nowhere else. It was `package` until #160, and `package` did
+      # not reach this target at all; the same defect bit ClientAuthorisation once already.
       - name: Build Monitor configuration
         run: |
           set -o pipefail
@@ -94,6 +103,27 @@ jobs:
             -derivedDataPath DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             build
+
+      # The step above cannot fail *silently*, but it can stop compiling the probe — a
+      # dropped source file, a target reshuffle — and then it proves nothing while staying
+      # green. This asserts the probe reached the binary, which is the artefact, not the
+      # log. Both halves are named: the extension on SMCConnection that references
+      # `write(_:to:)`, and the enum that references `encode(scalar:byteOrder:)`.
+      - name: Assert the helper binary carries the write-seam probe
+        run: |
+          set -euo pipefail
+          HELPER="DerivedData/Build/Products/Monitor Debug/AeolusHelper"
+          test -x "${HELPER}" || { echo "error: no helper binary at ${HELPER}"; exit 1; }
+
+          for symbol in namesTheWriteSeam WriteSeamReachability; do
+              if ! nm "${HELPER}" | grep -q "${symbol}"; then
+                  echo "error: ${HELPER} has no ${symbol} symbol."
+                  echo "The write-seam reachability probe did not reach the helper binary,"
+                  echo "so this job no longer proves the Xcode helper target can name the"
+                  echo "SMC write seam. See docs/ADR/0008-write-authorisation.md."
+                  exit 1
+              fi
+          done
 
       # "The helper is absent from Monitor" is called a safety property in project.yml,
       # and until now nothing checked it: the embed script's Monitor branch asserts

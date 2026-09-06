@@ -15,7 +15,8 @@ import Testing
 /// selector, and it is not trying to — what it catches is the realistic regression, which
 /// is somebody adding `kSMCWriteBytes = 6` "ready for E5" and nobody noticing until the
 /// helper is signed and installed. The real guard is that `SMCConnection.write(_:to:)`
-/// stays `package`-scoped and still throws, and that E5 does not exist.
+/// stays behind the `FanWrite` SPI group and still throws, and that E5 does not exist.
+/// `WriteSeamAccessTests` guards the access level itself; this suite guards the calls.
 @Suite("No write path exists in this tree")
 struct WritePathAbsenceTests {
 
@@ -59,15 +60,31 @@ struct WritePathAbsenceTests {
         }
     }
 
+    /// The one file permitted to *name* the write seam. Everything else in the helper may
+    /// not contain the text `.write(` at all.
+    ///
+    /// #160 gave the helper a reachability probe, because `@_spi(FanWrite) public`
+    /// replaced `package` on `SMCConnection.write(_:to:)` and an access level is only
+    /// proven by a reference the compiler must resolve. That reference is written as a
+    /// compound name — `self.write(_:to:)` — so the file contains the text this test used
+    /// to forbid outright. Naming the exception rather than deleting the rule is the
+    /// point: one file, by name, with zero calls in it.
+    static let writeSeamProbe = "WriteSeamReachability.swift"
+
     /// The helper is the only thing that could reach `SMCConnection.write(_:to:)`, and it
-    /// does not.
+    /// never calls it.
     ///
     /// Comment lines are dropped before the scan, which is not a detail: this file's first
     /// green run failed on `AeolusHelperMain`'s own documentation explaining that
-    /// `SMCConnection.write(_:to:)` is `package`-scoped and still throws. A tripwire that
+    /// `SMCConnection.write(_:to:)` was `package`-scoped and still throws. A tripwire that
     /// fires on the sentence saying the thing does not exist is a tripwire nobody keeps.
     /// The trade is that a call hidden after code on a commented line is not seen — which
     /// is a contrived case, where an added write is not.
+    ///
+    /// A *mention* and a *call* are now distinguished, because the probe has to make one
+    /// without making the other. What is counted is a call site: `.write(` whose argument
+    /// list is anything other than a compound name's label placeholders. `.write(_:to:)`
+    /// is a reference; `.write(bytes, to: key)` is a write, and so is `.write()`.
     @Test("The helper target never calls the SMC write API")
     func helperNeverCallsWrite() throws {
         let helperSources = try Self.swiftFiles().filter {
@@ -75,15 +92,85 @@ struct WritePathAbsenceTests {
         }
         #expect(!helperSources.isEmpty, "the helper's sources were not found")
 
+        var mentioning: [String] = []
         for file in helperSources {
             let code = try String(contentsOf: file, encoding: .utf8)
                 .split(separator: "\n", omittingEmptySubsequences: false)
                 .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
                 .joined(separator: "\n")
+
+            let arguments = Self.writeArgumentLists(in: code)
+            guard !arguments.isEmpty else { continue }
+            mentioning.append(file.lastPathComponent)
+
             #expect(
-                !code.contains(".write("),
-                "\(file.lastPathComponent) calls a write. E5 does not exist."
+                file.lastPathComponent == Self.writeSeamProbe,
+                """
+                \(file.lastPathComponent) names the SMC write API. Only \
+                \(Self.writeSeamProbe) may, and only as a reference — see \
+                docs/ADR/0008-write-authorisation.md.
+                """
             )
+            for argumentList in arguments {
+                #expect(
+                    Self.isCompoundName(argumentList),
+                    """
+                    \(file.lastPathComponent) calls a write: .write(\(argumentList)). E3/E4 \
+                    do not exist, and the reachability probe references the seam without \
+                    invoking it.
+                    """
+                )
+            }
         }
+
+        // Coverage. Without it, an enumerator that found nothing — or a scan that stopped
+        // recognising `.write(` — would make zero assertions above and report the tree
+        // clean. The probe is the one file guaranteed to be seen.
+        #expect(
+            mentioning == [Self.writeSeamProbe],
+            """
+            Expected exactly \(Self.writeSeamProbe) to name the SMC write API; found \
+            \(mentioning). If the probe is gone, nothing proves the Xcode helper target can \
+            still reach the write seam.
+            """
+        )
+    }
+
+    /// The text inside the parentheses of every `.write(…)` occurrence, parenthesis-balanced
+    /// rather than stopped at the first `)`, so a nested call in an argument is not read as
+    /// the end of the list.
+    private static func writeArgumentLists(in code: String) -> [String] {
+        var lists: [String] = []
+        var searchStart = code.startIndex
+
+        while let open = code.range(of: ".write(", range: searchStart..<code.endIndex) {
+            var depth = 1
+            var index = open.upperBound
+            while index < code.endIndex, depth > 0 {
+                if code[index] == "(" { depth += 1 }
+                if code[index] == ")" { depth -= 1 }
+                index = code.index(after: index)
+            }
+            let close = depth == 0 ? code.index(before: index) : code.endIndex
+            lists.append(String(code[open.upperBound..<close]))
+            searchStart = index
+        }
+        return lists
+    }
+
+    /// Whether an argument list is a compound *name* — `_:to:` — rather than arguments.
+    ///
+    /// A compound name is a run of `label:` and `_:` and nothing else: no values, no
+    /// whitespace, and never empty. `.write()` therefore reads as a call, which is what it
+    /// is.
+    private static func isCompoundName(_ argumentList: String) -> Bool {
+        guard !argumentList.isEmpty, argumentList.hasSuffix(":") else { return false }
+        return argumentList.split(separator: ":", omittingEmptySubsequences: false)
+            .dropLast()
+            .allSatisfy { label in
+                label == "_"
+                    || (!label.isEmpty
+                        && label.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" })
+            }
     }
 }
