@@ -142,7 +142,7 @@ extension ClientAuthorisationRefusal: CustomStringConvertible {
         case .requirementDidNotCompile(let status):
             return "the requirement text did not compile (OSStatus \(status))"
         case .negativeControlUnavailable(let status):
-            return "the startup negative control could not run (OSStatus \(status))"
+            return "the startup negative control reached no verdict (OSStatus \(status))"
         case .negativeControlAdmittedForeignCode:
             return
                 "the startup negative control fired: an Apple-signed binary from another "

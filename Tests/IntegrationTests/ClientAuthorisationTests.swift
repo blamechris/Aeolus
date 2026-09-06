@@ -269,6 +269,26 @@ struct ClientAuthorisationBuilderTests {
         #expect(!refusal.description.isEmpty)
         #expect(!refusal.description.contains("ClientAuthorisationRefusal"))
     }
+
+    /// #87 item 3's failure scenario is the fault-log line, not the doc comment: the case
+    /// fires both for a probe that could not be opened *and* for one that opened and could
+    /// not be evaluated — a damaged signature, `errSecCSSignatureFailed`. A line saying the
+    /// control "could not run" sends the operator to check that `/bin/ls` exists, they find
+    /// that it does, and they conclude the daemon is lying. The wording has to be neutral
+    /// about which half happened, so it is pinned here rather than left to a comment nobody
+    /// reading a log will see.
+    @Test("The inconclusive refusal does not tell the operator the probe never ran")
+    func negativeControlUnavailableDescribesNoVerdict() {
+        let refusal = ClientAuthorisationRefusal.negativeControlUnavailable(
+            errSecCSSignatureFailed
+        )
+        #expect(
+            refusal.description
+                == "the startup negative control reached no verdict "
+                + "(OSStatus \(errSecCSSignatureFailed))"
+        )
+        #expect(!refusal.description.contains("could not run"))
+    }
 }
 
 /// The one suite that touches the real world: this process's own signature, and the
