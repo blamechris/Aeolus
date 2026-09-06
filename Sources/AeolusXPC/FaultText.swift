@@ -12,16 +12,19 @@ enum FaultText {
     ///
     /// Not a validation limit — nothing is refused for exceeding it. It bounds one log
     /// line and one UI label, which is all `errorDescription` is for.
-    static let maxRenderedLength = 200
+    ///
+    /// The number itself moved to `FaultDetailBounds` in #93, which needed the same pair
+    /// where a detail is *constructed*. Named here rather than restated: two numbers that
+    /// must agree with nothing enforcing it is a disagreement waiting to happen.
+    static let maxRenderedLength = FaultDetailBounds.maxLength
 
     /// The same bound, in UTF-8 bytes.
     ///
     /// A character cap alone does not bound a log line: one grapheme cluster can carry an
     /// unbounded run of combining marks, so 200 *characters* can be hundreds of kilobytes.
     /// Exactly the defect `AeolusXPCValidation.maxHolderDescriptionUTF8Bytes` exists for,
-    /// at the same 4:1 ratio, applied to the rendering side. Not reachable from client
-    /// input today — this text comes from the helper — so it is depth, not a live hole.
-    static let maxRenderedUTF8Bytes = maxRenderedLength * 4
+    /// at the same 4:1 ratio, applied to the rendering side.
+    static let maxRenderedUTF8Bytes = FaultDetailBounds.maxUTF8Bytes
 
     /// Shown in place of text that survived stripping with nothing left.
     static let unprintableMarker = "unprintable"
@@ -35,8 +38,9 @@ enum FaultText {
     /// a reader can tell "the helper said something unprintable" from "the helper said
     /// nothing".
     ///
-    /// Both caps apply. Text over either renders truncated with an ellipsis; text so dense
-    /// that not one character fits inside the byte cap renders as the marker.
+    /// Both caps apply, and the ellipsis is counted *inside* them rather than added past
+    /// them, so a rendered string is never longer than the constant that named its ceiling.
+    /// Text so dense that not one character fits inside the byte cap renders as the marker.
     static func displayable(
         _ text: String,
         limit: Int = maxRenderedLength,
@@ -56,22 +60,23 @@ enum FaultText {
         let trimmed = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return unprintableMarker }
         guard trimmed.count > limit || trimmed.utf8.count > byteLimit else { return trimmed }
-        let cut = truncated(trimmed, characters: limit, bytes: byteLimit)
+        // The cut itself is `FaultDetailBounds.truncated` — the same one the construction
+        // -time bound uses. Two implementations of "stop on a grapheme boundary inside a
+        // byte budget" would be two chances to split a scalar.
+        //
+        // The marker's own room comes out of the budget rather than being added past it.
+        // That is `FaultDetailBounds.bounded`'s rule and was not this function's until #93's
+        // review: cutting to the full `limit` and then appending returned 201 characters and
+        // 803 bytes against constants named `maxRenderedLength` and `maxRenderedUTF8Bytes`,
+        // and `oneBoundNotTwo` could not see it because it compares the two constants and
+        // not the two cuts. `renderingAndConstructionCutIdentically` is what fails if the
+        // two rules diverge again.
+        let cut = FaultDetailBounds.truncated(
+            trimmed,
+            characters: limit - FaultDetailBounds.truncationMarker.count,
+            bytes: byteLimit - FaultDetailBounds.truncationMarker.utf8.count
+        )
         guard !cut.isEmpty else { return unprintableMarker }
-        return cut + "…"
-    }
-
-    /// Applies both caps at once, cutting on a `Character` boundary so the result is never
-    /// a half-formed grapheme cluster and never a split scalar.
-    private static func truncated(_ text: String, characters: Int, bytes: Int) -> String {
-        var result = ""
-        var byteCount = 0
-        for character in text.prefix(characters) {
-            let width = String(character).utf8.count
-            guard byteCount + width <= bytes else { break }
-            result.append(character)
-            byteCount += width
-        }
-        return result
+        return cut + FaultDetailBounds.truncationMarker
     }
 }

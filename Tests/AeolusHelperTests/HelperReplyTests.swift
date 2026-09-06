@@ -53,4 +53,54 @@ struct HelperReplyTests {
         #expect(!rendered.contains("inf"))
         #expect(!rendered.contains("Infinity"))
     }
+
+    // MARK: - The unbounded arm
+
+    /// An error from a layer that has not been written yet. `crossing(_:)` exists to catch
+    /// exactly this, and `String(describing:)` over an arbitrary `Error` is unbounded by
+    /// construction.
+    private struct EnormousError: Error, CustomStringConvertible {
+        let description = String(repeating: "x", count: 4_000_000)
+    }
+
+    /// The bound has to bite **before** `asNSError()`, not after.
+    ///
+    /// `asNSError()` encodes the fault into `userInfo` and `NSXPCConnection` re-encodes
+    /// that on the way across, so a detail that is only shortened at render time has
+    /// already crossed the privilege boundary at full size. The enum payload is asserted
+    /// first for that reason: it is what the helper's own log line and every later encoding
+    /// read from.
+    ///
+    /// Every producer reaching `helperFailed` today is bounded — `SMCFanEnumerationError`'s
+    /// sentences and four fixed literals — so this is depth. It is also the arm whose whole
+    /// purpose is to carry errors nobody anticipated, which E5 keeps adding to.
+    @Test("An unbounded error is bounded where the fault is built, before asNSError")
+    func crossingBoundsAnUnboundedError() throws {
+        let fault = AeolusXPCFault.crossing(EnormousError())
+
+        guard case .helperFailed(let detail) = fault else {
+            Issue.record("expected helperFailed, got \(fault)")
+            return
+        }
+        #expect(detail.count <= FaultDetailBounds.maxLength)
+        #expect(detail.utf8.count <= FaultDetailBounds.maxUTF8Bytes)
+        #expect(detail.hasSuffix(FaultDetailBounds.truncationMarker))
+
+        let payload = try #require(
+            fault.asNSError().userInfo[AeolusXPCFault.payloadUserInfoKey] as? String)
+        #expect(payload.utf8.count <= 2 * FaultDetailBounds.maxUTF8Bytes)
+    }
+
+    /// The other half: `helperFailed`'s permission to quote what it saw is not withdrawn.
+    /// A diagnosis that fits is carried whole, or an SMC failure stops being diagnosable.
+    @Test("An error whose description fits crosses unchanged")
+    func crossingLeavesAShortDescriptionAlone() {
+        struct ShortError: Error, CustomStringConvertible {
+            let description = "the SMC refused the key"
+        }
+
+        #expect(
+            AeolusXPCFault.crossing(ShortError())
+                == .helperFailed(detail: "the SMC refused the key"))
+    }
 }
