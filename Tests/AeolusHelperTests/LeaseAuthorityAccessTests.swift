@@ -32,22 +32,16 @@ import Testing
 /// one is a failure a maintainer has to answer for here, in the file that says why the
 /// existing ones were acceptable.
 ///
-/// ## Why the modifiers are parsed rather than assumed absent
+/// ## Where the parse lives
 ///
-/// The first version of this suite classified a line by `hasPrefix("let ")` or
-/// `hasPrefix("var ")` after trimming, which meant every declaration carrying an explicit
-/// modifier — `internal var`, `package var`, `static var`, and worst of all
-/// `private(set) var` — was skipped rather than checked. The widening the exhaustive half
-/// exists to catch could therefore be written in a spelling it could not see, and
-/// `private(set) var table` is the exact worst case: an internal *getter* on the state this
-/// suite exists to keep unreadable. `member(in:keyword:)` strips the modifier run instead,
-/// and treats `private(set)` as internal because that is what its getter is.
-///
-/// A method is scanned for the same reason a property is. `WriteVerbAllowlistTests` filters
-/// its population on `isAsync || mentions(anyOf: permits)`, and an actor's *synchronous*
-/// isolated method is `async` only at the call site — that suite records the blind spot in
-/// its own doc comment — so `func forceRelease(fanAt: Int) { table.remove(...) }` added here
-/// would be reachable from every file in `AeolusHelper` and caught by nothing else.
+/// In `MemberAccessScan`, shared with `HelperConnectionSessionAccessTests` since
+/// [#98](https://github.com/blamechris/Aeolus/issues/98) split
+/// `HelperConnectionSession.swift` the same way and needed the same guard. It records why
+/// the modifier run is parsed rather than assumed absent — `private(set) var table` is the
+/// spelling that motivated it — and why a method is scanned as well as a property:
+/// `WriteVerbAllowlistTests` filters its population on `isAsync || mentions(anyOf: permits)`,
+/// so `func forceRelease(fanAt: Int) { table.remove(...) }` added here would be reachable
+/// from every file in `AeolusHelper` and caught by nothing else.
 @Suite("The lease core's registry stays private to LeaseAuthority.swift")
 struct LeaseAuthorityAccessTests {
 
@@ -210,83 +204,22 @@ struct LeaseAuthorityAccessTests {
 
     // MARK: - The member parse
 
-    private enum MemberKeyword {
-        case property
-        case method
-    }
-
-    private struct Member {
-        let name: String
-        let isPrivate: Bool
-    }
-
-    /// The modifiers that may precede `let`/`var`/`func` without changing what is declared.
-    ///
-    /// `private` and `fileprivate` are handled separately because they are the answer, not
-    /// noise. A modifier written with a parenthesised argument — `private(set)`,
-    /// `nonisolated(unsafe)` — is matched on the part before the parenthesis, and
-    /// `private(set)` deliberately does **not** count as private: it restricts the setter and
-    /// leaves an internal getter on whatever it guards.
-    private static let ignorableModifiers: Set<String> = [
-        "internal", "package", "public", "open", "static", "class", "final", "lazy", "weak",
-        "unowned", "override", "mutating", "nonmutating", "dynamic", "distributed",
-        "nonisolated", "isolated", "borrowing", "consuming", "indirect", "required",
-        "convenience", "optional",
-    ]
-
     /// Every member of the requested kind declared at the actor's own member indent, across
     /// both files it is written in.
     ///
-    /// Four spaces is that indent. Neither file declares a nested type, so nothing else in
-    /// either sits at that depth; a `let` inside a method body is indented further and is a
-    /// local, not a member. Computed properties are counted alongside stored ones
-    /// deliberately — `fansAeolusIsAccountableFor` is computed, and it is the widening most
-    /// worth watching.
-    private static func members(keyword: MemberKeyword) throws -> [Member] {
-        var found: [Member] = []
-        for file in Self.authorityFiles {
-            let code = try Self.strippedSource(of: file)
-            for line in code.split(separator: "\n", omittingEmptySubsequences: false) {
-                guard let member = Self.member(in: line, keyword: keyword) else { continue }
-                found.append(member)
-            }
-        }
-        return found
-    }
-
-    /// One line, classified — or `nil` when it declares nothing of the requested kind.
-    private static func member(in line: Substring, keyword: MemberKeyword) -> Member? {
-        guard line.hasPrefix("    "), !line.hasPrefix("     ") else { return nil }
-        var tokens = line.trimmingCharacters(in: .whitespaces).split(separator: " ")
-        var isPrivate = false
-
-        while let token = tokens.first {
-            let head = String(token.prefix { $0 != "(" })
-            if token.hasPrefix("@") {
-                tokens.removeFirst()
-            } else if head == "private" || head == "fileprivate" {
-                // `private(set)` leaves the getter internal, so only the bare form answers.
-                if head.count == token.count { isPrivate = true }
-                tokens.removeFirst()
-            } else if Self.ignorableModifiers.contains(head) {
-                tokens.removeFirst()
-            } else {
-                break
-            }
-        }
-
-        let introducers: Set<String> = keyword == .property ? ["let", "var"] : ["func"]
-        guard tokens.count > 1, introducers.contains(String(tokens[0])) else { return nil }
-
-        let name = tokens[1].prefix { $0.isLetter || $0.isNumber || $0 == "_" }
-        guard !name.isEmpty else { return nil }
-        return Member(name: String(name), isPrivate: isPrivate)
+    /// The parse itself is `MemberAccessScan`, shared with
+    /// `HelperConnectionSessionAccessTests` since #98 rather than copied into it. Neither
+    /// file here declares a nested type, so nothing but a member of the actor sits at that
+    /// depth — which is the precondition that scan states and its callers have to keep.
+    /// Computed properties are counted alongside stored ones deliberately —
+    /// `fansAeolusIsAccountableFor` is computed, and it is the widening most worth watching.
+    private static func members(
+        keyword: MemberAccessScan.Keyword
+    ) throws -> [MemberAccessScan.Member] {
+        try MemberAccessScan.members(in: Self.authorityFiles, keyword: keyword)
     }
 
     private static func strippedSource(of file: String) throws -> String {
-        let url = try #require(
-            SeamScanner.swiftFiles().first { $0.lastPathComponent == file },
-            "\(file) is not in the source tree")
-        return SeamScanner.strippingComments(try String(contentsOf: url, encoding: .utf8))
+        try MemberAccessScan.strippedSource(of: file)
     }
 }
