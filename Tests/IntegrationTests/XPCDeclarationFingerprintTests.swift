@@ -5,11 +5,16 @@ import Testing
 
 /// A source-level fingerprint of the privilege boundary's declaration.
 ///
-/// `XPCContractTests.protocolDeclaresExactlyTheAllowedMessages` pins the boundary's message
-/// set as the Objective-C runtime sees it, which is the right axis for a message added,
-/// removed, renamed, re-parameterised, made optional, or moved to a class method. It is
-/// blind to two changes that alter what the boundary *carries* without altering what it is
-/// *called* ([#88](https://github.com/blamechris/Aeolus/issues/88)):
+/// `XPCContractTests` pins the boundary's message set as the Objective-C runtime sees it,
+/// which is the right axis for a message added, removed, renamed, re-parameterised, made
+/// optional, or moved to a class method. Two of its tests split that work and neither
+/// covers the other's half: `protocolDeclaresExactlyTheAllowedMessages` holds the message
+/// *set*, and `protocolUsesOnlyTheRequiredInstanceQuadrant` is the only thing that sees the
+/// optional/class-method axis — the exact-set test unions all four quadrants, so a message
+/// moved between them leaves its set byte-identical.
+///
+/// Both are blind to two changes that alter what the boundary *carries* without altering
+/// what it is *called* ([#88](https://github.com/blamechris/Aeolus/issues/88)):
 ///
 /// - **A parameter's type.** `applyWithSettings:leaseID:reply:` is byte-identical whether
 ///   `settings` is `Data` or `[String: String]`, and so is its type encoding — every object
@@ -20,10 +25,9 @@ import Testing
 ///
 /// Neither is visible at the runtime level at all, so this guard reads the declaration in
 /// `Sources/AeolusXPC/AeolusXPCProtocol.swift` and compares a normalised form of it to a
-/// pinned set. The normalisation is whitespace-and-punctuation only: a reformat — wrapping a
-/// parameter list, re-indenting, adding a doc comment or a blank line — must leave the
-/// fingerprint identical, and `formattingDoesNotChangeTheFingerprint` holds that property
-/// against fixtures rather than leaving it to a reviewer's memory.
+/// pinned set. The normalisation is whitespace-and-punctuation only; that it survives a
+/// reformat is held by `XPCDeclarationNormaliserTests` against fixtures rather than left to
+/// a reviewer's memory.
 ///
 /// ## What this cannot see
 ///
@@ -39,22 +43,43 @@ import Testing
 /// - **A change to the file this points at.** Splitting `AeolusXPCProtocol` into a second
 ///   file would leave nothing to scan; the extraction fails loudly rather than passing
 ///   vacuously, which is the behaviour `#require` gives here.
+/// - **Which declaration a stray modifier belongs to.** A modifier or attribute on the line
+///   *above* a `func` is fingerprinted with the declaration above it, so the change goes red
+///   but the failure message names the wrong method. Anything above the *first* declaration
+///   — including a property requirement — is emitted as its own entry and fails the pin on
+///   its own text.
 /// - **Semantics.** A parameter that keeps its name and type while meaning something else is
 ///   a review problem, not a text one.
 @Suite("XPC declaration fingerprint")
 struct XPCDeclarationFingerprintTests {
 
-    /// The boundary's seven declarations, normalised.
+    /// The boundary's shape at every contract version.
     ///
-    /// Labels, parameter types, and the whole reply block — `@escaping`, `@Sendable`, and
-    /// the optionality of every reply argument — are all inside the pin, because each of
-    /// them is part of what a client must know to talk to the helper and none of them is
-    /// legible to a selector.
+    /// An entry records what one version of the contract declares: labels, parameter types,
+    /// and the whole reply block — `@escaping`, `@Sendable`, and the optionality of every
+    /// reply argument — because each of them is part of what a client must know to talk to
+    /// the helper and none of them is legible to a selector.
     ///
-    /// **Changing this set means the boundary's shape changed.** Bump `AeolusXPCVersion`,
-    /// update this pin and `pinnedProtocolVersion` below in the same pull request, and say
-    /// so in the pull request body.
-    static let pinnedSignatures: Set<String> = [
+    /// **A boundary change adds an entry; it does not edit one.** That is the forcing
+    /// function #88 records as missing, and it is mechanical rather than advisory: a shape
+    /// change with no new entry fails `declarationFingerprintMatchesThePin` (the current
+    /// version's record no longer describes the source), and a new entry with
+    /// `AeolusXPCVersion.current` left behind fails `pinnedVersionIsTheNewestEntry`. The
+    /// only green way through a shape change is a new `(version, signatures)` pair *and* a
+    /// bump — and say so in the pull request body.
+    ///
+    /// The residual, stated because a guard trusted past its reach is worse than none: an
+    /// author can still rewrite the newest entry in place and leave the version alone. That
+    /// is a version's shipped record being edited after the fact — a deliberate, legible act
+    /// in the diff — rather than the silent omission this table closes, and it stays a
+    /// review obligation.
+    static let pinHistory: [Int: Set<String>] = [
+        1: v1Signatures
+    ]
+
+    /// The shape v1 declares. A version's entry is a `let` of its own so that adding the
+    /// next one is an addition rather than a re-indent of the whole table.
+    private static let v1Signatures: Set<String> = [
         "func hello(request: Data, reply: @escaping @Sendable (Data?, Error?) -> Void)",
         "func snapshot(reply: @escaping @Sendable (Data?, Error?) -> Void)",
         "func acquireLease(request: Data, reply: @escaping @Sendable (Data?, Error?) -> Void)",
@@ -64,12 +89,17 @@ struct XPCDeclarationFingerprintTests {
         "func restoreAllToAutomatic(reply: @escaping @Sendable (Error?) -> Void)",
     ]
 
-    /// The contract version the signatures above describe.
-    ///
-    /// It sits here, next to them, so the two move together: a pull request that edits
-    /// `pinnedSignatures` and leaves this number alone has changed the boundary's shape
-    /// without versioning it, which is precisely the missing forcing function #88 records.
-    static let pinnedProtocolVersion = 1
+    /// The record for the version the contract currently advertises.
+    static func pinnedSignatures() throws -> Set<String> {
+        try #require(
+            pinHistory[AeolusXPCVersion.current],
+            """
+            AeolusXPCVersion.current is \(AeolusXPCVersion.current) and `pinHistory` has no \
+            entry for it: add `\(AeolusXPCVersion.current): [ … ]` recording the shape this \
+            version declares
+            """
+        )
+    }
 
     /// The declaration source, located from this file rather than from the working
     /// directory — `swift test` and Xcode disagree about the latter.
@@ -95,19 +125,22 @@ struct XPCDeclarationFingerprintTests {
     }
 
     /// **This is the guard.** Set equality against the declaration as written.
-    @Test("The boundary's declared signatures are exactly the pinned ones")
+    @Test("The boundary's declared signatures are exactly the current version's pin")
     func declarationFingerprintMatchesThePin() throws {
         let found = try Self.fingerprintOfSource()
+        let pinned = try Self.pinnedSignatures()
         #expect(
-            found == Self.pinnedSignatures,
+            found == pinned,
             """
             the boundary's shape changed — a parameter type, a reply block, or a label is \
             not what it was, and no selector-based guard can see that. \
-            Added \(found.subtracting(Self.pinnedSignatures).sorted()); \
-            removed \(Self.pinnedSignatures.subtracting(found).sorted()). \
-            If the change is intended: bump AeolusXPCVersion, update `pinnedSignatures` and \
-            `pinnedProtocolVersion` in this file in the same pull request, and say so in the \
-            pull request body.
+            Added \(found.subtracting(pinned).sorted()); \
+            removed \(pinned.subtracting(found).sorted()). \
+            If the change is intended it is a new contract version: add a \
+            `\(AeolusXPCVersion.current + 1): [ … ]` entry to `pinHistory` carrying the \
+            declarations above, bump AeolusXPCVersion.current to match, and say so in the \
+            pull request body. Editing the v\(AeolusXPCVersion.current) entry instead \
+            rewrites a shipped version's record.
             """
         )
     }
@@ -127,7 +160,7 @@ struct XPCDeclarationFingerprintTests {
     @Test("The selectors derived from the pinned signatures are the pinned selectors")
     func derivedSelectorsMatchTheRuntimeGuard() throws {
         var derived: Set<String> = []
-        for signature in Self.pinnedSignatures {
+        for signature in try Self.pinnedSignatures() {
             derived.insert(
                 try #require(
                     XPCDeclarationNormaliser.selector(forNormalisedSignature: signature),
@@ -146,61 +179,18 @@ struct XPCDeclarationFingerprintTests {
         )
     }
 
-    @Test("The pinned version is the version the contract advertises")
-    func pinnedVersionMatchesTheContract() {
+    /// The other half of the forcing function: an entry added without the bump that makes
+    /// it the contract.
+    @Test("The advertised version is the newest entry in the pin history")
+    func pinnedVersionIsTheNewestEntry() throws {
+        let newest = try #require(Self.pinHistory.keys.max(), "`pinHistory` is empty")
         #expect(
-            AeolusXPCVersion.current == Self.pinnedProtocolVersion,
+            AeolusXPCVersion.current == newest,
             """
-            AeolusXPCVersion.current moved to \(AeolusXPCVersion.current) while the pinned \
-            signatures above still describe v\(Self.pinnedProtocolVersion): update both \
-            together or the fingerprint documents a contract nobody is speaking
+            `pinHistory` records v\(newest) as the boundary's newest shape while \
+            AeolusXPCVersion.current still advertises \(AeolusXPCVersion.current): bump \
+            `current` to \(newest), or drop the entry if the shape change was not intended
             """
         )
-    }
-
-    /// The property that makes the pin usable: reformatting is not a contract change.
-    ///
-    /// Held against fixtures rather than against the real file, so it keeps holding once
-    /// `AeolusXPCProtocol.swift` is formatted the one way `swift format` writes it. The
-    /// second fixture differs from the first by every formatting move available — a wrapped
-    /// parameter list, a different indent, a blank line, a doc comment, a trailing comment,
-    /// a block comment, and a trailing comma — and must fingerprint identically.
-    @Test("Reformatting the declaration does not change the fingerprint")
-    func formattingDoesNotChangeTheFingerprint() {
-        let compact = """
-            @objc public protocol Fixture {
-                func apply(settings: Data, id: String, reply: @escaping @Sendable (Error?) -> Void)
-                func snapshot(reply: @escaping @Sendable (Data?, Error?) -> Void)
-            }
-            """
-        let reformatted = """
-            /// A doc comment that was not here before, mentioning func snapshotWithReply:.
-            @objc public protocol Fixture {
-
-                /* a block comment, and a stray ) brace to be dropped with it */
-                func apply(
-                    settings: Data,
-                    id: String,
-
-                    reply: @escaping @Sendable (Error?) -> Void,
-                )
-
-                func snapshot(  // trailing comment
-                    reply: @escaping @Sendable (Data?, Error?) -> Void)
-            }
-            """
-        let expected: Set<String> = [
-            "func apply(settings: Data, id: String, reply: @escaping @Sendable (Error?) -> Void)",
-            "func snapshot(reply: @escaping @Sendable (Data?, Error?) -> Void)",
-        ]
-
-        #expect(Self.fingerprint(ofFixture: compact) == expected)
-        #expect(Self.fingerprint(ofFixture: reformatted) == expected)
-    }
-
-    private static func fingerprint(ofFixture source: String) -> Set<String> {
-        guard let body = XPCDeclarationNormaliser.protocolBody(named: "Fixture", in: source)
-        else { return [] }
-        return Set(XPCDeclarationNormaliser.normalisedDeclarations(inProtocolBody: body))
     }
 }
