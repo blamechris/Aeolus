@@ -84,8 +84,16 @@ retry budget genuinely required, and whether the reported ~3 s figure holds unde
 Reported: sleep/wake resets `Ftst` in firmware and the system reclaims the fans, so manual
 control silently stops working after the lid closes unless the unlock sequence is re-run.
 
-**To verify (E4):** whether reclamation is detectable promptly by comparing actual against
-target RPM, and how quickly re-assertion can happen after wake without racing the system.
+**To verify (E4):** how quickly re-assertion can happen after wake without racing the system —
+and whether reclamation is detectable promptly at all, which is a narrower question than it was
+when this line was written. **Do not take the actual-against-target comparison this line
+originally proposed as the method.** It is the signal [SAFETY.md](SAFETY.md) § 5 demoted to
+report-only in [#119](https://github.com/blamechris/Aeolus/issues/119), and the post-wake window
+is the worst place to use it: the fans read a true 0 RPM for tens of seconds after every wake, so
+any commanded target is a 100 % shortfall there and the comparison reports a reclamation that did
+not happen. § 5's primary signal — the target written against the target the SMC reads back —
+does not depend on fan dynamics and is what an E4 detection method should be built on. See the
+paragraphs below and [#212](https://github.com/blamechris/Aeolus/issues/212).
 
 **Still reported, and the 2026-09-05 lid close did not retire it.** That capture (see
 "Sleep/wake and the read connection — observed", below) was expected to settle two questions at

@@ -105,6 +105,25 @@ enum ReclamationLimits {
     /// that happens: since the shortfall path no longer reaches the terminal action, a line
     /// saying a fan is below its commanded speed during a long ramp is accurate rather than
     /// harmful. It was not acceptable when that path restored the fan and revoked the lease.
+    ///
+    /// ## The post-wake case, measured
+    ///
+    /// **A fan at rest reads exactly 0**, so any commanded target is a 100 % shortfall and this
+    /// dwell is crossed with nothing wrong. On `Mac16,5` — read-only capture, 2026-09-05, see
+    /// `docs/SMC-RESEARCH.md` — `F0Ac` and `F1Ac` read a true 0 for the whole of every dark wake
+    /// and for **38 s after the user reopened the lid**, then took about **4 s** to spin up, the
+    /// first non-zero sample being 109.13 RPM. So the false window is 38 s plus a spin-up on a
+    /// full wake, and is bounded at roughly four seconds once the fan is turning.
+    ///
+    /// Anyone tuning this number should know that case exists rather than rediscover it, and
+    /// should read the emitted line as the fan **having not reached** its target rather than
+    /// being unable to: "cannot" is a hardware diagnosis, and a fan that has not started yet is
+    /// not one.
+    ///
+    /// **This is a read-only observation of Apple's own controller, not a step response.** No
+    /// write selector was issued at any point in that capture and this build has no write path,
+    /// so nothing here may be quoted as Aeolus commanding a fan — and nothing here re-tunes this
+    /// constant or any other. `docs/SAFETY.md` § 5 carries the same numbers.
     static let actualDwellCycles = 5
 
     /// How many times § 5 will try to take a fan back before falling back to restore.
