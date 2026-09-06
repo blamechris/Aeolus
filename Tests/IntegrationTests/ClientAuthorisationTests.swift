@@ -269,12 +269,61 @@ struct ClientAuthorisationBuilderTests {
         #expect(!refusal.description.isEmpty)
         #expect(!refusal.description.contains("ClientAuthorisationRefusal"))
     }
+
+    /// #87 item 3's failure scenario is the fault-log line, not the doc comment: the case
+    /// fires both for a probe that could not be opened *and* for one that opened and could
+    /// not be evaluated — a damaged signature, `errSecCSSignatureFailed`. A line saying the
+    /// control "could not run" sends the operator to check that `/bin/ls` exists, they find
+    /// that it does, and they conclude the daemon is lying. The wording has to be neutral
+    /// about which half happened, so it is pinned here rather than left to a comment nobody
+    /// reading a log will see.
+    @Test("The inconclusive refusal does not tell the operator the probe never ran")
+    func negativeControlUnavailableDescribesNoVerdict() {
+        let refusal = ClientAuthorisationRefusal.negativeControlUnavailable(
+            errSecCSSignatureFailed
+        )
+        #expect(
+            refusal.description
+                == "the startup negative control reached no verdict "
+                + "(OSStatus \(errSecCSSignatureFailed))"
+        )
+        #expect(!refusal.description.contains("could not run"))
+    }
 }
 
 /// The one suite that touches the real world: this process's own signature, and the
 /// entitlement clause evaluated against binaries that really do and really do not carry it.
 @Suite("Client authorisation — the real host")
 struct ClientAuthorisationHostTests {
+
+    /// Reading our own signature must *succeed*, whatever it turns out to say.
+    ///
+    /// The one deterministic thing about this host: a Mach-O the kernel agreed to execute is
+    /// at minimum linker-signed, on CI and on the maintainer's machine alike, so
+    /// `SecCodeCopySelf` → `SecCodeCopyStaticCode` → `SecCodeCopySigningInformation` can
+    /// always complete. *Whether* the signature carries a Team ID is host-dependent and is
+    /// deliberately not asserted here — `productionEntryPointMatchesTheHost` handles that by
+    /// agreeing with whatever the host is. Whether it can be **read** is not host-dependent,
+    /// and until #87 nothing said so: the whole suite stayed green with the static-code step
+    /// forced to fail, because every assertion about `inspect()` was written to tolerate any
+    /// answer it gave.
+    ///
+    /// The refusal that failure produces is fail-closed, so this is not a safety hole — it is
+    /// a helper that would refuse every client for a reason nobody could distinguish from a
+    /// genuine one, with no test between that state and a release.
+    @Test("Reading this process's own code signature succeeds on any host that can run tests")
+    func selfInspectionSucceedsOnTheHost() {
+        let inspection = HelperSigningIdentity.inspect()
+        if case .inspectionFailed(let status) = inspection {
+            Issue.record(
+                """
+                Reading our own signature failed with OSStatus \(status). Any binary this \
+                runner can execute is at least linker-signed, so this is a defect in \
+                HelperSigningIdentity.inspect(), not a property of the host.
+                """
+            )
+        }
+    }
 
     /// `swift test` binaries are ad-hoc signed and carry no Team ID, on CI and on the
     /// maintainer's machine alike — so the production entry point refuses here, which is
