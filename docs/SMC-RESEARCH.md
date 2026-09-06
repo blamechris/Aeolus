@@ -26,9 +26,9 @@ The machine available to this project:
 |---|---|---|---|
 | `Mac16,5` | Apple M4 Max (12P/4E, 64 GB) | 26.6.2 (25G83) | Sole development machine |
 
-The machine ran 26.5.2 (25F84) for the 2026-07-25 session and 26.6.2 (25G83) for the
-2026-08-20 one. Each observation below is scoped to the build it was taken on, and says so;
-this row is the machine as it stands now.
+The machine ran 26.5.2 (25F84) for the 2026-07-25 session, and 26.6.2 (25G83) for the
+2026-08-20 one and for the 2026-09-05 lid-close capture. Each observation below is scoped to
+the build it was taken on, and says so; this row is the machine as it stands now.
 
 That is one Mac, from the M3-and-newer generation. It means:
 
@@ -86,6 +86,25 @@ control silently stops working after the lid closes unless the unlock sequence i
 
 **To verify (E4):** whether reclamation is detectable promptly by comparing actual against
 target RPM, and how quickly re-assertion can happen after wake without racing the system.
+
+**Still reported, and the 2026-09-05 lid close did not retire it.** That capture (see
+"Sleep/wake and the read connection — observed", below) was expected to settle two questions at
+once. It settled one: the read connection survives, outcome 1. It could not touch this one.
+`Ftst` read `0x00` both before the lid closed (20:13Z) and after the wake (23:58Z) — because
+**nothing had ever set it**. A firmware reset of a bit that was never set is unobservable, so
+this section stays *To verify (E4)*, unchanged, and no future reader should take a lid-close
+experiment as having covered it.
+
+Two things that capture *does* contribute here. First, "every wake from sleep" is a heavier
+requirement than it sounds: one lid close produced **seven** wakes on this machine, six of them
+dark wakes with no user present, so an E4 unlock re-establishment designed around "once per wake,
+user present" is designed against the wrong shape. Second, the verification method proposed above
+— comparing actual against target RPM — is precisely the signal
+[SAFETY.md](SAFETY.md) § 5 demoted to report-only in
+[#119](https://github.com/blamechris/Aeolus/issues/119), and the post-wake window is where it is
+worst: the fans read a true 0 RPM for tens of seconds after every wake, so any commanded target is
+a 100% shortfall there. See
+[#212](https://github.com/blamechris/Aeolus/issues/212).
 
 ### Sensors outside the SMC
 
@@ -224,6 +243,28 @@ this idle machine. Actual fan speed is not bounded by the declared minimum. Any 
 assumes `actual >= min` — a gauge, a health check, a "fan stopped" heuristic — is wrong on
 this hardware. Clamping applies to *targets* written by Aeolus, never to values *read* from
 the SMC; observed reality does not have to respect the bound the firmware itself declares.
+
+**Updated 2026-09-05: the gap is not 0.5%, it is the entire range.** The lid-close capture
+below measured `F0Ac` and `F1Ac` at **exactly 0.0 on 2,904 of 10,570 ticks** — 2,429 of them a
+single unbroken 42-minute dark wake — while `F0Mn`/`F1Mn` in those very same replies
+read **1350** and `F0Mx`/`F1Mx` read **5777**, identical to every live tick. Across the entire
+10,570-row capture there is exactly one distinct `(F0Mn, F0Mx, F1Mn, F1Mx)` tuple. So the
+disagreement is not a rounding-scale miss on an idle machine: a healthy fan legitimately reads
+**zero against a declared minimum of 1350**, for 42 minutes, with no read error anywhere. Any
+`actual >= minimum` assumption is wrong by the full declared range, not by 0.5%.
+
+Two corollaries worth stating in full, because both are easy to get backwards:
+
+- **The 100 RPM floor in [SAFETY.md](SAFETY.md) § 2 governs targets, not observations.**
+  `FanSafetyLimits.minimumManualRPM` is the compiled floor under what Aeolus may *command*. It is
+  not, and must never be reused as, a threshold for classifying a *reading* — "below 100 RPM means
+  stopped" would misclassify the 109.13 RPM this machine reads while genuinely spinning up from
+  rest, and would call a healthy fan at rest a fault.
+- **A fan reading 0 says nothing about what the firmware declares.** These are different facts and
+  this hardware decouples them: it reads 0 while declaring 1350. `SAFETY.md` § 2's rationale for
+  the compiled floor currently infers the second from the first via `RECOVERY.md`; the conclusion
+  survives, the inference is not what this machine shows
+  ([#212](https://github.com/blamechris/Aeolus/issues/212)).
 
 ### `ioft` decodes as little-endian 48.16 fixed point — derived by this project, not sourced
 
@@ -737,69 +778,274 @@ draft of this document did, and it would have led an implementer to make `ui16`/
 unconditionally little-endian — which decodes `#KEY` as 957,153,280 instead of 3385 and
 breaks key enumeration outright.
 
-### Sleep/wake and the read connection — open question, not exercised (issue #68)
+### Sleep/wake and the read connection — observed, one lid close, read path only (issue #68)
 
-> **Tracked as [#68](https://github.com/blamechris/Aeolus/issues/68)**, which is open and carries
-> `needs-hardware`. It also collects two other unknowns that the same single lid-close would retire:
-> "Sleep resets the force key" above (marked *To verify (E4)*), and `SMCConnection.close()`'s own note
-> that staleness after a wake is "unverified either way". If you are reading this because something
-> broke after a wake, start there.
+> **[#68](https://github.com/blamechris/Aeolus/issues/68) asked which of three outcomes happens.
+> The first one did.** The `io_connect_t` survived; reads resumed on the same handle at every
+> wake, with no error and no hang. What this section does *not* retire is set out under "The claim
+> boundary" below — in particular the `Ftst` half of the same question ("Sleep resets the force
+> key", above) is untouched, because nothing had set `Ftst` for a wake to reset.
 
-`SMCSensorProvider` opens exactly one `SMCConnection` and holds it for the lifetime of the
-process. `SMCConnection.open()` is idempotent purely on whether `connection != 0` — once it
-has succeeded, every later call is a guaranteed no-op, regardless of whether the underlying
-`io_connect_t` the kernel handed back is still valid. There is no reconnect path anywhere in
-this project, and nothing observes sleep or wake at all (`AeolusHelperMain.swift` names
-`IORegisterForSystemPower` as future E5 scaffolding, not something implemented yet). Whether
-an `io_connect_t` obtained from `IOServiceOpen` against the `AppleSMC` service survives a
-sleep/wake cycle is exactly the fact this session was asked to establish, and it was **not**
-established here.
+**Date:** 2026-09-05 20:18Z → 2026-09-06 00:00Z. **Machine:** `Mac16,5`, Apple M4 Max, macOS
+26.6.2 (25G83), on AC power for the whole capture. **Method:** one process —
+`fanctl watch --json --interval 1`, built from `main` at `c8fb218`, PID 70883 — started
+20:18:47Z, lid closed at 22:27Z, lid reopened at 23:56Z, stopped by `SIGTERM` at
+2026-09-06T00:00:55Z. 10,570 ticks. Every NDJSON line carries a wall-clock UTC second stamped by
+the shell `while read` loop draining the pipe; `capturedAt` inside the JSON is the process's own
+clock. Sleep/wake ground truth is `pmset -g log` (local time, UTC−7). **No write selector was
+issued at any point**, and the tree has no write path at all (`WritePathAbsenceTests`, green).
 
-**Why not:** the only way to observe this honestly is to start `fanctl watch`, physically
-close the lid, wake the machine, and read what happened — a lid-close is a physical action
-this session has no way to perform. The one available proxy, forcing a whole-machine sleep
-with `pmset sleepnow`, was deliberately not attempted instead of being used as a stand-in:
-this development machine may be running other work concurrently in sibling worktrees at the
-time of any given session, and a forced system-wide suspend would interrupt all of it to
-produce a result that is not even confidently the same code path a lid-close exercises
-(`pmset sleepnow` and the lid switch both trigger system sleep, but this project has no
-observation confirming they are indistinguishable to `AppleSMC`'s IOKit connection
-specifically). Guessing the answer and coding to it would be worse than leaving it open:
-CLAUDE.md's rule against fabricating an observation applies exactly as much to a plausible
-substitute as to an invented one.
+The two captures are kept in the maintainer's private vault rather than in the repository — 5.4 MB
+of NDJSON is a capture, not source:
 
-**What to actually do:** run `fanctl watch` in a terminal, close the lid, wait, wake it, and
-record which of these happens, verbatim:
+- `~/Obsidian/no-it-all/handoffs/Aeolus-68-lid-close-watch-2026-09-05.ndjson`
+- `~/Obsidian/no-it-all/handoffs/Aeolus-68-pmset-sleepwake-2026-09-05.log`
 
-- Reads continue normally with no interruption — the connection (or at least its
-  behaviour) survives sleep/wake on this machine, this macOS build.
-- A read fails outright with a specific `kern_return_t` — record it. If that failure
-  reaches `readFanCount` (an `FNum` read), `WatchCommand` exits with
-  `FanctlError.connectionFailed`, a clear message, non-zero status — an honest failure, not
-  a silent one. If it only ever hits a per-fan key (`F0Ac`/`Mn`/`Mx`), every tick renders
-  that fan `unavailable (...)` forever, because nothing currently re-opens or invalidates
-  the connection on its own — this is the "silently unavailable forever" outcome the issue
-  calls out as the one wrong answer, and it would already be happening today, just not
-  proven to.
-- Reads hang rather than failing — a third outcome worth recording explicitly, since it
-  changes the fix: a bounded timeout would be needed before a reconnect attempt could even
-  be tried.
+**Provenance here is a source check, not a binary check.** `.build/debug/fanctl` no longer exists
+and cannot be re-inspected. What can be checked is that
+`git diff c8fb218 48136ec -- Sources/fanctl Sources/SMCCore` is **empty**: the read path at the
+commit this section was written against is byte-identical to the one the binary was built from.
 
-Once one of those is confirmed, the actual decision — reconnect transparently inside
-`SMCSensorProvider`/`SMCConnection`, or fail loudly with a message that tells the user to
-restart `fanctl watch` — can be made from evidence instead of a guess. No such change is
-made in this PR.
+#### One lid close produced seven sleeps and seven wakes
 
-**This bears far more on `AeolusHelper` than on `fanctl`.** A `watch` session is one process
-a user restarts if it exits; the helper holds its own `SMCConnection` indefinitely, across
-every sleep/wake cycle a laptop goes through for as long as it is running, and serves every
-client (the app, `fanctl`, the control loop, the safety supervisor) from that one connection.
-If it does not survive sleep/wake, the helper needs its own answer to this question — most
-likely a reconnect, given how central continuous operation is to what it does — before E5's
-safety supervisor can be trusted to keep reading actual fan state correctly across a laptop's
-entire uptime. That is out of this issue's and this document's scope (`AeolusHelper` is not
-touched here), but it is the reason this question is worth closing rather than leaving
-indefinitely open once real hardware access to actually close a lid is available.
+This is the first surprise, and it is not about the connection at all. Closing the lid once at
+22:27Z produced **one clamshell sleep and six maintenance sleeps**, and **six dark wakes plus one
+full wake**, inside a 1 h 29 min lid-closed window. Local times are the `pmset -g log` entries
+verbatim; UTC is those plus seven hours.
+
+| `pmset` local | UTC | Event | `pmset` duration | Log gap |
+|---|---|---|---|---|
+| 15:27:32 | 22:27:32 | Sleep — `'Clamshell Sleep'`, AC, charge 27% | 31 secs | — |
+| 15:28:03 | 22:28:03 | DarkWake from Deep Idle — `wifibt` | 44 secs | 30 s |
+| 15:28:47 | 22:28:47 | Sleep — `'Maintenance Sleep'` | 900 secs | — |
+| 15:43:47 | 22:43:47 | DarkWake from Deep Idle — `rtc/Maintenance` | 45 secs | 899 s |
+| 15:44:32 | 22:44:32 | Sleep — `'Maintenance Sleep'`, charge 59% | 900 secs | — |
+| 15:59:32 | 22:59:32 | DarkWake from Deep Idle — `rtc/Maintenance` | *(no duration field)* | 899 s |
+| 16:41:26 | 23:41:26 | Sleep — `'Maintenance Sleep'`, charge 100% | 64 secs | — |
+| 16:42:30 | 23:42:30 | DarkWake from Deep Idle | 291 secs | 63 s |
+| 16:47:21 | 23:47:21 | Sleep — `'Maintenance Sleep'` | 9 secs | — |
+| 16:47:30 | 23:47:30 | DarkWake from Deep Idle | 45 secs | 8 s |
+| 16:48:15 | 23:48:15 | Sleep — `'Maintenance Sleep'` | 255 secs | — |
+| 16:52:30 | 23:52:30 | DarkWake from Deep Idle | 45 secs | 254 s |
+| 16:53:15 | 23:53:15 | Sleep — `'Maintenance Sleep'` | 211 secs | — |
+| 16:56:46 | 23:56:46 | **Wake** from Deep Idle — `lid … /UserActivity` | — | 210 s |
+
+The 22:59:32 → 23:41:26 dark wake carries no duration field on its own line (it is terminated by
+the next `Sleep` entry rather than by its own timer), so its **~42 min** is derived from the two
+timestamps — 41 min 54 s — not read off `pmset`. The machine charged 59% → 100% during it.
+
+Every sleep here is **Deep Idle on AC power**, the longest 899 s. No hibernate or standby cycle was
+exercised, and nothing below generalises to one.
+
+#### The gaps line up with the wakes to the second
+
+A 1 Hz loop that emits nothing for 899 s has made no progress: the application processor was
+genuinely suspended, not merely idle or dark. Exactly **seven** gaps larger than 3 s appear in the
+10,570-line log — 30, 899, 899, 63, 8, 254, 210 s — and at all seven:
+
+- the last tick before the gap is exactly **one second after** the `pmset` `Sleep` entry, and
+- the first tick after the gap is stamped at exactly the **`pmset` wake second**, with `capturedAt`
+  equal to that wall-clock stamp.
+
+The remaining 404 gaps in the file are single-tick ~2 s drops scattered evenly across the whole
+capture, awake stretches included — a scheduling artifact of the capture pipeline, not a sleep
+signature. (A related artifact: 65 of the 10,570 rows have `capturedAt` exactly 1 s behind the
+shell stamp, all of them outside the seven sleep clusters. Unexplained, and it changes nothing
+here.)
+
+#### Outcome 1: reads resumed on the same handle, every time
+
+Of the three outcomes this section previously asked to be recorded verbatim — reads continue
+normally, a read fails with a specific `kern_return_t`, or reads hang — **the first occurred, and
+neither of the others occurred once.**
+
+- **Zero errors.** Across 10,570 ticks × 6 per-key outcomes = **63,420** `error` fields, every one
+  is `null`. `FNum` read `2` on all 10,570 ticks. `"error": null` is reachable only from a
+  `.success`, which requires `kIOReturnSuccess`, an 80-byte reply, a zero status byte, a payload
+  matching the declared `dataSize`, and a finite decode — see `SMCConnection.call(...)` and
+  `SMCFanEnumeration.checked(_:in:)`. A `kern_return_t` failure cannot render as
+  `value: 0.0, error: null`; it renders as `value: null, error: "…"`, because `KeyedValue`'s two
+  fields are built from the outcome and encoded with `encode`, not `encodeIfPresent`
+  (`Sources/fanctl/ListCommand.swift:38-49`, `:94-101`, `:125-130`).
+- **No hang.** `IOConnectCallStructMethod` is synchronous and untimed, so a wedge would simply have
+  stopped the log. Output was continuous to `SIGTERM`.
+- **No exit.** `WatchCommand.run` rethrows anything `fetch` throws
+  (`Sources/fanctl/WatchCommand.swift:66`), and a dead handle would have surfaced first at the
+  `FNum` read and ended the process with `FanctlError.connectionFailed`. It did not.
+
+**There is no reconnect path in this binary, so the original handle is the only thing that could
+have served those reads.** `Sources/fanctl/WatchCommand.swift:180` constructs exactly one
+`SMCSensorProvider()`; the loop at `:65-66` calls `ListCommand.fetch(provider:)` on that same value
+forever. `SMCSensorProvider` holds `let connection: SMCConnection`, and `SMCConnection` is an
+`actor` — a reference — so even a struct copy shares one handle. `SMCSensorProvider.read(keys:)`
+does call `try await connection.open()` on every tick (`Sources/SMCCore/SensorProvider.swift:258`),
+but `open()` is `guard connection == 0 else { return }` (`SMCConnection.swift:145`): after the
+first success it never re-runs `IOServiceGetMatchingService` or `IOServiceOpen`. The only writer of
+`connection = 0` is `close()`, and no `close()` or `invalidate()` call exists anywhere in
+`Sources/fanctl` or `Sources/SMCCore`. Nothing in either target registers for power notifications.
+PR #198's reconnect-and-health work landed only under `Sources/AeolusHelper/` and was **not**
+exercised by this capture.
+
+One thing that must not be mistaken for a reconnect: `SMCFanEnumeration.enumerate` calls
+`provider.isAvailable` on every tick, which is a fresh `IOServiceGetMatchingService` +
+`IOObjectRelease` (`SMCConnection.isHardwareAvailable()`). It never calls `IOServiceOpen` and never
+touches `connection`. What it does add is that the `AppleSMC` service was matchable on all 10,570
+ticks.
+
+**Nor were the readings cached.** Only metadata is cached here (see the note above `keyInfoCache`);
+`read(_:)` unconditionally issues `READ_BYTES` for any key with `dataSize > 0`. `knownKeys` is
+`nil` in this process, because `markDiscoveryComplete` is called only from `readAll()`, which
+`watch` never calls — so no key was short-circuited. The warm cost is **7
+`IOConnectCallStructMethod` round trips per tick** — `FNum` plus six fan keys — i.e. roughly
+**74,000 round trips** over the capture, not "10,570 reads". `F0Ac` took **6,659 distinct values**
+across those ticks.
+
+A second, quieter result: every fan key's `dataType`/`dataSize` was already warm before the first
+sleep, and every read after the seven transitions still decoded correctly, so the metadata cache
+survived them here too. That is weaker than it sounds — nothing re-fetched the metadata to compare,
+so a stale-but-still-correct cache and a genuinely stable one are indistinguishable in this data.
+
+#### The claim boundary
+
+What is established is narrow, and the narrowness is the point.
+
+- **Established:** on `Mac16,5` / macOS 26.6.2, a read-only `io_connect_t` against `AppleSMC`
+  remained usable across seven Deep Idle sleep/wake transitions inside a 1 h 29 min lid-closed
+  window and 3 h 42 min of process uptime, and the first read *issued after* each wake completed
+  successfully, within the same wall-clock second as the `pmset` wake line. The claim survives even
+  counting only the one full `Wake … lid … UserActivity`, which followed a genuine 211 s
+  suspension: n = 1 for a user-visible wake, n = 7 counting dark wakes.
+- **Not established — a read in flight across a suspension.** Nothing here shows a read was ever
+  *pending* when the machine slept, and an earlier draft of this finding claimed otherwise. Both
+  timestamps are stamped after the read: `ListCommand.fetch` takes `now` as an `@autoclosure` and
+  evaluates it at `ListCommand.swift:86`, after enumeration returns, and the shell's prefix is
+  stamped after the line is printed. The loop spends ~1.00 s of each ~1.04 s cycle in `Task.sleep`
+  (`WatchCommand.swift:74`), so the overwhelmingly likely state at each suspension is *between*
+  reads, and 1 s timestamp resolution could not distinguish the two cases either way. A re-run that
+  wants this answer needs a per-tick monotonic delta printed alongside `capturedAt`.
+- **Not established — anything about the write path.** This handle carried no write authority. The
+  helper's handle does, the helper's reconnect-and-health path (PR #198) was not exercised here,
+  and nothing in this observation licenses removing or weakening it.
+- **Not established — hibernate or standby**, a sleep longer than 899 s, battery power, a second
+  process holding its own `AppleSMC` connection concurrently, or the "`ContinuousClock` advances
+  across sleep" assumption in [ADR 0007](ADR/0007-safety-composition.md), which this capture did
+  not sample at all.
+- **Not established — that a full-length, status-0 reply is necessarily a fresh measurement.**
+  `call()` guards the reply length and the status byte; a driver-level stale success would be
+  indistinguishable from a live read. This does not threaten the connection result — the ioctl
+  still succeeded on the handle — but it is the residual threat to the fan-stop finding below.
+- **Not established — anything about Intel, M1, or M2 Macs, other macOS builds, or any other
+  machine.** One machine, one session, not repeated.
+  [HARDWARE-MATRIX.md](HARDWARE-MATRIX.md) is unchanged by this and still says `untested`
+  everywhere it said `untested` before.
+
+#### The fans stop in sleep and dark wake, and read a true 0 RPM for ~38 s after the lid opens
+
+Nobody asked for this and it is the more consequential half. **2,904 of the 10,570 ticks read
+`F0Ac = F1Ac = 0.0`** — and the set of ticks where fan 0 reads zero is *identical* to the set where
+fan 1 does. There is not one tick in the file where only one fan reads zero.
+
+Segmented by the `pmset` wakes, the zero readings form seven runs, each beginning at the exact
+second of a wake:
+
+| Zero run (UTC) | Ticks | Begins at | Note |
+|---|---|---|---|
+| 22:28:03 – 22:28:19 | 17 | DarkWake `wifibt` | 17 s, then spin-up |
+| 22:43:47 – 22:44:33 | 46 | DarkWake `rtc` | the whole 45 s dark wake |
+| 22:59:32 – 23:41:27 | 2,429 | DarkWake `rtc` | the whole ~42 min dark wake, charging 59% → 100% |
+| 23:42:30 – 23:47:22 | 284 | DarkWake | the whole 291 s dark wake |
+| 23:47:30 – 23:48:16 | 45 | DarkWake | the whole 45 s dark wake |
+| 23:52:30 – 23:53:16 | 46 | DarkWake | the whole 45 s dark wake |
+| 23:56:46 – 23:57:23 | 37 | **full Wake, lid** | 38 s at 0 RPM after the user opened the lid |
+
+That segmentation is the `pmset` view, not a raw property of the log: in the NDJSON itself the zero
+ticks form only **two** contiguous runs of rows — 17 ticks, then 2,887 ticks from 22:43:47 to
+23:57:23 — because the sleep gaps contain no ticks at all to separate the runs. Both readings of
+the same 2,904 ticks are true; the seven-run table is the one that carries meaning, and it is
+derived rather than observed. The tick counts fall 0/1/87/9/2/1/1 short of each run's inclusive
+span, in proportion to the same ~2–4% single-tick drop rate seen throughout the awake portion.
+
+**The zero is specific to `F<n>Ac`, and the read did not fail wholesale.** On every one of the
+2,904 zero ticks, `F0Mn`/`F1Mn` read **1350** and `F0Mx`/`F1Mx` read **5777** — identical to every
+live tick. Across the entire 10,570-row file there is exactly one distinct
+`(F0Mn, F0Mx, F1Mn, F1Mx)` tuple ever observed. So this is not a zeroed struct, not a defaulted
+buffer, and not a failed call: the minimum and maximum keys kept returning their true constants
+through the same replies on the same handle while the actual-RPM key alone read 0.
+
+**The spin-up is a real ramp, and it replicated.** There is no reading anywhere in the file
+strictly between 0 and 50 RPM on either fan — every value is exactly 0.0 or in the hundreds and
+above, which is what a tachometer counting no pulses in its sampling window looks like. At the two
+wakes where the fans came back, the first non-zero tick is ~109–110 RPM and the climb takes about
+four seconds, overshooting the idle band before settling:
+
+| | UTC | `F0Ac` | `F1Ac` | | UTC | `F0Ac` | `F1Ac` |
+|---|---|---|---|---|---|---|---|
+| last zero | 23:57:23 | 0 | 0 | | 22:28:19 | 0 | 0 |
+| +1 s | 23:57:24 | **109.13** | **109.75** | | 22:28:20 | **109.64** | **110.13** |
+| +2 s | 23:57:25 | 401.20 | 428.44 | | 22:28:21 | 499.07 | 501.43 |
+| +3 s | 23:57:26 | 933.53 | 954.09 | | 22:28:22 | 953.71 | 974.08 |
+| +4 s | 23:57:27 | **1635.56** | **1657.36** | | 22:28:23 | **1660.31** | **1682.13** |
+| +5 s | 23:57:28 | 1519.71 | 1611.08 | | 22:28:24 | 1504.40 | 1609.79 |
+| +6 s | 23:57:29 | 1332.81 | 1490.47 | | 22:28:25 | 1356.55 | 1487.87 |
+
+That is roughly **410 RPM/s from rest** — about twice the 200 RPM/s cap `FanKit`'s `RampGovernor`
+compiles in — with a **~21% overshoot** above the ~1350/1460 idle before it damps back. **This is
+Apple's own controller, not a step response to a write.** No write was issued, so it must never be
+quoted as one; `ReclamationLimits`' statement that no step response has ever been observed on this
+hardware remains true. It does mean that a control loop seeding a ramp from the *measured* speed
+rather than from the last commanded target would start from 0 after a wake and spend 6.75 s at the
+cap climbing to a speed the fan reaches on its own in about a second. `RampGovernor.step(from:)`
+governs from the last commanded target, which this makes demonstrably the right choice.
+
+**What is not known: whether anything targeted 0.** `F<n>Tg` was **not logged by this watch run** —
+`SMCFanEnumeration` deliberately reads only `FNum`, `F<n>Ac`, `F<n>Mn`, and `F<n>Mx`. The only
+target reading in evidence is a separate `fanctl dump --key` at 2026-09-06T00:00:03Z, minutes after
+the fans had already spun back up, where `F0Tg`/`F1Tg` read 1350/1458 (raw `00c0a844` /
+`0040b644`), alongside a `fanctl list` reading 1343/1460 RPM actual. Those two figures come from the
+observer's own note and are **not** in the NDJSON; the watch's nearest tick reads
+`F0Ac = 1342.47`, `F1Ac = 1453.38`, which corroborates without being the same sample. **Whether the
+thermal manager drove `F<n>Tg` to 0 during the dark wakes, or left it at the idle value while the
+motor was gated off downstream of it, is unknown**, and is the obvious thing to log on a re-run
+([#58](https://github.com/blamechris/Aeolus/issues/58)).
+
+**And a boundary on "physically stopped".** SMC reads alone cannot, in strict logic, separate a
+rotor genuinely at rest from firmware substituting a canonical 0 for `F<n>Ac` in this power state.
+No audio, external tachometer, or camera corroboration exists. What makes the substitution
+explanation unparsimonious rather than disproven: the four-second ramp with overshoot, replicated
+independently at two wakes with a first non-zero reading of ~109 RPM both times; the complete
+absence of any value between 0 and 50; and `F<n>Mn`/`F<n>Mx` continuing to read their true
+constants in the same replies. The honest form of the claim is that the fans **read a true 0 RPM
+and behave in every respect like fans starting from rest** — not that a rotor was measured to be
+still.
+
+**Three consequences worth carrying out of this section**, all recorded here rather than acted on:
+
+- A fan at rest reads exactly 0, so *any* commanded target is a 100% shortfall for tens of seconds
+  after a wake. [SAFETY.md](SAFETY.md) §5's actual-versus-target check is report-only since
+  [#119](https://github.com/blamechris/Aeolus/issues/119) and cannot reach a terminal action —
+  which this observation retroactively supports with hardware evidence rather than the thin warm-up
+  coupling §5 currently cites. The log line it does emit would nonetheless call a healthy fan "not
+  reaching" its target. Tracked in
+  [#212](https://github.com/blamechris/Aeolus/issues/212).
+- The `pmset` shape — seven wakes per lid close, several under a minute, fans at rest at every one
+  — is what any client policy about re-acquiring a lease on wake has to be designed against
+  ([#211](https://github.com/blamechris/Aeolus/issues/211)), and what §4's per-cycle handback cost
+  has to be measured against ([#209](https://github.com/blamechris/Aeolus/issues/209)).
+- The capture sampled seven fan keys and **no temperature keys**, while the lease gate and §3 both
+  depend on the critical sensors reading truthfully — including through a 42-minute dark wake with
+  real dissipation and no airflow. Proving a read *succeeded* is not proving it is *plausible*
+  ([#210](https://github.com/blamechris/Aeolus/issues/210)).
+
+#### Still worth carrying from the version of this section that asked the question
+
+The reason this mattered was never `fanctl watch`, which a user restarts if it exits. It is
+`AeolusHelper`, which holds its own `SMCConnection` indefinitely across every sleep/wake cycle a
+laptop goes through, and serves the app, `fanctl`, the control loop, and the safety supervisor from
+that one connection. This result is encouraging for that case and does not settle it: the helper's
+handle carries write authority, the helper is a root daemon receiving the
+`IORegisterForSystemPower` notifications this capture did not involve, and PR #198's
+reconnect-and-health path exists for failures this run never produced. Read it as "the fault this
+was afraid of has zero observed instances on one machine", not as "the reconnect can go".
 
 ---
 
