@@ -10,6 +10,10 @@ import SwiftUI
 struct MenuBarContentView: View {
     @ObservedObject var viewModel: MenuBarViewModel
 
+    /// `Preferences.temperatureUnit`. Defaults to `.celsius`, preserving this view's
+    /// existing rendering for every call site that does not pass one explicitly.
+    var temperatureUnit: TemperatureUnit = .celsius
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if viewModel.isThermalEmergencyActive {
@@ -21,7 +25,7 @@ struct MenuBarContentView: View {
                 emptyReadoutsView
             } else {
                 ForEach(viewModel.readouts) { readout in
-                    MenuBarReadoutRow(readout: readout)
+                    MenuBarReadoutRow(readout: readout, temperatureUnit: temperatureUnit)
                 }
             }
 
@@ -99,6 +103,7 @@ struct MenuBarContentView: View {
 /// rule that a friendly label never stands in for the key it came from.
 private struct MenuBarReadoutRow: View {
     let readout: ResolvedMenuBarReadout
+    var temperatureUnit: TemperatureUnit = .celsius
 
     var body: some View {
         HStack(spacing: 8) {
@@ -121,8 +126,21 @@ private struct MenuBarReadoutRow: View {
                     .help("System reclaimed control of this fan")
             }
 
-            Text(ReadingFormatting.text(for: readout.reading, unit: readout.unit))
+            Text(displayText)
                 .fontDesign(.monospaced)
         }
+    }
+
+    /// Converts `readout.reading` for `temperatureUnit` before formatting — the same
+    /// `TemperatureDisplay` seam `SensorRowModel` uses for the main window, so a
+    /// temperature reading never shows two different converted values depending on which
+    /// view rendered it.
+    private var displayText: String {
+        let displayReading = TemperatureDisplay.convert(
+            readout.reading, kind: readout.kind, to: temperatureUnit)
+        let unit =
+            TemperatureDisplay.unit(for: readout.kind, temperatureUnit: temperatureUnit)
+            ?? readout.unit
+        return ReadingFormatting.text(for: displayReading, unit: unit)
     }
 }

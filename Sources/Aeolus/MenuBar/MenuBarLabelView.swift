@@ -12,6 +12,10 @@ import SwiftUI
 struct MenuBarLabelView: View {
     @ObservedObject var viewModel: MenuBarViewModel
 
+    /// `Preferences.temperatureUnit`. Defaults to `.celsius`, preserving this view's
+    /// existing rendering for every call site that does not pass one explicitly.
+    var temperatureUnit: TemperatureUnit = .celsius
+
     var body: some View {
         Label(labelText, systemImage: iconName)
             .labelStyle(.titleAndIcon)
@@ -38,7 +42,14 @@ struct MenuBarLabelView: View {
         }
         return
             viewModel.readouts
-            .map { ReadingFormatting.text(for: $0.reading, unit: $0.unit) }
+            .map { readout in
+                let displayReading = TemperatureDisplay.convert(
+                    readout.reading, kind: readout.kind, to: temperatureUnit)
+                let unit =
+                    TemperatureDisplay.unit(for: readout.kind, temperatureUnit: temperatureUnit)
+                    ?? readout.unit
+                return ReadingFormatting.text(for: displayReading, unit: unit)
+            }
             .joined(separator: "  ")
     }
 

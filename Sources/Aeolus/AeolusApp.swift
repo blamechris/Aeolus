@@ -17,13 +17,32 @@ import SwiftUI
 ///   type is compiled as a plain library under `swift build` so CI type-checks the views
 ///   without needing an app bundle.
 public struct AeolusApp: App {
-    @StateObject private var menuBarViewModel = MenuBarViewModel()
+    @StateObject private var preferencesController: PreferencesController
+    @StateObject private var launchAtLoginController: LaunchAtLoginController
+    @StateObject private var menuBarViewModel: MenuBarViewModel
 
-    public init() {}
+    public init() {
+        // `preferencesController` must exist before the other two `StateObject`s: both
+        // read its already-loaded `Preferences` value once, at construction, to seed the
+        // refresh interval and menu bar selection this build starts with — see
+        // `PreferencesRefreshInterval`'s and `Preferences.menuBarReadouts`'s own
+        // documentation for why those are read here rather than left at
+        // `PollingViewModel`'s and `MenuBarViewModel`'s own hardcoded defaults.
+        let preferencesController = PreferencesController()
+        _preferencesController = StateObject(wrappedValue: preferencesController)
+        _launchAtLoginController = StateObject(
+            wrappedValue: LaunchAtLoginController(preferences: preferencesController))
+        _menuBarViewModel = StateObject(
+            wrappedValue: MenuBarViewModel(
+                polling: PollingViewModel(
+                    labelSource: CatalogSensorLabelSource.loadDefault(),
+                    refreshInterval: preferencesController.preferences.refreshInterval),
+                selection: preferencesController.preferences.menuBarReadouts))
+    }
 
     public var body: some Scene {
         WindowGroup {
-            MainView()
+            MainView(preferencesController: preferencesController)
         }
 
         // `MenuBarExtra` with multiple simultaneous readouts (`MenuBarLabelView`) and a
@@ -46,11 +65,25 @@ public struct AeolusApp: App {
         //   lives instead in `MenuBarContentView`, in the view layer, where `#available`
         //   branching is fully supported.
         MenuBarExtra {
-            MenuBarContentView(viewModel: menuBarViewModel)
+            MenuBarContentView(
+                viewModel: menuBarViewModel,
+                temperatureUnit: preferencesController.preferences.temperatureUnit)
         } label: {
-            MenuBarLabelView(viewModel: menuBarViewModel)
+            MenuBarLabelView(
+                viewModel: menuBarViewModel,
+                temperatureUnit: preferencesController.preferences.temperatureUnit)
         }
         .menuBarExtraStyle(.window)
+
+        // The Settings scene (`#64`): sensor selection, units, refresh interval, menu bar
+        // contents, and launch at login. macOS surfaces this as "Aeolus › Settings…" (or
+        // "Preferences…" pre-Ventura) automatically — no menu item is defined for it here.
+        Settings {
+            PreferencesView(
+                preferencesController: preferencesController,
+                launchAtLoginController: launchAtLoginController,
+                menuBarViewModel: menuBarViewModel)
+        }
     }
 }
 
@@ -71,9 +104,22 @@ public struct AeolusApp: App {
 /// leave "can this app change my fans?" to be inferred, and inference is what `CLAUDE.md`
 /// rule 6 exists to prevent.
 struct MainView: View {
-    @StateObject private var viewModel = PollingViewModel(
-        labelSource: CatalogSensorLabelSource.loadDefault())
+    @ObservedObject var preferencesController: PreferencesController
+    @StateObject private var viewModel: PollingViewModel
     @StateObject private var helperController = HelperLifecycleController()
+
+    /// Reads `preferencesController.preferences.refreshInterval` once, at construction,
+    /// to seed this window's own `PollingViewModel` — see `AeolusApp.init()`'s identical
+    /// note on why a preference changed later needs this window reopened to take effect
+    /// on the refresh cadence specifically (`selectedSensorKeys`/`temperatureUnit`, by
+    /// contrast, are read fresh on every `body` evaluation below and apply immediately).
+    init(preferencesController: PreferencesController) {
+        self.preferencesController = preferencesController
+        _viewModel = StateObject(
+            wrappedValue: PollingViewModel(
+                labelSource: CatalogSensorLabelSource.loadDefault(),
+                refreshInterval: preferencesController.preferences.refreshInterval))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -86,7 +132,10 @@ struct MainView: View {
             }
             HSplitView {
                 FanListView(viewModel: viewModel)
-                SensorListView(viewModel: viewModel)
+                SensorListView(
+                    viewModel: viewModel,
+                    selectedKeys: preferencesController.preferences.selectedSensorKeys,
+                    temperatureUnit: preferencesController.preferences.temperatureUnit)
             }
             Divider()
             HelperStatusView(controller: helperController)
