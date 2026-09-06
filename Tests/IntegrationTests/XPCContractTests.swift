@@ -189,7 +189,12 @@ struct XPCContractTests {
     /// `apply(settings:leaseID:reply:)` and `apply(settings:leaseID:ignoringLimits:reply:)`
     /// share a base name and are different messages, and only the selector tells them
     /// apart.
-    private static let allowedSelectors: Set<String> = [
+    ///
+    /// Not `private`: `XPCDeclarationFingerprintTests` derives selectors from its own
+    /// source-level pin and asserts they are exactly this set, so the two guards cannot
+    /// drift into describing different boundaries. Referring to the one pin is the point —
+    /// a second copy here would be a third thing to keep in step.
+    static let allowedSelectors: Set<String> = [
         "acquireLeaseWithRequest:reply:",
         "applyWithSettings:leaseID:reply:",
         "helloWithRequest:reply:",
