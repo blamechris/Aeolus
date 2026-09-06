@@ -802,13 +802,18 @@ extension HelperCompositionTests {
     /// **Mutation C:** delete `processLifetimeComposition = helper`. Run: red.
     /// **Mutation D — the tripwire's own:** replace the three lines with
     /// `withExtendedLifetime((authorisation, helper, delegate, listener)) { dispatchMain() }`,
-    /// which is what this asserts is *not* there. Run: red on all three, which is the
-    /// condition being mutated rather than the code it watches.
+    /// which is what this asserts is *not* there. Run: red on all six assertions — three
+    /// presence, three position — which is the condition being mutated rather than the code
+    /// it watches.
     /// **Mutation E:** move `_ = Unmanaged.passRetained(delegate)` and
     /// `_ = Unmanaged.passRetained(listener)` from before `dispatchMain()` to after it. Run:
-    /// red on the position assertion — the mutation the first version of this test survived.
+    /// red on both position assertions — the mutation the first version of this test
+    /// survived green.
     /// **Mutation F:** move `processLifetimeComposition = helper` below `dispatchMain()`.
-    /// Run: red.
+    /// Run: red on its position assertion.
+    /// **Mutation G — the position loop's own:** with E applied, narrow the loop below back
+    /// to `["processLifetimeComposition=helper"]`, the shape it had before #221's second
+    /// review round. Run: **green** — which is the finding that widened it.
     @Test("The process-lifetime objects are retained before dispatchMain")
     func theProcessLifetimeObjectsAreRetainedBeforeDispatchMain() throws {
         let code = Self.strippingWhitespace(try Self.mainSource())
