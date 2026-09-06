@@ -180,6 +180,15 @@ converts is the accident — an app-side call that compiles and looks correct �
 deliberate, one-line, greppable act. That is this ADR's own standard for the permit types,
 applied to their supplier.
 
+One reach is *wider* than `package` was, and the controls below do not narrow it.
+`SMCCore` is a published `.library` product ([`Package.swift`](../../Package.swift)), so a
+**downstream package** that depends on Aeolus can write `@_spi(FanWrite) import SMCCore`
+and name the seam. `package` did prevent that; `@_spi` does not. Every control below scans
+this repository's `Sources/`, which a downstream consumer is not in, so nothing here fires.
+The exposure is bounded by what the members do — both throw today, and E3/E4 put them
+behind the safety subsystem — and by the fact that no such consumer exists; it is recorded
+so the next reader does not have to rediscover it.
+
 **Rejected: plain `public`.** Simplest, and the fallback had `@_spi` proved unusable in the
 Xcode build. Rejected because after E3/E4 the write body no longer throws, and `fanctl` and
 `Aeolus.app` would then link a callable root SMC write; `sudo fanctl` is a realistic
@@ -204,21 +213,41 @@ checkout directory basename, so it works in a clone and fails in a worktree. See
 [`ClientAuthorisation.swift`](../../Sources/AeolusXPC/ClientAuthorisation/ClientAuthorisation.swift),
 which carries the observation.
 
-**Controls.** Four, replacing the one that `package` supplied:
+**Controls.** Seven, replacing the one that `package` supplied. Three of them were added
+by #226's review, which defeated the first four:
 
 | Control | Where |
 |---|---|
-| The SPI import appears only under `Sources/AeolusHelper/` | `WriteSeamAccessTests.spiImportAppearsOnlyInTheHelper` |
-| `Sources/SMCCore/` declares exactly two `@_spi(FanWrite)` members, both named | `WriteSeamAccessTests.smcCoreDeclaresExactlyTwoSPIMembers` |
-| `.write(` appears in exactly one named, never-called probe file, and only as a reference | `WritePathAbsenceTests.helperNeverCallsWrite` |
-| The `Monitor app build` job compiles that probe and asserts its symbol is in the helper | `.github/workflows/ci.yml` |
+| The only SPI group imported under `Sources/` is `FanWrite`, and only by the helper | `WriteSeamAccessTests.spiImportAppearsOnlyInTheHelper` |
+| `Sources/SMCCore/` declares exactly two SPI members, both named, both in `FanWrite` | `WriteSeamAccessTests.smcCoreDeclaresExactlyTwoSPIMembers` |
+| `write(` — with or without a receiver — appears in exactly one named, never-called probe file, and only as a reference | `WritePathAbsenceTests.helperNeverCallsWrite` |
+| No helper file declares a populated `extension SMCConnection`, so the actor's isolation is never open to helper code | `WritePathAbsenceTests.noHelperFileOpensSMCConnectionsIsolation` |
+| No declaration under `Sources/` carries the `package` access level | `WriteSeamAccessTests.noSourceFileDeclaresPackageAccess` |
+| No file under `Sources/` describes the write seam as `package`-scoped | `WriteSeamAccessTests.noSourceFileCallsTheWriteSeamPackageScoped` |
+| The `Monitor app build` job compiles the probe and asserts its demangled symbols are in the helper | `.github/workflows/ci.yml` |
 
 The probe is
 [`Sources/AeolusHelper/WriteSeamReachability.swift`](../../Sources/AeolusHelper/WriteSeamReachability.swift).
-It names both members and calls neither. `SMCConnection` is an `actor`, and an
-actor-isolated method cannot be partially applied from outside its isolation, so the `write`
-half is an extension on `SMCConnection` rather than a static function — inside the actor's
-isolation the reference is legal and the access level is what decides whether it compiles.
+It names both members and calls neither.
+
+**The probe's shape is itself a control, and the first shape was wrong.** `SMCConnection`
+is an `actor`, and the reference must sit inside its isolation, so the `write` half was
+first written as an `extension SMCConnection`. That opened a hole in the control above it:
+inside such an extension `self` *is* the connection, so an unqualified
+`write(bytes, to: key)` is a live SMC write, and the scan — which matched the literal
+`.write(` — could not see it. #226's reviewer inserted exactly that call; it compiled and
+left all four controls green.
+
+The probe is a free `enum` whose `write` half takes an `isolated SMCConnection` parameter.
+That puts the *body* inside the actor's isolation, which is what the access check needs,
+while putting no instance in unqualified scope: the same mutation now fails to compile with
+`cannot find 'write' in scope`. Referencing `SMCConnection.write(_:to:)` as an unbound
+function value instead — the obvious alternative — is not available: Swift rejects it from a
+`nonisolated` context as `call to actor-isolated instance method 'write(_:to:)' in a
+synchronous nonisolated context`, with or without an explicit
+`@Sendable (isolated SMCConnection) -> …` annotation. The scan was widened to a bare
+`write(` as well, and the extension shape is now forbidden outright, so neither half rests
+on the other.
 
 **Assumption.** `@_spi` resolves correctly when Xcode consumes a SwiftPM product. Verified
 on `Mac16,5` / macOS 26.6.2 before this amendment was accepted:
@@ -232,8 +261,13 @@ xcodebuild -project Aeolus.xcodeproj -scheme "Aeolus (Monitor)" \
 
 `** BUILD SUCCEEDED **`, with the log line
 `SwiftCompile normal arm64 … WriteSeamReachability.swift (in target 'AeolusHelper' …)` and
-`nm` on `DerivedData/Build/Products/Monitor Debug/AeolusHelper` reporting
-`_$s7SMCCore13SMCConnectionC12AeolusHelperE17namesTheWriteSeamSbyF`. Two negative controls
+`nm | xcrun swift-demangle` on
+`DerivedData/Build/Products/Monitor Debug/AeolusHelper` reporting
+`static AeolusHelper.WriteSeamReachability.namesTheWriteSeam(on: isolated SMCCore.SMCConnection) -> Swift.Bool`.
+The symbols are compared **demangled** because Swift's mangler substitutes repeated words:
+`WriteSeamReachability.namesTheWriteSeam` mangles to `…WriteSeamReachabilityO08namesThecD02on…`
+and the source spelling never appears in raw `nm` output, so grepping the raw table for it
+is a check that can only pass by accident. Two negative controls
 were run against the same tree and both failed to compile, which is what makes the gate a
 gate rather than a convention:
 
@@ -242,8 +276,8 @@ gate rather than a convention:
 - the same references from a scratch file under `Sources/fanctl` → the same error for both
   members.
 
-Had the Xcode build failed instead, the decision was plain `public` with the same four
-controls minus the import tripwire.
+Had the Xcode build failed instead, the decision was plain `public` with the same controls
+minus the import tripwire.
 
 **Revisit when:** Swift changes or removes `@_spi`; `package` becomes usable from an Xcode
 target consuming a package product; or the helper stops being built by Xcode at all.
