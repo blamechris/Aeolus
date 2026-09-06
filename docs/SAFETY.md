@@ -100,11 +100,25 @@ lease that has to be actively held.
 ordinary per-lease teardown restores only the fans that lease covered and leaves `Ftst` untouched:
 `KeystoneRestoreAttempt.restoreOnce(fanAt:)` issues `restoreToAutomatic(.fan(index))` and never
 `.everyFan`, and the type's own documentation gives the reason. `Ftst` is machine-wide rather than
-per-fan (§ 4), so clearing it belongs to the machine-wide restore verb that § 6's orderly exit and
-§ 7's panic path use — and is withheld from a per-lease teardown, which may be running alongside
-another client's still-live lease over a different fan. Every `.everyFan` call site in `Sources/`
-is one of those non-lease paths. The correction is recorded here rather than made silently, for
-the reason the status block above gives.
+per-fan (§ 4), so clearing it belongs to the machine-wide restore verb — and is withheld from a
+per-lease teardown, which may be running alongside another client's still-live lease over a
+different fan. The three `.everyFan` call sites in `Sources/` are all non-lease paths, and they
+are § 4's sleep handback (`Lifecycle/SystemPowerResponder.swift`), § 6's orderly exit
+(`Lifecycle/SignalTeardown.swift`) and § 6's startup-reconciliation fallback
+(`Safety/StartupReconciliation.swift`).
+
+**§ 7's panic path is not among them, and this paragraph said it was until the review of #104.**
+The machine-wide clear is § 7's by design, and the shipped verb does not issue it:
+`SupervisedFanAuthority.restoreAllToAutomatic` releases every lease and calls nothing on the
+control plane. That is a recorded decision rather than an omission — the plane verb throws
+`.controlPathNotBuilt` on this build, so issuing it would convert a v1 message that succeeds into
+one that always fails while leaving the machine in exactly the same state, and the message's
+contract is frozen at v1 ([#159](https://github.com/blamechris/Aeolus/issues/159)). The
+consequence for a reader is the one worth stating plainly: **on this build no path clears `Ftst`
+at all** — not a lease teardown, which never asks; not the panic verb, which does not ask either;
+and not the three call sites above, whose write throws. Every sentence in this document that has
+the panic path clearing the force key is describing the design, not the binary. The correction is
+recorded here rather than made silently, for the reason the status block above gives.
 
 The heartbeat interval is a third of the TTL so that two consecutive missed beats are
 tolerated. A single scheduling hiccup must not surrender control; a dead client must.
@@ -313,8 +327,13 @@ a fan is subject to is the bounds-free mode verb, restore-to-automatic, which ne
 envelope. Automatic control is untouched throughout: the system keeps managing the fan as it
 already was.
 
-A declared minimum of zero is **not** a plausibility failure. It is a machine whose fans
-stop when idle, which Aeolus must work on rather than refuse; the floor above handles it.
+A declared minimum of zero is **not** a plausibility failure. Some firmware legitimately declares
+one, and Aeolus must work on that machine rather than refuse it; the floor above handles it. **The
+gloss here read "it is a machine whose fans stop when idle" until #104**, which is the inference
+the correction 50 lines above retracts: a fan *reading* 0 says nothing about what its firmware
+*declares*, and on the machine where 2,904 ticks read 0 the declared `F0Mn` was 1350 throughout.
+The gate's behaviour is unchanged either way — only the reason given for it was wrong, and it was
+the reason an implementer would reuse.
 
 This is defence in depth, not a substitute for correct decoding — it catches a *class* of
 error rather than a specific bug, which is what makes it worth keeping even once the codec
@@ -520,17 +539,23 @@ one 1 h 29 min lid-closed window: **one clamshell sleep plus six maintenance sle
 a maintenance cycle roughly every 900 s while charging and a burst of much shorter ones once the
 battery reached 100 % — cycles of 9 s, 45 s, 211 s and 255 s. So the whole handback above — seal,
 release every lease, restore `.everyFan`, acknowledge — runs on the order of **four times an
-hour**, not once per lid close. That is the cadence the 5 s budget is visibly chosen against, and
-it is also the exposure arithmetic for the durable `.restoreToAutomaticFailed` refusal
-`abandonOutstandingHandbacks()` records: not one chance per lid close but on the order of **thirty
-across an overnight**, in a window with nobody watching.
+hour**, not once per lid close. **That is exposure arithmetic, not the input the 5 s budget was
+chosen against** — the constant's own rationale is a bound on the wait for a wedged `io_connect_t`
+(#68), sized inside the kernel's ~30 s acknowledgement window, and it shipped before this capture
+existed. What the cadence changes is how often the budget is *spent*: roughly four times an hour
+rather than once per lid close, and the same multiplier applies to the durable
+`.restoreToAutomaticFailed` refusal `abandonOutstandingHandbacks()` records — not one chance per
+lid close but on the order of **thirty across an overnight**, in a window with nobody watching.
 
 **One thing that capture does not establish, stated plainly rather than left to be assumed:** the
 `pmset` log proves the *machine* slept seven times. It does **not** prove IOKit delivered seven
 `.willSleep`/`.didWake` pairs to a root daemon, because the helper was not running during the
 capture. That delivery count is **unmeasured**, it is the multiplier on everything in this
 paragraph, and it is row 14 of the [hardware checklist](#hardware-checklist) — observable
-read-only today. The case it exists for is a wedged
+read-only today.
+
+**The case the acknowledgement budget exists for** — separated from the paragraphs above, which
+#209 inserted between it and the sentence introducing the constant — is a wedged
 `io_connect_t` (#68) where a synchronous IOKit write never returns at all: `FanRestoreAttempting`
 records that no attempt budget can bound that, and `BoundedFanRestorer` deliberately makes
 each attempt uncancellable. Holding the sleep open instead would buy nothing — the kernel
@@ -647,8 +672,9 @@ reaches the re-assert and the fallback below.
 
 **A fan at rest reads exactly 0, and that is the shortfall case hardware has actually
 demonstrated** (#212). On the read-only lid close recorded in [SMC-RESEARCH.md](SMC-RESEARCH.md),
-`F0Ac` and `F1Ac` read a true 0 for the whole of every dark wake and for **38 s after the user
-reopened the lid**, followed by a ~4 s spin-up. Any commanded target is a 100 % shortfall against
+`F0Ac` and `F1Ac` read a true 0 for the whole of every dark wake but the first — where they read 0
+for 17 s of a 44 s wake and then spun up — and for **38 s after the user reopened the lid**,
+followed by a ~4 s spin-up. Any commanded target is a 100 % shortfall against
 0, so the secondary signal's dwell — five cycles, five seconds — is crossed long before the fan is
 turning, and once it is turning the false window is bounded at about four more seconds. The line
 this produces must therefore say the fan **has not reached** its target, never that it *cannot*:
@@ -717,7 +743,8 @@ temperature is above ceiling.
 
 **That rule is asked before the write path, and again after the writes land — with one
 supervisor SMC turn still inside that window** —
-[ADR 0009](ADR/0009-precedence-at-the-write.md). The re-assert is the first ordinary safety
+[ADR 0009](ADR/0009-precedence-at-the-write.md). The level ordering being asked for is
+[Precedence](#precedence)'s, stated there canonically. The re-assert is the first ordinary safety
 write in this project that moves a fan **away** from the safe state, so the question of when
 precedence is read stopped being academic with it. An answer obtained once per sweep and
 spent several SMC turns later authorised a write § 3 had already forbidden, and the failure
@@ -952,18 +979,19 @@ firmware takes the mode write; both belong to E3/E4 bring-up.
 
 ## 7. Panic path
 
-`fanctl reset --all` restores every fan to automatic, clears the force key, and drops all
-leases. It must work when the helper's state is inconsistent and when the app will not
-launch at all.
+`fanctl reset --all` is specified to restore every fan to automatic, clear the force key, and
+drop all leases. It must work when the helper's state is inconsistent and when the app will not
+launch at all. **Read that as the design.** What ships today drops the leases and nothing else —
+the gap is itemised below and in row 18 of the [hardware checklist](#hardware-checklist).
 
 Handing the fans back to Apple's thermal management is always a valid state, so this
 command is safe to run at any time, from anywhere, including over SSH.
 
 **Why it can be issued from a state nothing else can be trusted in** is the keystone principle,
 stated in full in [Precedence](#precedence): restore-to-automatic is a mode write that consumes no
-bounds, no clamp, no sensor reading and no lease lookup, so there is nothing in it for a corrupted
-helper state to invalidate. This section asserted the consequence without the principle until
-#104.
+bounds, no clamp, no sensor reading, no lease lookup and no ramp budget, so there is nothing in
+it for a corrupted helper state to invalidate. This section asserted the consequence without the
+principle until #104.
 
 **The authorisation contract, which this section also did not state.** `restoreAllToAutomatic` is
 exempt from the version handshake gate — every other message is refused until the handshake
@@ -972,6 +1000,16 @@ code-signing authorisation check, which is applied at the connection rather than
 ([ADR 0005](ADR/0005-xpc-authorisation.md)). Its contract is global: restore *everything*, never
 "restore what this connection holds". E2's teardown-gate exemption depends on that staying
 true.
+
+**The built implementation satisfies that contract only through the lease core.**
+`SupervisedFanAuthority.restoreAllToAutomatic` is `await leases.releaseEveryLease()` and a log
+line: no `restoreToAutomatic(.everyFan)` reaches the control plane, so a fan held in manual under
+no live lease — one another tool pinned, one reconciliation recorded as `handbackRefused` — is
+outside what today's message touches, and no force-key clear is issued. That is deliberate and
+recorded at the source: the plane verb throws `.controlPathNotBuilt`, so calling it would make a
+v1 message that succeeds into one that always fails for no change in machine state, and the
+contract is frozen at v1 ([#159](https://github.com/blamechris/Aeolus/issues/159)). It is
+nonetheless a third missing piece, and it is not obtainable from the two named below.
 
 [RECOVERY.md](RECOVERY.md) documents the procedure for when even that is unavailable,
 including SMC reset key combinations by Mac family.
@@ -986,7 +1024,14 @@ exist. `restoreAllToAutomatic` has existed since E2.1: it is declared on `Aeolus
 implemented through `HelperXPCService` → `HelperConnectionSession` → the authority, tested, and is
 the one message exempt from the version handshake gate. #15 is `fanctl`'s call into it — the
 command body carries the literal `TODO` — and E3/E4 are the write, because the control-plane
-restore throws `.controlPathNotBuilt`. Until both land, § 7 describes the panic path rather than
+restore throws `.controlPathNotBuilt`.
+
+**Wiring those two is not sufficient, which the previous sentence read as though it were.** The
+handler behind the message is lease-scoped in effect (above), so a build with #15 wired and a live
+write path would restore the fans live leases covered and still leave a foreign-held fan pinned
+and `Ftst` set. Three pieces, then: the CLI's call (#15), the firmware write (E3/E4), and the
+machine-wide restore inside the handler — which is a v1 contract change and belongs with the write
+path rather than before it. Until all three land, § 7 describes the panic path rather than
 providing one, which matters more than the other pending lines here because this is the section
 the others fall back to.
 
@@ -1022,11 +1067,14 @@ mechanism**, `FanKit.RampGovernor`, built in the change that states the ruling s
 exclusion is checkable by mutation rather than asserted. Hysteresis stays with #17 — it is
 a property of evaluating a curve, and there is no curve evaluator yet.
 
-The exclusion is **structural, not a runtime check**. Safety actors write through
-`SafetyActorWriter`, which holds no governor and has no property one could be assigned to;
-the control loop writes through `GovernedFanWriter`, the only holder of one. The two share
-no protocol, so no code can be generic over "a writer" and hand a safety actor the governed
-one. `SafetyActorLevel.Ungoverned` carries the five levels that bypass § 8 as a type, and a
+The exclusion is **structural, not a runtime check**, and the canonical statement of how it
+composes with the other seven mechanisms is in [Precedence](#precedence). Safety actors write
+through `SafetyActorWriter`, which holds no governor and has no property one could be assigned to;
+the control loop writes through `GovernedFanWriter`, the only holder of one. The two share no
+*writing* protocol, so no code can be generic over "a writer" and hand a safety actor the governed
+one — they do both satisfy `Sendable`, and the exclusion is about the verbs rather than about
+every protocol in the language. `SafetyActorLevel.Ungoverned` carries the five levels that bypass
+§ 8 as a type, and a
 test asserts it is exactly `allCases` minus the control loop — so adding a seventh safety
 actor and forgetting it turns the suite red instead of silently governing a new safety
 mechanism.
@@ -1101,8 +1149,13 @@ numbering.
 safety write — and that holds structurally rather than by a runtime check. Levels 1–5 write
 through `SafetyActorWriter`, which holds no `RampGovernor` and has no property one could be
 assigned to; level 6 writes through `GovernedFanWriter`, the only holder of one, which does not
-declare the verbs a safety actor calls. The two share no protocol, so no code can be generic over
-"a writer" and hand a safety actor the governed one. `SafetyActorLevel.Ungoverned` carries the
+declare the verbs a safety actor calls. The two share no *writing* protocol, so no code can be
+generic over "a writer" and hand a safety actor the governed one; the compile-time guarantee is
+exactly that `GovernedFanWriter` declares neither `commandMaximum(of:)` nor
+`restoreToAutomatic(_:)`. (They do both satisfy `Sendable`, so a `<W: Sendable>` parameter accepts
+either — the exclusion is about the verbs, not about every protocol in the language.
+`SafetyWriters.swift` records the same correction, having said "no protocol in common" once.)
+`SafetyActorLevel.Ungoverned` carries the
 five bypassing levels as a type, and a test asserts it is exactly `allCases` minus the control
 loop — so adding a seventh actor and forgetting it turns the suite red instead of silently
 governing a new safety mechanism.
@@ -1112,9 +1165,20 @@ governing a new safety mechanism.
 Every ruling in this document rests on one principle, stated here canonically and cross-referenced
 everywhere else it is used:
 
-> **Restore-to-automatic is a mode write, and must never depend on trusted data.** It consumes no
-> bounds, no clamp, no sensor reading, no lease lookup and no prior call of any kind — `F<n>Md = 0`
-> (plus `Ftst = 0` for the machine-wide scope) on Apple Silicon, clearing the `FS!` bit on Intel.
+> **Restore-to-automatic is a mode write, and must never depend on trusted data.** It needs no
+> bounds, no clamp, no sensor reading, no lease lookup and no ramp budget — `F<n>Md = 0` (plus
+> `Ftst = 0` for the machine-wide scope) on Apple Silicon, clearing the `FS!` bit on Intel.
+
+That list is [ADR 0007](ADR/0007-safety-composition.md)'s own, word for word, because the ADR wins
+on disagreement (see the preamble) and a paraphrase in the one place everything else defers to is
+exactly how a principle drifts. It read "and no prior call of any kind" until the review of #104 —
+a stronger property than the ADR states, and one the machine-wide scope is required *not* to have.
+
+**What `.everyFan` does depend on, stated separately so it is not read as part of the keystone:**
+it resolves its fan set from the enumeration the helper established at bring-up — knowledge the
+conformer already holds — and never from a read issued at restore time, because a restore that
+must first read is missing in the one case it exists for. `SMCFanControlPlaneTests` asserts the
+provider records no request.
 
 That is why it is every actor's terminal action: it is the only action that stays available when
 the data every other action depends on is untrustworthy. It is why § 6's reconciliation issues the
@@ -1149,12 +1213,18 @@ Driven end to end against the scripted plane by `LeaseTeardownTests` and
 `SupervisedFanAuthorityTests`.
 
 **2. `kill -9` on the helper: launchd restarts it, and the reconciliation pass runs and logs what
-it found.** *Executes: now, read-only on `Mac16,5` for the restart-and-pass-runs half; the restore
-itself during E3/E4 bring-up.* Needs no write path to observe: `KeepAlive = { SuccessfulExit =
-false }` and `RunAtLoad = true` are in the plist, and `HelperComposition.bringUp()` runs the pass
-before any supervisor starts, so what is observable now is launchd restarting the process and the
-pass emitting its reconciliation log lines. In practice this row is maintainer-only until a
-signing identity exists, because an unsigned Monitor build cannot be installed as a system daemon.
+it found.** *Executes: maintainer-only (needs the signing identity); the restore itself
+additionally during E3/E4 bring-up.* This row's tag read "now, read-only on `Mac16,5` for the
+restart-and-pass-runs half" until the review of #104, against its own closing sentence — and the
+tag is what a maintainer schedules a week's hardware pass from, so the two disagreeing is a
+scheduling error waiting to happen. **launchd is what restarts the helper, and launchd only
+restarts a daemon it installed**: an unsigned Monitor build cannot be installed as a system
+daemon, so there is no `kill -9`-and-it-comes-back to watch without the Developer ID. What needs
+no write path, once there *is* a signed install, is the observation itself: `KeepAlive = {
+SuccessfulExit = false }` and `RunAtLoad = true` are in the plist, and
+`HelperComposition.bringUp()` runs the pass before any supervisor starts, so launchd restarting
+the process and the pass emitting its reconciliation log lines are both visible with every write
+still throwing.
 
 **3. Helper crash restarts and reconciles a fan left in manual** — the full path, restore
 included. *Executes: during E3/E4 bring-up.* `StartupReconciliationTests` drives every branch over
@@ -1216,10 +1286,10 @@ client taking `Lease.defaultTimeToLive`.
 
 **13. Critical-sensor plausibility across a dark wake** — do the curated keys read truthfully, not
 merely successfully. *Executes: now, read-only on `Mac16,5`
-([#210](https://github.com/blamechris/Aeolus/issues/210)).* The lid-close capture sampled seven fan
-keys and no temperature keys, through a 42-minute dark wake with real dissipation and no airflow,
-while § 1's lease gate and § 3 both depend on those sensors. Proving a read succeeded is not
-proving it is plausible.
+([#210](https://github.com/blamechris/Aeolus/issues/210)).* The lid-close capture sampled `FNum`
+plus six fan keys and no temperature keys, through a 42-minute dark wake with real dissipation
+and no airflow, while § 1's lease gate and § 3 both depend on those sensors. Proving a read
+succeeded is not proving it is plausible.
 
 **14. IOKit `willSleep`/`didWake` delivery count with the helper actually running across a lid
 close.** *Executes: now, read-only on `Mac16,5`
@@ -1228,8 +1298,12 @@ because it is easy to assume row 15 answered it: the helper was **not running** 
 capture, so the `pmset` log proves the machine slept seven times and proves nothing about how many
 notification round trips a root daemon receives. `SystemPowerLimits.acknowledgementBudget` is
 spent once per delivery, so that count is the multiplier on § 4's exposure. Observable without a
-write path, since the helper's writes are refused today. `IOKitSystemPowerObserver` itself is the
-one thing no automated test can reach.
+write path, since the helper's writes are refused today. **And observable without the signing
+identity, which is what keeps this row's "now" tag honest against row 2's:** what
+`IOKitSystemPowerObserver` needs is a root process holding an `IORegisterForSystemPower` port, not
+an installed daemon, so running the built helper binary under `sudo` across one lid close is
+enough. Row 2 needs launchd to restart the process and therefore needs the install; this row does
+not. `IOKitSystemPowerObserver` itself is the one thing no automated test can reach.
 
 **15. Sleep/wake cadence per lid close** — how often § 4's handback path is exercised. *Executes:
 **done** — see [SMC-RESEARCH.md](SMC-RESEARCH.md) and
@@ -1250,11 +1324,25 @@ the ordering at the source, and `theServiceIsAdvertisedOnlyAfterBringUp` pins th
 arrive first.
 
 **18. `fanctl reset --all` from SSH with the app not running.** *Executes: during E3/E4 bring-up,
-and additionally blocked on #15 wiring the CLI to the XPC message that already exists.* Two
-independent blockers: the CLI body throws `Not implemented yet — see epic E10b`, and the plane
-write throws `.controlPathNotBuilt`. The message itself exists, is authorisation-checked, and is
-exempt from the handshake gate — covered by `AnonymousListenerTests`, `HandshakeGateTests` and
-`ConnectionTeardownGateTests`. This row also carries #104's corrupted-helper-state case.
+and additionally blocked on #15 wiring the CLI to the XPC message that already exists.* **Three**
+independent blockers, not two: the CLI body throws `Not implemented yet — see epic E10b`, the
+plane write throws `.controlPathNotBuilt`, and the handler behind the message issues no
+machine-wide restore of its own (§ 7), so wiring the first two would still leave a fan no live
+lease covers pinned and `Ftst` set. This row is what checks that, and it is the reason the row is
+worth running rather than assuming.
+
+The message itself exists, is exempt from the handshake gate, and is authorisation-checked. The
+exemption is covered by `AnonymousListenerTests`, `HandshakeGateTests` and
+`ConnectionTeardownGateTests`. **The authorisation half is covered elsewhere and deliberately not
+by the first of those**, which runs a real listener with no signing identity and admits every
+connection through `UnenforcedAdmission`; its own header says a green run of it must never be read
+as evidence the boundary holds. What covers the authorisation claim is
+`Tests/IntegrationTests/ClientAuthorisationTests.swift` — both requirement variants, every
+fail-closed row, and a mutation-tested negative control — plus `AdmissionOrderSpy`, pinning that
+the admission decision is taken before the connection is configured or resumed, so no message can
+arrive on a connection that does not yet carry the requirement. Whether the production requirement
+admits the real signed clients and refuses everything else is row 16's neighbour: it needs the
+Developer ID and is E2.5's manual check. This row also carries #104's corrupted-helper-state case.
 
 ---
 
@@ -1267,7 +1355,8 @@ If you are writing code in `AeolusHelper` or the write path of `SMCCore`:
 3. **Never allow 0 RPM**, by any path, for any reason.
 4. **Never claim control you do not have.** Report reclamation honestly.
 5. **Every safety mechanism gets a test.** The lease and the emergency override get
-   integration tests against a mock SMC, plus a manual hardware checklist entry.
+   integration tests against a mock SMC, plus a row in the
+   [hardware checklist](#hardware-checklist).
 6. **Strict concurrency is not negotiable here.** In a root daemon that drives cooling
    hardware, a data race is a hardware-safety issue, not a crash report.
 

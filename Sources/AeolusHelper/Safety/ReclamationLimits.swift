@@ -111,9 +111,10 @@ enum ReclamationLimits {
     /// **A fan at rest reads exactly 0**, so any commanded target is a 100 % shortfall and this
     /// dwell is crossed with nothing wrong. On `Mac16,5` — read-only capture, 2026-09-05, see
     /// `docs/SMC-RESEARCH.md` — `F0Ac` and `F1Ac` read a true 0 for the whole of every dark wake
-    /// and for **38 s after the user reopened the lid**, then took about **4 s** to spin up, the
-    /// first non-zero sample being 109.13 RPM. So the false window is 38 s plus a spin-up on a
-    /// full wake, and is bounded at roughly four seconds once the fan is turning.
+    /// but the first, where they read 0 for 17 s of a 44 s wake and then spun up, and for **38 s
+    /// after the user reopened the lid**, then took about **4 s** to spin up, the first non-zero
+    /// sample being 109.13 RPM. So the false window is 38 s plus a spin-up on a full wake, and is
+    /// bounded at roughly four seconds once the fan is turning.
     ///
     /// Anyone tuning this number should know that case exists rather than rediscover it, and
     /// should read the emitted line as the fan **having not reached** its target rather than
