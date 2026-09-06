@@ -43,11 +43,18 @@ struct SystemPowerTests {
     /// from another program holding it, and correctly refused. Nothing asserted below reads
     /// the fan's starting mode: the scripted plane records `.restoreToAutomatic(.fan(0))`
     /// whichever mode the fan is in.
+    ///
+    /// **`UnconfirmedHandbackTests` builds its graph through this and `composed` too**, rather
+    /// than through fixtures of its own — see that suite's header. `fanCount` is there for it:
+    /// a set documented as a subset of the fans mid-restore cannot be told apart from "every
+    /// fan this helper knows about" on a one-fan machine.
     static func machine(
-        writes: ScriptedControlPlane.WriteBehaviour = .honoured
+        writes: ScriptedControlPlane.WriteBehaviour = .honoured,
+        fanCount: Int = 1
     ) -> ScriptedControlPlane {
         ScriptedControlPlane(
-            fans: [0: .automatic(at: 2_400)],
+            fans: Dictionary(
+                uniqueKeysWithValues: (0..<fanCount).map { ($0, .automatic(at: 2_400)) }),
             stages: [
                 .nominal(temperatures: LeaseFixture.nominalDieTemperatures, writes: writes)
             ])
@@ -62,11 +69,12 @@ struct SystemPowerTests {
         plane: Plane,
         observer: any SystemPowerObserving,
         budget: Duration = SystemPowerLimits.acknowledgementBudget,
+        fanCount: Int = 1,
         safetyLog: RecordedLog
     ) -> HelperComposition<Plane> {
         HelperComposition(
             plane: plane,
-            snapshotProvider: fanProvider(fanCount: 1),
+            snapshotProvider: fanProvider(fanCount: fanCount),
             criticalSensors: .mac16x5,
             powerObserver: observer,
             acknowledgementBudget: budget,
@@ -215,92 +223,6 @@ struct SystemPowerTests {
         await plane.release()
         await delivery.value
         #expect(observer.acknowledgements == [.willSleep], "the system was acknowledged twice")
-    }
-
-    /// The lease table is empty at the acknowledgement, and the fan left behind is refused.
-    ///
-    /// Two properties of the same wedged sleep, asserted together because they are the two
-    /// halves of what § 4 owes a fan whose handback never lands.
-    ///
-    /// **The ordering.** `handBackEveryFan()` drops every lease *before* it issues the
-    /// keystone, and that was documented as load-bearing while nothing pinned it: swapping the
-    /// two statements left the whole suite green, and on a wedged connection the swapped
-    /// version sleeps the machine with every lease live and every fan in manual. So the lease
-    /// count is read from **inside** the acknowledgement, exactly as the plane's attempts are
-    /// in `sleepHandsTheFansBackBeforeAllowingThePowerChange` — afterwards is useless, because
-    /// on a wedged connection the responder never gets there at all.
-    ///
-    /// **The abandonment.** Decision D17. When the budget wins there is no lease left to
-    /// expire — the same function destroyed it — so § 1's TTL cannot be the backstop the log
-    /// line used to name. What survives instead is the durable `.restoreToAutomaticFailed`
-    /// refusal, recorded before the system is told it may sleep. It is asserted **after** the
-    /// wedge is released and the wake delivered, which is the whole point of the word durable:
-    /// the restore landing late does not undo it, and neither does the sleep ending.
-    ///
-    /// The lease's own fan is what wedges here, not the keystone, which is why `restoreScopes`
-    /// is `[.fan(0)]` rather than `[.everyFan]` — the keystone is not reached until the wedge
-    /// lets go. That is the honest shape of a machine whose `io_connect_t` went stale while a
-    /// client held a fan.
-    ///
-    /// **Mutation A:** in `handBackEveryFan()`, move `await leases.releaseEveryLease()` below
-    /// the `do { try await writer.restoreToAutomatic(.everyFan) … }` block. Run: red on the
-    /// lease count.
-    /// **Mutation B:** delete `let abandoned = await leases.abandonOutstandingHandbacks()` from
-    /// `SleepAcknowledgement.acknowledge(_:)`'s `.budgetExpired` branch, passing `[]` to the
-    /// log line instead. Run: red on the refusal.
-    @Test("A wedged handback drops the lease first and records the fan as abandoned")
-    func aWedgedHandbackDropsTheLeaseFirstAndRecordsTheFanAsAbandoned() async throws {
-        let plane = WedgedRestorePlane(Self.machine())
-        let observer = ScriptedPowerObserver()
-        let witness = AcknowledgementWitness()
-        let log = RecordedLog()
-        let helper = Self.composed(
-            plane: plane, observer: observer, budget: .milliseconds(50), safetyLog: log)
-        observer.whenAcknowledging { [leases = helper.leases] in
-            await witness.record(leaseCount: leases.leaseCount)
-        }
-
-        await helper.bindSafetyRegistries()
-        helper.observeSystemPower()
-
-        _ = try await helper.leases.acquireLease(
-            LeaseFixture.request(fans: [0]), from: ConnectionID())
-        #expect(await helper.leases.leaseCount == 1)
-
-        let delivery = try observer.deliverWithoutWaiting(.willSleep)
-        try await observer.didAcknowledge.wait()
-
-        #expect(
-            await witness.leaseCount == 0,
-            """
-            the system was told it may sleep with a lease still live. The keystone restore \
-            preceded the lease teardown, and on a wedged connection that means every fan \
-            crosses the sleep in manual with a client still holding them.
-            """)
-        #expect(
-            await plane.restoreScopes == [.fan(0)],
-            "the lease's own fan is what wedged, so the keystone cannot have been reached yet")
-        #expect(
-            log.faults.contains { $0.contains("handback still outstanding") },
-            "the system was allowed to sleep on the budget without a fault-level line")
-
-        // The wedge lets go and the machine wakes: the two events that would undo this
-        // refusal if it were transient. The expectation below is what says it is not.
-        await plane.release()
-        await delivery.value
-        try await observer.deliver(.didWake)
-
-        await #expect(
-            throws: AeolusXPCFault.manualControlUnavailable(reason: .restoreToAutomaticFailed),
-            """
-            a fan whose handback was still outstanding when the machine slept can be leased \
-            again. Nothing confirmed it went back to automatic control, so a lease over it is \
-            CLAUDE.md rule 6 — claiming control nothing is honouring.
-            """
-        ) {
-            _ = try await helper.leases.acquireLease(
-                LeaseFixture.request(fans: [0]), from: ConnectionID())
-        }
     }
 
     /// The budget also beats a restore that *blocks* rather than suspends.

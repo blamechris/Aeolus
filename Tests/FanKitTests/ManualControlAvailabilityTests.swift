@@ -31,6 +31,7 @@ struct ManualControlAvailabilityTests {
             .unavailable(.leaseHeldByAnotherClient),
             .unavailable(.selfRenewalNotBuilt),
             .unavailable(.releaseInProgress),
+            .unavailable(.handbackUnconfirmed),
             .unavailable(.restoreToAutomaticFailed),
             .unavailable(.systemSleeping),
             .unavailable(.noThermalTelemetry),
@@ -66,6 +67,31 @@ struct ManualControlAvailabilityTests {
         let decoded = try decode(#"{"state":"unavailable","reason":"foreignManualControl"}"#)
         #expect(decoded == .unavailable(.foreignManualControl))
         #expect(decoded != .unavailable(.unknown("foreignManualControl")))
+    }
+
+    /// The case #209 added, decoded from the wire and held apart from the two reasons it
+    /// sits between.
+    ///
+    /// `AeolusXPCVersion` stays at 1 for it, on ADR 0007's Consequences bullet: *"Every
+    /// refusal E5 raises is an existing fault case or an additive, forward-tolerant
+    /// `Reason`."* `foreignManualControlDecodesToItsOwnCase` above makes that argument for
+    /// #164's case, and the direction is the one that would otherwise need a bump: a client
+    /// of *this* version must resolve the value to the case rather than to
+    /// `.unknown("handbackUnconfirmed")`.
+    ///
+    /// The two inequalities are the point rather than ceremony. A client that cannot tell
+    /// this from `.releaseInProgress` retries in a moment against a restore that has already
+    /// outlived a five-second budget; one that cannot tell it from
+    /// `.restoreToAutomaticFailed` reaches for a helper restart to clear a state a restart
+    /// does not clear. Those are the two wrong actions decision D33 introduced the case to
+    /// separate.
+    @Test("handbackUnconfirmed arrives as itself, distinct from both of its neighbours")
+    func handbackUnconfirmedDecodesToItsOwnCase() throws {
+        let decoded = try decode(#"{"state":"unavailable","reason":"handbackUnconfirmed"}"#)
+        #expect(decoded == .unavailable(.handbackUnconfirmed))
+        #expect(decoded != .unavailable(.unknown("handbackUnconfirmed")))
+        #expect(decoded != .unavailable(.releaseInProgress))
+        #expect(decoded != .unavailable(.restoreToAutomaticFailed))
     }
 
     /// The direction of the guess is the whole point. If a future version grows a third
@@ -105,6 +131,7 @@ struct ManualControlAvailabilityTests {
             .leaseHeldByAnotherClient,
             .selfRenewalNotBuilt,
             .releaseInProgress,
+            .handbackUnconfirmed,
             .restoreToAutomaticFailed,
             .systemSleeping,
             .noThermalTelemetry,
@@ -136,6 +163,9 @@ struct ManualControlAvailabilityTests {
         #expect(
             ManualControlAvailability.Reason.releaseInProgress.wireValue
                 == "releaseInProgress")
+        #expect(
+            ManualControlAvailability.Reason.handbackUnconfirmed.wireValue
+                == "handbackUnconfirmed")
         #expect(
             ManualControlAvailability.Reason.restoreToAutomaticFailed.wireValue
                 == "restoreToAutomaticFailed")
