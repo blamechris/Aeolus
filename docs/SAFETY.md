@@ -61,6 +61,13 @@ load-bearing: a coverage claim naming a test that does not exist is worse than n
 all, because it retires the question. #119 split every one of the eight sections against the
 suite as it stands, so a bare line here is now a statement about tests that are in it.
 
+**How the eight mechanisms compose is stated once, below.** There are two classes:
+*constraints*, which bind every write at every level with no ordering, and *actors*, which are
+ordered so that a higher one pre-empts a lower. The order lives in
+`Sources/AeolusHelper/Safety/SafetyPrecedence.swift` and is written out in
+[Precedence](#precedence), along with the keystone principle every ruling here rests on. The
+sections below cross-reference it rather than restating it.
+
 **Where this document and [ADR 0007](ADR/0007-safety-composition.md) disagreed, ADR 0007
 won.** Design review before E5 found that the eight mechanisms below do not compose as
 written. ADR 0007 re-decided § 4's wake semantics, § 6's crash path, and § 8's standing
@@ -210,9 +217,10 @@ not), that a fan the firmware takes back on a later attempt is not abandoned
 (`CancellationSensitiveRestore` — a seam that fails only because the task was cancelled). The
 durable refusal's ordering against a concurrent lease uses the in-memory double too.
 
-*Tested by (pending #104):* a manual hardware check that `kill -9` on the app returns the
-fans to automatic. It cannot run until a write path exists to put them anywhere else, which
-is the ordering rule at the top of this document, not an omission.
+*Tested by (pending E3/E4):* a manual hardware check that `kill -9` on the app returns the
+fans to automatic — row 1 of the [hardware checklist](#hardware-checklist). It cannot run until a
+write path exists to put them anywhere else, which is the ordering rule at the top of this
+document, not an omission.
 
 ## 2. Hardware clamps
 
@@ -293,7 +301,8 @@ client, and nothing is lost by that — an envelope produces a *speed*, and only
   establishes — and a permit binds the index and the bounds that came out of the *same*
   `FanEnvelope`, so the fan written to and the envelope clamped into cannot disagree. Both
   write verbs — engage and command — take a permit; restore-to-automatic takes none, and must
-  never acquire one.
+  never acquire one. That is the fan-bounds-local instance of the keystone principle stated in
+  [Precedence](#precedence).
 
   What that does **not** deliver, stated here because the normative document is the wrong
   place to imply more than the code holds: a permit is not proof the bounds came from
@@ -418,9 +427,9 @@ quietly stops claiming something is indistinguishable from one that never claime
 as-built rewrite of this document is
 [#104](https://github.com/blamechris/Aeolus/issues/104)'s.
 
-*Tested by (pending #104):* the hardware rows — a real fan actually reaching maximum, and
-the override releasing on a real cool-down — which cannot run until E3 or E4 builds a write
-path.
+*Tested by (pending E3/E4):* the hardware rows — a real fan actually reaching maximum, and
+the override releasing on a real cool-down — which cannot run until E3 or E4 builds a write path.
+Row 8 of the [hardware checklist](#hardware-checklist).
 
 ## 4. Sleep and wake supervision
 
@@ -481,6 +490,8 @@ the fan, in the order it can act:
   acknowledged** (`LeaseAuthority.abandonOutstandingHandbacks()`, decision D17). That is the
   durable `restoreToAutomaticFailed` refusal of § 1, so no client can take a lease over a fan
   the helper never saw return to automatic control.
+- **The restore is issued unconditionally, after and regardless of the lease teardown**,
+  because the keystone verb needs no data at all — see [Precedence](#precedence).
 - **§ 3 still acts on it above the ceiling.** The thermal override's registry entry is
   deliberately retained across the handback, so such a fan coming back hot is taken to full
   scale. Above the ceiling only — that is an override, not a restore.
@@ -539,7 +550,9 @@ can register with a real power management root and then sleep the machine. The h
 are what prove it — closing the lid returns the fans to automatic, reopening leaves them there
 until a client asks again, the `ContinuousClock` delta across a real sleep (#210), and whether
 the helper's own `io_connect_t` survives — #68 answered that for a read-only handle in a CLI
-process, not for the helper's (#104).
+process, not for the helper's. Rows 11 to 14 of the
+[hardware checklist](#hardware-checklist) carry all four, with the two that are runnable read-only
+today marked as such.
 
 ## 5. Reclamation watchdog
 
@@ -799,8 +812,9 @@ serves clients anyway and refuses manual control of the fans it never reached, a
 `.supervisorBlind` — nobody has looked at them, and nothing will, because reconciliation is
 one-shot. **Wherever the pass cannot see, the machine-wide restore is issued anyway**: on a
 failed mode read, on a failed fan enumeration, and on that budget expiry. The keystone needs
-no data, which is the whole reason ADR 0007 makes it the keystone, and a fan nobody looked at
-is not less pinned than one whose read threw (ADR 0011 D3). Being one-shot is enforced rather
+no data — see [Precedence](#precedence) for the principle in full — which is the whole reason ADR
+0007 makes it the keystone, and a fan nobody looked at is not less pinned than one whose read
+threw (ADR 0011 D3). Being one-shot is enforced rather
 than assumed — a second `reconcile()` is declined, because it would discard those refusals
 and hand a fan back a second time.
 
@@ -833,9 +847,11 @@ somebody else's: one under a live lease, one whose handback was abandoned, and o
 diagnosed as reclaimed by the system.
 `HelperCompositionTests.reconciliationSitsBetweenTheBindAndTheSupervisors` holds the pass in
 its position. `LaunchDaemonPlistTests` holds the restart keys and the exit-code contract.
-*Pending hardware:* the checklist rows for a helper restarted with a fan left in manual,
-boot-start, `kill -9`, quit, logout, and `SMAppService` accepting the two keys — all of which
-need the signing identity and E3/E4's write path.
+*Pending hardware:* rows 2 to 7, 16 and 17 of the
+[hardware checklist](#hardware-checklist). **This line bundled six facts behind one blocker until
+#104**, and they do not share one: boot-start and `SMAppService` need the signing identity, the
+restore rows need E3/E4's write path, and the restart-and-the-pass-runs half of the `kill -9` row
+is observable read-only today. The checklist carries each row with its own timing tag.
 
 *Tested by:* `SignalTeardownTests` and `SignalTeardownTripwireTests` drive the orderly-signal
 bullet through the composed helper — the ordering of all five steps, the exit code for each
@@ -854,6 +870,20 @@ launch at all.
 
 Handing the fans back to Apple's thermal management is always a valid state, so this
 command is safe to run at any time, from anywhere, including over SSH.
+
+**Why it can be issued from a state nothing else can be trusted in** is the keystone principle,
+stated in full in [Precedence](#precedence): restore-to-automatic is a mode write that consumes no
+bounds, no clamp, no sensor reading and no lease lookup, so there is nothing in it for a corrupted
+helper state to invalidate. This section asserted the consequence without the principle until
+#104.
+
+**The authorisation contract, which this section also did not state.** `restoreAllToAutomatic` is
+exempt from the version handshake gate — every other message is refused until the handshake
+succeeds, and this one is the single deliberate exemption — and it is **never** exempt from the
+code-signing authorisation check, which is applied at the connection rather than per message
+([ADR 0005](ADR/0005-xpc-authorisation.md)). Its contract is global: restore *everything*, never
+"restore what this connection holds". E2's teardown-gate exemption depends on that staying
+true.
 
 [RECOVERY.md](RECOVERY.md) documents the procedure for when even that is unavailable,
 including SMC reset key combinations by Mac family.
@@ -926,6 +956,217 @@ handing one to the emergency does not build.
 *Tested by (pending #17):* `FanKit` unit tests driving a temperature series across a curve
 boundary and asserting no oscillation. The ramp half of that line is now covered above; the
 hysteresis half still has nothing to drive a series through.
+
+---
+
+## Precedence
+
+Which mechanism wins, stated once. The sections above cross-reference this one rather than
+restating it, because six paraphrases of an ordering drift into six orderings. The source of
+truth in code is `Sources/AeolusHelper/Safety/SafetyPrecedence.swift`; the design is
+[ADR 0007](ADR/0007-safety-composition.md), and
+[ADR 0009](ADR/0009-precedence-at-the-write.md) settles *when* precedence is read relative to a
+write, which stopped being academic once § 5 gained a write that moves a fan away from the safe
+state.
+
+**There are two classes, and conflating them is what produced the § 3-versus-§ 8 conflict ADR
+0007 was written to end.** One binds; the other is scheduled.
+
+### Constraints bind every write
+
+Two of them, and they bind at every level, in every mechanism, with no ordering and no
+exceptions:
+
+- **The firmware's bounds, as read at runtime** — § 2, `CLAUDE.md` rule 4. A configuration may
+  narrow the range and may never widen it.
+- **The zero-speed floor** — § 2, `CLAUDE.md` rule 3. `FanSafetyLimits.minimumManualRPM` is what
+  makes it hold on firmware that legitimately declares a minimum of zero.
+
+A constraint cannot be outranked, and there is no precedence *between* the two. Something that
+could be outranked is an actor, and an actor that binds writes is exactly the conflation above.
+`SafetyConstraint` names the class in code and deliberately does not conform to `Comparable`,
+with a test asserting that absence through the runtime conformance rather than in prose.
+
+**There is exactly one clamp in this project, and a permit is the evidence both constraints were
+discharged.** An `AuthorisedFanTarget` can only be minted by `FanEnvelope.commandable` →
+`CommandableFan.target(for:)`, which runs § 2's plausibility gate and clamps into
+`[max(F<n>Mn, FanSafetyLimits.minimumManualRPM), F<n>Mx]`. Holding one *is* both constraints,
+discharged; the precedence engine consumes that fact and restates neither constraint, because a
+second clamp is a second place for this project's most consequential arithmetic to drift.
+
+### Actors are ordered, and higher pre-empts lower
+
+| Level | Actor | Section |
+|---|---|---|
+| 1 | Panic and teardown restore | § 6, § 7 |
+| 2 | Thermal emergency override | § 3 |
+| 3 | Reclamation watchdog | § 5 |
+| 4 | Sleep and wake | § 4 |
+| 5 | Lease expiry | § 1 |
+| 6 | The control loop, running a user's curve or fixed target under a live lease | § 8 shapes it |
+
+`SafetyActorLevel` carries exactly those six cases in that order, and `outranks(_:)` is the
+spelling to use in code rather than the comparison operators, which read backwards against the
+numbering.
+
+**§ 8 is not a peer of these.** Ramp limiting shapes level 6's output only and never delays a
+safety write — and that holds structurally rather than by a runtime check. Levels 1–5 write
+through `SafetyActorWriter`, which holds no `RampGovernor` and has no property one could be
+assigned to; level 6 writes through `GovernedFanWriter`, the only holder of one, which does not
+declare the verbs a safety actor calls. The two share no protocol, so no code can be generic over
+"a writer" and hand a safety actor the governed one. `SafetyActorLevel.Ungoverned` carries the
+five bypassing levels as a type, and a test asserts it is exactly `allCases` minus the control
+loop — so adding a seventh actor and forgetting it turns the suite red instead of silently
+governing a new safety mechanism.
+
+### The keystone
+
+Every ruling in this document rests on one principle, stated here canonically and cross-referenced
+everywhere else it is used:
+
+> **Restore-to-automatic is a mode write, and must never depend on trusted data.** It consumes no
+> bounds, no clamp, no sensor reading, no lease lookup and no prior call of any kind — `F<n>Md = 0`
+> (plus `Ftst = 0` for the machine-wide scope) on Apple Silicon, clearing the `FS!` bit on Intel.
+
+That is why it is every actor's terminal action: it is the only action that stays available when
+the data every other action depends on is untrustworthy. It is why § 6's reconciliation issues the
+machine-wide restore on a failed mode read, a failed enumeration and a budget expiry alike — a fan
+nobody looked at is not less pinned than one whose read threw. It is why § 4 issues it
+unconditionally, after and regardless of the lease teardown. And it is why § 7 is safe to run from
+a corrupted or blind helper state at all: there is nothing in the verb for the corruption to
+invalidate. § 2 carries the fan-bounds-local half of the same principle — the restore verb takes
+no permit, and must never acquire one — with source tripwires holding it.
+
+*Tested by:* `SafetyPrecedenceTests` — the six levels in this order, that a constraint cannot be
+made `Comparable`, and that `Ungoverned` is exactly `allCases` minus the control loop.
+
+## Hardware checklist
+
+Every hardware row this document owes, in one place, each marked with **when it executes**.
+[#104](https://github.com/blamechris/Aeolus/issues/104) asks for exactly this, and the sections
+above now point here rather than each carrying an aggregate sentence with three different blockers
+bundled into it.
+
+Four tags are used. **Now, read-only on `Mac16,5`** — runnable this week, needing no write path
+and in some cases no helper. **During E3/E4 bring-up** — blocked on the SMC write path, because
+verifying "restore works" requires first being in manual, and E5 is deliberately not blocked on
+that circular dependency. **Maintainer-only** — needs the Developer ID signing identity. **Done**
+— with the source to open. No row is marked done for Intel or M1/M2: those platforms ship
+`untested` and are never claimed (`CLAUDE.md` rule 11).
+
+**1. `kill -9` on the app returns the fans to automatic** (client death, TTL backstop).
+*Executes: during E3/E4 bring-up.* Blocked on the write path — `SMCFanControlPlane` answers
+`.notBuilt` and every write verb throws, so there is nowhere to put the fans to return them from.
+Driven end to end against the scripted plane by `LeaseTeardownTests` and
+`SupervisedFanAuthorityTests`.
+
+**2. `kill -9` on the helper: launchd restarts it, and the reconciliation pass runs and logs what
+it found.** *Executes: now, read-only on `Mac16,5` for the restart-and-pass-runs half; the restore
+itself during E3/E4 bring-up.* Needs no write path to observe: `KeepAlive = { SuccessfulExit =
+false }` and `RunAtLoad = true` are in the plist, and `HelperComposition.bringUp()` runs the pass
+before any supervisor starts, so what is observable now is launchd restarting the process and the
+pass emitting its reconciliation log lines. In practice this row is maintainer-only until a
+signing identity exists, because an unsigned Monitor build cannot be installed as a system daemon.
+
+**3. Helper crash restarts and reconciles a fan left in manual** — the full path, restore
+included. *Executes: during E3/E4 bring-up.* `StartupReconciliationTests` drives every branch over
+scripted firmware: restored exactly once, failed mode read and failed enumeration both falling
+back to the machine-wide verb, a second pass declined, budget exhaustion. None of it proves a real
+firmware takes the mode write.
+
+**4. App quit restores automatic control.** *Executes: during E3/E4 bring-up.* Same mechanism as
+row 1 — lease teardown on connection invalidation — and write-blocked for the same reason.
+
+**5. Logout restores automatic control.** *Executes: during E3/E4 bring-up.* The orderly signal
+path. `SignalTeardownTests` covers the handler body end to end over the scripted plane; signal
+*delivery* is asserted at the source by `SignalTeardownTripwireTests` rather than tested,
+deliberately, because installing the real source would apply `SIG_IGN` to the test runner.
+
+**6. Restart restores automatic control.** *Executes: during E3/E4 bring-up.* As row 5, plus row
+17's boot-start half.
+
+**7. Shutdown restores automatic control.** *Executes: during E3/E4 bring-up.* As row 5. This is
+also the row that would exercise ADR 0011's unverified assumption that manual mode does not
+persist across a power cycle.
+
+**8. Thermal emergency reaches a real maximum and hands back on a real cool-down.** *Executes:
+during E3/E4 bring-up.* `ThermalEmergencyTests` drives the scripted SMC to exactly the ceiling, to
+the next representable value above it, into the hysteresis band and to the release threshold,
+asserting engage, maximum-in-one-write, restore, whole-lease revocation, and the next acquire
+refused. No fan has ever been commanded.
+
+**9. Reclamation behaviour: what the system actually does to a fan Aeolus is holding, and a fan's
+real step response.** *Executes: during E3/E4 bring-up.* Unobserved.
+`ReclamationLimits.actualToleranceFraction` is set against a warm-up measurement rather than a
+commanded step, which is why § 5's primary signal is written-target-versus-read-back and the
+actual-versus-target check is report-only (#119).
+
+**10. `Ftst` semantics: whether sleep resets the Apple Silicon force key, and where the unlock
+must re-run.** *Executes: during E3/E4 bring-up.* Explicitly **not** retired by the read-only lid
+close: [SMC-RESEARCH.md](SMC-RESEARCH.md) records that the `Ftst` half is untouched, because
+nothing had set `Ftst` for a wake to reset. A firmware reset of a bit that was never set is
+unobservable, and setting it requires the write path.
+
+**11. Lid-close sleep/wake: does the `io_connect_t` survive, and do reads resume on the same
+handle.** *Executes: **done** for the read path — see [SMC-RESEARCH.md](SMC-RESEARCH.md),
+"Sleep/wake and the read connection — observed, one lid close, read path only (issue #68)";
+**open** for the helper's own handle.* #68 asked which of three outcomes happens and the first one
+did: the handle survived and reads resumed at every wake, with no error and no hang. Seven sleeps
+and seven wakes — one clamshell plus six maintenance sleeps — with the fans at a true 0 RPM
+through the dark wakes and for 38 s after the full wake, the first non-zero reading of the ~4 s
+spin-up being 109.13 RPM. The helper's own handle stays open: it carries write authority, the
+capture involved no `IORegisterForSystemPower` round trip, and #198's reconnect path was never
+exercised by it.
+
+**12. `ContinuousClock` delta across a real sleep** — does it advance while the machine is asleep.
+*Executes: now, read-only on `Mac16,5` ([#210](https://github.com/blamechris/Aeolus/issues/210)).*
+Needs no write path and no helper: a small logging process sampling the clock across one lid close
+settles it. The lid-close capture did **not** sample it. This is the assumption ADR 0007 records
+as unverified and the one § 4's TTL backstop rests on; if it degrades, the bound is the lease's
+own remaining TTL — at most `AeolusXPCValidation.leaseTTLRange.upperBound`, 120 s, and 30 s for a
+client taking `Lease.defaultTimeToLive`.
+
+**13. Critical-sensor plausibility across a dark wake** — do the curated keys read truthfully, not
+merely successfully. *Executes: now, read-only on `Mac16,5`
+([#210](https://github.com/blamechris/Aeolus/issues/210)).* The lid-close capture sampled seven fan
+keys and no temperature keys, through a 42-minute dark wake with real dissipation and no airflow,
+while § 1's lease gate and § 3 both depend on those sensors. Proving a read succeeded is not
+proving it is plausible.
+
+**14. IOKit `willSleep`/`didWake` delivery count with the helper actually running across a lid
+close.** *Executes: now, read-only on `Mac16,5`
+([#209](https://github.com/blamechris/Aeolus/issues/209)).* **Unmeasured**, and said plainly
+because it is easy to assume row 15 answered it: the helper was **not running** during the
+capture, so the `pmset` log proves the machine slept seven times and proves nothing about how many
+notification round trips a root daemon receives. `SystemPowerLimits.acknowledgementBudget` is
+spent once per delivery, so that count is the multiplier on § 4's exposure. Observable without a
+write path, since the helper's writes are refused today. `IOKitSystemPowerObserver` itself is the
+one thing no automated test can reach.
+
+**15. Sleep/wake cadence per lid close** — how often § 4's handback path is exercised. *Executes:
+**done** — see [SMC-RESEARCH.md](SMC-RESEARCH.md) and
+[#209](https://github.com/blamechris/Aeolus/issues/209).* One clamshell sleep plus six maintenance
+sleeps per lid close, seven wakes, several under a minute, cycles of 9–255 s, roughly four cycles
+an hour while charging.
+
+**16. `SMAppService` accepts `KeepAlive` and `RunAtLoad` in a daemon plist.** *Executes:
+maintainer-only (needs the Developer ID signing identity).* Both keys are present and pinned by
+`LaunchDaemonPlistTests`, along with a six-key exact allowlist. Whether the registration API
+accepts them is recorded as an assumption in ADR 0011 and cannot be settled without a signed
+install.
+
+**17. Boot-start: the helper starts at boot with `RunAtLoad`, and reconciles before serving.**
+*Executes: maintainer-only (needs the signing identity); the restore half additionally during
+E3/E4 bring-up.* `HelperCompositionTests.reconciliationSitsBetweenTheBindAndTheSupervisors` pins
+the ordering at the source, and `theServiceIsAdvertisedOnlyAfterBringUp` pins that clients cannot
+arrive first.
+
+**18. `fanctl reset --all` from SSH with the app not running.** *Executes: during E3/E4 bring-up,
+and additionally blocked on #15 wiring the CLI to the XPC message that already exists.* Two
+independent blockers: the CLI body throws `Not implemented yet — see epic E10b`, and the plane
+write throws `.controlPathNotBuilt`. The message itself exists, is authorisation-checked, and is
+exempt from the handshake gate — covered by `AnonymousListenerTests`, `HandshakeGateTests` and
+`ConnectionTeardownGateTests`. This row also carries #104's corrupted-helper-state case.
 
 ---
 
