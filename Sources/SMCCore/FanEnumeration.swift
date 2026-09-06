@@ -20,8 +20,10 @@
 ///
 /// ## Read-side only
 ///
-/// `public`, per `SMCCore`'s read-`public` / write-`package` rule: nothing here writes, and
-/// nothing here may grow a write. The three keys are a fan's *observed* speed and its
+/// `public`, per `SMCCore`'s read-`public` / write-`@_spi(FanWrite)` rule — see the
+/// 2026-09-06 amendment in [ADR 0008](../../docs/ADR/0008-write-authorisation.md) for why
+/// `package` could not be that gate. Nothing here writes, and nothing here may grow a
+/// write. The three keys are a fan's *observed* speed and its
 /// firmware-*declared* bounds. `F<n>Tg` and `F<n>Md` — target and mode, the write path —
 /// are deliberately absent, and adding them here would be a safety review rather than a
 /// refactor.

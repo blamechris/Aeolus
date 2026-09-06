@@ -32,7 +32,7 @@ import Foundation
 /// `SightednessProving` explains why handing this type the cycle's telemetry no longer
 /// compiles.
 ///
-/// **Still no write of any kind** — `SMCConnection.write` is `package`-scoped and still
+/// **Still no write of any kind** — `SMCConnection.write` is SPI-gated and still
 /// throws, and no write selector exists anywhere in `Sources/`.
 ///
 /// The split keeps this fully testable with no hardware. It no longer keeps it free of the
