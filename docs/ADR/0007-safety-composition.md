@@ -155,6 +155,62 @@ The composition tolerates either answer to the unverified clock question: if `Co
 out not to advance across sleep, the backstop degrades to "the lease survives with its remaining
 TTL", bounding post-wake exposure at the TTL rather than eliminating it.
 
+#### Amendment, 2026-09-06 ([#209](https://github.com/blamechris/Aeolus/issues/209)) — a budget
+expiry is not a firmware refusal
+
+§ 4's handback runs **once per sleep cycle, not once per lid close**. The
+[#68](https://github.com/blamechris/Aeolus/issues/68) capture recorded one clamshell sleep plus six
+maintenance sleeps inside 1 h 29 min (`SMC-RESEARCH.md`, "Sleep/wake and the read connection —
+observed"), so the whole of § 4 — seal, release, keystone, acknowledge — executes several times an
+hour with nobody present. The exposure is narrower than that cadence suggests:
+`abandonOutstandingHandbacks()` reads `releasing`, which only a lease teardown populates, so a cycle
+with no live lease records nothing. Whether cycles 2..N carry a lease is
+[#211](https://github.com/blamechris/Aeolus/issues/211)'s client policy, undecided.
+
+**Decision D17 is amended** (`SystemPowerResponder.swift`; `docs/SAFETY.md` § 4). A handback the
+acknowledgement budget gave up waiting for no longer earns the durable `.restoreToAutomaticFailed`
+refusal. It records a distinct *handback unconfirmed* state, which refuses a lease exactly as hard
+while it stands and is resolved by the outstanding restore's own completion: a success clears it, a
+refusal after `RestoreLimits.attemptBudget` converts it to the durable set through the path that
+already exists, and a restore that never returns leaves it standing for the life of the process.
+**A firmware refusal remains durable and is untouched.** The state is client-visible as an additive
+`ManualControlAvailability.Reason` case, with no `AeolusXPCVersion` bump, on the Consequences
+bullet below.
+
+The reason is that the two producers are evidence about different things. A five-second timeout is
+evidence about *time* — a wedged `io_connect_t`,
+[#68](https://github.com/blamechris/Aeolus/issues/68)'s case — and says nothing about whether the
+firmware would take the write; three refused attempts are evidence about the firmware. Collapsing
+them let the cheapest and most frequent event in the system mint its most durable state, and in the
+case where that state is *deserved* the restore's own return value already recorded it. The
+abandonment therefore added nothing except when it was wrong.
+
+**Rejected: clearing the refusal instead of not earning it.** Clearing on a later confirmed
+successful restore ([#189](https://github.com/blamechris/Aeolus/issues/189)'s shape) puts a
+read-back on or beside the keystone verb, which this ADR requires to depend on no trusted data;
+clearing is a move toward granting and so must be gated on positive evidence, which means new
+branches on the restore path for the case where the read-back itself fails. Clearing on the next
+full wake is refused twice over: § 4 forbids any firmware contact on wake, and
+`kIOMessageSystemHasPoweredOn` is delivered identically for dark and full wakes, so the predicate
+cannot be written. Leaving it durable as today was rejected on its honest cost — a healthy
+machine's five-second timeout permanently removing a fan from manual control, with
+`fanctl reset --all` no route out because the ledger is the helper's own state and launchd
+restarts only on a non-zero exit.
+
+**Assumption table, new row:** *"one lid close delivers N `.willSleep`/`.didWake` pairs to a
+registered process"* — **unmeasured**; the [#68](https://github.com/blamechris/Aeolus/issues/68)
+capture ran no registered process. Basis: `pmset` cadence only. If maintenance sleeps deliver no
+`kIOMessageSystemWillSleep`, the per-night exposure is one cycle rather than thirty; this amendment
+is unaffected either way, which is why it rests on the evidence argument rather than on the
+cadence.
+
+**Revisit when:** E3/E4 hardware shows `BoundedFanRestorer` returning success for a write the
+firmware did not take; or [#211](https://github.com/blamechris/Aeolus/issues/211) decides clients
+re-acquire on every dark wake, which raises the frequency without changing the reasoning.
+
+This amendment corrects a clause of a Proposed ADR rather than the decision it sits under.
+**Status stays Proposed.**
+
 ## Alternatives considered
 
 **In-process crash restore.** A signal handler calling IOKit is undefined behaviour on the one path
@@ -207,6 +263,7 @@ exactly that one.
 | `SMAppService` accepts `KeepAlive`/`RunAtLoad` in a daemon plist | Documented-plausible; unverifiable until a signing identity exists | Restart policy needs another mechanism — escalate before shipping self-renewal |
 | `F0Md`/`Ftst` are readable for reconciliation | Observed readable on `Mac16,5` | Reconciliation falls back to unconditional restore-to-automatic at startup — safe either way |
 | `io_connect_t` survives sleep/wake | **Observed for the read path only**, on `Mac16,5` / macOS 26.6.2 across seven Deep Idle sleep/wake transitions with zero read errors ([#68](https://github.com/blamechris/Aeolus/issues/68), `SMC-RESEARCH.md` § "Sleep/wake and the read connection — observed"). A write-authorised handle, hibernate/standby, and every other machine remain open | The reconnect-or-release rule is the answer either way, and stays: the helper's handle carries write authority and its reconnect path was not exercised |
+| One lid close delivers N `.willSleep`/`.didWake` pairs to a registered process | **Unmeasured** — the [#68](https://github.com/blamechris/Aeolus/issues/68) capture ran no registered process; basis is `pmset` cadence only | If maintenance sleeps deliver no `kIOMessageSystemWillSleep`, per-night exposure is one cycle rather than thirty; the [#209](https://github.com/blamechris/Aeolus/issues/209) amendment is unaffected either way |
 
 Every hardware observation above is `Mac16,5`. A row that names no build was taken on macOS
 26.5.2; a row that names its own build (the `io_connect_t` row, 26.6.2) was taken on that build.
@@ -214,4 +271,4 @@ Intel and M1/M2 ship `untested`.
 
 **Revisit when:** self-renewal ships (tombstone eviction coupling); the lid-close session contradicts
 the clock assumption; `SMAppService` rejects the restart keys; or any firmware is found to refuse a
-restore write while leaving a fan manual.
+restore write while leaving a fan manual; or the #209 delivery count is measured.
