@@ -18,6 +18,13 @@ import Security
 /// the exact-match requirement text tests in `ClientRequirementTextTests`, which is where
 /// a reader should look for clause-level coverage — not here.
 ///
+/// One of those has a second net as well: the identifier disjunction's precedence is also
+/// covered by `Tests/IntegrationTests/ClientAuthorisationProbeTests.swift`, which builds an
+/// ad-hoc probe wearing an Aeolus identifier and watches the unparenthesised text admit it
+/// outright — the direct evidence, where the text tests give the string mismatch. That
+/// suite also pins this control's blindness to that defect, so weakening or deleting it is
+/// a change to coverage this type is relied on not to provide.
+///
 /// Bounded and local by construction: one file on the boot volume, one
 /// `SecStaticCodeCheckValidity` call with `.noNetworkAccess`, no network, no unbounded
 /// wait.
