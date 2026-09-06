@@ -29,6 +29,70 @@ import Foundation
 ///
 /// `restoreAllToAutomatic` is the one deliberate exemption — see its own documentation.
 ///
+/// ## Messages are processed in the order they were sent
+///
+/// Per connection, **every message except `restoreAllToAutomatic`**, and it is the
+/// **helper's** guarantee rather than a client's discipline. A client may pipeline `hello`
+/// and `snapshot` without awaiting the handshake's reply: the `snapshot` is answered after
+/// the `hello` it was sent behind, and never with `handshakeRequired` for having overtaken
+/// it. The helper calls message N's reply block before it begins message N+1, so the answers
+/// come back in the order the questions went out. "Fire `hello` and `snapshot` together to
+/// save a round trip at launch" is therefore a legal optimisation and not a race a client
+/// has to know about.
+///
+/// **The panic path is exempt, and the exemption is the point of it.** Ordering is a
+/// precondition — "every message sent earlier on this connection has returned" — and
+/// `restoreAllToAutomatic` carries the fewest preconditions of anything here. It is
+/// **dispatched** the moment it arrives and is never queued behind another message, so a
+/// `snapshot` still in flight, or an operation that never returns at all, cannot hold it in
+/// a queue. What that buys is promptness, not a bounded reply: the restore's own body drops
+/// every lease and writes each fan back to automatic through the same control plane, so on
+/// the wedged `io_connect_t` of `docs/SAFETY.md` § 4 it is *started* immediately and its
+/// completion is still the plane's to give. A client may therefore send it at any time,
+/// including on a connection it has already pipelined work onto, and it is answered on its
+/// own schedule rather than the queue's. Its reply is the one that may arrive out of order.
+///
+/// **The hazard the exemption creates, stated plainly.** Because it is not in the queue, a
+/// message sent *before* it on the same connection may still be executing when the restore
+/// runs — and may therefore take effect *after* it, leaving a fan in manual that the panic
+/// was meant to clear. A client that needs the restore to be the last thing that happens
+/// must await its earlier replies first; the exemption buys promptness, not ordering.
+/// [#180](https://github.com/blamechris/Aeolus/issues/180) is the mechanism that makes the
+/// interleaving harmless — a write away from the safe state requires a live lease, checked
+/// at the write — and until it is built, this ordering is the client's to manage.
+///
+/// **What ordering costs a client that pipelines.** One message at a time is one message at
+/// a time in both directions: while message N is being handled, N+1 has not started, so a
+/// message the helper is slow to answer delays every later message on that connection until
+/// it returns. There is no queue bound and no per-message deadline
+/// ([#229](https://github.com/blamechris/Aeolus/issues/229)), so a client that pipelines
+/// faster than the helper answers grows its own backlog and should treat its round-trip
+/// latency as the budget for everything behind it — a heartbeat in particular. Two
+/// connections cost nothing to hold and are the way to keep an unrelated message off a slow
+/// one's queue; the panic path needs neither, being exempt.
+///
+/// Nothing between connections is ordered, and nothing will be: two connections are two
+/// clients as far as this boundary is concerned, and one must never be able to delay the
+/// other. Neither is `connectionDidInvalidate` a message, so a connection's death is not
+/// ordered against messages already in flight on it.
+///
+/// **Detecting a helper that predates this.** The guarantee is only usable by pipelining
+/// ahead of the handshake's reply, and every version and capability signal arrives *in* that
+/// reply — so it cannot be gated on one, whatever the version said. A client that pipelines
+/// must therefore treat `handshakeRequired` **on the pipelined message** as a retryable
+/// stale-helper signal and re-send it after the handshake, rather than as a contract
+/// violation. `HelloReply.capabilities` carries `"ordered-messages"` from a helper that
+/// honours this, which is what lets a client confirm afterwards, remember it, and skip the
+/// fallback next time.
+///
+/// The rule is stated here, on the contract, because that is where a client can rely on it.
+/// It is kept on the helper side, because rule 7 makes client-side validation a courtesy and
+/// helper-side validation the control — the same argument applied to sequencing. This
+/// strengthens what a compliant client may do without adding a message, a field, or any
+/// change to what crosses the wire — the capability string is an added `capabilities` entry,
+/// which the bump policy below lists as additive — so ``AeolusXPCVersion/current`` does not
+/// move for it. See [#90](https://github.com/blamechris/Aeolus/issues/90).
+///
 /// ## The lease, as the helper must implement it
 ///
 /// E2 defines these semantics; E5 implements them. They are written down here, on the
@@ -178,12 +242,16 @@ import Foundation
     /// key, and drops all leases. Must succeed even when the helper's state is
     /// inconsistent — this is what `fanctl reset --all` calls.
     ///
-    /// **Exempt from the handshake gate** — never from the authorisation gate — and its
-    /// semantics are frozen at v1 permanently. Its only expressible effect is the safe
-    /// state, so a version fence that stopped a panicked user's older `fanctl` from
-    /// restoring automatic control would be a safety mechanism defeating safety. The
-    /// panic path carries the fewest preconditions of anything in this protocol, by
-    /// design.
+    /// **Exempt from the handshake gate** — never from the authorisation gate — **and from
+    /// the per-connection ordering above**, and its semantics are frozen at v1 permanently.
+    /// Its only expressible effect is the safe state, so a version fence that stopped a
+    /// panicked user's older `fanctl` from restoring automatic control would be a safety
+    /// mechanism defeating safety. The panic path carries the fewest preconditions of
+    /// anything in this protocol, by design — which is why it is not queued behind messages
+    /// sent before it: a message still in flight is a precondition, and a message that never
+    /// returns is a permanent one. The exemption is over *dispatch*: a message pipelined
+    /// ahead of this one may still complete after it, so a client that wants this to be the
+    /// last effect on the connection awaits its earlier replies first.
     func restoreAllToAutomatic(reply: @escaping @Sendable (Error?) -> Void)
 }
 
