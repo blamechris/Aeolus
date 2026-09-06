@@ -161,7 +161,10 @@ struct XPCDeclarationFingerprintTests {
     /// The property that makes the pin usable: reformatting is not a contract change.
     ///
     /// Held against fixtures rather than against the real file, so it keeps holding once
-    /// `AeolusXPCProtocol.swift` is formatted the one way `swift format` writes it.
+    /// `AeolusXPCProtocol.swift` is formatted the one way `swift format` writes it. The
+    /// second fixture differs from the first by every formatting move available — a wrapped
+    /// parameter list, a different indent, a blank line, a doc comment, a trailing comment,
+    /// a block comment, and a trailing comma — and must fingerprint identically.
     @Test("Reformatting the declaration does not change the fingerprint")
     func formattingDoesNotChangeTheFingerprint() {
         let compact = """
@@ -178,7 +181,8 @@ struct XPCDeclarationFingerprintTests {
                 func apply(
                     settings: Data,
                     id: String,
-                    reply: @escaping @Sendable (Error?) -> Void
+
+                    reply: @escaping @Sendable (Error?) -> Void,
                 )
 
                 func snapshot(  // trailing comment
