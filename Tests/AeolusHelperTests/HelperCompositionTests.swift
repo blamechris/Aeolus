@@ -781,9 +781,21 @@ extension HelperCompositionTests {
     /// A retain has nothing to elide: the count goes up and never comes down. The process
     /// never returns, so it is the honest statement of a process-lifetime object. The
     /// composition is a `struct` and cannot be retained that way, so it is stored instead —
-    /// a store to a `static` is an observable side effect, and it matters more than it
-    /// looks: all three supervisors run their loop under `Task.detached { [weak self] … }`,
-    /// so that value is their only strong holder.
+    /// a store to a `static` is an observable side effect, and what it alone keeps alive is
+    /// `powerObserver`'s registration with the power-management root, `signalTeardown`'s
+    /// `DispatchSourceSignal` owners, and the `SMCConnection` handle behind `plane`. It is
+    /// *not* the supervisors' loops: those capture their collaborators strongly and keep
+    /// running whether or not the supervisor object survives, so naming `[weak self]` as the
+    /// reason — as this comment and `main()`'s both once did — was a claim a reader could
+    /// check and find false.
+    ///
+    /// ## Position, not just presence
+    ///
+    /// Each of the three lines is asserted to be followed by `dispatchMain()` in `main()`'s
+    /// body, because a retain after the call that never returns is a retain that never
+    /// happens. The first version of this test checked the position of the composition store
+    /// alone while its failure message spoke for all three, so both retains could be moved
+    /// below `dispatchMain()` — reinstating #92 exactly — with the whole suite green.
     ///
     /// **Mutation A:** delete `_ = Unmanaged.passRetained(delegate)`. Run: red.
     /// **Mutation B:** delete `_ = Unmanaged.passRetained(listener)`. Run: red.
@@ -792,6 +804,11 @@ extension HelperCompositionTests {
     /// `withExtendedLifetime((authorisation, helper, delegate, listener)) { dispatchMain() }`,
     /// which is what this asserts is *not* there. Run: red on all three, which is the
     /// condition being mutated rather than the code it watches.
+    /// **Mutation E:** move `_ = Unmanaged.passRetained(delegate)` and
+    /// `_ = Unmanaged.passRetained(listener)` from before `dispatchMain()` to after it. Run:
+    /// red on the position assertion — the mutation the first version of this test survived.
+    /// **Mutation F:** move `processLifetimeComposition = helper` below `dispatchMain()`.
+    /// Run: red.
     @Test("The process-lifetime objects are retained before dispatchMain")
     func theProcessLifetimeObjectsAreRetainedBeforeDispatchMain() throws {
         let code = Self.strippingWhitespace(try Self.mainSource())
@@ -818,17 +835,27 @@ extension HelperCompositionTests {
             """)
 
         // Ordering, which the three assertions above cannot express: a retain after the
-        // call that never returns is a retain that never happens.
+        // call that never returns is a retain that never happens. Each of the three lines
+        // is checked on its own — asserting it of one left the other two free to move below
+        // `dispatchMain()` with this test still green.
         let body = try #require(
             Self.body(ofFunctionMatching: "static func main", in: try Self.mainSource()),
             "AeolusHelperMain no longer has a main() to order the retains against")
         let stripped = Self.strippingWhitespace(body)
-        let retainsBeforeDispatch =
-            (stripped.range(of: "processLifetimeComposition=helper")?.upperBound).map {
+        for held in [
+            "Unmanaged.passRetained(delegate)",
+            "Unmanaged.passRetained(listener)",
+            "processLifetimeComposition=helper",
+        ] {
+            let precedesDispatch = (stripped.range(of: held)?.upperBound).map {
                 stripped[$0...].contains("dispatchMain()")
             }
-        #expect(
-            retainsBeforeDispatch == true,
-            "the retains no longer all precede dispatchMain(), which never returns")
+            #expect(
+                precedesDispatch == true,
+                """
+                `\(held)` no longer precedes dispatchMain(), which never returns — so it \
+                never runs and the object it was holding is held by nothing (#92).
+                """)
+        }
     }
 }

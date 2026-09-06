@@ -115,14 +115,22 @@ enum AeolusHelperMain {
         // `helper` is a `struct`, so there is no object to retain — `Unmanaged` takes a
         // class. It is parked in process-lifetime storage instead: a store to a `static`
         // is an observable side effect and a real strong reference to every mechanism the
-        // composition holds. That matters more than it looks: all three supervisors run
-        // their loop under `Task.detached { [weak self] … }`, so this value is their only
-        // strong holder, and a composition released here is a safety subsystem released
-        // with it. `authorisation` needs no separate hold — it is an `enum`, and the
+        // composition holds.
+        //
+        // What dies with it is not the supervisors' loops. Those run under
+        // `Task.detached { [weak self] … }` but capture their collaborators — the emergency
+        // latch, the watchdog, the authority, the clock, the log — *strongly*, so a released
+        // supervisor object keeps looping. What the composition alone holds is the
+        // machinery underneath: `powerObserver`'s registration with the power-management
+        // root (§ 4 stops hearing sleep and wake), `signalTeardown`'s `DispatchSourceSignal`
+        // owners (a `DispatchSourceSignal` released by ARC is cancelled, so `SIGTERM` stops
+        // being served at the moment the machine is shutting down), and the `SMCConnection`
+        // handle behind `plane` that every one of those loops writes through.
+        // `authorisation` needs no separate hold — it is an `enum`, and the
         // `ConnectionAdmission` it resolved to is stored on the delegate above.
         //
         // `HelperCompositionTests.theProcessLifetimeObjectsAreRetainedBeforeDispatchMain`
-        // is the tripwire on all three lines.
+        // is the tripwire on all three lines, and on their position before `dispatchMain()`.
         processLifetimeComposition = helper
 
         // Never returns. The listener runs on libdispatch, so the main thread's only job
@@ -132,13 +140,23 @@ enum AeolusHelperMain {
 
     /// Holds the composition for the life of the process. See `main()`.
     ///
-    /// `nonisolated(unsafe)` because it is written exactly once, on the main thread, before
-    /// `dispatchMain()` is called and therefore before any connection exists to read it —
-    /// and it is never read at all. The alternative shapes are worse: a `let` cannot be
-    /// assigned after the graph is built, and a lock would suggest contention that the
-    /// write-once-then-never ordering rules out.
-    nonisolated(unsafe) private static var processLifetimeComposition:
-        HelperComposition<SMCFanControlPlane>?
+    /// `@MainActor`, which is what makes this store need no unsafe claim: the `main()` of an
+    /// `@main` type is main-actor-isolated, so the one write below is checked by the
+    /// compiler rather than asserted past it. `nonisolated(unsafe)` was the first spelling
+    /// and was wrong twice over — CLAUDE.md rule 10 does not admit an unsafe claim in this
+    /// target, and `.swiftlint.yml`'s `no_unchecked_sendable_in_helper` does not match
+    /// `nonisolated(unsafe)`, so it would have been an *unreviewed* claim rather than a
+    /// reviewed one.
+    ///
+    /// The store is safe because **nothing reads it**. It exists only to pin the value for
+    /// the process lifetime. The ordering argument that stood here — "before `dispatchMain()`
+    /// and therefore before any connection exists" — was false: `bringUp` resumes the
+    /// listener three statements earlier, so the Mach service is already advertised when
+    /// this runs. If a reader is ever added, isolation stops being a formality and this
+    /// declaration has to be revisited with it.
+    ///
+    /// A `let` is not available: it cannot be assigned after the graph is built.
+    @MainActor private static var processLifetimeComposition: HelperComposition<SMCFanControlPlane>?
 
     /// Brings the safety subsystem up, then advertises the Mach service — in that order,
     /// and never the other one.
