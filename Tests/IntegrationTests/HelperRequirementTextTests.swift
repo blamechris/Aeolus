@@ -304,10 +304,12 @@ struct HelperRequirementPinningTests {
 
         switch inspection {
         case .noTeamIdentifier:
-            #expect(outcome == .failure(.runningProcessHasNoTeamIdentifier))
-            #expect(
-                HelperPinningRefusal.runningProcessHasNoTeamIdentifier
-                    .description.contains("Team ID"))
+            guard case .failure(let refusal) = outcome else {
+                Issue.record("a host with no Team ID should refuse, got \(outcome)")
+                return
+            }
+            #expect(refusal == .runningProcessHasNoTeamIdentifier)
+            #expect(refusal.description.contains("Team ID"))
         case .inspectionFailed(let status):
             #expect(outcome == .failure(.selfInspectionFailed(status)))
         case .teamIdentifier(let team):

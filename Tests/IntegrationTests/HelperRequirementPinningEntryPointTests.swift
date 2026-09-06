@@ -77,8 +77,10 @@ struct HelperMirrorSpecificationTests {
     /// the failure this suite is most likely to suffer is the specification being moved or
     /// reformatted — and an empty clause list would make the comparisons below pass against
     /// an empty requirement, which is exactly the vacuous shape the suite exists to rule
-    /// out. The three tests at the end of this suite are the ones that prove that: they run
-    /// the scan against documents that are damaged in each of these ways.
+    /// out. The five tests at the end of this suite are the ones that prove that: they run
+    /// the scan against documents damaged in each of these four ways — `blockMalformed`
+    /// gets two, since "no fence at all" and "a neighbour's fence read as this marker's"
+    /// are distinct failures that a single guard must catch both of.
     enum SpecificationScanFailure: Error, Equatable {
         /// ADR 0005 carries no such marker: the specification is gone or was renamed.
         case markerAbsent(String)
@@ -102,7 +104,14 @@ struct HelperMirrorSpecificationTests {
             throw SpecificationScanFailure.markerAbsent(marker)
         }
         let afterMarker = lines[lines.index(after: markerIndex)...]
-        guard let openIndex = afterMarker.firstIndex(where: { $0.hasPrefix("```") }) else {
+        // Bounded to the few lines immediately after the marker, not the rest of the
+        // document: an unbounded search finds a *neighbour's* fence when the marker's own
+        // block is deleted, and reads that neighbour's content as if it were this variant's
+        // — the downstream-guard-masks-upstream shape #220's delta review named. The ADR's
+        // own layout is marker, one blank line, opening fence; four lines of slack is
+        // generous without reaching into the next variant's block.
+        let searchWindow = afterMarker.prefix(4)
+        guard let openIndex = searchWindow.firstIndex(where: { $0.hasPrefix("```") }) else {
             throw SpecificationScanFailure.blockMalformed(marker)
         }
         let body = lines[lines.index(after: openIndex)...]
@@ -158,6 +167,51 @@ struct HelperMirrorSpecificationTests {
                 marker: Self.releaseMarker,
                 in: "# An ADR that says nothing about the mirror\n"
             )
+        }
+    }
+
+    /// The one failure mode `SpecificationScanFailure` names that had no test until #220's
+    /// delta review: a marker with no fenced block after it at all, rather than one that is
+    /// merely empty.
+    @Test("A marker with no fenced block anywhere after it fails the scan")
+    func aMissingFencedBlockIsAFailure() {
+        #expect(throws: SpecificationScanFailure.blockMalformed(Self.releaseMarker)) {
+            try Self.specifiedText(
+                marker: Self.releaseMarker,
+                in: "\(Self.releaseMarker)\n\nno fence follows this marker at all.\n"
+            )
+        }
+    }
+
+    /// The scenario the delta review's evidence actually described: a marker whose own
+    /// fenced block was deleted, with a *different* variant's block sitting later in the
+    /// same document. An unbounded forward search for the opening fence treats that later
+    /// block as if it belonged to this marker and reads its content as the specification —
+    /// the downstream-guard-masks-upstream shape, because `blockListsNoClauses` and
+    /// `blockPinsNoTeam` both still have something non-vacuous to fire on or pass, and
+    /// nothing ever reports that the fence belongs to a different marker entirely.
+    ///
+    /// **Mutation:** replace `searchWindow` with `afterMarker` (drop the `.prefix(4)`
+    /// bound) in `specifiedText`. Run: red — `\(Self.debugMarker)`'s block below is found
+    /// and read as this marker's, and the call returns successfully instead of throwing.
+    @Test("A deleted block does not silently borrow a later marker's fence")
+    func aDeletedBlockDoesNotBorrowALaterMarkersFence() {
+        let document = [
+            Self.releaseMarker,
+            "",
+            "the block that used to follow this marker is gone; only prose remains",
+            "here, spanning several lines, so nothing found from here on is this",
+            "variant's own fenced block, only a neighbour's borrowed by mistake",
+            "",
+            Self.debugMarker,
+            "",
+            "```text",
+            "certificate leaf[subject.OU] = \"\(Self.placeholder)\"",
+            "```",
+        ].joined(separator: "\n")
+
+        #expect(throws: SpecificationScanFailure.blockMalformed(Self.releaseMarker)) {
+            try Self.specifiedText(marker: Self.releaseMarker, in: document)
         }
     }
 

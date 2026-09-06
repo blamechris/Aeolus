@@ -68,8 +68,8 @@ was self-referential: it asserted that the builder produces the string its autho
 commit, which defends against later drift but could never have caught a requirement that was wrong
 on day one.
 
-`HelperRequirementTextTests` reads the two blocks below and asserts the builder produces exactly
-them, so this section and `Sources/AeolusXPC/ClientAuthorisation/HelperRequirementText.swift`
+`HelperMirrorSpecificationTests` reads the two blocks below and asserts the builder produces
+exactly them, so this section and `Sources/AeolusXPC/ClientAuthorisation/HelperRequirementText.swift`
 cannot drift apart silently. The `<!-- helper-requirement:… -->` markers are that test's anchors:
 moving them is fine, deleting them fails the suite.
 
