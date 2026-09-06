@@ -93,10 +93,19 @@ extension AeolusXPCFault {
     /// by the helper's own dependencies, not by a client, so there is no client-chosen
     /// string steering a log line. `FaultText.displayable` still sanitises it at render.
     ///
+    /// **Bounded, not refused, and bounded here rather than at render.**
+    /// `String(describing:)` over an arbitrary `Error` has no ceiling by construction, and
+    /// this arm exists to catch errors nobody anticipated — including from layers E5 has yet
+    /// to add. What it builds is embedded in `userInfo` by `asNSError()` and re-encoded by
+    /// `NSXPCConnection`, so a ceiling that only applied when a label was drawn would apply
+    /// after the thing had already crossed a privilege boundary at full size (#93).
+    /// Truncated rather than refused, because this text is the diagnosis: `helperFailed`
+    /// keeps its permission to quote what it saw, with a limit on how much.
+    ///
     /// Never "success". A path that cannot say what went wrong still has to say that
     /// something did.
     static func crossing(_ error: Error) -> AeolusXPCFault {
         if let fault = error as? AeolusXPCFault { return fault }
-        return .helperFailed(detail: String(describing: error))
+        return .helperFailed(detail: FaultDetailBounds.bounded(String(describing: error)))
     }
 }

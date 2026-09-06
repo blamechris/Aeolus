@@ -100,10 +100,17 @@ public enum AeolusXPCValidation {
     /// that asymmetry is the wanted one. A payload that omits a TTL is a client that did
     /// not say how long it wants the fans, and the helper should not decide that for it.
     ///
+    /// The envelope is bounded before anything is decoded — see `AeolusXPCPayloadBounds`.
+    /// The field caps below bound a request the decoder already built; this bounds what the
+    /// decoder is handed.
+    ///
     /// - Parameter payload: The JSON the client sent.
     /// - Returns: The decoded request.
-    /// - Throws: `AeolusXPCFault.malformedPayload`.
+    /// - Throws: `AeolusXPCFault.malformedPayload`, for an over-size envelope as well as
+    ///   for JSON that does not decode.
     public static func decodeLeaseRequest(from payload: Data) throws -> LeaseRequest {
+        try AeolusXPCPayloadBounds.requireWithinEnvelope(
+            payload, limit: AeolusXPCPayloadBounds.maxLeaseRequestBytes)
         do {
             return try AeolusXPCCoding.decoder().decode(LeaseRequest.self, from: payload)
         } catch {
@@ -215,10 +222,15 @@ public enum AeolusXPCValidation {
     /// owns the enumeration and the clamp, not to a pure function over the payload. E2
     /// has no write path for it to be acceptable *to*; E5 owns that check.
     ///
+    /// The envelope is bounded before anything is decoded — see `AeolusXPCPayloadBounds`.
+    ///
     /// - Parameter payload: The JSON the client sent.
     /// - Returns: The decoded settings, in the order the client sent them.
-    /// - Throws: `AeolusXPCFault.malformedPayload`.
+    /// - Throws: `AeolusXPCFault.malformedPayload`, for an over-size envelope as well as
+    ///   for JSON that does not decode.
     public static func decodeFanSettings(from payload: Data) throws -> [FanSetting] {
+        try AeolusXPCPayloadBounds.requireWithinEnvelope(
+            payload, limit: AeolusXPCPayloadBounds.maxFanSettingsBytes)
         do {
             return try AeolusXPCCoding.decoder().decode([FanSetting].self, from: payload)
         } catch {
