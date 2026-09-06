@@ -8,10 +8,9 @@ import Foundation
 /// `SMAppService` actually reports for the privileged helper.
 ///
 /// `registrationStatus` is never derived from the stored intent: a preference that says
-/// "on" while the registrar has never actually registered anything — true of every build
-/// today, since `SystemLoginItemRegistrar` is a stub awaiting direct review, see that
-/// type's documentation — must still show the honest answer, not the wish. Per
-/// `CLAUDE.md` rule 6.
+/// "on" while macOS reports `.requiresApproval`, `.notRegistered`, or a refusal — the
+/// normal case for an ad-hoc development build — must still show the honest answer, not
+/// the wish. Per `CLAUDE.md` rule 6.
 @MainActor
 public final class LaunchAtLoginController: ObservableObject {
     /// The system's own answer, sourced from `LoginItemRegistering.status` alone.
@@ -24,8 +23,8 @@ public final class LaunchAtLoginController: ObservableObject {
     private let preferences: PreferencesController
 
     /// - Parameters:
-    ///   - registrar: The `SMAppService.mainApp` seam. Defaults to the real (stubbed)
-    ///     conformer. Tests inject an in-memory double.
+    ///   - registrar: The `SMAppService.mainApp` seam. Defaults to the real conformer.
+    ///     Tests inject an in-memory double.
     ///   - preferences: Where the user's intent is persisted. Not owned by this type —
     ///     `PreferencesController` already owns every other preference, and intent here
     ///     is exactly that: a preference, not launch-at-login-specific state.

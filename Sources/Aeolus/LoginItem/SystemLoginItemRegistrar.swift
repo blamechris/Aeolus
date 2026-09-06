@@ -1,52 +1,41 @@
-/// The real `SMAppService.mainApp` conformer for launch-at-login — **deliberately not
-/// implemented here**.
+import ServiceManagement
+
+/// The real `SMAppService.mainApp` conformer for launch-at-login.
 ///
-/// ## Why this file exists in this shape
+/// ## Written under direct review
 ///
-/// `#64` builds the preference toggle, its persisted state, `LoginItemRegistering`, and
-/// an in-memory test double — all ordinary application work. The ruling recorded on
-/// `#11` is explicit that the actual `SMAppService.mainApp.register()`/`.unregister()`
-/// call site is written under direct review, not by an unsupervised implementer agent,
-/// even though `.mainApp` itself (unprivileged, no entitlement, no daemon, no root) is
-/// squarely in this epic's scope. This type is that call site's placeholder: the
-/// reviewed shape will fill in the bodies below, never a working implementation an agent
-/// produced anyway under a different name.
+/// `#64` built everything around this type — the preference toggle, its persisted intent,
+/// `LoginItemRegistering`, `LaunchAtLoginController`, and an in-memory test double — as
+/// ordinary application work. The ruling recorded on `#11` reserves this one call site
+/// for direct review rather than an unsupervised implementer, even though `.mainApp` is
+/// the unprivileged login-item API: no entitlement, no daemon, no root, and structurally
+/// unrelated to the privileged helper's `SMAppService.daemon(plistName:)` registration.
+/// The bodies below are that reviewed call site.
 ///
-/// ## What "truthful" means for a stub
+/// ## What it claims, and what it does not
 ///
-/// Per `CLAUDE.md` rule 6 — never claim control that is not held — `status` must not
-/// report `.enabled`, `.notRegistered`, or any other system-confirmed state it never
-/// actually asked `SMAppService` for. It reports `.unavailable` unconditionally, and
-/// `register()`/`unregister()` both throw rather than silently succeeding: a caller that
-/// ignored the thrown error and assumed success is exactly the failure this stub exists
-/// to prevent. See `LaunchAtLoginController`, which never treats a thrown error here as
-/// anything other than a failure to report.
+/// `status` is `SMAppService.mainApp.status` mapped through `LoginItemStatus.init(_:)`,
+/// the same forward-tolerant mirror shape `HelperDaemonStatus` uses for the daemon: a
+/// value this SDK does not recognise is reported as `.unavailable` carrying the raw value,
+/// never as a plausible-looking known case (`CLAUDE.md` rule 6).
+///
+/// `register()` and `unregister()` returning without throwing means macOS accepted the
+/// request — not that the item is enabled. `status` is the only answer to that, and
+/// `LaunchAtLoginController` republishes it after every call rather than inferring it
+/// from the call's outcome. A build macOS declines to register — an ad-hoc-signed
+/// development build is the usual case — surfaces as a thrown error and an honest status,
+/// which is exactly what the controller's `lastFailure` exists to show.
 @MainActor
 public final class SystemLoginItemRegistrar: LoginItemRegistering {
-    public init() {}
+    private let service: SMAppService
 
-    public var status: LoginItemStatus {
-        // Filled in under direct review (#64): read SMAppService.mainApp.status here and
-        // map it through a mirrored status enum — the same way HelperDaemonStatus mirrors
-        // SMAppService.Status for the privileged helper's own daemon(plistName:) surface.
-        .unavailable(
-            reason: "Launch-at-login is not yet wired to SMAppService.mainApp; see #64.")
+    public init() {
+        service = .mainApp
     }
 
-    public func register() throws {
-        // Filled in under direct review (#64): call SMAppService.mainApp.register() here.
-        throw LoginItemRegistrationError.notImplemented
-    }
+    public var status: LoginItemStatus { LoginItemStatus(service.status) }
 
-    public func unregister() throws {
-        // Filled in under direct review (#64): call SMAppService.mainApp.unregister()
-        // here.
-        throw LoginItemRegistrationError.notImplemented
-    }
-}
+    public func register() throws { try service.register() }
 
-/// Why `SystemLoginItemRegistrar` refused a request. `notImplemented` is its only case
-/// today — see that type's documentation for why.
-public enum LoginItemRegistrationError: Error, Sendable, Hashable {
-    case notImplemented
+    public func unregister() throws { try service.unregister() }
 }

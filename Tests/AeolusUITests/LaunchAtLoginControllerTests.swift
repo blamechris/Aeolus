@@ -51,9 +51,8 @@ struct LaunchAtLoginControllerTests {
 
     @Test(
         """
-        A registrar that always fails (true of every production build today, per \
-        SystemLoginItemRegistrar) never lets registrationStatus become .enabled just \
-        because the user's intent is "on"
+        A registrar whose request macOS refuses never lets registrationStatus become \
+        .enabled just because the user's intent is "on"
         """
     )
     func failingRegistrarNeverClaimsEnabled() {

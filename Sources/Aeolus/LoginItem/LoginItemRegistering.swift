@@ -1,22 +1,44 @@
+import ServiceManagement
+
 /// What Aeolus can truthfully say about whether it is registered to launch at login right
 /// now.
 ///
-/// Deliberately not a mirror of `SMAppService.Status` the way `HelperDaemonStatus` mirrors
-/// it for the privileged helper: the production conformer of `LoginItemRegistering`
-/// (`SystemLoginItemRegistrar`) does not call `SMAppService` at all yet — see that type's
-/// documentation for why — so there is nothing from the system to mirror. `.unavailable`
-/// is that conformer's only truthful answer today; the other cases exist so this seam is
-/// already shaped for the day a reviewed call site can report them for real, without a
-/// second protocol change.
+/// A mirror of `SMAppService.Status`, for the same reason `HelperDaemonStatus` mirrors it
+/// for the privileged helper: the system type is a closed set today and may not be
+/// tomorrow, and a value this SDK does not know must surface as "cannot say" rather than
+/// as a plausible-looking known case. The four named cases map one-to-one onto the
+/// system's; `.unavailable` is the forward-tolerant remainder and the seam's honest
+/// answer whenever the registrar cannot ask the system at all.
 public enum LoginItemStatus: Sendable, Hashable {
     case notRegistered
     case enabled
     case requiresApproval
     case notFound
-    /// The registrar cannot currently say — includes "this build's call site is not
-    /// implemented yet." Never mapped onto `.enabled`: per `CLAUDE.md` rule 6, a UI must
-    /// never report a control nothing is honouring.
+    /// The registrar cannot currently say — a status this build does not recognise, or a
+    /// conformer that cannot reach the system. Never mapped onto `.enabled`: per
+    /// `CLAUDE.md` rule 6, a UI must never report a control nothing is honouring.
     case unavailable(reason: String)
+
+    /// The forward-tolerant mapping from the system's answer. An unrecognised value is
+    /// carried onward with its raw value, never coerced onto a known case — the same
+    /// decoding rule `docs/ADR/0005-xpc-authorisation.md` sets for the fault vocabulary.
+    init(_ status: SMAppService.Status) {
+        switch status {
+        case .notRegistered:
+            self = .notRegistered
+        case .enabled:
+            self = .enabled
+        case .requiresApproval:
+            self = .requiresApproval
+        case .notFound:
+            self = .notFound
+        @unknown default:
+            self = .unavailable(
+                reason:
+                    "macOS reported a login-item status this build does not recognise "
+                    + "(raw value \(status.rawValue)).")
+        }
+    }
 }
 
 /// The `SMAppService.mainApp` operations launch-at-login performs, behind a seam — the
@@ -27,8 +49,8 @@ public enum LoginItemStatus: Sendable, Hashable {
 /// `.mainApp` is the unprivileged, no-entitlement, no-daemon, no-root login-item API — see
 /// `#64` and the ruling recorded on `#11` for why it is squarely in scope for this epic
 /// despite `.claude/agents/implementer.md`'s `SMAppService` restriction, which is a
-/// delegation boundary for one agent, not a project rule. What is *not* in scope for an
-/// unsupervised implementer is the call site itself — see `SystemLoginItemRegistrar`.
+/// delegation boundary for one agent, not a project rule. The call site itself,
+/// `SystemLoginItemRegistrar`, was written under direct review per that ruling.
 @MainActor
 public protocol LoginItemRegistering: AnyObject {
     /// What macOS currently reports, or the honest "cannot say" answer — never
