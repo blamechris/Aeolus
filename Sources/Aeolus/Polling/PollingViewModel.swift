@@ -50,7 +50,14 @@ import SMCCore
 @MainActor
 public final class PollingViewModel: ObservableObject {
     /// The smallest refresh interval this view model accepts — see `init`'s documentation.
-    public static let minimumRefreshInterval: TimeInterval = 0.1
+    ///
+    /// `nonisolated`: this is a compile-time constant, not instance state, and
+    /// `Preferences`/`PreferencesRefreshInterval` (`#64`) read it from a plain,
+    /// non-actor-isolated context so the same number backs both this view model's own
+    /// floor and the preference bound a user configures — see that type's documentation
+    /// for why they are deliberately the same value rather than two numbers that could
+    /// drift apart.
+    nonisolated public static let minimumRefreshInterval: TimeInterval = 0.1
 
     @Published public private(set) var fans: [FanPollingReading] = []
     @Published public private(set) var sensors: [SensorPollingReading] = []

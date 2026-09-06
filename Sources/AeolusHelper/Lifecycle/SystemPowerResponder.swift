@@ -47,10 +47,13 @@ enum SystemPowerLimits {
     ///   the handback, so a fan that crossed the sleep in manual and comes back hot is taken
     ///   to full scale by the thermal override. Above the ceiling only — it is not a restore.
     /// - **Startup reconciliation at the next helper start**
-    ///   ([#164](https://github.com/blamechris/Aeolus/issues/164)), which is what actually
-    ///   returns such a fan to automatic. It is not built yet, and until it is, a fan in this
-    ///   state stays manual until something else moves it — `docs/RECOVERY.md` is the user's
-    ///   route out.
+    ///   ([#164](https://github.com/blamechris/Aeolus/issues/164), landed in #199), which is
+    ///   what returns such a fan to automatic. **This bullet said it "is not built yet" until
+    ///   #104, and that was stale**: `HelperComposition.bringUp()` runs the pass before any
+    ///   supervisor starts and it reads `F<n>Md` for every enumerated fan. What it cannot do
+    ///   is land a write — the restore is refused with `.controlPathNotBuilt` — so on today's
+    ///   build such a fan is refused durably rather than recovered, and `docs/RECOVERY.md` is
+    ///   the user's route out until E3/E4 ship a write path.
     ///
     /// Acknowledging anyway is still the right answer, and the argument is unchanged by the
     /// correction: holding the sleep open buys nothing, because the kernel sleeps the machine

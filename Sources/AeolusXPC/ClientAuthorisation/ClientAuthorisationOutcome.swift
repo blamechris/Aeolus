@@ -82,8 +82,16 @@ public enum ClientAuthorisationRefusal: Sendable, Hashable {
     /// out later.
     case requirementDidNotCompile(OSStatus)
 
-    /// The negative control could not be run: the probe binary was missing or unreadable.
-    /// Inconclusive is not the same as passing, so it refuses.
+    /// The negative control reached no verdict. Either the probe binary could not be opened
+    /// — missing or unreadable, `errSecCSStaticCodeNotFound` — or it opened and then could
+    /// not be evaluated against the requirement at all: `errSecCSUnsigned` (-67062) for a
+    /// probe carrying no signature, `errSecCSSignatureFailed` (-67061) for one whose
+    /// signature does not match its bytes. In every one of those the requirement was never
+    /// consulted, so nothing was learned about it. Inconclusive is not the same as passing,
+    /// so it refuses.
+    ///
+    /// The status is the one thing that tells those apart in the fault log, which is why it
+    /// is carried rather than flattened.
     case negativeControlUnavailable(OSStatus)
 
     /// The negative control fired. An Apple-signed binary from another team satisfied the
@@ -134,7 +142,7 @@ extension ClientAuthorisationRefusal: CustomStringConvertible {
         case .requirementDidNotCompile(let status):
             return "the requirement text did not compile (OSStatus \(status))"
         case .negativeControlUnavailable(let status):
-            return "the startup negative control could not run (OSStatus \(status))"
+            return "the startup negative control reached no verdict (OSStatus \(status))"
         case .negativeControlAdmittedForeignCode:
             return
                 "the startup negative control fired: an Apple-signed binary from another "
