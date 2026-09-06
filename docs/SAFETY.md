@@ -79,7 +79,17 @@ lease that has to be actively held.
 - It renews on a heartbeat, every 10 seconds by default.
 - If the lease expires for **any** reason — the client crashed, was `kill -9`'d, the GUI
   hung, the user logged out, a deadlock stalled the renewal — the helper restores every
-  affected fan to automatic and clears the Apple Silicon force key.
+  affected fan to automatic.
+
+**That bullet ended "and clears the Apple Silicon force key" until #104, and it was wrong.** An
+ordinary per-lease teardown restores only the fans that lease covered and leaves `Ftst` untouched:
+`KeystoneRestoreAttempt.restoreOnce(fanAt:)` issues `restoreToAutomatic(.fan(index))` and never
+`.everyFan`, and the type's own documentation gives the reason. `Ftst` is machine-wide rather than
+per-fan (§ 4), so clearing it belongs to the machine-wide restore verb that § 6's orderly exit and
+§ 7's panic path use — and is withheld from a per-lease teardown, which may be running alongside
+another client's still-live lease over a different fan. Every `.everyFan` call site in `Sources/`
+is one of those non-lease paths. The correction is recorded here rather than made silently, for
+the reason the status block above gives.
 
 The heartbeat interval is a third of the TTL so that two consecutive missed beats are
 tolerated. A single scheduling hiccup must not surrender control; a dead client must.
@@ -126,14 +136,35 @@ this document:
 - **Nothing clears it.** The ledger is append-only for the life of the helper process, so a
   later restore the firmware *does* accept leaves the refusal standing. #189 owns the
   clearing path; § 7's panic restore is the first caller that will need it.
+- **Lease teardown is not its only producer.** § 6's startup reconciliation reaches the same
+  terminal state independently
+  ([ADR 0011](ADR/0011-reconciliation-and-foreign-manual-control.md)): a fan found in manual at
+  bring-up whose handback the firmware refuses is recorded in reconciliation's own
+  `handbackRefused` set rather than in `LeaseAuthority.restoreAbandoned`, and reached before any
+  client connected rather than after one disconnected. It is watched by nothing for the same
+  reason — § 3 included, because reconciliation engaged nothing and there is no registry entry for
+  the emergency bridge to find ([#201](https://github.com/blamechris/Aeolus/issues/201)).
+  `Fan.ManualControlAvailability.Reason.restoreToAutomaticFailed` documents both producers on the
+  case itself.
 
 A helper restart is the route out, and § 6's reconciliation is what makes it safe: the next
 process reads `F<n>Md` before it serves anything and hands back whatever it finds in manual,
 so the fan this refusal named is no longer one whose mode nothing has read. Built in #164,
 and **still not a route out on today's build** — the restore it issues is refused with
 `.controlPathNotBuilt` until E3/E4 ship a write path, so the fan is carried into the new
-process as `.foreignManualControl` instead. That is a more accurate refusal, not a recovery.
-`docs/RECOVERY.md` is the user-facing version.
+process as a second, independent `.restoreToAutomaticFailed`: reconciliation's own producer of
+the terminal state above. That is a more accurate refusal, not a recovery. `docs/RECOVERY.md` is
+the user-facing version.
+
+**This paragraph named `.foreignManualControl` as that carried-over state until #104, and it named
+the softer of two refusals.** `StartupReconciliation.refusalForGrant` answers
+`.restoreToAutomaticFailed` from `handbackRefused` before the fresh-read branch that can produce
+`.foreignManualControl` is reachable at all, and a test asserts that ordering.
+`.foreignManualControl` is the *different* answer, and its case is narrow: a fan reconciliation
+found **automatic** at bring-up that a fresh grant-time read then finds in manual — something else
+took it after the pass ran. The distinction matters here rather than being a naming detail,
+because the refusal actually carried over is the permanent terminal state this section has just
+said nothing watches and nothing clears.
 
 *Tested by:* unit tests on expiry arithmetic, including a wall clock moved in either
 direction and a monotonic jump (`LeaseExpiryTests`); tests on the supervisor's *schedule* as
@@ -325,7 +356,15 @@ is a configuration turning a safety mechanism off, which this document says cann
 The same downward-only rule governs the ramp cap in § 8, which is client data carried
 inside a settings payload, and it is applied helper-side after the payload crosses.
 
-User curves cannot override this. It is checked after curve evaluation, not before.
+**User curves cannot override this**, and the mechanism is not a check sequenced around a curve.
+This line read *"It is checked after curve evaluation, not before"* until #104, and it was wrong
+twice over: it stated an ordering fact about a pipeline that does not exist — there is no curve
+evaluator, as `FanKit.RampGovernor` says outright and as § 8's hysteresis entry on the not-built
+list above implies — and it described a design an E3/E4 implementer could have gone on to build.
+What was actually built is level-based pre-emption. § 3 is `SafetyActorLevel.thermalEmergency`,
+which outranks the control loop, and it writes through `SafetyActorWriter`, a writer that reads no
+curve and holds no ramp governor at all; the control loop's own writer is a different type that
+does not declare the verbs § 3 calls. See [Precedence](#precedence).
 
 *Tested by:* unit tests asserting that a request to raise a ceiling is rejected, and that a
 NaN or an infinity falls back to the compiled ceiling rather than disabling the mechanism
@@ -429,9 +468,17 @@ the fan, in the order it can act:
 - **§ 3 still acts on it above the ceiling.** The thermal override's registry entry is
   deliberately retained across the handback, so such a fan coming back hot is taken to full
   scale. Above the ceiling only — that is an override, not a restore.
-- **Startup reconciliation at the next helper start** (#164) is what actually returns it to
-  automatic, and it is not built yet. Until it is, a fan in this state stays manual until
-  something else moves it, and [RECOVERY.md](RECOVERY.md) is the user's route out.
+- **Startup reconciliation at the next helper start** (#164, landed in #199) is what returns it
+  to automatic. **This bullet said it "is not built yet" until #104, and that was stale** — the
+  same failure the status block above records against § 4 and § 5, corrected in place here for
+  the same reason and not quietly rewritten. It is built and wired:
+  `HelperComposition.bringUp()` runs the pass before any supervisor starts, and it reads
+  `F<n>Md` for every enumerated fan. What it still cannot do is land a *write* —
+  `SMCFanControlPlane` answers `FanWriteCapability.notBuilt` and the restore is refused with
+  `.controlPathNotBuilt` — so on today's build the fan is refused durably rather than recovered.
+  Once E3/E4 ship a write path, a helper restart is the automatic route out;
+  [RECOVERY.md](RECOVERY.md) remains the user-facing procedure and is what covers today's
+  build.
 
 **The helper never silently re-asserts manual control on wake.** This section instructed the
 opposite until #119 — "re-acquire, and re-run the Apple Silicon unlock sequence", called not
