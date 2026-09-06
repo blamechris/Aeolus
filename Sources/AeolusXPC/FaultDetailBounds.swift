@@ -11,7 +11,11 @@ import Foundation
 ///
 /// So the bound is applied where the detail is **constructed** as well —
 /// `AeolusXPCFault.crossing(_:)`, whose whole purpose is to catch errors nobody
-/// anticipated — and again where one arrives, in `AeolusXPCFault.init(from:)`.
+/// anticipated — and again where one arrives, in `AeolusXPCFault.init(from:)`, for *every*
+/// arm that carries free text rather than for `helperFailed` alone. The decode-side bound
+/// is justified by a peer that need not be this project's helper, and such a peer chooses
+/// which arm it sends: bounding one of five would name an adversary and then leave it four
+/// doors.
 ///
 /// ## Truncated, not refused
 ///
@@ -84,12 +88,37 @@ public enum FaultDetailBounds {
     static func truncated(_ text: String, characters: Int, bytes: Int) -> String {
         var result = ""
         var byteCount = 0
-        for character in text.prefix(characters) {
+        // Both budgets are floored at zero rather than trusted. Each caller subtracts the
+        // marker's width from a limit before calling, and `String.prefix` **traps** on a
+        // negative count — so a limit smaller than the marker would abort the process
+        // rather than return a short string, which is not a failure mode worth having in a
+        // function on the error path.
+        for character in text.prefix(max(0, characters)) {
             let width = String(character).utf8.count
-            guard byteCount + width <= bytes else { break }
+            guard byteCount + width <= max(0, bytes) else { break }
             result.append(character)
             byteCount += width
         }
         return result
+    }
+}
+
+/// Decoding a free-text field with the ceiling already applied.
+///
+/// An extension rather than a bare call at each site because `AeolusXPCFault.init(from:)`
+/// has five arms carrying free text and the bound has to be on every one of them. Writing
+/// `FaultDetailBounds.bounded(try container.decode(String.self, forKey: .detail))` five
+/// times is five chances to leave one out — and the one left out is the one an adversary
+/// picks, since choosing which arm arrives is a matter of changing one wire code.
+extension KeyedDecodingContainer {
+
+    /// Decodes a required free-text field, bounded.
+    func decodeBoundedText(forKey key: Key) throws -> String {
+        FaultDetailBounds.bounded(try decode(String.self, forKey: key))
+    }
+
+    /// Decodes an optional free-text field, bounded when it is there.
+    func decodeBoundedTextIfPresent(forKey key: Key) throws -> String? {
+        try decodeIfPresent(String.self, forKey: key).map(FaultDetailBounds.bounded)
     }
 }

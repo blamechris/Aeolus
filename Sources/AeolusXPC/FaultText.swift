@@ -38,8 +38,9 @@ enum FaultText {
     /// a reader can tell "the helper said something unprintable" from "the helper said
     /// nothing".
     ///
-    /// Both caps apply. Text over either renders truncated with an ellipsis; text so dense
-    /// that not one character fits inside the byte cap renders as the marker.
+    /// Both caps apply, and the ellipsis is counted *inside* them rather than added past
+    /// them, so a rendered string is never longer than the constant that named its ceiling.
+    /// Text so dense that not one character fits inside the byte cap renders as the marker.
     static func displayable(
         _ text: String,
         limit: Int = maxRenderedLength,
@@ -62,7 +63,19 @@ enum FaultText {
         // The cut itself is `FaultDetailBounds.truncated` — the same one the construction
         // -time bound uses. Two implementations of "stop on a grapheme boundary inside a
         // byte budget" would be two chances to split a scalar.
-        let cut = FaultDetailBounds.truncated(trimmed, characters: limit, bytes: byteLimit)
+        //
+        // The marker's own room comes out of the budget rather than being added past it.
+        // That is `FaultDetailBounds.bounded`'s rule and was not this function's until #93's
+        // review: cutting to the full `limit` and then appending returned 201 characters and
+        // 803 bytes against constants named `maxRenderedLength` and `maxRenderedUTF8Bytes`,
+        // and `oneBoundNotTwo` could not see it because it compares the two constants and
+        // not the two cuts. `renderingAndConstructionCutIdentically` is what fails if the
+        // two rules diverge again.
+        let cut = FaultDetailBounds.truncated(
+            trimmed,
+            characters: limit - FaultDetailBounds.truncationMarker.count,
+            bytes: byteLimit - FaultDetailBounds.truncationMarker.utf8.count
+        )
         guard !cut.isEmpty else { return unprintableMarker }
         return cut + FaultDetailBounds.truncationMarker
     }

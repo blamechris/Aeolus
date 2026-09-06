@@ -22,12 +22,22 @@ import Foundation
 /// ## Free text in a fault
 ///
 /// `detail` and the raw `unknown` code are free text, and free text ends up in a log line
-/// and a UI label. It is sanitised at **render** time by `errorDescription`, not at
-/// decode time, so diagnostics keep the bytes that actually arrived while nothing
-/// unprintable reaches a human. That is the opposite of the rule for client-supplied
-/// input in `AeolusXPCValidation`, which refuses rather than repairs — and deliberately
-/// so. A request that is not clean should not be honoured; a refusal that is not clean
-/// should still be *shown*, because the alternative is a user staring at nothing.
+/// and a UI label. Two different things are done to it, in two different places, and they
+/// are not interchangeable.
+///
+/// It is **bounded** at decode time, since #93: `init(from:)` puts every free-text field
+/// through `FaultDetailBounds.bounded`. `asNSError()` embeds this type's own JSON in
+/// `userInfo` and `NSXPCConnection` re-encodes that, so a peer — or anything that can forge
+/// an `NSError` in this domain — otherwise hands a client an unbounded string that has
+/// already crossed. Text inside the caps arrives byte for byte as it was sent; only text
+/// past them is cut, with a visible marker.
+///
+/// It is **sanitised** at render time by `errorDescription`, which is a different job:
+/// stripping what would turn one log line into two, or reverse the reading order of the
+/// rest of it. That is the opposite of the rule for client-supplied input in
+/// `AeolusXPCValidation`, which refuses rather than repairs — and deliberately so. A
+/// request that is not clean should not be honoured; a refusal that is not clean should
+/// still be *shown*, because the alternative is a user staring at nothing.
 ///
 /// Fault details never quote the offending value back. A detail describes the violation
 /// ("contains a control character"), so nothing a client sent can steer a log line.
@@ -202,9 +212,12 @@ extension AeolusXPCFault: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let code = try container.decode(String.self, forKey: .code)
         guard let known = KnownCode(rawValue: code) else {
+            // Bounded after the lookup, not before it: a known code is short by
+            // construction, and a truncated code would turn a recognisable refusal into an
+            // unrecognisable one.
             self = .unknown(
-                code: code,
-                detail: try container.decodeIfPresent(String.self, forKey: .detail)
+                code: FaultDetailBounds.bounded(code),
+                detail: try container.decodeBoundedTextIfPresent(forKey: .detail)
             )
             return
         }
@@ -217,11 +230,11 @@ extension AeolusXPCFault: Codable {
                 helperRange: try container.decode(ProtocolVersionRange.self, forKey: .helperRange)
             )
         case .malformedPayload:
-            self = .malformedPayload(detail: try container.decode(String.self, forKey: .detail))
+            self = .malformedPayload(detail: try container.decodeBoundedText(forKey: .detail))
         case .invalidParameter:
             self = .invalidParameter(
-                name: try container.decode(String.self, forKey: .name),
-                detail: try container.decode(String.self, forKey: .detail)
+                name: try container.decodeBoundedText(forKey: .name),
+                detail: try container.decodeBoundedText(forKey: .detail)
             )
         case .manualControlUnavailable:
             let raw = try container.decode(String.self, forKey: .reason)
@@ -241,16 +254,15 @@ extension AeolusXPCFault: Codable {
         case .boundsImplausible:
             self = .boundsImplausible(
                 fanIndex: try container.decode(Int.self, forKey: .fanIndex),
-                detail: try container.decode(String.self, forKey: .detail)
+                detail: try container.decodeBoundedText(forKey: .detail)
             )
         case .helperFailed:
-            // The one detail in this vocabulary that is free text rather than a fixed
-            // sentence, so the one that arrives unbounded. Bounded here as well as at
-            // construction because a peer — or anything that can forge an `NSError` in this
-            // domain — is not the helper whose ceiling was applied on the way out.
-            self = .helperFailed(
-                detail: FaultDetailBounds.bounded(
-                    try container.decode(String.self, forKey: .detail)))
+            // The arm #93 was written for — the only one this project *builds* from an
+            // arbitrary error rather than from a fixed sentence, so the only one that is
+            // also bounded at construction, in `crossing(_:)`. On the way in it gets no
+            // special treatment: which code arrives is the sender's choice, and a bound
+            // that only covers the arm an honest helper would have used is not a bound.
+            self = .helperFailed(detail: try container.decodeBoundedText(forKey: .detail))
         }
     }
 }
