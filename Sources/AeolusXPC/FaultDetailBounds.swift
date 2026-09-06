@@ -33,9 +33,11 @@ import Foundation
 ///
 /// They were `FaultText`'s until #93 needed the same pair at construction time, and two
 /// numbers that must agree with nothing enforcing it is a disagreement waiting to happen.
-/// `FaultText` now names these; its rendering behaviour is unchanged, which is the point —
-/// stripping control characters and bidirectional overrides is a different job from
-/// bounding a length, and this does not replace it.
+/// `FaultText` now names these. Where the marker's room is spent moved here in #93's
+/// review — `displayable` cuts to `limit - truncationMarker.count` /
+/// `byteLimit - truncationMarker.utf8.count` rather than to the full budget, so `displayable`
+/// and `bounded` now cut identically. Stripping control characters and bidirectional
+/// overrides is still a different job from bounding a length, and this does not replace it.
 public enum FaultDetailBounds {
 
     /// Longest fault detail this project carries, in characters.
@@ -92,10 +94,14 @@ public enum FaultDetailBounds {
         // marker's width from a limit before calling, and `String.prefix` **traps** on a
         // negative count — so a limit smaller than the marker would abort the process
         // rather than return a short string, which is not a failure mode worth having in a
-        // function on the error path.
+        // function on the error path. Guard-rail only: every in-tree caller (`bounded`
+        // above, `FaultText.displayable`) passes a budget derived from `maxLength` /
+        // `maxUTF8Bytes`, both far larger than the marker, so nothing in this repository
+        // reaches either floor and neither is exercised by a test.
+        let byteBudget = max(0, bytes)
         for character in text.prefix(max(0, characters)) {
             let width = String(character).utf8.count
-            guard byteCount + width <= max(0, bytes) else { break }
+            guard byteCount + width <= byteBudget else { break }
             result.append(character)
             byteCount += width
         }

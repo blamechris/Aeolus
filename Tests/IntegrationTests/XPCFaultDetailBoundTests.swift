@@ -139,14 +139,28 @@ struct XPCFaultDetailBoundTests {
 
     /// Every free-text string a decoded fault carries, so one test can cover every arm and
     /// adding an arm that forgets the bound fails here rather than passing unnoticed.
+    ///
+    /// No `default:` arm, deliberately: `AeolusXPCFault` is not `@testable`-exempt from
+    /// exhaustiveness, so a new case added to it is a compile error in this file until this
+    /// switch is taught what the case carries — the one shape of "forgets the bound" a
+    /// non-exhaustive switch cannot catch. #219's review confirmed the gap: with a
+    /// `default: return []` arm here, `manualControlUnavailable`'s `reason` decoded
+    /// unbounded and the whole suite stayed green.
     static func freeText(_ fault: AeolusXPCFault) -> [String] {
         switch fault {
+        case .handshakeRequired: return []
+        case .versionMismatch: return []
         case .malformedPayload(let detail): return [detail]
         case .invalidParameter(let name, let detail): return [name, detail]
+        case .manualControlUnavailable(let reason): return [reason.wireValue]
+        case .leaseExpired: return []
+        case .leaseUnknown: return []
+        case .leaseNotHeldByThisConnection: return []
+        case .thermalEmergencyActive: return []
+        case .reclaimedBySystem: return []
         case .boundsImplausible(_, let detail): return [detail]
         case .helperFailed(let detail): return [detail]
         case .unknown(let code, let detail): return [code] + (detail.map { [$0] } ?? [])
-        default: return []
         }
     }
 
@@ -163,6 +177,7 @@ struct XPCFaultDetailBoundTests {
         arguments: [
             #"{"code":"malformedPayload","detail":"@"}"#,
             #"{"code":"invalidParameter","name":"@","detail":"@"}"#,
+            #"{"code":"manualControlUnavailable","reason":"@"}"#,
             #"{"code":"boundsImplausible","fanIndex":0,"detail":"@"}"#,
             #"{"code":"helperFailed","detail":"@"}"#,
             #"{"code":"@","detail":"@"}"#,

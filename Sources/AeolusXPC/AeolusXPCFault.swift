@@ -237,9 +237,10 @@ extension AeolusXPCFault: Codable {
                 detail: try container.decodeBoundedText(forKey: .detail)
             )
         case .manualControlUnavailable:
-            let raw = try container.decode(String.self, forKey: .reason)
             self = .manualControlUnavailable(
-                reason: ManualControlAvailability.Reason(wireValue: raw)
+                reason: ManualControlAvailability.Reason(
+                    wireValue: try container.decodeBoundedText(forKey: .reason)
+                )
             )
         case .leaseExpired:
             self = .leaseExpired
