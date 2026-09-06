@@ -244,8 +244,13 @@ extension AeolusXPCFault: Codable {
                 detail: try container.decode(String.self, forKey: .detail)
             )
         case .helperFailed:
+            // The one detail in this vocabulary that is free text rather than a fixed
+            // sentence, so the one that arrives unbounded. Bounded here as well as at
+            // construction because a peer — or anything that can forge an `NSError` in this
+            // domain — is not the helper whose ceiling was applied on the way out.
             self = .helperFailed(
-                detail: try container.decode(String.self, forKey: .detail))
+                detail: FaultDetailBounds.bounded(
+                    try container.decode(String.self, forKey: .detail)))
         }
     }
 }
