@@ -28,8 +28,13 @@ struct PayloadEnvelopeGateTests {
     /// the size rather than the syntax.
     private func oversize(_ payload: Data, limit: Int) -> Data {
         var bytes = Array(payload)
+        #expect(bytes.count <= limit + 1, "fixture is already past the cap it must exceed")
+        // Floored at zero, because `Array(repeating:count:)` **traps** on a negative count:
+        // a fixture that outgrew its cap would abort the whole run rather than fail the
+        // expectation above, and an aborted run says nothing about which test was wrong.
         bytes.insert(
-            contentsOf: Array(repeating: UInt8(ascii: " "), count: limit + 1 - bytes.count), at: 1)
+            contentsOf: Array(repeating: UInt8(ascii: " "), count: max(0, limit + 1 - bytes.count)),
+            at: 1)
         return Data(bytes)
     }
 
@@ -40,6 +45,13 @@ struct PayloadEnvelopeGateTests {
     /// The message that matters most: `hello` is not behind the handshake gate, because it
     /// *is* the gate, so this is the only refusal reachable on a connection that has proved
     /// nothing about itself yet.
+    ///
+    /// The suite's "never reaches the authority" claim covers the other two tests and not
+    /// this one, and the assertion that said so here has been removed rather than left to
+    /// read as coverage: `hello(payload:)` decodes, records the negotiated version and
+    /// replies, calling nothing on the authority on *any* path. An `authority.calls.isEmpty`
+    /// beside it is green with the envelope check deleted — it was carried entirely by the
+    /// fault assertion, which is what actually goes red.
     @Test("An over-size hello is refused on a connection that has not handshaken")
     func helloIsBoundedBeforeTheHandshake() async throws {
         let authority = RecordingFanAuthority()
@@ -53,7 +65,6 @@ struct PayloadEnvelopeGateTests {
             reply.fault
                 == .malformedPayload(
                     detail: sizeDetail(limit: AeolusXPCPayloadBounds.maxHelloRequestBytes)))
-        #expect(await authority.calls.isEmpty)
     }
 
     @Test("An over-size lease request is refused and never reaches the authority")

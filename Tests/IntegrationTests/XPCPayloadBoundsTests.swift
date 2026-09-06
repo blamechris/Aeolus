@@ -46,8 +46,13 @@ struct XPCPayloadBoundsTests {
     static func padded(_ payload: Data, toBytes total: Int) -> Data {
         var bytes = Array(payload)
         #expect(bytes.count <= total, "fixture is already larger than the target size")
+        // Floored at zero rather than left to the expectation above. `#expect` records a
+        // failure and carries on, and `Array(repeating:count:)` **traps** on a negative
+        // count — so a fixture that outgrew its cap would abort the whole run instead of
+        // failing this one test, which is the harder failure to read.
         bytes.insert(
-            contentsOf: Array(repeating: UInt8(ascii: " "), count: total - bytes.count), at: 1)
+            contentsOf: Array(repeating: UInt8(ascii: " "), count: max(0, total - bytes.count)),
+            at: 1)
         return Data(bytes)
     }
 
@@ -197,6 +202,59 @@ struct XPCPayloadBoundsTests {
             } == "is not well-formed JSON")
     }
 
+    /// The ordering claim is made for all three entry points, so it is tested at all three.
+    ///
+    /// It was tested at `decodeHelloRequest` alone, and #219's review showed what that
+    /// bought: moving the size check to *after* the decoder in either of the other two left
+    /// the entire non-hardware suite green. The "one byte over" tests cannot see it — they
+    /// pad well-formed JSON, so the decoder succeeds and the size check then throws the
+    /// identical fault whichever order they run in. Only bytes that are over-size **and**
+    /// undecodable separate the two orders, and only the answer, not the fault code,
+    /// distinguishes them: both are `malformedPayload`.
+    ///
+    /// The decoder's own answer for the same byte shape is measured here rather than
+    /// written down, because it differs per entry point — `[FanSetting]` refuses an object
+    /// where it wanted an array, `LeaseRequest` refuses the syntax — and a test that hard
+    /// -codes one of those is a test that breaks when Foundation rewords an error.
+    @Test("An over-size lease payload that is not JSON at all is refused by the size check")
+    func leaseSizeCheckRunsBeforeTheDecoder() {
+        let overSize = Data(
+            repeating: UInt8(ascii: "{"), count: AeolusXPCPayloadBounds.maxLeaseRequestBytes + 1)
+        let decoderAnswer = Self.refusedMalformedDetail {
+            _ = try AeolusXPCValidation.decodeLeaseRequest(from: Data(repeating: 0x7B, count: 16))
+        }
+
+        let detail = Self.refusedMalformedDetail {
+            _ = try AeolusXPCValidation.decodeLeaseRequest(from: overSize)
+        }
+
+        #expect(detail == Self.sizeDetail(limit: AeolusXPCPayloadBounds.maxLeaseRequestBytes))
+        #expect(
+            decoderAnswer != nil, "the decoder has to be a live answer for this to mean anything")
+        #expect(detail != decoderAnswer, "the decoder answered, so it ran first")
+    }
+
+    /// `apply`'s half of the same claim. This is the one that matters most of the three:
+    /// its cap is 486 KB, so a decoder running first is the largest amplification the
+    /// helper offers a signed-but-buggy client — which is the whole of #91.
+    @Test("An over-size settings payload that is not JSON at all is refused by the size check")
+    func settingsSizeCheckRunsBeforeTheDecoder() {
+        let overSize = Data(
+            repeating: UInt8(ascii: "{"), count: AeolusXPCPayloadBounds.maxFanSettingsBytes + 1)
+        let decoderAnswer = Self.refusedMalformedDetail {
+            _ = try AeolusXPCValidation.decodeFanSettings(from: Data(repeating: 0x7B, count: 16))
+        }
+
+        let detail = Self.refusedMalformedDetail {
+            _ = try AeolusXPCValidation.decodeFanSettings(from: overSize)
+        }
+
+        #expect(detail == Self.sizeDetail(limit: AeolusXPCPayloadBounds.maxFanSettingsBytes))
+        #expect(
+            decoderAnswer != nil, "the decoder has to be a live answer for this to mean anything")
+        #expect(detail != decoderAnswer, "the decoder answered, so it ran first")
+    }
+
     // MARK: - The caps are not too tight
 
     /// The escape-expansion term, exercised by the only payload that can reach it: a
@@ -270,15 +328,22 @@ struct XPCPayloadBoundsTests {
     ///
     /// Every "one byte over" test above sizes its payload as `cap + 1`, so loosening the cap
     /// moves the test with it and the suite stays green while the bound stops bounding
-    /// anything. These are absolute ceilings on the ceilings: a pre-handshake envelope
-    /// belongs in kilobytes, and a settings payload — the largest thing this protocol
-    /// carries — under a megabyte. Neither is a derivation; both are the loosest value at
-    /// which the cap they guard still means something.
+    /// anything. These are absolute ceilings on the ceilings — not derivations, and each one
+    /// a round number.
+    ///
+    /// They are the *tightest* round number above each derived cap rather than the loosest
+    /// defensible one, which is a change #219's review argued for and it earns its keep: at
+    /// 64 KiB / 64 KiB / 1 MiB the whole set tolerated `headroomFactor` going from 2 to 3 —
+    /// a 50% loosening of all three caps at once, invisible to every other test in the file.
+    /// At 8 KiB / 12 KiB / 512 KiB that mutation is refused by the first two. The cost is
+    /// that a real growth in the derivation reaches this test first, which is the intended
+    /// direction: widening the envelope on the pre-handshake message should take an argument
+    /// and an edit here, not happen as a side effect of adding a field.
     @Test("The caps stay small enough to still be bounds")
     func capsStaySmallEnoughToBeBounds() {
-        #expect(AeolusXPCPayloadBounds.maxHelloRequestBytes < 64 * 1024)
-        #expect(AeolusXPCPayloadBounds.maxLeaseRequestBytes < 64 * 1024)
-        #expect(AeolusXPCPayloadBounds.maxFanSettingsBytes < 1024 * 1024)
+        #expect(AeolusXPCPayloadBounds.maxHelloRequestBytes < 8 * 1024)
+        #expect(AeolusXPCPayloadBounds.maxLeaseRequestBytes < 12 * 1024)
+        #expect(AeolusXPCPayloadBounds.maxFanSettingsBytes < 512 * 1024)
     }
 
     /// The one constant here that is a restatement of a number owned elsewhere.

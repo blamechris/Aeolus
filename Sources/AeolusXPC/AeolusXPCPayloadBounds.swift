@@ -27,10 +27,21 @@ import Foundation
 /// answer: a megabyte of spaces around a two-field object is not something a client of
 /// this protocol sends, and admitting it would leave the check with nothing to bound.
 ///
-/// The one expansion that *is* admitted in full is string escaping, because a peer need
-/// not be Foundation: a conforming encoder may write every UTF-16 code unit of a string as
-/// a six-byte `\uXXXX` escape, and several in common use do exactly that for every
-/// non-ASCII scalar. See `jsonEscapeExpansion`.
+/// The one expansion that *is* admitted in full is the escaping of string **values**,
+/// because a peer need not be Foundation: a conforming encoder may write every UTF-16 code
+/// unit of a string as a six-byte `\uXXXX` escape, and several in common use do exactly
+/// that for every non-ASCII scalar. See `jsonEscapeExpansion`.
+///
+/// Object **keys** are charged at their literal width, not their escaped width — an
+/// asymmetry, and a chosen one. `hello` and `acquireLease` absorb key escaping inside
+/// `headroomFactor`; the maximal `apply` shape does not, and saying otherwise would be the
+/// kind of claim this file exists to make checkable. Sixty-four fans each carrying a
+/// 32-point curve escape to roughly 489 KB against a cap of 486 KB, so a peer that escaped
+/// ASCII keys at exactly that shape would be refused. Charging keys at six would nearly
+/// double `apply`'s envelope to admit an encoder nobody ships: a JSON key here is one of
+/// this build's own ASCII schema names, and the encoders that motivate `jsonEscapeExpansion`
+/// escape non-ASCII scalars rather than ASCII ones. The narrower envelope on the largest
+/// message is worth more than that peer.
 ///
 /// ## Three caps, not one
 ///
