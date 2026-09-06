@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The Settings scene (`#64`): sensor selection, units, refresh interval, menu bar
@@ -19,8 +20,29 @@ struct PreferencesView: View {
     /// relaunch.
     @ObservedObject var menuBarViewModel: MenuBarViewModel
 
-    @StateObject private var pollingViewModel = PollingViewModel(
-        labelSource: CatalogSensorLabelSource.loadDefault())
+    @StateObject private var pollingViewModel: PollingViewModel
+
+    /// Reads `preferencesController.preferences.refreshInterval` once, at construction, to
+    /// seed this window's own `PollingViewModel` — the same "seed once at `init`, not on
+    /// every `body` evaluation" shape `MainView.init` uses for its own `PollingViewModel`
+    /// (`AeolusApp.swift`), and for the same reason: a `@StateObject` is constructed
+    /// exactly once for a given view identity, so leaving this at `PollingViewModel`'s
+    /// hardcoded 1 s default would mean opening Preferences always adds a poll at a
+    /// cadence the user's own Refresh Interval setting never reaches, however that
+    /// setting is configured.
+    init(
+        preferencesController: PreferencesController,
+        launchAtLoginController: LaunchAtLoginController,
+        menuBarViewModel: MenuBarViewModel
+    ) {
+        self.preferencesController = preferencesController
+        self.launchAtLoginController = launchAtLoginController
+        self.menuBarViewModel = menuBarViewModel
+        _pollingViewModel = StateObject(
+            wrappedValue: PollingViewModel(
+                labelSource: CatalogSensorLabelSource.loadDefault(),
+                refreshInterval: preferencesController.preferences.refreshInterval))
+    }
 
     var body: some View {
         TabView {
@@ -39,6 +61,15 @@ struct PreferencesView: View {
         .frame(width: 460, height: 360)
         .onAppear { pollingViewModel.start() }
         .onDisappear { pollingViewModel.stop() }
+        .onReceive(
+            NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+        ) { _ in
+            // The same re-read `HelperStatusView` performs for the privileged helper's own
+            // status, and for the identical reason: the approval that moves launch-at-login
+            // from "requires approval" to "enabled" — or a user removing it entirely — both
+            // happen in System Settings, which sends this app no notification when they do.
+            launchAtLoginController.refresh()
+        }
     }
 
     private var generalTab: some View {
@@ -82,7 +113,8 @@ struct PreferencesView: View {
                 value: Binding(
                     get: { preferencesController.preferences.refreshInterval },
                     set: { preferencesController.setRefreshInterval($0) }),
-                in: PreferencesRefreshInterval.minimum...PreferencesRefreshInterval.maximum
+                in: PreferencesRefreshInterval.minimum...PreferencesRefreshInterval.maximum,
+                step: 0.1
             ) {
                 Text("Refresh Interval")
             }
