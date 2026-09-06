@@ -204,7 +204,7 @@ exactly that one.
 | `ContinuousClock` advances across sleep | Swift documentation; **unverified on this machine and unverifiable without sleeping it** | Backstop degrades to ≤ TTL exposure post-wake; §4 remains load-bearing; nothing breaks |
 | `SMAppService` accepts `KeepAlive`/`RunAtLoad` in a daemon plist | Documented-plausible; unverifiable until a signing identity exists | Restart policy needs another mechanism — escalate before shipping self-renewal |
 | `F0Md`/`Ftst` are readable for reconciliation | Observed readable on `Mac16,5` | Reconciliation falls back to unconditional restore-to-automatic at startup — safe either way |
-| `io_connect_t` survives sleep/wake | Open ([#68](https://github.com/blamechris/Aeolus/issues/68)) | The reconnect-or-release rule is the answer either way |
+| `io_connect_t` survives sleep/wake | **Observed for the read path only**, on `Mac16,5` / macOS 26.6.2 across seven Deep Idle sleep/wake transitions with zero read errors ([#68](https://github.com/blamechris/Aeolus/issues/68), `SMC-RESEARCH.md` § "Sleep/wake and the read connection — observed"). A write-authorised handle, hibernate/standby, and every other machine remain open | The reconnect-or-release rule is the answer either way, and stays: the helper's handle carries write authority and its reconnect path was not exercised |
 
 Every hardware observation above is `Mac16,5` on macOS 26.5.2. Intel and M1/M2 ship `untested`.
 
