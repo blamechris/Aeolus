@@ -29,8 +29,51 @@ enum ClientAuthorisationFixtures {
     ]
 
     static func compiledRequirement(variant: ClientRequirementVariant) throws -> SecRequirement {
-        let text = try ClientRequirementText.build(teamIdentifier: team, variant: variant).get()
-        return try compile(text)
+        try compile(try text(variant: variant))
+    }
+
+    static func text(variant: ClientRequirementVariant) throws -> String {
+        try ClientRequirementText.build(teamIdentifier: team, variant: variant).get()
+    }
+
+    /// The production text with exactly one pair of parentheses removed: the ones around the
+    /// identifier disjunction.
+    ///
+    /// Derived from the production text rather than written out, so this is the real
+    /// requirement with one real defect in it. `and` binds tighter than `or`, so the result
+    /// parses as `(everything and one identifier) or (the other identifier …)` — and the
+    /// second alternative pins nothing at all.
+    ///
+    /// The `#require` is the vacuity guard: if the identifier clause is ever built some other
+    /// way, this stops silently returning the text unchanged and starts failing.
+    static func unparenthesisedIdentifierDisjunction(
+        variant: ClientRequirementVariant
+    ) throws -> String {
+        let alternatives = AeolusClientIdentifier.all
+            .map { "identifier \"\($0)\"" }
+            .joined(separator: " or ")
+        let built = try text(variant: variant)
+        try #require(built.contains("(\(alternatives))"))
+        return built.replacingOccurrences(of: "(\(alternatives))", with: alternatives)
+    }
+
+    /// Clauses of the Release requirement that a careless edit could drop, spelled as they
+    /// appear in the built text.
+    ///
+    /// Literals, because the builder assembles them privately — but literals that
+    /// `releaseTextDeleting` proves are still present before it removes one, so a clause that
+    /// changed shape turns this into a red test rather than a no-op deletion.
+    static let deletableConjuncts = [
+        "certificate leaf[subject.OU] = \"\(team)\"",
+        "certificate 1[field.1.2.840.113635.100.6.2.6] "
+            + "and certificate leaf[field.1.2.840.113635.100.6.1.13]",
+    ]
+
+    /// The Release text with one conjunct removed, `and` separator included.
+    static func releaseTextDeleting(_ conjunct: String) throws -> String {
+        let built = try text(variant: .release)
+        try #require(built.contains("\(conjunct) and "))
+        return built.replacingOccurrences(of: "\(conjunct) and ", with: "")
     }
 
     static func compile(_ text: String) throws -> SecRequirement {
@@ -143,10 +186,23 @@ struct AdHocSignedFixtures {
         try? FileManager.default.removeItem(at: directory)
     }
 
+    /// The signing tool every fixture in this file shells out to.
+    static let codesignPath = "/usr/bin/codesign"
+
+    /// Whether `codesign` is present and runnable on this host.
+    ///
+    /// It ships with macOS and with the Command Line Tools, so it is there on CI and on the
+    /// maintainer's machine alike; this exists so that a host where it is genuinely absent
+    /// skips the fixtures that need it with a reason on the record, rather than failing a
+    /// suite for a reason that has nothing to do with client authorisation.
+    static var isAvailable: Bool {
+        FileManager.default.isExecutableFile(atPath: codesignPath)
+    }
+
     /// Shared with `UnsignedBinaryFixture`, which strips a signature with the same tool.
     static func codesign(_ arguments: [String]) throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        process.executableURL = URL(fileURLWithPath: codesignPath)
         process.arguments = arguments
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -168,4 +224,49 @@ struct AdHocSignedFixtures {
         </dict>
         </plist>
         """
+}
+
+/// A copy of an Apple binary, ad-hoc re-signed to wear one of Aeolus's own client
+/// identifiers — no team, no certificate chain, and no Apple anchor over the new signature.
+///
+/// This is the probe the startup negative control does not have. `/bin/ls` is Apple-team
+/// platform code, so it can only catch a requirement that admits Apple platform binaries.
+/// This fixture is the other shape: code that is *not* Apple's and that claims to be
+/// `fanctl`. A requirement whose identifier disjunction lost its parentheses admits it
+/// outright, because `and` binds tighter than `or` and the trailing `identifier "…"` then
+/// stands alone as a complete alternative.
+///
+/// Built with `codesign --sign - --force --identifier` (`-s - -f -i`), which needs no
+/// signing identity and so works on CI. Nothing executes it; it is only ever read.
+struct AeolusIdentifiedProbeFixture {
+    let directory: URL
+    /// A real Mach-O, ad-hoc signed, whose designated identifier is `identifier`.
+    let path: String
+
+    /// One of the two identifiers the production requirement admits, taken from the
+    /// production constant rather than restated — a probe wearing a stale identifier would
+    /// be refused for the wrong reason and would prove nothing.
+    static let identifier = AeolusClientIdentifier.commandLine
+
+    static func make() throws -> AeolusIdentifiedProbeFixture {
+        let manager = FileManager.default
+        let directory = manager.temporaryDirectory
+            .appendingPathComponent("aeolus-identified-probe-\(UUID().uuidString)")
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let binary = directory.appendingPathComponent("client")
+        try manager.copyItem(
+            at: URL(fileURLWithPath: RequirementNegativeControl.systemProbePath),
+            to: binary
+        )
+        try AdHocSignedFixtures.codesign(
+            ["--sign", "-", "--force", "--identifier", Self.identifier, binary.path]
+        )
+
+        return AeolusIdentifiedProbeFixture(directory: directory, path: binary.path)
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: directory)
+    }
 }
