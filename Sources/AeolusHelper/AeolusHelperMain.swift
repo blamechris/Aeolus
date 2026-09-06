@@ -125,7 +125,7 @@ enum AeolusHelperMain {
         // root (§ 4 stops hearing sleep and wake), `signalTeardown`'s `DispatchSourceSignal`
         // owners (a `DispatchSourceSignal` released by ARC is cancelled, so `SIGTERM` stops
         // being served at the moment the machine is shutting down), and the `SMCConnection`
-        // handle behind `plane` that every one of those loops writes through.
+        // handle behind `plane` that every one of those loops reads through.
         // `authorisation` needs no separate hold — it is an `enum`, and the
         // `ConnectionAdmission` it resolved to is stored on the delegate above.
         //
