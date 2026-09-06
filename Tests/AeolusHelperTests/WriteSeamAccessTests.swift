@@ -240,9 +240,19 @@ struct WriteSeamAccessTests {
     /// for a different type.
     @Test("No declaration under Sources carries the package access level")
     func noSourceFileDeclaresPackageAccess() throws {
+        // An attribute run is permitted *before* `package` as well as after it, and a
+        // `(set)` modifier between `package` and the keyword. #226's delta review found the
+        // earlier form anchored `package` to the line start with attributes allowed only
+        // after it, so `@MainActor package func encode(…)` and `package private(set) var …`
+        // both escaped — and for the encode half of the seam they escape the prose tripwire
+        // below too, since that one only knows `package func write`.
+        let attributeRun = #"(?:@[A-Za-z_]\w*(?:\s*\([^)]*\))?\s+)*"#
         let pattern = try NSRegularExpression(
-            pattern: #"(?m)^\s*package\s+(?:@\w+\s+)*(?:final\s+|static\s+|nonisolated\s+)*"#
-                + #"(?:func|var|let|init|subinit|struct|enum|class|actor|protocol|typealias|"#
+            pattern: #"(?m)^\s*"# + attributeRun + #"package\s+"# + attributeRun
+                + #"(?:(?:final|static|nonisolated|class|lazy|weak|unowned|mutating|override"#
+                + #"|required|convenience|dynamic|indirect)\s+"#
+                + #"|(?:private|fileprivate|internal|package|public)\s*\(\s*set\s*\)\s+)*"#
+                + #"(?:func|var|let|init|struct|enum|class|actor|protocol|typealias|"#
                 + #"extension|subscript|associatedtype)\b"#)
 
         let files = try SeamScanner.swiftFiles()
