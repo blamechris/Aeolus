@@ -78,10 +78,12 @@ enum AeolusHelperMain {
         )
 
         let listener = NSXPCListener(machServiceName: AeolusXPCService.machServiceName)
-        // NSXPCListener holds its delegate weakly. `delegate` is a local of a function
-        // that never returns, which is what keeps it alive; a `listener.delegate = ...`
-        // with a temporary on the right-hand side would deallocate it immediately and
-        // every connection would be accepted with no delegate to configure it.
+        // NSXPCListener holds its delegate weakly. Nothing else here holds it strongly, so
+        // a deallocated `delegate` means `listener(_:shouldAcceptNewConnection:)` is never
+        // called and **every** connection is accepted with nothing to apply the
+        // code-signing requirement or set the exported object — the refuse-all path's own
+        // failure state, reached by accident. `AnonymousListenerHarness` holds its delegate
+        // explicitly for this reason and says so.
         //
         // The same rule is why the graph and the delegate are built *here* rather than
         // inside the bring-up task below: `main()` is the only frame in this process that
@@ -90,9 +92,22 @@ enum AeolusHelperMain {
 
         bringUp(helper, advertising: listener, log: log)
 
+        // `withExtendedLifetime` is what makes that a **guarantee** rather than an
+        // inference about codegen. Swift does not promise a local outlives its lexical
+        // scope: the optimiser may end a variable's lifetime after its last use, and
+        // `delegate`'s last use is the assignment above. No build has done it — the suite
+        // is green under `-O` too, and `dispatchMain()` never returning has been enough in
+        // practice — but "no optimiser has done this to us yet" is not the standard for
+        // the one line deciding whether a root daemon authenticates its clients (#92).
+        //
+        // All four, not just the delegate. `listener` and `authorisation` carry the same
+        // argument, and `helper` owns the running supervisors.
+        //
         // Never returns. The listener runs on libdispatch, so the main thread's only job
         // from here is to not exit.
-        dispatchMain()
+        withExtendedLifetime((authorisation, helper, delegate, listener)) {
+            dispatchMain()
+        }
     }
 
     /// Brings the safety subsystem up, then advertises the Mach service — in that order,
