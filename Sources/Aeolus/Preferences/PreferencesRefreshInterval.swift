@@ -4,8 +4,8 @@ import Foundation
 ///
 /// ## Why both ends are load-bearing, not just polite defaults
 ///
-/// The issue this bounds a config file to firmware's own truth, not the other way
-/// around: a preference is a courtesy over the SMC, never a promise to hammer it.
+/// These bounds tie a config file to firmware's own truth, not the other way around: a
+/// preference is a courtesy over the SMC, never a promise to hammer it.
 /// `fanctl watch --interval` (`Sources/fanctl/FanctlCommand.swift`) bounds itself the
 /// same way for the same reason — see `Fanctl.Watch.validate()` and its own
 /// `maxIntervalSeconds` — and this type is that same discipline applied to the app's own
