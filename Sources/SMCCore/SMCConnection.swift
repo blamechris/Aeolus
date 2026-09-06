@@ -54,15 +54,26 @@ public actor SMCConnection {
     //   honouring.
     //
     // - Note: Whether these attributes are actually stable across sleep/wake or a reboot
-    //   is **unverified** on this project's one development machine. ADR 0004 already
-    //   requires the write path to re-resolve byte order from a fresh `keyInfo(for:)` at
-    //   write time rather than trust an earlier enumeration, for exactly this reason.
-    //   This cache is a read-path performance optimisation only, and nothing in the write
-    //   path may come to rely on it. `close()` deliberately leaves it populated (see its
-    //   documentation); `invalidate()` is the explicit escape hatch for a caller who
-    //   suspects staleness. Nothing currently calls `invalidate()` automatically — wiring
-    //   it to a sleep/wake notification, if warranted, is a decision for whoever owns
-    //   that lifecycle, not this cache.
+    //   is still **unverified**, and the 2026-09-05 lid-close capture (issue #68) did not
+    //   settle it. Every fan key was already warm before that capture's first sleep and
+    //   every read after its seven sleep/wake transitions still decoded correctly, so the
+    //   cache was not observed to go wrong — but nothing re-fetched the metadata to
+    //   compare, so a stale-but-still-correct cache and a genuinely stable one are
+    //   indistinguishable in that data. See `docs/SMC-RESEARCH.md`, "Sleep/wake and the
+    //   read connection — observed". ADR 0004 already requires the write path to
+    //   re-resolve byte order from a fresh `keyInfo(for:)` at write time rather than trust
+    //   an earlier enumeration, for exactly this reason. This cache is a read-path
+    //   performance optimisation only, and nothing in the write path may come to rely on
+    //   it. `close()` deliberately leaves it populated (see its documentation);
+    //   `invalidate()` is the explicit escape hatch for a caller who suspects staleness.
+    //   Nothing currently calls `invalidate()` automatically, and #68 — on a read-only
+    //   handle, in a CLI process that never registered for wake — is an argument against
+    //   wiring it to a wake notification rather than for it: across 10,570 ticks and seven
+    //   wakes on `Mac16,5` / macOS 26.6.2 there were zero read failures, so a `.didWake`
+    //   invalidation would pay the full rediscovery cost on every dark wake — seven in the
+    //   one lid close observed on that machine — for a fault with no observed instances
+    //   there. The helper's own write-authorised handle is unobserved. Doing it anyway
+    //   remains a decision for whoever owns that lifecycle, not this cache.
 
     /// Per-key metadata: `dataType`, `dataSize`, and the attribute byte, keyed by
     /// `SMCKey`. Populated as each key is first looked up via `keyInfo(for:)` — most
@@ -234,9 +245,25 @@ public actor SMCConnection {
     ///   Clearing here would cost a full rediscovery (~4.5 s on `Mac16,5`) on every
     ///   reopen for no established benefit; the alternative that does clear it is
     ///   `invalidate()`, kept separate and explicit so a caller who actually suspects
-    ///   staleness (a wake from sleep, say — unverified either way, see the read-cache
-    ///   note above `keyInfoCache`) can ask for it deliberately rather than paying the
-    ///   cost on every ordinary reconnect.
+    ///   staleness can ask for it deliberately rather than paying the cost on every
+    ///   ordinary reconnect.
+    ///
+    /// - Note: A wake from sleep used to be this note's example of such a caller, marked
+    ///   "unverified either way". It has now been observed once, in one direction, on one
+    ///   machine: on `Mac16,5` / macOS 26.6.2, a read-only connection held across **seven**
+    ///   Deep Idle sleep/wake transitions (one clamshell sleep plus six maintenance sleeps,
+    ///   inside a 1 h 29 min lid-closed window) served 10,570 ticks with **zero** read
+    ///   errors, and reads resumed on the same handle within the same wall-clock second as
+    ///   every `pmset` wake line. Nothing here reopened or invalidated anything — there is
+    ///   no reconnect path in `SMCCore` or `fanctl` at all. See `docs/SMC-RESEARCH.md`,
+    ///   "Sleep/wake and the read connection — observed, one lid close, read path only",
+    ///   and issue #68.
+    ///
+    ///   Read that narrowly. It says nothing about a **write**-authorised handle (this one
+    ///   carried none, and `AeolusHelper`'s does), nothing about hibernate or standby,
+    ///   nothing about a sleep longer than 899 s, and nothing about Intel, M1, or M2 Macs
+    ///   or any other macOS build. It is emphatically not a licence to remove
+    ///   `AeolusHelper`'s reconnect-and-health path, which that capture did not exercise.
     public func close() {
         guard connection != 0 else { return }
         IOServiceClose(connection)

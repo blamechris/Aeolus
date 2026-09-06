@@ -402,8 +402,8 @@ remaining TTL", which bounds post-wake exposure rather than eliminating it, and 
 release-before-sleep matter more, not less. What that bound *is*, exactly: the lease's own
 remaining TTL, so at most `AeolusXPCValidation.leaseTTLRange.upperBound` — 120 s — and 30 s
 for a client taking `Lease.defaultTimeToLive`. Composition either way, as ADR 0007 requires:
-nothing in the helper changes on the answer, and #68's lid-close row records the measured
-delta.
+nothing in the helper changes on the answer. The delta has not been measured: the one lid
+close in #68 sampled no clock, and #210 asks for it alongside the critical sensors.
 
 **The handback is bounded, and overrunning the bound is not a safety failure.** The
 acknowledgement waits at most `SystemPowerLimits.acknowledgementBudget` — 5 s — after which
@@ -447,8 +447,9 @@ write. That is what keeps "never claim control you do not have" a structural pro
 than a matter of re-assertion winning a race against the firmware. See
 [ADR 0007](ADR/0007-safety-composition.md).
 
-The stale-connection question — whether `io_connect_t` survives sleep/wake at all — is open
-(#68), and reconnect-or-release is the answer either way: a helper that cannot read after
+The stale-connection question — whether `io_connect_t` survives sleep/wake at all — is
+answered for a read-only handle on `Mac16,5` (#68: seven wakes, no read failure) and open for
+the helper's own handle (#104's lid-close row); reconnect-or-release is the answer either way: a helper that cannot read after
 wake is the blindness case in § 5.
 
 *Tested by:* `SystemPowerTests`, which drives `.willSleep` and `.didWake` through the
@@ -467,8 +468,9 @@ one that carries an `IOKitSystemPowerObserver`.
 *Not tested by anything automated, and cannot be:* `IOKitSystemPowerObserver` itself. No test
 can register with a real power management root and then sleep the machine. The hardware rows
 are what prove it — closing the lid returns the fans to automatic, reopening leaves them there
-until a client asks again, the `ContinuousClock` delta across a real sleep, and whether
-`io_connect_t` survives (#68).
+until a client asks again, the `ContinuousClock` delta across a real sleep (#210), and whether
+the helper's own `io_connect_t` survives — #68 answered that for a read-only handle in a CLI
+process, not for the helper's (#104).
 
 ## 5. Reclamation watchdog
 

@@ -38,9 +38,16 @@ neither capability exists yet, so there is nothing to have verified. It will mov
 
 ## Apple Silicon
 
-Fan control on **M3 and newer** requires an unlock sequence that M1 and M2 do not, and
-that sequence must be re-established after every wake from sleep. Expect these generations
-to behave differently, and expect M3+ to be the fragile one.
+Fan control on **M3 and newer** requires an unlock sequence that M1 and M2 do not, and that
+sequence is **reported** to need re-establishing after every wake from sleep. That second half is a
+community report, not a measurement: see [SMC-RESEARCH.md](SMC-RESEARCH.md), "Sleep resets the force
+key", which still carries it as *To verify (E4)*. The 2026-09-05 lid-close capture
+([#68](https://github.com/blamechris/Aeolus/issues/68)) did **not** retire it — `Ftst` read `0x00`
+both before and after, because nothing had ever set it. What that capture did establish is how many
+wakes "every wake from sleep" can mean: **seven wakes in the one 1 h 29 min lid close observed** on
+`Mac16,5`, on AC, six of them dark wakes with no user present — an n = 1 count, not a rate: the
+cadence was ~900 s while charging and 9–255 s once the battery reached 100 %. Expect these generations to behave differently, and expect M3+ to be the
+fragile one.
 
 ### M1 generation
 
