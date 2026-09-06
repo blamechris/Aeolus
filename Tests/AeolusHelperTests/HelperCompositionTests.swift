@@ -829,9 +829,10 @@ extension HelperCompositionTests {
         #expect(
             holdsTheComposition,
             """
-            main() no longer parks the composition in process-lifetime storage. The three \
-            supervisors run under `[weak self]`, so that value is their only strong holder \
-            and a released composition is a released safety subsystem.
+            main() no longer parks the composition in process-lifetime storage. It is the \
+            only holder of the power observer's registration, of SignalTeardown's dispatch \
+            sources — which ARC cancels when it releases them — and of the SMC connection \
+            handle, so a released composition is a released safety subsystem.
             """)
 
         // Ordering, which the three assertions above cannot express: a retain after the
