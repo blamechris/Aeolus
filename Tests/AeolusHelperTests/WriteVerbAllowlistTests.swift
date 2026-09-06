@@ -293,6 +293,16 @@ struct WriteVerbAllowlistTests {
     /// `refuseIfForeignManualControl(_:wanting:)` read `F<n>Md` and return a refusal — they
     /// are the half of ADR 0011 that exists **so that** no second restore happens, which is
     /// the opposite of a write verb. `activeLeaseView()` reads the lease table.
+    ///
+    /// **Two keys moved file in [#128](https://github.com/blamechris/Aeolus/issues/128) and
+    /// are re-pinned rather than relaxed.** `refuseIfBlind(_:)` and
+    /// `refuseIfForeignManualControl(_:wanting:)` are declared in
+    /// `LeaseAuthorityRefusals.swift` now — the same declarations, in an extension in a
+    /// second file, because `LeaseAuthority.swift` was over the lint threshold. `key` is
+    /// `file: signature`, so a split moves an entry even when nothing about the verb
+    /// changes; the entries follow the declarations, and `everyVerbIsAcknowledged`'s
+    /// `departed` half is what makes leaving the old key behind a failure rather than dead
+    /// weight. Their classification is unchanged: both refuse, neither writes.
     private static let permitFreeFunctions: Set<String> = [
         "BoundedFanRestorer.swift: attemptUncancellably(fanAt: Int)",
         // `CriticalTemperatureRecording`'s single requirement, declared beside the cache in
@@ -304,7 +314,6 @@ struct WriteVerbAllowlistTests {
         "CriticalTemperatureCache.swift: sighting()",
         "HelperComposition.swift: reconcileFans()",
         "LeaseAuthority.swift: activeLeaseView()",
-        "LeaseAuthority.swift: refuseIfForeignManualControl(_: ConnectionID, wanting: Set<Int>)",
         "StartupReconciliation.swift: reconcile()",
         "StartupReconciliation.swift: refusalForGrant(overFans: Set<Int>, "
             + "heldByAeolus: Set<Int>)",
@@ -348,12 +357,14 @@ struct WriteVerbAllowlistTests {
         "LeaseAuthority.swift: activeLease()",
         "LeaseAuthority.swift: connectionDidInvalidate(_: ConnectionID)",
         "LeaseAuthority.swift: expireLapsedLeases()",
-        "LeaseAuthority.swift: refuseIfBlind(_: ConnectionID)",
         "LeaseAuthority.swift: refuseIfThermalEmergencyActive(_: ConnectionID)",
         "LeaseAuthority.swift: releaseEveryLease()",
         "LeaseAuthority.swift: releaseLease(id: UUID, from: ConnectionID)",
         "LeaseAuthority.swift: revokeEveryLease(because: FanRestoreCause)",
         "LeaseAuthority.swift: revokeLeases(coveringFan: Int, because: FanRestoreCause)",
+        "LeaseAuthorityRefusals.swift: refuseIfBlind(_: ConnectionID)",
+        "LeaseAuthorityRefusals.swift: refuseIfForeignManualControl(_: ConnectionID, "
+            + "wanting: Set<Int>)",
         "LeaseClock.swift: sleep(until: ContinuousClock.Instant)",
         "LeaseExpirySupervisor.swift: run(authority: LeaseAuthority, "
             + "clock: some MonotonicClock, idleInterval: Duration, log: LeaseLog)",

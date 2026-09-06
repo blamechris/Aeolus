@@ -84,11 +84,18 @@ actor LeaseAuthority {
     /// core's hand — the same exclusion `FanStateSensing` exists to give
     /// `ReclamationWatchdog`. See `FanWriteCapabilityReporting` for why the answer is
     /// synchronous, and `acquireLease` for why it is consulted before anything else.
-    private let writeCapability: any FanWriteCapabilityReporting
+    ///
+    /// `internal` since #128 moved `refuseIfWritePathNotBuilt` to
+    /// `LeaseAuthorityRefusals.swift`. A get-only property on a `Sendable` role: the module
+    /// can ask the same question, and no answer it gets changes anything here.
+    let writeCapability: any FanWriteCapabilityReporting
     /// The third — and, by design, last — thing this type needs of the machine. See
     /// `SightednessProving` for why it is its own role rather than a method on either of the
     /// two above, and why it is deliberately **not** the role § 3's own cycle holds.
-    private let telemetry: any SightednessProving
+    ///
+    /// `internal` since #128 moved `refuseIfBlind` to `LeaseAuthorityRefusals.swift`. One
+    /// read verb, `sighting()`, on a role that holds no writer and no plane.
+    let telemetry: any SightednessProving
 
     /// `docs/SAFETY.md` § 6's post-reconciliation baseline, asked once per grant.
     ///
@@ -96,7 +103,12 @@ actor LeaseAuthority {
     /// firmware; it asks a question and is told a `ManualControlAvailability.Reason`. See
     /// `ForeignManualControlSensing`, and ADR 0011 for why the answer to a fan somebody else
     /// is holding is a refusal rather than a second restore.
-    private let foreignControl: any ForeignManualControlSensing
+    ///
+    /// `internal` since #128 moved `refuseIfForeignManualControl(_:wanting:)` to
+    /// `LeaseAuthorityRefusals.swift`. One read verb, `refusalForGrant(overFans:
+    /// heldByAeolus:)`, which answers with a `ManualControlAvailability.Reason` and touches
+    /// no fan.
+    let foreignControl: any ForeignManualControlSensing
 
     /// The one bit that says `docs/SAFETY.md` § 3 is holding. Read at grant time; set by
     /// `ThermalEmergency`, which this type deliberately holds no reference to — see
@@ -107,8 +119,20 @@ actor LeaseAuthority {
     /// will ever engage, which turns `refuseIfThermalEmergencyActive` into a guard that
     /// cannot fire. `ThermalEmergency` already required its latch; the two types that must
     /// agree with it did not, and an adversarial review named that as the E3 footgun it is.
+    ///
+    /// **Deliberately still `private` after #128**, where the other three injected
+    /// collaborators went `internal` so `LeaseAuthorityRefusals.swift` could reach them.
+    /// Those three are stateless query roles; this is a concrete actor with mutators, so
+    /// widening the reference would hand every file in the module a route to engage or
+    /// release § 3's latch through the lease core. `refuseIfThermalEmergencyActive(_:)`
+    /// therefore stayed here with it. `LeaseAuthorityAccessTests` enforces that.
     private let thermalEmergency: ThermalEmergencyLatch
-    private let log: LeaseLog
+
+    /// `internal` since #128, for the three refusals in `LeaseAuthorityRefusals.swift`.
+    /// `LeaseLog` is an `os.Logger` wrapper that is already constructible anywhere in the
+    /// module — this initialiser defaults it to `LeaseLog()` — so the widening adds no
+    /// capability that did not exist.
+    let log: LeaseLog
 
     private var table = LeaseTable()
     private var tombstones: ConnectionTombstones
@@ -620,6 +644,11 @@ actor LeaseAuthority {
     }
 
     // MARK: - Guards
+    //
+    // The three refusals that consult a stateless query role rather than this actor's own
+    // state — the build's write capability, the sightedness proof, and § 6's foreign-control
+    // baseline — live in `LeaseAuthorityRefusals.swift`, which explains the split. What is
+    // left here is what reads state this actor owns.
 
     /// The refusal a message gets when its own connection died while it was in flight.
     ///
@@ -631,103 +660,6 @@ actor LeaseAuthority {
     /// the client.
     private static let invalidatedInFlight = AeolusXPCFault.helperFailed(
         detail: "the connection was invalidated while this request was in flight")
-
-    /// Refuses the grant when this build has no SMC write path.
-    ///
-    /// **Synchronous, and first in `acquireLease`.** Both halves are the point.
-    ///
-    /// *First*, because this is the only refusal in the method that no client and no machine
-    /// can change. `refuseIfBlind` can cost a real 34-key `.supervisor` read — it does
-    /// whenever § 3's last reading has aged out, and always on a helper whose supervisor is
-    /// not running — so ordering it
-    /// ahead of this one would spend a hardware round trip to produce an answer about the
-    /// *sensors* for a request that was never going to be granted whatever they said — and a
-    /// client told `noThermalTelemetry` reasonably retries when the machine recovers, into a
-    /// refusal that is not about the machine at all. `LeaseWriteCapabilityTests` asserts the
-    /// read count, not merely the fault, because a check that is merely *present* can be
-    /// moved below the read by an ordinary-looking edit and nothing else would notice.
-    ///
-    /// *Synchronous*, because `FanWriteCapabilityReporting` has no `async` on it: "before
-    /// any hardware round trip" is then a property of the type rather than a claim about
-    /// where this line sits. See that protocol.
-    ///
-    /// It replaces `ReadOnlyFanAuthority`'s hard-coded `Self.noWritePath` — the same fault,
-    /// the same reason case, sourced from the seam that would have to perform the write
-    /// instead of from a literal. `AeolusXPCFault.manualControlUnavailable(reason:)` and
-    /// `.writePathNotBuilt` both already exist, so `AeolusXPCVersion` does not move.
-    private func refuseIfWritePathNotBuilt(_ connection: ConnectionID) throws {
-        guard writeCapability.writeCapability == .notBuilt else { return }
-        log.refusedNoWritePath(connection)
-        throw AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
-    }
-
-    /// Refuses the grant if the helper cannot currently see a critical temperature.
-    ///
-    /// **`docs/SAFETY.md` § 3 is a precondition of § 1.** A lease is a promise that
-    /// something is watching the fans it pins; a helper that cannot read a temperature is
-    /// not watching anything, and the thermal override, the reclamation watchdog and the
-    /// sleep supervisor are all equally blind. What is left is the TTL, which
-    /// [ADR 0007](../../../docs/ADR/0007-safety-composition.md) accepts as a *backstop*
-    /// and nowhere accepts as the whole mechanism.
-    ///
-    /// ## What it costs, since #134
-    ///
-    /// Not a read per call. `SightednessProving` is answered by `CriticalTemperatureCache`,
-    /// which serves § 3's own most recent reading while it is less than one cycle period
-    /// old and coalesces concurrent callers onto a single read when it is not — so a client
-    /// retrying `acquireLease` in a tight loop can no longer queue an unbounded number of
-    /// `.supervisor` turns ahead of the cycle that would take its fans back. A cold cache,
-    /// or a helper whose thermal supervisor is not running, still costs one real 34-key read
-    /// per grant. [ADR 0010](../../../docs/ADR/0010-coalesced-supervisor-reads.md) records
-    /// why that staleness is exact rather than tolerated: this method asks whether § 3 can
-    /// see, and § 3's own cycle is the authoritative answer to that question.
-    ///
-    /// ## Why it sits here in the order
-    ///
-    /// It is above the straight-line region because it suspends, and it must be: the proof
-    /// is the point. That places it ahead of the concurrent-lease and mid-handback
-    /// refusals, so a client asking during blindness is told about the blindness even when
-    /// another client holds the fans. Both facts are true and this is the one worth
-    /// telling: `leaseHeldByAnotherClient` invites "wait for them to finish", which is
-    /// wrong advice on a machine where nobody can be granted anything.
-    ///
-    /// It also lands ahead of `validateFanIndices`, which is the one ordering here that is
-    /// a consequence rather than a choice — everything in the straight-line region is below
-    /// every suspension point by construction. So a request naming a fan that does not
-    /// exist, sent to a blind machine, is answered `noThermalTelemetry` rather than
-    /// `invalidFanIndex`. That is tolerable (both are refusals, and the blindness is the
-    /// more consequential fact) but it is not a judgement anybody made, and a future reader
-    /// comparing this against the validation-first ordering elsewhere should know that.
-    ///
-    /// ## Why it catches everything except cancellation
-    ///
-    /// Every failure to obtain telemetry is blindness, whatever its type. There is no
-    /// allow-list of error cases that count, because an allow-list means the next error case
-    /// somebody adds silently defaults to *granted*, and this guard exists precisely to stop
-    /// a lease being handed out on a machine nothing can see. The default is refuse.
-    ///
-    /// `CancellationError` is the one exception, and it is not a hole in that rule — it is
-    /// the one error that is definitionally **not a statement about the machine**. A
-    /// cancelled request says the caller went away; it says nothing about whether the SMC
-    /// answered. Folding it in would tell a client "no thermal telemetry" when telemetry was
-    /// never the problem, and — worse — write a `.fault` line into a root daemon's log
-    /// claiming the sensors went silent on a machine whose sensors are fine. That log is
-    /// meant to be the record a user reaches for when asking whether the mechanism was
-    /// watching; a false entry in it is worse than no entry.
-    ///
-    /// Re-throwing is also still fail-safe: the lease is not granted either way. Only the
-    /// reported reason differs, and `CLAUDE.md` rule 6 is about exactly that — never report
-    /// a state that is not the one you are in.
-    private func refuseIfBlind(_ connection: ConnectionID) async throws {
-        do {
-            _ = try await telemetry.sighting()
-        } catch let cancellation as CancellationError {
-            throw cancellation
-        } catch {
-            log.refusedBlindTelemetry(connection, detail: String(describing: error))
-            throw AeolusXPCFault.manualControlUnavailable(reason: .noThermalTelemetry)
-        }
-    }
 
     /// Refuses the grant while `docs/SAFETY.md` § 3 is holding.
     ///
@@ -757,35 +689,6 @@ actor LeaseAuthority {
         throw AeolusXPCFault.thermalEmergencyActive
     }
 
-    /// `docs/SAFETY.md` § 6's baseline, asked immediately after the blindness gate.
-    ///
-    /// **Last of the four things `acquireLease` suspends on, and last of the three refusals
-    /// among them — and the position is reasoned.** The four are the fan enumeration, § 3's
-    /// latch, the sightedness proof, and this; the enumeration is the one that is not a
-    /// refusal, and the sweep of lapsed leases runs ahead of all four rather than being one
-    /// of them. Step 3 of `acquireLease` lists them in that order, and says which count is
-    /// which for the same reason this does: two nearby sentences counting different things
-    /// with the same word is how the previous "three" and "four" came to disagree. § 3's
-    /// latch
-    /// and the sightedness proof are both properties of the *machine* and answer for
-    /// every fan at once; this one costs one `.supervisor` turn **per requested fan**, so it
-    /// is the most expensive question here and the one most worth not asking when a cheaper
-    /// refusal already applies. `refuseIfWritePathNotBuilt` running first (step 0) is what
-    /// keeps it off today's helper's grant path entirely.
-    ///
-    /// `fansAeolusIsAccountableFor` is read here rather than passed in because it must be
-    /// this actor's state as it stands at the moment of the question — see that property for
-    /// the three registers it unions and the more precise refusal each of them already has.
-    private func refuseIfForeignManualControl(
-        _ connection: ConnectionID, wanting fans: Set<Int>
-    ) async throws {
-        let reason = await foreignControl.refusalForGrant(
-            overFans: fans, heldByAeolus: fansAeolusIsAccountableFor)
-        guard let reason else { return }
-        log.refusedForeignManualControl(connection, fans: fans, reason: reason)
-        throw AeolusXPCFault.manualControlUnavailable(reason: reason)
-    }
-
     /// Every fan whose manual state is Aeolus's own doing, and therefore not foreign.
     ///
     /// Three registers, and each one has a **more precise** refusal further down this
@@ -804,7 +707,13 @@ actor LeaseAuthority {
     /// definition, because two would disagree the moment either moved — and the way they
     /// disagreed before was the snapshot naming a fan Aeolus could not hand back as another
     /// program's, while the gate refused it correctly.
-    private var fansAeolusIsAccountableFor: Set<Int> {
+    ///
+    /// `internal` since #128 moved `refuseIfForeignManualControl(_:wanting:)` out. It is
+    /// **derived and read-only**, and `activeLeaseView()` — `internal`, and what the control
+    /// plane calls — already returns exactly this set, so the widening exposes nothing new.
+    /// The three registers it unions stay `private`: this is the union, not a way to reach
+    /// them.
+    var fansAeolusIsAccountableFor: Set<Int> {
         table.fansUnderLease.union(restoreAbandoned).union(releasing.keys)
     }
 
