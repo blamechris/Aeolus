@@ -145,6 +145,11 @@ jobs:
               fi
           done
 
+          # A positive signal, so a reader of the log can tell "the probe was found" from
+          # "the step ran and asserted nothing". #226's delta review caught the PR body
+          # quoting exactly this line as evidence while the step was silent on success.
+          echo "PROBE ASSERTION PASSED: both probe symbols are in ${HELPER}"
+
       # "The helper is absent from Monitor" is called a safety property in project.yml,
       # and until now nothing checked it: the embed script's Monitor branch asserts
       # nothing, so a configuration that gained AEOLUS_EMBEDS_HELPER: YES, or a Copy Files
