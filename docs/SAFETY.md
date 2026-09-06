@@ -177,6 +177,18 @@ this document:
 - **Nothing clears it.** The ledger is append-only for the life of the helper process, so a
   later restore the firmware *does* accept leaves the refusal standing. #189 owns the
   clearing path; § 7's panic restore is the first caller that will need it.
+- **§ 4's acknowledgement budget no longer produces it, and did until #209.** That is a
+  correction to the paragraph above rather than a new bullet's worth of mechanism: a handback
+  the budget stopped waiting for was recorded here, on the argument that a fan nobody answered
+  for is a fan the handback failed on. A budget expiring is evidence about *time*, not about
+  the firmware — nothing on that path observes a refused write — so a healthy machine that
+  merely slept slowly removed a fan from manual control for the life of the process, with no
+  user route out. It now records the **`.handbackUnconfirmed`** state described in § 4, which
+  refuses a lease exactly as hard while it stands and is resolved by the outstanding restore's
+  own completion. A restore that comes back *refused* after `RestoreLimits.attemptBudget` still
+  lands here, through `LeaseAuthority.restore`'s existing union — so the terminal state keeps
+  exactly one meaning: the firmware was asked and said no. Decision D33, recorded as ADR 0007,
+  amendment 2026-09-06 (#209).
 - **Lease teardown is not its only producer.** § 6's startup reconciliation reaches the same
   terminal state independently
   ([ADR 0011](ADR/0011-reconciliation-and-foreign-manual-control.md)): a fan found in manual at
@@ -543,9 +555,18 @@ hour**, not once per lid close. **That is exposure arithmetic, not the input the
 chosen against** — the constant's own rationale is a bound on the wait for a wedged `io_connect_t`
 (#68), sized inside the kernel's ~30 s acknowledgement window, and it shipped before this capture
 existed. What the cadence changes is how often the budget is *spent*: roughly four times an hour
-rather than once per lid close, and the same multiplier applies to the durable
-`.restoreToAutomaticFailed` refusal `abandonOutstandingHandbacks()` records — not one chance per
-lid close but on the order of **thirty across an overnight**, in a window with nobody watching.
+rather than once per lid close, and the same multiplier applies to the refusal
+`recordUnconfirmedHandbacks()` records — not one chance per lid close but on the order of
+**thirty across an overnight**, in a window with nobody watching.
+
+**That sentence said "the durable `.restoreToAutomaticFailed` refusal
+`abandonOutstandingHandbacks()` records", and the arithmetic it supports is what retired the
+claim** (#209, decision D33 — ADR 0007, amendment 2026-09-06). Thirty chances an unattended
+night to lose a fan permanently, on a machine whose only fault is sleeping slowly, is not a
+number a durable refusal survives being multiplied by. What the budget path multiplies now is
+the **self-resolving** `.handbackUnconfirmed` state below: as hard a refusal while it stands,
+cleared by the outstanding restore's own completion. Corrected in place — the exposure
+arithmetic is unchanged and is the reason the state changed.
 
 **One thing that capture does not establish, stated plainly rather than left to be assumed:** the
 `pmset` log proves the *machine* slept seven times. It does **not** prove IOKit delivered seven
@@ -570,10 +591,23 @@ the fan, in the order it can act:
 
 - **The parked restore may still land.** Nothing cancels it; § 4 stops waiting, and
   `BoundedFanRestorer` keeps attempting inside a task that does not inherit cancellation.
-- **Every fan still outstanding is recorded as an abandoned handback before the sleep is
-  acknowledged** (`LeaseAuthority.abandonOutstandingHandbacks()`, decision D17). That is the
-  durable `restoreToAutomaticFailed` refusal of § 1, so no client can take a lease over a fan
-  the helper never saw return to automatic control.
+- **Every fan still outstanding is recorded as an *unconfirmed* handback before the sleep is
+  acknowledged** (`LeaseAuthority.recordUnconfirmedHandbacks()`, decision D33 — ADR 0007,
+  amendment 2026-09-06, #209). No client can take a lease over a fan the helper never saw
+  return to automatic control: it is refused `.handbackUnconfirmed`, exactly as hard as the
+  durable refusal, for as long as it stands. **This bullet said "an abandoned handback" and
+  named decision D17, and the ordering claim it makes is unchanged — only the state recorded
+  is** (corrected in place, for the reason the bullet below this one gives about its own
+  staleness). How it ends, and the three endings are the whole of D33:
+  - **The outstanding restore lands** — it is still running, nothing cancelled it — and that
+    clears the refusal. This is the ending D17 could not express, and the one a healthy
+    machine that merely slept slowly actually reaches.
+  - **The outstanding restore comes back refused** after `RestoreLimits.attemptBudget`, and
+    `LeaseAuthority.restore`'s existing union converts it to the durable
+    `restoreToAutomaticFailed` of § 1. No new path records that; the firmware refusing is
+    still the one thing that produces the terminal state.
+  - **The restore never returns**, and the refusal stands for the life of the process. That is
+    the fail-safe direction, and it is the honest report of a fan nothing can answer for.
 - **The restore is issued unconditionally, after and regardless of the lease teardown**,
   because the keystone verb needs no data at all — see [Precedence](#precedence).
 - **§ 3 still acts on it above the ceiling.** The thermal override's registry entry is
@@ -628,13 +662,20 @@ composed helper against a scripted `SystemPowerObserving` — asserting the rest
 wire **before** the acknowledgement (observed from inside the acknowledgement, because
 afterwards the two orders are indistinguishable), **no firmware call at all** on wake, that
 the budget releases the system when the handback does not return, and that neither event
-stops a supervisor. Four further properties, each with a mutation named against it: on a
+stops a supervisor. Six further properties, each with a mutation named against it: on a
 wedged connection the lease table is empty at the acknowledgement (so the keystone cannot
-precede the teardown), the outstanding fan is durably refused a new lease afterwards, a
-refused restore still lets the machine sleep and says at `.fault` that it did not land, and a
-lease request arriving inside the sleep window is refused `systemSleeping` until the wake
-clears it. `HelperCompositionTests` asserts that the shipped `production(log:)` graph is the
-one that carries an `IOKitSystemPowerObserver`.
+precede the teardown); the outstanding fan is refused `handbackUnconfirmed` afterwards, both
+inside the sleep window and after the wake, and a fan whose restore was never issued is not;
+that refusal is cleared by the parked restore landing, and is converted to the durable
+`restoreToAutomaticFailed` by the parked restore coming back refused; a refused restore still
+lets the machine sleep and says at `.fault` that it did not land; a lease request arriving
+inside the sleep window is refused `systemSleeping` until the wake clears it; and **three
+`.willSleep`/`.didWake` cycles through one helper** each seal, reopen and acknowledge exactly
+once, leaving nothing accumulated in either register — the cycle count is asserted outside the
+loop, so a loop that runs once is red. That last one is #209's: the measurement above says a
+lid close is several cycles, and every other test here delivers one.
+`HelperCompositionTests` asserts that the shipped `production(log:)` graph is the one that
+carries an `IOKitSystemPowerObserver`.
 
 *Not tested by anything automated, and cannot be:* `IOKitSystemPowerObserver` itself. No test
 can register with a real power management root and then sleep the machine. The hardware rows
