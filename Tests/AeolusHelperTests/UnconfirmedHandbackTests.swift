@@ -252,15 +252,11 @@ struct UnconfirmedHandbackTests {
         }
     }
 
-    /// The subset `fansAeolusIsAccountableFor` rests on, asserted rather than trusted.
-    ///
-    /// That set deliberately does not union the unconfirmed register, on the strength of the
-    /// register being a subset of the fans mid-handback. A fan here and not there is one the
-    /// accountable set has silently stopped naming — and nothing else in the suite sees it:
-    /// the exact-set assertions above pass, and the refusal is unchanged.
-    ///
-    /// **Mutation:** `releasing.removeAll()` at the end of `recordUnconfirmedHandbacks()`.
-    /// Run: red here, and nowhere else.
+    /// The subset `fansAeolusIsAccountableFor` rests on — it omits the unconfirmed register
+    /// because every fan in it is mid-handback — asserted rather than trusted. **Mutation:**
+    /// `releasing.removeAll()` at the end of `recordUnconfirmedHandbacks()`. Run: red here in
+    /// the parked test, whose other assertions pass; the two late-outcome tests go red too,
+    /// because a fan with no `releasing` entry is never cleared when its restore returns.
     private static func expectUnconfirmedIsMidHandback(_ leases: LeaseAuthority) async {
         let unconfirmed = await leases.fansWithUnconfirmedHandbacks
         let midHandback = await leases.fansMidHandback
@@ -269,11 +265,9 @@ struct UnconfirmedHandbackTests {
             "unconfirmed \(unconfirmed) is not a subset of mid-handback \(midHandback)")
     }
 
-    /// The refusal a fan whose handback is unconfirmed gets, at two instants of one test.
-    ///
-    /// The equality is the whole assertion. Two inequalities against the neighbouring reasons
-    /// stood here until a review noted that `AeolusXPCFault` is `Equatable` over case
-    /// identity, so both were implied by the equality and could never go red on their own.
+    /// The refusal a fan whose handback is unconfirmed gets, at two instants of one test. The
+    /// equality is the whole assertion: two inequalities against the neighbouring reasons stood
+    /// here until a review noted both were implied by it, so neither could go red on its own.
     private static func expectUnconfirmed(
         _ leases: LeaseAuthority, fan: Int, whenAsking moment: String
     ) async {
