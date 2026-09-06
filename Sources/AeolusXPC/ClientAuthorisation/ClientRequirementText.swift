@@ -88,7 +88,12 @@ enum ClientRequirementText {
     /// Object identifiers from Apple's certificate policy extensions. Named rather than
     /// inlined because a transposed digit in an OID is invisible in a string literal but
     /// obvious in a constant with a name next to it.
-    private enum OID {
+    ///
+    /// Module-internal rather than `private` since #158: `HelperRequirementText` builds the
+    /// mirror requirement — a client pinning the helper — from the same chain, and two
+    /// tables of the same OIDs is exactly the drift this naming exists to prevent. Nothing
+    /// outside this module can see it, and no member is `public`.
+    enum OID {
         /// Developer ID Certification Authority, the intermediate in a Developer ID chain.
         static let developerIDIntermediate = "1.2.840.113635.100.6.2.6"
         /// Developer ID Application, the leaf of a Developer ID chain.
