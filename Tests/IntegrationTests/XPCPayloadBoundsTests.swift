@@ -265,6 +265,22 @@ struct XPCPayloadBoundsTests {
                 == AeolusXPCPayloadBounds.maxFansPerPayload)
     }
 
+    /// The other way a cap fails, and the one no test that derives its own payload from the
+    /// constant can see.
+    ///
+    /// Every "one byte over" test above sizes its payload as `cap + 1`, so loosening the cap
+    /// moves the test with it and the suite stays green while the bound stops bounding
+    /// anything. These are absolute ceilings on the ceilings: a pre-handshake envelope
+    /// belongs in kilobytes, and a settings payload — the largest thing this protocol
+    /// carries — under a megabyte. Neither is a derivation; both are the loosest value at
+    /// which the cap they guard still means something.
+    @Test("The caps stay small enough to still be bounds")
+    func capsStaySmallEnoughToBeBounds() {
+        #expect(AeolusXPCPayloadBounds.maxHelloRequestBytes < 64 * 1024)
+        #expect(AeolusXPCPayloadBounds.maxLeaseRequestBytes < 64 * 1024)
+        #expect(AeolusXPCPayloadBounds.maxFanSettingsBytes < 1024 * 1024)
+    }
+
     /// The one constant here that is a restatement of a number owned elsewhere.
     ///
     /// `AeolusXPC` cannot import `SMCCore` — the shared contract does not take an IOKit
