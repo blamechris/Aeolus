@@ -92,23 +92,53 @@ enum AeolusHelperMain {
 
         bringUp(helper, advertising: listener, log: log)
 
-        // `withExtendedLifetime` is what makes that a **guarantee** rather than an
-        // inference about codegen. Swift does not promise a local outlives its lexical
-        // scope: the optimiser may end a variable's lifetime after its last use, and
-        // `delegate`'s last use is the assignment above. No build has done it — the suite
-        // is green under `-O` too, and `dispatchMain()` never returning has been enough in
-        // practice — but "no optimiser has done this to us yet" is not the standard for
-        // the one line deciding whether a root daemon authenticates its clients (#92).
+        // A deliberately unbalanced +1 on each object, which is what makes the retention a
+        // **guarantee** rather than an inference about codegen. Swift does not promise a
+        // local outlives its lexical scope: the optimiser may end a variable's lifetime
+        // after its last use, and `delegate`'s last use is the assignment above (#92).
         //
-        // All four, not just the delegate. `listener` and `authorisation` carry the same
-        // argument, and `helper` owns the running supervisors.
+        // `withExtendedLifetime` cannot say this here, and the first draft of #92 was
+        // wrong to use it. Its whole mechanism is `defer { _fixLifetime(x) }; body()`, it
+        // is `@inlinable`, and `dispatchMain()` returns `Never` — so after inlining the
+        // `defer` is unreachable, no `fix_lifetime` marker is emitted, and the emitted SIL
+        // for `withExtendedLifetime(d) { dispatchMain() }` is byte-for-byte identical to a
+        // bare `dispatchMain()`. It reads like a barrier and is not one.
         //
+        // A retain is not elidable, because there is nothing for the optimiser to prove:
+        // the reference count is raised and never lowered. The process never returns, so
+        // the +1 is the honest statement of a process-lifetime object rather than a leak —
+        // `main()` is the only frame here that outlives every connection, and these are the
+        // objects that must outlive it too.
+        _ = Unmanaged.passRetained(delegate)
+        _ = Unmanaged.passRetained(listener)
+
+        // `helper` is a `struct`, so there is no object to retain — `Unmanaged` takes a
+        // class. It is parked in process-lifetime storage instead: a store to a `static`
+        // is an observable side effect and a real strong reference to every mechanism the
+        // composition holds. That matters more than it looks: all three supervisors run
+        // their loop under `Task.detached { [weak self] … }`, so this value is their only
+        // strong holder, and a composition released here is a safety subsystem released
+        // with it. `authorisation` needs no separate hold — it is an `enum`, and the
+        // `ConnectionAdmission` it resolved to is stored on the delegate above.
+        //
+        // `HelperCompositionTests.theProcessLifetimeObjectsAreRetainedBeforeDispatchMain`
+        // is the tripwire on all three lines.
+        processLifetimeComposition = helper
+
         // Never returns. The listener runs on libdispatch, so the main thread's only job
         // from here is to not exit.
-        withExtendedLifetime((authorisation, helper, delegate, listener)) {
-            dispatchMain()
-        }
+        dispatchMain()
     }
+
+    /// Holds the composition for the life of the process. See `main()`.
+    ///
+    /// `nonisolated(unsafe)` because it is written exactly once, on the main thread, before
+    /// `dispatchMain()` is called and therefore before any connection exists to read it —
+    /// and it is never read at all. The alternative shapes are worse: a `let` cannot be
+    /// assigned after the graph is built, and a lock would suggest contention that the
+    /// write-once-then-never ordering rules out.
+    nonisolated(unsafe) private static var processLifetimeComposition:
+        HelperComposition<SMCFanControlPlane>?
 
     /// Brings the safety subsystem up, then advertises the Mach service — in that order,
     /// and never the other one.
