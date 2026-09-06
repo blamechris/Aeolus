@@ -71,12 +71,56 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// client holds a live lease over a fan nothing is honouring. Refusing for a few
         /// milliseconds is the honest answer; a client may simply retry.
         case releaseInProgress
+        /// The helper issued this fan's restore-to-automatic, stopped waiting for it, and
+        /// nothing has confirmed what mode the fan is in.
+        ///
+        /// `docs/SAFETY.md` § 4 waits at most `SystemPowerLimits.acknowledgementBudget` for
+        /// the pre-sleep handback and then allows the sleep anyway. A fan whose restore was
+        /// still outstanding at that instant is in this state: the write was issued, nothing
+        /// cancelled it, and the helper has no answer about it yet. Manual control is refused
+        /// for `CLAUDE.md` rule 6's reason — a lease over a fan whose mode nothing has
+        /// established is control this process cannot claim.
+        ///
+        /// **It may resolve itself, and a helper restart is not the answer.** The outstanding
+        /// restore is still running; when it returns, this clears. So the advice is to retry
+        /// later, or to watch connection health — not to restart the helper, which is the
+        /// route out of `restoreToAutomaticFailed` and is the wrong action here.
+        ///
+        /// **How it differs from the two reasons it sits between**, which is the whole reason
+        /// it is its own case rather than either of them:
+        ///
+        /// - `releaseInProgress` is a restore inside its normal window — milliseconds — and
+        ///   the honest advice there is *retry in a moment*. This one has already outlived a
+        ///   five-second budget, so a client told "in a moment" would retry into a refusal
+        ///   that is not measured in moments.
+        /// - `restoreToAutomaticFailed` is the firmware refusing every attempt: a fact about
+        ///   the hardware, durable, and restart-and-reconcile is the route out. This one is a
+        ///   fact about *time* — the helper gave up waiting, not the firmware gave up taking —
+        ///   so it must not carry that reason's finality.
+        ///
+        /// A restore that comes back refused after `RestoreLimits.attemptBudget` converts this
+        /// into `restoreToAutomaticFailed` through the path that already exists. A restore
+        /// that **never returns** leaves this standing for the life of the process; that is
+        /// the fail-safe direction, and it is the honest report of a fan nothing can answer
+        /// for. Decision D33 on
+        /// [#209](https://github.com/blamechris/Aeolus/issues/209), recorded as ADR 0007,
+        /// amendment 2026-09-06 (#209).
+        case handbackUnconfirmed
         /// The handback failed: the helper spent its attempts trying to return this fan to
         /// automatic control and the firmware never took the write.
         ///
         /// The durable counterpart to `releaseInProgress`, and the distinction is the
         /// point — that one means *retrying*, this one means *gave up*. A client that
         /// cannot tell them apart retries forever against a fan whose handback is over.
+        ///
+        /// **"Gave up" means the firmware refused, and nothing else.** `docs/SAFETY.md` § 4's
+        /// acknowledgement budget used to produce this reason too, and it should not have:
+        /// a budget expiring is evidence about *time*, not about the firmware, and a healthy
+        /// machine's five-second timeout permanently removing a fan from manual control left
+        /// the user no route out. Since ADR 0007, amendment 2026-09-06 (#209) that path
+        /// records `handbackUnconfirmed` instead, and a fan reaches this case from there only
+        /// when the outstanding restore comes back having spent
+        /// `RestoreLimits.attemptBudget` on a firmware that never took the write.
         ///
         /// Manual control is refused because the helper no longer knows what mode the fan
         /// is in: it asked for automatic, was refused, and stopped asking. Granting a lease
@@ -190,6 +234,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case .leaseHeldByAnotherClient: return "leaseHeldByAnotherClient"
             case .selfRenewalNotBuilt: return "selfRenewalNotBuilt"
             case .releaseInProgress: return "releaseInProgress"
+            case .handbackUnconfirmed: return "handbackUnconfirmed"
             case .restoreToAutomaticFailed: return "restoreToAutomaticFailed"
             case .systemSleeping: return "systemSleeping"
             case .noThermalTelemetry: return "noThermalTelemetry"
@@ -210,6 +255,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case Reason.leaseHeldByAnotherClient.wireValue: self = .leaseHeldByAnotherClient
             case Reason.selfRenewalNotBuilt.wireValue: self = .selfRenewalNotBuilt
             case Reason.releaseInProgress.wireValue: self = .releaseInProgress
+            case Reason.handbackUnconfirmed.wireValue: self = .handbackUnconfirmed
             case Reason.restoreToAutomaticFailed.wireValue: self = .restoreToAutomaticFailed
             case Reason.systemSleeping.wireValue: self = .systemSleeping
             case Reason.noThermalTelemetry.wireValue: self = .noThermalTelemetry
