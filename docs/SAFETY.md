@@ -56,7 +56,11 @@ deliberately, because E5 is what gates the epics that give it something.
 
 **How to read the *Tested by:* lines.** A bare *Tested by:* is a claim that those tests
 exist and pass today. Where a mechanism is not built, the line reads
-*Tested by (pending #N):* and names the issue that will satisfy it. The distinction is
+*Tested by (pending #N):* and names the issue — or, where the blocker is a whole epic rather
+than one issue, the epic — that will satisfy it. That wording was "the issue" until #104, and the
+looser form is what lets a pending line name its **real** blocker: #104 delivers documentation and
+makes no hardware test runnable, so a row pending on the write path now says E3/E4 and points at
+the [hardware checklist](#hardware-checklist). The distinction is
 load-bearing: a coverage claim naming a test that does not exist is worse than no line at
 all, because it retires the question. #119 split every one of the eight sections against the
 suite as it stands, so a bare line here is now a statement about tests that are in it.
