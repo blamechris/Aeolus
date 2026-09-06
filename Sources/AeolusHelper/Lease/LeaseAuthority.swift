@@ -719,6 +719,14 @@ actor LeaseAuthority {
     /// under the same read-only rule as the set above.
     var fansWithAbandonedHandbacks: Set<Int> { restoreAbandoned }
 
+    /// The fans with a restore issued and not yet returned — `releasing`'s keys, and nothing
+    /// about its counts. Read-only, under the same rule as the two sets above.
+    ///
+    /// Exists so that `handbackUnconfirmed ⊆ releasing.keys` is a fact a test asserts rather
+    /// than a sentence a doc comment states: `fansAeolusIsAccountableFor` rests on it, and
+    /// an invariant nothing can observe is one a refactor can break with the suite green.
+    var fansMidHandback: Set<Int> { Set(releasing.keys) }
+
     func holdsTombstone(for connection: ConnectionID) -> Bool {
         tombstones.contains(connection)
     }
@@ -787,7 +795,8 @@ actor LeaseAuthority {
     /// `releasing.keys` by its own invariant — entered only from there, left only when the
     /// fan's `releasing` count reaches `nil` — so every fan in it is already accounted for by
     /// the third register. Adding it would change no answer and would suggest the two can
-    /// disagree.
+    /// disagree. The invariant is asserted, not merely stated: `UnconfirmedHandbackTests`
+    /// reads `fansMidHandback` beside `fansWithUnconfirmedHandbacks` and requires the subset.
     ///
     /// **Read by the snapshot as well as by the gate**, through `activeLeaseView()`. One
     /// definition, because two would disagree the moment either moved — and the way they

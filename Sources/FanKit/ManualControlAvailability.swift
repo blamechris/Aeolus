@@ -81,10 +81,13 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// for `CLAUDE.md` rule 6's reason — a lease over a fan whose mode nothing has
         /// established is control this process cannot claim.
         ///
-        /// **It may resolve itself, and a helper restart is not the answer.** The outstanding
-        /// restore is still running; when it returns, this clears. So the advice is to retry
-        /// later, or to watch connection health — not to restart the helper, which is the
-        /// route out of `restoreToAutomaticFailed` and is the wrong action here.
+        /// **It may resolve itself, so a helper restart is not the first action.** The
+        /// outstanding restore is still running; when it returns, this clears, and the advice
+        /// is to retry later or to watch connection health. If it stands across a wake, the
+        /// restore never returned — the wedged handle of #68 — and then a helper restart,
+        /// whose startup reconciliation reads every fan's mode, is the route out exactly as it
+        /// is for `restoreToAutomaticFailed`. The difference between the two is *when* to
+        /// reach for the restart, not whether.
         ///
         /// **How it differs from the two reasons it sits between**, which is the whole reason
         /// it is its own case rather than either of them:

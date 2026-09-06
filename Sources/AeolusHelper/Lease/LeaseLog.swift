@@ -341,7 +341,9 @@ struct LeaseLog: Sendable {
             helper stopped waiting for when the pre-sleep budget expired. Refused: the \
             restore is still outstanding and nothing has confirmed the fan's mode, so a \
             lease over it would be claiming control nothing has answered for. It may clear \
-            on its own when that restore returns — restarting the helper is not the remedy.
+            on its own when that restore returns; if it stands across a wake, the restore \
+            never returned, and a helper restart — whose startup reconciliation reads every \
+            fan's mode — is the route out, as it is for a refused handback.
             """
         )
     }

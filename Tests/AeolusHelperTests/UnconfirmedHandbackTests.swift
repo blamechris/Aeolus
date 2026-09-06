@@ -43,11 +43,11 @@ struct UnconfirmedHandbackTests {
     /// #209). This test asserted `.restoreToAutomaticFailed` until then, on decision D17's
     /// argument that a budget expiring is the same event as a firmware refusal. It is not — a
     /// budget expiring is evidence about time. So the fan is refused `.handbackUnconfirmed`,
-    /// which refuses exactly as hard while it stands, and the two inequalities in
-    /// `expectUnconfirmed` are the content of the change: a client told `.releaseInProgress`
-    /// retries in a moment against a restore that has outlived five seconds, and one told
-    /// `.restoreToAutomaticFailed` reaches for a helper restart to clear something a restart
-    /// does not clear.
+    /// which refuses exactly as hard while it stands, and *which* case it is is the content
+    /// of the change: a client told `.releaseInProgress` retries in a moment against a
+    /// restore that has outlived five seconds, and one told `.restoreToAutomaticFailed`
+    /// reaches first for a helper restart, which is the right action only once this state
+    /// has outlived a wake.
     ///
     /// It is asserted twice — once while the machine still believes it is going to sleep, and
     /// again after `.didWake` with the restore still parked; the second is what says the
@@ -123,6 +123,7 @@ struct UnconfirmedHandbackTests {
             set is documented as a subset of the fans mid-restore, and every claim resting on \
             that — fansAeolusIsAccountableFor not unioning it included — is false if it is not.
             """)
+        await Self.expectUnconfirmedIsMidHandback(helper.leases)
 
         // Nothing is left parked behind the test.
         await plane.release()
@@ -251,11 +252,28 @@ struct UnconfirmedHandbackTests {
         }
     }
 
-    /// The refusal a fan whose handback is unconfirmed gets, and the two it must not get.
+    /// The subset `fansAeolusIsAccountableFor` rests on, asserted rather than trusted.
     ///
-    /// Factored out because it is asserted at two different instants in one test — sealed and
-    /// unsealed — and the inequalities are the point rather than decoration: they are what
-    /// stops the new case being a rename of either neighbour.
+    /// That set deliberately does not union the unconfirmed register, on the strength of the
+    /// register being a subset of the fans mid-handback. A fan here and not there is one the
+    /// accountable set has silently stopped naming — and nothing else in the suite sees it:
+    /// the exact-set assertions above pass, and the refusal is unchanged.
+    ///
+    /// **Mutation:** `releasing.removeAll()` at the end of `recordUnconfirmedHandbacks()`.
+    /// Run: red here, and nowhere else.
+    private static func expectUnconfirmedIsMidHandback(_ leases: LeaseAuthority) async {
+        let unconfirmed = await leases.fansWithUnconfirmedHandbacks
+        let midHandback = await leases.fansMidHandback
+        #expect(
+            unconfirmed.isSubset(of: midHandback),
+            "unconfirmed \(unconfirmed) is not a subset of mid-handback \(midHandback)")
+    }
+
+    /// The refusal a fan whose handback is unconfirmed gets, at two instants of one test.
+    ///
+    /// The equality is the whole assertion. Two inequalities against the neighbouring reasons
+    /// stood here until a review noted that `AeolusXPCFault` is `Equatable` over case
+    /// identity, so both were implied by the equality and could never go red on their own.
     private static func expectUnconfirmed(
         _ leases: LeaseAuthority, fan: Int, whenAsking moment: String
     ) async {
@@ -268,19 +286,6 @@ struct UnconfirmedHandbackTests {
             """
             fan \(fan) \(moment): expected the unconfirmed refusal, got \
             \(String(describing: refusal)).
-            """)
-        #expect(
-            refusal != .manualControlUnavailable(reason: .releaseInProgress),
-            """
-            fan \(fan) \(moment): told to retry in a moment about a restore that has already \
-            outlived the acknowledgement budget. A client acts on that by retrying forever.
-            """)
-        #expect(
-            refusal != .manualControlUnavailable(reason: .restoreToAutomaticFailed),
-            """
-            fan \(fan) \(moment): told the firmware refused a write nothing has reported on \
-            yet. The user's action for that reason is a helper restart, and the restore that \
-            would clear this state is still running.
             """)
     }
 

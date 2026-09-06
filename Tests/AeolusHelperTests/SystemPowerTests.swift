@@ -402,7 +402,8 @@ struct SystemPowerTests {
     ///
     /// The lower bound is asserted too, and it is not ceremony: a zero budget expires before
     /// the handback can start, which turns the `.fault` line into noise on healthy machines and
-    /// makes the D17 abandonment refuse every fan on every sleep.
+    /// makes the unconfirmed record (D33; the D17 abandonment until #209) cover every fan on
+    /// every sleep.
     ///
     /// **Mutation:** `static let acknowledgementBudget: Duration = .seconds(600)`. Run: red.
     @Test("The acknowledgement budget sits inside the kernel's own sleep window")

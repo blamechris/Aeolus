@@ -110,7 +110,9 @@ struct LeaseAuthorityAccessTests {
     /// They exist because decision D33 gave a handback three distinguishable endings —
     /// cleared, converted to the durable set, still standing — and the refusal alone cannot
     /// tell "cleared" from "never recorded", so a test asserting only the thrown fault would
-    /// pass against a helper that recorded nothing at all.
+    /// pass against a helper that recorded nothing at all. `fansMidHandback` is the third of
+    /// the same kind — `releasing`'s keys — and exists so the subset invariant the first two
+    /// rest on is asserted by a test rather than stated by a comment.
     private static let acknowledgedInternalProperties: Set<String> = [
         "writeCapability",
         "telemetry",
@@ -121,6 +123,7 @@ struct LeaseAuthorityAccessTests {
         "tombstoneCount",
         "fansWithUnconfirmedHandbacks",
         "fansWithAbandonedHandbacks",
+        "fansMidHandback",
     ]
 
     /// Every method of `LeaseAuthority` that is not `private`, and what each of them is.
