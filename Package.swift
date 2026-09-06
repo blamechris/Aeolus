@@ -34,9 +34,14 @@ let package = Package(
     targets: [
         // Key enumeration, the type codec, and the IOKit connection.
         //
-        // The read API is `public`. The write API is deliberately NOT public — it is
-        // `package`-scoped so only AeolusHelper can reach it. Any change that widens
-        // that boundary is a safety review, not a refactor. See docs/SAFETY.md.
+        // The read API is `public`. The write API is deliberately not reachable through
+        // a plain `import SMCCore`: it is `@_spi(FanWrite) public`, so only a module that
+        // opts in with `@_spi(FanWrite) import SMCCore` can name it, and only AeolusHelper
+        // does. `package` was the obvious level and does not work — the Xcode AeolusHelper
+        // target consumes this as a *product*, so it is outside the package `package` is
+        // computed against. See the 2026-09-06 amendment in
+        // docs/ADR/0008-write-authorisation.md. Any change that widens that boundary is a
+        // safety review, not a refactor. See docs/SAFETY.md.
         .target(
             name: "SMCCore",
             swiftSettings: [.swiftLanguageMode(.v6)]

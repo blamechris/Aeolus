@@ -221,7 +221,14 @@ extension SMCKeyType {
     /// Encodes a scalar into this key type's wire representation.
     ///
     /// This is the inverse of `SMCValue.scalar()` and is used only on the write path,
-    /// which means only inside `AeolusHelper`. It is deliberately not `public`.
+    /// which means only inside `AeolusHelper`. It is deliberately not reachable through a
+    /// plain `import SMCCore`: `@_spi(FanWrite)` makes the symbol public in the binary but
+    /// unnameable except from a module that opts in with `@_spi(FanWrite) import SMCCore`,
+    /// and only `Sources/AeolusHelper` does. It is here rather than `package` because the
+    /// Xcode `AeolusHelper` target consumes `SMCCore` as a package *product* and so is
+    /// outside the package `package` visibility is computed against — see the 2026-09-06
+    /// amendment in [ADR 0008](../../docs/ADR/0008-write-authorisation.md). Encoding is
+    /// half of a write, so it is gated exactly as the write is.
     ///
     /// `byteOrder` is the order to encode with — resolved the same way a read resolves
     /// it, via `resolveByteOrder(generation:attributes:type:)` from a fresh `keyInfo` at
@@ -235,7 +242,7 @@ extension SMCKeyType {
     /// - Note: Implemented in E3 (Intel, `fpe2`) and E4 (Apple Silicon, `flt`), each with
     ///   round-trip tests against `SMCValue.scalar()`. Left unimplemented rather than
     ///   guessed: a wrong encoding here writes a wrong RPM to real hardware.
-    package func encode(scalar: Double, byteOrder: SMCByteOrder?) throws -> [UInt8] {
+    @_spi(FanWrite) public func encode(scalar: Double, byteOrder: SMCByteOrder?) throws -> [UInt8] {
         throw SMCError.encodingNotImplemented(type: self)
     }
 }

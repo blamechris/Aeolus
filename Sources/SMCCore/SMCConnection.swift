@@ -8,9 +8,11 @@ import os
 ///
 /// Reading is safe, unprivileged, and available to every client. Writing requires root,
 /// can damage hardware, and is therefore reachable only from `AeolusHelper`: the write
-/// entry points are `package`-scoped, not `public`. Widening that access is a change to
-/// the project's safety posture and needs review under the rules in `docs/SAFETY.md` —
-/// it is not a refactor.
+/// entry points are behind the `FanWrite` SPI group, which a plain `import SMCCore`
+/// cannot name. Widening that access — to plain `public`, or by adding a member to the
+/// group — is a change to the project's safety posture and needs review under the rules
+/// in `docs/SAFETY.md`. It is not a refactor. See the 2026-09-06 amendment in
+/// `docs/ADR/0008-write-authorisation.md` for why `package` could not do this job.
 ///
 /// ## `SMCKeyData_t` is read at explicit byte offsets, not as a Swift struct
 ///
@@ -589,7 +591,21 @@ public actor SMCConnection {
     ///   `[max(F0Mn, minimumManualRPM), F0Mx]`, and the only type that produces a value in
     ///   it is `FanKit.FanControlEnvelope`. Anything reaching this function should have come
     ///   from there.
-    package func write(_ bytes: [UInt8], to key: SMCKey) throws {
+    ///
+    /// - Important: `@_spi(FanWrite)` is the access control, and it is not decoration. The
+    ///   symbol is public in the binary, but a plain `import SMCCore` — what `fanctl` and
+    ///   the app write — cannot *name* it; only a module opting in with
+    ///   `@_spi(FanWrite) import SMCCore` can, and only `Sources/AeolusHelper` does. It
+    ///   replaced `package`, which does not reach the Xcode `AeolusHelper` target because
+    ///   that target consumes `SMCCore` as a package *product*. See the 2026-09-06
+    ///   amendment in `docs/ADR/0008-write-authorisation.md`, and
+    ///   `AeolusHelper.WriteSeamReachability` for the probe that proves the level in the
+    ///   build that ships the helper.
+    ///
+    ///   The body still throws and no write path is built. Widening this — to plain
+    ///   `public`, or by adding a third member to the group — is a safety review under
+    ///   `docs/SAFETY.md`, not a refactor.
+    @_spi(FanWrite) public func write(_ bytes: [UInt8], to key: SMCKey) throws {
         throw SMCError.notPermitted
     }
 

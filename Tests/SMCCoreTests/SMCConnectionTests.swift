@@ -1,7 +1,10 @@
 import IOKit
 import Testing
 
-@testable import SMCCore
+// `write(_:to:)` is `@_spi(FanWrite) public` — see the 2026-09-06 amendment in
+// docs/ADR/0008-write-authorisation.md. `@testable` widens *internal* access and does
+// nothing for an SPI group, so `writeStaysRefused` below needs the opt-in by name.
+@_spi(FanWrite) @testable import SMCCore
 
 // swiftlint:disable force_unwrapping
 
