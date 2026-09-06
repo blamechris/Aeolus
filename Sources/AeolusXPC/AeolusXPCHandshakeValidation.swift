@@ -28,10 +28,18 @@ extension AeolusXPCValidation {
 
     /// Decodes a `HelloRequest` without validating it.
     ///
+    /// The envelope is bounded before anything is decoded — see `AeolusXPCPayloadBounds`.
+    /// This is the message that most needs it: `hello` is reachable before the handshake
+    /// because it *is* the handshake, so this decode is the helper's pre-authentication
+    /// surface.
+    ///
     /// - Parameter payload: The JSON the client sent.
     /// - Returns: The decoded request.
-    /// - Throws: `AeolusXPCFault.malformedPayload`.
+    /// - Throws: `AeolusXPCFault.malformedPayload`, for an over-size envelope as well as
+    ///   for JSON that does not decode.
     public static func decodeHelloRequest(from payload: Data) throws -> HelloRequest {
+        try AeolusXPCPayloadBounds.requireWithinEnvelope(
+            payload, limit: AeolusXPCPayloadBounds.maxHelloRequestBytes)
         do {
             return try AeolusXPCCoding.decoder().decode(HelloRequest.self, from: payload)
         } catch {
