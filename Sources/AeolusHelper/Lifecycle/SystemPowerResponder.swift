@@ -39,10 +39,22 @@ enum SystemPowerLimits {
     /// - **The parked restore may still land.** Nothing cancels it; § 4 stops *waiting*, and
     ///   `BoundedFanRestorer` keeps attempting inside a task that does not inherit
     ///   cancellation. On a machine that only sleeps slowly, the write arrives.
-    /// - **Every fan still outstanding is recorded as an abandoned handback before the
-    ///   acknowledgement** — `LeaseAuthority.abandonOutstandingHandbacks()`, decision D17 on
-    ///   this PR. That is the durable `.restoreToAutomaticFailed` refusal, so the fan cannot
-    ///   be leased again on a machine that never confirmed it went back to automatic.
+    /// - **Every fan still outstanding is recorded as an unconfirmed handback before the
+    ///   acknowledgement** — `LeaseAuthority.recordUnconfirmedHandbacks()`, decision D33
+    ///   (ADR 0007, amendment 2026-09-06, #209). A lease over such a fan is refused exactly
+    ///   as hard as one over an abandoned handback while it stands, so nothing can be leased
+    ///   on a machine that never confirmed the fan went back to automatic.
+    ///
+    ///   **It records that, and not the durable `.restoreToAutomaticFailed`, and the bullet
+    ///   said the opposite until D33 — decision D17, corrected here rather than deleted.**
+    ///   A budget expiring is evidence about *time*: nothing on this path observed a refused
+    ///   write, and treating five seconds of silence as a firmware refusal removed a fan from
+    ///   manual control for the life of the process on a machine whose only fault was
+    ///   sleeping slowly. The unconfirmed state ends three ways — the outstanding restore
+    ///   lands and clears it, the restore comes back refused after `RestoreLimits.attemptBudget`
+    ///   and converts it to the durable set through `LeaseAuthority.restore(_:because:)`'s
+    ///   existing union, or the restore never returns and it stands for the life of the
+    ///   process.
     /// - **§ 3 acts above the ceiling.** Its registry entry is deliberately retained across
     ///   the handback, so a fan that crossed the sleep in manual and comes back hot is taken
     ///   to full scale by the thermal override. Above the ceiling only — it is not a restore.
@@ -115,17 +127,23 @@ actor SleepAcknowledgement {
     /// to be read — which would leave the budget-expiry fault, the one line § 4 has that says
     /// the fans may not have been handed back, as the least likely of all to be recorded.
     ///
-    /// **The abandonment is recorded before the acknowledgement too, and for a stronger
-    /// reason than the log line's.** Decision D17: a fan whose handback has not landed when
-    /// the budget fires is a fan in a mode nothing confirmed, and `restoreAbandoned` is the
-    /// durable refusal that says so. Recording it after the acknowledgement would put the one
-    /// piece of state that survives the sleep on the far side of the instant the machine
-    /// stops running this process — the same argument, applied to something a reader cannot
-    /// merely miss.
+    /// **The unconfirmed handback is recorded before the acknowledgement too, and for a
+    /// stronger reason than the log line's.** A fan whose handback has not landed when the
+    /// budget fires is a fan in a mode nothing confirmed, and `handbackUnconfirmed` is the
+    /// refusal that says so. Recording it after the acknowledgement would put the one piece
+    /// of state that survives the sleep on the far side of the instant the machine stops
+    /// running this process — the same argument, applied to something a reader cannot merely
+    /// miss.
+    ///
+    /// **This paragraph said "the abandonment" and named decision D17 until D33** (ADR 0007,
+    /// amendment 2026-09-06, #209). What is recorded is no longer the durable
+    /// `.restoreToAutomaticFailed` — see `SystemPowerLimits.acknowledgementBudget` for the
+    /// argument — and the *ordering* claim above is unchanged by that, which is why it is
+    /// corrected in place rather than rewritten.
     ///
     /// It sits inside the once-only guard rather than in the budget task, so it happens on
     /// the path that actually answers the system and on no other: a budget that fires while
-    /// the handback is completing must not record an abandonment for a fan that went back.
+    /// the handback is completing must not record anything about a fan that went back.
     func acknowledge(_ outcome: Outcome) async {
         guard settledOutcome == nil else { return }
         settledOutcome = outcome
@@ -134,8 +152,8 @@ actor SleepAcknowledgement {
         case .handedBack:
             log.allowingSleepAfterHandback()
         case .budgetExpired:
-            let abandoned = await leases.abandonOutstandingHandbacks()
-            log.allowingSleepWithHandbackOutstanding(after: budget, abandoning: abandoned)
+            let unconfirmed = await leases.recordUnconfirmedHandbacks()
+            log.allowingSleepWithHandbackUnconfirmed(after: budget, leaving: unconfirmed)
         }
 
         await notification.acknowledge()
@@ -170,9 +188,11 @@ actor SleepAcknowledgement {
 /// machine with every lease still live and every fan still in manual — and on a healthy one
 /// it would clear `F<n>Md` underneath § 5, whose next cycle reads a mode key it did not
 /// expect as a reclamation and re-asserts on the way into sleep.
-/// `SystemPowerTests.aWedgedHandbackTearsTheLeaseDownFirstAndRecordsTheFanAsAbandoned`
+/// `UnconfirmedHandbackTests.aWedgedHandbackDropsTheLeaseFirstAndLeavesTheFanUnconfirmed`
 /// asserts `leaseCount == 0` from **inside** the acknowledgement, so a keystone that never
-/// returns cannot precede the teardown.
+/// returns cannot precede the teardown. (This named a test that did not exist under the
+/// spelling given, until #209 replaced it and fixed the reference; a doc pointing at nothing
+/// is how an ordering claim stops having a guard.)
 ///
 /// ## Acquisition is sealed for the duration
 ///

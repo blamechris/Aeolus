@@ -73,6 +73,18 @@ struct LeaseLog: Sendable {
     /// state the write that just failed was trying to establish, and a claim `CLAUDE.md`
     /// rule 6 forbids. `SafetyLog.reclamationFanMayStillBePinned` already says the true
     /// thing about the identical event next door, so the two now agree.
+    ///
+    /// **It has exactly one producer, and that is what keeps the sentence true.** Only
+    /// `BoundedFanRestorer` writes this line, and only once the firmware has refused
+    /// `RestoreLimits.attemptBudget` attempts — so "Aeolus has stopped trying" reports
+    /// something observed. `docs/SAFETY.md` § 4's acknowledgement budget used to reach the
+    /// same durable state by another route, and this line would have been untrue of the fans
+    /// it covered: the helper had stopped *waiting*, which is not the same as having stopped
+    /// trying, and no attempt count or firmware error existed to name. Since ADR 0007,
+    /// amendment 2026-09-06 (#209) that path records
+    /// `ManualControlAvailability.Reason.handbackUnconfirmed` and writes
+    /// `SafetyLog.allowingSleepWithHandbackUnconfirmed(after:leaving:)` instead, so the two
+    /// stay distinguishable in `log show`.
     func abandonedHandback(
         fanAt index: Int, because cause: FanRestoreCause, after attempts: Int, error: any Error
     ) {
@@ -301,6 +313,35 @@ struct LeaseLog: Sendable {
             \(fans.sorted().map(String.init).joined(separator: ", "), privacy: .public) \
             while their restore to automatic is still in flight. Refused: a lease granted \
             now would be overwritten by that restore.
+            """
+        )
+    }
+
+    /// A client asked for a fan whose handback the helper stopped waiting for.
+    ///
+    /// `docs/SAFETY.md` § 4's budget expired with this fan's restore still outstanding, and
+    /// nothing has answered for it since. Beside `refusedMidHandback` deliberately: the two
+    /// are the same fan in the same register — `handbackUnconfirmed` is a subset of
+    /// `releasing` — and what separates them is how long the restore has been out. That one
+    /// is worth writing because a client seeing it repeatedly has found a restore that never
+    /// completes; this one *is* that fault, already diagnosed.
+    ///
+    /// `.notice` for `refusedMidHandback`'s reason: `.info` is not persisted by default, and
+    /// the repeated-refusal evidence has to be there when somebody goes looking. Not
+    /// `.fault` — the fault was written once, by § 4, where the budget expired.
+    ///
+    /// The wording says what a client should do, because the answer differs from the one next
+    /// door in the way that matters most: a restart is the route out of a refused handback
+    /// and is the wrong action here.
+    func refusedUnconfirmedHandback(_ connection: ConnectionID, fans: Set<Int>) {
+        log.notice(
+            """
+            Connection \(connection.logDescription, privacy: .public) asked for fan(s) \
+            \(Self.describe(fans), privacy: .public) whose return to automatic control the \
+            helper stopped waiting for when the pre-sleep budget expired. Refused: the \
+            restore is still outstanding and nothing has confirmed the fan's mode, so a \
+            lease over it would be claiming control nothing has answered for. It may clear \
+            on its own when that restore returns — restarting the helper is not the remedy.
             """
         )
     }
