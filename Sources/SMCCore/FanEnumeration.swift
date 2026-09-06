@@ -36,6 +36,19 @@
 /// `actual >= minimum` — a gauge, a health check, a "fan stopped" heuristic — is wrong on
 /// real hardware, and no test here may encode that assumption either.
 ///
+/// **The 1343.07 example understates it by roughly two orders of magnitude.** That reading falls
+/// 6.93 RPM short of the declared 1350. The same keys on the same machine read **exactly 0 for 42
+/// consecutive minutes** — 2,904 of 10,570 ticks across one lid close, with `F0Mn`/`F1Mn` reading
+/// 1350 in those very same replies — a shortfall of the full 1350, close to 200x the first one —
+/// and **109.13 RPM while genuinely turning**, against that same declared minimum. So the
+/// disagreement is not a 0.5 % rounding miss on an idle machine; it is the entire declared range.
+/// The rule above and its no-test clause are unchanged and were always right. Only their evidence
+/// gets stronger.
+///
+/// Both numbers are **read-only observations of Apple's own thermal controller**: no write
+/// selector was issued in that capture and this tree has no write path, so neither may be
+/// quoted as a step response to anything Aeolus commanded.
+///
 /// ## No `{fds`, and no architecture branch
 ///
 /// `{fds`, the fan descriptor struct that could supply firmware-authored fan names, is

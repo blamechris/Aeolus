@@ -88,4 +88,44 @@ struct SensorRowModelTests {
         #expect(row.value.text != "—")
         #expect(row.value.text.contains("unavailable"))
     }
+
+    // MARK: - temperatureUnit (#64)
+
+    @Test("Defaulting temperatureUnit to .celsius leaves existing behaviour unchanged")
+    func defaultTemperatureUnitIsCelsius() {
+        let reading = SensorPollingReading(
+            key: "Tp09", kind: .temperatureCelsius, sample: .value(key: "Tp09", 44.2))
+        let row = SensorRowModel(reading: reading)
+
+        #expect(row.value.text == "44.20 °C")
+    }
+
+    @Test("Fahrenheit converts a temperature reading's displayed value and unit alike")
+    func fahrenheitConvertsDisplayedValue() {
+        let reading = SensorPollingReading(
+            key: "Tp09", kind: .temperatureCelsius, sample: .value(key: "Tp09", 0))
+        let row = SensorRowModel(reading: reading, temperatureUnit: .fahrenheit)
+
+        #expect(row.value.text == "32 °F")
+    }
+
+    @Test("Fahrenheit never affects a non-temperature reading")
+    func fahrenheitDoesNotAffectNonTemperatureReadings() {
+        let reading = SensorPollingReading(
+            key: "F0Ac", kind: .rpm, sample: .value(key: "F0Ac", 2000))
+        let row = SensorRowModel(reading: reading, temperatureUnit: .fahrenheit)
+
+        #expect(row.value.text == "2000 RPM")
+    }
+
+    @Test("An unavailable temperature reading still renders honestly under Fahrenheit")
+    func unavailableTemperatureUnderFahrenheitRendersHonestly() {
+        let reading = SensorPollingReading(
+            key: "Tp09", kind: .temperatureCelsius,
+            sample: .unavailable(key: "Tp09", reason: "read failed"))
+        let row = SensorRowModel(reading: reading, temperatureUnit: .fahrenheit)
+
+        #expect(!row.value.isAvailable)
+        #expect(row.value.text.contains("unavailable"))
+    }
 }
