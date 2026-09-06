@@ -28,7 +28,16 @@ import Testing
 //
 // ## What this suite does not close
 //
-// Only the precedence class. A probe built without a signing identity is ad-hoc, so it fails
+// Only the identifier disjunction's precedence — one instance of the precedence class, not
+// the class. The Debug variant's certificate-chain clause carries the identical
+// and-binds-tighter hazard: `((DeveloperID chain) or (AppleDevelopment chain))` losing its
+// outer pair parses as `(anchor and DeveloperID) or (AppleDevelopment and team and
+// identifier …)`, whose second alternative drops `anchor apple generic` entirely. This probe
+// structurally cannot see it — that alternative still demands certificates, and an ad-hoc
+// probe carries none, so it is refused for the ordinary reason and this suite stays green.
+// Those parentheses remain `ClientRequirementTextTests`' exact-match responsibility.
+//
+// A probe built without a signing identity is ad-hoc, so it fails
 // `anchor apple generic`, so every requirement that still *conjoins* that clause rejects it —
 // which is why deleting the Team ID clause and deleting the chain clauses both leave this
 // suite green, measured, not assumed (see `probeCannotSeeConjunctiveClauseDeletion`). Going
@@ -50,10 +59,12 @@ import Testing
 // a red test.
 
 /// The clause-level probe: an ad-hoc client wearing an Aeolus identifier.
-@Suite(
-    "Client authorisation — an ad-hoc client wearing our identifier",
-    .enabled(if: AdHocSignedFixtures.isAvailable, "codesign is not present on this host")
-)
+///
+/// No `codesign`-availability trait: the fixtures in `ClientAuthorisationTests` shell out to
+/// the same `/usr/bin/codesign` with no guard, so a host missing it fails the run either way.
+/// A trait here would only remove these six tests from the report while the run went red
+/// elsewhere — one policy for the module, and it is "fail loudly".
+@Suite("Client authorisation — an ad-hoc client wearing our identifier")
 struct AeolusIdentifiedProbeTests {
 
     /// Vacuity guard for everything below.
@@ -129,9 +140,15 @@ struct AeolusIdentifiedProbeTests {
         #expect(control.evaluate(widened) == .admittedProbe)
     }
 
-    /// The same widened text, run all the way through the decision the helper actually makes,
-    /// so that "the probe notices" and "the helper refuses to serve anybody" are the same
-    /// fact rather than two adjacent ones.
+    /// The same widened text, run all the way through the decision the seal actually makes,
+    /// so that "the probe notices" and "a helper carrying this probe refuses to serve
+    /// anybody" are the same fact rather than two adjacent ones.
+    ///
+    /// Scoped to *this* probe deliberately. The shipped helper injects
+    /// `RequirementNegativeControl.system` (`/bin/ls`), and under that control the same
+    /// widened text yields `.enforce`, not `.refuseAll` — which is exactly what
+    /// `startupControlIsBlindToThePrecedenceDefect` below asserts. This test says what a
+    /// helper carrying the clause-level probe would do, not what the shipped one does.
     @Test("A helper whose requirement admits the probe refuses every connection")
     func admittedProbeEndsInRefuseAll() throws {
         let probe = try AeolusIdentifiedProbeFixture.make()
@@ -163,6 +180,21 @@ struct AeolusIdentifiedProbeTests {
             variant: variant
         )
         let widened = try ClientAuthorisationFixtures.compile(widenedText)
+
+        // The reason the blindness holds, asserted alongside the blindness itself, so that a
+        // future red says which half moved. The premise is that the startup probe is Apple
+        // platform code and therefore carries no Aeolus identifier; if someone points
+        // `systemProbePath` at a bundled non-Apple probe — a strict improvement — this line
+        // goes red first and names the premise, instead of the expectation below reading
+        // like a regression.
+        let appleAnchored = try ClientAuthorisationFixtures.compile("anchor apple generic")
+        #expect(
+            ClientAuthorisationFixtures.satisfies(
+                appleAnchored,
+                RequirementNegativeControl.systemProbePath
+            )
+        )
+
         #expect(RequirementNegativeControl.system.evaluate(widened) == .rejectedProbe)
     }
 
@@ -185,6 +217,18 @@ struct AeolusIdentifiedProbeTests {
         let damagedText = try ClientAuthorisationFixtures.releaseTextDeleting(conjunct)
         let damaged = try ClientAuthorisationFixtures.compile(damagedText)
         let control = RequirementNegativeControl(probePath: probe.path)
+
+        // The reason the limit holds, asserted here rather than only in the vacuity guard
+        // forty lines above: the probe is ad-hoc, so it fails `anchor apple generic`, and
+        // every text this test damages still conjoins that clause. A future probe that does
+        // satisfy the anchor turns this line red first, which distinguishes "the probe
+        // changed" from "the requirement stopped demanding an anchor".
+        let appleAnchored = try ClientAuthorisationFixtures.compile("anchor apple generic")
+        #expect(
+            ClientAuthorisationFixtures.checkValidity(appleAnchored, probe.path)
+                == errSecCSReqFailed
+        )
+
         #expect(control.evaluate(damaged) == .rejectedProbe)
     }
 }
