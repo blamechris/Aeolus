@@ -1304,6 +1304,8 @@ identity, which is what keeps this row's "now" tag honest against row 2's:** wha
 an installed daemon, so running the built helper binary under `sudo` across one lid close is
 enough. Row 2 needs launchd to restart the process and therefore needs the install; this row does
 not. `IOKitSystemPowerObserver` itself is the one thing no automated test can reach.
+This row is executed by running `Tools/PowerObserver` (`power-observer`) across one real lid
+close alongside `pmset -g log` — see its README for how to run it and read the result.
 
 **15. Sleep/wake cadence per lid close** — how often § 4's handback path is exercised. *Executes:
 **done** — see [SMC-RESEARCH.md](SMC-RESEARCH.md) and

@@ -184,7 +184,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: swift-format
-        run: swift format lint --recursive --strict Sources Tests
+        run: swift format lint --recursive --strict Sources Tests Tools
 
       - name: Install SwiftLint
         run: brew install swiftlint
