@@ -740,3 +740,128 @@ struct HelperCompositionTests {
             .joined(separator: "\n")
     }
 }
+
+/// `main()`'s process-lifetime retention, kept out of `HelperCompositionTests`'s body.
+///
+/// An extension rather than a fifth test in the struct: the suite is already at its
+/// `type_body_length` ceiling, and the alternative — a second file scanning
+/// `AeolusHelperMain.swift` with its own copy of `mainSource()`, `strippingWhitespace(_:)`
+/// and `body(ofFunctionMatching:in:)` — is two implementations of one scanner, which is
+/// the defect this repository keeps finding. Same file, same helpers, same suite.
+extension HelperCompositionTests {
+
+    /// The delegate, the listener and the composition are held for the life of the process,
+    /// by three mechanisms an optimiser cannot remove, before `dispatchMain()` is reached.
+    ///
+    /// ## Why this file grows for it
+    ///
+    /// This suite is already over 400 lines and the rule is not to grow it. The exception is
+    /// a tripwire, and this is the case the exception is for: `main()` cannot be driven — it
+    /// binds a Mach service and calls a function that never returns — so the only place the
+    /// property can be asserted is the source, and this suite is where `main()`'s source
+    /// assertions live. Somewhere else would mean two files scanning one function.
+    ///
+    /// ## What each line is for, and why the obvious spelling was wrong
+    ///
+    /// `NSXPCListener.delegate` is **weak**. If `delegate`'s lifetime ends after its last
+    /// use — the assignment — then `listener(_:shouldAcceptNewConnection:)` is never called
+    /// and every connection to a root daemon is accepted with nothing applying the
+    /// code-signing requirement and nothing setting the exported object
+    /// ([#92](https://github.com/blamechris/Aeolus/issues/92)).
+    ///
+    /// #92's first fix was `withExtendedLifetime((…)) { dispatchMain() }`, and it did
+    /// nothing at all. `withExtendedLifetime` is `@inlinable` and its whole mechanism is
+    /// `defer { _fixLifetime(x) }; body()`; `dispatchMain()` returns `Never`, so after
+    /// inlining the `defer` is unreachable, no `fix_lifetime` marker is emitted, and the
+    /// emitted SIL is byte-for-byte identical to a bare `dispatchMain()`. A construct that
+    /// reads as a barrier and compiles to nothing is worse than no construct, because it
+    /// stops anyone looking — which is why the spelling is pinned here and not just the
+    /// intent.
+    ///
+    /// A retain has nothing to elide: the count goes up and never comes down. The process
+    /// never returns, so it is the honest statement of a process-lifetime object. The
+    /// composition is a `struct` and cannot be retained that way, so it is stored instead —
+    /// a store to a `static` is an observable side effect, and what it alone keeps alive is
+    /// `powerObserver`'s registration with the power-management root, `signalTeardown`'s
+    /// `DispatchSourceSignal` owners, and the `SMCConnection` handle behind `plane`. It is
+    /// *not* the supervisors' loops: those capture their collaborators strongly and keep
+    /// running whether or not the supervisor object survives, so naming `[weak self]` as the
+    /// reason — as this comment and `main()`'s both once did — was a claim a reader could
+    /// check and find false.
+    ///
+    /// ## Position, not just presence
+    ///
+    /// Each of the three lines is asserted to be followed by `dispatchMain()` in `main()`'s
+    /// body, because a retain after the call that never returns is a retain that never
+    /// happens. The first version of this test checked the position of the composition store
+    /// alone while its failure message spoke for all three, so both retains could be moved
+    /// below `dispatchMain()` — reinstating #92 exactly — with the whole suite green.
+    ///
+    /// **Mutation A:** delete `_ = Unmanaged.passRetained(delegate)`. Run: red.
+    /// **Mutation B:** delete `_ = Unmanaged.passRetained(listener)`. Run: red.
+    /// **Mutation C:** delete `processLifetimeComposition = helper`. Run: red.
+    /// **Mutation D — the tripwire's own:** replace the three lines with
+    /// `withExtendedLifetime((authorisation, helper, delegate, listener)) { dispatchMain() }`,
+    /// which is what this asserts is *not* there. Run: red on all six assertions — three
+    /// presence, three position — which is the condition being mutated rather than the code
+    /// it watches.
+    /// **Mutation E:** move `_ = Unmanaged.passRetained(delegate)` and
+    /// `_ = Unmanaged.passRetained(listener)` from before `dispatchMain()` to after it. Run:
+    /// red on both position assertions — the mutation the first version of this test
+    /// survived green.
+    /// **Mutation F:** move `processLifetimeComposition = helper` below `dispatchMain()`.
+    /// Run: red on its position assertion.
+    /// **Mutation G — the position loop's own:** with E applied, narrow the loop below back
+    /// to `["processLifetimeComposition=helper"]`, the shape it had before #221's second
+    /// review round. Run: **green** — which is the finding that widened it.
+    @Test("The process-lifetime objects are retained before dispatchMain")
+    func theProcessLifetimeObjectsAreRetainedBeforeDispatchMain() throws {
+        let code = Self.strippingWhitespace(try Self.mainSource())
+
+        let retainsTheDelegate = code.contains("Unmanaged.passRetained(delegate)")
+        #expect(
+            retainsTheDelegate,
+            """
+            main() no longer retains the listener's delegate. NSXPCListener holds it weakly \
+            and nothing else holds it at all, so a build that ends the local's lifetime \
+            accepts every connection with no code-signing requirement applied (#92).
+            """)
+
+        let retainsTheListener = code.contains("Unmanaged.passRetained(listener)")
+        #expect(retainsTheListener, "main() no longer retains the listener itself")
+
+        let holdsTheComposition = code.contains("processLifetimeComposition=helper")
+        #expect(
+            holdsTheComposition,
+            """
+            main() no longer parks the composition in process-lifetime storage. It is the \
+            only holder of the power observer's registration, of SignalTeardown's dispatch \
+            sources — which ARC cancels when it releases them — and of the SMC connection \
+            handle, so a released composition is a released safety subsystem.
+            """)
+
+        // Ordering, which the three assertions above cannot express: a retain after the
+        // call that never returns is a retain that never happens. Each of the three lines
+        // is checked on its own — asserting it of one left the other two free to move below
+        // `dispatchMain()` with this test still green.
+        let body = try #require(
+            Self.body(ofFunctionMatching: "static func main", in: try Self.mainSource()),
+            "AeolusHelperMain no longer has a main() to order the retains against")
+        let stripped = Self.strippingWhitespace(body)
+        for held in [
+            "Unmanaged.passRetained(delegate)",
+            "Unmanaged.passRetained(listener)",
+            "processLifetimeComposition=helper",
+        ] {
+            let precedesDispatch = (stripped.range(of: held)?.upperBound).map {
+                stripped[$0...].contains("dispatchMain()")
+            }
+            #expect(
+                precedesDispatch == true,
+                """
+                `\(held)` no longer precedes dispatchMain(), which never returns — so it \
+                never runs and the object it was holding is held by nothing (#92).
+                """)
+        }
+    }
+}

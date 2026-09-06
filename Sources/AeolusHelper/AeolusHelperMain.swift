@@ -78,10 +78,12 @@ enum AeolusHelperMain {
         )
 
         let listener = NSXPCListener(machServiceName: AeolusXPCService.machServiceName)
-        // NSXPCListener holds its delegate weakly. `delegate` is a local of a function
-        // that never returns, which is what keeps it alive; a `listener.delegate = ...`
-        // with a temporary on the right-hand side would deallocate it immediately and
-        // every connection would be accepted with no delegate to configure it.
+        // NSXPCListener holds its delegate weakly. Nothing else here holds it strongly, so
+        // a deallocated `delegate` means `listener(_:shouldAcceptNewConnection:)` is never
+        // called and **every** connection is accepted with nothing to apply the
+        // code-signing requirement or set the exported object — the refuse-all path's own
+        // failure state, reached by accident. `AnonymousListenerHarness` holds its delegate
+        // explicitly for this reason and says so.
         //
         // The same rule is why the graph and the delegate are built *here* rather than
         // inside the bring-up task below: `main()` is the only frame in this process that
@@ -90,10 +92,71 @@ enum AeolusHelperMain {
 
         bringUp(helper, advertising: listener, log: log)
 
+        // A deliberately unbalanced +1 on each object, which is what makes the retention a
+        // **guarantee** rather than an inference about codegen. Swift does not promise a
+        // local outlives its lexical scope: the optimiser may end a variable's lifetime
+        // after its last use, and `delegate`'s last use is the assignment above (#92).
+        //
+        // `withExtendedLifetime` cannot say this here, and the first draft of #92 was
+        // wrong to use it. Its whole mechanism is `defer { _fixLifetime(x) }; body()`, it
+        // is `@inlinable`, and `dispatchMain()` returns `Never` — so after inlining the
+        // `defer` is unreachable, no `fix_lifetime` marker is emitted, and the emitted SIL
+        // for `withExtendedLifetime(d) { dispatchMain() }` is byte-for-byte identical to a
+        // bare `dispatchMain()`. It reads like a barrier and is not one.
+        //
+        // A retain is not elidable, because there is nothing for the optimiser to prove:
+        // the reference count is raised and never lowered. The process never returns, so
+        // the +1 is the honest statement of a process-lifetime object rather than a leak —
+        // `main()` is the only frame here that outlives every connection, and these are the
+        // objects that must outlive it too.
+        _ = Unmanaged.passRetained(delegate)
+        _ = Unmanaged.passRetained(listener)
+
+        // `helper` is a `struct`, so there is no object to retain — `Unmanaged` takes a
+        // class. It is parked in process-lifetime storage instead: a store to a `static`
+        // is an observable side effect and a real strong reference to every mechanism the
+        // composition holds.
+        //
+        // What dies with it is not the supervisors' loops. Those run under
+        // `Task.detached { [weak self] … }` but capture their collaborators — the emergency
+        // latch, the watchdog, the authority, the clock, the log — *strongly*, so a released
+        // supervisor object keeps looping. What the composition alone holds is the
+        // machinery underneath: `powerObserver`'s registration with the power-management
+        // root (§ 4 stops hearing sleep and wake), `signalTeardown`'s `DispatchSourceSignal`
+        // owners (a `DispatchSourceSignal` released by ARC is cancelled, so `SIGTERM` stops
+        // being served at the moment the machine is shutting down), and the `SMCConnection`
+        // handle behind `plane` that every one of those loops reads through.
+        // `authorisation` needs no separate hold — it is an `enum`, and the
+        // `ConnectionAdmission` it resolved to is stored on the delegate above.
+        //
+        // `HelperCompositionTests.theProcessLifetimeObjectsAreRetainedBeforeDispatchMain`
+        // is the tripwire on all three lines, and on their position before `dispatchMain()`.
+        processLifetimeComposition = helper
+
         // Never returns. The listener runs on libdispatch, so the main thread's only job
         // from here is to not exit.
         dispatchMain()
     }
+
+    /// Holds the composition for the life of the process. See `main()`.
+    ///
+    /// `@MainActor`, which is what makes this store need no unsafe claim: the `main()` of an
+    /// `@main` type is main-actor-isolated, so the one write below is checked by the
+    /// compiler rather than asserted past it. `nonisolated(unsafe)` was the first spelling
+    /// and was wrong twice over — CLAUDE.md rule 10 does not admit an unsafe claim in this
+    /// target, and `.swiftlint.yml`'s `no_unchecked_sendable_in_helper` does not match
+    /// `nonisolated(unsafe)`, so it would have been an *unreviewed* claim rather than a
+    /// reviewed one.
+    ///
+    /// The store is safe because **nothing reads it**. It exists only to pin the value for
+    /// the process lifetime. The ordering argument that stood here — "before `dispatchMain()`
+    /// and therefore before any connection exists" — was false: `bringUp` resumes the
+    /// listener three statements earlier, so the Mach service is already advertised when
+    /// this runs. If a reader is ever added, isolation stops being a formality and this
+    /// declaration has to be revisited with it.
+    ///
+    /// A `let` is not available: it cannot be assigned after the graph is built.
+    @MainActor private static var processLifetimeComposition: HelperComposition<SMCFanControlPlane>?
 
     /// Brings the safety subsystem up, then advertises the Mach service — in that order,
     /// and never the other one.

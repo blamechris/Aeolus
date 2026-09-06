@@ -24,8 +24,8 @@ struct NegotiatedClient: Sendable, Hashable {
 ///
 /// The state this holds — has this connection handshaken, how many messages has it
 /// delivered — is per connection and mutable, and libxpc invokes the exported object from
-/// its own event threads with no ordering promise between messages on one connection.
-/// Under strict concurrency that state needs somewhere safe to live.
+/// its own event threads. Under strict concurrency that state needs somewhere safe to live.
+/// Ordering is separate: the `Task` hop lost it, `MessageSequencer` restores it (#90).
 ///
 /// An actor rather than a lock, and rather than an unchecked `Sendable` conformance over a
 /// mutable class: `CLAUDE.md` rule 10 makes the latter a claim requiring review, and this
@@ -49,11 +49,11 @@ struct NegotiatedClient: Sendable, Hashable {
 ///
 /// ## Why a dead connection is a gate and not bookkeeping
 ///
-/// `HelperXPCService` hops every message through a `Task {}`, and `invalidationHandler`
-/// spawns a detached one, so a message task and the invalidation task enqueue on this actor
-/// in unspecified order. That is a real interleaving, not a theoretical one: libxpc can
-/// deliver a message it already had in hand and then the kernel tears the port down because
-/// the client was `SIGKILL`ed.
+/// `MessageSequencer` orders one connection's *messages*, and `connectionDidInvalidate` is
+/// not one: `invalidationHandler` spawns its own detached task, so it and a message still
+/// enqueue on this actor in unspecified order. That is a real interleaving, not a
+/// theoretical one: libxpc can deliver a message it already had in hand and then the kernel
+/// tears the port down because the client was `SIGKILL`ed.
 ///
 /// The outcome it exists to prevent: E5's authority releases everything held by this
 /// `ConnectionID` — nothing, yet — and is *then* handed an `acquireLease` bound to that
@@ -249,14 +249,15 @@ actor HelperConnectionSession {
 
     // MARK: - The panic path
 
-    /// Exempt from the handshake gate **and from the teardown gate**, and never from the
-    /// authorisation gate.
+    /// Exempt from the handshake gate, from the teardown gate, and — in `HelperXPCService`,
+    /// which routes it outside the sequencer — from this connection's message ordering.
+    /// Never from the authorisation gate. A message pipelined ahead of it may therefore
+    /// still complete after it.
     ///
     /// Its only expressible effect is the safe state, so a version fence that stopped a
     /// panicked user's older `fanctl` from restoring automatic control would be a safety
     /// mechanism defeating safety. The message still arrives only on a connection libxpc
-    /// admitted against the code-signing requirement — the exemption is from *versioning*,
-    /// not from *authorisation*, and those are different gates in different layers.
+    /// admitted against the code-signing requirement: the exemption is from *versioning*.
     ///
     /// ## Why the teardown gate exempts it too, deliberately
     ///
@@ -277,8 +278,7 @@ actor HelperConnectionSession {
     /// state, it needs revisiting, per [#95](https://github.com/blamechris/Aeolus/issues/95).
     ///
     /// The reply may well be undeliverable by the time this returns, because the port it
-    /// would travel on is what died. That is accepted: what matters here is the **effect**,
-    /// not the acknowledgement. Reaching the authority is the whole of the job.
+    /// would travel on is what died; what matters is the **effect**, not the reply.
     func restoreAllToAutomatic() async -> AcknowledgementReply {
         deliveredMessages += 1
         do {

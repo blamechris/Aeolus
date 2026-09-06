@@ -30,6 +30,21 @@ import Foundation
 /// precisely so that it is not edited often.
 final class HelperListenerDelegate: NSObject, NSXPCListenerDelegate, Sendable {
 
+    /// Advertised in every `HelloReply`, and the only place a capability string is minted.
+    ///
+    /// `"ordered-messages"` says this helper honours the per-connection ordering
+    /// `AeolusXPCProtocol` states, so a client that pipelines `hello` and `snapshot` can
+    /// confirm afterwards that the helper it reached is one that permits it — and remember
+    /// it for the next connection. It cannot be consulted *before* pipelining, because the
+    /// reply carrying it is the round trip pipelining exists to skip; that is why the
+    /// contract also names the fallback (`handshakeRequired` on the pipelined message is
+    /// retryable, not fatal) rather than resting on this string.
+    ///
+    /// A capability is feature discovery and never authorisation: nothing in the helper
+    /// reads this back, and no gate consults it. Adding a string here is additive under the
+    /// bump policy, so ``AeolusXPCVersion/current`` does not move.
+    static let advertisedCapabilities = ["ordered-messages"]
+
     private let admission: any ConnectionAdmission
     private let authority: any FanAuthority
     private let helperBuild: String
@@ -81,6 +96,7 @@ final class HelperListenerDelegate: NSObject, NSXPCListenerDelegate, Sendable {
             id: id,
             authority: authority,
             helperBuild: helperBuild,
+            capabilities: Self.advertisedCapabilities,
             log: log
         )
 
