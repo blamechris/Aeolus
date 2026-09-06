@@ -9,9 +9,12 @@ to the most. Follow it in order.
 > always a safe state, and every option below does exactly that. None of these steps can
 > damage your Mac, and none of them lose data.
 >
-> Also: if Aeolus stops running entirely, its lease expires within about 30 seconds and
-> the fans return to automatic on their own. A stuck fan usually means Aeolus is still
-> running and holding control — not that it has abandoned the fans in a bad state.
+> Also, with one distinction that matters: if the **app** stops — it crashed, you force-quit
+> it, it hung — its lease expires within about 30 seconds and the background helper returns
+> the fans to automatic on its own. If the **helper itself** stops, nothing is counting that
+> lease; what covers it is the helper restarting and handing back whatever it finds, or the
+> steps below. A stuck fan usually means Aeolus is still running and holding control — not
+> that it has abandoned the fans in a bad state.
 
 ---
 
@@ -23,15 +26,21 @@ correct behaviour:
 - Apple's own thermal management runs fans hard under sustained load. Loud is not
   necessarily wrong.
 - Recent Apple Silicon laptops run their fans very slowly, or not at all, when idle.
-- A fan reading 0 RPM when the machine is cool and idle is normal on many Macs.
+- A fan reading 0 RPM when the machine is cool and idle is normal on many Macs, and is
+  measured on this project's own development machine: a `Mac16,5` reads a true 0 RPM on both
+  fans through sleep and for about 38 seconds after the lid is reopened, then takes roughly
+  four seconds to spin back up. A reading of 0 also says nothing about the minimum speed the
+  firmware *declares* — that machine reads 0 while declaring 1350.
 
 If the fan speed responds to load — rises when you compile something, falls when you stop
 — it is under automatic control and there is nothing to fix.
 
 ## 2. Quit Aeolus
 
-Quitting restores automatic control. That is a guarantee: the app is not the authority on
-fan state, and the helper returns fans to automatic when the app's lease ends.
+Quitting restores automatic control. That is a guarantee about the helper *attempting* it and
+saying which fans it could not put back: the app is not the authority on fan state, and the
+helper returns fans to automatic when the app's lease ends. On the current build the helper has
+no SMC write path at all, so it can neither have put a fan into manual nor need to take it out.
 
 Quit from the menu bar item, or:
 
@@ -41,7 +50,17 @@ osascript -e 'tell application "Aeolus" to quit'
 
 Wait about 30 seconds and check whether the fans respond to load again.
 
-## 3. Use the panic command
+## 3. Use the panic command — **not available yet**
+
+> **This step does not work on the current build. Go to step 4.** `fanctl reset --all` parses
+> and appears in the command tree, but its body exits with
+> `Not implemented yet — see epic E10b` and writes nothing. It becomes real when
+> [#15](https://github.com/blamechris/Aeolus/issues/15) wires the command to the helper
+> message that already exists, and when the epics that build the SMC write path land. The
+> step is left here, marked, rather than deleted, so that nobody is sent looking for a
+> command this document promised and then quietly withdrew.
+
+When it is available:
 
 ```bash
 fanctl reset --all
@@ -59,8 +78,19 @@ If `fanctl` is not installed, it ships inside the app bundle:
 
 ## 4. Stop the helper
 
-If the command above fails, stop the daemon directly. Its lease supervision cannot outlive
-the process, so the fans return to automatic when it exits.
+If the command above fails — or on the current build, instead of it — stop the daemon
+directly.
+
+**What actually returns the fans, because "its lease supervision cannot outlive the process"
+was the wrong mechanism and is corrected here rather than dropped:** the SMC keeps the last
+value written to it, so supervision ending is not by itself a restore. `bootout` delivers
+`SIGTERM`, and the helper's orderly teardown refuses new control messages, releases every
+lease, restores every fan, stops its supervisors, restores every fan once more, and exits. If
+the helper dies without that chance, the next start reads every fan's mode and hands back
+whatever it finds in manual. **On the current build neither of those writes can land** — there
+is no SMC write path yet — so today this step works by the helper no longer being there to
+hold anything, which is also why nothing on this build can have left a fan pinned in the first
+place.
 
 ```bash
 sudo launchctl bootout system/com.blamechris.Aeolus.Helper
