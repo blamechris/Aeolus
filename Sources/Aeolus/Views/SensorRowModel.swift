@@ -17,13 +17,25 @@ struct SensorRowModel: Equatable, Identifiable {
     let confidence: CatalogConfidence?
     let value: KeyedValueDisplay
 
-    init(reading: SensorPollingReading) {
+    /// - Parameters:
+    ///   - reading: The live sample to project into a row.
+    ///   - temperatureUnit: `Preferences.temperatureUnit`, applied for display only via
+    ///     `TemperatureDisplay` — see that type's documentation for why this never
+    ///     changes what `reading.sample` decoded to. Defaults to `.celsius`, `SMCCore`'s
+    ///     own decoded unit, so every existing call site is unaffected by this
+    ///     parameter's addition.
+    init(reading: SensorPollingReading, temperatureUnit: TemperatureUnit = .celsius) {
         id = reading.key
         key = reading.key
         label = reading.decoration?.label
         categoryLabel = reading.decoration?.category.schemaValue
         confidence = reading.decoration?.confidence
-        value = KeyedValueDisplay(reading: reading.sample, unit: Self.unit(for: reading.kind))
+        let displaySample = TemperatureDisplay.convert(
+            reading.sample, kind: reading.kind, to: temperatureUnit)
+        let displayUnit =
+            TemperatureDisplay.unit(for: reading.kind, temperatureUnit: temperatureUnit)
+            ?? Self.unit(for: reading.kind)
+        value = KeyedValueDisplay(reading: displaySample, unit: displayUnit)
     }
 
     /// A display unit for `reading.kind`, or `nil` when the kind carries no natural unit
