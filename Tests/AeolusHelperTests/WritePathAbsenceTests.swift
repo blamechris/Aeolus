@@ -61,13 +61,13 @@ struct WritePathAbsenceTests {
     }
 
     /// The one file permitted to *name* the write seam. Everything else in the helper may
-    /// not contain the text `.write(` at all.
+    /// not contain the text `write(` at all.
     ///
     /// #160 gave the helper a reachability probe, because `@_spi(FanWrite) public`
     /// replaced `package` on `SMCConnection.write(_:to:)` and an access level is only
     /// proven by a reference the compiler must resolve. That reference is written as a
-    /// compound name — `self.write(_:to:)` — so the file contains the text this test used
-    /// to forbid outright. Naming the exception rather than deleting the rule is the
+    /// compound name — `connection.write(_:to:)` — so the file contains the text this test
+    /// used to forbid outright. Naming the exception rather than deleting the rule is the
     /// point: one file, by name, with zero calls in it.
     static let writeSeamProbe = "WriteSeamReachability.swift"
 
@@ -99,7 +99,7 @@ struct WritePathAbsenceTests {
                 .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
                 .joined(separator: "\n")
 
-            let arguments = Self.writeArgumentLists(in: code)
+            let arguments = try Self.writeArgumentLists(in: code)
             guard !arguments.isEmpty else { continue }
             mentioning.append(file.lastPathComponent)
 
@@ -115,7 +115,7 @@ struct WritePathAbsenceTests {
                 #expect(
                     Self.isCompoundName(argumentList),
                     """
-                    \(file.lastPathComponent) calls a write: .write(\(argumentList)). E3/E4 \
+                    \(file.lastPathComponent) calls a write: write(\(argumentList)). E3/E4 \
                     do not exist, and the reachability probe references the seam without \
                     invoking it.
                     """
@@ -124,7 +124,7 @@ struct WritePathAbsenceTests {
         }
 
         // Coverage. Without it, an enumerator that found nothing — or a scan that stopped
-        // recognising `.write(` — would make zero assertions above and report the tree
+        // recognising `write(` — would make zero assertions above and report the tree
         // clean. The probe is the one file guaranteed to be seen.
         #expect(
             mentioning == [Self.writeSeamProbe],
@@ -136,24 +136,132 @@ struct WritePathAbsenceTests {
         )
     }
 
-    /// The text inside the parentheses of every `.write(…)` occurrence, parenthesis-balanced
-    /// rather than stopped at the first `)`, so a nested call in an argument is not read as
-    /// the end of the list.
-    private static func writeArgumentLists(in code: String) -> [String] {
-        var lists: [String] = []
-        var searchStart = code.startIndex
+    /// Nothing under `Sources/AeolusHelper` may declare a *populated* `extension
+    /// SMCConnection`.
+    ///
+    /// This is the shape guard behind the scan above, and #226's review is why it exists.
+    /// Inside an extension of the actor, `self` is an `SMCConnection`, so `write(bytes, to:
+    /// key)` — no receiver, no dot — is a real SMC write. `WriteSeamReachability` was such
+    /// an extension when the PR was reviewed; a mutation inserting that call compiled and
+    /// left every control green, because the scan was looking for `.write(`.
+    ///
+    /// The scan is now widened, so this is belt *and* braces — deliberately. The widened
+    /// scan is text matching and can be evaded by spelling; the isolation cannot be opened
+    /// at all without the declaration this test forbids, which is the structural half.
+    ///
+    /// An **empty** extension is permitted, and is the form `SMCFanControlPlane.swift`'s
+    /// `extension SMCConnection: SMCConnectionRecycling {}` takes. A conformance that
+    /// declares no member puts no unqualified name in scope, so it cannot host the call
+    /// this test is about. That is a property of the declaration, checked here, rather than
+    /// a file allowlist that a second such extension would slip past.
+    @Test("No helper file opens SMCConnection's isolation")
+    func noHelperFileOpensSMCConnectionsIsolation() throws {
+        let helperSources = try Self.swiftFiles().filter {
+            $0.pathComponents.contains("AeolusHelper")
+        }
+        #expect(!helperSources.isEmpty, "the helper's sources were not found")
 
-        while let open = code.range(of: ".write(", range: searchStart..<code.endIndex) {
+        var extending: [String] = []
+        for file in helperSources {
+            let code = SeamScanner.strippingComments(
+                try String(contentsOf: file, encoding: .utf8))
+            for body in try Self.smcConnectionExtensionBodies(in: code) {
+                extending.append(file.lastPathComponent)
+                #expect(
+                    body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    """
+                    \(file.lastPathComponent) declares a populated extension of \
+                    SMCConnection. Inside one, `self` is the actor and an unqualified \
+                    write(bytes, to: key) is a live SMC write — see \
+                    docs/ADR/0008-write-authorisation.md. Only an empty conformance \
+                    extension is permitted.
+                    """
+                )
+            }
+        }
+
+        // Coverage, not decoration. The helper has exactly one such extension today —
+        // `SMCFanControlPlane`'s empty `SMCConnectionRecycling` conformance — so a scan
+        // that stopped recognising the declaration, or an enumerator that found nothing,
+        // would leave the loop making zero assertions and this test green over a tree that
+        // had reopened the isolation.
+        #expect(
+            !extending.isEmpty,
+            """
+            No extension of SMCConnection was found under Sources/AeolusHelper. The empty \
+            SMCConnectionRecycling conformance in SMCFanControlPlane.swift is expected to \
+            match, so this scan is not reading the source tree.
+            """
+        )
+    }
+
+    /// `extension SMCConnection` matched by name, and only that name —
+    /// `SMCConnectionRecycling` is a different type and does not count.
+    private static let smcConnectionExtension = try? NSRegularExpression(
+        pattern: #"extension\s+SMCConnection(?![A-Za-z0-9_])"#)
+
+    /// The text between the braces of every `extension SMCConnection` in `code`,
+    /// brace-balanced rather than stopped at the first `}`.
+    private static func smcConnectionExtensionBodies(in code: String) throws -> [String] {
+        let pattern = try #require(Self.smcConnectionExtension)
+        var bodies: [String] = []
+
+        let whole = NSRange(code.startIndex..<code.endIndex, in: code)
+        for match in pattern.matches(in: code, range: whole) {
+            guard let matched = Range(match.range, in: code),
+                let open = code.range(of: "{", range: matched.upperBound..<code.endIndex)
+            else { continue }
+
             var depth = 1
             var index = open.upperBound
+            while index < code.endIndex, depth > 0 {
+                if code[index] == "{" { depth += 1 }
+                if code[index] == "}" { depth -= 1 }
+                index = code.index(after: index)
+            }
+            let close = depth == 0 ? code.index(before: index) : code.endIndex
+            bodies.append(String(code[open.upperBound..<close]))
+        }
+        return bodies
+    }
+
+    /// Every occurrence of the *name* `write` followed by an argument list, whether or not
+    /// it is reached through a receiver.
+    ///
+    /// #226's review found the hole this replaces. The scan matched the literal `.write(`,
+    /// which is every call written through a receiver — and the reachability probe was an
+    /// `extension SMCConnection`, so inside it `self` was the actor and an **unqualified**
+    /// `write(bytes, to: key)` compiled into a real SMC write that this scan could not see.
+    /// The reviewer's mutation of exactly that shape built clean and left all four controls
+    /// green. `WriteSeamReachability` is a free `enum` again, and
+    /// `noHelperFileOpensSMCConnectionsIsolation` keeps it that way — but the scan is
+    /// widened too, because a receiver-only pattern was never what this test meant.
+    ///
+    /// A lookbehind on the preceding character is what distinguishes `write(` and
+    /// `connection.write(` — both of which count — from `overwrite(` and `didWrite(`, which
+    /// are different names.
+    private static let writeName = try? NSRegularExpression(
+        pattern: #"(?<![A-Za-z0-9_])write\s*\("#)
+
+    /// The text inside the parentheses of every `write(…)` occurrence, parenthesis-balanced
+    /// rather than stopped at the first `)`, so a nested call in an argument is not read as
+    /// the end of the list.
+    private static func writeArgumentLists(in code: String) throws -> [String] {
+        let pattern = try #require(Self.writeName)
+        var lists: [String] = []
+
+        let whole = NSRange(code.startIndex..<code.endIndex, in: code)
+        for match in pattern.matches(in: code, range: whole) {
+            guard let matched = Range(match.range, in: code) else { continue }
+            var depth = 1
+            var index = matched.upperBound
             while index < code.endIndex, depth > 0 {
                 if code[index] == "(" { depth += 1 }
                 if code[index] == ")" { depth -= 1 }
                 index = code.index(after: index)
             }
             let close = depth == 0 ? code.index(before: index) : code.endIndex
-            lists.append(String(code[open.upperBound..<close]))
-            searchStart = index
+            lists.append(String(code[matched.upperBound..<close]))
         }
         return lists
     }

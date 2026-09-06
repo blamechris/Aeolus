@@ -107,16 +107,36 @@ jobs:
       # The step above cannot fail *silently*, but it can stop compiling the probe — a
       # dropped source file, a target reshuffle — and then it proves nothing while staying
       # green. This asserts the probe reached the binary, which is the artefact, not the
-      # log. Both halves are named: the extension on SMCConnection that references
-      # `write(_:to:)`, and the enum that references `encode(scalar:byteOrder:)`.
+      # log. Both halves are named: the function that references `write(_:to:)`, and the one
+      # that references `encode(scalar:byteOrder:)`.
+      #
+      # The symbol table is written to a file and grepped there rather than piped into
+      # `grep -q`. Under `set -o pipefail` that pipeline returns 141 on *success*: `grep -q`
+      # exits at the first match, `nm` dies on SIGPIPE with a megabyte still buffered, and
+      # the step reports "has no ... symbol" for a binary that has it. #226's first CI run
+      # failed exactly that way, on a build that was fine.
+      #
+      # The names are compared *demangled*. Swift's mangler substitutes repeated words, so
+      # `WriteSeamReachability.namesTheWriteSeam` mangles to `...WriteSeamReachabilityO08
+      # namesThecD02on...` and the literal `namesTheWriteSeam` never appears in `nm` output.
+      # Grepping the raw table for the source spelling is a check that can only pass by
+      # accident.
       - name: Assert the helper binary carries the write-seam probe
         run: |
           set -euo pipefail
           HELPER="DerivedData/Build/Products/Monitor Debug/AeolusHelper"
           test -x "${HELPER}" || { echo "error: no helper binary at ${HELPER}"; exit 1; }
 
-          for symbol in namesTheWriteSeam WriteSeamReachability; do
-              if ! nm "${HELPER}" | grep -q "${symbol}"; then
+          SYMBOLS="${RUNNER_TEMP:-/tmp}/helper-symbols.txt"
+          nm "${HELPER}" > "${SYMBOLS}"
+          xcrun swift-demangle < "${SYMBOLS}" > "${SYMBOLS}.demangled"
+
+          probes=(
+              "AeolusHelper.WriteSeamReachability.namesTheWriteSeam(on:"
+              "AeolusHelper.WriteSeamReachability.namesTheEncodeSeam()"
+          )
+          for symbol in "${probes[@]}"; do
+              if ! grep -qF -- "${symbol}" "${SYMBOLS}.demangled"; then
                   echo "error: ${HELPER} has no ${symbol} symbol."
                   echo "The write-seam reachability probe did not reach the helper binary,"
                   echo "so this job no longer proves the Xcode helper target can name the"

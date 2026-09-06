@@ -16,9 +16,32 @@
 ///
 /// An access level is only proven by a reference the compiler must resolve, so both
 /// members are named below — as compound-name function references
-/// (`SMCConnection.write(_:to:)`), which force overload resolution and access checking
-/// while producing no call. The compound form, rather than the bare name, is deliberate:
-/// it pins the exact declaration by its argument labels.
+/// (`write(_:to:)`, `encode(scalar:byteOrder:)`), which force overload resolution and
+/// access checking while producing no call. The compound form, rather than the bare name,
+/// is deliberate: it pins the exact declaration by its argument labels.
+///
+/// ## Why this is an `enum` and not an `extension SMCConnection`
+///
+/// It was an `extension SMCConnection` until #226's review, and that shape defeated the
+/// tripwire that guards it. Inside an extension of the actor, `self` is an `SMCConnection`,
+/// so an **unqualified** `write(bytes, to: key)` resolves to the SMC write seam and is a
+/// real, compiling call — while `WritePathAbsenceTests` scans for the text `.write(` and
+/// cannot see it. A reviewer's mutation inserting exactly that call built clean and left
+/// the whole suite green.
+///
+/// A free `enum` puts no instance of the actor in scope, so `write` is simply not a name
+/// this file can resolve on its own — the mutation now fails to compile with
+/// `cannot find 'write' in scope`. `WritePathAbsenceTests.noHelperFileOpensSMCConnectionsIsolation`
+/// holds the shape closed for the rest of the target.
+///
+/// The write half takes an `isolated SMCConnection` parameter rather than referencing
+/// `SMCConnection.write(_:to:)` as an unbound function value, because Swift will not form
+/// that value: `write` is actor-isolated, and the reference from a `nonisolated` context is
+/// rejected as `call to actor-isolated instance method 'write(_:to:)' in a synchronous
+/// nonisolated context` (`#ActorIsolatedCall`) — with or without an explicit
+/// `@Sendable (isolated SMCConnection) -> …` annotation. An `isolated` parameter puts the
+/// *body* inside the actor's isolation, which is what the access check needs, without
+/// putting the actor's members in unqualified scope, which is what defeated the tripwire.
 ///
 /// ## Why nothing here is ever called
 ///
@@ -26,7 +49,7 @@
 /// throws `SMCError.encodingNotImplemented(type:)`; E3 and E4 implement them behind the
 /// safety subsystem, and until then nothing may invoke either. `WritePathAbsenceTests`
 /// enforces precisely that: this is the one file under `Sources/AeolusHelper/` permitted
-/// to contain the text `.write(`, and it is permitted zero *call sites* of it — a
+/// to contain the text `write(`, and it is permitted zero *call sites* of it — a
 /// compound-name reference is allowed, an argument list is not.
 ///
 /// Neither probe function is referenced by anything. Both are functions rather than stored
@@ -53,21 +76,15 @@ enum WriteSeamReachability {
         _ = encodeSeam
         return true
     }
-}
-
-extension SMCConnection {
 
     /// Names `SMCConnection.write(_:to:)` and returns. No call, no I/O.
     ///
-    /// This half of the probe is an extension rather than a static function on
-    /// `WriteSeamReachability` for one reason: `SMCConnection` is an `actor`, and an
-    /// actor-isolated method cannot be *partially applied* from outside its isolation —
-    /// the compiler rejects the reference before it ever gets to the access check, which
-    /// would make the probe prove nothing. An extension's instance method is isolated to
-    /// the actor, so the reference is legal there and the access level is what decides
-    /// whether it compiles. It is still never called, from here or anywhere.
-    func namesTheWriteSeam() -> Bool {
-        let writeSeam: ([UInt8], SMCKey) throws -> Void = self.write(_:to:)
+    /// The parameter is `isolated` for the reason given above: the body must sit inside the
+    /// actor's isolation for the reference to be legal, and a free function with an
+    /// `isolated` parameter is the way to get that without an `extension SMCConnection`.
+    /// The local is typed explicitly for the same reason the encode probe's is.
+    static func namesTheWriteSeam(on connection: isolated SMCConnection) -> Bool {
+        let writeSeam: ([UInt8], SMCKey) throws -> Void = connection.write(_:to:)
         _ = writeSeam
         return true
     }
