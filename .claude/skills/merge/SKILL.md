@@ -315,7 +315,7 @@ Do not commit the result — the project file is gitignored by design.
    subsystem gates the write-path epics E3 and E4. `CLAUDE.md` states it, and no
    green CI run overrides it, because CI cannot verify a fan write at all: GitHub's
    macOS runners are VMs with no SMC.
-8. **A change to `AeolusHelper`, the `package`-scoped write path in `SMCCore`,
+8. **A change to `AeolusHelper`, the SPI-gated write path in `SMCCore`,
    `AeolusXPC`, `Configs/*.entitlements` or `Configs/LaunchDaemons/` gets the
    `reviewer` agent, not just Copilot.** A Copilot review is not the Phase 0 gate and
    never satisfies it on privileged code.
