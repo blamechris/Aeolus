@@ -64,28 +64,43 @@ struct ImpossibleClientPinning: HelperConnectionPinning {
     static let text = "identifier \"com.example.nothing\""
 
     func pinnedConnection(over transport: HelperClientTransport) throws -> NSXPCConnection {
-        var compiled: SecRequirement?
-        let status = SecRequirementCreateWithString(Self.text as CFString, [], &compiled)
-        guard status == errSecSuccess else {
-            throw HelperClientError.protocolViolation(
-                detail: "the test requirement did not compile (\(status))")
-        }
+        try Self.compile(Self.text)
         let connection = transport.makeConnection()
         connection.setCodeSigningRequirement(Self.text)
         return connection
     }
+
+    /// Compiles `text`, and throws rather than handing an uncompiled string onward.
+    static func compile(_ text: String) throws {
+        var compiled: SecRequirement?
+        let status = SecRequirementCreateWithString(text as CFString, [], &compiled)
+        guard status == errSecSuccess else {
+            throw HelperClientError.protocolViolation(
+                detail: "the test requirement did not compile (\(status))")
+        }
+    }
 }
 
-/// Counts the connections a client asked it to build, and applies no requirement.
+/// Counts the connections a client asked it to build, under whatever requirement it is given.
 ///
 /// "The client dropped the dead connection and built another" is a claim about a *new*
 /// object, and from outside the actor one connection object is indistinguishable from its
 /// replacement — the listener may never see either, which is the whole case being tested.
 /// The count is taken where the connection is actually made.
+///
+/// `requirement` defaults to none. Handed `ImpossibleClientPinning.text` it makes every
+/// message on the connection fail at libxpc, which is how the drop-and-rebuild path is
+/// reached **without** depending on what tearing a listener down does to its clients — a
+/// thing that differs between macOS versions, as this project measured the hard way.
 final class CountingClientPinning: HelperConnectionPinning, @unchecked Sendable {
 
+    private let requirement: String?
     private let lock = NSLock()
     private var built = 0
+
+    init(requirement: String? = nil) {
+        self.requirement = requirement
+    }
 
     var connectionsBuilt: Int {
         lock.lock()
@@ -97,6 +112,11 @@ final class CountingClientPinning: HelperConnectionPinning, @unchecked Sendable 
         lock.lock()
         built += 1
         lock.unlock()
-        return transport.makeConnection()
+        let connection = transport.makeConnection()
+        if let requirement {
+            try ImpossibleClientPinning.compile(requirement)
+            connection.setCodeSigningRequirement(requirement)
+        }
+        return connection
     }
 }

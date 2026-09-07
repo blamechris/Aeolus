@@ -130,48 +130,41 @@ struct HelperClientConnectionTests {
     /// An invalidated connection is dropped, and the next call builds a new one — once.
     ///
     /// Counted at the pinning policy, because that is where a connection is actually made:
-    /// from outside the actor a reused connection object and its replacement look identical,
-    /// and the listener — dead, in this test — sees neither.
+    /// from outside the actor a reused connection object and its replacement look identical.
+    ///
+    /// **Reached through a requirement the peer cannot satisfy, and deliberately not through
+    /// a dead listener.** The first version of this test killed the listener and asserted the
+    /// sequence measured on `Mac16,5` / macOS 26.6.2 — 4097, then 4099, then a rebuild. CI's
+    /// older macOS does not reproduce it: invalidating an anonymous listener there left its
+    /// client connection working, and the test failed on a machine where the client was
+    /// behaving correctly. What is portable is the requirement refusal: libxpc reports it,
+    /// this client treats the connection as dead, and the next call must therefore build
+    /// another one.
     ///
     /// One attempt per call and no internal retry loop: a client that retried on its own
     /// against a mach name launchd is restarting a daemon behind is a boot-loop amplifier.
-    /// The reconnect is therefore observed as *the caller asking again*, which is what the
-    /// third `snapshot()` here is.
+    /// The reconnect is observed as *the caller asking again*, which is what the second
+    /// `snapshot()` here is.
     ///
     /// **Mutation:** in `HelperClient.connectionWasInvalidated(_:)`, stop clearing
     /// `connection`. Run: red — the count stays at one, because the dead object is reused.
     @Test("An invalidated connection is dropped and the next call builds another")
     func anInvalidatedConnectionIsDroppedAndTheNextCallBuildsAnother() async throws {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
-        let pinning = CountingClientPinning()
+        let pinning = CountingClientPinning(requirement: ImpossibleClientPinning.text)
         let client = harness.client(pinning: pinning)
 
-        _ = try await client.snapshot()
-        #expect(pinning.connectionsBuilt == 1)
-
-        harness.stopListening()
-
-        // The observed sequence on `Mac16,5` / macOS 26.6.2, and it takes two calls rather
-        // than one: libxpc reports the first failure on a connection whose peer has gone as
-        // an *interruption* — it will try to reconnect — and only invalidates the connection
-        // when that reconnect cannot be made.
-        await #expect(throws: HelperClientError.helperRestarted) { try await client.snapshot() }
-        #expect(await client.health == .interrupted)
-
-        let invalidation = await #expect(throws: HelperClientError.self) {
-            try await client.snapshot()
-        }
-        #expect(invalidation == .helperUnreachable(code: 4099))
+        await #expect(throws: HelperClientError.self) { try await client.snapshot() }
         #expect(await client.health == .invalidated)
-        #expect(pinning.connectionsBuilt == 1, "the dead connection carried both attempts")
+        #expect(pinning.connectionsBuilt == 1)
 
         await #expect(throws: HelperClientError.self) { try await client.snapshot() }
         #expect(
             pinning.connectionsBuilt == 2,
             """
-            the client built \(pinning.connectionsBuilt) connection(s). An invalidated \
-            connection never works again, so reusing it makes every later call fail for a \
-            reason that has nothing to do with the helper's current state.
+            the client built \(pinning.connectionsBuilt) connection(s). A connection this \
+            client has declared dead never works again, so reusing it makes every later call \
+            fail for a reason that has nothing to do with the helper's current state.
             """)
     }
 

@@ -66,17 +66,17 @@ final class ClientListenerHarness {
     /// **interruption**: the connection object survives and libxpc reconnects it to a new
     /// session on the next message.
     ///
-    /// Measured on `Mac16,5` / macOS 26.6.2: the client's `interruptionHandler` fires, a
-    /// message in flight fails with `NSCocoaErrorDomain` 4097, and the next message on the
-    /// same connection object reaches a freshly minted session.
+    /// Measured on `Mac16,5` / macOS 26.6.2 and reproduced on CI's older macOS: the client's
+    /// `interruptionHandler` fires, a message in flight fails with `NSCocoaErrorDomain` 4097,
+    /// and the next message on the same connection object reaches a freshly minted session.
+    ///
+    /// Killing the **listener** is deliberately not offered beside this. It looked like the
+    /// way to reach the invalidation path and is not portable: on `Mac16,5` it interrupted
+    /// and then invalidated the client's connection, and on CI it left that connection
+    /// working. A test that has to assert one of those is a test that fails on a machine
+    /// where the client is correct.
     func killHelperSideOfEveryConnection() {
         delegate.invalidateConnections()
-    }
-
-    /// Kills the listener, which is what a client observes as **invalidation**: 4099, and
-    /// the connection never works again.
-    func stopListening() {
-        listener.invalidate()
     }
 
     /// A client wired to this harness, with no requirement and short deadlines.

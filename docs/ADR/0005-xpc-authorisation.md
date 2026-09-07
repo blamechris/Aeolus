@@ -421,6 +421,16 @@ connection is reported as 4097, the same code a helper that died mid-call produc
 never distinguishes "refused" from "restarted" — the client keys that decision on whether the
 connection ever completed a handshake.
 
+**What a client sees when a peer goes away is not portable, and this is where that was learned.**
+On `Mac16,5` / macOS 26.6.2, invalidating an anonymous `NSXPCListener` interrupted its client's
+connection (4097) and then invalidated it (4099) on the following message. On a GitHub macOS
+runner the same call left the client's connection working. Both are libxpc's to decide, and
+neither is documented, so **no test in this repository may assert either**: the client's own
+drop-and-rebuild path is exercised through a code-signing requirement the peer cannot satisfy,
+which every supported macOS reports the same way. A test that pins one machine's teardown
+behaviour fails on the other while the code under test is correct — which is what happened, on
+CI, to the first version of `HelperClientConnectionTests`.
+
 Nothing in this design depends on `docs/SMC-RESEARCH.md`'s reported-but-unverified section. E2 touches
 no write, no `Ftst`, no unlock sequence — deliberately, because the boundary must not encode Apple
 Silicon hypotheses. The only E4-adjacent commitments are fault codes and availability reasons, which
