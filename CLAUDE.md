@@ -24,6 +24,7 @@ firmware.
 | `SMCCore` | IOKit connection, key enumeration, type codec | Read API `public`; write API `@_spi(FanWrite) public`, nameable only from `Sources/AeolusHelper` — see the 2026-09-06 amendment in [ADR 0008](docs/ADR/0008-write-authorisation.md) for why `package` could not do this. Widening it, or adding a third member to the group, is a safety review. |
 | `FanKit` | Models, curve engine, profiles, sensor catalog | Pure, with two named exceptions: reading the catalog file, and `sysctlbyname` for hardware identity. No IOKit. Keep it exhaustively testable. |
 | `AeolusXPC` | The `@objc` protocol and DTOs | This *is* the privilege boundary. |
+| `AeolusXPCClient` | The connection-owning actor every client talks through | The only `NSXPCConnection` outside the helper. Never runs as root, holds no fan state, never re-acquires a lease. One pinning policy ships; a second is a safety review. |
 | `AeolusHelper` | Root daemon | The only writer. Highest review bar in the repo. |
 | `fanctl` | CLI client | Read commands work with no helper and no signing. |
 | `AeolusUI` / `Aeolus` | SwiftUI views / app bundle | A view of helper state, never an owner of it. |

@@ -393,6 +393,34 @@ listener test in the tree drives an admission policy declared in the *test targe
 requirement at all, precisely so no production wiring can select one; a green suite says the gate and
 the seam are correct, and says nothing whatever about the requirement.
 
+**The client side has the identical survivor, and it is recorded here beside its twin — added
+2026-09-06 (#158).** Deleting `connection.setCodeSigningRequirement(requirement.text)` from
+`SignedHelperPinning` leaves the whole suite green, for the same reason and with no additional
+excuse: every client test drives a pinning policy declared in the *test target* that applies no
+requirement, and killing the mutation needs a Developer ID-signed helper and a foreign-signed client
+— one machine, no CI runner. `HelperClientSeamTests.exactlyOnePinningPolicyShipsInSources` keeps the
+test-only policy from acquiring a production sibling, which is a different guarantee and not a
+substitute for this one.
+
+So the manual `Mac16,5` checklist gains **one** row beside "an ad-hoc-built client is refused by the
+installed helper":
+
+> **A client whose pinned requirement the installed helper does not satisfy refuses to talk to it.**
+> Run the signed app against a helper signed by a different identity — or with the requirement's Team
+> ID clause deliberately wrong — and confirm the client reports it rather than proceeding.
+> *Maintainer-only: needs the Developer ID.*
+
+What the suite *can* now say, because it was measured rather than assumed: when a client pins a
+requirement its peer cannot satisfy, libxpc reports `NSXPCConnectionCodeSigningRequirementFailure`
+(4102) to the client's error handler — observed on `Mac16,5` / macOS 26.6.2 over an anonymous
+listener, with the connection's own invalidation handler *not* firing. That is a genuinely
+distinguishable outcome and the client names it (`helperSignatureRejected`); it is not evidence that
+the production requirement is correct, only that a failed requirement is reportable. A second
+measurement bounds the claim in the other direction: a listener whose delegate simply **refuses** the
+connection is reported as 4097, the same code a helper that died mid-call produces, so the code alone
+never distinguishes "refused" from "restarted" — the client keys that decision on whether the
+connection ever completed a handshake.
+
 Nothing in this design depends on `docs/SMC-RESEARCH.md`'s reported-but-unverified section. E2 touches
 no write, no `Ftst`, no unlock sequence — deliberately, because the boundary must not encode Apple
 Silicon hypotheses. The only E4-adjacent commitments are fault codes and availability reasons, which

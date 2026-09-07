@@ -35,6 +35,7 @@ the other, and both are thin.
 | `SMCCore` | library | IOKit connection, key enumeration, type codec. Read API `public`; write API `@_spi(FanWrite) public`, nameable only from `AeolusHelper` ([ADR 0008 amendment](ADR/0008-write-authorisation.md)). |
 | `FanKit` | library | Fan and sensor models, curve engine, profiles, config schema, sensor catalog. No IOKit. I/O limited to two named exceptions: reading the catalog file, and `sysctlbyname` for hardware identity (`hw.model`, `machdep.cpu.brand_string`) — never `uname -m`. |
 | `AeolusXPC` | library | The `@objc` protocol and the Codable DTOs that cross the privilege boundary. |
+| `AeolusXPCClient` | library | The client half of that boundary: one connection-owning actor, lazily connected, `hello` once per connection, the helper's code-signing requirement pinned before the connection is resumed. Holds no fan state and caches no snapshot — stale control state is unrepresentable rather than forbidden — and a reconnect restores the connection, never a lease. |
 | `AeolusHelper` | root daemon | The only writer. Listener, client authorisation, handshake gate, control loop, and safety supervisor. Internally split at the `FanAuthority` seam: everything from the mach port down to that protocol is E2's, everything behind it is E5's. |
 | `fanctl` | executable | XPC client; also standalone in read-only mode. |
 | `AeolusUI` | library | SwiftUI views and view models. |
