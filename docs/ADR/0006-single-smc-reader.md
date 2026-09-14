@@ -44,6 +44,20 @@ The invariant, stated so it survives every combination:
 > Corollary: **at most one continuous SMC poller exists per machine** — the helper when present and
 > healthy, the app only otherwise.
 
+**What "healthy" is, in the type that carries it — added 2026-09-13 (#237).**
+`HelperConnectionHealth` is the switch above, and it now names each of the conditions this decision
+distinguishes rather than collapsing them: `.handshaken` is the **only** value that licenses
+rendering a control claim from a helper snapshot; `.refused` is absent-or-unapproved-or-refused,
+which ADR 0005 established cannot be told apart from the client; `.versionMismatched` is the version
+fence; `.unresponsive` is a connection that handshook and then stopped answering; `.interrupted` and
+`.invalidated` are the two transport deaths; and `.idle` means only that nothing has been attempted.
+
+The first version of the enum had four cases and the review of #237 found two of these
+indistinguishable from `.idle` and one — the wedge — reading as `.handshaken`. That last one is the
+consequential half: `docs/SAFETY.md` § 4 calls a wedged `io_connect_t` the expected case, so the
+signal was granting the licence above in exactly the situation it was most likely to be wrong about,
+which is the rule-6 failure this ADR's whole switch exists to prevent.
+
 `fanctl` read commands stay direct-read in both provenances. A Homebrew-built `fanctl` can never pass
 the signing requirement, and the two builds must not behave differently; transient, user-invoked
 reads are the accepted exception to the corollary.
