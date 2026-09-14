@@ -54,14 +54,35 @@ actor FaultThrowingAuthority: FanAuthority {
 actor LeaseGrantingAuthority: FanAuthority {
 
     private let lease: Lease
+    private let snapshotGate: AsyncSignal?
     private(set) var applied: [FanSetting] = []
     private(set) var released: [UUID] = []
 
-    init(lease: Lease) {
+    /// Every connection this authority was told had died.
+    ///
+    /// This is the call that releases what a connection was holding, so it is where the
+    /// consequence of a client tearing a connection down actually lands. A test that wants
+    /// to assert a lease *survived* something asserts on this.
+    private(set) var invalidatedConnections: [ConnectionID] = []
+
+    /// Set before `snapshot` parks, so "the slow message has started" is observable rather
+    /// than inferred from a sleep.
+    private(set) var hasBeenAskedForSnapshot = false
+
+    /// - Parameters:
+    ///   - lease: the lease every `acquireLease` and `renewLease` answers with.
+    ///   - snapshotGate: when given, `snapshot` parks on it — so a test can hold a gated
+    ///     verb open on a connection whose lease it is watching.
+    init(lease: Lease, snapshotGate: AsyncSignal? = nil) {
         self.lease = lease
+        self.snapshotGate = snapshotGate
     }
 
-    func snapshot() async throws -> SystemSnapshot { .empty }
+    func snapshot() async throws -> SystemSnapshot {
+        hasBeenAskedForSnapshot = true
+        if let snapshotGate { try? await snapshotGate.wait() }
+        return .empty
+    }
 
     func acquireLease(
         _ request: LeaseRequest, from connection: ConnectionID
@@ -83,7 +104,9 @@ actor LeaseGrantingAuthority: FanAuthority {
 
     func restoreAllToAutomatic(from connection: ConnectionID) async throws {}
 
-    func connectionDidInvalidate(_ connection: ConnectionID) async {}
+    func connectionDidInvalidate(_ connection: ConnectionID) async {
+        invalidatedConnections.append(connection)
+    }
 }
 
 /// A peer that answers a payload message with **neither a payload nor a refusal**.

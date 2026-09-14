@@ -35,9 +35,30 @@ final class PendingReply<Answer>: @unchecked Sendable {
     private var buffered: Unchecked<Answer>?
     private var isFinished = false
     private let fallback: Unchecked<Answer>
+    private let cancellation: Unchecked<Answer>
 
+    /// One fallback for both ways of giving up, for a caller that does not need to tell
+    /// them apart.
+    ///
+    /// The listener harness is the only such caller. Anything acting on the answer wants
+    /// the initialiser below.
     init(ifNothingArrives fallback: Answer) {
         self.fallback = Unchecked(value: fallback)
+        self.cancellation = Unchecked(value: fallback)
+    }
+
+    /// Separate answers for the two ways this latch gives up, because they are **not the
+    /// same event** and a caller that acts on the answer must not treat them as one.
+    ///
+    /// The deadline expiring is a statement about the *peer*: it accepted a message and did
+    /// not answer. Cancellation is a statement about *this caller*: it went away, and the
+    /// peer may be perfectly healthy and about to answer. Collapsing them is not a cosmetic
+    /// loss — `HelperClient` acts on the deadline by tearing the connection down, and with
+    /// one shared fallback a cancelled SwiftUI `.task` invalidated a live connection and the
+    /// helper released every lease bound to it.
+    init(ifNothingArrives fallback: Answer, ifCancelled cancelled: Answer) {
+        self.fallback = Unchecked(value: fallback)
+        self.cancellation = Unchecked(value: cancelled)
     }
 
     /// Runs `send`, then waits for the first answer or for the deadline.
@@ -64,7 +85,7 @@ final class PendingReply<Answer>: @unchecked Sendable {
     func answer(within deadline: Duration = .seconds(10)) async -> Answer {
         let deadlineTask = Task.detached { [self] in
             try? await Task.sleep(for: deadline)
-            giveUp()
+            giveUp(with: fallback)
         }
         defer { deadlineTask.cancel() }
 
@@ -79,7 +100,11 @@ final class PendingReply<Answer>: @unchecked Sendable {
                 attach(continuation)
             }.value
         } onCancel: {
-            giveUp()
+            // The cancellation answer, not the deadline's. See `init(ifNothingArrives:
+            // ifCancelled:)`: a caller that went away says nothing about whether the peer
+            // is healthy, and a caller that acts on these two as one event tears down a
+            // connection that was working.
+            giveUp(with: cancellation)
         }
     }
 
@@ -109,12 +134,12 @@ final class PendingReply<Answer>: @unchecked Sendable {
     ///
     /// It cannot double-resume: this and `resolve` both take the continuation out from
     /// under the same lock, so exactly one of them ever holds it.
-    private func giveUp() {
+    private func giveUp(with answer: Unchecked<Answer>) {
         lock.lock()
         guard let continuation else {
             if !isFinished {
                 isFinished = true
-                buffered = fallback
+                buffered = answer
             }
             lock.unlock()
             return
@@ -122,7 +147,7 @@ final class PendingReply<Answer>: @unchecked Sendable {
         self.continuation = nil
         isFinished = true
         lock.unlock()
-        continuation.resume(returning: fallback)
+        continuation.resume(returning: answer)
     }
 
     private func attach(_ continuation: CheckedContinuation<Unchecked<Answer>, Never>) {

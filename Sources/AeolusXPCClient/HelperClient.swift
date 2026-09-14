@@ -57,11 +57,18 @@ import Foundation
 /// *independent* backstop rather than the mechanism. `disconnect()` is the same teardown
 /// made available to a caller that is finished.
 ///
-/// The connection is given up in three situations, and in none of them is anything retried:
-/// libxpc reported it dead; a handshake did not produce a `HelloReply`; or the helper
-/// accepted a message and did not answer within its deadline. The last is the wedged
-/// `io_connect_t` of `docs/SAFETY.md` § 4, where leaving the connection in place would park
-/// every later gated verb behind a message nothing can discard.
+/// The connection is given up in **four** situations, and in none of them is anything
+/// retried: libxpc reported it dead; the peer failed the code-signing requirement this
+/// client pinned; a handshake did not produce a `HelloReply`; or the helper accepted a
+/// message and did not answer within its deadline. `disconnect()` is a fifth, asked for
+/// rather than forced. The deadline one is the wedged `io_connect_t` of `docs/SAFETY.md`
+/// § 4, where leaving the connection in place would park every later gated verb behind a
+/// message nothing can discard.
+///
+/// **Cancelling a caller is not one of them**, and the list is written out partly to make
+/// that absence visible. A cancelled task says nothing about the helper, so it is reported
+/// as a `CancellationError` and the connection — with every lease bound to it — is left
+/// exactly as it was.
 ///
 /// ## `hello` is never pipelined, and no client can negotiate that it may be
 ///
@@ -353,10 +360,20 @@ public actor HelperClient {
 
     /// What a failed handshake says about the connection it failed on.
     ///
-    /// Only reached for a failure that did **not** already classify itself — a refusal the
-    /// helper authored, or a reply this build could not read. Everything the transport
-    /// reported has already published its own verdict from `translate(_:on:)`, and this is
-    /// not consulted for it.
+    /// Reached for every failure whose connection is still held at this generation, which is
+    /// **not** the same set as "failures the transport did not classify" — an earlier
+    /// version of this comment claimed it was, and was wrong about two arms:
+    ///
+    /// - The three arms of `translate(_:on:)` that call `discardConnection` move the
+    ///   generation, so the `catch` guard declines and this is genuinely not consulted.
+    /// - **4097 does reach here.** `connectionWasInterrupted` keeps its connection and does
+    ///   not move the generation, so the `catch` runs and the verdict becomes `.invalidated`,
+    ///   overwriting the `.interrupted` published a moment earlier. That is correct — the
+    ///   connection has now been discarded — but it is this function that says so.
+    /// - **4101 reaches here too**, because `replyNotDelivered` publishes nothing at all.
+    ///
+    /// The behaviour was right in both; the comment was the defect, and it was the kind that
+    /// makes a later reader believe a live function unreachable.
     private static func healthAfterFailedHandshake(
         for error: Error
     ) -> HelperConnectionHealth {
@@ -383,8 +400,12 @@ public actor HelperClient {
         _ send: (any AeolusXPCProtocol, @escaping @Sendable (Result<Answer, Error>) -> Void) ->
             Void
     ) async throws -> Answer {
+        // Two fallbacks, because the two ways of giving up are different events and the
+        // deadline's is acted on. A caller that was cancelled has said nothing about the
+        // helper; see `translate(_:on:)`.
         let pending = PendingReply<Result<Answer, Error>>(
-            ifNothingArrives: .failure(HelperClientError.helperNeverAnswered(after: deadline))
+            ifNothingArrives: .failure(HelperClientError.helperNeverAnswered(after: deadline)),
+            ifCancelled: .failure(CancellationError())
         )
         let proxy = live.connection.remoteObjectProxyWithErrorHandler { error in
             pending.deliver(.failure(error))
@@ -423,6 +444,19 @@ public actor HelperClient {
     /// connection at all, and an arm that decides whether a live connection survives is not
     /// one this project is willing to ship untested.
     func translate(_ error: Error, on generation: UInt64) -> Error {
+        // **Cancellation is not a teardown, and this is the line that keeps it from
+        // becoming one.** It is a statement about the caller — a view that navigated away,
+        // a `fanctl` that was interrupted — and none about the helper, which may be healthy
+        // and about to answer. Acting on it would invalidate the connection, and the helper
+        // releases a connection's leases when it dies: the fans would hand back to automatic
+        // because somebody changed tabs. It is thrown as itself, the way every other
+        // cancelled `async` call in Swift reports.
+        //
+        // The message stays at the head of the helper's queue and that is deliberate. The
+        // next verb queues behind it, hits its **own** deadline, and discards then — one
+        // extra timeout on a genuinely wedged helper, which is the right price for never
+        // tearing down a healthy one.
+        if error is CancellationError { return error }
         if let clientError = error as? HelperClientError {
             if case .helperNeverAnswered = clientError {
                 // The helper accepted this message and never answered it, which on the
@@ -512,7 +546,14 @@ public actor HelperClient {
     /// control is not silently re-asserted. The next call builds a new connection and
     /// handshakes it, as it would from cold; calling this with no connection open does
     /// nothing.
+    ///
+    /// The guard is what makes that last clause true, and it is load-bearing rather than an
+    /// optimisation: without it, tearing down a client that had **refused to pin** — the
+    /// ordinary outcome for an unsigned `fanctl` — moved its health from `.refused` to
+    /// `.idle` and threw away the one diagnosis this client can give with confidence. That
+    /// is the same erasure `liveConnection()` publishes `.refused` to prevent.
     public func disconnect() {
+        guard connection != nil else { return }
         discardConnection(generation, as: .idle)
     }
 
