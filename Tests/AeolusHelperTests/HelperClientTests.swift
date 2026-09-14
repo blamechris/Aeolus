@@ -88,6 +88,80 @@ struct HelperClientTests {
             "the arrivals were \(harness.arrivals)")
     }
 
+    /// Two verbs racing on a cold connection produce **one** `hello` between them.
+    ///
+    /// The second `hello` on a connection is refused by the helper — a connection has one
+    /// negotiated identity — so "whoever gets there second loses" would be a race a correct
+    /// caller could not avoid. The client coalesces by sharing one handshake `Task`.
+    ///
+    /// **Concurrent on purpose, because sequential cannot reach the code.** The existing
+    /// `helloRunsOncePerConnection` sends its two snapshots one after the other, so the
+    /// second short-circuits on `negotiatedReply != nil` long before the coalescing line —
+    /// which is why M3 survived against it. Here both verbs are in flight before either
+    /// handshake could complete: the first suspends on the shared task's value while the
+    /// `hello` is still on the wire, and the second finds that task rather than starting one.
+    ///
+    /// **Mutation:** in `HelperClient.handshakenConnection()`, replace
+    /// `handshake ?? Task { … }` with `Task { … }` — M3, which survived against the
+    /// sequential test. Run: red, and the *thrown* error is worth writing down because it is
+    /// not the obvious one. Two `hello`s go out on one connection and the helper refuses the
+    /// second with `invalidParameter`; that refusal is a failed handshake, so this client's
+    /// own rule takes the connection down with it, and the verb still in flight on it
+    /// surfaces as `helperUnreachable(code: 4099)`. Either way the racing pair cannot both
+    /// be served, which is the property.
+    @Test("Two verbs racing on a cold connection send one hello between them")
+    func racingVerbsShareOneHandshake() async throws {
+        let harness = ClientListenerHarness(authority: RecordingFanAuthority())
+        let client = harness.client()
+
+        async let first = client.snapshot()
+        async let second = client.snapshot()
+        _ = try await (first, second)
+
+        #expect(harness.sessions.count == 1)
+        let session = try #require(harness.sessions.first)
+        let delivered = await session.messageCount
+        #expect(
+            delivered == 3,
+            """
+            the session saw \(delivered) messages. Three is one hello and \
+            two snapshots; four is two verbs that each sent their own hello, and the second \
+            of those is refused for the life of the connection.
+            """)
+        #expect(await client.health == .handshaken)
+    }
+
+    /// The handshake is sent within **its own** deadline, not a gated verb's.
+    ///
+    /// `hello` is the first message on a cold connection, so it queues behind launchd's
+    /// spawn, the authorisation file I/O and the whole of startup reconciliation —
+    /// `HelperComposition.bringUp()` resumes its listener as its last statement, precisely
+    /// so no client is answered over unreconciled fans. Sharing `gatedVerb` with it meant
+    /// the client allowed the entire cold start exactly what the helper budgets for
+    /// reconciliation alone.
+    ///
+    /// Asserted by making `handshakeVerb` impossibly small and `gatedVerb` generous, which
+    /// is the only arrangement in which the two are distinguishable without a peer that can
+    /// be made slow: the handshake must be what fails.
+    ///
+    /// **Mutation:** in `HelperClient.performHandshake(generation:)`, send within
+    /// `deadlines.gatedVerb` again. Run: red — `hello` and the snapshot both fit inside the
+    /// generous deadline, so `snapshot()` returns `.empty` and nothing is thrown.
+    @Test("The handshake is sent within its own deadline, not a gated verb's")
+    func theHandshakeIsSentWithinItsOwnDeadline() async throws {
+        let harness = ClientListenerHarness(authority: RecordingFanAuthority())
+        let handshakeDeadline = Duration.nanoseconds(1)
+        let client = harness.client(
+            deadlines: HelperClientDeadlines(
+                gatedVerb: .seconds(5),
+                panicVerb: .seconds(5),
+                handshakeVerb: handshakeDeadline))
+
+        await #expect(throws: HelperClientError.helperNeverAnswered(after: handshakeDeadline)) {
+            try await client.snapshot()
+        }
+    }
+
     /// Refuse, never degrade — and name both sides' ranges, in both directions.
     ///
     /// A helper too new for this client and a helper too old for it are the same refusal
@@ -115,7 +189,15 @@ struct HelperClientTests {
             try await client.snapshot()
         }
         #expect(await client.negotiated == nil)
-        #expect(await client.health == .idle, "a refused handshake is not a handshake")
+        let health = await client.health
+        #expect(
+            health == .versionMismatched,
+            """
+            a version-refused helper read as \(health). It used to read `.idle` \
+            — indistinguishable from "nothing has been tried yet" — which is the state ADR \
+            0006's switch has to tell apart from a helper it cannot talk to, because the \
+            remedy is exact and belongs in front of the user.
+            """)
     }
 
     // MARK: - The refusal vocabulary
@@ -235,11 +317,23 @@ struct HelperClientTests {
         let harness = ClientListenerHarness(authority: GatedSnapshotAuthority(gate: gate))
         let deadline = Duration.milliseconds(250)
         let client = harness.client(
-            deadlines: HelperClientDeadlines(gatedVerb: deadline, panicVerb: deadline))
+            deadlines: HelperClientDeadlines(
+                gatedVerb: deadline, panicVerb: deadline, handshakeVerb: .seconds(5)))
 
         await #expect(throws: HelperClientError.helperNeverAnswered(after: deadline)) {
             try await client.snapshot()
         }
+
+        // The wedge, as ADR 0006 has to be able to read it. The connection handshook and
+        // then stopped answering, so `.handshaken` — the one state that licenses rendering a
+        // helper snapshot as current — would be a licence granted in exactly the situation
+        // `docs/SAFETY.md` § 4 calls expected.
+        //
+        // **Mutation:** in `HelperClient.translate(_:on:)`, delete the
+        // `case .helperNeverAnswered` arm. Run: red here — the health stays `.handshaken`
+        // and the wedged connection is kept.
+        let health = await client.health
+        #expect(health == .unresponsive, "a wedged connection read as \(health)")
 
         // Released so the parked helper task can finish rather than outliving the test.
         await gate.signal()

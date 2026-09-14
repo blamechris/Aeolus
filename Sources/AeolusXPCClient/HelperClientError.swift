@@ -77,6 +77,21 @@ public enum HelperClientError: Error, Sendable, Hashable {
     /// `HelperClientDeadlines`.
     case helperNeverAnswered(after: Duration)
 
+    /// The helper's answer could not be delivered, and **the connection is still alive**.
+    ///
+    /// `NSXPCConnectionReplyInvalid` (4101) is the one transport code that is about a
+    /// message rather than about the connection: the reply block could not be invoked —
+    /// over-released, or carrying something that would not encode — while the connection
+    /// itself is unaffected and still handshaken. It is a case of its own rather than an
+    /// arm of `helperUnreachable` because the two call for opposite responses: the helper
+    /// is reachable, this one answer is lost, and a client that tore the connection down
+    /// over it would orphan the helper-side session and any lease bound to it until the
+    /// TTL expired.
+    ///
+    /// Nothing can be said about whether the request took effect. The helper may well have
+    /// done the work.
+    case replyNotDelivered
+
     /// The helper answered in a shape the contract does not permit.
     ///
     /// `(nil, nil)` on a payload message is the one that matters: `AeolusXPCProtocol`
@@ -117,6 +132,12 @@ extension HelperClientError: LocalizedError {
             return """
                 The Aeolus helper accepted this request and did not answer within \
                 \(deadline). Nothing can be said about whether it took effect.
+                """
+        case .replyNotDelivered:
+            return """
+                The Aeolus helper's answer to this request could not be delivered. The \
+                connection is still open; nothing can be said about whether the request \
+                took effect.
                 """
         case .protocolViolation(let detail):
             return "The Aeolus helper answered in a way this build cannot read: \(detail)."

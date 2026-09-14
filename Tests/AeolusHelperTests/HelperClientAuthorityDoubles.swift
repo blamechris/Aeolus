@@ -116,7 +116,9 @@ final class EmptyReplyListenerHarness {
             pinning: UnenforcedClientPinning(),
             clientDescription: "test client",
             deadlines: HelperClientDeadlines(
-                gatedVerb: .milliseconds(750), panicVerb: .milliseconds(750))
+                gatedVerb: .milliseconds(750),
+                panicVerb: .milliseconds(750),
+                handshakeVerb: .milliseconds(750))
         )
     }
 }

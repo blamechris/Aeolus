@@ -26,15 +26,23 @@ final class ClientListenerHarness {
 
     /// `NSXPCListener` holds its delegate weakly; without this it would deallocate
     /// immediately and every connection would arrive with nothing to configure it.
+    ///
+    /// `garblingHandshakeReplies` answers `hello` through the **real** session — so the
+    /// helper records the handshake, and refuses every later `hello` on that connection —
+    /// but replaces the reply payload with bytes no client can decode. It is the only way to
+    /// reach a peer that has negotiated and a client that does not know it, which is the
+    /// state a permanently wedged connection starts from.
     init(
         authority: any FanAuthority,
         helperRange: ProtocolVersionRange = AeolusXPCVersion.supportedRange,
-        capabilities: [String] = HelperListenerDelegate.advertisedCapabilities
+        capabilities: [String] = HelperListenerDelegate.advertisedCapabilities,
+        garblingHandshakeReplies: Bool = false
     ) {
         delegate = ClientListenerDelegate(
             authority: authority,
             helperRange: helperRange,
-            capabilities: capabilities
+            capabilities: capabilities,
+            garblingHandshakeReplies: garblingHandshakeReplies
         )
         listener = NSXPCListener.anonymous()
         listener.delegate = delegate
@@ -88,7 +96,9 @@ final class ClientListenerHarness {
         description: String = "test client",
         pinning: any HelperConnectionPinning = UnenforcedClientPinning(),
         deadlines: HelperClientDeadlines = HelperClientDeadlines(
-            gatedVerb: .milliseconds(750), panicVerb: .milliseconds(750))
+            gatedVerb: .milliseconds(750),
+            panicVerb: .milliseconds(750),
+            handshakeVerb: .milliseconds(750))
     ) -> HelperClient {
         HelperClient(
             transport: .endpoint(endpoint),
@@ -105,6 +115,7 @@ private final class ClientListenerDelegate: NSObject, NSXPCListenerDelegate, @un
     private let authority: any FanAuthority
     private let helperRange: ProtocolVersionRange
     private let capabilities: [String]
+    private let garblingHandshakeReplies: Bool
     private let record = OrderRecord<String>()
 
     private let lock = NSLock()
@@ -115,11 +126,13 @@ private final class ClientListenerDelegate: NSObject, NSXPCListenerDelegate, @un
     init(
         authority: any FanAuthority,
         helperRange: ProtocolVersionRange,
-        capabilities: [String]
+        capabilities: [String],
+        garblingHandshakeReplies: Bool
     ) {
         self.authority = authority
         self.helperRange = helperRange
         self.capabilities = capabilities
+        self.garblingHandshakeReplies = garblingHandshakeReplies
     }
 
     var sessions: [HelperConnectionSession] {
@@ -167,7 +180,9 @@ private final class ClientListenerDelegate: NSObject, NSXPCListenerDelegate, @un
         )
         connection.exportedInterface = NSXPCInterface(with: AeolusXPCProtocol.self)
         connection.exportedObject = ArrivalRecordingService(
-            wrapping: HelperXPCService(session: session), record: record)
+            wrapping: HelperXPCService(session: session),
+            record: record,
+            garblingHandshakeReplies: garblingHandshakeReplies)
         connection.invalidationHandler = {
             Task.detached { await session.invalidate() }
         }
@@ -198,10 +213,16 @@ private final class ArrivalRecordingService: NSObject, AeolusXPCProtocol, @unche
 
     private let service: HelperXPCService
     private let record: OrderRecord<String>
+    private let garblingHandshakeReplies: Bool
 
-    init(wrapping service: HelperXPCService, record: OrderRecord<String>) {
+    init(
+        wrapping service: HelperXPCService,
+        record: OrderRecord<String>,
+        garblingHandshakeReplies: Bool = false
+    ) {
         self.service = service
         self.record = record
+        self.garblingHandshakeReplies = garblingHandshakeReplies
     }
 
     private func replied(_ message: String) { record.append("\(message)→replied") }
@@ -210,7 +231,13 @@ private final class ArrivalRecordingService: NSObject, AeolusXPCProtocol, @unche
         record.append("hello")
         service.hello(request: request) { [self] data, error in
             replied("hello")
-            reply(data, error)
+            // The real session has already recorded the handshake by the time this runs —
+            // that is the whole point, and it is why only the payload is replaced.
+            guard garblingHandshakeReplies, error == nil else {
+                reply(data, error)
+                return
+            }
+            reply(Data("not a HelloReply".utf8), nil)
         }
     }
 
