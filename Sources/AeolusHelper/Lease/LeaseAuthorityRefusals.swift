@@ -35,9 +35,9 @@ import FanKit
 //   it would hand every file in the module a route to engage or release `docs/SAFETY.md`
 //   § 3's latch through the lease core. The refusal is a read; the reference is not, and
 //   the reference is what a widening exposes.
-// - The three refusals inside `acquireLease`'s straight-line region read `restoreAbandoned`,
-//   `sleepSeal`, `table` and `releasing` directly, and stay inside it for the reason that
-//   region exists at all.
+// - The refusals inside `acquireLease`'s straight-line region read `restoreAbandoned`,
+//   `handbackUnconfirmed`, `sleepSeal`, `table` and `releasing` directly, and stay inside it
+//   for the reason that region exists at all.
 //
 // `LeaseAuthorityAccessTests` enforces that split rather than leaving it to this comment.
 //
