@@ -83,26 +83,39 @@ final class PendingReply<Answer>: @unchecked Sendable {
         }
     }
 
-    /// Hands the fallback to whoever is waiting, and does nothing when nobody is.
+    /// Hands the fallback to whoever is waiting, and **records it for whoever is about to**.
     ///
     /// Deliberately **not** `resolve(fallback)`, and the difference is what the second
     /// latch mutation exposed. `resolve` declines once an answer has been chosen — right
     /// for a *second answer*, wrong for giving up, because a latch that chose an answer and
     /// then failed to hand it over leaves a caller parked with nothing left that could wake
-    /// it. Here the question is "is somebody waiting", not "has an answer been chosen".
+    /// it. Here the question is "has this latch given up", not "has an answer been chosen".
     ///
-    /// While the rest of this type is correct that distinction cannot be observed — an
-    /// answer that beat the wait is buffered, and `attach` consumes it without ever storing
-    /// a continuation, so "finished, and someone is still waiting" is unreachable. It is
-    /// what stops a defect in `resolve` from becoming a **hang** rather than a failure, and
-    /// that is worth having: the mutation that removed the buffering ran for ten minutes
-    /// without producing a result before this existed.
+    /// ## Give up before anybody waits, and the fallback is buffered rather than dropped
+    ///
+    /// `withTaskCancellationHandler` runs `onCancel` **before** the operation when the task
+    /// is already cancelled, so "give up, then attach" is the ordinary order on a cancelled
+    /// caller rather than an exotic interleaving. A `giveUp` that returned having recorded
+    /// nothing would let `attach` store a continuation that cancellation is never going to
+    /// revisit, and the caller would park for the whole deadline — the opposite of what
+    /// `answer(within:)` installs the handler for. The same order is reachable from the
+    /// deadline on a short enough one, and there the outcome was worse: the deadline task
+    /// has already finished by then, so nothing at all would have resumed that caller.
+    ///
+    /// So the fallback goes into the same buffer an early answer uses, and the `attach`
+    /// that follows consumes it without ever storing a continuation. `isFinished` is what
+    /// keeps this from overwriting an answer that genuinely arrived first — a late deadline
+    /// on an answered latch still changes nothing.
     ///
     /// It cannot double-resume: this and `resolve` both take the continuation out from
     /// under the same lock, so exactly one of them ever holds it.
     private func giveUp() {
         lock.lock()
         guard let continuation else {
+            if !isFinished {
+                isFinished = true
+                buffered = fallback
+            }
             lock.unlock()
             return
         }

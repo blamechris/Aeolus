@@ -87,4 +87,91 @@ struct PendingReplyTests {
 
         #expect(await latch.answer(within: .nanoseconds(1)) == "the reply block")
     }
+
+    /// A caller that was **already cancelled** before it started waiting does not park for
+    /// the deadline.
+    ///
+    /// `withTaskCancellationHandler` runs `onCancel` *before* the operation when the task is
+    /// already cancelled, so "give up, then attach" is the ordinary order on a cancelled
+    /// caller rather than an exotic interleaving. A `giveUp` that recorded nothing when
+    /// nobody was waiting left `attach` storing a continuation that cancellation was never
+    /// going to revisit, and the caller waited out the whole deadline — five seconds on a
+    /// gated verb, ten on the panic path, which is the opposite of what the handler is
+    /// installed for.
+    ///
+    /// **The order is forced rather than raced.** `AsyncSignal.wait()` is the only thing
+    /// that can release the task, and this test does not release it until after `cancel()`,
+    /// so `answer(within:)` is guaranteed to be entered on an already-cancelled task. A bare
+    /// `Task { … }; task.cancel()` would be a coin flip between the two orders and would let
+    /// the defect through whenever the coin came up "attached first".
+    ///
+    /// **The deadline is ten seconds, not sixty.** The assertion has to be the elapsed time
+    /// — a latch that waits out its deadline still returns the fallback eventually, so the
+    /// *value* proves nothing — and sixty would trip this suite's time limit before the
+    /// expectation could record, which is the weaker kill this repository keeps rejecting.
+    ///
+    /// **Mutation:** in `PendingReply.giveUp()`, restore the early `return` that recorded
+    /// nothing when `continuation` was `nil`. Run: red on the elapsed-time expectation after
+    /// ten seconds, naming the wait.
+    @Test("A caller cancelled before it waits gives up at once", .timeLimit(.minutes(1)))
+    func aCallerCancelledBeforeItWaitsGivesUpAtOnce() async {
+        let latch = PendingReply<String>(ifNothingArrives: "nothing arrived")
+        let release = AsyncSignal()
+
+        let waiting = Task { () -> String in
+            try? await release.wait()
+            return await latch.answer(within: .seconds(10))
+        }
+        waiting.cancel()
+        await release.signal()
+
+        let started = ContinuousClock.now
+        let answer = await waiting.value
+        let waited = started.duration(to: .now)
+
+        #expect(answer == "nothing arrived")
+        #expect(
+            waited < .seconds(1),
+            """
+            the cancelled caller waited \(waited). Cancellation arrived before anything was \
+            attached, so the give-up had nobody to hand the fallback to — and a latch that \
+            drops it there leaves the caller parked on a continuation nothing will revisit \
+            until the deadline it was cancelled out of.
+            """)
+    }
+
+    /// Many answers arriving at once still resolve the continuation exactly once.
+    ///
+    /// The once-only guard is what stands between this client and a **trap**:
+    /// `withCheckedContinuation` aborts the process on a second resume, and a test cannot
+    /// catch that because the process is gone. `theFirstAnswerWins` asserts the rule on the
+    /// buffered path, where both answers are delivered before anyone waits and nothing is
+    /// concurrent; this one puts a real waiter and thirty-two real threads on the latch at
+    /// the same time, which is the shape the reply block and the error handler actually
+    /// arrive in.
+    ///
+    /// There is no mutation that reddens this without aborting the runner instead — which is
+    /// precisely why the guard is a type rather than a convention. What it asserts is that
+    /// one of the delivered answers comes back, exactly once, and that the concurrent path
+    /// never falls through to the fallback.
+    @Test("Answers racing each other resolve the wait exactly once", .timeLimit(.minutes(1)))
+    func concurrentAnswersResolveTheWaitExactlyOnce() async {
+        let latch = PendingReply<Int>(ifNothingArrives: -1)
+
+        async let answered = latch.answer(within: .seconds(10))
+        await withTaskGroup(of: Void.self) { group in
+            for value in 1...32 {
+                group.addTask { latch.deliver(value) }
+            }
+        }
+
+        let answer = await answered
+        #expect(
+            (1...32).contains(answer),
+            """
+            the latch answered \(answer). -1 is the fallback, which means thirty-two \
+            deliveries raced and none of them reached the caller; anything else is a value \
+            nobody delivered.
+            """)
+    }
 }
