@@ -94,29 +94,52 @@ struct HelperClientTests {
     /// negotiated identity — so "whoever gets there second loses" would be a race a correct
     /// caller could not avoid. The client coalesces by sharing one handshake `Task`.
     ///
-    /// **Concurrent on purpose, because sequential cannot reach the code.** The existing
-    /// `helloRunsOncePerConnection` sends its two snapshots one after the other, so the
-    /// second short-circuits on `negotiatedReply != nil` long before the coalescing line —
-    /// which is why M3 survived against it. Here both verbs are in flight before either
-    /// handshake could complete: the first suspends on the shared task's value while the
-    /// `hello` is still on the wire, and the second finds that task rather than starting one.
+    /// **The interleaving is constructed, not raced, and that is the whole design of this
+    /// test.** The existing `helloRunsOncePerConnection` sends its two snapshots one after
+    /// the other, so the second short-circuits on `negotiatedReply != nil` long before the
+    /// coalescing line — which is why M3 survived against it. A bare `async let` pair is only
+    /// better by luck: if the first handshake happens to complete before the second verb
+    /// enters the actor, it short-circuits too, every expectation still holds, and the
+    /// mutant survives that run. The same coin flip this suite refuses to accept for
+    /// cancellation in `PendingReplyTests`.
+    ///
+    /// So the `hello` reply is **withheld** by the harness. While it is held,
+    /// `negotiatedReply` is `nil` for certain, so the second verb cannot short-circuit —
+    /// it must reach the coalescing line. The reply is released only after that verb's task
+    /// has started, and releasing it costs a full IPC round trip while the verb's actor job
+    /// is already enqueued and serial with it. There is no ordering left for luck to pick.
     ///
     /// **Mutation:** in `HelperClient.handshakenConnection()`, replace
-    /// `handshake ?? Task { … }` with `Task { … }` — M3, which survived against the
-    /// sequential test. Run: red, and the *thrown* error is worth writing down because it is
-    /// not the obvious one. Two `hello`s go out on one connection and the helper refuses the
-    /// second with `invalidParameter`; that refusal is a failed handshake, so this client's
-    /// own rule takes the connection down with it, and the verb still in flight on it
-    /// surfaces as `helperUnreachable(code: 4099)`. Either way the racing pair cannot both
-    /// be served, which is the property.
+    /// `handshake ?? Task { … }` with `Task { … }` — M3. Run: red, and the *thrown* error is
+    /// worth writing down because it is not the obvious one. Two `hello`s go out on one
+    /// connection and the helper refuses the second with `invalidParameter`; that refusal is
+    /// a failed handshake, so this client's own rule takes the connection down with it, and
+    /// the verb still in flight surfaces as `helperUnreachable(code: 4099)`. The message
+    /// count is the backstop assertion at 4 rather than 3.
     @Test("Two verbs racing on a cold connection send one hello between them")
     func racingVerbsShareOneHandshake() async throws {
-        let harness = ClientListenerHarness(authority: RecordingFanAuthority())
-        let client = harness.client()
+        let releaseHandshake = AsyncSignal()
+        let harness = ClientListenerHarness(
+            authority: RecordingFanAuthority(), holdingHandshakeReplies: releaseHandshake)
+        let client = harness.client(
+            deadlines: HelperClientDeadlines(
+                gatedVerb: .seconds(30), panicVerb: .seconds(30), handshakeVerb: .seconds(30)))
 
-        async let first = client.snapshot()
-        async let second = client.snapshot()
-        _ = try await (first, second)
+        let first = Task { try await client.snapshot() }
+        try await waitUntil("the handshake reached the helper and is being held") {
+            harness.arrivals == ["hello"]
+        }
+
+        // Started only now, so it meets a handshake that is certainly unanswered.
+        let secondStarted = AsyncSignal()
+        let second = Task { () -> SystemSnapshot in
+            await secondStarted.signal()
+            return try await client.snapshot()
+        }
+        try await secondStarted.wait()
+
+        await releaseHandshake.signal()
+        _ = try await (first.value, second.value)
 
         #expect(harness.sessions.count == 1)
         let session = try #require(harness.sessions.first)
@@ -124,10 +147,13 @@ struct HelperClientTests {
         #expect(
             delivered == 3,
             """
-            the session saw \(delivered) messages. Three is one hello and \
-            two snapshots; four is two verbs that each sent their own hello, and the second \
-            of those is refused for the life of the connection.
+            the session saw \(delivered) messages. Three is one hello and two snapshots; \
+            four is two verbs that each sent their own hello, and the second of those is \
+            refused for the life of the connection.
             """)
+        #expect(
+            harness.arrivals.filter { $0 == "hello" } == ["hello"],
+            "the arrivals were \(harness.arrivals)")
         #expect(await client.health == .handshaken)
     }
 

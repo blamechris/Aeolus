@@ -32,17 +32,24 @@ final class ClientListenerHarness {
     /// but replaces the reply payload with bytes no client can decode. It is the only way to
     /// reach a peer that has negotiated and a client that does not know it, which is the
     /// state a permanently wedged connection starts from.
+    ///
+    /// `holdingHandshakeReplies` withholds each `hello` reply until that signal fires. The
+    /// message still reaches the real session, so the arrival is recorded and the handshake
+    /// is negotiated; only the answer waits. It is what makes "a second verb arrived while
+    /// the handshake was still unanswered" a *constructed* state rather than a raced one.
     init(
         authority: any FanAuthority,
         helperRange: ProtocolVersionRange = AeolusXPCVersion.supportedRange,
         capabilities: [String] = HelperListenerDelegate.advertisedCapabilities,
-        garblingHandshakeReplies: Bool = false
+        garblingHandshakeReplies: Bool = false,
+        holdingHandshakeReplies: AsyncSignal? = nil
     ) {
         delegate = ClientListenerDelegate(
             authority: authority,
             helperRange: helperRange,
             capabilities: capabilities,
-            garblingHandshakeReplies: garblingHandshakeReplies
+            garblingHandshakeReplies: garblingHandshakeReplies,
+            holdingHandshakeReplies: holdingHandshakeReplies
         )
         listener = NSXPCListener.anonymous()
         listener.delegate = delegate
@@ -116,6 +123,7 @@ private final class ClientListenerDelegate: NSObject, NSXPCListenerDelegate, @un
     private let helperRange: ProtocolVersionRange
     private let capabilities: [String]
     private let garblingHandshakeReplies: Bool
+    private let holdingHandshakeReplies: AsyncSignal?
     private let record = OrderRecord<String>()
 
     private let lock = NSLock()
@@ -127,12 +135,14 @@ private final class ClientListenerDelegate: NSObject, NSXPCListenerDelegate, @un
         authority: any FanAuthority,
         helperRange: ProtocolVersionRange,
         capabilities: [String],
-        garblingHandshakeReplies: Bool
+        garblingHandshakeReplies: Bool,
+        holdingHandshakeReplies: AsyncSignal?
     ) {
         self.authority = authority
         self.helperRange = helperRange
         self.capabilities = capabilities
         self.garblingHandshakeReplies = garblingHandshakeReplies
+        self.holdingHandshakeReplies = holdingHandshakeReplies
     }
 
     var sessions: [HelperConnectionSession] {
@@ -182,7 +192,8 @@ private final class ClientListenerDelegate: NSObject, NSXPCListenerDelegate, @un
         connection.exportedObject = ArrivalRecordingService(
             wrapping: HelperXPCService(session: session),
             record: record,
-            garblingHandshakeReplies: garblingHandshakeReplies)
+            garblingHandshakeReplies: garblingHandshakeReplies,
+            holdingHandshakeReplies: holdingHandshakeReplies)
         connection.invalidationHandler = {
             Task.detached { await session.invalidate() }
         }
@@ -214,15 +225,18 @@ private final class ArrivalRecordingService: NSObject, AeolusXPCProtocol, @unche
     private let service: HelperXPCService
     private let record: OrderRecord<String>
     private let garblingHandshakeReplies: Bool
+    private let holdingHandshakeReplies: AsyncSignal?
 
     init(
         wrapping service: HelperXPCService,
         record: OrderRecord<String>,
-        garblingHandshakeReplies: Bool = false
+        garblingHandshakeReplies: Bool = false,
+        holdingHandshakeReplies: AsyncSignal? = nil
     ) {
         self.service = service
         self.record = record
         self.garblingHandshakeReplies = garblingHandshakeReplies
+        self.holdingHandshakeReplies = holdingHandshakeReplies
     }
 
     private func replied(_ message: String) { record.append("\(message)→replied") }
@@ -230,14 +244,24 @@ private final class ArrivalRecordingService: NSObject, AeolusXPCProtocol, @unche
     func hello(request: Data, reply: @escaping @Sendable (Data?, Error?) -> Void) {
         record.append("hello")
         service.hello(request: request) { [self] data, error in
-            replied("hello")
             // The real session has already recorded the handshake by the time this runs —
             // that is the whole point, and it is why only the payload is replaced.
-            guard garblingHandshakeReplies, error == nil else {
-                reply(data, error)
+            let payload =
+                garblingHandshakeReplies && error == nil
+                ? Data("not a HelloReply".utf8) : data
+
+            // The reply marker is recorded where the reply actually leaves, not where it was
+            // computed, so a withheld handshake reads as withheld in `arrivals`.
+            guard let gate = holdingHandshakeReplies else {
+                replied("hello")
+                reply(payload, error)
                 return
             }
-            reply(Data("not a HelloReply".utf8), nil)
+            Task { [self] in
+                try? await gate.wait()
+                replied("hello")
+                reply(payload, error)
+            }
         }
     }
 
