@@ -402,6 +402,27 @@ requirement, and killing the mutation needs a Developer ID-signed helper and a f
 test-only policy from acquiring a production sibling, which is a different guarantee and not a
 substitute for this one.
 
+**Correction — the paragraph above covered two guards as one, and only one of them is a survivor.
+Split 2026-09-13 (#237).** `SignedHelperPinning.pinnedConnection(over:)` contains two decisions four
+lines apart, and filing them together retired a question that was still open:
+
+1. **Applying the requirement** — `setCodeSigningRequirement`. A genuine survivor, for the reason
+   stated above, and the record stands unchanged. It is what the manual `Mac16,5` checklist row
+   below exists for.
+2. **Refusing rather than degrading** — the `.failure` arm, which throws
+   `clientCannotVerifyHelper` instead of returning an unpinned connection. This one needed **no
+   certificate at all** and was untested only by omission. #237's review mutated it to
+   `return transport.makeConnection()` — a client that, when it cannot establish who it would be
+   talking to, connects anyway to whoever answers — and the suite stayed green at 1365 tests. That
+   is `CLAUDE.md` rule 8 with nothing behind it, and it was not the survivor's fault.
+
+It is covered now. `HelperClientPinningTests.theShippingPolicyRefusesAHostThatCannotVerifyItself`
+switches exhaustively on `HelperSigningIdentity.inspect()` and, in the `.noTeamIdentifier` arm that
+`swift build`, `swift test` and every CI runner produce, requires the refusal before any connection
+object exists. Re-running the same mutation against it is red on one expectation. The signed arm
+asserts the other direction, so a suite run from a signed host tests the mechanism rather than
+failing for it.
+
 So the manual `Mac16,5` checklist gains **one** row beside "an ad-hoc-built client is refused by the
 installed helper":
 
