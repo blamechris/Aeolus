@@ -393,6 +393,65 @@ listener test in the tree drives an admission policy declared in the *test targe
 requirement at all, precisely so no production wiring can select one; a green suite says the gate and
 the seam are correct, and says nothing whatever about the requirement.
 
+**The client side has the identical survivor, and it is recorded here beside its twin — added
+2026-09-06 (#158).** Deleting `connection.setCodeSigningRequirement(requirement.text)` from
+`SignedHelperPinning` leaves the whole suite green, for the same reason and with no additional
+excuse: every client test drives a pinning policy declared in the *test target* that applies no
+requirement, and killing the mutation needs a Developer ID-signed helper and a foreign-signed client
+— one machine, no CI runner. `HelperClientSeamTests.exactlyOnePinningPolicyShipsInSources` keeps the
+test-only policy from acquiring a production sibling, which is a different guarantee and not a
+substitute for this one.
+
+**Correction — the paragraph above covered two guards as one, and only one of them is a survivor.
+Split 2026-09-13 (#237).** `SignedHelperPinning.pinnedConnection(over:)` contains two decisions four
+lines apart, and filing them together retired a question that was still open:
+
+1. **Applying the requirement** — `setCodeSigningRequirement`. A genuine survivor, for the reason
+   stated above, and the record stands unchanged. It is what the manual `Mac16,5` checklist row
+   below exists for.
+2. **Refusing rather than degrading** — the `.failure` arm, which throws
+   `clientCannotVerifyHelper` instead of returning an unpinned connection. This one needed **no
+   certificate at all** and was untested only by omission. #237's review mutated it to
+   `return transport.makeConnection()` — a client that, when it cannot establish who it would be
+   talking to, connects anyway to whoever answers — and the suite stayed green at 1365 tests. That
+   is `CLAUDE.md` rule 8 with nothing behind it, and it was not the survivor's fault.
+
+It is covered now. `HelperClientPinningTests.theShippingPolicyRefusesAHostThatCannotVerifyItself`
+switches exhaustively on `HelperSigningIdentity.inspect()` and, in the `.noTeamIdentifier` arm that
+`swift build`, `swift test` and every CI runner produce, requires the refusal before any connection
+object exists. Re-running the same mutation against it is red on one expectation. The signed arm
+asserts the other direction, so a suite run from a signed host tests the mechanism rather than
+failing for it.
+
+So the manual `Mac16,5` checklist gains **one** row beside "an ad-hoc-built client is refused by the
+installed helper":
+
+> **A client whose pinned requirement the installed helper does not satisfy refuses to talk to it.**
+> Run the signed app against a helper signed by a different identity — or with the requirement's Team
+> ID clause deliberately wrong — and confirm the client reports it rather than proceeding.
+> *Maintainer-only: needs the Developer ID.*
+
+What the suite *can* now say, because it was measured rather than assumed: when a client pins a
+requirement its peer cannot satisfy, libxpc reports `NSXPCConnectionCodeSigningRequirementFailure`
+(4102) to the client's error handler — observed on `Mac16,5` / macOS 26.6.2 over an anonymous
+listener, with the connection's own invalidation handler *not* firing. That is a genuinely
+distinguishable outcome and the client names it (`helperSignatureRejected`); it is not evidence that
+the production requirement is correct, only that a failed requirement is reportable. A second
+measurement bounds the claim in the other direction: a listener whose delegate simply **refuses** the
+connection is reported as 4097, the same code a helper that died mid-call produces, so the code alone
+never distinguishes "refused" from "restarted" — the client keys that decision on whether the
+connection ever completed a handshake.
+
+**What a client sees when a peer goes away is not portable, and this is where that was learned.**
+On `Mac16,5` / macOS 26.6.2, invalidating an anonymous `NSXPCListener` interrupted its client's
+connection (4097) and then invalidated it (4099) on the following message. On a GitHub macOS
+runner the same call left the client's connection working. Both are libxpc's to decide, and
+neither is documented, so **no test in this repository may assert either**: the client's own
+drop-and-rebuild path is exercised through a code-signing requirement the peer cannot satisfy,
+which every supported macOS reports the same way. A test that pins one machine's teardown
+behaviour fails on the other while the code under test is correct — which is what happened, on
+CI, to the first version of `HelperClientConnectionTests`.
+
 Nothing in this design depends on `docs/SMC-RESEARCH.md`'s reported-but-unverified section. E2 touches
 no write, no `Ftst`, no unlock sequence — deliberately, because the boundary must not encode Apple
 Silicon hypotheses. The only E4-adjacent commitments are fault codes and availability reasons, which
