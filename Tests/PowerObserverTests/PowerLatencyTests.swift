@@ -21,4 +21,9 @@ struct PowerLatencyTests {
         #expect(
             PowerLatency.microseconds(fromNanoseconds: 0, toNanoseconds: 1_000_000) == 1_000)
     }
+
+    @Test("an end before start reports zero rather than trapping on unsigned underflow")
+    func endBeforeStartReportsZero() {
+        #expect(PowerLatency.microseconds(fromNanoseconds: 1_000, toNanoseconds: 0) == 0)
+    }
 }

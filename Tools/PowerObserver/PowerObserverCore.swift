@@ -67,8 +67,16 @@ enum PowerMessageName {
 enum PowerLatency {
 
     /// Microseconds elapsed from `start` to `end`, truncating rather than rounding.
+    ///
+    /// `end < start` is unreachable today — both callers take `end` from a
+    /// `DispatchTime.now()` sampled strictly after the `start` they pass — but `end - start`
+    /// on `UInt64` traps on underflow rather than producing a negative number, and a trap in
+    /// this tool's IOKit callback would take down the capture mid-lid-close. Guarded rather
+    /// than trusted, matching this project's rule that firmware and the clock are never
+    /// assumed to behave.
     static func microseconds(fromNanoseconds start: UInt64, toNanoseconds end: UInt64) -> Int {
-        Int((end - start) / 1_000)
+        guard end >= start else { return 0 }
+        return Int((end - start) / 1_000)
     }
 }
 
