@@ -139,8 +139,9 @@ targets:
         product: AeolusXPC
       # The client half of the privilege boundary. The app links it here rather than
       # reaching for NSXPCConnection itself: one connection-owning actor, one place that
-      # pins the helper's code-signing requirement. fanctl gets it separately, in its own
-      # target, when E10b wires the CLI up.
+      # pins the helper's code-signing requirement. fanctl links it through Package.swift
+      # for `reset --all` (#159); it has no Xcode target here, because nothing about it
+      # needs signing or a bundle.
       - package: AeolusPackage
         product: AeolusXPCClient
       # Builds the helper before the app, so the embed script below always has a finished
