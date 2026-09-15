@@ -348,7 +348,8 @@ belongs to E4, not yet attempted. The catalog reflects this honestly:
 ### `F0Md`/`F1Md` have now been observed reading `1` — the first sighting on this machine
 
 **Date:** 2026-09-05. **Machine:** `Mac16,5`, macOS 26.6.2. **Method:**
-`HelperHardwareTests.everyFanIsOnAutomaticControlAtStart`, read-only, through the production
+`HelperHardwareTests.everyFanModeIsReadableAtStart` (named
+`everyFanIsOnAutomaticControlAtStart` when these readings were taken), read-only, through the production
 plane's `SMCReadScheduler` at `.supervisor` priority — one turn per fan, exactly as startup
 reconciliation reads them. One machine, and the readings below are single snapshots.
 
@@ -384,10 +385,20 @@ on the reviewer's desktop rather than about Aeolus (see
 reconciliation pass would find a fan in manual or not depending on *when the helper started*
 — which is an argument for the restart policy and reconciliation shipping together, not
 against. `HelperHardwareTests.snapshotFromRealHardware` now tolerates either value
-([#200](https://github.com/blamechris/Aeolus/issues/200)), while the checklist row
-`everyFanIsOnAutomaticControlAtStart` deliberately still pins `0` — that row's whole point
-is to say when this machine is *not* in the "nothing holding the fans" state, and loosening
-it would make it stop recording anything.
+([#200](https://github.com/blamechris/Aeolus/issues/200)), and since
+[#243](https://github.com/blamechris/Aeolus/issues/243) so does the checklist row
+`everyFanModeIsReadableAtStart`.
+
+That row was left pinning `0` at #200, on the argument that its whole point is to say when
+this machine is *not* in the "nothing holding the fans" state and that loosening it would
+make it stop recording anything. The argument conflated the two things a test does. The
+**print** records — and it still records, the raw `0`/`1` per fan, now with an explicit note
+naming any fan found in manual and saying that nothing in this build could have put it
+there. The **verdict** claims, and what a red verdict claimed was that this repository is
+broken, which it never was. A foreign hold was reproduced on 2026-09-13 during the #237
+review and reddened the suite on a tree whose write path is `.notBuilt`; the same suite had
+been green an hour earlier on the same commit. The recording survives; the false claim does
+not.
 
 At the fourth reading, `Ftst` read `0` (`ui8`, raw `00`) — the first `Ftst` reading in this
 series, taken by a separate `fanctl dump --key Ftst` in the same minute as the mode keys,
