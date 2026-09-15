@@ -99,6 +99,7 @@ enum NDJSON {
 
     enum EncodingFailure: Error, Sendable {
         case notUTF8
+        case embeddedNewline
     }
 
     /// `value`, encoded as one line of JSON with no trailing newline.
@@ -112,6 +113,17 @@ enum NDJSON {
         guard let text = String(data: data, encoding: .utf8) else {
             throw EncodingFailure.notUTF8
         }
+        return try rejectingEmbeddedNewline(text)
+    }
+
+    /// The "prove" half of this type's header comment, pulled out as its own function so a
+    /// test can drive the rejection path directly. `JSONEncoder` without `.prettyPrinted`
+    /// (never set above) inserts no structural whitespace and escapes every control
+    /// character inside a string value per RFC 8259, so `line(_:)` cannot exercise this
+    /// branch through any `Encodable` value passed to it today — the same "guarded rather
+    /// than trusted" shape `PowerLatency.microseconds` uses for its own unreachable branch.
+    static func rejectingEmbeddedNewline(_ text: String) throws -> String {
+        guard !text.contains("\n") else { throw EncodingFailure.embeddedNewline }
         return text
     }
 }

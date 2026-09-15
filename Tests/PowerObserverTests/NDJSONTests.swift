@@ -101,4 +101,16 @@ struct NDJSONTests {
         #expect(counts["kIOMessageSystemWillSleep"] == 7)
         #expect(counts["unknown"] == 1)
     }
+
+    @Test("text containing a literal newline is rejected rather than shipped as two lines")
+    func embeddedNewlineIsRejected() {
+        #expect(throws: NDJSON.EncodingFailure.embeddedNewline) {
+            try NDJSON.rejectingEmbeddedNewline("{\"a\":1}\n{\"b\":2}")
+        }
+    }
+
+    @Test("text with no embedded newline passes through unchanged")
+    func noEmbeddedNewlinePassesThrough() throws {
+        #expect(try NDJSON.rejectingEmbeddedNewline("{\"a\":1}") == "{\"a\":1}")
+    }
 }
