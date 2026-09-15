@@ -23,6 +23,7 @@ enum ToolsSeamScanner {
         let enumerator = try #require(
             FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
         let files = enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+        #expect(!files.isEmpty, "Tools/ sources were not found under \(root.path)")
         return files
     }
 
