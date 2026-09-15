@@ -187,3 +187,56 @@ private final class EmptyReplyService: NSObject, AeolusXPCProtocol, Sendable {
 
     func restoreAllToAutomatic(reply: @escaping @Sendable (Error?) -> Void) { reply(nil) }
 }
+
+/// A `FanAuthority` whose **panic path** parks until a signal fires.
+///
+/// The mirror image of `GatedSnapshotAuthority`, and it exists for a case that one cannot
+/// reach: a helper that *accepted* `restoreAllToAutomatic` and never answered it. That is
+/// `docs/SAFETY.md` § 4's wedged `io_connect_t` — the state the panic path is most likely to
+/// meet, since a control plane that cannot talk to the SMC is exactly why a user is running
+/// it — and it is the one outcome where neither "restored" nor "failed" is a statement
+/// anything observed.
+///
+/// Parking the panic path parks nothing else: since D27 `HelperXPCService` dispatches it
+/// outside the per-connection sequencer, so a message sent after it is unaffected.
+actor GatedRestoreAuthority: FanAuthority {
+
+    private let gate: AsyncSignal
+
+    /// Set when the panic path has reached this authority — before it parks, so "the helper
+    /// accepted it" is observable rather than inferred from a sleep.
+    private(set) var hasBeenAsked = false
+
+    init(gate: AsyncSignal) {
+        self.gate = gate
+    }
+
+    func snapshot() async throws -> SystemSnapshot { .empty }
+
+    func acquireLease(
+        _ request: LeaseRequest, from connection: ConnectionID
+    ) async throws -> Lease {
+        throw AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
+    }
+
+    func renewLease(id: UUID, from connection: ConnectionID) async throws -> Lease {
+        throw AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
+    }
+
+    func releaseLease(id: UUID, from connection: ConnectionID) async throws {
+        throw AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
+    }
+
+    func apply(
+        _ settings: [FanSetting], leaseID: UUID, from connection: ConnectionID
+    ) async throws {
+        throw AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
+    }
+
+    func restoreAllToAutomatic(from connection: ConnectionID) async throws {
+        hasBeenAsked = true
+        try? await gate.wait()
+    }
+
+    func connectionDidInvalidate(_ connection: ConnectionID) async {}
+}
