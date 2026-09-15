@@ -71,11 +71,22 @@ private func writeLineDirectly(_ line: String) {
     FileHandle.standardOutput.write(data)
 }
 
-/// Serializes every NDJSON line onto one queue, so the heartbeat timer and the power
+/// Serializes every NDJSON line onto one lock, so the heartbeat timer and the power
 /// notification callback — two independent dispatch queues — never interleave a write.
-actor StandardOutputSink {
+///
+/// This is a lock, not an actor. An actor's `write` would be `async`, and the whole point
+/// of writing the event line on the callback frame (see
+/// `PowerObserverRegistration.received(messageType:argument:)`) is that nothing between
+/// the acknowledgement and the write goes through the scheduler: a `Task` that has not yet
+/// been given a scheduling quantum cannot write anything before this process is suspended
+/// for sleep. `OSAllocatedUnfairLock` gives every caller a synchronous, mutually exclusive
+/// `write` instead, at the cost of the caller's own thread blocking for the — always short
+/// — duration of one `FileHandle.write`.
+final class StandardOutputSink: Sendable {
+    private let lock = OSAllocatedUnfairLock<Void>(initialState: ())
+
     func write(_ line: String) {
-        writeLineDirectly(line)
+        lock.withLock { _ in writeLineDirectly(line) }
     }
 }
 
@@ -132,14 +143,26 @@ final class PowerObserverRegistration: Sendable {
             uid: getuid(),
             pid: getpid())
 
-        // The only route from a `@convention(c)` callback to the `async` counters and sink.
-        // Its body does one `await` after another and writes nothing on this frame, the same
-        // property `SystemPowerObserver.swift`'s identical spawn is held to.
+        // Written on this callback frame, after the acknowledgement above and never
+        // before it — encoding and writing are both synchronous and cost microseconds, so
+        // doing them here, rather than handing the record to a `Task`, is what makes the
+        // `willSleep` line survive a process suspension that a detached `Task`'s first
+        // scheduling quantum might not win the race against. `sink.write` takes a lock
+        // rather than `await`ing an actor for exactly this reason: a task that has not yet
+        // run cannot write anything before this process is frozen for sleep. This is the
+        // one place in this file that deliberately does *not* mirror
+        // `SystemPowerObserver.swift`'s "write nothing on this frame" rule — that rule is
+        // right for the helper, whose handler runs safety-critical work no callback frame
+        // should carry; this tool's handler does nothing but serialize the message it just
+        // received, so carrying it costs nothing else waiting behind it.
+        if let line = try? NDJSON.line(record) {
+            sink.write(line)
+        }
+
+        // The only route from a `@convention(c)` callback to the `async` counters. Its
+        // body does the one `await` the actor needs and writes nothing — see above.
         Task {
             await counters.increment(name)
-            if let line = try? NDJSON.line(record) {
-                await sink.write(line)
-            }
         }
     }
 }
@@ -163,35 +186,44 @@ private func makeHeartbeatSource(sink: StandardOutputSink) -> DispatchSourceTime
         let record = PowerHeartbeatRecord(
             monotonicNanoseconds: DispatchTime.now().uptimeNanoseconds,
             wallClockUTC: WallClock.iso8601UTC())
-        Task {
-            if let line = try? NDJSON.line(record) {
-                await sink.write(line)
-            }
+        // Written on this timer frame, synchronously, for the same reason the event
+        // callback now is: `sink.write` needs no `await`, so there is no `Task` here to
+        // race the process's own suspension for sleep.
+        if let line = try? NDJSON.line(record) {
+            sink.write(line)
         }
     }
     return heartbeat
 }
 
-/// `SIGINT`/`SIGTERM`: `SIG_IGN` first so the kernel's default disposition (terminate
-/// immediately) never races the `DispatchSourceSignal` this installs — the same ordering
-/// `Sources/AeolusHelper/Lifecycle/SignalTeardown.swift`'s `DispatchSignalSources` uses and
-/// explains. Returns the sources, which the caller must hold: one released by ARC is
-/// cancelled, and a signal nobody serves fails silently.
+/// `SIGINT`/`SIGTERM`/`SIGHUP`: `SIG_IGN` first so the kernel's default disposition
+/// (terminate immediately) never races the `DispatchSourceSignal` this installs — the
+/// same ordering `Sources/AeolusHelper/Lifecycle/SignalTeardown.swift`'s
+/// `DispatchSignalSources` uses and explains. `SIGHUP` is in this set for a reason that
+/// does not apply to the helper: an attended capture across a real lid close runs for
+/// minutes in a foreground terminal, and a dropped terminal (an SSH disconnect, a closed
+/// Terminal.app window) sends `SIGHUP` to every process in the session. Left at its
+/// default disposition, that kills this tool with no `stop` line and no final counts —
+/// exactly the data loss row 14's capture cannot afford. Returns the sources, which the
+/// caller must hold: one released by ARC is cancelled, and a signal nobody serves fails
+/// silently.
 private func installOrderlyExit(
     counters: EventCounters, sink: StandardOutputSink
 ) -> [DispatchSourceSignal] {
     let queue = DispatchQueue(label: "dev.aeolus.power-observer.signals")
     let stopAndExit: @Sendable () -> Void = {
         Task {
+            // Still a `Task`: `counters.snapshot()` is the one `await` here, over the
+            // actor. `sink.write` itself needs none — see `StandardOutputSink`.
             let finalCounts = await counters.snapshot()
             if let line = try? NDJSON.line(PowerStopRecord(counts: finalCounts)) {
-                await sink.write(line)
+                sink.write(line)
             }
             exit(0)
         }
     }
 
-    return [SIGINT, SIGTERM].map { number in
+    return [SIGINT, SIGTERM, SIGHUP].map { number in
         _ = signal(number, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: number, queue: queue)
         source.setEventHandler(handler: stopAndExit)
@@ -214,7 +246,11 @@ struct PowerObserverMain {
             uid: getuid(),
             pid: getpid(),
             helperLoaded: helperIsLoaded())
-        writeLineDirectly(try NDJSON.line(startRecord))
+        // Through the sink, not `writeLineDirectly` directly, so every line in this
+        // process's stdout — start, event, heartbeat, stop — goes out the one locked path.
+        // Nothing else is running yet to race this one, but that stops being true the
+        // moment the queues below are started.
+        sink.write(try NDJSON.line(startRecord))
 
         let registration = PowerObserverRegistration(counters: counters, sink: sink)
         let context = Unmanaged.passRetained(registration).toOpaque()
