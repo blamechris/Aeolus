@@ -24,6 +24,7 @@ let package = Package(
         .library(name: "SMCCore", targets: ["SMCCore"]),
         .library(name: "FanKit", targets: ["FanKit"]),
         .library(name: "AeolusXPC", targets: ["AeolusXPC"]),
+        .library(name: "AeolusXPCClient", targets: ["AeolusXPCClient"]),
         .library(name: "AeolusUI", targets: ["AeolusUI"]),
         .executable(name: "fanctl", targets: ["fanctl"]),
         .executable(name: "AeolusHelper", targets: ["AeolusHelper"]),
@@ -74,6 +75,24 @@ let package = Package(
         .target(
             name: "AeolusXPC",
             dependencies: ["FanKit"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+
+        // The client half of the privilege boundary: the one place outside the helper
+        // that constructs an NSXPCConnection.
+        //
+        // It never runs as root — every client of it is an ordinary user process — and it
+        // holds no fan state: there is no cached snapshot anywhere in it, because stale
+        // control state must be unrepresentable rather than forbidden (CLAUDE.md rule 6).
+        // It never re-acquires a lease. A reconnect restores the connection and nothing
+        // else; a client that still wants the fans asks for them again, deliberately. See
+        // docs/ADR/0007-safety-composition.md's Sleep section and docs/ARCHITECTURE.md.
+        //
+        // Separate from AeolusXPC, which the root daemon links: connection construction
+        // does not belong in the module that *is* the privilege boundary's contract.
+        .target(
+            name: "AeolusXPCClient",
+            dependencies: ["AeolusXPC", "FanKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
 
@@ -156,7 +175,14 @@ let package = Package(
         // directly — and they run on CI, which has no signing identity and no SMC.
         .testTarget(
             name: "AeolusHelperTests",
-            dependencies: ["AeolusHelper", "SMCCore", "FanKit", "AeolusXPC"],
+            // AeolusXPCClient is here rather than in a suite of its own because the only
+            // peer the real client can be driven against is the real helper session, over
+            // a real anonymous listener — and both of those live behind
+            // `@testable import AeolusHelper`. A client suite that could not reach them
+            // would be reduced to asserting against a double of the thing under test.
+            dependencies: [
+                "AeolusHelper", "AeolusXPCClient", "SMCCore", "FanKit", "AeolusXPC",
+            ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         // Exercises AeolusUI's polling data layer (E7.1): fan/sensor enumeration, the

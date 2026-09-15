@@ -137,6 +137,12 @@ targets:
         product: FanKit
       - package: AeolusPackage
         product: AeolusXPC
+      # The client half of the privilege boundary. The app links it here rather than
+      # reaching for NSXPCConnection itself: one connection-owning actor, one place that
+      # pins the helper's code-signing requirement. fanctl gets it separately, in its own
+      # target, when E10b wires the CLI up.
+      - package: AeolusPackage
+        product: AeolusXPCClient
       # Builds the helper before the app, so the embed script below always has a finished
       # binary to copy. Deliberately neither linked nor embedded by Xcode: embedding is
       # done by that script, because a Copy Files phase cannot be made conditional on the

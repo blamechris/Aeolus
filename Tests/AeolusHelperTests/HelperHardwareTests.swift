@@ -63,8 +63,9 @@ struct HelperHardwareTests {
             // is holding the fan) or `.manualFixed` (something is) — see
             // `ReadOnlyFanReport.controlMode(_:)` — and which one this run observes is a
             // fact about the machine, not about this build. Printed rather than pinned to
-            // one value; `everyFanIsOnAutomaticControlAtStart` is the checklist row that
-            // wants `0` specifically, and it keeps pinning it.
+            // one value; `everyFanModeIsReadableAtStart` is the checklist row that prints
+            // the same decoded mode as `0`/`1` — not a register byte either, #208 — and
+            // since #243 it records rather than pins that too.
             //
             // Printed as what this test actually observed — the decoded mode — and never
             // as a raw `F<n>Md` byte, because nothing here reads one: `.automatic` covers
@@ -509,48 +510,96 @@ struct HelperHardwareTests {
             """)
     }
 
-    /// The hardware-checklist row #164 makes executable: what `F<n>Md` actually reads on this
-    /// machine at the moment a helper would start.
+    /// The hardware-checklist row #164 makes executable: what `F<n>Md` actually reads on
+    /// this machine at the moment a helper would start.
     ///
     /// Read-only, and it is the one row of that issue's list that needs neither a signing
-    /// identity nor a write path. Everything else about reconciliation — the restore landing,
-    /// boot-start, `kill -9` — waits for E3/E4.
+    /// identity nor a write path. Everything else about reconciliation — the restore
+    /// landing, boot-start, `kill -9` — waits for E3/E4.
     ///
-    /// **The number is printed and the mode is asserted, and the asymmetry is deliberate.**
-    /// `0` is what the pass expects to find on a healthy machine with nothing holding the
-    /// fans, and a `1` is a genuine observation rather than a test failure — it would mean
-    /// something on this machine is holding a fan, which is exactly the condition ADR 0011
-    /// exists for. The assertion is here anyway, because the checklist row is *"both fans
-    /// read `F<n>Md == 0`"* and a row that cannot fail records nothing: if this goes red,
-    /// read the printed values and the failure is the finding.
-    @Test("Every fan on this machine reads F<n>Md == 0 at the moment a helper would start")
-    func everyFanIsOnAutomaticControlAtStart() async throws {
+    /// **The mode is recorded, never pinned, and that is #200's ruling applied where it was
+    /// missed.** This row asserted `state.mode == .automatic` until #243. A foreign fan
+    /// utility holding a fan is a legitimate state of this machine — ADR 0011 models it as
+    /// `foreignManualControl`, and `snapshotFromRealHardware` has reported it that way since
+    /// #200 — so the assertion turned somebody else's running program into a failure of this
+    /// repository, and the text it printed on the way out ("find what is holding the fan
+    /// before trusting any of them") named the wrong finding. Reproduced on `Mac16,5` on
+    /// 2026-09-13 with both fans held; the same suite was green an hour earlier on the same
+    /// commit. CI arbitrates it neither way — GitHub's macOS runners are VMs with no SMC —
+    /// so it could only ever fail where nobody was watching.
+    ///
+    /// **What is left can still go red**, which is the other half of that ruling: the
+    /// enumeration must find fans, and every index it reports must be readable through the
+    /// production plane. A read that throws, or an enumeration that returns nothing, fails
+    /// this row on any machine in any environment. What it must not do is assert *which*
+    /// mode it finds.
+    ///
+    /// A codomain tripwire of the kind `snapshotFromRealHardware` carries is deliberately
+    /// not copied down here. That one is a guard because `FanControlMode` has a third case
+    /// for it to catch; `FirmwareFanMode` has exactly two, so `.automatic || .manual` is a
+    /// tautology — and a line that cannot fail is the defect this project keeps re-finding,
+    /// not a guard against it.
+    @Test("Every fan's F<n>Md reads through the production plane at the moment a helper starts")
+    func everyFanModeIsReadableAtStart() async throws {
         // One provider for both reads. Two would be two views of the same connection on a
         // suite whose other tests are timing the SMC, and this row needs neither.
         let provider = SMCSensorProvider()
         let plane = supervisorPlane(over: provider)
         let fans = try await SMCFanEnumeration.enumerate(provider: provider)
+        let indices = fans.fanIndices.sorted()
 
         var observed: [String] = []
-        for index in fans.fanIndices.sorted() {
+        var held: [Int] = []
+        for index in indices {
             let state = try await plane.readControlState(ofFan: index)
             observed.append("F\(index)Md=\(state.mode == .automatic ? 0 : 1)")
-            #expect(
-                state.mode == .automatic,
-                """
-                Fan \(index) is in manual control on this machine. Startup reconciliation \
-                would hand it back — and on this build be refused, because there is no write \
-                path. Every fan-state measurement taken here while that is true is \
-                contaminated: find what is holding the fan before trusting any of them.
-                """)
+            if state.mode != .automatic { held.append(index) }
         }
+
+        // The finding this row exists to record, stated where a reader will see it rather
+        // than encoded as a failure. A fan in manual is ADR 0011's supported state.
+        //
+        // Who put it there is **asked of the plane, never asserted here.** Writing "nothing
+        // in this build can have done this" as a literal would be true today and a lie the
+        // day E3 gives the plane a body — and a lie in exactly the direction this row was
+        // just fixed for, since it would exculpate Aeolus for a fan Aeolus had pinned, in a
+        // line that stays green either way. `writeCapability` is the property that answers
+        // it without touching hardware, and it is what `HelperComposition` gates the lease
+        // on.
+        let culprit =
+            plane.writeCapability == .notBuilt
+            ? "Nothing in this build can have put it there — the plane reports .notBuilt — "
+                + "so something outside Aeolus is holding it (ADR 0011)."
+            : "This build has a write path, so Aeolus is itself a candidate: check the lease "
+                + "ledger and startup reconciliation before looking for another tool."
+        let note =
+            held.isEmpty
+            ? ""
+            : " NOTE: \(held.count == 1 ? "fan" : "fans") "
+                + "\(held.map(String.init).joined(separator: ", ")) in manual. \(culprit) "
+                + "Either way, any fan timing measured elsewhere in this suite while it "
+                + "lasts is measuring that holder too."
 
         print(
             """
             startup fan modes on Mac16,5: \(observed.joined(separator: ", ")) \
             (0 = Apple's thermal management). Read through the production plane's scheduler, \
-            one supervisor turn per fan, exactly as startup reconciliation reads them.
+            one supervisor turn per fan, exactly as startup reconciliation reads them.\(note)
             """)
-        #expect(!observed.isEmpty, "no fan was enumerated, so the row measured nothing")
+
+        // The row's teeth, and neither is a fact about which mode this machine is in.
+        // This one: the enumeration must find a fan. The other is the `try` inside the
+        // loop — key formation, the subset read, the decode and the scheduler all
+        // propagate through it, so a plane that cannot read this machine fails the row
+        // before control reaches here.
+        //
+        // Deliberately **no** line comparing `observed.count` against `indices.count`.
+        // The loop appends unconditionally on every iteration that does not throw, so
+        // such a line is true by construction and falsifiable only by editing the loop
+        // above it. It would read as a guard on the plane and be nothing of the kind —
+        // which is the defect this row was just rewritten to stop committing, and adding
+        // it back three lines under the paragraph refusing the codomain tripwire for the
+        // same reason is how that defect keeps returning.
+        #expect(!indices.isEmpty, "no fan was enumerated, so the row measured nothing")
     }
 }

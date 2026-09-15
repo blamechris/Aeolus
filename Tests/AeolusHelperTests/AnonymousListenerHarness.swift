@@ -2,6 +2,7 @@ import AeolusXPC
 import Foundation
 
 @testable import AeolusHelper
+@testable import AeolusXPCClient
 
 /// Applies no code-signing requirement at all.
 ///
@@ -74,6 +75,12 @@ final class AdmissionOrderSpy: ConnectionAdmission, @unchecked Sendable {
 /// exercised over an actual XPC round trip rather than by calling the actor directly.
 /// Anonymous listeners need no mach service registration, no privilege, and no signing
 /// identity, so this runs unchanged on CI.
+///
+/// The once-only reply latch it waits on is `AeolusXPCClient`'s `PendingReply`, not a copy
+/// of it. This file used to own that type; promoting it into the client — which needs the
+/// same latch for the same reason, and ships — left one implementation exercised by one
+/// suite instead of two implementations of which only the test's was ever run.
+/// `PendingReplyTests` is where it is tested directly.
 ///
 /// Not `Sendable`, and not meant to be: one test owns one harness for its duration.
 final class AnonymousListenerHarness {
@@ -212,95 +219,6 @@ final class AnonymousListenerHarness {
 struct NoReplyArrived: Error, CustomStringConvertible {
     var description: String {
         "the helper neither replied nor reported a transport failure within the deadline"
-    }
-}
-
-/// Wraps a value the compiler cannot prove `Sendable` so it can cross a continuation.
-///
-/// Needed because the two answers here are `Result<Data?, any Error>` and `any Error?`,
-/// and an existential `Error` is not `Sendable`. What actually crosses is an `NSError`
-/// libxpc just created and handed to exactly one callback, or `Data`. Confined to this
-/// file and to the test target.
-private struct Unchecked<Value>: @unchecked Sendable {
-    let value: Value
-}
-
-/// Resumes a continuation exactly once, whichever of the reply block, the connection's
-/// error handler, and the deadline gets there first.
-///
-/// `@unchecked Sendable` over an `NSLock`, which the helper's own SwiftLint rule forbids in
-/// `Sources/AeolusHelper` and permits here: the state is three fields behind one lock with
-/// no path that touches any of them outside it, and the alternative — an actor — cannot be
-/// called from the synchronous, non-isolated context an XPC reply block runs in.
-private final class PendingReply<Answer>: @unchecked Sendable {
-
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<Unchecked<Answer>, Never>?
-    private var buffered: Unchecked<Answer>?
-    private var isFinished = false
-    private let fallback: Unchecked<Answer>
-
-    init(ifNothingArrives fallback: Answer) {
-        self.fallback = Unchecked(value: fallback)
-    }
-
-    /// Runs `send`, then waits for the first answer or for the deadline.
-    func awaitingAnswer(
-        within deadline: Duration = .seconds(10),
-        _ send: (@escaping @Sendable (Answer) -> Void) -> Void
-    ) async -> Answer {
-        send { [self] answer in deliver(answer) }
-        return await answer(within: deadline)
-    }
-
-    /// The first half of `awaitingAnswer`, for a caller that has to get a second message
-    /// sent before it starts waiting on the first. Buffered if it beats the wait — which
-    /// is the case `attach(_:)` below already exists for.
-    func deliver(_ answer: Answer) {
-        resolve(Unchecked(value: answer))
-    }
-
-    /// The second half: waits for the first answer or for the deadline.
-    func answer(within deadline: Duration = .seconds(10)) async -> Answer {
-        let deadlineTask = Task.detached { [self] in
-            try? await Task.sleep(for: deadline)
-            resolve(fallback)
-        }
-        defer { deadlineTask.cancel() }
-
-        return await withCheckedContinuation { continuation in
-            attach(continuation)
-        }.value
-    }
-
-    private func attach(_ continuation: CheckedContinuation<Unchecked<Answer>, Never>) {
-        lock.lock()
-        if let buffered {
-            self.buffered = nil
-            lock.unlock()
-            continuation.resume(returning: buffered)
-            return
-        }
-        self.continuation = continuation
-        lock.unlock()
-    }
-
-    /// Buffers the answer when it beats `attach`, which a synchronous refusal can.
-    private func resolve(_ answer: Unchecked<Answer>) {
-        lock.lock()
-        guard !isFinished else {
-            lock.unlock()
-            return
-        }
-        isFinished = true
-        guard let continuation else {
-            buffered = answer
-            lock.unlock()
-            return
-        }
-        self.continuation = nil
-        lock.unlock()
-        continuation.resume(returning: answer)
     }
 }
 

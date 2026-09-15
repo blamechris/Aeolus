@@ -1137,23 +1137,33 @@ extension SafetyLog {
     /// mechanism that will actually act, and there is no worse place for a comforting name.
     /// `SystemPowerLimits.acknowledgementBudget` carries the full account.
     ///
+    /// **It said "refused a new lease durably" until ADR 0007, amendment 2026-09-06 (#209),
+    /// and that was the wrong claim about the wrong thing.** A budget expiring is evidence
+    /// about time, not about the firmware: nothing here observed a refused write, and a
+    /// healthy machine that merely slept slowly was losing a fan to manual control for the
+    /// life of the process on the strength of it. Decision D33 records the fans as
+    /// *unconfirmed* instead — refused exactly as hard while it stands, and resolved by the
+    /// outstanding restore's own completion. Corrected in place, and renamed, so a reader
+    /// grepping the old name finds this paragraph rather than nothing.
+    ///
     /// - Parameters:
     ///   - budget: how long the handback was waited for before the wait was given up.
-    ///   - abandoned: the fans recorded as abandoned handbacks by decision D17, named rather
-    ///     than counted so the line identifies which fan to go and look at.
-    func allowingSleepWithHandbackOutstanding(
-        after budget: Duration, abandoning abandoned: Set<Int>
+    ///   - unconfirmed: the fans recorded as unconfirmed handbacks by decision D33, named
+    ///     rather than counted so the line identifies which fan to go and look at.
+    func allowingSleepWithHandbackUnconfirmed(
+        after budget: Duration, leaving unconfirmed: Set<Int>
     ) {
         emit(
             .fault,
             """
             Allowing the system to sleep with the handback still outstanding after \
-            \(budget). Fan(s) \(Self.describeFans(abandoned)) may cross the sleep still under \
-            manual control, and are now refused a new lease durably. What can still act: \
-            the parked restore may yet land, § 3 takes any such fan to full scale if it \
-            comes back above the thermal ceiling, and startup reconciliation returns it to \
-            automatic at the next helper start. § 1's TTL cannot — this handback dropped \
-            every lease before it wrote. See docs/SAFETY.md § 4 and docs/RECOVERY.md.
+            \(budget). Fan(s) \(Self.describeFans(unconfirmed)) may cross the sleep still \
+            under manual control, and a new lease over one is refused until something \
+            confirms its mode. What can still act: the parked restore may yet land — and \
+            that is what clears this — § 3 takes any such fan to full scale if it comes back \
+            above the thermal ceiling, and startup reconciliation returns it to automatic at \
+            the next helper start. § 1's TTL cannot — this handback dropped every lease \
+            before it wrote. See docs/SAFETY.md § 4 and docs/RECOVERY.md.
             """
         )
     }
