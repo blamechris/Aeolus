@@ -277,13 +277,27 @@ struct PowerObserverMain {
 
         let signalSources = installOrderlyExit(counters: counters, sink: sink)
 
-        // `signalSources`, `heartbeat` and `powerQueue` are ordinary locals of this frame,
-        // and this frame never returns: `dispatchMain()` blocks forever, so there is no
-        // point at which ARC could drop any of them. A `withExtendedLifetime` wrapper here
-        // would be exactly the false belt `AeolusHelperMain.swift`'s `main()` documents and
-        // removed — `dispatchMain()` returns `Never`, so a `defer` after it is unreachable
-        // and the wrapper compiles to nothing.
-        _ = signalSources
+        // A deliberately unbalanced +1 on `heartbeat` and each signal source — the same
+        // reasoning `AeolusHelperMain.swift`'s `main()` gives for `delegate` and
+        // `listener`. Swift does not promise a local outlives its lexical scope: the
+        // optimiser may end a variable's lifetime after its last use, which for
+        // `heartbeat` is `heartbeat.resume()` two statements above and for each element of
+        // `signalSources` is the `map` that built the array. A released `DispatchSourceSignal`
+        // is cancelled, so `SIGINT`/`SIGTERM` would stop being served, silently, at
+        // whatever point ARC decided the array's last use had passed — and a released
+        // `heartbeat` timer stops proving the process is alive.
+        //
+        // `withExtendedLifetime` cannot say this: its whole mechanism is
+        // `defer { _fixLifetime(x) }; body()`, it is `@inlinable`, and `dispatchMain()`
+        // returns `Never` — so after inlining, the `defer` is unreachable, no
+        // `fix_lifetime` marker is emitted, and `withExtendedLifetime(x) { dispatchMain() }`
+        // compiles to a bare `dispatchMain()`. A retain is not elidable, because there is
+        // nothing for the optimiser to prove: the reference count is raised and never
+        // lowered, and the process never returns to lower it.
+        for source in signalSources {
+            _ = Unmanaged.passRetained(source)
+        }
+        _ = Unmanaged.passRetained(heartbeat)
         dispatchMain()
     }
 }
