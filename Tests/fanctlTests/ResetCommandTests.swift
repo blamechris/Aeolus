@@ -10,15 +10,14 @@ import Testing
 /// give it.
 ///
 /// **These are about the rendering and the exit code, not about the round trip.** The round
-/// trip that produces these errors is driven against a real `NSXPCListener` and the real
-/// helper session in `Tests/AeolusHelperTests/FanctlResetTests.swift`; what cannot be reached
-/// that way — a peer that rejects the signature, a refusal the helper cannot raise in this
-/// build — is reached here by handing the command the error directly.
+/// trip — and `Fanctl.Reset.run()` itself — is driven against a real `NSXPCListener` and the
+/// real helper session in `Tests/AeolusHelperTests/FanctlResetTests.swift`; what cannot be
+/// reached that way, because no listener can cause it, is reached here by handing the
+/// renderer the error directly.
 ///
-/// The seam is the `restoring:` closure. It is deliberately not a protocol with a fake
-/// conformer: there is nothing here for a double to get wrong except throwing, and a double
-/// that never suspends is how a concurrency claim becomes vacuous. Nothing in this file
-/// asserts a concurrency claim.
+/// The real `ResetCommand.attempt` and the real `ResetCommand.emit` are both in the loop, so
+/// what is asserted is the shipping error-to-text and report-to-exit-code mappings rather
+/// than a copy of either.
 @Suite("fanctl reset --all reports the helper's answer and nothing beyond it")
 struct ResetCommandTests {
 
@@ -29,21 +28,13 @@ struct ResetCommandTests {
         let exitCode: ExitCode
     }
 
-    /// Parsed rather than constructed, so `--all` reaching the flag and `validate()`
-    /// accepting the invocation are part of every case below.
-    private static func resetAll() throws -> Fanctl.Reset {
-        try #require(Fanctl.parseAsRoot(["reset", "--all"]) as? Fanctl.Reset)
-    }
-
-    /// Runs the command and captures how it left.
-    ///
-    /// `nil` means it returned without throwing, which is a failure of the command rather
-    /// than of the test: both outcomes leave through an error, because that is the only way
-    /// swift-argument-parser is told an exit code.
-    private static func outcome(of restore: () async throws -> Void) async throws -> Emitted? {
+    /// Renders one attempt the way the command does, and captures how it would leave.
+    private static func emitted(whenRestoreThrows error: (any Error)? = nil) async -> Emitted {
+        let report = await ResetCommand.attempt {
+            if let error { throw error }
+        }
         do {
-            try await resetAll().run(restoring: restore)
-            return nil
+            try ResetCommand.emit(report)
         } catch {
             return Emitted(
                 message: Fanctl.message(for: error),
@@ -64,8 +55,8 @@ struct ResetCommandTests {
     /// **Mutation:** change `ResetCommand.accepted`'s text to "Every fan was restored to
     /// automatic control." Run: red on the second expectation, which is the one that matters.
     @Test("An accepted request is reported as accepted, never as fans restored")
-    func anAcceptedRequestIsNeverReportedAsARestore() async throws {
-        let emitted = try #require(try await Self.outcome(of: {}))
+    func anAcceptedRequestIsNeverReportedAsARestore() async {
+        let emitted = await Self.emitted()
 
         #expect(emitted.exitCode == .success)
         #expect(emitted.message.contains("accepted the reset request"))
@@ -79,14 +70,59 @@ struct ResetCommandTests {
             """)
     }
 
+    /// No restoration claim can be **added** to the success text either, which the three
+    /// `contains` checks above cannot see.
+    ///
+    /// They are all positive, so prepending "Every fan is back under automatic control." to
+    /// the accepted text leaves every one of them satisfied — with the forbidden sentence
+    /// leading the output a panicking user reads first. Two assertions close it, and they have
+    /// to be different in kind:
+    ///
+    /// - The **first paragraph is exactly** the acceptance line, against a literal rather than
+    ///   against `ResetCommand.acceptanceLine`, which would compare the constant to itself.
+    ///   That catches an addition above the disclaimer.
+    /// - With the disclaimer sentence **removed**, nothing that remains says a fan is back
+    ///   under automatic control or was restored. That catches an addition below it, in the
+    ///   paragraph where the only legitimate occurrence of those words already lives.
+    ///
+    /// **Mutation:** prepend "Every fan is back under automatic control.\n\n" to
+    /// `ResetCommand.accepted`'s text. Run: red on the first expectation. Move the same
+    /// sentence into the second paragraph instead: red on the second.
+    @Test("No restoration claim can be added to the success text")
+    func noRestorationClaimCanBeAddedToTheSuccessText() async {
+        let emitted = await Self.emitted()
+        let paragraphs = emitted.message.components(separatedBy: "\n\n")
+
+        #expect(
+            paragraphs.first == "The helper accepted the reset request.",
+            """
+            the success text leads with "\(paragraphs.first ?? "")". Exactly one sentence may \
+            come first, and it is the one that claims an accepted request and nothing else.
+            """)
+
+        let disclaimer = "It has not reported that any fan is back under automatic control"
+        let beyondTheDisclaimer = emitted.message.replacingOccurrences(of: disclaimer, with: "")
+        #expect(!beyondTheDisclaimer.contains("back under automatic control"))
+        #expect(!beyondTheDisclaimer.lowercased().contains("restored"))
+        #expect(
+            !beyondTheDisclaimer.lowercased().contains("respond to load"),
+            """
+            the success text tells the reader to watch the fans under load. That is not a test \
+            of this command — on a build with no write path the fans respond because Apple's \
+            controller is driving them, which it was throughout — and a fan pinned by a \
+            foreign tool responds too. It licenses exactly the success inference the rest of \
+            this text refuses to make.
+            """)
+    }
+
     /// The success path does not send the reader to the daemon-stopping step.
     ///
     /// Not cosmetic: printing the recovery block on every outcome would make the two
     /// outcomes indistinguishable for anyone reading the terminal rather than `$?`, which is
     /// how a CLI is actually read.
     @Test("An accepted request does not print the stop-the-helper step")
-    func anAcceptedRequestDoesNotPrintTheRecoveryCommand() async throws {
-        let emitted = try #require(try await Self.outcome(of: {}))
+    func anAcceptedRequestDoesNotPrintTheRecoveryCommand() async {
+        let emitted = await Self.emitted()
 
         #expect(!emitted.message.contains("launchctl bootout"))
     }
@@ -105,11 +141,9 @@ struct ResetCommandTests {
     /// helper could not be reached" instead of the error's `errorDescription`. Run: red on
     /// all three possibility expectations.
     @Test("An unreachable helper names both possibilities and the way out")
-    func anUnreachableHelperNamesBothPossibilities() async throws {
-        let emitted = try #require(
-            try await Self.outcome(of: {
-                throw HelperClientError.helperUnreachable(code: 4097)
-            }))
+    func anUnreachableHelperNamesBothPossibilities() async {
+        let emitted = await Self.emitted(
+            whenRestoreThrows: HelperClientError.helperUnreachable(code: 4097))
 
         #expect(emitted.exitCode != .success)
         #expect(emitted.message.contains("not installed"))
@@ -126,13 +160,11 @@ struct ResetCommandTests {
     /// work, and it may well never do it.
     ///
     /// **Mutation:** change `ResetCommand.unconfirmed`'s lead line to "The reset failed."
-    /// Run: red on the first expectation.
+    /// Run: red on the second expectation.
     @Test("A helper that never answered is reported as unconfirmed, not as failed")
-    func aHelperThatNeverAnsweredIsReportedAsUnconfirmed() async throws {
-        let emitted = try #require(
-            try await Self.outcome(of: {
-                throw HelperClientError.helperNeverAnswered(after: .seconds(10))
-            }))
+    func aHelperThatNeverAnsweredIsReportedAsUnconfirmed() async {
+        let emitted = await Self.emitted(
+            whenRestoreThrows: HelperClientError.helperNeverAnswered(after: .seconds(10)))
 
         #expect(emitted.exitCode != .success)
         #expect(emitted.message.contains("did not confirm the reset request"))
@@ -148,12 +180,10 @@ struct ResetCommandTests {
     /// absent helper, with a different fix (#82), and it is the one case the client can be
     /// sure about.
     @Test("An unsigned build says so rather than blaming the daemon")
-    func anUnsignedBuildSaysSoRatherThanBlamingTheDaemon() async throws {
-        let emitted = try #require(
-            try await Self.outcome(of: {
-                throw HelperClientError.clientCannotVerifyHelper(
-                    .runningProcessHasNoTeamIdentifier)
-            }))
+    func anUnsignedBuildSaysSoRatherThanBlamingTheDaemon() async {
+        let emitted = await Self.emitted(
+            whenRestoreThrows: HelperClientError.clientCannotVerifyHelper(
+                .runningProcessHasNoTeamIdentifier))
 
         #expect(emitted.exitCode != .success)
         #expect(emitted.message.contains("cannot be used to control fans"))
@@ -169,7 +199,7 @@ struct ResetCommandTests {
     @Test("A refusal from the helper is reported in the helper's own words")
     func aRefusalFromTheHelperIsReportedInItsOwnWords() async throws {
         let fault = AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
-        let emitted = try #require(try await Self.outcome(of: { throw fault }))
+        let emitted = await Self.emitted(whenRestoreThrows: fault)
 
         #expect(emitted.exitCode != .success)
         #expect(emitted.message.contains(try #require(fault.errorDescription)))
@@ -194,6 +224,54 @@ struct ResetCommandTests {
             #expect(Fanctl.exitCode(for: error) == .validationFailure)
             #expect(Fanctl.message(for: error).contains("fanctl reset --all"))
         }
+    }
+
+    /// The usage error does not claim a restoration either.
+    ///
+    /// It said the command "returns every fan to automatic control" until review caught it:
+    /// a flat assertion that the fans are restored, in user-facing text, thirty lines below
+    /// the report that carefully refuses to make one. Intent — *asks the helper to* — is the
+    /// only shape any string in this command may take.
+    @Test("The usage error describes intent, not an accomplished restore")
+    func theUsageErrorDescribesIntentNotAnAccomplishedRestore() throws {
+        do {
+            _ = try Fanctl.parseAsRoot(["reset"])
+            Issue.record("`fanctl reset` with no --all was accepted")
+        } catch {
+            let message = Fanctl.message(for: error)
+            #expect(message.contains("asks the helper to return every fan to automatic"))
+            #expect(!message.contains("fanctl reset returns every fan"))
+        }
+    }
+
+    // MARK: - What the shipping command is wired to
+
+    /// `run()`'s production connection talks to the installed daemon, pins it, and waits the
+    /// panic deadline.
+    ///
+    /// **A memo pin, and the numbers are literals on purpose.** D26 item 4 fixes 5 s for gated
+    /// verbs and 10 s for `restoreAllToAutomatic`; comparing the constant to itself would pass
+    /// under any change, so the figures are written out where a reviewer can check them
+    /// against the memo. `FanctlResetTests` asserts the other half — that `run()` actually
+    /// waits the deadline it is handed rather than one of its own.
+    ///
+    /// The transport and the pinning matter for a different reason: `HelperClientTransport`
+    /// has an `.endpoint` case that exists so the suite can drive a real listener, and
+    /// `HelperConnection` exists so a test can select it. Nothing but a test may, and this is
+    /// what says so.
+    @Test("The shipping command connects to the daemon, pinned, on the panic deadline")
+    func theShippingConnectionIsTheDaemonPinnedOnThePanicDeadline() {
+        let production = ResetCommand.HelperConnection.production
+
+        guard case .machService = production.transport else {
+            Issue.record("the shipping command does not connect to the mach service")
+            return
+        }
+        #expect(
+            production.pinning is SignedHelperPinning,
+            "the shipping command would talk to whoever answered the mach name")
+        #expect(production.deadlines.panicVerb == .seconds(10))
+        #expect(production.deadlines.gatedVerb == .seconds(5))
     }
 
     // MARK: - The recovery step

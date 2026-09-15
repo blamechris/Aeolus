@@ -140,9 +140,9 @@ extension Fanctl {
         static let configuration = CommandConfiguration(
             abstract: "Return fans to automatic control.",
             discussion: """
-                The panic path. Works even when the app will not launch, and is safe to \
-                run at any time: handing the fans back to Apple's thermal management is \
-                always a valid state.
+                The panic path. It reaches the helper even when the app will not launch, \
+                and is safe to run at any time: handing the fans back to Apple's thermal \
+                management is always a valid state to ask for.
 
                 It reports whether the helper *accepted* the request. It does not report \
                 that a fan is back under automatic control — the helper does not say so, \
@@ -156,5 +156,12 @@ extension Fanctl {
 
         @Flag(name: .long, help: "Reset every fan and drop all leases.")
         var all = false
+
+        /// Where `run()` looks for the helper. **Not an argument**, and no flag reaches it —
+        /// see `ResetCommand.HelperConnection`, which is also why it decodes to the
+        /// production value whatever swift-argument-parser hands it. The suite sets it
+        /// directly, which is what makes `run()` itself the thing under test rather than a
+        /// test-only overload of it.
+        var helper = ResetCommand.HelperConnection.production
     }
 }

@@ -6,8 +6,16 @@ import Testing
 @testable import AeolusXPCClient
 @testable import fanctl
 
-/// `fanctl reset --all`, end to end: the real command, the real `HelperClient`, a real
+/// `fanctl reset --all`, end to end: **the shipping `run()`**, the real `HelperClient`, a real
 /// `NSXPCListener` and the real `HelperConnectionSession` behind it.
+///
+/// **`run()` itself, and that is the point of this file's shape.** An earlier version of this
+/// suite drove a test-only `run(restoring:)` overload, so every decision the shipping path
+/// makes was covered by nothing: rewriting `run()` to `try emit(accepted)` printed "the helper
+/// accepted the reset request", contacted nothing, and left 1425 tests green. Three decisions
+/// live there and each has an assertion below — the verb that is sent, the deadline it is sent
+/// with, and the `disconnect()` afterwards. `ResetCommand.HelperConnection` exists so they can
+/// be reached without being replaced.
 ///
 /// **Why this suite lives here rather than in `fanctlTests`.** The only peer the real client
 /// can be driven against is the real helper session, and that is behind
@@ -15,10 +23,6 @@ import Testing
 /// a second listener harness, a second unenforced pinning policy and a stub exported object —
 /// three copies of things that already exist in this target, none of which is the helper. The
 /// same argument put `AeolusXPCClient` here in #237.
-///
-/// What this suite therefore covers that `ResetCommandTests` cannot: that the errors the
-/// command renders are the errors the client actually produces against a live peer, and that
-/// an accepted request really did reach a helper.
 ///
 /// What none of it proves, and what the acceptance criterion still waits on: that a **signed**
 /// `fanctl` is admitted by an **installed** helper. A `swift build` binary carries no Team ID
@@ -36,20 +40,23 @@ struct FanctlResetTests {
 
     /// Deadlines long enough that a loaded runner cannot fake a failure.
     ///
-    /// **Three of these four tests assert text and an exit code and nothing about timing**,
-    /// so a short deadline buys them nothing and costs a red CI run: `ClientListenerHarness`
+    /// **Three of these tests assert text and an exit code and nothing about timing**, so a
+    /// short deadline buys them nothing and costs a red CI run: `ClientListenerHarness`
     /// defaults to 750 ms, which this machine never approaches and a GitHub runner exceeded
     /// for a message the helper had already answered — reporting a working helper as one that
     /// never answered, which is the exact misreport this suite exists to forbid. A generous
-    /// deadline costs nothing when the reply arrives, and every reply here does.
+    /// deadline costs nothing when the reply arrives, and every reply in those three does.
     private static let unhurried = HelperClientDeadlines(
         gatedVerb: .seconds(10), panicVerb: .seconds(10), handshakeVerb: .seconds(10))
 
     /// The one deadline this suite asserts on, in the one test whose peer never replies.
     ///
-    /// Not the 750 ms default, for the reason above, and not ten seconds either: this is the
-    /// wall clock the suite actually spends, so it is the shortest figure that still leaves a
-    /// slow runner no way to make a delivered message look undelivered.
+    /// **Two seconds, and it is neither 5 nor 10 on purpose:** those are the shipping
+    /// `gatedVerb` and `panicVerb`, so a `run()` that ignored the deadline it was given and
+    /// hardcoded either of them would still produce a plausible-looking message. This one is
+    /// distinguishable from both in the text the client renders. It is also the wall clock
+    /// this suite actually spends, and the shortest figure that leaves a slow runner no way to
+    /// make a delivered message look undelivered.
     private static let observableDeadline = Duration.seconds(2)
 
     /// Parsed rather than constructed, so `--all` reaching the flag and `validate()`
@@ -58,10 +65,21 @@ struct FanctlResetTests {
         try #require(Fanctl.parseAsRoot(["reset", "--all"]) as? Fanctl.Reset)
     }
 
-    /// Runs the real command against one client and captures how it left.
-    private static func emitted(over client: HelperClient) async throws -> Emitted {
+    /// Runs the **shipping** `run()` against one listener and captures how it left.
+    ///
+    /// Only the connection is substituted — where to look, who may answer, how long to wait.
+    /// The verb, the teardown and the report all come from the function under test.
+    private static func emitted(
+        over harness: ClientListenerHarness,
+        waiting deadlines: HelperClientDeadlines = unhurried
+    ) async throws -> Emitted {
+        var command = try resetAll()
+        command.helper = ResetCommand.HelperConnection(
+            transport: .endpoint(harness.endpoint),
+            pinning: UnenforcedClientPinning(),
+            deadlines: deadlines)
         do {
-            try await resetAll().run(restoring: { try await client.restoreAllToAutomatic() })
+            try await command.run()
             Issue.record("fanctl reset returned without an exit code")
             return Emitted(message: "", exitCode: .success)
         } catch {
@@ -78,18 +96,18 @@ struct FanctlResetTests {
     ///
     /// The authority call count is the half that makes the text an assertion rather than a
     /// description — without it this would pass against a command that printed "accepted"
-    /// having sent nothing at all.
+    /// having sent nothing at all, which is exactly what `run()` was free to do while only a
+    /// test-only overload was covered.
     ///
-    /// **Mutation:** in `ResetCommand.attempt(_:)`, return `accepted` without calling
-    /// `restore`. Run: red on the authority's call count, and on the arrivals.
+    /// **Mutation:** replace `run()`'s body with `try ResetCommand.emit(ResetCommand.accepted)`.
+    /// Run: red on the authority's call count and on the arrivals — the two expectations that
+    /// know the difference between reporting an answer and inventing one.
     @Test("An accepted request exits 0, reached the helper, and claims no restore")
     func anAcceptedRequestExitsZeroAndClaimsNoRestore() async throws {
         let authority = RecordingFanAuthority()
         let harness = ClientListenerHarness(authority: authority)
-        let client = harness.client(
-            description: ResetCommand.clientDescription, deadlines: Self.unhurried)
 
-        let emitted = try await Self.emitted(over: client)
+        let emitted = try await Self.emitted(over: harness)
 
         #expect(emitted.exitCode == .success)
         #expect(emitted.message.contains("accepted the reset request"))
@@ -97,7 +115,11 @@ struct FanctlResetTests {
             emitted.message.contains(
                 "has not reported that any fan is back under automatic control"))
 
-        #expect(await authority.calls.count == 1, "the request did not reach the helper")
+        let restores = await authority.calls.filter {
+            if case .restoreAllToAutomatic = $0 { return true }
+            return false
+        }
+        #expect(restores.count == 1, "the request did not reach the helper")
         #expect(
             harness.arrivals == ["restoreAllToAutomatic", "restoreAllToAutomatic→replied"],
             "the arrivals were \(harness.arrivals)")
@@ -118,10 +140,8 @@ struct FanctlResetTests {
     @Test("The command's request is sent with no handshake behind it")
     func theCommandSendsNoHandshake() async throws {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
-        let client = harness.client(
-            description: ResetCommand.clientDescription, deadlines: Self.unhurried)
 
-        let emitted = try await Self.emitted(over: client)
+        let emitted = try await Self.emitted(over: harness)
         #expect(emitted.exitCode == .success)
 
         let session = try #require(harness.sessions.first)
@@ -129,33 +149,68 @@ struct FanctlResetTests {
         #expect(await session.handshakeState == nil, "the command sent a hello")
     }
 
+    /// `run()` invalidates the connection rather than letting the reference die with the
+    /// process.
+    ///
+    /// The helper releases what a connection was holding from its listener's invalidation
+    /// handler, which fires only if somebody invalidates. Nothing is held on this build — no
+    /// lease can exist — so this is a guard on the shape rather than on a present leak, and it
+    /// is asserted because `await client.disconnect()` is the third decision that lived in
+    /// `run()` with nothing covering it.
+    ///
+    /// **Mutation:** delete `await client.disconnect()` from `run()`. Run: red — the authority
+    /// is never told the connection went away.
+    @Test("run() gives the connection back rather than dropping it")
+    func theCommandInvalidatesItsConnection() async throws {
+        let authority = RecordingFanAuthority()
+        let harness = ClientListenerHarness(authority: authority)
+
+        let emitted = try await Self.emitted(over: harness)
+        #expect(emitted.exitCode == .success)
+
+        // Bounded: the helper's invalidation handler hands off to a detached task, so the
+        // event is ordered after `run()` returns but not synchronous with it. A `run()` that
+        // never disconnected leaves this empty for the whole timeout.
+        try await waitUntil("the helper was told the connection went away") {
+            await authority.calls.contains {
+                if case .connectionDidInvalidate = $0 { return true }
+                return false
+            }
+        }
+    }
+
     // MARK: - The helper never answered
 
-    /// A helper that accepts the request and never answers: non-zero, and the text says the
-    /// effect is unknown rather than guessing either way.
+    /// A helper that accepts the request and never answers: non-zero, the text says the effect
+    /// is unknown rather than guessing either way, and `run()` waited the deadline it was
+    /// given.
     ///
     /// This is `docs/SAFETY.md` § 4's wedged `io_connect_t`, constructed rather than waited
     /// for: the authority parks inside the panic path, so the helper has the message and the
     /// reply never comes. `NSXPCConnection` has no per-message timeout, so what turns that
     /// into an answer at all is the client's own `panicVerb` deadline.
     ///
-    /// **Mutation:** in `HelperClient.exchange(on:within:_:)`, replace
-    /// `pending.answer(within: deadline)` with `pending.answer(within: .seconds(600))`. Run:
-    /// red on the suite's time limit rather than here, which is the weaker kill — so the
-    /// expectations below are on the text, which no timeout can produce.
-    @Test("A helper that never answers exits non-zero and says the effect is unknown")
+    /// **The deadline assertion is the binding, not the constant.** `HelperClientDeadlines`
+    /// already names 10 s and `ResetCommandTests` pins that number to D26 item 4; what nothing
+    /// caught until review was whether `run()` *uses* it. The client renders the deadline it
+    /// actually waited into this message, so injecting a figure that is neither 5 nor 10 makes
+    /// the binding readable from the output.
+    ///
+    /// **Mutation:** in `run()`, replace `deadlines: helper.deadlines` with an explicit
+    /// `HelperClientDeadlines(gatedVerb: .seconds(5), panicVerb: .seconds(5), handshakeVerb:
+    /// .seconds(5))`. Run: red — the message names 5.0 seconds.
+    @Test("A helper that never answers exits non-zero, says the effect is unknown, and waits")
     func aHelperThatNeverAnswersIsReportedAsUnknown() async throws {
         let gate = AsyncSignal()
         let authority = GatedRestoreAuthority(gate: gate)
         let harness = ClientListenerHarness(authority: authority)
-        let client = harness.client(
-            description: ResetCommand.clientDescription,
-            deadlines: HelperClientDeadlines(
+
+        let emitted = try await Self.emitted(
+            over: harness,
+            waiting: HelperClientDeadlines(
                 gatedVerb: Self.observableDeadline,
                 panicVerb: Self.observableDeadline,
                 handshakeVerb: .seconds(10)))
-
-        let emitted = try await Self.emitted(over: client)
 
         #expect(emitted.exitCode != .success)
         #expect(emitted.message.contains("did not confirm the reset request"))
@@ -167,23 +222,29 @@ struct FanctlResetTests {
             """)
         #expect(emitted.message.contains("sudo launchctl bootout system/"))
 
+        // The literal, not `\(Self.observableDeadline)`: interpolating the same value on both
+        // sides would compare the deadline to itself and pass whatever `run()` waited.
+        #expect(
+            emitted.message.contains("did not answer within 2.0 seconds"),
+            """
+            the client reported "\(emitted.message)". `run()` waited some deadline other than \
+            the one it was given, so nothing here would notice a shipping path that hardcoded \
+            a gated verb's 5 s for the panic path.
+            """)
+
         // The precondition, so this cannot pass against a client that sent nothing at all —
         // which produces the same `helperNeverAnswered` and the same text.
         //
-        // A **bounded wait**, not an instantaneous read, and the difference is not cosmetic:
-        // the client gives up on its own deadline, so at the moment it returns there is no
-        // guarantee libxpc has finished delivering. Read straight after the timeout this
-        // raced, and failed under a full-suite run. What it must not become is a wait that
-        // *supplies* the condition — it does not: a client that never sent the message
-        // leaves `arrivals` empty for the whole timeout and this records an issue.
-        //
-        // `arrivals` rather than the authority's own flag, because it is recorded
-        // synchronously by `ArrivalRecordingService` on delivery, with no actor hop between
-        // the wire and the observation.
-        try await waitUntil("the panic path reached the helper") {
-            harness.arrivals.contains("restoreAllToAutomatic")
-        }
-        #expect(await authority.hasBeenAsked, "the helper received it but never dispatched it")
+        // A **bounded wait**, not an instantaneous read: the client gives up on its own
+        // deadline, so at the moment it returns there is no guarantee the message has been
+        // delivered *and* dispatched. Read straight after the timeout this raced, and failed
+        // under a full-suite run. It waits on the authority's own flag rather than on the
+        // arrival record, because the arrival is appended strictly upstream of the dispatch
+        // that sets the flag — waiting on the earlier event leaves the later one raced, which
+        // is the same window made smaller. What it must not become is a wait that *supplies*
+        // the condition, and it does not: a client that never sent the message leaves this
+        // false for the whole timeout and the wait records the issue itself.
+        try await waitUntil("the panic path reached the helper") { await authority.hasBeenAsked }
 
         // Released so the parked helper task finishes rather than outliving the test.
         await gate.signal()
@@ -206,10 +267,8 @@ struct FanctlResetTests {
     func aRefusingHelperNamesBothPossibilities() async throws {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
         harness.isAdmitting = false
-        let client = harness.client(
-            description: ResetCommand.clientDescription, deadlines: Self.unhurried)
 
-        let emitted = try await Self.emitted(over: client)
+        let emitted = try await Self.emitted(over: harness)
 
         #expect(emitted.exitCode != .success)
         #expect(emitted.message.contains("not installed"))
