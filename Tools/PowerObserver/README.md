@@ -76,6 +76,15 @@ One JSON object per line, no line ever containing a literal newline:
 - `"kind":"stop"` — once, on a clean `SIGINT`/`SIGTERM`/`SIGHUP` exit. The final counts,
   keyed by the same names `event` lines use (`"unknown"` included).
 
+**If the `stop` counts and the `event` lines ever disagree, the lines are the record.** Each
+line is written synchronously on the frame that received the message, but the matching
+`counters.increment` is the one piece of this still handed to a `Task` — so a count for a
+message received microseconds before `Ctrl-C` can miss the snapshot that `stop` reports. The
+window is tiny and an attended capture leaves minutes between the last event and the stop,
+so the two will agree in practice. It is written down because the number this tool exists to
+produce **is** a delivery count, and a count that can quietly under-report by one is exactly
+the kind of thing that should not be discovered while reading results.
+
 **Every line is written synchronously, on the frame that received it, before this tool
 does anything else — an `event` line on the IOKit callback frame right after the
 acknowledgement, a `heartbeat` line on the timer's own frame, a `stop` line before
