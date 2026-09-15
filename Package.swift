@@ -181,6 +181,7 @@ let package = Package(
         .executableTarget(
             name: "power-observer",
             path: "Tools/PowerObserver",
+            exclude: ["README.md"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         // Exercises PowerObserverCore.swift's pure parts — the NDJSON encoder, the
