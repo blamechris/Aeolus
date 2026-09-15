@@ -392,9 +392,10 @@ against. `HelperHardwareTests.snapshotFromRealHardware` now tolerates either val
 That row was left pinning `0` at #200, on the argument that its whole point is to say when
 this machine is *not* in the "nothing holding the fans" state and that loosening it would
 make it stop recording anything. The argument conflated the two things a test does. The
-**print** records — and it still records, the raw `0`/`1` per fan, now with an explicit note
-naming any fan found in manual and saying that nothing in this build could have put it
-there. The **verdict** claims, and what a red verdict claimed was that this repository is
+**print** records — and it still records, the decoded mode per fan printed as `0`/`1` (not a
+register byte: nothing on this path reads one, #208), now with an explicit note naming any
+fan found in manual and saying, on the plane's own `writeCapability` rather than on a
+literal, whether this build could have put it there. The **verdict** claims, and what a red verdict claimed was that this repository is
 broken, which it never was. A foreign hold was reproduced on 2026-09-13 during the #237
 review and reddened the suite on a tree whose write path is `.notBuilt`; the same suite had
 been green an hour earlier on the same commit. The recording survives; the false claim does

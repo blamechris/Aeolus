@@ -63,8 +63,9 @@ struct HelperHardwareTests {
             // is holding the fan) or `.manualFixed` (something is) — see
             // `ReadOnlyFanReport.controlMode(_:)` — and which one this run observes is a
             // fact about the machine, not about this build. Printed rather than pinned to
-            // one value; `everyFanModeIsReadableAtStart` is the checklist row that records
-            // the raw `0`/`1`, and since #243 it records rather than pins that too.
+            // one value; `everyFanModeIsReadableAtStart` is the checklist row that prints
+            // the same decoded mode as `0`/`1` — not a register byte either, #208 — and
+            // since #243 it records rather than pins that too.
             //
             // Printed as what this test actually observed — the decoded mode — and never
             // as a raw `F<n>Md` byte, because nothing here reads one: `.automatic` covers
@@ -556,16 +557,28 @@ struct HelperHardwareTests {
         }
 
         // The finding this row exists to record, stated where a reader will see it rather
-        // than encoded as a failure. A fan in manual is ADR 0011's supported state, and the
-        // one thing it is definitely not is Aeolus's doing.
+        // than encoded as a failure. A fan in manual is ADR 0011's supported state.
+        //
+        // Who put it there is **asked of the plane, never asserted here.** Writing "nothing
+        // in this build can have done this" as a literal would be true today and a lie the
+        // day E3 gives the plane a body — and a lie in exactly the direction this row was
+        // just fixed for, since it would exculpate Aeolus for a fan Aeolus had pinned, in a
+        // line that stays green either way. `writeCapability` is the property that answers
+        // it without touching hardware, and it is what `HelperComposition` gates the lease
+        // on.
+        let culprit =
+            plane.writeCapability == .notBuilt
+            ? "Nothing in this build can have put it there — the plane reports .notBuilt — "
+                + "so something outside Aeolus is holding it (ADR 0011)."
+            : "This build has a write path, so Aeolus is itself a candidate: check the lease "
+                + "ledger and startup reconciliation before looking for another tool."
         let note =
             held.isEmpty
             ? ""
-            : " NOTE: fan \(held.map(String.init).joined(separator: ", ")) in manual. "
-                + "Nothing in this build can have put it there — the write path is "
-                + ".notBuilt — so something outside Aeolus is holding it (ADR 0011). That "
-                + "is a supported state, not a failure; but any fan timing measured "
-                + "elsewhere in this suite while it lasts is measuring that tool too."
+            : " NOTE: \(held.count == 1 ? "fan" : "fans") "
+                + "\(held.map(String.init).joined(separator: ", ")) in manual. \(culprit) "
+                + "Either way, any fan timing measured elsewhere in this suite while it "
+                + "lasts is measuring that holder too."
 
         print(
             """
@@ -574,13 +587,19 @@ struct HelperHardwareTests {
             one supervisor turn per fan, exactly as startup reconciliation reads them.\(note)
             """)
 
-        // The row's teeth, and neither is a fact about which mode this machine is in: the
-        // enumeration must find a fan, and every index it reported must have produced a
-        // reading. A throw inside the loop already fails; this catches a plane that returned
-        // for an index without recording one.
+        // The row's teeth, and neither is a fact about which mode this machine is in.
+        // This one: the enumeration must find a fan. The other is the `try` inside the
+        // loop — key formation, the subset read, the decode and the scheduler all
+        // propagate through it, so a plane that cannot read this machine fails the row
+        // before control reaches here.
+        //
+        // Deliberately **no** line comparing `observed.count` against `indices.count`.
+        // The loop appends unconditionally on every iteration that does not throw, so
+        // such a line is true by construction and falsifiable only by editing the loop
+        // above it. It would read as a guard on the plane and be nothing of the kind —
+        // which is the defect this row was just rewritten to stop committing, and adding
+        // it back three lines under the paragraph refusing the codomain tripwire for the
+        // same reason is how that defect keeps returning.
         #expect(!indices.isEmpty, "no fan was enumerated, so the row measured nothing")
-        #expect(
-            observed.count == indices.count,
-            "enumerated \(indices.count) fans but recorded \(observed.count) modes")
     }
 }
