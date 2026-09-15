@@ -104,12 +104,18 @@ let package = Package(
         ),
 
         // Thin XPC client. Also runs standalone in read-only mode with no helper present.
+        //
+        // AeolusXPCClient is here for exactly one command: `reset --all`, the panic path.
+        // Every read command (list, sensors, watch, dump) still goes straight to the SMC
+        // and connects to nothing, which is what keeps "works with no helper installed and
+        // no signing" literally true rather than aspirational.
         .executableTarget(
             name: "fanctl",
             dependencies: [
                 "SMCCore",
                 "FanKit",
                 "AeolusXPC",
+                "AeolusXPCClient",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             swiftSettings: [.swiftLanguageMode(.v6)]
@@ -146,7 +152,12 @@ let package = Package(
             // needed directly, not just transitively via fanctl, so
             // FanctlCommandTests.swift can reference AeolusXPCVersion.current without
             // Swift's non-transitive imports standing in the way.
-            dependencies: ["fanctl", "SMCCore", "FanKit", "AeolusXPC"],
+            // AeolusXPCClient is needed directly so ResetCommandTests can construct the
+            // HelperClientError values `fanctl reset --all` renders. Those tests are about
+            // the rendering and the exit code; the round trip that produces those errors is
+            // driven against the real helper session in AeolusHelperTests, which is the only
+            // target that can reach one.
+            dependencies: ["fanctl", "SMCCore", "FanKit", "AeolusXPC", "AeolusXPCClient"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
@@ -180,8 +191,15 @@ let package = Package(
             // a real anonymous listener — and both of those live behind
             // `@testable import AeolusHelper`. A client suite that could not reach them
             // would be reduced to asserting against a double of the thing under test.
+            //
+            // fanctl is here for the same reason, one step further out: `fanctl reset --all`
+            // is the panic path, and what it reports is only worth asserting against a peer
+            // that actually answered. Driving it from fanctlTests would mean a second
+            // listener, a second pinning double and a stub peer — three copies of things
+            // that already exist here, none of which is the helper.
             dependencies: [
                 "AeolusHelper", "AeolusXPCClient", "SMCCore", "FanKit", "AeolusXPC",
+                "fanctl",
             ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

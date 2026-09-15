@@ -50,31 +50,55 @@ osascript -e 'tell application "Aeolus" to quit'
 
 Wait about 30 seconds and check whether the fans respond to load again.
 
-## 3. Use the panic command — **not available yet**
-
-> **This step does not work on the current build. Go to step 4.** `fanctl reset --all` parses
-> and appears in the command tree, but its body exits with
-> `Not implemented yet — see epic E10b` and writes nothing. It becomes real when
-> [#15](https://github.com/blamechris/Aeolus/issues/15) wires the command to the helper
-> message that already exists, and when the epics that build the SMC write path land. The
-> step is left here, marked, rather than deleted, so that nobody is sent looking for a
-> command this document promised and then quietly withdrew.
-
-When it is available:
+## 3. Use the panic command
 
 ```bash
 fanctl reset --all
 ```
 
-This restores every fan to automatic, clears the Apple Silicon force key, and drops all
-leases. It works when the app will not launch, when the helper's state is inconsistent,
-and over SSH.
+This asks the helper to return every fan to automatic control and drop every lease. It needs
+no handshake and no protocol-version match — that exemption is deliberate, so that an older
+`fanctl` can still reach a newer helper with it — so it works over SSH, with the app not
+running, and when the helper's own state is inconsistent.
+
+> **Read what it prints. It reports what the helper *accepted*, never what your fans are
+> doing.** The two are not the same thing, and the command will not claim the second on the
+> helper's behalf.
+
+**Exit 0 — "The helper accepted the reset request."** The helper took the request. That is
+all it confirmed: the restore is the helper's to finish, and nothing in the reply says a fan
+reached an automatic speed.
+
+**On the current build nothing is restored, and that message is still honest.** The helper has
+no SMC write path yet, so it answers this message as a no-op — see
+[SAFETY.md § 7](SAFETY.md#7-panic-path) for what is still missing. Running it costs nothing and
+it becomes the real thing the moment the write path lands; until then, if the fans are wrong,
+go to step 4.
+
+**Exit 1 — "The helper did not confirm the reset request."** Followed by the reason, and by
+step 4's `bootout` line. The reasons worth knowing in advance:
+
+- *Either the helper is not installed or not yet approved, or it refused this copy of
+  `fanctl` because the signature did not match.* Both are named because they cannot be told
+  apart from the client's side: macOS drops a connection whose peer fails the code-signing
+  check with nothing delivered, exactly as it does when nothing was listening. Check System
+  Settings → Login Items & Extensions first.
+- *This build carries no Team ID.* A `fanctl` you built yourself with `swift build` cannot
+  verify which process would answer, so it does not connect at all. That is expected, not a
+  fault — [#82](https://github.com/blamechris/Aeolus/issues/82) is the signed build. Reads
+  (`fanctl list`, `fanctl sensors`) need none of this and keep working.
+- *The helper accepted the request and did not answer within 10 seconds.* Nothing can be said
+  about whether it took effect; go to step 4.
 
 If `fanctl` is not installed, it ships inside the app bundle:
 
 ```bash
 /Applications/Aeolus.app/Contents/MacOS/fanctl reset --all
 ```
+
+There is no per-fan form: `fanctl reset` without `--all` prints usage and exits, because
+taking one fan back means holding it under a lease and this build has no write path to grant
+one.
 
 ## 4. Stop the helper
 

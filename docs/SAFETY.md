@@ -1055,26 +1055,39 @@ nonetheless a third missing piece, and it is not obtainable from the two named b
 [RECOVERY.md](RECOVERY.md) documents the procedure for when even that is unavailable,
 including SMC reset key combinations by Mac family.
 
-*Tested by (pending #15 and E3/E4):* integration tests invoked against a deliberately corrupted
-helper state; a manual hardware check. `fanctl reset --all` parses and is wired into the
-command tree today, but its body exits with `Not implemented yet — see epic E10b`.
+*Tested by (pending E3/E4):* integration tests invoked against a deliberately corrupted helper
+state; a manual hardware check. `fanctl reset --all` now sends `restoreAllToAutomatic` over XPC
+and is exercised end to end — the real command, the real client, a real `NSXPCListener` and the
+real helper session — by `Tests/AeolusHelperTests/FanctlResetTests.swift`. **No hardware run has
+executed it**, and none can until [#82](https://github.com/blamechris/Aeolus/issues/82) produces a
+signed `fanctl`: a `swift build` binary carries no Team ID, so it refuses to pin the helper and the
+helper would refuse it, both by design.
 
-**What is missing is the CLI's call and the firmware write, not the boundary message.** This line
-read *"the XPC call behind it is #15"* until #104, which reads as though the message did not
-exist. `restoreAllToAutomatic` has existed since E2.1: it is declared on `AeolusXPCProtocol`,
-implemented through `HelperXPCService` → `HelperConnectionSession` → the authority, tested, and is
-the one message exempt from the version handshake gate. #15 is `fanctl`'s call into it — the
-command body carries the literal `TODO` — and E3/E4 are the write, because the control-plane
-restore throws `.controlPathNotBuilt`.
+**The CLI's call now exists; the firmware write and the handler's scope do not.** This line read
+*"the XPC call behind it is #15"* until #104, which reads as though the message did not exist, and
+then *"what is missing is the CLI's call and the firmware write"* until
+[#159](https://github.com/blamechris/Aeolus/issues/159) landed the call.
+`restoreAllToAutomatic` has existed since E2.1: it is declared on `AeolusXPCProtocol`, implemented
+through `HelperXPCService` → `HelperConnectionSession` → the authority, tested, and is the one
+message exempt from the version handshake gate. #159 is `fanctl`'s call into it. E3/E4 are the
+write, because the control-plane restore throws `.controlPathNotBuilt`.
 
-**Wiring those two is not sufficient, which the previous sentence read as though it were.** The
-handler behind the message is lease-scoped in effect (above), so a build with #15 wired and a live
-write path would restore the fans live leases covered and still leave a foreign-held fan pinned
-and `Ftst` set. Three pieces, then: the CLI's call (#15), the firmware write (E3/E4), and the
-machine-wide restore inside the handler — which is a v1 contract change and belongs with the write
-path rather than before it. Until all three land, § 7 describes the panic path rather than
-providing one, which matters more than the other pending lines here because this is the section
-the others fall back to.
+**What the CLI therefore reports today, exactly.** `fanctl reset --all` exits 0 saying *the helper
+accepted the reset request* — and says in the same breath that the helper has not reported any fan
+back under automatic control. It is a truthful acknowledgement of a request the helper answers as a
+no-op, and it is the shape the command keeps once the write path lands, because
+`restoreAllToAutomatic` answers *accepted*, never *done*. Any failure exits non-zero, names what
+the client decided, and prints step 4's `bootout` line; an unreachable helper is reported as **both**
+of the two possibilities ADR 0005 measured to be indistinguishable from the client's side.
+
+**Wiring the call was not sufficient, which the previous sentence read as though it were.** The
+handler behind the message is lease-scoped in effect (above), so a build with the call wired and a
+live write path would restore the fans live leases covered and still leave a foreign-held fan
+pinned and `Ftst` set. Two pieces remain, then: the firmware write (E3/E4), and the machine-wide
+restore inside the handler — which is a v1 contract change and belongs with the write path rather
+than before it. Until both land, § 7 describes the panic path rather than providing one, which
+matters more than the other pending lines here because this is the section the others fall back
+to.
 
 ## 8. Rate limiting and hysteresis
 
@@ -1372,12 +1385,13 @@ the ordering at the source, and `theServiceIsAdvertisedOnlyAfterBringUp` pins th
 arrive first.
 
 **18. `fanctl reset --all` from SSH with the app not running.** *Executes: during E3/E4 bring-up,
-and additionally blocked on #15 wiring the CLI to the XPC message that already exists.* **Three**
-independent blockers, not two: the CLI body throws `Not implemented yet — see epic E10b`, the
-plane write throws `.controlPathNotBuilt`, and the handler behind the message issues no
-machine-wide restore of its own (§ 7), so wiring the first two would still leave a fan no live
-lease covers pinned and `Ftst` set. This row is what checks that, and it is the reason the row is
-worth running rather than assuming.
+and additionally blocked on [#82](https://github.com/blamechris/Aeolus/issues/82) for a signed
+`fanctl` an installed helper will admit.* **Two** blockers remain of the three this row used to
+name: #159 wired the CLI to the XPC message, so the command now issues a real request and reports
+the helper's answer; the plane write still throws `.controlPathNotBuilt`, and the handler behind
+the message still issues no machine-wide restore of its own (§ 7), so a fan no live lease covers
+stays pinned with `Ftst` set. This row is what checks that, and it is the reason the row is worth
+running rather than assuming.
 
 The message itself exists, is exempt from the handshake gate, and is authorisation-checked. The
 exemption is covered by `AnonymousListenerTests`, `HandshakeGateTests` and
@@ -1417,8 +1431,11 @@ Stated so the guarantees are not read as broader than they are:
   backstop; below it, the user's choice is the user's choice.
 - Hardware faults — a failed fan, a blocked vent, a failing thermal sensor.
 - Bugs in the safety subsystem itself. Which is why it is tested first and reviewed
-  hardest, and why the panic path in §7 is designed as it is — **designed, and not built yet**.
-  Its body exits `Not implemented yet` (see § 7), so it is not a backstop a user can reach today;
-  the shape is the most heavily reviewed thing in this document, which is not the same claim.
-  This bullet ended "and why the panic path in §7 exists" until #104, which read as a present
-  mitigation.
+  hardest, and why the panic path in §7 is designed as it is — **designed, reachable, and
+  still not able to move a fan**. `fanctl reset --all` now issues the real message and
+  reports the helper's real answer (#159), so the *route* exists and a user can reach it; the
+  helper answers it as a no-op because there is no write path behind it (see § 7), so it is
+  not yet a backstop against anything. The shape is the most heavily reviewed thing in this
+  document, which is not the same claim. This bullet ended "and why the panic path in §7
+  exists" until #104, which read as a present mitigation, and said the body exits
+  `Not implemented yet` until #159 made that false.
