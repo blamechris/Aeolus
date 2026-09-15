@@ -34,6 +34,24 @@ struct FanctlResetTests {
         let exitCode: ExitCode
     }
 
+    /// Deadlines long enough that a loaded runner cannot fake a failure.
+    ///
+    /// **Three of these four tests assert text and an exit code and nothing about timing**,
+    /// so a short deadline buys them nothing and costs a red CI run: `ClientListenerHarness`
+    /// defaults to 750 ms, which this machine never approaches and a GitHub runner exceeded
+    /// for a message the helper had already answered — reporting a working helper as one that
+    /// never answered, which is the exact misreport this suite exists to forbid. A generous
+    /// deadline costs nothing when the reply arrives, and every reply here does.
+    private static let unhurried = HelperClientDeadlines(
+        gatedVerb: .seconds(10), panicVerb: .seconds(10), handshakeVerb: .seconds(10))
+
+    /// The one deadline this suite asserts on, in the one test whose peer never replies.
+    ///
+    /// Not the 750 ms default, for the reason above, and not ten seconds either: this is the
+    /// wall clock the suite actually spends, so it is the shortest figure that still leaves a
+    /// slow runner no way to make a delivered message look undelivered.
+    private static let observableDeadline = Duration.seconds(2)
+
     /// Parsed rather than constructed, so `--all` reaching the flag and `validate()`
     /// accepting the invocation are part of every case below.
     private static func resetAll() throws -> Fanctl.Reset {
@@ -68,7 +86,8 @@ struct FanctlResetTests {
     func anAcceptedRequestExitsZeroAndClaimsNoRestore() async throws {
         let authority = RecordingFanAuthority()
         let harness = ClientListenerHarness(authority: authority)
-        let client = harness.client(description: ResetCommand.clientDescription)
+        let client = harness.client(
+            description: ResetCommand.clientDescription, deadlines: Self.unhurried)
 
         let emitted = try await Self.emitted(over: client)
 
@@ -99,7 +118,8 @@ struct FanctlResetTests {
     @Test("The command's request is sent with no handshake behind it")
     func theCommandSendsNoHandshake() async throws {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
-        let client = harness.client(description: ResetCommand.clientDescription)
+        let client = harness.client(
+            description: ResetCommand.clientDescription, deadlines: Self.unhurried)
 
         let emitted = try await Self.emitted(over: client)
         #expect(emitted.exitCode == .success)
@@ -131,9 +151,9 @@ struct FanctlResetTests {
         let client = harness.client(
             description: ResetCommand.clientDescription,
             deadlines: HelperClientDeadlines(
-                gatedVerb: .milliseconds(500),
-                panicVerb: .milliseconds(500),
-                handshakeVerb: .seconds(5)))
+                gatedVerb: Self.observableDeadline,
+                panicVerb: Self.observableDeadline,
+                handshakeVerb: .seconds(10)))
 
         let emitted = try await Self.emitted(over: client)
 
@@ -186,7 +206,8 @@ struct FanctlResetTests {
     func aRefusingHelperNamesBothPossibilities() async throws {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
         harness.isAdmitting = false
-        let client = harness.client(description: ResetCommand.clientDescription)
+        let client = harness.client(
+            description: ResetCommand.clientDescription, deadlines: Self.unhurried)
 
         let emitted = try await Self.emitted(over: client)
 
