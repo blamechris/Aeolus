@@ -16,8 +16,15 @@ helper.
 ## Running it
 
 It needs no root, no signing identity, and no installed helper —
-`IORegisterForSystemPower` works for an ordinary user. Run it across one real lid close,
-capturing to a durable path (not inside this worktree, which a teardown can reclaim):
+`IORegisterForSystemPower` works for an ordinary user. **What this tool measures is delivery
+to an unprivileged registered process** — the number
+[ADR 0007](../../docs/ADR/0007-safety-composition.md)'s `.willSleep`/`.didWake` assumption
+row asks for. [docs/SAFETY.md](../../docs/SAFETY.md) row 14 additionally requires the built
+helper running under `sudo` across that same lid close, and **stays open until both captures
+exist** — this tool run on its own, however carefully, does not execute row 14 by itself; an
+unprivileged process and a root daemon are not proven to see the same delivery count. Run it
+across one real lid close, capturing to a durable path (not inside this worktree, which a
+teardown can reclaim):
 
 ```sh
 swift run power-observer > ~/Obsidian/no-it-all/handoffs/Aeolus-209-power-observer-<UTC date>.ndjson
@@ -26,7 +33,9 @@ swift run power-observer > ~/Obsidian/no-it-all/handoffs/Aeolus-209-power-observ
 Close the lid, wait for it to wake back up on its own, then bring the lid back up and
 press a key (or otherwise wake the machine) so you can return to the terminal. Stop the
 tool with `Ctrl-C` (`SIGINT`) — it exits cleanly and appends a `stop` line with the final
-per-message-type counts.
+per-message-type counts. `SIGTERM` and `SIGHUP` exit the same way, so a dropped terminal
+during a long attended capture (a closed window, a lost SSH session) still ends with a
+`stop` line and final counts rather than the process simply vanishing.
 
 Immediately afterward, capture the system's own account of the same window:
 
@@ -64,8 +73,20 @@ One JSON object per line, no line ever containing a literal newline:
   process is still in the process list, it is suspended rather than idle; if the whole
   file stops growing including heartbeats, the process is gone. This is what makes a
   missed delivery during a dark wake distinguishable from a process macOS never resumed.
-- `"kind":"stop"` — once, on a clean `SIGINT`/`SIGTERM` exit. The final counts, keyed by
-  the same names `event` lines use (`"unknown"` included).
+- `"kind":"stop"` — once, on a clean `SIGINT`/`SIGTERM`/`SIGHUP` exit. The final counts,
+  keyed by the same names `event` lines use (`"unknown"` included).
+
+**Every line is written synchronously, on the frame that received it, before this tool
+does anything else — an `event` line on the IOKit callback frame right after the
+acknowledgement, a `heartbeat` line on the timer's own frame, a `stop` line before
+`exit(0)`.** Nothing is buffered across a scheduler hop first. That is what makes a
+missing `kIOMessageSystemWillSleep` line after a real sleep **itself a finding, not a bug
+in this tool to chase**: it is evidence the process was suspended in the narrow window
+between IOKit's own delivery and this tool's line being written, not evidence the line was
+lost somewhere downstream. `StandardOutputSink` serializes every writer — the power
+callback and the heartbeat timer both run on their own independent dispatch queue — behind
+one lock, so two lines can never interleave into one corrupted line, but a lock buys
+nothing against the process itself being frozen before it gets the lock.
 
 ## Reading the result
 

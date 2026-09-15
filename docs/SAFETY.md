@@ -1304,8 +1304,13 @@ identity, which is what keeps this row's "now" tag honest against row 2's:** wha
 an installed daemon, so running the built helper binary under `sudo` across one lid close is
 enough. Row 2 needs launchd to restart the process and therefore needs the install; this row does
 not. `IOKitSystemPowerObserver` itself is the one thing no automated test can reach.
-This row is executed by running `Tools/PowerObserver` (`power-observer`) across one real lid
-close alongside `pmset -g log` — see its README for how to run it and read the result.
+`Tools/PowerObserver` (`power-observer`) measures delivery of these messages **to an
+unprivileged registered process** — the number ADR 0007's `.willSleep`/`.didWake` assumption
+row asks for — by running it across one real lid close alongside `pmset -g log`; see its
+README for how to run it and read the result. **This row additionally needs the built helper
+running under `sudo` across that same lid close**, per the paragraph above, and **stays open
+until both captures exist**: an unprivileged process and a root daemon are not proven to see
+the same delivery count, and `power-observer` alone does not close this row.
 
 **15. Sleep/wake cadence per lid close** — how often § 4's handback path is exercised. *Executes:
 **done** — see [SMC-RESEARCH.md](SMC-RESEARCH.md) and
