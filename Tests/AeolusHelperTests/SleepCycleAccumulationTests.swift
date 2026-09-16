@@ -65,19 +65,16 @@ import Testing
 /// ## The cadence this is sized against, and the correction to it
 ///
 /// #209 opened on a `pmset` capture reading one lid close as seven sleep cycles, and inferred
-/// the budget path ran roughly four times an hour — on the order of thirty unattended chances a
-/// night to earn a refusal. Row 14's hardware capture (2026-09-16,
-/// [SMC-RESEARCH.md](../../docs/SMC-RESEARCH.md), landed in #247) measured the delivery rather
-/// than inferring it: IOKit delivers **one** `.willSleep`/`.didWake` pair per lid close, to an
-/// unprivileged process and to the root helper alike, so the real exposure is 1 per lid close
-/// and the inference was high by about 7×.
+/// roughly thirty unattended chances a night to earn a refusal. Row 14's hardware capture
+/// (2026-09-16, [SMC-RESEARCH.md](../../docs/SMC-RESEARCH.md), landed in #247) measured the
+/// delivery instead: IOKit delivers **one** `.willSleep`/`.didWake` pair per lid close, to an
+/// unprivileged process and the root helper alike — the inference was high by about 7×.
 ///
-/// That correction does not retire this test, and it is worth saying why rather than leaving a
-/// reader to wonder. A mechanism asserted only in its first cycle is unpinned at *any*
-/// frequency: the helper is a long-lived root daemon, so cycle 3 arrives on the third lid close
-/// of the day whether or not it arrives four times an hour. What the frequency governs is how
-/// urgent the *state* question is — which is exactly the maintainer decision #209's criterion 3
-/// holds open, and which nothing here settles.
+/// That correction does not retire this test, and it is worth saying why. A mechanism asserted
+/// only in its first cycle is unpinned at *any* frequency: the helper is a long-lived root
+/// daemon, so cycle 3 arrives on the third lid close of the day whether or not it arrives four
+/// times an hour. What frequency governs is how urgent the *state* question is — exactly the
+/// maintainer decision #209's criterion 3 holds open, and which nothing here settles.
 @Suite("§ 4's handback registers across repeated sleep cycles", .timeLimit(.minutes(1)))
 struct SleepCycleAccumulationTests {
 
@@ -123,7 +120,12 @@ struct SleepCycleAccumulationTests {
     /// Run: red on **cycle 3's** grant, not cycle 2's, and the arithmetic is worth having written
     /// down: cycle 1's wake unseals and sets the flag, cycle 2's grant is taken before its own
     /// wake, and it is cycle 2's failed unseal that refuses cycle 3. The healthy-path multi-cycle
-    /// test catches this one too.
+    /// test catches this one too, and it is what `expectThreeCyclesLeftNothingBehind`'s own grant
+    /// is measured against: red **twice** there — `an error was thrown when none was expected:
+    /// ".systemSleeping"` at the `throws: Never` wrapper, then `leaseCount == 1` on the line after
+    /// it. The second is the load-bearing one: it says execution carried on past the refusal into
+    /// the three `isRunning` assertions and the caller's `shutDown()`. A bare `try` there instead
+    /// reported a single unattributed issue at the `@Test` line and ran none of that.
     ///
     /// **Mutation E — the register never written.** Reduce `recordUnconfirmedHandbacks()` to
     /// `return []`. Run: red on all three cycles' fan-0 refusal — which comes back
@@ -137,21 +139,21 @@ struct SleepCycleAccumulationTests {
     /// { return [] }` at the top of `recordUnconfirmedHandbacks()`, so § 4's budget path records
     /// on the first sleep of a helper's life and never again. Run: red **only here**, three
     /// issues — `perCycle → [Set([0]), Set([]), Set([])]`, and cycles 2 and 3's fan-0 refusal
-    /// coming back `.systemSleeping` — with the rest of the repository green (`1430 tests in 219
-    /// suites … with 3 issues`, 31 s). **This is the mutation the rest of the list does not
+    /// coming back `.systemSleeping` — with the rest of the repository green (`1431 tests in 220
+    /// suites … with 3 issues`, 34.6 s). **This is the mutation the rest of the list does not
     /// contain**, and it is the one the suite's whole premise rests on: A is this test's own loop
     /// bound, C and D are admitted above as caught elsewhere, and B and E redden the single-sleep
     /// tests too. G is caught by nothing else, `threeSleepCyclesEachSealReopenAndAcknowledgeOnce`
-    /// and all three single-sleep unconfirmed tests included. Note what stays green under it: the
-    /// three fault lines, because § 4 logs the expiry whether or not the set it recorded was
-    /// empty. The register is the claim; the log line is not a substitute for it.
+    /// and all three single-sleep unconfirmed tests included. What stays green under it is the
+    /// three fault lines — § 4 logs the expiry whether or not the set it recorded was empty, so
+    /// the log line is not a substitute for the register.
     ///
     /// **Mutation F — the keystone issued once per helper.** A per-responder latch before
     /// `restoreToAutomatic(.everyFan)` in `SystemPowerResponder.handBackEveryFan()`, so the
     /// machine-wide half of § 4 fires on the first sleep of a helper's life and never again.
     /// Run: red **only here** — `scopes → [.fan(0), .everyFan, .fan(0), .fan(0)]` at the
-    /// `restoreScopes` assertion, with the whole rest of the repository green (`1430 tests in
-    /// 219 suites … with 1 issue`, 33 s on a quiet machine). This is the mutation the register
+    /// `restoreScopes` assertion, with the whole rest of the repository green (`1431 tests in
+    /// 220 suites … with 1 issue`, 31.0 s on a quiet machine). This is the mutation the register
     /// assertions cannot feel: the per-fan teardown stays perfect under it, so a suite that
     /// only read the registers would report three healthy cycles. A *process*-wide latch is a
     /// different and much weaker mutation — it also reddens three cycle-1 tests in
@@ -202,7 +204,7 @@ struct SleepCycleAccumulationTests {
             """)
 
         await Self.expectBothHalvesOfTheHandbackRanEveryCycle(plane)
-        try await Self.expectThreeCyclesLeftNothingBehind(helper)
+        await Self.expectThreeCyclesLeftNothingBehind(helper)
 
         await helper.shutDown()
     }
@@ -210,13 +212,12 @@ struct SleepCycleAccumulationTests {
     /// Both acts of § 4's handback, on every cycle, read off the firmware rather than the
     /// registers.
     ///
-    /// § 4 issues two restores and `SystemPowerResponder`'s own doc calls them different acts:
-    /// the lease teardown's per-fan restore, and the machine-wide keystone that additionally
-    /// clears the Apple Silicon force key. Every other assertion in this suite reads a
-    /// `LeaseAuthority` register, and the keystone writes none of them — it consumes no lease
-    /// and touches no lease state — so a keystone issued once per helper leaves this suite's
-    /// register assertions, and the healthy-path multi-cycle test, entirely green. This is the
-    /// one assertion that looks at the wire, which is why mutation F is red only here.
+    /// § 4 issues two restores that `SystemPowerResponder`'s doc calls different acts: the lease
+    /// teardown's per-fan restore, and the machine-wide keystone that also clears the Apple
+    /// Silicon force key. Every other assertion here reads a `LeaseAuthority` register and the
+    /// keystone writes none of them — it consumes no lease and touches no lease state — so a
+    /// keystone issued once per helper leaves them, and the healthy-path multi-cycle test, green.
+    /// This is the one assertion that reads the wire, which is why mutation F is red only here.
     private static func expectBothHalvesOfTheHandbackRanEveryCycle(
         _ plane: CycleWedgingRestorePlane
     ) async {
@@ -235,8 +236,8 @@ struct SleepCycleAccumulationTests {
     /// What three wedged-then-resolved cycles must leave: three empty registers, a grantable
     /// fan, and every supervisor still running.
     ///
-    /// Extracted for SwiftLint's `function_body_length`, and it reads better for it — the test
-    /// above is now the cadence and this is the end state.
+    /// Extracted for SwiftLint's `function_body_length`: the test above is now the cadence and
+    /// this is the end state.
     ///
     /// **The two empty-register assertions are the ones that are only meaningful here.** Asserted
     /// after three cycles that each *wrote* the unconfirmed register, they say it was written and
@@ -246,7 +247,7 @@ struct SleepCycleAccumulationTests {
     /// ran before them.
     private static func expectThreeCyclesLeftNothingBehind(
         _ helper: HelperComposition<CycleWedgingRestorePlane>
-    ) async throws {
+    ) async {
         #expect(
             await helper.leases.fansWithUnconfirmedHandbacks.isEmpty,
             "the last cycle's restore landed and the fan is still recorded as unconfirmed")
@@ -263,8 +264,21 @@ struct SleepCycleAccumulationTests {
             await helper.leases.fansMidHandback.isEmpty,
             "a restore that returned left its releasing entry behind, three cycles running")
 
-        _ = try await helper.leases.acquireLease(
-            LeaseFixture.request(fans: [0]), from: ConnectionID())
+        // `throws: Never` rather than a bare `try`: a bare one skips the `isRunning` assertions
+        // below *and* the caller's `shutDown()`, leaking three 1 Hz supervisor loops over a
+        // scripted plane for the rest of the process. Measured under mutation D above.
+        await #expect(
+            throws: Never.self,
+            """
+            fan 0 could not be leased again after three wedged-then-resolved sleeps. Its restore \
+            landed on every one of them, so either a cycle's unconfirmed register outlived the \
+            restore that resolved it, or the seal stopped reopening — both refuse every lease for \
+            the rest of the process's life, which is safe and useless.
+            """
+        ) {
+            _ = try await helper.leases.acquireLease(
+                LeaseFixture.request(fans: [0]), from: ConnectionID())
+        }
         #expect(
             await helper.leases.leaseCount == 1,
             "fan 0 is no longer grantable after three wedged-then-resolved sleeps")
