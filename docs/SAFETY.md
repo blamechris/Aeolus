@@ -683,9 +683,33 @@ that refusal is cleared by the parked restore landing, and is converted to the d
 lets the machine sleep and says at `.fault` that it did not land; a lease request arriving
 inside the sleep window is refused `systemSleeping` until the wake clears it; and **three
 `.willSleep`/`.didWake` cycles through one helper** each seal, reopen and acknowledge exactly
-once, leaving nothing accumulated in either register — the cycle count is asserted outside the
-loop, so a loop that runs once is red. That last one is #209's: the measurement above says a
-lid close is several cycles, and every other test here delivers one.
+once — the cycle count is asserted outside the loop, so a loop that runs once is red.
+
+That last line also claimed those three cycles left "nothing accumulated in either register",
+and **the claim was vacuous**: on a healthy sleep the budget never expires, so
+`recordUnconfirmedHandbacks()` is never called and both registers are empty for a reason that
+has nothing to do with correctness. Measured, not inferred — with that method reduced to
+`return []`, and again with it unioning the durable register as decision D17 did, the test
+stayed green. It is a claim about the seal, the acknowledgement count and the cycle count, and
+those it holds; it is not a claim about either register, and it is recorded here as a
+correction rather than deleted, because a *Tested by:* line that retires a question is the
+failure mode this section's own reading note warns about.
+
+The register half is **`SleepCycleAccumulationTests`** (#209) and its sibling
+**`SleepCycleSurvivalTests`**, which split decision D33's endings between them. The first
+sleeps three times with **the budget expiring on every one**, asserting per cycle what the
+expiry recorded, that the recorded fan is refused `handbackUnconfirmed` while a fan that was
+never leased is refused `systemSleeping`, that the outstanding restore landing clears it, and
+that **both** acts of the handback ran every cycle — the lease teardown's per-fan restore *and*
+the machine-wide keystone, read off the firmware, because the keystone writes no register and a
+keystone issued once per helper is otherwise invisible. The second never releases its wedge, so
+the register written on the first cycle is the one read after the second wake: the instant the
+issue is actually about, with the seal lifted and the refusal belonging to the fan. Every claim
+in both carries a mutation, and two of those mutations are caught by nothing else in the
+repository. What is **not** covered multi-cycle is D33's third ending: a durable
+`restoreToAutomaticFailed` earned on cycle 1 is never carried into a cycle 2, deliberately,
+because what it should do across a wake is #209's still-open criterion 3.
+
 `HelperCompositionTests` asserts that the shipped `production(log:)` graph is the one that
 carries an `IOKitSystemPowerObserver`.
 
