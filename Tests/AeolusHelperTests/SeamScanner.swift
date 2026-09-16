@@ -370,7 +370,11 @@ enum SeamScanner {
 
     /// Copies an opening `delimiter`, everything up to the matching closing one, and that
     /// one too — honouring `\` escapes — and answers where to carry on.
-    private static func copyDelimited(
+    ///
+    /// `internal` rather than `private`, like the three below it: `SeamScannerScopes` is this
+    /// same type in a sibling file, `private` at type scope does not reach there, and a second
+    /// copy of a string-literal walker is precisely the drift this suite exists to catch.
+    static func copyDelimited(
         _ source: String, from open: String.Index, delimiter: String, into output: inout String
     ) -> String.Index {
         var index = source.index(open, offsetBy: delimiter.count)
@@ -400,7 +404,7 @@ enum SeamScanner {
     /// `func read<T: Decoding<Wire>>(…)` matched nothing at all and went **silently
     /// uncounted** — the same failure mode as `\([^)]*\)` on a nested `)`, and the reason an
     /// allowlist cannot be built on either.
-    private static func parameterListStart(
+    static func parameterListStart(
         in code: String, after name: String.Index
     ) -> String.Index? {
         var index = name
@@ -446,7 +450,7 @@ enum SeamScanner {
     /// scan does not match such a declaration **at all** — it goes silently uncounted rather
     /// than failing. `docs/ADR/0008` calls that out and
     /// [#120](https://github.com/blamechris/Aeolus/issues/120) asks for it to be parsed.
-    private static func closingParenthesis(
+    static func closingParenthesis(
         in code: String, openingAt open: String.Index
     ) -> String.Index? {
         var depth = 0
@@ -595,7 +599,7 @@ enum SeamScanner {
         return (parameter, "")
     }
 
-    private static func collapsingWhitespace(_ text: String) -> String {
+    static func collapsingWhitespace(_ text: String) -> String {
         text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 }
