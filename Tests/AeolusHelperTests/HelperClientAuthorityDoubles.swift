@@ -133,15 +133,22 @@ final class EmptyReplyListenerHarness {
 
     deinit { listener.invalidate() }
 
+    /// Deadlines taken from `ClientListenerHarness`, never restated, and **deliberately not
+    /// overridable**.
+    ///
+    /// This carried its own `.milliseconds(750)` triple — a second copy of the constant
+    /// [#250](https://github.com/blamechris/Aeolus/issues/250) was about, in a second file,
+    /// which is how `emptyReplyIsAProtocolViolation` came to be one of that issue's failures.
+    /// A knob no caller turns is how the copy got here: the sibling harness offered one, this
+    /// one grew a literal to match, and the two then drifted with nothing checking either. So
+    /// there is no parameter. A test that genuinely needs a different bound has to add one,
+    /// which is a visible change to this type rather than a number nobody reviews.
     func client() -> HelperClient {
         HelperClient(
             transport: .endpoint(listener.endpoint),
             pinning: UnenforcedClientPinning(),
             clientDescription: "test client",
-            deadlines: HelperClientDeadlines(
-                gatedVerb: .milliseconds(750),
-                panicVerb: .milliseconds(750),
-                handshakeVerb: .milliseconds(750))
+            deadlines: ClientListenerHarness.defaultDeadlines
         )
     }
 }

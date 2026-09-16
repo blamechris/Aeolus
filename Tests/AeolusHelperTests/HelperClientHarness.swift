@@ -56,6 +56,24 @@ final class ClientListenerHarness {
         listener.resume()
     }
 
+    /// **Measured, because #250 turned on it.** `NSXPCListenerEndpoint` does not retain the
+    /// listener, so ARC is *permitted* to release a harness whose last use is the
+    /// `client()` line and leave that client talking to a listener this `deinit` has already
+    /// invalidated — the reading [#239](https://github.com/blamechris/Aeolus/issues/239)
+    /// raises and the one #250 was filed expecting.
+    ///
+    /// It does not happen in either configuration CI builds. Instrumenting this `deinit` and
+    /// `shouldAcceptNewConnection`, every test in `HelperClientTests` and
+    /// `HelperClientConnectionTests` — the ones #250 lists among its failures included —
+    /// logs the connection attempt **before** the harness deinitialises, under
+    /// `swift test` and under `swift test -c release` alike, on `Mac16,5` / macOS 26.6.2 /
+    /// Swift 6.2. These are `async` functions and the locals live in the async frame, so
+    /// release lands at frame exit rather than at last use.
+    ///
+    /// That is a measurement of a toolchain and not a guarantee from one, which is why the
+    /// tests that care still pin the precondition at the harness — `sessions.isEmpty` in
+    /// `aRefusingHelperIsPromptAndNamesBothPossibilities` is the pattern. What it does settle
+    /// is that #250's "no reply at all" was never a dead listener.
     deinit {
         delegate.invalidateConnections()
         listener.invalidate()
@@ -94,18 +112,42 @@ final class ClientListenerHarness {
         delegate.invalidateConnections()
     }
 
-    /// A client wired to this harness, with no requirement and short deadlines.
+    /// The deadlines a client gets when the test does not name its own: **the shipping
+    /// trio**, not a tighter one.
     ///
-    /// Short deadlines because two of these tests assert on the deadline expiring, and five
-    /// seconds of a suite's wall clock to observe a constant is a cost with no assertion in
-    /// it. Everything else here answers in milliseconds.
+    /// This was `.milliseconds(750)` on all three verbs, and
+    /// [#250](https://github.com/blamechris/Aeolus/issues/250) is what that cost. The
+    /// justification written here was that "two of these tests assert on the deadline
+    /// expiring, and five seconds of a suite's wall clock to observe a constant is a cost
+    /// with no assertion in it" — which is true, and is an argument for those two tests
+    /// passing their own deadline, which both of them already do. It is not an argument for
+    /// the *default*, and as a default it protected nothing while making a 750 ms bound
+    /// load-bearing for eighteen tests that never intended to measure a deadline.
+    ///
+    /// On a contended GitHub runner a cold anonymous-listener round trip exceeds 750 ms, and
+    /// because all eighteen shared this one constant they failed **together, at the identical
+    /// bound** — which read as a teardown race and was not one. A test that asserts a fault
+    /// round-trips has no business failing because a round trip was slow.
+    ///
+    /// So the default is `HelperClientDeadlines.default`: the numbers the product ships, the
+    /// handshake's derived from the helper's own reconciliation budget by
+    /// `HelperClientDeadlines.reconciliationBudget`. That is the only bound whose expiry is a
+    /// real defect rather than an artefact of the machine the suite is running on — a client
+    /// that cannot get an answer inside it is broken for a user too. **A harness must never
+    /// impose a bound the product does not**, and
+    /// `HelperClientDeadlineTests.noHarnessImposesATighterDeadlineThanTheProduct` is what
+    /// holds this to that.
+    ///
+    /// It costs nothing on a healthy run: everything here answers in milliseconds and never
+    /// reaches the deadline at all. It costs the shipping deadline on a *failing* run, which
+    /// is a slower red and still a red — the suite's `.timeLimit` bounds it either way.
+    static let defaultDeadlines = HelperClientDeadlines.default
+
+    /// A client wired to this harness, with no requirement.
     func client(
         description: String = "test client",
         pinning: any HelperConnectionPinning = UnenforcedClientPinning(),
-        deadlines: HelperClientDeadlines = HelperClientDeadlines(
-            gatedVerb: .milliseconds(750),
-            panicVerb: .milliseconds(750),
-            handshakeVerb: .milliseconds(750))
+        deadlines: HelperClientDeadlines = ClientListenerHarness.defaultDeadlines
     ) -> HelperClient {
         HelperClient(
             transport: .endpoint(endpoint),
