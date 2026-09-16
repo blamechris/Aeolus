@@ -691,24 +691,42 @@ struct HelperClientSeamTests {
     /// SwiftPM and broke in the Xcode build — was invisible to CI for the same reason, and the
     /// fix there was to check the thing CI does not run.
     ///
-    /// Both halves read the **dependency list** and not the target's declaration, and both
-    /// `#require` that they found one. Neither is defensive padding — each stands for a defect
-    /// the mutation found in this test's first version, one in each direction:
+    /// Both halves `#require` that they found what they slice, and both carry a **floor** of
+    /// the products the daemon does link. Neither is defensive padding — each stands for a
+    /// defect the mutation found, and the floor is what the first two had in common:
     ///
-    /// - It matched the bare `name: "AeolusHelper",`, which found the `.executable(…)`
-    ///   **product** declared forty lines above the target. The region it sliced contained no
-    ///   dependencies at all, so adding `"AeolusXPCClient"` to the daemon's real ones left it
-    ///   **green**. A test that passed and could not fail.
+    /// - The first version matched the bare `name: "AeolusHelper",`, which found the
+    ///   `.executable(…)` **product** declared forty lines above the target. The region it
+    ///   sliced contained no dependencies at all, so adding `"AeolusXPCClient"` to the daemon's
+    ///   real ones left it **green**. A test that passed and could not fail.
     /// - Anchoring on `.executableTarget(` fixed that and made it fail on the **clean** tree,
     ///   because a target's declaration runs up to the next target and the comment between
     ///   them is `fanctl`'s — which explains at length why *it* links `AeolusXPCClient`.
+    /// - The `project.yml` half then sliced from `^    dependencies:$` to the next `^    \S`,
+    ///   and `#` is `\S`. This file's own style puts target-level comments at exactly four
+    ///   spaces, so one comment line immediately below `dependencies:` collapsed the region to
+    ///   nothing and the `product: AeolusXPCClient` below it passed. `ruby -ryaml` confirmed the
+    ///   mutated file resolves `AeolusHelper` to `[SMCCore, FanKit, AeolusXPC, AeolusXPCClient]`:
+    ///   the graph that builds the shipping helper linked the client, and the half this test's
+    ///   own body calls "the one CI never builds" was green. Whole-line comments are stripped
+    ///   now, and the floor is what makes an empty region fail rather than pass.
     ///
-    /// Both were invisible to reading and took one mutation each to find.
+    /// The `project.yml` half reads the target's **whole region** rather than its dependency
+    /// list, and that is the fourth mutation: `- path: Sources/AeolusXPCClient` added to the
+    /// same target's `sources:` compiles every line of the client into the root daemon, which is
+    /// precisely what the name of this test forbids, and a dependency-list scan cannot see it.
+    /// In xcodegen a `sources:` entry is a plausible way for someone to "just include" a file.
+    /// Reading the region is only safe because the comments are gone: a region-wide search is
+    /// what fired on the clean tree above, and the comment it fired on is the kind that is now
+    /// dropped.
     ///
     /// **Mutation:** add `"AeolusXPCClient"` to the `AeolusHelper` target's `dependencies` in
     /// `Package.swift`. Run: red. **Mutation:** add the matching `product: AeolusXPCClient`
     /// entry under `AeolusHelper:` in `project.yml`. Run: red — and green in `Package.swift`,
-    /// which is the whole reason both are read.
+    /// which is the whole reason both are read. **Mutation:** add `- path:
+    /// Sources/AeolusXPCClient` to that target's `sources:`. Run: red, which the dependency-list
+    /// version was not. **Mutation:** delete the daemon's `product: FanKit` entry. Run: red on
+    /// the floor, which is what a region that shrank to nothing trips.
     @Test("No build graph links the client into the root daemon")
     func theRootDaemonDoesNotLinkTheClient() throws {
         let root = SeamScanner.sourcesRoot.deletingLastPathComponent()
@@ -742,25 +760,32 @@ struct HelperClientSeamTests {
             "the AeolusHelper target in Package.swift declares no dependency list")
         let manifestDependencies = String(manifest[list])
 
-        let project = try String(
-            contentsOf: root.appendingPathComponent("project.yml"), encoding: .utf8)
+        // Comments first, because everything below reads a whole region rather than one list.
+        // A `#` is `\S`, and this file puts its target-level comments at exactly four spaces —
+        // which is how one comment line below `dependencies:` collapsed the old region to
+        // nothing and let the entry underneath it through.
+        let project = Self.strippingWholeLineComments(
+            try String(contentsOf: root.appendingPathComponent("project.yml"), encoding: .utf8))
         let daemonKey = try #require(
             project.range(of: "\n  AeolusHelper:\n"),
             "project.yml no longer declares an AeolusHelper target")
+        // Terminated by the next target key **or by the next top-level key**: `AeolusHelper` is
+        // the last target in the file, so a two-space-only terminator runs the region on into
+        // `schemes:` and everything after it.
         let nextKey =
             project.range(
-                of: #"(?m)^  [A-Za-z]"#, options: .regularExpression,
+                of: #"(?m)^(?:\S|  [A-Za-z])"#, options: .regularExpression,
                 range: daemonKey.upperBound..<project.endIndex)?.lowerBound ?? project.endIndex
-        let yamlList = try #require(
-            project.range(
-                of: #"(?m)^    dependencies:$"#, options: .regularExpression,
-                range: daemonKey.upperBound..<nextKey),
-            "the AeolusHelper target in project.yml declares no dependencies")
-        let yamlListEnd =
-            project.range(
-                of: #"(?m)^    \S"#, options: .regularExpression,
-                range: yamlList.upperBound..<nextKey)?.lowerBound ?? nextKey
-        let projectDependencies = String(project[yamlList.upperBound..<yamlListEnd])
+        let daemonRegion = String(project[daemonKey.upperBound..<nextKey])
+
+        // Both sub-keys, because either one links the client. `dependencies:` is the declared
+        // route; `sources:` is the one that compiles the client's files into the daemon directly,
+        // and it is the shorter path for someone who only wants to "include" a file.
+        for key in ["sources", "dependencies"] {
+            _ = try #require(
+                daemonRegion.range(of: "(?m)^    \(key):$", options: .regularExpression),
+                "the AeolusHelper target in project.yml declares no \(key)")
+        }
 
         #expect(
             !manifestDependencies.contains(Self.target),
@@ -771,10 +796,51 @@ struct HelperClientSeamTests {
             it is also a client.
             """)
         #expect(
-            !projectDependencies.contains(Self.target),
+            !daemonRegion.contains(Self.target),
             """
-            project.yml links \(Self.target) into the root daemon. That is the graph the \
-            shipping helper is built from, and it is the one CI never builds.
+            project.yml links \(Self.target) into the root daemon, through its `dependencies:` \
+            or its `sources:`. That is the graph the shipping helper is built from, and it is \
+            the one CI never builds.
             """)
+
+        // The floor. Both halves above assert an **absence** inside a region they sliced, and a
+        // region that shrank to nothing satisfies any absence: that is exactly how the first
+        // version of the `Package.swift` half and the first version of the `project.yml` half
+        // each passed while the daemon really did link the client. What the daemon does link is
+        // therefore asserted too, so a slice that lost its content fails instead of passing.
+        for product in Self.daemonDependencyFloor {
+            #expect(
+                manifestDependencies.contains("\"\(product)\""),
+                """
+                the dependency list this test sliced out of Package.swift does not name \
+                \(product), which the root daemon links. The slice is wrong, and an absence \
+                asserted over the wrong text is a test that cannot fail.
+                """)
+            #expect(
+                daemonRegion.range(
+                    of: "(?m)^\\s*product: \(product)$", options: .regularExpression) != nil,
+                """
+                the AeolusHelper region this test sliced out of project.yml does not name \
+                \(product), which the root daemon links. The slice is wrong, and an absence \
+                asserted over the wrong text is a test that cannot fail.
+                """)
+        }
+    }
+
+    /// The products the root daemon links, for the floor above. Three, and none of them is the
+    /// client.
+    private static let daemonDependencyFloor = ["SMCCore", "FanKit", "AeolusXPC"]
+
+    /// YAML with every whole-line comment removed, lines preserved so the anchored patterns above
+    /// still line up.
+    ///
+    /// Whole-line only, rather than `#`-to-end-of-line: a `#` inside a quoted value is not a
+    /// comment, and this is not a YAML parser. The mutation that made it necessary was a
+    /// whole-line comment, and this file's own style has no trailing ones.
+    private static func strippingWholeLineComments(_ yaml: String) -> String {
+        yaml
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces).hasPrefix("#") ? "" : String($0) }
+            .joined(separator: "\n")
     }
 }
