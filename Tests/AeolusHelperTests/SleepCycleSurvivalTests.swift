@@ -91,13 +91,18 @@ struct SleepCycleSurvivalTests {
     /// **Mutation B — a second expiry promoted to the durable register.** In
     /// `recordUnconfirmedHandbacks()`, union `outstanding.intersection(handbackUnconfirmed)` into
     /// `restoreAbandoned` — the "it has now missed two whole sleeps, it has clearly failed" edit,
-    /// which is decision D17 creeping back one cycle later than before. Run: red **only here**, 2
+    /// which is decision D17 creeping back one cycle later than before. **The union goes *above*
+    /// `handbackUnconfirmed.formUnion(outstanding)`, and that placement is the whole mutation:**
+    /// above it the intersection is empty on the first expiry and names fan 0 only on the second,
+    /// which is the "one cycle later" this is testing; below it the intersection is just
+    /// `outstanding`, which is plain D17 and reddens 23 issues across three suites — a much weaker
+    /// mutation that the accumulation suite's own B already covers. Run: red **only here**, 2
     /// issues, both after the second wake — fan 0's refusal coming back
     /// `.restoreToAutomaticFailed` and `fansWithAbandonedHandbacks.isEmpty` — against `1431 tests
-    /// in 220 suites`, in **35.1 s** with those two issues and nothing else, and with
+    /// in 220 suites`, in **30.4 s** with those two issues and nothing else, and with
     /// `threeSleepCyclesEachSealReopenAndAcknowledgeOnce` passing on the same run. Nothing else in
-    /// the repository sleeps twice on one outstanding fan, so nothing else can see it. Four runs
-    /// rather than one, and the three discarded ones are worth a line: each went over 50 s on a
+    /// the repository sleeps twice on one outstanding fan, so nothing else can see it. Several runs
+    /// rather than one, and the discarded ones are worth a line: each went over 50 s on a
     /// machine with other agents building and so also carried one or more of the
     /// wall-clock-deadline flakes #227 (`HelperHardwareTests`, `SMCSensorProviderTests`) and #256
     /// (`HelperClientTests`, `MessageOrderingTests`) track. Those varied run to run; these two did
