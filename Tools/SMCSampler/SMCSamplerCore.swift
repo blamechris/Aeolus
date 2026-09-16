@@ -167,7 +167,15 @@ struct CommandLineOptions: Sendable, Equatable {
             func value() throws -> String {
                 if let inlineValue { return inlineValue }
                 let next = arguments.index(after: index)
-                guard next < arguments.endIndex else {
+                // A missing space-separated value is not only detectable at the end of
+                // `arguments` — the very next token can itself be another flag
+                // (`--interval --count 5`). A `--`-prefixed token is never a legitimate
+                // value for any flag this parser recognises (a seconds count, a tick
+                // count, or a comma-separated key list), so treating it as one silently
+                // swallows the next flag and blames the wrong one for the resulting parse
+                // failure. Reported the same way as the end-of-arguments case: the flag
+                // that is missing its value, not the token that was almost consumed.
+                guard next < arguments.endIndex, !arguments[next].hasPrefix("--") else {
                     throw ParseError.unrecognizedArgument(argument)
                 }
                 index = next
