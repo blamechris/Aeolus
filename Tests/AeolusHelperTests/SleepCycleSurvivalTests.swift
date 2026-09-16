@@ -99,7 +99,7 @@ struct SleepCycleSurvivalTests {
     /// mutation that the accumulation suite's own B already covers. Run: red **only here**, 2
     /// issues, both after the second wake — fan 0's refusal coming back
     /// `.restoreToAutomaticFailed` and `fansWithAbandonedHandbacks.isEmpty` — against `1431 tests
-    /// in 220 suites`, in **30.4 s** with those two issues and nothing else, and with
+    /// in 220 suites`, in **31.5 s** with those two issues and nothing else, and with
     /// `threeSleepCyclesEachSealReopenAndAcknowledgeOnce` passing on the same run. Nothing else in
     /// the repository sleeps twice on one outstanding fan, so nothing else can see it. Several runs
     /// rather than one, and the discarded ones are worth a line: each went over 50 s on a
