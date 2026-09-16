@@ -131,9 +131,7 @@ struct SMCSamplerMain {
         let identity = HardwareIdentity.current()
 
         var fanIndices: [Int] = []
-        var keySource: String
-        var fanEnumerationFailed = false
-        var fanEnumerationFailureReason: String?
+        var enumerationOutcome: FanEnumerationOutcome?
         if options.keys.isEmpty {
             // Fan enumeration failing does not make this run pointless — the critical set
             // alone may still be readable — so the outcome is reported and continued past,
@@ -152,10 +150,8 @@ struct SMCSamplerMain {
             }
             let outcome = FanEnumerationOutcome.from(
                 enumerationResult, model: identity.modelIdentifier)
+            enumerationOutcome = outcome
             fanIndices = outcome.fanIndices
-            keySource = outcome.keySource
-            fanEnumerationFailed = outcome.fanEnumerationFailed
-            fanEnumerationFailureReason = outcome.fanEnumerationFailureReason
 
             // Reported twice, deliberately: stderr for a maintainer watching the terminal
             // live, and `fanEnumerationFailureReason` on the `start` line itself for the
@@ -168,9 +164,11 @@ struct SMCSamplerMain {
                         "smc-sampler: fan enumeration failed, continuing with 0 fans: \(reason)\n"
                             .utf8))
             }
-        } else {
-            keySource = "custom"
         }
+        // `enumerationOutcome` stays `nil` when `options.keys` was non-empty — no
+        // enumeration was attempted, and `SamplerStartRecord.startRecord(outcome:...)`
+        // below maps a `nil` outcome to `keySource: "custom"` the same way this branch used
+        // to wire it inline.
 
         let keys = MeasurementKeySet.resolvedKeys(
             custom: options.keys, model: identity.modelIdentifier, fanIndices: fanIndices)
@@ -187,17 +185,20 @@ struct SMCSamplerMain {
             exit(1)
         }
 
-        let startRecord = SamplerStartRecord(
+        // `FanEnumerationOutcome`'s own documentation explains why that type exists;
+        // `startRecord(outcome:...)`'s documentation explains why `main()` calls it here
+        // rather than re-deriving `keySource`/`fanEnumerationFailed`/
+        // `fanEnumerationFailureReason` itself — that re-derivation was the exact
+        // untested passthrough round-3 delta review of #248 found.
+        let startRecord = SamplerStartRecord.startRecord(
+            outcome: enumerationOutcome,
             hostname: ProcessInfo.processInfo.hostName,
             hwModel: hardwareModel(),
             osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
             uid: getuid(),
             pid: getpid(),
             intervalSeconds: options.intervalSeconds,
-            keys: keys,
-            keySource: keySource,
-            fanEnumerationFailed: fanEnumerationFailed,
-            fanEnumerationFailureReason: fanEnumerationFailureReason)
+            keys: keys)
         sink.write(try NDJSON.line(startRecord))
 
         let continuousStart = ContinuousClock.now

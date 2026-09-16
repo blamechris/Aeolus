@@ -125,6 +125,19 @@ enum MeasurementKeySet {
 /// Before this existed, `SMCSamplerMain.swift:188-189` wired
 /// `fanEnumerationFailed: fanEnumerationFailureReason != nil` directly against a local
 /// variable no test could see — deleting that wiring left the full suite green.
+///
+/// That closed the mapping *into* this type; it did not close the mapping *out* of it.
+/// Round-3 delta review of #248 found `main()` still copied this type's four fields onto
+/// local variables and from there into `SamplerStartRecord`'s initializer — a second,
+/// untested passthrough at the same site the first one occupied. Hardcoding
+/// `fanEnumerationFailed: false, fanEnumerationFailureReason: nil` at that construction, or
+/// hardcoding just `fanEnumerationFailed = false` one assignment earlier, both left the
+/// full suite green. `SamplerStartRecord.startRecord(outcome:hostname:hwModel:osVersion:
+/// uid:pid:intervalSeconds:keys:)` below closes that second gap the same way this type
+/// closed the first: `main()` now calls it directly instead of re-deriving the record's
+/// fields itself, and `SamplerStartRecordTests` exercises the wiring for both the `nil`
+/// outcome (custom `--keys`) and populated-outcome (default enumeration, success and
+/// failure) paths.
 struct FanEnumerationOutcome: Sendable, Equatable {
     let fanIndices: [Int]
     let keySource: String
@@ -427,6 +440,55 @@ struct SamplerStartRecord: Encodable, Sendable {
     let keySource: String
     let fanEnumerationFailed: Bool
     let fanEnumerationFailureReason: String?
+}
+
+extension SamplerStartRecord {
+    /// Builds a `start` line from a `FanEnumerationOutcome?` — `nil` exactly when `main()`
+    /// never attempted fan enumeration because `--keys` supplied a custom list, matching
+    /// `SMCSamplerMain.swift`'s own two branches (default enumeration vs. custom keys).
+    ///
+    /// This exists because `FanEnumerationOutcome.from(_:model:)`'s own documentation
+    /// closed one untested passthrough — outcome-mapping into this type's four fields —
+    /// only for a second, identically-shaped one to remain at the call site that carries
+    /// those same four fields on into `SamplerStartRecord` itself: round-3 delta review of
+    /// #248 found `main()` re-deriving `keySource`/`fanEnumerationFailed`/
+    /// `fanEnumerationFailureReason` on local variables between the two types, and neither
+    /// hardcoding those fields at the record's construction nor hardcoding
+    /// `fanEnumerationFailed` one assignment earlier moved any test. Routing both of
+    /// `main()`'s branches through this single pure function — which `main()` now only
+    /// calls — puts the whole outcome-to-record path under `SamplerStartRecordTests`
+    /// instead of leaving the last leg of it visible only to `swift run`.
+    ///
+    /// `outcome == nil` produces exactly what `SMCSamplerMain.swift`'s `else` branch wired
+    /// by hand: `keySource: "custom"`, `fanEnumerationFailed: false`,
+    /// `fanEnumerationFailureReason: nil` — a custom `--keys` list never attempts
+    /// enumeration, so there is nothing to have failed.
+    static func startRecord(
+        outcome: FanEnumerationOutcome?,
+        hostname: String,
+        hwModel: String,
+        osVersion: String,
+        uid: UInt32,
+        pid: Int32,
+        intervalSeconds: Double,
+        keys: [String]
+    ) -> SamplerStartRecord {
+        let keySource = outcome?.keySource ?? "custom"
+        let fanEnumerationFailed = outcome?.fanEnumerationFailed ?? false
+        let fanEnumerationFailureReason = outcome?.fanEnumerationFailureReason
+
+        return SamplerStartRecord(
+            hostname: hostname,
+            hwModel: hwModel,
+            osVersion: osVersion,
+            uid: uid,
+            pid: pid,
+            intervalSeconds: intervalSeconds,
+            keys: keys,
+            keySource: keySource,
+            fanEnumerationFailed: fanEnumerationFailed,
+            fanEnumerationFailureReason: fanEnumerationFailureReason)
+    }
 }
 
 /// One tick: wall clock plus both monotonic clocks — `ContinuousClock`, which keeps

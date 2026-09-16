@@ -68,6 +68,26 @@ struct CriticalKeySetDriftTests {
             .filter { !$0.isEmpty }
     }
 
+    /// The individual prefix strings a `prefixLiteral(in:)` result names, in order — the
+    /// bracketed-literal counterpart of `suffixes(fromLiteral:)` above, reused so
+    /// `resolvedKeysMatchCriticalSensorSetLiterals` reads the prefix pair from
+    /// `CriticalSensorSet.swift`'s own source rather than carrying a third hard-coded copy
+    /// of `["TPD", "TRD"]` that `prefixListsMatch` and
+    /// `mac16x5ComposesOnlyFromTheSharedLiterals` do not otherwise cover: round-3 delta
+    /// review of #248 found that a helper-side prefix widening
+    /// (`dieClusterKeys(prefixes: ["TPD", "TRD", "TCD"])`) left
+    /// `resolvedKeysMatchCriticalSensorSetLiterals` green while `prefixListsMatch` and
+    /// `mac16x5ComposesOnlyFromTheSharedLiterals` both went red — a redundancy rather than
+    /// a hole today, but one this removes rather than leaves for the next literal to drift
+    /// past unnoticed.
+    private static func prefixes(fromLiteral literal: String) -> [String] {
+        literal
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) }
+            .filter { !$0.isEmpty }
+    }
+
     /// The two-element prefix literal each file writes for the Mac16,5 cluster:
     /// `CriticalSensorSet.swift` as `dieClusterKeys(prefixes: ["TPD", "TRD"])`,
     /// `SMCSamplerCore.swift` as `["TPD", "TRD"].flatMap`. Anchored on the substring
@@ -148,7 +168,11 @@ struct CriticalKeySetDriftTests {
     func resolvedKeysMatchCriticalSensorSetLiterals() throws {
         let suffixes = Self.suffixes(
             fromLiteral: try Self.suffixLiteral(in: Self.criticalSensorSetSource))
-        let expected = ["TPD", "TRD"].flatMap { prefix in suffixes.map { prefix + $0 } }
+        let prefixLiteral = try #require(
+            Self.prefixLiteral(in: Self.criticalSensorSetSource),
+            "CriticalSensorSet.swift no longer names [\"TPD\", \"TRD\"]")
+        let prefixes = Self.prefixes(fromLiteral: prefixLiteral)
+        let expected = prefixes.flatMap { prefix in suffixes.map { prefix + $0 } }
 
         #expect(
             expected.count == 34,
