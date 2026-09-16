@@ -239,5 +239,32 @@ let package = Package(
             path: "Tests/PowerObserverTests",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+
+        // A second maintainer measurement tool, never shipped: a read-only SMC sampler that
+        // answers #248 (unblocking docs/SAFETY.md rows 12/13 via #210). Lives outside
+        // `Sources/` for the same reason `power-observer` does — not referenced by
+        // project.yml, the app never embeds it — but unlike `power-observer` this one
+        // depends on `SMCCore` and `FanKit` on purpose: its whole job is targeted
+        // `SensorProvider.read(keys:)` subset reads. It never depends on `AeolusHelper` and
+        // never reaches the SMC write path — see Tools/SMCSampler/SMCSamplerCore.swift's
+        // header note and Tests/SMCSamplerTests/ToolsSeamTests.swift for the tripwire that
+        // checks both against the source. See Tools/SMCSampler/README.md.
+        .executableTarget(
+            name: "smc-sampler",
+            dependencies: ["SMCCore", "FanKit"],
+            path: "Tools/SMCSampler",
+            exclude: ["README.md"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        // Exercises SMCSamplerCore.swift's pure parts — key-set resolution, the NDJSON
+        // encoder, the clock-delta arithmetic, the command-line parser, and the per-key
+        // outcome mapping — the same "depends on the executable target directly" shape
+        // `PowerObserverTests` uses for `power-observer`.
+        .testTarget(
+            name: "SMCSamplerTests",
+            dependencies: ["smc-sampler"],
+            path: "Tests/SMCSamplerTests",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
     ]
 )
