@@ -1069,6 +1069,145 @@ handle carries write authority, the helper is a root daemon receiving the
 reconnect-and-health path exists for failures this run never produced. Read it as "the fault this
 was afraid of has zero observed instances on one machine", not as "the reconnect can go".
 
+### IOKit sleep/wake delivery to a registered process — observed, one lid close (issues #209, #210)
+
+> **[#209](https://github.com/blamechris/Aeolus/issues/209) inferred a delivery count from the
+> `pmset` cadence above. The measurement contradicts the inference.** Seven machine sleeps
+> delivered **one** `.willSleep`/`.didWake` pair — to an unprivileged process and to a root daemon
+> alike. [SAFETY.md](SAFETY.md) § 4's handback runs once per lid close, not once per sleep cycle.
+
+**Date:** 2026-09-16 04:16:44Z → 06:05:03Z (1 h 48 min). **Machine:** `Mac16,5`, Apple M4 Max,
+macOS 26.6.2 (25G83), on AC for the whole capture, charge 92% → 100%. **Method:** two processes
+registered for system power across one lid close, plus `pmset -g log` for ground truth:
+
+- `power-observer` (`Tools/PowerObserver`), unprivileged, uid 501, PID 10996. Its `start` line
+  records `helperLoaded` false — the helper below was run directly rather than installed as a
+  launchd daemon, which is exactly what that field reports and why it is recorded.
+- `.build/debug/AeolusHelper` under `sudo`, root, PID 11047, logging to the unified log under
+  subsystem `dev.aeolus.AeolusHelper`. **This is the half `power-observer` cannot be**: an
+  unprivileged process and a root daemon are not assumed to see the same count, they are captured
+  separately and compared.
+
+Lid closed 21:19:33 local, reopened 23:04:45. No write selector was issued at any point — the
+helper's own log records `controlPathNotBuilt` for the pre-sleep restore, which is this build
+having no write path rather than a failure of one.
+
+Running the built helper under `sudo` with no install and no Developer ID **works**, which row 14
+asserted and nothing had executed: it logged `listening on com.blamechris.Aeolus.Helper` and ran
+its startup reconciliation before serving.
+
+The three captures are kept in the maintainer's private vault rather than in the repository:
+
+- `~/Obsidian/no-it-all/handoffs/Aeolus-209-power-observer-2026-09-16.ndjson`
+- `~/Obsidian/no-it-all/handoffs/Aeolus-209-helper-oslog-2026-09-16.ndjson`
+- `~/Obsidian/no-it-all/handoffs/Aeolus-209-pmset-sleepwake-2026-09-16.log`
+
+#### Seven sleeps, one delivery
+
+The machine did what the #68 capture said it would. `pmset -g log` for the lid-closed window, local
+times verbatim:
+
+| Local | Event | Type |
+|---|---|---|
+| 21:19:33 | Sleep | `'Clamshell Sleep'` |
+| 21:19:35 | DarkWake | Deep Idle, `wifibt` |
+| 21:20:20 | Sleep | `'Maintenance Sleep'` (900 s) |
+| 21:35:20 | DarkWake | `rtc/Maintenance` |
+| 21:36:06 | Sleep | `'Maintenance Sleep'` (900 s) |
+| 21:51:06 | DarkWake | `rtc/Maintenance` |
+| 21:52:07 | Sleep | `'Maintenance Sleep'` (946 s) |
+| 22:07:53 | DarkWake | `rtc/Maintenance` |
+| 22:08:39 | Sleep | `'Maintenance Sleep'` (922 s) |
+| 22:24:01 | DarkWake | `rtc/SleepService` |
+| 22:35:04 | Sleep | `'Sleep Service Back to Sleep'` |
+| 22:51:41 | DarkWake | `rtc/Maintenance` |
+| 22:52:42 | Sleep | `'Maintenance Sleep'` (719 s) |
+| 23:04:41 | DarkWake | `USB-C_plug` |
+| 23:04:45 | **Wake** | DarkWake to FullWake, `Notification` |
+
+Seven sleeps and eight wakes. What reached each registered process across all of it:
+
+| Process | `kIOMessageSystemWillSleep` | `…WillPowerOn` | `…HasPoweredOn` |
+|---|---|---|---|
+| `power-observer` (uid 501) | 1, at 04:19:28.124Z | 1, at 06:04:45.833Z | 1, at 06:04:45.835Z |
+| `AeolusHelper` (root) | 1, at 04:19:28Z | — | 1, at 06:04:45Z |
+
+`power-observer`'s `stop` counts agree with its own `event` lines exactly — 1/1/1 — so the
+one-line under-report window its README warns about did not occur here. The helper's equivalent is
+§ 4's own `sleepIsComing` line, logged once, followed once by the wake line.
+
+**The six maintenance sleeps delivered nothing to either process.** The one `willSleep` that did
+arrive preceded the clamshell sleep by 5 s and was acknowledged in **62 µs**, three orders of
+magnitude inside `SystemPowerLimits.acknowledgementBudget`.
+
+#### Why this is not a suspension artifact
+
+A suspended process cannot receive a message, so "we saw nothing" and "nothing was sent" are the
+same observation from inside the process — and that is the obvious way to be wrong about this
+number.
+
+The helper's log separates them. Its thermal-emergency supervisor logged at **every dark wake** —
+21:19:37, 21:35:21, 21:51:08, 22:07:54, 22:24:03, 22:51:43, 23:04:43 — so the helper was
+demonstrably awake and running 45 s before the 21:36:06 maintenance sleep, and logged nothing for
+it. Two independent processes, one unprivileged and one root, both provably alive across the
+cycles, both recording one pair.
+
+#### § 4's exposure is one per lid close
+
+#209's arithmetic — a durable `.restoreToAutomaticFailed` earned on "the order of 30 independent
+chances across an overnight lid-close" — rests on the inference this capture replaces. The handback
+path runs **once per lid close**, and `SystemPowerLimits.acknowledgementBudget` is spent once
+rather than four times an hour.
+
+The correction runs in the safe direction, and it does not retire the multi-cycle test #209 asks
+for: one helper process outlives many lid closes, so state accumulating across cycles is still
+worth asserting. The cycles are simply rarer than the `pmset` cadence implied.
+
+#### The critical sensors are unreadable during a dark wake, not wrong
+
+[#210](https://github.com/blamechris/Aeolus/issues/210) asks whether the curated critical keys read
+*truthfully* during a dark wake, the feared composition being reads that succeed and are false.
+This capture sampled no sensor values — `power-observer` never touches the SMC — but the helper's
+own supervisor did, and logged the same pair seven times, once per dark wake:
+
+> `Thermal emergency cycle could not read a critical temperature:`
+> `criticalTelemetryUnavailable(requestedKeys: 34)`
+
+followed roughly a second later by `34 curated key(s) answering again after a run of unreadable
+cycles`. So on this machine, during a dark wake, the 34-key critical read **fails** rather than
+returning a plausible-but-stale value. That is the failure mode § 5 already treats as divergence,
+and it is the safer of the two outcomes #210 contemplates.
+
+**This narrows #210; it does not close it.** One lid close, on one machine; no temperature *values*
+were recorded for comparison against a pre-sleep baseline; and "unreadable here, this time" is not
+"never false anywhere". Row 13 stays open for a capture that samples the values themselves.
+
+#### The monotonic clock loses the whole sleep
+
+`power-observer` writes a heartbeat carrying both clocks once a second, which makes each suspension
+window measurable. Six gaps, one per maintenance sleep:
+
+| Gap (UTC) | Wall clock | `DispatchTime` monotonic |
+|---|---|---|
+| 04:20:21 → 04:35:21 | 899.8 s | 1.0 s |
+| 04:36:08 → 04:51:07 | 899.4 s | 1.0 s |
+| 04:52:08 → 05:07:54 | 945.6 s | 1.0 s |
+| 05:08:40 → 05:24:01 | 921.6 s | 1.1 s |
+| 05:35:05 → 05:51:42 | 996.7 s | 1.0 s |
+| 05:52:44 → 06:04:42 | 718.0 s | 1.0 s |
+| **Total** | **5,381.1 s** | **6.1 s** |
+
+The monotonic clock lost 5,375 s — 90 minutes of a 108-minute capture.
+
+**This is not row 12, and must not be read as it.** `power-observer` samples
+`DispatchTime.now().uptimeNanoseconds`, which is `mach_absolute_time` — the clock family
+`SuspendingClock` is built on. [ADR 0007](ADR/0007-safety-composition.md)'s assumption row names
+**`ContinuousClock`**, a different clock with different documented behaviour across sleep, and
+nothing in this capture samples it. What this measures is the *stake* rather than the answer: a
+suspending clock loses essentially the entire sleep, so anything resting on one would age by one
+second across an 899 s maintenance sleep. Row 12 stays open, and now has a number attached to why
+it matters.
+
 ---
 
 ## Sources
