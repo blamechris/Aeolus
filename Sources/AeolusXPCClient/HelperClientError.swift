@@ -115,7 +115,7 @@ extension HelperClientError: LocalizedError {
             return """
                 The Aeolus helper did not answer. Either it is not installed or not yet \
                 approved, or it refused this copy of Aeolus because the signature did not \
-                match. These two cannot be told apart from here.
+                match. These possibilities cannot be told apart from here.
                 """
         case .helperRestarted:
             return """

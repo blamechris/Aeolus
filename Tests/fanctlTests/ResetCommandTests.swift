@@ -152,6 +152,31 @@ struct ResetCommandTests {
         #expect(emitted.message.contains("sudo launchctl bootout system/"))
     }
 
+    /// The closing sentence's count must match the number of possibilities it closes —
+    /// three items enumerated above it, so the sentence must not narrow that to two, or to
+    /// any other number, when it says they cannot be told apart.
+    ///
+    /// This is `HelperClientError.helperUnreachable`'s `errorDescription` directly, not
+    /// `fanctl`'s rendering of it, because the defect (#246) was in the string itself: it
+    /// listed three states — not installed, not yet approved, signature refused — and then
+    /// said "these two". A fixed numeral would only move the bug; asserting the actual
+    /// closing clause is what keeps the count from drifting out of sync with the list again.
+    ///
+    /// **Mutation:** in `HelperClientError.errorDescription`, revert the closing clause to
+    /// "These two cannot be told apart from here." Run: red on both expectations below.
+    @Test("helperUnreachable's closing sentence does not miscount its own list")
+    func helperUnreachableClosingSentenceMatchesItsList() {
+        let described = HelperClientError.helperUnreachable(code: 4097).errorDescription ?? ""
+
+        #expect(described.contains("not installed"))
+        #expect(described.contains("not yet"))
+        #expect(described.contains("approved"))
+        #expect(described.contains("refused"))
+        #expect(!described.contains("These two"))
+        #expect(!described.contains("These three"))
+        #expect(described.contains("These possibilities cannot be told apart from here."))
+    }
+
     /// A helper that accepted and never answered is reported as exactly that — not as a
     /// failure to restore, and not as a success.
     ///
