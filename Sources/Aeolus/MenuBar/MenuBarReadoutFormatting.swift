@@ -19,8 +19,13 @@ import Foundation
 ///
 /// This does not depend on `#249`'s other fix (`MenuBarReadoutSelection` no longer
 /// defaulting to `F0Md`/`F0Tg`): a user can still *choose* either key deliberately via
-/// `MenuBarContentsPreferencesView` — "nameable, not defaultable" — and this formatter is
-/// what keeps that choice honest wherever it is rendered.
+/// `MenuBarContentsPreferencesView` — "nameable, not defaultable." `identifiedText(for:
+/// temperatureUnit:)` keeps that choice honest in the strip, where identifier and value
+/// are always the one string this type composes. The dropdown renders the two separately
+/// (`MenuBarContentView`'s row draws the identifier and `value(for:)`'s result in their
+/// own `Text` views); there, a bare `value(for:)` result staying legible depends on the
+/// caller placing it beside that identifier — this formatter has no way to enforce that
+/// composition on its own.
 enum MenuBarReadoutFormatting {
     /// The formatted value alone (temperature-converted per `temperatureUnit`, unit
     /// appended when `readout.kind` implies one) — no label, no key, no control state.

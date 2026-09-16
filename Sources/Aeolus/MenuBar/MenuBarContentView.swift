@@ -147,10 +147,15 @@ private struct MenuBarReadoutRow: View {
     }
 
     /// What this row's control state says, if it has one — see
-    /// `MenuBarReadoutFormatting.controlStateSuffix(for:)`. Per `#249`, this is what
-    /// keeps a fan's mode from rendering as a bare, unexplained number: the dropdown
-    /// already showed label and key alongside the value, but said nothing about what a
-    /// fan's own mode currently is, unlike the main window's fan list.
+    /// `MenuBarReadoutFormatting.controlStateSuffix(for:)`. `nil` for every
+    /// `.sensor`-sourced readout — `F0Md` picked deliberately via the preferences picker
+    /// included — because this only ever reports a *fan's* own mode (a `.fan`-sourced
+    /// readout's live control state), never a raw mode/target key being read as an
+    /// ordinary sensor. What keeps a picked `F0Md`'s `0` from being misread here is this
+    /// row's own label and key, shown above regardless of whether `controlStateText` is
+    /// `nil`; per `#249`, this property's own job is narrower — bringing the main
+    /// window's fan list's control-state wording to the dropdown for a readout that
+    /// already has a real control state to report.
     private var controlStateText: String? {
         MenuBarReadoutFormatting.controlStateSuffix(for: readout)
     }
