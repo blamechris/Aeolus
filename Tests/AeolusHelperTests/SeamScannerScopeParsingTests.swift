@@ -110,6 +110,41 @@ struct SeamScannerScopeParsingTests {
         #expect(found.filter { !$0.isStored }.map(\.name) == ["negotiated", "health"])
     }
 
+    /// The observer half of the rule above, with **no initialiser** — which is the only shape
+    /// that actually reaches `observesStorage`.
+    ///
+    /// `currentHealth` in the fixture above carries `= .idle`, so the parser takes its `=`
+    /// branch and records storage without ever consulting the accessor block. The branch the
+    /// fixture named was therefore executed by nothing: mutating `observesStorage` to
+    /// `return false` left the whole parsing suite green, and with that regression applied
+    /// `private var lastSnapshot: SystemSnapshot? { didSet { publish() } }` — a legal stored
+    /// optional with an observer and no initialiser — read as computed and walked straight
+    /// through `theClientStoresNoFanState`. The parser was right; only its test was inert.
+    ///
+    /// **Mutation:** `return word == "willSet" || word == "didSet"` → `return false`. Run: red
+    /// here, and green across the rest of this suite, which is why this fixture exists
+    /// separately rather than as another line in the one above.
+    @Test("An observed property with no initialiser is stored")
+    func observedPropertiesWithoutInitialisersAreStored() {
+        let found = properties(
+            """
+            actor Client {
+                private var lastSnapshot: SystemSnapshot? {
+                    didSet { publish() }
+                }
+                private var lastLease: Lease? {
+                    willSet { publish() }
+                }
+                var derived: SystemSnapshot? {
+                    lastSnapshot
+                }
+            }
+            """)
+
+        #expect(found.filter(\.isStored).map(\.name) == ["lastSnapshot", "lastLease"])
+        #expect(found.filter { !$0.isStored }.map(\.name) == ["derived"])
+    }
+
     /// A protocol requirement is a `{ get }`, which is not storage either — and a protocol
     /// that named a forbidden type in a requirement would be describing a conformer's
     /// storage, not declaring any.
@@ -294,5 +329,36 @@ struct SeamScannerScopeParsingTests {
                 """)
 
         #expect(body == nil)
+    }
+
+    /// A bodiless declaration above a real one is **skipped**, not answered with.
+    ///
+    /// This is exactly how `HelperConnectionPinning.swift` is written — the protocol
+    /// requirement first, `SignedHelperPinning`'s implementation below it — and a first-match
+    /// scan answered `nil` for the one function in this target that builds a connection.
+    /// `sendPath()` then dropped `pinnedConnection` from its population silently, and a
+    /// three-attempt retry of `transport.makeConnection()` inside it was green.
+    ///
+    /// **Mutation:** take the first match rather than the first match with a body. Run: red
+    /// here, and red on `nothingOnTheSendPathRetries`' floor, which is the half that says the
+    /// name was reached at all.
+    @Test("A bodiless declaration does not hide the implementation below it")
+    func bodilessDeclarationsDoNotHideImplementations() throws {
+        let body = try SeamScanner.functionBody(
+            named: "pinnedConnection",
+            inSource: """
+                protocol HelperConnectionPinning {
+                    func pinnedConnection(over transport: Transport) throws -> NSXPCConnection
+                }
+
+                struct SignedHelperPinning: HelperConnectionPinning {
+                    func pinnedConnection(over transport: Transport) throws -> NSXPCConnection {
+                        for attempt in 0..<3 { _ = attempt }
+                        return transport.makeConnection()
+                    }
+                }
+                """)
+
+        #expect(body?.contains("for attempt in 0..<3") == true)
     }
 }
