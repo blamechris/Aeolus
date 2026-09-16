@@ -26,17 +26,17 @@ public enum HelperClientError: Error, Sendable, Hashable {
 
     /// The connection went away without a message ever being delivered.
     ///
-    /// **Two situations are indistinguishable here, and both must be named to the user.**
-    /// The helper may not be installed or not yet approved; or the helper may have
+    /// **These possibilities are indistinguishable here, and all must be named to the user.**
+    /// The helper may not be installed; it may not yet be approved; or the helper may have
     /// *refused this client* because its signature did not satisfy the requirement. ADR
     /// 0005 measured that directly: libxpc drops a requirement-refused peer and invalidates
     /// the connection with nothing delivered, which is what a client that connected to
-    /// nothing also sees. Reporting either one alone would be a guess presented as a
+    /// nothing also sees. Reporting any one of them alone would be a guess presented as a
     /// diagnosis.
     ///
     /// The app narrows it with `HelperInstallationState`, which knows what the bundle
     /// contains and what `SMAppService` says about it; `fanctl`, which has no such source,
-    /// names both possibilities.
+    /// names all of them.
     ///
     /// `code` is the underlying `NSError` code, carried rather than asserted because the
     /// transport's vocabulary is not this project's and a code nobody anticipated must still

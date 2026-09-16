@@ -79,10 +79,10 @@ go to step 4.
 step 4's `bootout` line. The reasons worth knowing in advance:
 
 - *Either the helper is not installed or not yet approved, or it refused this copy of
-  `fanctl` because the signature did not match.* Both are named because they cannot be told
-  apart from the client's side: macOS drops a connection whose peer fails the code-signing
-  check with nothing delivered, exactly as it does when nothing was listening. Check System
-  Settings → Login Items & Extensions first.
+  `fanctl` because the signature did not match.* These possibilities are named together
+  because they cannot be told apart from the client's side: macOS drops a connection whose
+  peer fails the code-signing check with nothing delivered, exactly as it does when nothing
+  was listening. Check System Settings → Login Items & Extensions first.
 - *This build carries no Team ID.* A `fanctl` you built yourself with `swift build` cannot
   verify which process would answer, so it does not connect at all. That is expected, not a
   fault — [#82](https://github.com/blamechris/Aeolus/issues/82) is the signed build. Reads
