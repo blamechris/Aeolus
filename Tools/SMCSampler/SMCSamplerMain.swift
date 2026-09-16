@@ -132,31 +132,42 @@ struct SMCSamplerMain {
 
         var fanIndices: [Int] = []
         var keySource: String
+        var fanEnumerationFailed = false
         var fanEnumerationFailureReason: String?
         if options.keys.isEmpty {
+            // Fan enumeration failing does not make this run pointless — the critical set
+            // alone may still be readable — so the outcome is reported and continued past,
+            // not thrown. A genuinely unavailable SMC still surfaces: the sample loop's own
+            // first `read(keys:)` call throws the same underlying error. The mapping from
+            // "did it throw" to `keySource`/`fanEnumerationFailed`/`fanEnumerationFailureReason`
+            // lives in `FanEnumerationOutcome.from(_:model:)`, a pure function
+            // `FanEnumerationOutcomeTests` exercises directly — this `do`/`catch` only
+            // supplies the `Result` that function needs.
+            let enumerationResult: Result<[Int], Error>
             do {
                 let enumeration = try await SMCFanEnumeration.enumerate(provider: provider)
-                fanIndices = enumeration.fanIndices
+                enumerationResult = .success(enumeration.fanIndices)
             } catch {
-                // Fan enumeration failing does not make this run pointless — the critical
-                // set alone may still be readable — so this is reported and continued past,
-                // not thrown. A genuinely unavailable SMC still surfaces: the sample loop's
-                // own first `read(keys:)` call throws the same underlying error.
-                //
-                // Reported twice, deliberately: stderr for a maintainer watching the
-                // terminal live, and `fanEnumerationFailureReason` on the `start` line
-                // itself for the common invocation that redirects only stdout to a file —
-                // see that field's documentation for why stderr alone leaves the capture
-                // indistinguishable from a fanless machine.
-                let reason = "\(error)"
-                fanEnumerationFailureReason = reason
+                enumerationResult = .failure(error)
+            }
+            let outcome = FanEnumerationOutcome.from(
+                enumerationResult, model: identity.modelIdentifier)
+            fanIndices = outcome.fanIndices
+            keySource = outcome.keySource
+            fanEnumerationFailed = outcome.fanEnumerationFailed
+            fanEnumerationFailureReason = outcome.fanEnumerationFailureReason
+
+            // Reported twice, deliberately: stderr for a maintainer watching the terminal
+            // live, and `fanEnumerationFailureReason` on the `start` line itself for the
+            // common invocation that redirects only stdout to a file — see that field's
+            // documentation for why stderr alone leaves the capture indistinguishable from
+            // a fanless machine.
+            if let reason = outcome.fanEnumerationFailureReason {
                 FileHandle.standardError.write(
                     Data(
                         "smc-sampler: fan enumeration failed, continuing with 0 fans: \(reason)\n"
                             .utf8))
             }
-            keySource =
-                "default(model:\(identity.modelIdentifier ?? "unknown"),fans:\(fanIndices.count))"
         } else {
             keySource = "custom"
         }
@@ -185,7 +196,7 @@ struct SMCSamplerMain {
             intervalSeconds: options.intervalSeconds,
             keys: keys,
             keySource: keySource,
-            fanEnumerationFailed: fanEnumerationFailureReason != nil,
+            fanEnumerationFailed: fanEnumerationFailed,
             fanEnumerationFailureReason: fanEnumerationFailureReason)
         sink.write(try NDJSON.line(startRecord))
 

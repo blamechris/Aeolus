@@ -112,6 +112,52 @@ enum MeasurementKeySet {
     }
 }
 
+/// What `main()` derives from attempting fan enumeration before resolving the key set to
+/// sample: the fan indices actually found (empty on failure), the human-readable
+/// `keySource` string `SamplerStartRecord` records, and the
+/// `fanEnumerationFailed`/`fanEnumerationFailureReason` pair that field's own documentation
+/// explains the need for.
+///
+/// Pulled out of `SMCSamplerMain.swift` as a pure function over the already-caught
+/// `Result`, the same move `b33abf8` made for `runSampleLoop` and for the identical
+/// reason: `main()` is `@main` and unreachable by `@testable import`, so whatever decides
+/// these three values has to live here to be exercised by anything other than `swift run`.
+/// Before this existed, `SMCSamplerMain.swift:188-189` wired
+/// `fanEnumerationFailed: fanEnumerationFailureReason != nil` directly against a local
+/// variable no test could see — deleting that wiring left the full suite green.
+struct FanEnumerationOutcome: Sendable, Equatable {
+    let fanIndices: [Int]
+    let keySource: String
+    let fanEnumerationFailed: Bool
+    let fanEnumerationFailureReason: String?
+
+    /// `enumerationResult`: `.success(fanIndices)` when `SMCFanEnumeration.enumerate`
+    /// returned normally, `.failure(error)` when it threw. `model` is
+    /// `HardwareIdentity.current().modelIdentifier`, threaded through as a parameter
+    /// rather than read again here so this stays a pure function of its inputs — the same
+    /// reason `resolvedKeys(custom:model:fanIndices:)` above takes `model` rather than
+    /// calling `HardwareIdentity.current()` itself.
+    static func from(
+        _ enumerationResult: Result<[Int], Error>,
+        model: String?
+    ) -> FanEnumerationOutcome {
+        switch enumerationResult {
+        case .success(let fanIndices):
+            return FanEnumerationOutcome(
+                fanIndices: fanIndices,
+                keySource: "default(model:\(model ?? "unknown"),fans:\(fanIndices.count))",
+                fanEnumerationFailed: false,
+                fanEnumerationFailureReason: nil)
+        case .failure(let error):
+            return FanEnumerationOutcome(
+                fanIndices: [],
+                keySource: "default(model:\(model ?? "unknown"),fans:0)",
+                fanEnumerationFailed: true,
+                fanEnumerationFailureReason: "\(error)")
+        }
+    }
+}
+
 /// Parses `--keys=K1,K2,...` out of a raw comma-separated string into individual keys,
 /// trimmed of surrounding whitespace and with empty entries dropped — so `--keys="F0Ac, F0Mn"`
 /// and a trailing comma both behave the way a maintainer typing the flag by hand would
