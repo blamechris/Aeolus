@@ -140,20 +140,23 @@ struct SleepCycleAccumulationTests {
     /// on the first sleep of a helper's life and never again. Run: red **only here**, three
     /// issues — `perCycle → [Set([0]), Set([]), Set([])]`, and cycles 2 and 3's fan-0 refusal
     /// coming back `.systemSleeping` — with the rest of the repository green (`1431 tests in 220
-    /// suites … with 3 issues`, 32.7 s). **This is the mutation the rest of the list does not
-    /// contain**, and it is the one the suite's whole premise rests on: A is this test's own loop
-    /// bound, C and D are admitted above as caught elsewhere, and B and E redden the single-sleep
-    /// tests too. G is caught by nothing else, `threeSleepCyclesEachSealReopenAndAcknowledgeOnce`
-    /// and all three single-sleep unconfirmed tests included. What stays green under it is the
-    /// three fault lines — § 4 logs the expiry whether or not the set it recorded was empty, so
-    /// the log line is not a substitute for the register.
+    /// suites … with 3 issues`, on a run quiet enough that none of the wall-clock-deadline flakes
+    /// #227 and #256 track fired alongside them — those three issues are the whole red). **This is
+    /// the mutation the rest of the list does not contain**, and it is the one the suite's whole
+    /// premise rests on: A is this test's own loop bound, C and D are admitted above as caught
+    /// elsewhere, and B and E redden the single-sleep tests too. G is caught by nothing else,
+    /// `threeSleepCyclesEachSealReopenAndAcknowledgeOnce` and all three single-sleep unconfirmed
+    /// tests included. What stays green under it is the three fault lines — § 4 logs the expiry
+    /// whether or not the set it recorded was empty, so the log line is not a substitute for the
+    /// register.
     ///
     /// **Mutation F — the keystone issued once per helper.** A per-responder latch before
     /// `restoreToAutomatic(.everyFan)` in `SystemPowerResponder.handBackEveryFan()`, so the
     /// machine-wide half of § 4 fires on the first sleep of a helper's life and never again.
     /// Run: red **only here** — `scopes → [.fan(0), .everyFan, .fan(0), .fan(0)]` at the
     /// `restoreScopes` assertion, with the whole rest of the repository green (`1431 tests in
-    /// 220 suites … with 1 issue`, 30.5 s on a quiet machine). This is the mutation the register
+    /// 220 suites … with 1 issue`, on a quiet machine — that single issue is the whole red, with
+    /// none of the #227 / #256 wall-clock flakes beside it). This is the mutation the register
     /// assertions cannot feel: the per-fan teardown stays perfect under it, so a suite that
     /// only read the registers would report three healthy cycles. A *process*-wide latch is a
     /// different and much weaker mutation — it also reddens three cycle-1 tests in

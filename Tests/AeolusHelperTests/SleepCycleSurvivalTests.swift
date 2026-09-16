@@ -99,14 +99,15 @@ struct SleepCycleSurvivalTests {
     /// mutation that the accumulation suite's own B already covers. Run: red **only here**, 2
     /// issues, both after the second wake — fan 0's refusal coming back
     /// `.restoreToAutomaticFailed` and `fansWithAbandonedHandbacks.isEmpty` — against `1431 tests
-    /// in 220 suites`, in **31.5 s** with those two issues and nothing else, and with
-    /// `threeSleepCyclesEachSealReopenAndAcknowledgeOnce` passing on the same run. Nothing else in
-    /// the repository sleeps twice on one outstanding fan, so nothing else can see it. Several runs
-    /// rather than one, and the discarded ones are worth a line: each went over 50 s on a
-    /// machine with other agents building and so also carried one or more of the
-    /// wall-clock-deadline flakes #227 (`HelperHardwareTests`, `SMCSensorProviderTests`) and #256
-    /// (`HelperClientTests`, `MessageOrderingTests`) track. Those varied run to run; these two did
-    /// not. Under 50 s is the threshold this repository already uses for believing a red run.
+    /// in 220 suites`, with those two issues and nothing else on a run quiet enough to carry no
+    /// wall-clock-deadline flake, and with `threeSleepCyclesEachSealReopenAndAcknowledgeOnce`
+    /// passing on the same run. Nothing else in the repository sleeps twice on one outstanding fan,
+    /// so nothing else can see it. Several runs rather than one, and the discarded ones are worth a
+    /// line: each went over 50 s on a machine with other agents building and so also carried one or
+    /// more of the wall-clock-deadline flakes #227 (`HelperHardwareTests`,
+    /// `SMCSensorProviderTests`) and #256 (`HelperClientTests`, `MessageOrderingTests`) track.
+    /// Those varied run to run; these two did not. Under 50 s is the threshold this repository
+    /// already uses for believing a red run.
     ///
     /// **Mutation C — the seal reopening once.** A `hasUnsealed` latch on `unsealAfterWake()`.
     /// Run: red on the fan 1 grant after the second wake (`.systemSleeping` where nothing was
