@@ -704,9 +704,16 @@ that **both** acts of the handback ran every cycle — the lease teardown's per-
 the machine-wide keystone, read off the firmware, because the keystone writes no register and a
 keystone issued once per helper is otherwise invisible. The second never releases its wedge, so
 the register written on the first cycle is the one read after the second wake: the instant the
-issue is actually about, with the seal lifted and the refusal belonging to the fan. Every claim
-in both carries a mutation, and two of those mutations are caught by nothing else in the
-repository. What is **not** covered multi-cycle is D33's third ending: a durable
+issue is actually about, with the seal lifted and the refusal belonging to the fan. **Each
+suite's register, refusal, keystone and cycle-count claims carry a mutation** — recorded in the
+suites themselves — and **three** of those mutations are caught by nothing else in the
+repository: the unconfirmed register written once per helper and the keystone issued once per
+responder, both red only in the first suite, and a *second* budget expiry promoted to the durable
+register, red only in the second. The narrower wording is a correction: the sentence here read
+*"every claim in both"*, and the end-state assertions on `fansMidHandback` and on the three
+supervisors still running carry no mutation of their own, so that was the kind of coverage claim
+this section's own reading note says is worse than no line. What is **not** covered multi-cycle is
+D33's third ending: a durable
 `restoreToAutomaticFailed` earned on cycle 1 is never carried into a cycle 2, deliberately,
 because what it should do across a wake is #209's still-open criterion 3.
 
