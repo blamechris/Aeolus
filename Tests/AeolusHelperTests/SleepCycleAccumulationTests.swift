@@ -108,6 +108,18 @@ struct SleepCycleAccumulationTests {
     /// separate: a suite that asked only "was a lease refused inside the window?" would read the
     /// seal's answer as the register's and pass. Measured green in
     /// `threeSleepCyclesEachSealReopenAndAcknowledgeOnce`.
+    ///
+    /// **Mutation F — the keystone issued once per helper.** A per-responder latch before
+    /// `restoreToAutomatic(.everyFan)` in `SystemPowerResponder.handBackEveryFan()`, so the
+    /// machine-wide half of § 4 fires on the first sleep of a helper's life and never again.
+    /// Run: red **only here** — `scopes → [.fan(0), .everyFan, .fan(0), .fan(0)]` at the
+    /// `restoreScopes` assertion, with the whole rest of the repository green (`1430 tests in
+    /// 219 suites … with 1 issue`, 33 s on a quiet machine). This is the mutation the register
+    /// assertions cannot feel: the per-fan teardown stays perfect under it, so a suite that
+    /// only read the registers would report three healthy cycles. A *process*-wide latch is a
+    /// different and much weaker mutation — it also reddens three cycle-1 tests in
+    /// `SystemPowerTests`, because those compose their own helper in the same process — which is
+    /// why the latch is per responder.
     @Test("Three wedged sleep cycles each record, refuse and clear the same fan")
     func threeWedgedCyclesEachRecordRefuseAndClearTheSameFan() async throws {
         let plane = CycleWedgingRestorePlane(SystemPowerTests.machine(fanCount: 2))
@@ -152,9 +164,35 @@ struct SleepCycleAccumulationTests {
             show, from a handback that started working.
             """)
 
+        await Self.expectBothHalvesOfTheHandbackRanEveryCycle(plane)
         try await Self.expectThreeCyclesLeftNothingBehind(helper)
 
         await helper.shutDown()
+    }
+
+    /// Both acts of § 4's handback, on every cycle, read off the firmware rather than the
+    /// registers.
+    ///
+    /// § 4 issues two restores and `SystemPowerResponder`'s own doc calls them different acts:
+    /// the lease teardown's per-fan restore, and the machine-wide keystone that additionally
+    /// clears the Apple Silicon force key. Every other assertion in this suite reads a
+    /// `LeaseAuthority` register, and the keystone writes none of them — it consumes no lease
+    /// and touches no lease state — so a keystone issued once per helper leaves this suite's
+    /// register assertions, and the healthy-path multi-cycle test, entirely green. This is the
+    /// one assertion that looks at the wire, which is why mutation F is red only here.
+    private static func expectBothHalvesOfTheHandbackRanEveryCycle(
+        _ plane: CycleWedgingRestorePlane
+    ) async {
+        let scopes = await plane.restoreScopes
+        #expect(
+            scopes == [.fan(0), .everyFan, .fan(0), .everyFan, .fan(0), .everyFan],
+            """
+            three cycles issued \(scopes) rather than the lease's own fan followed by the \
+            keystone, three times over. A keystone issued on the first sleep of a helper's life \
+            and never again sleeps every later lid close with Ftst still set and any fan in \
+            foreign manual control still in manual — and the per-fan half would still be \
+            perfect, so no register assertion here would notice.
+            """)
     }
 
     /// What three wedged-then-resolved cycles must leave: three empty registers, a grantable
