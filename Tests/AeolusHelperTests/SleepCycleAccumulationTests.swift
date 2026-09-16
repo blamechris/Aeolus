@@ -38,6 +38,30 @@ import Testing
 /// on cycle 1 than on cycle 3. The first says the mechanism never worked; the later ones say it
 /// works once.
 ///
+/// ## Which of decision D33's three endings this covers, and which it does not
+///
+/// The header above argues about *frequency*, and frequency is not the only axis. D33 (ADR 0007,
+/// amendment 2026-09-06) gives an unconfirmed handback three endings, and they are covered to
+/// three different depths — stated here rather than left for a reader to work out from the
+/// assertions:
+///
+/// - **The outstanding restore lands, and the register clears.** Driven three times below, which
+///   is the ending a machine that merely slept slowly actually reaches.
+/// - **The restore never returns, and the register stands.** Covered across a wake and the sleep
+///   after it by `SleepCycleSurvivalTests` — deliberately a sibling suite, because a wedge
+///   released inside every cycle (as here) cannot express it.
+/// - **The restore comes back refused after `RestoreLimits.attemptBudget`, and converts to the
+///   durable `.restoreToAutomaticFailed`.** Covered for **one sleep only**, by
+///   `UnconfirmedHandbackTests.aLateRefusalConvertsTheUnconfirmedStateToTheDurableOne` with
+///   `WedgedThenRefusingRestorePlane`. Nothing drives a durable refusal earned on cycle 1 into a
+///   cycle 2, so "a fan refused durably on an unattended cycle is still refused durably on the
+///   next one" rests on the register being append-only by inspection rather than by assertion.
+///   That is left open on purpose: what a durable refusal should do across a wake is #209's
+///   criterion 3, the maintainer's clearability decision, and a test written before it is a test
+///   that would have to be rewritten by it. The two assertions below that read
+///   `fansWithAbandonedHandbacks` say the durable register was **not** produced; neither says
+///   what happens once it is.
+///
 /// ## The cadence this is sized against, and the correction to it
 ///
 /// #209 opened on a `pmset` capture reading one lid close as seven sleep cycles, and inferred
