@@ -83,7 +83,9 @@ final class ClientListenerHarness {
     /// `health == .versionMismatched`). **Matched by assertion, not by line number**: 750 ms
     /// does not expire on a quiet `Mac16,5` at all, which is the whole point of #250, so the
     /// reproduction runs at `.nanoseconds(1)`, and the line numbers in #250's list are from a
-    /// tree several comment inserts ago. It is not enough to retire #239. The only portable guard against the lifetime reading
+    /// tree several comment inserts ago.
+    ///
+    /// It is not enough to retire #239. The only portable guard against the lifetime reading
     /// is still the one the tests that care already use — pinning the harness past the last
     /// call, `sessions.isEmpty` in `aRefusingHelperIsPromptAndNamesBothPossibilities` being
     /// the pattern — and #239's second defect stays open for exactly that reason.
