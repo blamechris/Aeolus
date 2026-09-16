@@ -31,6 +31,19 @@ import SMCCore
 /// state per E6's design), this fallback is legitimately empty rather than showing
 /// whatever the enumeration order happens to put first.
 ///
+/// ## A guessed label earns the same trust as no label at all
+///
+/// "Labelled is trusted" above only holds for `CatalogConfidence.isConfirmed` — `.verified`
+/// or `.community` — because those mean a human actually stands behind the label. A
+/// `.guess` label is, by its own documentation, "a plausible mapping nobody has
+/// confirmed," which is exactly the same standing as an unlabelled key, so it is held to
+/// the same `kind != .unknown` measurement gate rather than skipped straight through.
+/// Observed on this project's development hardware: `TB0T`/`TB1T` (category `battery`)
+/// carry a `.guess`-confidence catalog label and classify as `kind == .unknown` (their
+/// name matches no convention `SMCSensorProvider.kind(for:)` recognises) — without this
+/// gate they would default ahead of any genuinely-measured sensor on the strength of a
+/// label nobody has confirmed, over a value this project cannot itself vouch for as real.
+///
 /// ## A curated label makes a key nameable, not defaultable (`#249`)
 ///
 /// `#249` found `F0Md` (Fan 0 Mode) and `F0Tg` (Fan 0 Target Speed) in the default menu
@@ -82,12 +95,24 @@ enum MenuBarReadoutSelection {
         let candidates = sensors.filter {
             !fanKeys.contains($0.key) && !isFanControlPlaneKey($0.key)
         }
-        let labelled = candidates.filter { $0.decoration != nil }
-        // Trust a catalog label regardless of `kind` — a human curated it via E6. Absent
-        // one, only a key whose `kind` this project can actually vouch for as a physical
-        // measurement is eligible; see this type's "labelled is trusted" documentation
-        // for the #KEY/AC-B finding this specifically guards against.
-        let unlabelledFallback = candidates.filter { $0.decoration == nil && $0.kind != .unknown }
+        // Trust a catalog label regardless of `kind` only when a human actually confirmed
+        // it — `.verified` or `.community` — per this type's "labelled is trusted"
+        // documentation. A `.guess` label is, by `CatalogConfidence.guess`'s own
+        // definition, "a plausible mapping nobody has confirmed": it has exactly the same
+        // "not itself confirmed" status as no label at all, so it earns no more trust than
+        // an unlabelled key and falls to the same `kind != .unknown` gate below rather
+        // than skipping it. This is what keeps a `.guess`, `.unknown`-kind key (observed
+        // on real hardware: `TB0T`/`TB1T`, category `battery`) from becoming a default
+        // just because a low-confidence label happens to exist for it.
+        let labelled = candidates.filter { $0.decoration?.confidence.isConfirmed == true }
+        // Only a key whose `kind` this project can actually vouch for as a physical
+        // measurement is eligible here — either genuinely unlabelled, or labelled with a
+        // confidence this type does not yet trust outright; see this type's "labelled is
+        // trusted" documentation for the #KEY/AC-B finding this specifically guards
+        // against.
+        let unlabelledFallback = candidates.filter {
+            $0.decoration?.confidence.isConfirmed != true && $0.kind != .unknown
+        }
         let chosen = (labelled.isEmpty ? unlabelledFallback : labelled)
             .prefix(maximumDefaultSensors)
         readouts.append(contentsOf: chosen.map { MenuBarReadout(key: $0.key, source: .sensor) })

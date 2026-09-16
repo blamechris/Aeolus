@@ -186,6 +186,57 @@ struct MenuBarReadoutSelectionTests {
         #expect(selection.filter { $0.source == .fan }.map(\.key) == ["F0Ac"])
     }
 
+    // MARK: - A `.guess`-confidence label is not a confirmed one
+
+    @Test(
+        "A .guess-confidence label on an .unknown-kind sensor is never chosen — the TB0T/TB1T shape"
+    )
+    func guessConfidenceUnknownKindCandidateIsExcludedFromDefaults() {
+        // The exact shape observed on this project's development hardware: TB0T/TB1T
+        // carry a catalog label sourced with confidence .guess, and SMCSensorProvider
+        // classifies both .unknown because their name matches no convention it
+        // recognises. Neither a human-confirmed label nor a vouched-for kind backs
+        // these, so — unlike controlPlaneKeysAreNeverDefaultedEvenWhenLabelled's F0Md,
+        // which is excluded by the fan-control-plane shape check — this one is excluded
+        // by the confidence/kind gate this fix adds.
+        let guessDecoration = CatalogDecoration(
+            key: "TB0T", label: "Battery Temperature (Sensor 0)", category: .battery,
+            confidence: .guess)
+        let sensors = [
+            Self.sensor(key: "TB0T", kind: .unknown, decoration: guessDecoration),
+            Self.sensor(key: "Tp09"),
+        ]
+        let selection = MenuBarReadoutSelection.defaultSelection(fans: [], sensors: sensors)
+
+        let sensorKeys = selection.filter { $0.source == .sensor }.map(\.key)
+        #expect(!sensorKeys.contains("TB0T"))
+        #expect(sensorKeys == ["Tp09"])
+    }
+
+    @Test("A .guess-confidence label on a kind this project can vouch for is still chosen")
+    func guessConfidenceKnownKindCandidateIsStillChosen() {
+        // A .guess label does not disqualify a key whose kind is itself a real
+        // measurement — the kind, not the label, is what vouches for it here, exactly as
+        // it already does for a wholly unlabelled candidate.
+        let guessDecoration = CatalogDecoration(
+            key: "Th9J", label: "Maybe Battery Proximity", category: .battery,
+            confidence: .guess)
+        let sensors = [Self.sensor(key: "Th9J", decoration: guessDecoration)]
+        let selection = MenuBarReadoutSelection.defaultSelection(fans: [], sensors: sensors)
+
+        #expect(selection.filter { $0.source == .sensor }.map(\.key) == ["Th9J"])
+    }
+
+    @Test("A .community-confidence label is trusted outright, same as .verified")
+    func communityConfidenceLabelIsTrustedRegardlessOfKind() {
+        let communityDecoration = CatalogDecoration(
+            key: "Th9J", label: "Battery Proximity", category: .battery, confidence: .community)
+        let sensors = [Self.sensor(key: "Th9J", kind: .unknown, decoration: communityDecoration)]
+        let selection = MenuBarReadoutSelection.defaultSelection(fans: [], sensors: sensors)
+
+        #expect(selection.filter { $0.source == .sensor }.map(\.key) == ["Th9J"])
+    }
+
     @Test("A second fan's F1Md/F1Tg are excluded the same way as fan 0's")
     func controlPlaneExclusionGeneralisesPastFanZero() {
         let sensors = [
