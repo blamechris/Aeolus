@@ -145,20 +145,23 @@ final class ClientListenerHarness {
     ///
     /// **What holds this value there, and exactly how far that reaches.**
     /// `HelperClientDeadlineTests.noHarnessDefaultImposesATighterDeadlineThanTheProduct`
-    /// compares this constant, and `FanctlResetTests.unhurried`, against the shipping trio.
-    /// Those two are every *default* in the test target, so no test inherits a tighter bound
-    /// than the product's without that test going red. It says nothing about a deadline a test
-    /// passes **explicitly** at its call site: ten call sites do, several of them below the
-    /// product's bound on a verb they do not assert, and
-    /// [#255](https://github.com/blamechris/Aeolus/issues/255) is where that is tracked. Read
+    /// requires this constant to **equal** the shipping trio, and `FanctlResetTests.unhurried`
+    /// to be no tighter than it. Those two are every *default* in the test target, so no test
+    /// inherits a bound tighter than the product's without that test going red. It says nothing
+    /// about a deadline a test passes **explicitly** at its call site: ten call sites do, and
+    /// five of those are below the product's bound on a verb they do not assert — the panic
+    /// terms and handshake terms in `HelperClientTeardownTests` that
+    /// [#255](https://github.com/blamechris/Aeolus/issues/255) carries, plus two panic terms on
+    /// a verb the test never sends at all. That test's own doc enumerates which is which. Read
     /// the invariant as "no test inherits a tighter bound", never as "no tighter bound exists".
     ///
-    /// The comparison is also *relative*, so tightening `HelperClientDeadlines` itself keeps it
-    /// green while every inheriting test gets the tighter bound. The absolute floor comes from
-    /// a different test —
-    /// `HelperClientDeadlineTests.aPeerASecondSlowToAnswerHelloStillRoundTrips` holds `hello`
-    /// for a second and requires the round trip to survive it — which reddens whichever side
-    /// moved.
+    /// Because this constant is *defined* as the product's trio, the comparison is a value
+    /// against itself: it is a source tripwire that fires when a literal is written back in, not
+    /// a runtime check, and it is blind to tightening `HelperClientDeadlines` itself. The
+    /// absolute floor comes from two other tests —
+    /// `HelperClientDeadlineTests.aPeerASecondSlowToAnswerHelloStillRoundTrips` and
+    /// `aPeerASecondSlowToAnswerAGatedVerbStillRoundTrips` hold a message for a second and
+    /// require the round trip to survive it — which redden whichever side moved.
     ///
     /// It costs nothing on a healthy run: everything here answers in milliseconds and never
     /// reaches the deadline at all. It costs the shipping deadline on a *failing* run, which

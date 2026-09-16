@@ -94,13 +94,50 @@ struct HelperClientDeadlineTests {
     /// third default. So no test can acquire a tighter bound than the product's without
     /// naming one.
     ///
+    /// **Most of what it compares is a value against itself, and that is what it is for.**
+    /// `ClientListenerHarness.defaultDeadlines` *is* `HelperClientDeadlines.default`
+    /// (`HelperClientHarness.swift`), and `FanctlResetTests.unhurried`'s handshake term *is*
+    /// `HelperClientDeadlines.handshakeVerb`, so of the four terms read here only `unhurried`'s
+    /// gated (10 s against 5 s) and panic (10 s against 10 s) compare distinct values. This is
+    /// therefore a **source tripwire**: it cannot fail while the defaults are defined by
+    /// reference, and it goes red the moment a literal is written back into either of them —
+    /// which is the only way #250 returns. The harness half is asserted as *equality* for that
+    /// reason: there is no reason for the default eighteen tests inherit to differ from the
+    /// product in either direction, and equality catches a literal that merely *differs* rather
+    /// than only one that is tighter. `unhurried` keeps `>=`, because being generous is
+    /// deliberate there.
+    ///
     /// **What it does not cover, and why that is not hidden.** Ten call sites pass a deadline
-    /// explicitly, and several are below the product's bound on a verb they do not assert —
-    /// `HelperClientTeardownTests` at `panicVerb: .seconds(5)` twice and `handshakeVerb:
-    /// .seconds(10)` once. Each is a visible literal beside the assertion it serves, which is
-    /// a review matter; [#255](https://github.com/blamechris/Aeolus/issues/255) carries them,
-    /// and deciding whether a `SeamScanner` pass over the target is worth its own tripwire is
-    /// part of that issue. This test is not cover for that category and must not be read as it.
+    /// explicitly. A bound below the product's is legitimate at a site where the expiry *is*
+    /// the assertion — `HelperClientTests.aMessageNobodyAnswersHasItsOwnError`'s 250 ms gated
+    /// verb, `theHandshakeIsSentWithinItsOwnDeadline`'s 1 ns handshake,
+    /// `FanctlResetTests.aHelperThatNeverAnswersIsReportedAsUnknown`'s 2 s panic path — and
+    /// that is what most of those sites are for. Verb by verb, what is left over is two
+    /// different things:
+    ///
+    /// - **Below the product on a round trip the test requires to *succeed*** — live exposure,
+    ///   #250's own shape. In `HelperClientTeardownTests`: `panicVerb: .seconds(5)`, half the
+    ///   product's 10 s, in `thePanicPathSurvivesATimedOutVerb` and
+    ///   `thePanicPathIsNotBlockedByAParkedVerb`, both of which then `await
+    ///   client.restoreAllToAutomatic()` and assert it arrived; and the handshake term below
+    ///   the product's 15 s at **all three** of that file's short sites —
+    ///   `handshakeVerb: .seconds(5)` in `aTimedOutVerbDoesNotWedgeTheVerbsAfterIt` and
+    ///   `thePanicPathSurvivesATimedOutVerb`, `.seconds(10)` in
+    ///   `thePanicPathIsNotBlockedByAParkedVerb` — each of which sends a `hello` that only has
+    ///   to succeed.
+    /// - **Below the product on a verb the test never sends** — inert, no exposure, named only
+    ///   so this list cannot be read as shorter than the truth: `panicVerb: .seconds(5)` in
+    ///   `aTimedOutVerbDoesNotWedgeTheVerbsAfterIt` (whose second verb is `acquireLease`) and
+    ///   in `HelperClientTests.theHandshakeIsSentWithinItsOwnDeadline`, and
+    ///   `panicVerb: deadline` in `aMessageNobodyAnswersHasItsOwnError`. None of the three
+    ///   touches the panic path.
+    ///
+    /// [#255](https://github.com/blamechris/Aeolus/issues/255) carries the first category —
+    /// the handshake terms it was filed for **and** the panic terms, which are in its
+    /// acceptance rather than only in this comment, because a category named here and absent
+    /// there is a category nobody fixes. Deciding whether a `SeamScanner` pass over the target
+    /// is worth its own tripwire is part of that issue too. This test is cover for none of it
+    /// and must not be read as it.
     ///
     /// **It is also a relative check, deliberately, and that leaves a second route open.**
     /// Both sides move together if `HelperClientDeadlines` itself is tightened — a reachable
@@ -114,55 +151,68 @@ struct HelperClientDeadlineTests {
     ///
     /// **Mutation:** set `ClientListenerHarness.defaultDeadlines` back to
     /// `HelperClientDeadlines(gatedVerb: .milliseconds(750), panicVerb: .milliseconds(750),
-    /// handshakeVerb: .milliseconds(750))`. Run: red on the first three expectations, each
-    /// naming the harness bound and the shipping one it undercuts. Or put
-    /// `FanctlResetTests.unhurried`'s handshake term back to `.seconds(10)`: red on the fourth.
+    /// handshakeVerb: .milliseconds(750))`. Run: red on the first expectation, naming all three
+    /// harness bounds and the shipping trio they undercut. Or put `FanctlResetTests.unhurried`'s
+    /// handshake term back to `.seconds(10)`: red on the third expectation of the loop below.
     @Test("No harness default imposes a tighter deadline than the product")
     func noHarnessDefaultImposesATighterDeadlineThanTheProduct() {
-        let harnessDeadlines = ClientListenerHarness.defaultDeadlines
         let shipping = HelperClientDeadlines.default
 
+        // Equality rather than `>=`: this is the default eighteen tests inherit, and it has no
+        // business differing from the product in either direction. In the shipped tree it is
+        // defined *as* `HelperClientDeadlines.default`, so this compares a value with itself and
+        // can only fail once a literal is written back in — which is how #250 arose, twice.
+        let harnessDeadlines = ClientListenerHarness.defaultDeadlines
         #expect(
-            harnessDeadlines.gatedVerb >= shipping.gatedVerb,
+            harnessDeadlines == shipping,
             """
-            the harness allows a gated verb \(harnessDeadlines.gatedVerb) where the product \
-            allows \(shipping.gatedVerb). Every test taking this default asserts something \
-            other than a deadline, so a bound below the product's can only fail them on a \
-            slow machine — #250.
-            """)
-        #expect(
-            harnessDeadlines.panicVerb >= shipping.panicVerb,
-            """
-            the harness allows the panic path \(harnessDeadlines.panicVerb) where the product \
-            allows \(shipping.panicVerb).
-            """)
-        #expect(
-            harnessDeadlines.handshakeVerb >= shipping.handshakeVerb,
-            """
-            the harness allows a handshake \(harnessDeadlines.handshakeVerb) where the \
-            product allows \(shipping.handshakeVerb) — which is \
-            `reconciliationBudget + spawnAllowance + gatedVerb`, the whole of the helper's \
-            cold start. A harness that undercuts it is asserting that the runner is fast, not \
-            that the client is correct.
+            `ClientListenerHarness.defaultDeadlines` allows gated \(harnessDeadlines.gatedVerb) \
+            / panic \(harnessDeadlines.panicVerb) / handshake \(harnessDeadlines.handshakeVerb) \
+            where the product ships \(shipping.gatedVerb) / \(shipping.panicVerb) / \
+            \(shipping.handshakeVerb) — the handshake being `reconciliationBudget + \
+            spawnAllowance + gatedVerb`, the whole of the helper's cold start. Every test \
+            taking this default asserts something other than a deadline, so a bound below the \
+            product's can only fail them on a slow machine (#250), and a literal here is how \
+            the 750 ms triple got in.
             """)
 
-        // The other default a test can inherit without naming it. `unhurried` may be looser
-        // than the product on the two verbs it is generous about; its handshake term was
-        // `.seconds(10)`, tighter than the product's, on a verb none of its tests asserts.
+        // The other default a test can inherit without naming it, and `>=` rather than equality
+        // because being *looser* is deliberate here: `unhurried` sits at 10 s on both verbs this
+        // suite's tests exercise. Those two terms are also the only distinct comparisons in this
+        // test — the handshake term is `HelperClientDeadlines.handshakeVerb` itself.
         let fanctlDefaults = FanctlResetTests.unhurried
-        for (verb, harnessBound, productBound) in [
-            ("a gated verb", fanctlDefaults.gatedVerb, shipping.gatedVerb),
-            ("the panic path", fanctlDefaults.panicVerb, shipping.panicVerb),
-            ("a handshake", fanctlDefaults.handshakeVerb, shipping.handshakeVerb),
+        for (verb, harnessBound, productBound, consequence) in [
+            (
+                "a gated verb", fanctlDefaults.gatedVerb, shipping.gatedVerb,
+                """
+                Three of that suite's four tests inherit this and assert text and an exit code, \
+                so a bound below the product's can only report a helper that answered as one \
+                that did not — the misreport that suite exists to forbid.
+                """
+            ),
+            (
+                "the panic path", fanctlDefaults.panicVerb, shipping.panicVerb,
+                """
+                `fanctl reset --all` *is* the panic path, so this is the bound its round trip \
+                actually runs under, and a value below the product's reports a helper that \
+                answered as one that did not.
+                """
+            ),
+            (
+                "a handshake", fanctlDefaults.handshakeVerb, shipping.handshakeVerb,
+                """
+                No test in that suite sends a `hello` at all — `theCommandSendsNoHandshake` \
+                asserts precisely that — so this term is inert there and misreports nothing \
+                today. It is held to the product's value because a fourth invented handshake \
+                bound is what the first test that *does* send one would inherit.
+                """
+            ),
         ] {
             #expect(
                 harnessBound >= productBound,
                 """
                 `FanctlResetTests.unhurried` allows \(verb) \(harnessBound) where the product \
-                allows \(productBound). Three of that suite's four tests inherit this and \
-                assert text and an exit code, so a bound below the product's can only report a \
-                helper that answered as one that did not — the misreport that suite exists to \
-                forbid.
+                allows \(productBound). \(consequence)
                 """)
         }
     }
@@ -170,9 +220,36 @@ struct HelperClientDeadlineTests {
     /// How long the peer is made to sit on a message in the two tests below.
     ///
     /// Longer than the 750 ms this suite's harness used to allow, because a lag *shorter* than
-    /// that would leave the test green under the exact constant #250 was about. Short enough
-    /// that it is a second of suite wall clock and not five.
+    /// that would leave both tests green under the exact constant #250 was about. Short enough
+    /// that it is a second of suite wall clock and not five. That floor is asserted by
+    /// `theConstructedPeerLagStillExceedsTheBoundBehind250`, once, rather than inside whichever
+    /// of the two tests happened to be written first.
     private static let peerLag = Duration.seconds(1)
+
+    /// The lag both slow-peer tests are built on is still longer than the bound #250 was about.
+    ///
+    /// **A tripwire over a constant, not a behaviour**, and it is labelled as one: it compares
+    /// two compile-time values and cannot fail at runtime. It exists because `peerLag` is the
+    /// one number that decides whether either test below is a test at all — shortened under
+    /// 750 ms to save suite wall clock, both would pass against the very constant they were
+    /// written to catch — and because a floor read by two tests belongs where both of them can
+    /// point at it rather than asserted in one and absent from the other, which is how it was
+    /// first written.
+    ///
+    /// **Mutation:** set `peerLag` to `.milliseconds(500)`. Run: red here, naming 0.5 seconds,
+    /// while `aPeerASecondSlowToAnswerHelloStillRoundTrips` and
+    /// `aPeerASecondSlowToAnswerAGatedVerbStillRoundTrips` both stay green — which is exactly
+    /// the asymmetry this test exists to make visible.
+    @Test("The constructed peer lag still exceeds the bound #250 was about")
+    func theConstructedPeerLagStillExceedsTheBoundBehind250() {
+        #expect(
+            Self.peerLag > .milliseconds(750),
+            """
+            the lag is \(Self.peerLag), which does not exceed the 750 ms bound #250 was about — \
+            so both slow-peer tests would have passed under the constant they exist to catch. \
+            Shortening it to save suite wall clock is how they stop being tests.
+            """)
+    }
 
     /// **A peer a second slow to answer `hello` still round-trips.** The failure, exercised —
     /// not the constant, compared.
@@ -230,13 +307,9 @@ struct HelperClientDeadlineTests {
             the client reached \(harness.sessions.count) sessions. One is the whole point — and \
             reading the harness here is also what pins it past the `client()` line, #239.
             """)
-        #expect(
-            Self.peerLag > .milliseconds(750),
-            """
-            the lag is \(Self.peerLag), which does not exceed the 750 ms bound #250 was \
-            about — so this test would have passed under the constant it exists to catch. \
-            Shortening it to save suite wall clock is how it stops being a test.
-            """)
+        // The floor under `peerLag` — the thing that makes a green run here mean anything — is
+        // `theConstructedPeerLagStillExceedsTheBoundBehind250`, which the gated-verb test below
+        // reads the same constant under.
     }
 
     /// **A peer a second slow to answer a *gated verb* still round-trips.** The same floor, on
