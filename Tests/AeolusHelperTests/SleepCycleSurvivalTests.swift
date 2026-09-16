@@ -47,9 +47,20 @@ struct SleepCycleSurvivalTests {
     /// **The wedge is armed once and never released**, which is what makes this different from
     /// every other multi-cycle test of § 4. `CycleWedgingRestorePlane` keeps parking every
     /// restore until `release()`, so cycle 1's per-fan restore is still parked while cycle 2
-    /// sleeps and the keystone is never reached on either. That is the honest shape of the case
-    /// #209 describes — a stale `io_connect_t` under a live lease, which does not heal because
-    /// the machine woke up.
+    /// sleeps. That is the honest shape of the case #209 describes — a stale `io_connect_t` under
+    /// a live lease, which does not heal because the machine woke up.
+    ///
+    /// **The two cycles do not park on the same restore, and the doc comment says which because
+    /// the wedge makes it counter-intuitive.** `handBackEveryFan()` calls `releaseEveryLease()`
+    /// first, which empties the lease table *before* any restore is issued. So on cycle 1 the
+    /// lease teardown's per-fan `.fan(0)` restore parks and the machine-wide keystone is never
+    /// reached; on cycle 2 the table is already empty, `releaseEveryLease()` returns at once, and
+    /// the keystone `restoreToAutomatic(.everyFan)` **is** issued — onto the same wedge. Cycle 2's
+    /// budget expiry is therefore driven by a parked *keystone*, which is a case the sibling suite
+    /// cannot reach at all, because releasing inside every cycle lets its keystone through.
+    /// Measured rather than read off the code: probing `plane.restoreScopes` from inside this test
+    /// records `[.fan(0), .everyFan]` before `release()` and `[.fan(0), .everyFan, .everyFan]`
+    /// after it — cycle 1's keystone arriving third, once its own per-fan restore finally lands.
     ///
     /// **Fan 1 is enumerated, never leased until the last act, and is the separator.** It is
     /// granted *after* the second wake, so a stuck seal and a stuck register cannot both read as
@@ -83,8 +94,12 @@ struct SleepCycleSurvivalTests {
     /// which is decision D17 creeping back one cycle later than before. Run: red **only here**, 2
     /// issues, both after the second wake — fan 0's refusal coming back
     /// `.restoreToAutomaticFailed` and `fansWithAbandonedHandbacks.isEmpty` — against `1431 tests
-    /// in 220 suites` with those two and nothing else. Nothing else in the repository sleeps
-    /// twice on one outstanding fan, so nothing else can see it.
+    /// in 220 suites`. Nothing else in the repository sleeps twice on one outstanding fan, so
+    /// nothing else can see it. Run three times rather than once, and the reason is worth the
+    /// line: none of the three got under 50 s, so each also carried one or more of the
+    /// wall-clock-deadline flakes #227 (`HelperHardwareTests`, `SMCSensorProviderTests`) and #256
+    /// (`HelperClientTests`) tracks. Those varied run to run; these two did not, and no suite
+    /// this mutation could plausibly reach was among them.
     ///
     /// **Mutation C — the seal reopening once.** A `hasUnsealed` latch on `unsealAfterWake()`.
     /// Run: red on the fan 1 grant after the second wake (`.systemSleeping` where nothing was
@@ -223,8 +238,10 @@ struct SleepCycleSurvivalTests {
             await helper.leases.leaseCount == 1,
             "fan 1's lease was not granted after two wakes")
 
-        // One release frees both cycles' parked restores: the wedge was armed once, so both are
-        // waiting on the same signal. Nothing is left parked behind the test.
+        // One release frees both cycles' parked restores — cycle 1's per-fan `.fan(0)` and cycle
+        // 2's keystone `.everyFan`, for the reason the test's doc comment gives. The wedge was
+        // armed once, so both are waiting on the same signal, and nothing is left parked behind
+        // the test.
         await plane.release()
         for delivery in deliveries {
             await delivery.value

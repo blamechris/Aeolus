@@ -132,11 +132,20 @@ actor CycleWedgingRestorePlane: FanControlPlane {
     /// Lets this cycle's parked restore through and stops wedging, so the keystone that
     /// follows it is not parked too.
     ///
-    /// That asymmetry is deliberate rather than a convenience: the lease's own fan is what
-    /// wedges, the keystone is not reached until the wedge lets go — the honest shape of a
-    /// stale `io_connect_t` under a live lease, and the one
-    /// `aWedgedHandbackDropsTheLeaseFirstAndLeavesTheFanUnconfirmed` already pins for a single
-    /// sleep — so parking both would need two releases per cycle for no property gained.
+    /// That asymmetry is deliberate rather than a convenience: on a cycle that starts with a
+    /// lease outstanding, the lease's own fan is what wedges and the keystone is not reached
+    /// until the wedge lets go — the honest shape of a stale `io_connect_t` under a live lease,
+    /// and the one `aWedgedHandbackDropsTheLeaseFirstAndLeavesTheFanUnconfirmed` already pins
+    /// for a single sleep — so parking both would need two releases per cycle for no property
+    /// gained.
+    ///
+    /// **It is the lease that decides which restore parks, not this double**, and a caller that
+    /// never releases will find that out. `handBackEveryFan()` empties the lease table before it
+    /// issues anything, so a sleep with nothing left to tear down reaches the keystone
+    /// immediately and parks *that*. `SleepCycleSurvivalTests` arms the wedge once and never
+    /// releases mid-test, and its second cycle parks on the keystone for exactly this reason —
+    /// stated here because "the keystone is never parked" is the wrong thing to carry away from
+    /// the paragraph above.
     func release() async {
         isWedging = false
         await held.signal()
