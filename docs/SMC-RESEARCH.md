@@ -1088,7 +1088,9 @@ registered for system power across one lid close, plus `pmset -g log` for ground
   unprivileged process and a root daemon are not assumed to see the same count, they are captured
   separately and compared.
 
-Lid closed 21:19:33 local, reopened 23:04:45. No write selector was issued at any point — the
+Lid closed 21:19:33 local (04:19:33Z), reopened 23:04:45 local (06:04:45Z) — local times
+throughout this section are PDT, UTC−7, and the `pmset` log's own timezone. No write selector was
+issued at any point — the
 helper's own log records `controlPathNotBuilt` for the pre-sleep restore, which is this build
 having no write path rather than a failure of one.
 
@@ -1104,8 +1106,8 @@ The three captures are kept in the maintainer's private vault rather than in the
 
 #### Seven sleeps, one delivery
 
-The machine did what the #68 capture said it would. `pmset -g log` for the lid-closed window, local
-times verbatim:
+The machine did what the #68 capture said it would. `pmset -g log` for the lid-closed window,
+local times (PDT, UTC−7) verbatim; add seven hours for UTC:
 
 | Local | Event | Type |
 |---|---|---|

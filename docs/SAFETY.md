@@ -573,8 +573,11 @@ slept seven times; it never followed that IOKit delivered seven `.willSleep`/`.d
 row 14's capture (2026-09-16, [SMC-RESEARCH.md](SMC-RESEARCH.md)) establishes that it delivers
 **one pair per lid close** — to an unprivileged registered process and to the helper running as
 root alike, with the six maintenance sleeps delivering nothing to either. The multiplier on
-everything in this paragraph is therefore **1 per lid close, not roughly 4 per hour**: the budget
-is spent once as the lid closes and once as it opens.
+everything in this paragraph is therefore **1 per lid close, not roughly 4 per hour**, and the
+budget is spent **once** in that cycle rather than twice: only `.willSleep` is acknowledged —
+`deliver(.didWake) {}` acknowledges nothing, because IOKit does not ask a woken process for
+permission to have woken. The capture shows the same thing from outside: `power-observer` recorded
+an acknowledgement latency for the sleep message and `null` for both power-on messages.
 
 **The arithmetic above was wrong by about 7×, in the direction that overstates the danger, and the
 decision it drove is deliberately left standing.** Thirty chances an unattended night was an
