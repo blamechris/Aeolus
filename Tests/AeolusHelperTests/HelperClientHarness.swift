@@ -77,8 +77,13 @@ final class ClientListenerHarness {
     /// So this settles one thing and not another. It is enough to say that #250's block of
     /// `helperNeverAnswered(after: 0.75 seconds)` was a shared constant rather than a dead
     /// listener: a dead listener cannot fail eighteen tests at *precisely* the bound the
-    /// constant names, and the 750 ms mutation reproduces #250's failure list line for line.
-    /// It is not enough to retire #239. The only portable guard against the lifetime reading
+    /// constant names, and driving this constant far enough down to expire on *this* machine
+    /// reproduces #250's shape — the same two suites, every failure
+    /// `helperNeverAnswered(after: …)`, including the derived-state ones (`health == .refused`,
+    /// `health == .versionMismatched`). **Matched by assertion, not by line number**: 750 ms
+    /// does not expire on a quiet `Mac16,5` at all, which is the whole point of #250, so the
+    /// reproduction runs at `.nanoseconds(1)`, and the line numbers in #250's list are from a
+    /// tree several comment inserts ago. It is not enough to retire #239. The only portable guard against the lifetime reading
     /// is still the one the tests that care already use — pinning the harness past the last
     /// call, `sessions.isEmpty` in `aRefusingHelperIsPromptAndNamesBothPossibilities` being
     /// the pattern — and #239's second defect stays open for exactly that reason.
