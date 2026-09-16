@@ -349,6 +349,18 @@ extension KeyReading: Encodable {
 /// key list this run is sampling and where it came from. A capture is only reproducible
 /// and only auditable if the key list is recorded once, in the file, rather than left to
 /// be reconstructed from "whatever the default was on the date this ran."
+///
+/// `fanEnumerationFailed`/`fanEnumerationFailureReason` exist because the invocation this
+/// tool's own README documents — `swift run smc-sampler --interval=1 > capture.ndjson` —
+/// captures stdout only. `SMCSamplerMain.swift` also writes a transient enumeration failure
+/// to stderr, which that redirect never reaches, so without a field here the resulting file
+/// would say `fans:0` whether enumeration failed transiently or the machine genuinely has
+/// no fans — two situations a maintainer reading the file back later cannot tell apart,
+/// even though the row 13 checklist entry that cites the file needs to. `Bool` rather than
+/// an optional carrying the same information: a caller reading only `keySource`'s
+/// `fans:0` cannot already distinguish the two cases, and a non-optional flag is present on
+/// every start line, success included, rather than only surfacing on failure the way the
+/// reason string does.
 struct SamplerStartRecord: Encodable, Sendable {
     let kind = "start"
     let hostname: String
@@ -359,6 +371,8 @@ struct SamplerStartRecord: Encodable, Sendable {
     let intervalSeconds: Double
     let keys: [String]
     let keySource: String
+    let fanEnumerationFailed: Bool
+    let fanEnumerationFailureReason: String?
 }
 
 /// One tick: wall clock plus both monotonic clocks — `ContinuousClock`, which keeps
@@ -366,9 +380,10 @@ struct SamplerStartRecord: Encodable, Sendable {
 /// elapsed since the `start` line and as a delta from the previous tick (`nil` on tick 0,
 /// where there is no previous tick). Both deltas together are what let a reader of this
 /// capture see a sleep directly in the numbers: a `continuousDelta` far larger than
-/// `suspendingDelta` on the same tick is a sleep the wall clock and `SuspendingClock` both
-/// missed and `ContinuousClock` did not — see `docs/ADR/0007-safety-composition.md`'s
-/// assumption table and #210.
+/// `suspendingDelta` on the same tick is a sleep `SuspendingClock` missed and
+/// `ContinuousClock` did not — `wallClockUTC` (`Date`) advances across a sleep exactly as
+/// `ContinuousClock` does, so it is not a clock this comparison is about — see
+/// `docs/ADR/0007-safety-composition.md`'s assumption table and #210.
 struct SampleRecord: Sendable {
     let kind = "sample"
     let tick: Int
@@ -450,5 +465,81 @@ enum SamplerInterval {
     static func clampedNanoseconds(forSeconds seconds: Double) -> UInt64 {
         let nanoseconds = max(0, seconds * 1_000_000_000).rounded()
         return UInt64(exactly: nanoseconds) ?? UInt64.max
+    }
+}
+
+/// What `runSampleLoop` needs from an output destination: one line, written synchronously.
+/// `SMCSamplerMain.swift`'s `StandardOutputSink` is the production conformer; `RunSampleLoopTests`
+/// supplies an in-memory one, which is the entire reason this protocol exists rather than the
+/// loop taking `StandardOutputSink` directly — a concrete `FileHandle`-backed sink cannot be
+/// asserted against without a subprocess, and `runSampleLoop` living in `SMCSamplerMain.swift`
+/// (the `@main` file) could not be reached by `@testable import` at all.
+protocol LineSink: Sendable {
+    func write(_ line: String)
+}
+
+/// The tick loop: read the resolved key set, emit one `sample` line, wait `--interval`
+/// seconds, repeat — until `--count` ticks have run (if given) or the surrounding `Task` is
+/// cancelled. Modelled on `Sources/fanctl/WatchCommand.swift`'s `WatchCommand.run`: a single
+/// read failure ends the loop with that error, exactly as one `fanctl list` invocation
+/// would, and only cancellation between ticks is a *clean* stop.
+///
+/// Lives here rather than in `SMCSamplerMain.swift` so `RunSampleLoopTests` can drive it
+/// against a fake `SensorProvider` and an in-memory `LineSink` via `@testable import
+/// smc_sampler` — nothing in `@main`'s file is reachable that way. See that suite for the
+/// tick-0-vs-tick-1 delta assertion and the exact double-stop-line regression this loop's
+/// own history records (this function's documentation on cancellation, and
+/// `installOrderlyExit`'s in `SMCSamplerMain.swift`).
+func runSampleLoop(
+    provider: some SensorProvider,
+    keys: [String],
+    options: CommandLineOptions,
+    sink: some LineSink,
+    continuousStart: ContinuousClock.Instant,
+    suspendingStart: SuspendingClock.Instant,
+    tickState: TickState
+) async throws {
+    var previousContinuous: Int64?
+    var previousSuspending: Int64?
+    var tick = 0
+
+    while true {
+        let outcomes = try await provider.read(keys: keys)
+
+        let continuousNanoseconds = ClockNanoseconds.nanoseconds(
+            from: ContinuousClock.now - continuousStart)
+        let suspendingNanoseconds = ClockNanoseconds.nanoseconds(
+            from: SuspendingClock.now - suspendingStart)
+
+        let record = SampleRecord(
+            tick: tick,
+            wallClockUTC: WallClock.iso8601UTC(),
+            continuousNanoseconds: continuousNanoseconds,
+            continuousDeltaNanoseconds: previousContinuous.flatMap {
+                ClockNanoseconds.delta(from: $0, to: continuousNanoseconds)
+            },
+            suspendingNanoseconds: suspendingNanoseconds,
+            suspendingDeltaNanoseconds: previousSuspending.flatMap {
+                ClockNanoseconds.delta(from: $0, to: suspendingNanoseconds)
+            },
+            readings: outcomes.map(KeyReading.from))
+
+        sink.write(try NDJSON.line(record))
+        await tickState.recordTick()
+
+        previousContinuous = continuousNanoseconds
+        previousSuspending = suspendingNanoseconds
+        tick += 1
+
+        if let count = options.tickCount, tick >= count {
+            return
+        }
+        do {
+            try await Task.sleep(
+                nanoseconds: SamplerInterval.clampedNanoseconds(forSeconds: options.intervalSeconds)
+            )
+        } catch is CancellationError {
+            return
+        }
     }
 }

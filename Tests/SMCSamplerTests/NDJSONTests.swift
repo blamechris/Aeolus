@@ -11,7 +11,8 @@ struct NDJSONTests {
         let record = SamplerStartRecord(
             hostname: "test-host", hwModel: "Mac16,5", osVersion: "macOS 26.6.2", uid: 501,
             pid: 4242, intervalSeconds: 1.0, keys: ["TPD0", "F0Ac"],
-            keySource: "default(model:Mac16,5,fans:1)")
+            keySource: "default(model:Mac16,5,fans:1)", fanEnumerationFailed: false,
+            fanEnumerationFailureReason: nil)
 
         let line = try NDJSON.line(record)
         #expect(!line.contains("\n"), "an NDJSON line must not contain an embedded newline")
@@ -23,6 +24,35 @@ struct NDJSONTests {
         #expect(decoded["kind"] as? String == "start")
         #expect(decoded["keys"] as? [String] == ["TPD0", "F0Ac"])
         #expect(decoded["keySource"] as? String == "default(model:Mac16,5,fans:1)")
+        #expect(decoded["fanEnumerationFailed"] as? Bool == false)
+        // SamplerStartRecord uses the synthesized Encodable conformance, which calls
+        // encodeIfPresent for the Optional reason field — a nil reason is an absent key,
+        // not a JSON null. That is safe here (unlike SampleRecord's deltas) precisely
+        // because fanEnumerationFailed is a non-optional Bool always present alongside it:
+        // "the key is missing" and "enumeration did not fail" are never ambiguous.
+        #expect(decoded["fanEnumerationFailureReason"] == nil)
+    }
+
+    /// The property this field exists for: `fans:0` in `keySource` is what a genuinely
+    /// fanless machine and a transient enumeration failure both produce, and `keySource`
+    /// alone cannot tell a reader which one happened. `fanEnumerationFailed`/
+    /// `fanEnumerationFailureReason` are what let the start line itself — not stderr, which
+    /// this tool's own documented invocation never captures — say which.
+    @Test("a start line records a fan enumeration failure that stderr alone would not capture")
+    func startLineRecordsFanEnumerationFailure() throws {
+        let record = SamplerStartRecord(
+            hostname: "test-host", hwModel: "Mac16,5", osVersion: "macOS 26.6.2", uid: 501,
+            pid: 4242, intervalSeconds: 1.0, keys: ["TPD0"],
+            keySource: "default(model:Mac16,5,fans:0)", fanEnumerationFailed: true,
+            fanEnumerationFailureReason: "SMCError.hardwareUnavailable")
+
+        let line = try NDJSON.line(record)
+        let data = try #require(line.data(using: .utf8))
+        let decoded = try #require(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(decoded["fanEnumerationFailed"] as? Bool == true)
+        #expect(decoded["fanEnumerationFailureReason"] as? String == "SMCError.hardwareUnavailable")
     }
 
     @Test("a sample line carries both clocks and a null delta on the first tick")

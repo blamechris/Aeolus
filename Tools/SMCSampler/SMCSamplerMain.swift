@@ -34,7 +34,7 @@ private func writeLineDirectly(_ line: String) {
 /// — independent tasks/queues — never interleave one line into another. Identical in shape
 /// to `PowerObserverMain.swift`'s `StandardOutputSink`; not shared for the reason
 /// `SMCSamplerCore.swift`'s `WallClock`/`NDJSON` documentation gives for those two types.
-final class StandardOutputSink: Sendable {
+final class StandardOutputSink: LineSink {
     private let lock = OSAllocatedUnfairLock<Void>(initialState: ())
 
     func write(_ line: String) {
@@ -109,65 +109,6 @@ private func installOrderlyExit(cancelling task: Task<Void, Error>) -> [Dispatch
     }
 }
 
-/// The tick loop: read the resolved key set, emit one `sample` line, wait `--interval`
-/// seconds, repeat — until `--count` ticks have run (if given) or the surrounding `Task` is
-/// cancelled. Modelled on `Sources/fanctl/WatchCommand.swift`'s `WatchCommand.run`: a single
-/// read failure ends the loop with that error, exactly as one `fanctl list` invocation
-/// would, and only cancellation between ticks is a *clean* stop.
-private func runSampleLoop(
-    provider: some SensorProvider,
-    keys: [String],
-    options: CommandLineOptions,
-    sink: StandardOutputSink,
-    continuousStart: ContinuousClock.Instant,
-    suspendingStart: SuspendingClock.Instant,
-    tickState: TickState
-) async throws {
-    var previousContinuous: Int64?
-    var previousSuspending: Int64?
-    var tick = 0
-
-    while true {
-        let outcomes = try await provider.read(keys: keys)
-
-        let continuousNanoseconds = ClockNanoseconds.nanoseconds(
-            from: ContinuousClock.now - continuousStart)
-        let suspendingNanoseconds = ClockNanoseconds.nanoseconds(
-            from: SuspendingClock.now - suspendingStart)
-
-        let record = SampleRecord(
-            tick: tick,
-            wallClockUTC: WallClock.iso8601UTC(),
-            continuousNanoseconds: continuousNanoseconds,
-            continuousDeltaNanoseconds: previousContinuous.flatMap {
-                ClockNanoseconds.delta(from: $0, to: continuousNanoseconds)
-            },
-            suspendingNanoseconds: suspendingNanoseconds,
-            suspendingDeltaNanoseconds: previousSuspending.flatMap {
-                ClockNanoseconds.delta(from: $0, to: suspendingNanoseconds)
-            },
-            readings: outcomes.map(KeyReading.from))
-
-        sink.write(try NDJSON.line(record))
-        await tickState.recordTick()
-
-        previousContinuous = continuousNanoseconds
-        previousSuspending = suspendingNanoseconds
-        tick += 1
-
-        if let count = options.tickCount, tick >= count {
-            return
-        }
-        do {
-            try await Task.sleep(
-                nanoseconds: SamplerInterval.clampedNanoseconds(forSeconds: options.intervalSeconds)
-            )
-        } catch is CancellationError {
-            return
-        }
-    }
-}
-
 @main
 struct SMCSamplerMain {
 
@@ -191,6 +132,7 @@ struct SMCSamplerMain {
 
         var fanIndices: [Int] = []
         var keySource: String
+        var fanEnumerationFailureReason: String?
         if options.keys.isEmpty {
             do {
                 let enumeration = try await SMCFanEnumeration.enumerate(provider: provider)
@@ -200,8 +142,18 @@ struct SMCSamplerMain {
                 // set alone may still be readable — so this is reported and continued past,
                 // not thrown. A genuinely unavailable SMC still surfaces: the sample loop's
                 // own first `read(keys:)` call throws the same underlying error.
+                //
+                // Reported twice, deliberately: stderr for a maintainer watching the
+                // terminal live, and `fanEnumerationFailureReason` on the `start` line
+                // itself for the common invocation that redirects only stdout to a file —
+                // see that field's documentation for why stderr alone leaves the capture
+                // indistinguishable from a fanless machine.
+                let reason = "\(error)"
+                fanEnumerationFailureReason = reason
                 FileHandle.standardError.write(
-                    Data("smc-sampler: fan enumeration failed, continuing with 0 fans: \(error)\n".utf8))
+                    Data(
+                        "smc-sampler: fan enumeration failed, continuing with 0 fans: \(reason)\n"
+                            .utf8))
             }
             keySource =
                 "default(model:\(identity.modelIdentifier ?? "unknown"),fans:\(fanIndices.count))"
@@ -232,7 +184,9 @@ struct SMCSamplerMain {
             pid: getpid(),
             intervalSeconds: options.intervalSeconds,
             keys: keys,
-            keySource: keySource)
+            keySource: keySource,
+            fanEnumerationFailed: fanEnumerationFailureReason != nil,
+            fanEnumerationFailureReason: fanEnumerationFailureReason)
         sink.write(try NDJSON.line(startRecord))
 
         let continuousStart = ContinuousClock.now
