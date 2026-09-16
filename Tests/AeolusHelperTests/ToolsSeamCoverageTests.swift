@@ -108,23 +108,63 @@ struct ToolsSeamCoverageTests {
     /// `forbiddenTokens = []`. Round-3 delta review of #248 flagged that spelling as a
     /// substring test an empty list still satisfies two other ways both suites already use
     /// as their declaration style (`static let forbiddenTokens = [` on its own line): a
-    /// type-annotated `forbiddenTokens: [String] = []`, and a multi-line `= [\n]`. This
-    /// instead locates the bracketed literal after the word and checks it for at least one
-    /// quoted string, the same "does the literal actually contain an element" test
-    /// `CriticalKeySetDriftTests.swift`'s `suffixLiteral`/`prefixLiteral` helpers use for a
-    /// different manifest-adjacent literal.
+    /// type-annotated `forbiddenTokens: [String] = []`, and a multi-line `= [\n]`.
+    ///
+    /// Delta-3 review of this suite found that "locate the first `[` after the first
+    /// mention of the word" is not the same test as "does the *declaration* have a
+    /// non-empty literal", and is wrong in both directions: `static let forbiddenTokens:
+    /// [String] = ["AeolusHelper"]` false-rejects (the bracket it inspects is the `[String]`
+    /// annotation, whose body is `String` — no quote), and a doc comment naming the word
+    /// next to any bracketed quoted string above a genuinely empty declaration — the house
+    /// style in both existing seam suites — false-accepts.
+    ///
+    /// This instead walks every occurrence of "forbiddenTokens" looking for one shaped like
+    /// a declaration: the word, an optional `: [...]` type annotation, then `=`, then the
+    /// literal to inspect. A mention that is not followed by that shape (a doc comment
+    /// prose reference, for instance) is skipped rather than trusted.
     static func declaresNonEmptyForbiddenTokens(in seamText: String) -> Bool {
-        guard let nameRange = seamText.range(of: "forbiddenTokens") else { return false }
-        guard
-            let openBracket = seamText.range(
-                of: "[", range: nameRange.upperBound..<seamText.endIndex)
-        else { return false }
-        guard
-            let closeBracket = seamText.range(
-                of: "]", range: openBracket.upperBound..<seamText.endIndex)
-        else { return false }
-        let body = seamText[openBracket.upperBound..<closeBracket.lowerBound]
-        return body.contains("\"")
+        var searchStart = seamText.startIndex
+        while let nameRange = seamText.range(
+            of: "forbiddenTokens", range: searchStart..<seamText.endIndex)
+        {
+            searchStart = nameRange.upperBound
+            var cursor = nameRange.upperBound
+            skipWhitespace(in: seamText, from: &cursor)
+
+            // Optional type annotation: `: [String]`.
+            if cursor < seamText.endIndex, seamText[cursor] == ":" {
+                cursor = seamText.index(after: cursor)
+                skipWhitespace(in: seamText, from: &cursor)
+                guard cursor < seamText.endIndex, seamText[cursor] == "[",
+                    let annotationClose = seamText.range(
+                        of: "]", range: cursor..<seamText.endIndex)
+                else { continue }  // not a `: [...]` annotation after all — not a declaration
+                cursor = annotationClose.upperBound
+                skipWhitespace(in: seamText, from: &cursor)
+            }
+
+            guard cursor < seamText.endIndex, seamText[cursor] == "=" else { continue }
+            cursor = seamText.index(after: cursor)
+            skipWhitespace(in: seamText, from: &cursor)
+
+            guard cursor < seamText.endIndex, seamText[cursor] == "[",
+                let closeBracket = seamText.range(
+                    of: "]", range: seamText.index(after: cursor)..<seamText.endIndex)
+            else { continue }
+            let body = seamText[seamText.index(after: cursor)..<closeBracket.lowerBound]
+            if body.contains("\"") { return true }
+            // This occurrence resolved to a real (but empty) declaration; a well-formed
+            // seam file has only one, but keep scanning rather than assume that.
+        }
+        return false
+    }
+
+    /// Advances `index` past any run of whitespace (including newlines) starting at
+    /// `index`, in `text`.
+    static func skipWhitespace(in text: String, from index: inout String.Index) {
+        while index < text.endIndex, text[index].isWhitespace {
+            index = text.index(after: index)
+        }
     }
 
     /// Fails the moment a tool directory arrives with no `<Name>Tests/ToolsSeamTests.swift`
@@ -248,6 +288,52 @@ struct ToolsSeamCoverageTests {
                     static let forbiddenTokens = [
                         "AeolusHelper",
                     ]
+                    """))
+    }
+
+    /// Round-4 delta review of #248: `declaresNonEmptyForbiddenTokensAcceptsARealList` above
+    /// only ever exercised the un-annotated, single-mention spelling, so it proved nothing
+    /// about the two failure modes this round actually found in the "first `[` after the
+    /// first mention" helper — both are about *which* bracket gets inspected, not whether a
+    /// quote is present once the right one is found.
+    ///
+    /// A type-annotated non-empty list was false-rejected, because the first `[` after the
+    /// word is `[String]`'s own bracket, whose body ("String") has no quote. A doc comment
+    /// naming the word next to any bracketed, quoted string — the house style both existing
+    /// seam suites use — false-accepted a genuinely empty declaration underneath it, because
+    /// the first `[` after the word's first mention is the comment's, not the declaration's.
+    /// Anchoring on the declaration (word, optional `: [...]` annotation, `=`, then the
+    /// literal) fixes both; these four spellings are what a reversion to the round-3 body
+    /// gets wrong.
+    @Test("forbiddenTokens is judged by its declaration, not by the first mention of the word")
+    func declaresNonEmptyForbiddenTokensAnchorsOnTheDeclaration() {
+        // Annotated, non-empty, single line.
+        #expect(
+            Self.declaresNonEmptyForbiddenTokens(
+                in: "static let forbiddenTokens: [String] = [\"AeolusHelper\"]"))
+
+        // Annotated, non-empty, multi-line.
+        #expect(
+            Self.declaresNonEmptyForbiddenTokens(
+                in: """
+                    static let forbiddenTokens: [String] = [
+                        "AeolusHelper",
+                    ]
+                    """))
+
+        // Annotated, empty — must be rejected because the declaration's own literal is
+        // empty, not merely because the annotation's brackets happen to hold no quote.
+        #expect(
+            !Self.declaresNonEmptyForbiddenTokens(
+                in: "static let forbiddenTokens: [String] = []"))
+
+        // A doc comment naming the word beside a bracketed, quoted string, above a
+        // genuinely empty declaration.
+        #expect(
+            !Self.declaresNonEmptyForbiddenTokens(
+                in: """
+                    /// forbiddenTokens is documented in ["docs/SAFETY.md"].
+                    static let forbiddenTokens: [String] = []
                     """))
     }
 }

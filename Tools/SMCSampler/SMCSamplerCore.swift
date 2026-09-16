@@ -456,8 +456,16 @@ extension SamplerStartRecord {
     /// hardcoding those fields at the record's construction nor hardcoding
     /// `fanEnumerationFailed` one assignment earlier moved any test. Routing both of
     /// `main()`'s branches through this single pure function — which `main()` now only
-    /// calls — puts the whole outcome-to-record path under `SamplerStartRecordTests`
-    /// instead of leaving the last leg of it visible only to `swift run`.
+    /// calls — puts the field-mapping leg of the outcome-to-record path under
+    /// `SamplerStartRecordTests` instead of leaving it visible only to `swift run`.
+    ///
+    /// One leg is still outside that suite, and still only visible to `swift run`:
+    /// `main()`'s own `enumerationOutcome = outcome` assignment and its `outcome:
+    /// enumerationOutcome` argument pass at the call site above. Hardcoding either one away
+    /// (`outcome: nil`, or dropping the assignment) leaves the full suite green — the
+    /// compiler's unused-variable warning is the only thing that would catch it, the same
+    /// hand-verified property `runSampleLoop`'s documentation states plainly for the
+    /// single-stop-line invariant rather than implying test coverage that is not there.
     ///
     /// `outcome == nil` produces exactly what `SMCSamplerMain.swift`'s `else` branch wired
     /// by hand: `keySource: "custom"`, `fanEnumerationFailed: false`,
