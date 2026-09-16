@@ -81,6 +81,28 @@ struct CriticalKeySetDriftTests {
         return String(source[range]).filter { !$0.isWhitespace }
     }
 
+    /// `CriticalSensorSet.mac16x5`'s own `keys:` argument, whitespace-stripped, taken from
+    /// `static let mac16x5 = CriticalSensorSet(` up to the following `provenance:` label.
+    ///
+    /// The three checks above (`suffixListsMatch`, `prefixListsMatch`,
+    /// `resolvedKeysMatchCriticalSensorSetLiterals`) all compare the *shared* `suffixes`
+    /// array and the `["TPD", "TRD"]` prefix pair that `dieClusterKeys(prefixes:)` takes as
+    /// an argument — none of them look at `mac16x5`'s own construction, so a term appended
+    /// there (`dieClusterKeys(prefixes: ["TPD", "TRD"]) + [known("TCAL")]`, say — the
+    /// natural way to add one measured key to one model without widening `suffixes` for
+    /// every model that calls it) passes all three unchanged: the shared literals it reads
+    /// are untouched. This anchors on the composition itself.
+    private static func mac16x5KeysArgumentLiteral(in source: String) throws -> String {
+        let startMarker = "static let mac16x5 = CriticalSensorSet("
+        let startRange = try #require(
+            source.range(of: startMarker), "no \"\(startMarker)\" found in source")
+        let tail = source[startRange.upperBound...]
+        let provenanceRange = try #require(
+            tail.range(of: "provenance:"),
+            "no \"provenance:\" found after mac16x5's keys: argument")
+        return String(tail[..<provenanceRange.lowerBound]).filter { !$0.isWhitespace }
+    }
+
     @Test("the suffix literal is character-for-character identical in both files")
     func suffixListsMatch() throws {
         let helperSuffixes = try Self.suffixLiteral(in: Self.criticalSensorSetSource)
@@ -95,6 +117,13 @@ struct CriticalKeySetDriftTests {
             """)
     }
 
+    /// Mutation this closes, cited on its own rather than folded into a suffix-list
+    /// mutation that never touches the prefix pair (round-2 delta review of #248 flagged
+    /// the original commit for citing a "Y"-suffix mutation here, under which this test
+    /// correctly stays green — a suffix change is not a prefix change): change
+    /// `dieClusterKeys(prefixes: ["TPD", "TRD"])` to `dieClusterKeys(prefixes: ["TPD",
+    /// "TRD", "TCD"])` in either file without touching the other, and the
+    /// whitespace-stripped literals stop matching.
     @Test("the TPD/TRD prefix pair appears identically in both files")
     func prefixListsMatch() throws {
         let helperPrefixes = try #require(
@@ -121,7 +150,39 @@ struct CriticalKeySetDriftTests {
             fromLiteral: try Self.suffixLiteral(in: Self.criticalSensorSetSource))
         let expected = ["TPD", "TRD"].flatMap { prefix in suffixes.map { prefix + $0 } }
 
-        #expect(expected.count == 34)
+        #expect(
+            expected.count == 34,
+            """
+            expected the well-known 34-key Mac16,5 die cluster (2 prefixes x 17 suffixes); \
+            got \(expected.count) — CriticalSensorSet.swift's suffix or prefix literal \
+            changed shape
+            """)
         #expect(MeasurementKeySet.criticalKeys(forModel: "Mac16,5") == expected)
+    }
+
+    /// Closes the gap none of the three checks above cover: `mac16x5`'s own `keys:`
+    /// argument must be exactly `dieClusterKeys(prefixes: ["TPD", "TRD"])`, with nothing
+    /// appended or substituted — a widening of the *composition* rather than of the shared
+    /// literals the other three tests compare.
+    ///
+    /// Mutation this closes: `Sources/AeolusHelper/Safety/CriticalSensorSet.swift`'s
+    /// `keys: dieClusterKeys(prefixes: ["TPD", "TRD"])` becomes
+    /// `keys: dieClusterKeys(prefixes: ["TPD", "TRD"]) + [known("TCAL")]` — the exact
+    /// mutation the round-2 delta review ran, under which `suffixListsMatch`,
+    /// `prefixListsMatch`, and `resolvedKeysMatchCriticalSensorSetLiterals` all stayed
+    /// green.
+    @Test(
+        "mac16x5's keys: argument is exactly dieClusterKeys(prefixes: [\"TPD\", \"TRD\"]), nothing appended"
+    )
+    func mac16x5ComposesOnlyFromTheSharedLiterals() throws {
+        let actual = try Self.mac16x5KeysArgumentLiteral(in: Self.criticalSensorSetSource)
+        #expect(
+            actual == #"keys:dieClusterKeys(prefixes:["TPD","TRD"]),"#,
+            """
+            CriticalSensorSet.mac16x5's keys: argument is no longer exactly \
+            dieClusterKeys(prefixes: ["TPD", "TRD"]) — got \(actual). If a key was added \
+            (or the shared suffixes/prefixes were widened instead), update \
+            MeasurementKeySet.mac16x5CriticalKeys in SMCSamplerCore.swift to match.
+            """)
     }
 }
