@@ -41,13 +41,24 @@ struct FanctlResetTests {
     /// Deadlines long enough that a loaded runner cannot fake a failure.
     ///
     /// **Three of these tests assert text and an exit code and nothing about timing**, so a
-    /// short deadline buys them nothing and costs a red CI run: `ClientListenerHarness`
-    /// defaults to 750 ms, which this machine never approaches and a GitHub runner exceeded
-    /// for a message the helper had already answered — reporting a working helper as one that
-    /// never answered, which is the exact misreport this suite exists to forbid. A generous
-    /// deadline costs nothing when the reply arrives, and every reply in those three does.
-    private static let unhurried = HelperClientDeadlines(
-        gatedVerb: .seconds(10), panicVerb: .seconds(10), handshakeVerb: .seconds(10))
+    /// short deadline buys them nothing and costs a red CI run — a working helper reported as
+    /// one that never answered, which is the exact misreport this suite exists to forbid. That
+    /// is what happened to the client suites in
+    /// [#250](https://github.com/blamechris/Aeolus/issues/250), where `ClientListenerHarness`
+    /// defaulted to 750 ms: a bound this machine never approaches and a contended GitHub runner
+    /// exceeded for a message the helper had already answered. That harness now defaults to the
+    /// shipping trio, so this comment no longer describes a 750 ms default anywhere.
+    ///
+    /// The generous terms are `gatedVerb` and `panicVerb`, which may sit **above** the product's
+    /// 5 s and 10 s — tolerating a slow machine is never the defect. `handshakeVerb` is the
+    /// product's own 15 s and not a fourth invention: it was `.seconds(10)`, 5 s *tighter* than
+    /// the bound a cold `hello` is actually allowed, on a verb none of these tests asserts —
+    /// #250's defect in a fourth file. `noHarnessDefaultImposesATighterDeadlineThanTheProduct`
+    /// reads this constant, which is why it is not `private`.
+    static let unhurried = HelperClientDeadlines(
+        gatedVerb: .seconds(10),
+        panicVerb: .seconds(10),
+        handshakeVerb: HelperClientDeadlines.handshakeVerb)
 
     /// The one deadline this suite asserts on, in the one test whose peer never replies.
     ///
