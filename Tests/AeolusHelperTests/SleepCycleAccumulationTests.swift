@@ -109,6 +109,19 @@ struct SleepCycleAccumulationTests {
     /// seal's answer as the register's and pass. Measured green in
     /// `threeSleepCyclesEachSealReopenAndAcknowledgeOnce`.
     ///
+    /// **Mutation G — the register written once per helper.** `guard !hasRecordedOnce else
+    /// { return [] }` at the top of `recordUnconfirmedHandbacks()`, so § 4's budget path records
+    /// on the first sleep of a helper's life and never again. Run: red **only here**, three
+    /// issues — `perCycle → [Set([0]), Set([]), Set([])]`, and cycles 2 and 3's fan-0 refusal
+    /// coming back `.systemSleeping` — with the rest of the repository green (`1430 tests in 219
+    /// suites … with 3 issues`, 31 s). **This is the mutation the rest of the list does not
+    /// contain**, and it is the one the suite's whole premise rests on: A is this test's own loop
+    /// bound, C and D are admitted above as caught elsewhere, and B and E redden the single-sleep
+    /// tests too. G is caught by nothing else, `threeSleepCyclesEachSealReopenAndAcknowledgeOnce`
+    /// and all three single-sleep unconfirmed tests included. Note what stays green under it: the
+    /// three fault lines, because § 4 logs the expiry whether or not the set it recorded was
+    /// empty. The register is the claim; the log line is not a substitute for it.
+    ///
     /// **Mutation F — the keystone issued once per helper.** A per-responder latch before
     /// `restoreToAutomatic(.everyFan)` in `SystemPowerResponder.handBackEveryFan()`, so the
     /// machine-wide half of § 4 fires on the first sleep of a helper's life and never again.
