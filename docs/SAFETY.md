@@ -568,12 +568,24 @@ the **self-resolving** `.handbackUnconfirmed` state below: as hard a refusal whi
 cleared by the outstanding restore's own completion. Corrected in place — the exposure
 arithmetic is unchanged and is the reason the state changed.
 
-**One thing that capture does not establish, stated plainly rather than left to be assumed:** the
-`pmset` log proves the *machine* slept seven times. It does **not** prove IOKit delivered seven
-`.willSleep`/`.didWake` pairs to a root daemon, because the helper was not running during the
-capture. That delivery count is **unmeasured**, it is the multiplier on everything in this
-paragraph, and it is row 14 of the [hardware checklist](#hardware-checklist) — observable
-read-only today.
+**That delivery count is now measured, and it is one.** The `pmset` log proves the *machine*
+slept seven times; it never followed that IOKit delivered seven `.willSleep`/`.didWake` pairs, and
+row 14's capture (2026-09-16, [SMC-RESEARCH.md](SMC-RESEARCH.md)) establishes that it delivers
+**one pair per lid close** — to an unprivileged registered process and to the helper running as
+root alike, with the six maintenance sleeps delivering nothing to either. The multiplier on
+everything in this paragraph is therefore **1 per lid close, not roughly 4 per hour**, and the
+budget is spent **once** in that cycle rather than twice: only `.willSleep` is acknowledged —
+`deliver(.didWake) {}` acknowledges nothing, because IOKit does not ask a woken process for
+permission to have woken. The capture shows the same thing from outside: `power-observer` recorded
+an acknowledgement latency for the sleep message and `null` for both power-on messages.
+
+**The arithmetic above was wrong by about 7×, in the direction that overstates the danger, and the
+decision it drove is deliberately left standing.** Thirty chances an unattended night was an
+inference from the machine's sleep cadence, not a measurement of delivery; the real figure is one
+per lid close. `.handbackUnconfirmed` remains the better state on its own merits — a self-resolving
+refusal is preferable to a durable one at *any* frequency — so the correction changes the premise
+without changing the conclusion. Whether D33 still wants re-deciding on an accurate exposure figure
+is a maintainer call, recorded here rather than quietly settled by the session that measured it.
 
 **The case the acknowledgement budget exists for** — separated from the paragraphs above, which
 #209 inserted between it and the sentence introducing the constant — is a wedged
@@ -1336,35 +1348,46 @@ Needs no write path and no helper: a small logging process sampling the clock ac
 settles it. The lid-close capture did **not** sample it. This is the assumption ADR 0007 records
 as unverified and the one § 4's TTL backstop rests on; if it degrades, the bound is the lease's
 own remaining TTL — at most `AeolusXPCValidation.leaseTTLRange.upperBound`, 120 s, and 30 s for a
-client taking `Lease.defaultTimeToLive`.
+client taking `Lease.defaultTimeToLive`. **Still open, now with the stake measured.** The
+2026-09-16 capture recorded a *suspending* clock —
+`DispatchTime.now().uptimeNanoseconds`, i.e. `mach_absolute_time` — advancing **1.0 s across each
+of six maintenance sleeps totalling 5,381 s of wall clock**, losing 90 minutes of a 108-minute
+capture. That is a different clock from the `ContinuousClock` this row names, so it does not
+answer the row; it establishes what the answer is worth.
 
 **13. Critical-sensor plausibility across a dark wake** — do the curated keys read truthfully, not
 merely successfully. *Executes: now, read-only on `Mac16,5`
 ([#210](https://github.com/blamechris/Aeolus/issues/210)).* The lid-close capture sampled `FNum`
 plus six fan keys and no temperature keys, through a 42-minute dark wake with real dissipation
 and no airflow, while § 1's lease gate and § 3 both depend on those sensors. Proving a read
-succeeded is not proving it is plausible.
+succeeded is not proving it is plausible. **Narrowed, not closed, by the 2026-09-16
+capture**: with the helper running, its thermal-emergency supervisor logged
+`criticalTelemetryUnavailable(requestedKeys: 34)` at **every one of seven dark wakes**, recovering
+about a second later each time. So the observed dark-wake behaviour is a read that *fails* — the
+divergence § 5 already handles — rather than the plausible-but-false read this row fears. No
+temperature *values* were recorded for comparison against a pre-sleep baseline, which is what this
+row still needs.
 
 **14. IOKit `willSleep`/`didWake` delivery count with the helper actually running across a lid
-close.** *Executes: now, read-only on `Mac16,5`
-([#209](https://github.com/blamechris/Aeolus/issues/209)).* **Unmeasured**, and said plainly
-because it is easy to assume row 15 answered it: the helper was **not running** during the
-capture, so the `pmset` log proves the machine slept seven times and proves nothing about how many
-notification round trips a root daemon receives. `SystemPowerLimits.acknowledgementBudget` is
-spent once per delivery, so that count is the multiplier on § 4's exposure. Observable without a
-write path, since the helper's writes are refused today. **And observable without the signing
-identity, which is what keeps this row's "now" tag honest against row 2's:** what
-`IOKitSystemPowerObserver` needs is a root process holding an `IORegisterForSystemPower` port, not
-an installed daemon, so running the built helper binary under `sudo` across one lid close is
-enough. Row 2 needs launchd to restart the process and therefore needs the install; this row does
-not. `IOKitSystemPowerObserver` itself is the one thing no automated test can reach.
-`Tools/PowerObserver` (`power-observer`) measures delivery of these messages **to an
-unprivileged registered process** — the number ADR 0007's `.willSleep`/`.didWake` assumption
-row asks for — by running it across one real lid close alongside `pmset -g log`; see its
-README for how to run it and read the result. **This row additionally needs the built helper
-running under `sudo` across that same lid close**, per the paragraph above, and **stays open
-until both captures exist**: an unprivileged process and a root daemon are not proven to see
-the same delivery count, and `power-observer` alone does not close this row.
+close.** *Executes: **done** — see [SMC-RESEARCH.md](SMC-RESEARCH.md), "IOKit sleep/wake delivery
+to a registered process — observed, one lid close".* **One pair per lid close.** Across a 1 h
+45 min lid close in which the machine slept seven times (row 15's cadence, reproduced), both
+registered processes received exactly one `kIOMessageSystemWillSleep` and one
+`kIOMessageSystemHasPoweredOn`: `Tools/PowerObserver` unprivileged, and the built helper under
+`sudo` as root. **Both captures exist, which is what this row required** — an unprivileged process
+and a root daemon were not assumed to see the same count, and the measurement is that they do. The
+six maintenance sleeps delivered nothing to either process.
+`SystemPowerLimits.acknowledgementBudget` is therefore spent **once per lid close, not once per
+sleep cycle**, and the single observed acknowledgement took 62 µs.
+
+Two things this row's previous text left as assumptions are now settled. Running the built helper
+under `sudo` with no install and no signing identity **does** work — it bound
+`com.blamechris.Aeolus.Helper` and ran its startup reconciliation before serving — which is what
+kept this row's "now" tag honest against row 2's, asserted but never executed until this capture.
+And the count is not a suspension artifact: the helper's thermal-emergency supervisor logged at
+every dark wake, so it was provably alive 44 s before a maintenance sleep for which it received no
+notification at all. `IOKitSystemPowerObserver` itself remains the one thing no automated test can
+reach.
 
 **15. Sleep/wake cadence per lid close** — how often § 4's handback path is exercised. *Executes:
 **done** — see [SMC-RESEARCH.md](SMC-RESEARCH.md) and
