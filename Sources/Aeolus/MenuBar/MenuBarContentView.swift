@@ -126,21 +126,32 @@ private struct MenuBarReadoutRow: View {
                     .help("System reclaimed control of this fan")
             }
 
-            Text(displayText)
-                .fontDesign(.monospaced)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(displayText)
+                    .fontDesign(.monospaced)
+                if let controlStateText {
+                    Text(controlStateText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 
-    /// Converts `readout.reading` for `temperatureUnit` before formatting — the same
-    /// `TemperatureDisplay` seam `SensorRowModel` uses for the main window, so a
-    /// temperature reading never shows two different converted values depending on which
+    /// The value alone, through `MenuBarReadoutFormatting.value(for:temperatureUnit:)` —
+    /// the same seam the strip (`MenuBarLabelView`) formats through, so a temperature (or
+    /// any other) reading never shows two different converted values depending on which
     /// view rendered it.
     private var displayText: String {
-        let displayReading = TemperatureDisplay.convert(
-            readout.reading, kind: readout.kind, to: temperatureUnit)
-        let unit =
-            TemperatureDisplay.unit(for: readout.kind, temperatureUnit: temperatureUnit)
-            ?? readout.unit
-        return ReadingFormatting.text(for: displayReading, unit: unit)
+        MenuBarReadoutFormatting.value(for: readout, temperatureUnit: temperatureUnit)
+    }
+
+    /// What this row's control state says, if it has one — see
+    /// `MenuBarReadoutFormatting.controlStateSuffix(for:)`. Per `#249`, this is what
+    /// keeps a fan's mode from rendering as a bare, unexplained number: the dropdown
+    /// already showed label and key alongside the value, but said nothing about what a
+    /// fan's own mode currently is, unlike the main window's fan list.
+    private var controlStateText: String? {
+        MenuBarReadoutFormatting.controlStateSuffix(for: readout)
     }
 }

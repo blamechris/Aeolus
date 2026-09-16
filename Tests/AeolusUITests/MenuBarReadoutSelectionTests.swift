@@ -139,16 +139,68 @@ struct MenuBarReadoutSelectionTests {
 
     @Test("A catalog-labelled candidate is chosen even if its own kind is .unknown")
     func labelledUnknownKindCandidateIsStillChosen() {
-        // Trusting the catalog regardless of kind is deliberate: F0Md (fan mode) is a
-        // real, catalog-labelled key whose kind is .unknown under
-        // SMCSensorProvider.kind(for:) (only Ac/Tg/Mn/Mx match the fan-suffix
-        // convention) — a human curated this entry via E6, so it is not held to the
-        // same "prove it" bar as an unlabelled key.
+        // Trusting the catalog regardless of kind is deliberate for an ordinary
+        // unclassified sensor: a human curated this entry via E6, so it is not held to
+        // the same "prove it" bar as an unlabelled key. This is deliberately not F0Md —
+        // see controlPlaneKeysAreNeverDefaultedEvenWhenLabelled below for why a
+        // fan-control-shaped key is excluded regardless of label.
         let decoration = CatalogDecoration(
-            key: "F0Md", label: "Fan 0 Mode", category: .fan, confidence: .verified)
-        let sensors = [Self.sensor(key: "F0Md", kind: .unknown, decoration: decoration)]
+            key: "Th9J", label: "Battery Proximity", category: .battery, confidence: .verified)
+        let sensors = [Self.sensor(key: "Th9J", kind: .unknown, decoration: decoration)]
         let selection = MenuBarReadoutSelection.defaultSelection(fans: [], sensors: sensors)
 
-        #expect(selection.filter { $0.source == .sensor }.map(\.key) == ["F0Md"])
+        #expect(selection.filter { $0.source == .sensor }.map(\.key) == ["Th9J"])
+    }
+
+    // MARK: - The #249 regression: F0Md / F0Tg
+
+    @Test(
+        "F0Md and F0Tg are never defaulted even when catalog-labelled — the real machine's shape"
+    )
+    func controlPlaneKeysAreNeverDefaultedEvenWhenLabelled() {
+        // The exact shape #249 found on real hardware: both F0Md and F0Tg are
+        // catalog-labelled (a human curated them via E6, and the labels are correct —
+        // "Fan 0 Mode" and "Fan 0 Target Speed" are accurate descriptions), yet neither
+        // is a live measurement fit to default to. F0Md's kind is .unknown under
+        // SMCSensorProvider.kind(for:); F0Tg's is .rpm (its suffix matches the fan-key
+        // convention) — the fix cannot be "trust kind" alone, because F0Tg's kind
+        // already looks exactly like a real RPM sensor's.
+        let modeDecoration = CatalogDecoration(
+            key: "F0Md", label: "Fan 0 Mode", category: .fan, confidence: .verified)
+        let targetDecoration = CatalogDecoration(
+            key: "F0Tg", label: "Fan 0 Target Speed", category: .fan, confidence: .verified)
+        let sensors = [
+            Self.sensor(key: "F0Md", kind: .unknown, decoration: modeDecoration),
+            Self.sensor(key: "F0Tg", kind: .rpm, decoration: targetDecoration),
+            Self.sensor(key: "Tp09"),
+        ]
+        let selection = MenuBarReadoutSelection.defaultSelection(
+            fans: [Self.fan(index: 0)], sensors: sensors)
+
+        let sensorKeys = selection.filter { $0.source == .sensor }.map(\.key)
+        #expect(!sensorKeys.contains("F0Md"))
+        #expect(!sensorKeys.contains("F0Tg"))
+        #expect(sensorKeys == ["Tp09"])
+        // The fan itself is still defaulted as usual — only the sensor-shaped
+        // control-plane keys are excluded.
+        #expect(selection.filter { $0.source == .fan }.map(\.key) == ["F0Ac"])
+    }
+
+    @Test("A second fan's F1Md/F1Tg are excluded the same way as fan 0's")
+    func controlPlaneExclusionGeneralisesPastFanZero() {
+        let sensors = [
+            Self.sensor(
+                key: "F1Md",
+                decoration: CatalogDecoration(
+                    key: "F1Md", label: "Fan 1 Mode", category: .fan, confidence: .verified)),
+            Self.sensor(
+                key: "F1Tg", kind: .rpm,
+                decoration: CatalogDecoration(
+                    key: "F1Tg", label: "Fan 1 Target Speed", category: .fan,
+                    confidence: .verified)),
+        ]
+        let selection = MenuBarReadoutSelection.defaultSelection(fans: [], sensors: sensors)
+
+        #expect(selection.filter { $0.source == .sensor }.isEmpty)
     }
 }
