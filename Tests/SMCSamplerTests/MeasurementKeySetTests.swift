@@ -14,7 +14,8 @@ struct MeasurementKeySetTests {
         #expect(keys.allSatisfy { $0.hasPrefix("TPD") || $0.hasPrefix("TRD") })
     }
 
-    @Test("an unrecognised or nil model resolves to the empty critical set — blindness, not a guess")
+    @Test(
+        "an unrecognised or nil model resolves to the empty critical set — blindness, not a guess")
     func unrecognisedModelResolvesToEmptySet() {
         #expect(MeasurementKeySet.criticalKeys(forModel: "Mac99,9").isEmpty)
         #expect(MeasurementKeySet.criticalKeys(forModel: nil).isEmpty)
@@ -43,7 +44,8 @@ struct MeasurementKeySetTests {
     func duplicatesAreCollapsed() {
         // A contrived overlap: today's curated sets never collide, but the dedup itself must
         // hold regardless of what the two source lists happen to contain.
-        let keys = MeasurementKeySet.defaultKeys(model: nil, fanIndices: [0])
+        let keys =
+            MeasurementKeySet.defaultKeys(model: nil, fanIndices: [0])
             + MeasurementKeySet.fanKeys(forFanIndices: [0])
         let deduped = MeasurementKeySet.resolvedKeys(custom: keys, model: nil, fanIndices: [])
         #expect(deduped == ["F0Ac", "F0Mn", "F0Mx"])

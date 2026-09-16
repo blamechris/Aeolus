@@ -14,7 +14,9 @@ struct ClockNanosecondsTests {
     func subSecondDurationConverts() {
         #expect(ClockNanoseconds.nanoseconds(from: .nanoseconds(1_500)) == 1_500)
         // 500 attoseconds is well below one nanosecond and must truncate to zero, not round up.
-        #expect(ClockNanoseconds.nanoseconds(from: Duration(secondsComponent: 0, attosecondsComponent: 500)) == 0)
+        #expect(
+            ClockNanoseconds.nanoseconds(
+                from: Duration(secondsComponent: 0, attosecondsComponent: 500)) == 0)
     }
 
     @Test("zero duration converts to zero")

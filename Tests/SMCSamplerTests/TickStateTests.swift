@@ -35,7 +35,9 @@ struct SamplerIntervalTests {
         #expect(SamplerInterval.clampedNanoseconds(forSeconds: -5) == 0)
     }
 
-    @Test("an interval too large to represent as nanoseconds clamps to UInt64.max rather than trapping")
+    @Test(
+        "an interval too large to represent as nanoseconds clamps to UInt64.max rather than trapping"
+    )
     func tooLargeIntervalClampsToMax() {
         #expect(SamplerInterval.clampedNanoseconds(forSeconds: 1e30) == UInt64.max)
     }
