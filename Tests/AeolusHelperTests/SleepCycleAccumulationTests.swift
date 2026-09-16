@@ -218,7 +218,8 @@ struct SleepCycleAccumulationTests {
         // `throws: Never` rather than a bare `try`, so a refusal here names the cycle it
         // happened on instead of escaping as an unattributed error from the test function.
         // Which cycle first refuses is the entire finding: cycle 1 says the mechanism never
-        // worked, cycle 2 says it works once.
+        // worked, and a later one says it works a bounded number of times — mutation D above
+        // is red on cycle 3, and the arithmetic that puts it there is the whole diagnosis.
         await #expect(
             throws: Never.self,
             """
