@@ -1,8 +1,11 @@
 import Foundation
 
 /// Formats a `ResolvedMenuBarReadout` for display — the single place `MenuBarLabelView`
-/// (the compact strip) and `MenuBarContentView` (the full dropdown) both go through, so
-/// the same readout is never described two different ways depending on which one drew it.
+/// (the compact strip) and `MenuBarContentView` (the full dropdown) both go through, so a
+/// value's identity and unit are never left to the reader to infer. One deliberate
+/// exception: the strip suppresses a fan's control-state suffix when it is the default
+/// (automatic, not reclaimed) to save width, while the dropdown always spells it out —
+/// see `isNoteworthyControlState` below for why that asymmetry is safe.
 ///
 /// ## `#249`: the strip must never drop the meaning a value depends on
 ///
