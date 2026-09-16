@@ -85,6 +85,24 @@ struct SleepCycleSurvivalTests {
     /// `.restoreToAutomaticFailed` and `fansWithAbandonedHandbacks.isEmpty` — against `1431 tests
     /// in 220 suites` with those two and nothing else. Nothing else in the repository sleeps
     /// twice on one outstanding fan, so nothing else can see it.
+    ///
+    /// **Mutation C — the seal reopening once.** A `hasUnsealed` latch on `unsealAfterWake()`.
+    /// Run: red on the fan 1 grant after the second wake (`.systemSleeping` where nothing was
+    /// expected to throw, then the lease count) — so the separator is load-bearing and not
+    /// decoration. Caught by the two other multi-cycle tests as well, so it is corroboration
+    /// rather than new cover. It is also why that grant is wrapped in `throws: Never` rather
+    /// than left as a bare `try`: measured first with a bare `try`, the same mutation reported
+    /// only `Caught error: .systemSleeping` against the `@Test` line, naming neither the fan nor
+    /// the moment — and skipped the epilogue, leaving two parked deliveries behind the test.
+    ///
+    /// **Mutation D — the second cycle removed**, applied to this test rather than to the
+    /// helper: delete the second `.willSleep`/`.didWake` pair. Run: red on the fault-line count
+    /// (`1 == 2`) and **on nothing else** — every register and refusal assertion stays green,
+    /// because a register that survived one wake survives the read after it either way. So that
+    /// count is the only thing standing between this and a single-cycle test wearing a
+    /// multi-cycle name, which is the defect the sibling suite was written to fix. Recorded
+    /// here because an assertion whose whole job is structural is the easiest one for a later
+    /// edit to drop as noise.
     @Test("A handback that never returns is still refused after a second wake")
     func aHandbackThatNeverReturnsIsStillRefusedAfterASecondWake() async throws {
         let plane = CycleWedgingRestorePlane(SystemPowerTests.machine(fanCount: 2))
@@ -115,11 +133,11 @@ struct SleepCycleSurvivalTests {
             """)
 
         try await observer.deliver(.didWake)
-        try await Self.expectStillRefused(helper.leases, after: "the first wake")
+        await Self.expectStillRefused(helper.leases, after: "the first wake")
 
         let secondSleep = try await Self.sleepWithoutReleasing(observer)
         try await observer.deliver(.didWake)
-        try await Self.expectStillRefused(helper.leases, after: "the second wake")
+        await Self.expectStillRefused(helper.leases, after: "the second wake")
 
         #expect(
             log.faults.count { $0.contains("handback still outstanding") } == 2,
@@ -131,7 +149,7 @@ struct SleepCycleSurvivalTests {
             asserting nothing new.
             """)
 
-        try await Self.expectTheLateRestoreStillClearsIt(
+        await Self.expectTheLateRestoreStillClearsIt(
             helper, plane, deliveries: [firstSleep, secondSleep])
     }
 
@@ -144,7 +162,7 @@ struct SleepCycleSurvivalTests {
     /// however many times it elapsed.
     private static func expectStillRefused(
         _ leases: LeaseAuthority, after moment: String
-    ) async throws {
+    ) async {
         let refusal = await #expect(throws: AeolusXPCFault.self) {
             _ = try await leases.acquireLease(
                 LeaseFixture.request(fans: [0]), from: ConnectionID())
@@ -183,16 +201,27 @@ struct SleepCycleSurvivalTests {
         _ helper: HelperComposition<CycleWedgingRestorePlane>,
         _ plane: CycleWedgingRestorePlane,
         deliveries: [Task<Void, Never>]
-    ) async throws {
-        _ = try await helper.leases.acquireLease(
-            LeaseFixture.request(fans: [1]), from: ConnectionID())
+    ) async {
+        // `throws: Never` rather than a bare `try`, for the reason the sibling suite records:
+        // a refusal here is the finding, and an error escaping the test function arrives
+        // unattributed — no fan, no moment, and the epilogue below never runs, so the two
+        // parked deliveries are left suspended behind the test. Measured: under a
+        // once-per-helper `unsealAfterWake()` a bare `try` reported only
+        // `Caught error: .systemSleeping` against the @Test line.
+        await #expect(
+            throws: Never.self,
+            """
+            fan 1 could not be leased after two wakes. Its handback was never issued and it was \
+            never leased, so the only thing left to refuse it is a seal that stopped reopening — \
+            which would mean the seal, not the register, is what refused fan 0 above.
+            """
+        ) {
+            _ = try await helper.leases.acquireLease(
+                LeaseFixture.request(fans: [1]), from: ConnectionID())
+        }
         #expect(
             await helper.leases.leaseCount == 1,
-            """
-            fan 1 is not grantable after two wakes. Its handback was never issued and it was \
-            never leased, so the only thing that could refuse it is the seal — which means the \
-            seal, not the register, is what refused fan 0 above.
-            """)
+            "fan 1's lease was not granted after two wakes")
 
         // One release frees both cycles' parked restores: the wedge was armed once, so both are
         // waiting on the same signal. Nothing is left parked behind the test.
