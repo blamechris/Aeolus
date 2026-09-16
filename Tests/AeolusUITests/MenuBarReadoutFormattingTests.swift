@@ -102,14 +102,44 @@ struct MenuBarReadoutFormattingTests {
         #expect(text != "0")
     }
 
-    @Test("A fan-sourced readout's identified text appends its control state")
-    func identifiedTextAppendsControlState() {
+    @Test("A fan in the default automatic, non-reclaimed state carries no suffix in the strip")
+    func identifiedTextSuppressesTheDefaultAutomaticControlState() {
+        // "(Automatic)" is dead weight on the strip's limited width when every fan
+        // starts in exactly this state — see this PR's review. The dropdown still shows
+        // it: this suppression is local to identifiedText/stripText.
         let readout = Self.resolved(
             key: "F0Ac", source: .fan, label: "Fan 0", kind: .rpm, value: 1712,
             fanControlState: FanControlState(mode: .automatic, isReclaimedBySystem: false))
         #expect(
             MenuBarReadoutFormatting.identifiedText(for: readout, temperatureUnit: .celsius)
-                == "Fan 0 1712 RPM (Automatic)")
+                == "Fan 0 1712 RPM")
+    }
+
+    @Test("A manually-controlled fan's identified text still appends its control state")
+    func identifiedTextAppendsANoteworthyControlState() {
+        let readout = Self.resolved(
+            key: "F0Ac", source: .fan, label: "Fan 0", kind: .rpm, value: 1712,
+            fanControlState: FanControlState(mode: .manualFixed, isReclaimedBySystem: false))
+        #expect(
+            MenuBarReadoutFormatting.identifiedText(for: readout, temperatureUnit: .celsius)
+                == "Fan 0 1712 RPM (Manual — fixed speed)")
+    }
+
+    @Test(
+        "A fan reclaimed while reporting mode .automatic still appends its control state — rule 6"
+    )
+    func identifiedTextAppendsControlStateWhenReclaimedEvenIfModeReadsAutomatic() {
+        // The safety net for isNoteworthyControlState's OR: whatever `mode` a reclaimed
+        // fan happens to report, `isReclaimedBySystem` alone must be enough to keep this
+        // fan's line off the "nothing to see here" list the automatic-suppression exists
+        // to shorten — CLAUDE.md rule 6 forbids ever looking like this app still has
+        // control when the system has taken it back.
+        let readout = Self.resolved(
+            key: "F0Ac", source: .fan, label: "Fan 0", kind: .rpm, value: 1712,
+            fanControlState: FanControlState(mode: .automatic, isReclaimedBySystem: true))
+        #expect(
+            MenuBarReadoutFormatting.identifiedText(for: readout, temperatureUnit: .celsius)
+                == "Fan 0 1712 RPM (Reclaimed by system (was Automatic))")
     }
 
     // MARK: - stripText(for:temperatureUnit:) — the reported #249 scenario
@@ -129,9 +159,11 @@ struct MenuBarReadoutFormattingTests {
         let text = MenuBarReadoutFormatting.stripText(
             for: [fan0, fan1, mode, target], temperatureUnit: .celsius)
 
+        // Both fans are in the default automatic state, so neither carries a
+        // "(Automatic)" suffix here — see identifiedTextSuppressesTheDefaultAutomaticControlState.
         #expect(
             text
-                == "Fan 0 1340.73 RPM (Automatic)  Fan 1 1470.74 RPM (Automatic)  "
+                == "Fan 0 1340.73 RPM  Fan 1 1470.74 RPM  "
                 + "Fan 0 Mode 0  Fan 0 Target Speed 1350 RPM")
         // The literal regression: no entry is a bare, unlabelled "0" indistinguishable
         // from a live reading.
