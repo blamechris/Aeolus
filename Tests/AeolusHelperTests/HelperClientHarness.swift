@@ -62,18 +62,26 @@ final class ClientListenerHarness {
     /// invalidated — the reading [#239](https://github.com/blamechris/Aeolus/issues/239)
     /// raises and the one #250 was filed expecting.
     ///
-    /// It does not happen in either configuration CI builds. Instrumenting this `deinit` and
-    /// `shouldAcceptNewConnection`, every test in `HelperClientTests` and
-    /// `HelperClientConnectionTests` — the ones #250 lists among its failures included —
-    /// logs the connection attempt **before** the harness deinitialises, under
-    /// `swift test` and under `swift test -c release` alike, on `Mac16,5` / macOS 26.6.2 /
-    /// Swift 6.2. These are `async` functions and the locals live in the async frame, so
-    /// release lands at frame exit rather than at last use.
+    /// **It did not happen on the development machine, in either configuration CI builds —
+    /// which is not the same statement as "it does not happen on CI", and the difference is
+    /// the point.** Instrumenting this `deinit` and `shouldAcceptNewConnection`, every test in
+    /// `HelperClientTests` and `HelperClientConnectionTests` — the ones #250 lists among its
+    /// failures included — logs the connection attempt **before** the harness deinitialises,
+    /// under `swift test` and under `swift test -c release -Xswiftc -enable-testing` alike.
+    /// Both of those are configurations CI builds; the machine was `Mac16,5` / macOS 26.6.2 /
+    /// Swift 6.2, and **the runner's own toolchain was never probed.** These are `async`
+    /// functions and the locals live in the async frame, so release lands at frame exit rather
+    /// than at last use — an optimiser's liberty, not a language guarantee, and the optimiser
+    /// measured was not the runner's.
     ///
-    /// That is a measurement of a toolchain and not a guarantee from one, which is why the
-    /// tests that care still pin the precondition at the harness — `sessions.isEmpty` in
-    /// `aRefusingHelperIsPromptAndNamesBothPossibilities` is the pattern. What it does settle
-    /// is that #250's "no reply at all" was never a dead listener.
+    /// So this settles one thing and not another. It is enough to say that #250's block of
+    /// `helperNeverAnswered(after: 0.75 seconds)` was a shared constant rather than a dead
+    /// listener: a dead listener cannot fail eighteen tests at *precisely* the bound the
+    /// constant names, and the 750 ms mutation reproduces #250's failure list line for line.
+    /// It is not enough to retire #239. The only portable guard against the lifetime reading
+    /// is still the one the tests that care already use — pinning the harness past the last
+    /// call, `sessions.isEmpty` in `aRefusingHelperIsPromptAndNamesBothPossibilities` being
+    /// the pattern — and #239's second defect stays open for exactly that reason.
     deinit {
         delegate.invalidateConnections()
         listener.invalidate()
@@ -133,10 +141,24 @@ final class ClientListenerHarness {
     /// handshake's derived from the helper's own reconciliation budget by
     /// `HelperClientDeadlines.reconciliationBudget`. That is the only bound whose expiry is a
     /// real defect rather than an artefact of the machine the suite is running on — a client
-    /// that cannot get an answer inside it is broken for a user too. **A harness must never
-    /// impose a bound the product does not**, and
-    /// `HelperClientDeadlineTests.noHarnessImposesATighterDeadlineThanTheProduct` is what
-    /// holds this to that.
+    /// that cannot get an answer inside it is broken for a user too.
+    ///
+    /// **What holds this value there, and exactly how far that reaches.**
+    /// `HelperClientDeadlineTests.noHarnessDefaultImposesATighterDeadlineThanTheProduct`
+    /// compares this constant, and `FanctlResetTests.unhurried`, against the shipping trio.
+    /// Those two are every *default* in the test target, so no test inherits a tighter bound
+    /// than the product's without that test going red. It says nothing about a deadline a test
+    /// passes **explicitly** at its call site: ten call sites do, several of them below the
+    /// product's bound on a verb they do not assert, and
+    /// [#255](https://github.com/blamechris/Aeolus/issues/255) is where that is tracked. Read
+    /// the invariant as "no test inherits a tighter bound", never as "no tighter bound exists".
+    ///
+    /// The comparison is also *relative*, so tightening `HelperClientDeadlines` itself keeps it
+    /// green while every inheriting test gets the tighter bound. The absolute floor comes from
+    /// a different test —
+    /// `HelperClientDeadlineTests.aPeerASecondSlowToAnswerHelloStillRoundTrips` holds `hello`
+    /// for a second and requires the round trip to survive it — which reddens whichever side
+    /// moved.
     ///
     /// It costs nothing on a healthy run: everything here answers in milliseconds and never
     /// reaches the deadline at all. It costs the shipping deadline on a *failing* run, which
