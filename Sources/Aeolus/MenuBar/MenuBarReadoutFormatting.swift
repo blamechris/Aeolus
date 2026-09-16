@@ -26,7 +26,9 @@ enum MenuBarReadoutFormatting {
     /// appended when `readout.kind` implies one) — no label, no key, no control state.
     /// Shared by both display sites so a value never decodes two different ways; callers
     /// needing more context use `identifiedText(for:temperatureUnit:)`.
-    static func value(for readout: ResolvedMenuBarReadout, temperatureUnit: TemperatureUnit)
+    static func value(
+        for readout: ResolvedMenuBarReadout, temperatureUnit: TemperatureUnit
+    )
         -> String
     {
         let displayReading = TemperatureDisplay.convert(
@@ -55,7 +57,9 @@ enum MenuBarReadoutFormatting {
     /// otherwise — never nothing, so a value's meaning is never carried solely by its
     /// position among other readouts. See this type's own documentation for the `#249`
     /// finding this specifically fixes.
-    static func identifiedText(for readout: ResolvedMenuBarReadout, temperatureUnit: TemperatureUnit)
+    static func identifiedText(
+        for readout: ResolvedMenuBarReadout, temperatureUnit: TemperatureUnit
+    )
         -> String
     {
         let identifier = readout.label ?? readout.key

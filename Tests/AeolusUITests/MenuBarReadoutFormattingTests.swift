@@ -123,7 +123,8 @@ struct MenuBarReadoutFormattingTests {
             key: "F1Ac", source: .fan, label: "Fan 1", kind: .rpm, value: 1470.74,
             fanControlState: FanControlState(mode: .automatic, isReclaimedBySystem: false))
         let mode = Self.resolved(key: "F0Md", label: "Fan 0 Mode", kind: .unknown, value: 0)
-        let target = Self.resolved(key: "F0Tg", label: "Fan 0 Target Speed", kind: .rpm, value: 1350)
+        let target = Self.resolved(
+            key: "F0Tg", label: "Fan 0 Target Speed", kind: .rpm, value: 1350)
 
         let text = MenuBarReadoutFormatting.stripText(
             for: [fan0, fan1, mode, target], temperatureUnit: .celsius)
@@ -131,7 +132,7 @@ struct MenuBarReadoutFormattingTests {
         #expect(
             text
                 == "Fan 0 1340.73 RPM (Automatic)  Fan 1 1470.74 RPM (Automatic)  "
-                    + "Fan 0 Mode 0  Fan 0 Target Speed 1350 RPM")
+                + "Fan 0 Mode 0  Fan 0 Target Speed 1350 RPM")
         // The literal regression: no entry is a bare, unlabelled "0" indistinguishable
         // from a live reading.
         #expect(!text.contains("  0  "))

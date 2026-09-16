@@ -79,7 +79,9 @@ enum MenuBarReadoutSelection {
         // Excludes F0Md/F0Tg (and any fan's) before either branch below ever sees them —
         // see this type's "#249" documentation for why a catalog label cannot rescue a
         // control-plane key here the way it rescues a merely-unclassified one.
-        let candidates = sensors.filter { !fanKeys.contains($0.key) && !isFanControlPlaneKey($0.key) }
+        let candidates = sensors.filter {
+            !fanKeys.contains($0.key) && !isFanControlPlaneKey($0.key)
+        }
         let labelled = candidates.filter { $0.decoration != nil }
         // Trust a catalog label regardless of `kind` — a human curated it via E6. Absent
         // one, only a key whose `kind` this project can actually vouch for as a physical
