@@ -1137,8 +1137,8 @@ one-line under-report window its README warns about did not occur here. The help
 § 4's own `sleepIsComing` line, logged once, followed once by the wake line.
 
 **The six maintenance sleeps delivered nothing to either process.** The one `willSleep` that did
-arrive preceded the clamshell sleep by 5 s and was acknowledged in **62 µs**, three orders of
-magnitude inside `SystemPowerLimits.acknowledgementBudget`.
+arrive preceded the clamshell sleep by 5 s and was acknowledged in **62 µs**, against a
+`SystemPowerLimits.acknowledgementBudget` of 5 s — roughly 80,000x inside it.
 
 #### Why this is not a suspension artifact
 
@@ -1148,7 +1148,7 @@ number.
 
 The helper's log separates them. Its thermal-emergency supervisor logged at **every dark wake** —
 21:19:37, 21:35:21, 21:51:08, 22:07:54, 22:24:03, 22:51:43, 23:04:43 — so the helper was
-demonstrably awake and running 45 s before the 21:36:06 maintenance sleep, and logged nothing for
+demonstrably awake and running 44 s before the 21:36:06 maintenance sleep, and logged nothing for
 it. Two independent processes, one unprivileged and one root, both provably alive across the
 cycles, both recording one pair.
 

@@ -1382,7 +1382,7 @@ under `sudo` with no install and no signing identity **does** work — it bound
 `com.blamechris.Aeolus.Helper` and ran its startup reconciliation before serving — which is what
 kept this row's "now" tag honest against row 2's, asserted but never executed until this capture.
 And the count is not a suspension artifact: the helper's thermal-emergency supervisor logged at
-every dark wake, so it was provably alive 45 s before a maintenance sleep for which it received no
+every dark wake, so it was provably alive 44 s before a maintenance sleep for which it received no
 notification at all. `IOKitSystemPowerObserver` itself remains the one thing no automated test can
 reach.
 
