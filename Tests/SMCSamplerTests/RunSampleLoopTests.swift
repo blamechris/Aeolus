@@ -46,12 +46,25 @@ private final class CapturingSink: LineSink {
 private func deltas(ofLine line: String) throws -> (continuous: Int64?, suspending: Int64?) {
     let data = try #require(line.data(using: .utf8))
     let decoded = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-    let continuous = decoded["continuousDeltaNanoseconds"]
-    let suspending = decoded["suspendingDeltaNanoseconds"]
     return (
-        continuous is NSNull ? nil : (continuous as? Int64 ?? Int64(continuous as? Int ?? 0)),
-        suspending is NSNull ? nil : (suspending as? Int64 ?? Int64(suspending as? Int ?? 0))
+        try delta(named: "continuousDeltaNanoseconds", in: decoded),
+        try delta(named: "suspendingDeltaNanoseconds", in: decoded)
     )
+}
+
+/// `nil` only for an explicit JSON `null`. A genuinely *absent* key — the regression a
+/// stray `encodeIfPresent` would introduce, see `SampleRecord.encode(to:)`'s own
+/// documentation — fails loudly via `#require` instead of being read as `nil` (or, as the
+/// three-way collapse this replaced did via its `?? 0` fallback, as a silent `Int64(0)`
+/// that a `!= nil` check could not tell apart from a real zero-length delta).
+private func delta(named key: String, in decoded: [String: Any]) throws -> Int64? {
+    let value = try #require(
+        decoded[key], "\"\(key)\" is absent from the decoded line entirely")
+    if value is NSNull { return nil }
+    if let int64 = value as? Int64 { return int64 }
+    if let int = value as? Int { return Int64(int) }
+    Issue.record("\"\(key)\" decoded to an unexpected type: \(value)")
+    return nil
 }
 
 @Suite("runSampleLoop")
@@ -80,15 +93,26 @@ struct RunSampleLoopTests {
             suspendingStart: SuspendingClock.now,
             tickState: TickState())
 
-        #expect(sink.lines.count == 2)
+        // `try #require`, not `#expect`: the two lines below index `sink.lines[0]` and
+        // `sink.lines[1]` unguarded. Swift Testing runs every test in one process, so an
+        // out-of-range index here would abort the whole suite rather than fail just this
+        // test — see the round-2 delta review of #248 that flagged this, and its cited
+        // mutation just below `boundedCountEmitsExactlyThatManyLines`.
+        try #require(sink.lines.count == 2)
 
         let firstDeltas = try deltas(ofLine: sink.lines[0])
         #expect(firstDeltas.continuous == nil)
         #expect(firstDeltas.suspending == nil)
 
+        // A plausible positive number, not merely "not nil" — with a real (if short)
+        // `intervalSeconds` sleep between tick 0 and tick 1, both clocks must have
+        // advanced. `!= nil` alone was satisfied by a delta of any value, including the
+        // `Int64(0)` the old absent-key fallback in `deltas(ofLine:)` produced.
         let secondDeltas = try deltas(ofLine: sink.lines[1])
-        #expect(secondDeltas.continuous != nil)
-        #expect(secondDeltas.suspending != nil)
+        let continuousDelta = try #require(secondDeltas.continuous)
+        let suspendingDelta = try #require(secondDeltas.suspending)
+        #expect(continuousDelta > 0)
+        #expect(suspendingDelta > 0)
     }
 
     @Test("--count ticks emits exactly that many sample lines, then returns")
