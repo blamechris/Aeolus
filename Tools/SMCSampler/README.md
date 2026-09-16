@@ -72,7 +72,13 @@ One JSON object per line, no line ever containing a literal newline:
   resolved `--interval`, and — the field that makes a capture reproducible and auditable —
   the exact `keys` this run is sampling and a `keySource` string naming where that list came
   from (`"default(model:...,fans:...)"` or `"custom"`). A capture is only as trustworthy as
-  its own record of what it asked for.
+  its own record of what it asked for. `fanEnumerationFailed` and
+  `fanEnumerationFailureReason` record whether fan discovery itself failed before the key
+  list above was resolved: `keySource`'s own `fans:0` looks identical whether this machine
+  genuinely has no fans or enumeration failed transiently, and this tool's own invocation
+  above (`> capture.ndjson`) captures stdout only — the stderr line this failure also
+  produces never reaches the file. Check this field, not `fans:0` alone, before reading a
+  capture as evidence a machine has no fans.
 - `"kind":"sample"` — one per tick. `tick` (0-indexed), `wallClockUTC`, and **both**
   monotonic clocks: `continuousNanoseconds`/`continuousDeltaNanoseconds` from
   `ContinuousClock` (documented to keep advancing across sleep) and
@@ -94,8 +100,11 @@ One JSON object per line, no line ever containing a literal newline:
 ## Reading the result
 
 **A `continuousDelta` far larger than the matching `suspendingDelta` on the same tick is a
-sleep the wall clock and `SuspendingClock` both missed and `ContinuousClock` did not.** That
-comparison is the whole reason this tool samples both — see
+sleep `SuspendingClock` missed and `ContinuousClock` did not.** (The wall clock — `Date`,
+via `wallClockUTC` — advances across a sleep exactly as `ContinuousClock` does, and reading
+a large `wallClockUTC` gap on that tick as a problem rather than the expected reading is a
+mistake; `SuspendingClock` is the one clock this comparison is about.) That comparison is
+the whole reason this tool samples both — see
 [ADR 0007](../../docs/ADR/0007-safety-composition.md)'s assumption table and #210's
 own description of why a capture carrying only one clock cannot distinguish "this clock
 advanced" from "this clock is the other family."
