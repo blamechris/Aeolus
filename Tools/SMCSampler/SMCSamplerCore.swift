@@ -540,10 +540,16 @@ protocol LineSink: Sendable {
 ///
 /// Lives here rather than in `SMCSamplerMain.swift` so `RunSampleLoopTests` can drive it
 /// against a fake `SensorProvider` and an in-memory `LineSink` via `@testable import
-/// smc_sampler` — nothing in `@main`'s file is reachable that way. See that suite for the
-/// tick-0-vs-tick-1 delta assertion and the exact double-stop-line regression this loop's
-/// own history records (this function's documentation on cancellation, and
-/// `installOrderlyExit`'s in `SMCSamplerMain.swift`).
+/// smc_sampler` — nothing in `@main`'s file is reachable that way. See that suite for what
+/// it actually pins: the tick-0-vs-tick-1 delta assertion, the exact `--count` line count,
+/// and a clean (non-throwing) return when cancelled between ticks. It does *not* and
+/// cannot cover the double-stop-line regression this loop's own history records (this
+/// function's documentation on cancellation, and `installOrderlyExit`'s in
+/// `SMCSamplerMain.swift`) — the property that fixed it, "`main()` is the one and only
+/// place that writes a `stop` line," lives entirely inside `@main`'s file, unreachable by
+/// `@testable import`. That property is currently verified by hand (manual `Ctrl-C`
+/// testing — see `SMCSamplerMain.swift`'s `installOrderlyExit` documentation), not by a
+/// test.
 func runSampleLoop(
     provider: some SensorProvider,
     keys: [String],
