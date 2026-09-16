@@ -94,12 +94,14 @@ struct SleepCycleSurvivalTests {
     /// which is decision D17 creeping back one cycle later than before. Run: red **only here**, 2
     /// issues, both after the second wake — fan 0's refusal coming back
     /// `.restoreToAutomaticFailed` and `fansWithAbandonedHandbacks.isEmpty` — against `1431 tests
-    /// in 220 suites`. Nothing else in the repository sleeps twice on one outstanding fan, so
-    /// nothing else can see it. Run three times rather than once, and the reason is worth the
-    /// line: none of the three got under 50 s, so each also carried one or more of the
+    /// in 220 suites`, in **35.1 s** with those two issues and nothing else, and with
+    /// `threeSleepCyclesEachSealReopenAndAcknowledgeOnce` passing on the same run. Nothing else in
+    /// the repository sleeps twice on one outstanding fan, so nothing else can see it. Four runs
+    /// rather than one, and the three discarded ones are worth a line: each went over 50 s on a
+    /// machine with other agents building and so also carried one or more of the
     /// wall-clock-deadline flakes #227 (`HelperHardwareTests`, `SMCSensorProviderTests`) and #256
-    /// (`HelperClientTests`) tracks. Those varied run to run; these two did not, and no suite
-    /// this mutation could plausibly reach was among them.
+    /// (`HelperClientTests`, `MessageOrderingTests`) track. Those varied run to run; these two did
+    /// not. Under 50 s is the threshold this repository already uses for believing a red run.
     ///
     /// **Mutation C — the seal reopening once.** A `hasUnsealed` latch on `unsealAfterWake()`.
     /// Run: red on the fan 1 grant after the second wake (`.systemSleeping` where nothing was

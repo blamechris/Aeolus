@@ -99,9 +99,9 @@ struct SleepCycleAccumulationTests {
     /// makes that safe: three 1 Hz loops over a scripted plane would otherwise put reads in it
     /// that have nothing to do with sleeping.
     ///
-    /// **Mutation A — the loop bound.** `for cycle in 1...3` → `1...1`. Run: red, three issues —
-    /// `(perCycle → [Set([0])]) == [Set([0]), Set([0]), Set([0])]`, the acknowledgement list, and
-    /// the fault-line count at 1 rather than 3.
+    /// **Mutation A — the loop bound.** `for cycle in 1...3` → `1...1`. Run: red, **four** issues —
+    /// `perCycle → [Set([0])]`, the acknowledgement list, the fault-line count at 1 rather than 3,
+    /// and `restoreScopes` at one cycle's pair. Said three until round 2 re-ran it on this tree.
     ///
     /// **Mutation B — decision D17 restored.** In `LeaseAuthority.recordUnconfirmedHandbacks()`,
     /// `restoreAbandoned.formUnion(outstanding)` in place of `handbackUnconfirmed`. Run: red —
