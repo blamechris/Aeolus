@@ -252,23 +252,35 @@ extension SeamScanner {
     /// could not find is a tripwire that passes because it looked at nothing, which is exactly
     /// how a renamed function silently drops its guard.
     ///
-    /// The limits: the **first** declaration of the name wins, so an overload is not
-    /// distinguished; and a body includes every closure written inside it, which is
+    /// The limits: the first declaration of the name **that has a body** wins, so an overload
+    /// is not distinguished; and a body includes every closure written inside it, which is
     /// deliberate — a retry loop spawned in a `Task { … }` inside the send path is the send
     /// path.
+    ///
+    /// **Every** declaration of the name is tried, rather than only the first, and that is a
+    /// correctness fix rather than a generalisation. `HelperConnectionPinning.swift` declares
+    /// the protocol requirement `func pinnedConnection(over:)` above
+    /// `SignedHelperPinning.pinnedConnection`, so a first-match scan answered `nil` for the one
+    /// function in this target that builds a connection — and `HelperClientSeamTests.sendPath()`
+    /// dropped it from the population without a word. A three-attempt retry of
+    /// `transport.makeConnection()`, which is the boot-loop amplifier that test exists to
+    /// forbid, was green. The requirement and the conformer are written in that order because
+    /// the protocol comes first in the file, which is the ordinary way to write one.
     static func functionBody(named name: String, inSource source: String) throws -> String? {
         let code = strippingComments(source)
         let declaration = try NSRegularExpression(pattern: #"func\s+\#(name)\b"#)
-        guard
-            let match = declaration.firstMatch(
-                in: code, range: NSRange(code.startIndex..<code.endIndex, in: code)),
-            let whole = Range(match.range, in: code),
-            let open = parameterListStart(in: code, after: whole.upperBound),
-            let close = closingParenthesis(in: code, openingAt: open),
-            let body = bodyStart(in: code, after: close),
-            let end = closingBrace(in: code, openingAt: body)
-        else { return nil }
-        return String(code[code.index(after: body)..<end])
+        let matches = declaration.matches(
+            in: code, range: NSRange(code.startIndex..<code.endIndex, in: code))
+        for match in matches {
+            guard let whole = Range(match.range, in: code),
+                let open = parameterListStart(in: code, after: whole.upperBound),
+                let close = closingParenthesis(in: code, openingAt: open),
+                let body = bodyStart(in: code, after: close),
+                let end = closingBrace(in: code, openingAt: body)
+            else { continue }
+            return String(code[code.index(after: body)..<end])
+        }
+        return nil
     }
 
     /// The `{` that opens a body, or `nil` if a `}` arrives first — a declaration with no body
