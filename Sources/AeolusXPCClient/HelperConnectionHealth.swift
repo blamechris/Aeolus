@@ -60,8 +60,13 @@ public enum HelperConnectionHealth: Sendable, Hashable {
 
     /// The connection is dead and will not come back. The next message builds a new one.
     ///
-    /// Consistent with the helper being absent or not yet approved — those cannot be told
-    /// apart here. See `HelperClientError.helperUnreachable`.
+    /// Consistent with the helper being absent, not yet approved, or having silently
+    /// refused this client over a code-signing mismatch — ADR 0005 measured that libxpc
+    /// drops that last one with nothing delivered, indistinguishable from the first two at
+    /// this layer, so this state must not be read as naming only two of the three. The
+    /// *explicit* signature refusal (`NSXPCConnectionCodeSigningRequirementFailure`) is
+    /// `.refused` instead; this is the other one, where the drop is silent. See
+    /// `HelperClientError.helperUnreachable`.
     case invalidated
 
     /// The two ends would not agree to talk at all.
