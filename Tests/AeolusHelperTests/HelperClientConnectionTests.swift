@@ -142,16 +142,17 @@ struct HelperClientConnectionTests {
         #expect(harness.sessions.isEmpty, "the delegate refused, so it minted no session")
     }
 
-    /// `HelperConnectionHealth.invalidated`'s doc comment must name every possibility this
-    /// state is actually reached through, not a fixed two of them.
+    /// A refused connection lands on `.invalidated`, and `HelperClientError.errorDescription`
+    /// names every possibility that lands there.
     ///
-    /// The previous wording said "the helper being absent or not yet approved" — two
-    /// items — while the state this test drives into `.invalidated` is the exact same
-    /// silent-drop ambiguity `HelperClientError.helperUnreachable`'s `errorDescription`
-    /// names **three** possibilities for. A doc comment that hand-counts "two" or "three"
-    /// drifts the moment either list gains or loses an item; asserting `possibilities.count`
-    /// against the described text, rather than a literal number, is what keeps this test
-    /// from going stale the same way the prose did.
+    /// This drives the real silent-drop scenario and reads `errorDescription` — it does not
+    /// read `HelperConnectionHealth.swift`'s doc comment, which is a separate prose claim
+    /// about the same enumeration. `invalidatedDocCommentNamesEveryPossibility` below is the
+    /// source tripwire for that half; the two together are what keep the code and the case's
+    /// own doc comment from drifting apart the way #246 arose. A doc comment that
+    /// hand-counts "two" or "three" drifts the moment either list gains or loses an item, so
+    /// this test asserts `possibilities.count` against the described text rather than a
+    /// literal number.
     ///
     /// **Mutation:** in `HelperClientError.errorDescription`'s `.helperUnreachable` arm,
     /// delete the "or it refused this copy of Aeolus because the signature did not match"
@@ -184,6 +185,44 @@ struct HelperClientConnectionTests {
             """)
 
         #expect(harness.sessions.isEmpty, "the delegate refused, so it minted no session")
+    }
+
+    /// `HelperConnectionHealth.invalidated`'s own doc comment must name every possibility
+    /// this state is actually reached through — a source tripwire, because nothing above
+    /// reads `HelperConnectionHealth.swift` at all.
+    /// `invalidatedConnectionNamesEveryPossibilityThatReachesIt` drives the real scenario and
+    /// checks `HelperClientError.errorDescription`; a doc comment three files away from that
+    /// string could narrow back to two possibilities — exactly how #246 arose — with every
+    /// assertion above still green, because none of them look at this file. This is the test
+    /// that closes that gap.
+    ///
+    /// **Mutation:** revert the `case invalidated` doc comment in
+    /// `Sources/AeolusXPCClient/HelperConnectionHealth.swift` to its pre-fix wording
+    /// ("Consistent with the helper being absent or not yet approved — those cannot be told
+    /// apart here."). Run: red — "refused" is no longer in the scanned comment, so `named`
+    /// drops to 2 of the 3 `possibilities`.
+    @Test("HelperConnectionHealth.invalidated's doc comment names every possibility it covers")
+    func invalidatedDocCommentNamesEveryPossibility() throws {
+        let url = SeamScanner.sourcesRoot
+            .appendingPathComponent("AeolusXPCClient/HelperConnectionHealth.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+
+        let start = try #require(
+            source.range(of: "/// The connection is dead and will not come back."),
+            "HelperConnectionHealth.swift no longer opens .invalidated's doc comment with the expected line")
+        let end = try #require(
+            source.range(of: "case invalidated"),
+            "HelperConnectionHealth.swift no longer declares case invalidated")
+        let comment = String(source[start.lowerBound..<end.lowerBound])
+
+        // The possibilities the doc comment must enumerate. Its count, not a hand-typed "3",
+        // is what the assertion below checks against, for the same reason the errorDescription
+        // test above does it this way.
+        let possibilities = ["absent", "not yet approved", "refused"]
+        let named = possibilities.filter { comment.contains($0) }
+        #expect(
+            named.count == possibilities.count,
+            "the doc comment named \(named) but must name all of \(possibilities)")
     }
 
     /// An invalidated connection is dropped, and the next call builds a new one — once.
