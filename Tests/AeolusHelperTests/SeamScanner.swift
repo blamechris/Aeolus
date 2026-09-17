@@ -226,9 +226,41 @@ enum SeamScanner {
         let url = try #require(
             swiftFiles().first { $0.lastPathComponent == file },
             "\(file) is not in the source tree")
-        let source = try String(contentsOf: url, encoding: .utf8)
+        return try structBody(
+            of: type, inSource: try String(contentsOf: url, encoding: .utf8), file: file)
+    }
+
+    /// `structBody(of:in:)`'s parse, over one file's text.
+    ///
+    /// **The name is matched whole.** `struct \(type)` with nothing after it is a *prefix*
+    /// match, and `range(of:)` answers the first one in the file, so `structBody(of: "Fan", …)`
+    /// resolved to whichever of `Fan` and `FanState` came first in `Fan.swift` — and a
+    /// `FanStateReport` added above `FanState` would silently hand every caller the wrong
+    /// struct's body. The consequence is worse for the callers than for the parser:
+    ///
+    /// - `HelperClientStateSeamTests.theFanStateListNamesEveryTypeTheseDTOsCarry` is the check
+    ///   that makes the forbidden lists "self-maintaining rather than hand-written". Reading a
+    ///   colliding struct's fields instead audits a type nobody asked about, finds them all
+    ///   accounted for, and stays **green** — so the audited type's own fields go on being
+    ///   validated by nothing, which is exactly the gap that hid `FanControlMode` for a review
+    ///   round. A completeness check that can read the wrong type is not one.
+    /// - `WriteAuthorisationTests.anAuthorisationTypeCannotBeMintedElsewhere` counts the stored
+    ///   properties of `CommandableFan` and `AuthorisedFanTarget` to decide who can mint a write
+    ///   permit. Auditing a neighbour with the same field count would pass on a type nobody
+    ///   checked.
+    ///
+    /// Today's tree matches by luck — `Fan` precedes `FanState`, `FanTargetRPM` precedes
+    /// `FanControlEnvelope` — and declaration order is not a thing a guard may depend on.
+    ///
+    /// The limits: the body ends at the first `\n}` in column zero, so this reads a **top-level**
+    /// struct and a nested one is part of its parent's body; and an `extension` of the type is not
+    /// its declaration and is not read.
+    static func structBody(of type: String, inSource source: String, file: String) throws -> String
+    {
         let body = try #require(
-            source.range(of: #"struct \#(type)[^{]*\{[\s\S]*?\n\}"#, options: .regularExpression),
+            source.range(
+                of: #"struct \#(type)(?![A-Za-z0-9_])[^{]*\{[\s\S]*?\n\}"#,
+                options: .regularExpression),
             "\(type) was not found in \(file)")
         return String(source[body])
     }
