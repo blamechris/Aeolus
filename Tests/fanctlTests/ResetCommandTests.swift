@@ -163,7 +163,9 @@ struct ResetCommandTests {
     /// closing clause is what keeps the count from drifting out of sync with the list again.
     ///
     /// **Mutation:** in `HelperClientError.errorDescription`, revert the closing clause to
-    /// "These two cannot be told apart from here." Run: red on both expectations below.
+    /// "These two cannot be told apart from here." Run: red on the "These two" negative match
+    /// and the closing-sentence pin below (the "These three" negative match stays green — the
+    /// mutation never introduces that string).
     @Test("helperUnreachable's closing sentence does not miscount its own list")
     func helperUnreachableClosingSentenceMatchesItsList() {
         let described = HelperClientError.helperUnreachable(code: 4097).errorDescription ?? ""

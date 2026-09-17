@@ -142,6 +142,50 @@ struct HelperClientConnectionTests {
         #expect(harness.sessions.isEmpty, "the delegate refused, so it minted no session")
     }
 
+    /// `HelperConnectionHealth.invalidated`'s doc comment must name every possibility this
+    /// state is actually reached through, not a fixed two of them.
+    ///
+    /// The previous wording said "the helper being absent or not yet approved" — two
+    /// items — while the state this test drives into `.invalidated` is the exact same
+    /// silent-drop ambiguity `HelperClientError.helperUnreachable`'s `errorDescription`
+    /// names **three** possibilities for. A doc comment that hand-counts "two" or "three"
+    /// drifts the moment either list gains or loses an item; asserting `possibilities.count`
+    /// against the described text, rather than a literal number, is what keeps this test
+    /// from going stale the same way the prose did.
+    ///
+    /// **Mutation:** in `HelperClientError.errorDescription`'s `.helperUnreachable` arm,
+    /// delete the "or it refused this copy of Aeolus because the signature did not match"
+    /// clause. Run: red — `possibilities.count` (still 3, the list literal below) no longer
+    /// matches how many of those substrings `described` contains (drops to 2).
+    @Test("A refused connection is .invalidated, and names every possibility that reaches it")
+    func invalidatedConnectionNamesEveryPossibilityThatReachesIt() async throws {
+        let harness = ClientListenerHarness(authority: RecordingFanAuthority())
+        harness.isAdmitting = false
+        let client = harness.client()
+
+        let error = await #expect(throws: HelperClientError.self) { try await client.snapshot() }
+        let unreachable = try #require(error)
+        let described = try #require(unreachable.errorDescription)
+
+        // The list this state's doc comment must enumerate in full. Its count, not a
+        // hand-typed "3", is what the assertion below checks against — so growing or
+        // shrinking this list is what changes the expectation, never a second hand-count.
+        let possibilities = ["not installed", "not yet approved", "refused"]
+        let named = possibilities.filter { described.contains($0) }
+        #expect(
+            named.count == possibilities.count,
+            "described the possibilities as \(named) but the list is \(possibilities)")
+
+        #expect(
+            await client.health == .invalidated,
+            """
+            the silent-drop ambiguity this test drives into must land on the state whose \
+            doc comment claims to cover it
+            """)
+
+        #expect(harness.sessions.isEmpty, "the delegate refused, so it minted no session")
+    }
+
     /// An invalidated connection is dropped, and the next call builds a new one — once.
     ///
     /// Counted at the pinning policy, because that is where a connection is actually made:
