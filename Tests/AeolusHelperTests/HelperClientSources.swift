@@ -2,10 +2,11 @@ import Foundation
 
 /// The one description of what "the XPC client's sources" means.
 ///
-/// Two suites assert over that set — `HelperClientSeamTests` for what the client *does* and
-/// `HelperClientStateSeamTests` for what it *keeps* — and a second copy of "enumerate the
-/// target's files and strip their comments" is precisely the drift both of them exist to catch.
-/// It lives here rather than in either of them so that neither owns it.
+/// Three suites assert over that set — `HelperClientSeamTests` for what this target's sources
+/// and build graphs must *contain*, `HelperClientSendPathSeamTests` for what the send path may not
+/// *do*, and `HelperClientStateSeamTests` for what the client may not *keep* — and a second copy
+/// of "enumerate the target's files and strip their comments" is precisely the drift all three of
+/// them exist to catch. It lives here rather than in any of them so that none owns it.
 enum HelperClientSources {
 
     static let target = "AeolusXPCClient"
