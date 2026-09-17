@@ -23,12 +23,15 @@ struct MenuBarLabelView: View {
             .onDisappear { viewModel.stop() }
     }
 
-    /// Every currently-selected readout's formatted value, in selection order, separated
-    /// by two spaces — through the same `Views/ReadingFormatting.text(for:unit:)` `#62`'s
-    /// main window renders every fan/sensor row with, so the same key never shows two
-    /// different values at the same moment. An unavailable reading renders as
+    /// Every currently-selected readout, in selection order, through
+    /// `MenuBarReadoutFormatting.stripText(for:temperatureUnit:)` — the same formatter
+    /// `MenuBarContentView`'s dropdown rows use, so a readout is never described one way
+    /// in the strip and another in the dropdown. An unavailable reading renders as
     /// `"unavailable (<reason>)"`, never as `0` or a blank space that could be mistaken
-    /// for one — see `ReadingFormatting.text(for:unit:)`'s own documentation.
+    /// for one — see `ReadingFormatting.text(for:unit:)`'s own documentation. Per `#249`,
+    /// every entry also always carries its label or raw key, so a value's meaning is
+    /// never left to the reader to infer from where it sits in the list — see
+    /// `MenuBarReadoutFormatting`'s own documentation.
     private var labelText: String {
         guard !viewModel.readouts.isEmpty else {
             switch viewModel.phase {
@@ -40,17 +43,8 @@ struct MenuBarLabelView: View {
                 return "offline"
             }
         }
-        return
-            viewModel.readouts
-            .map { readout in
-                let displayReading = TemperatureDisplay.convert(
-                    readout.reading, kind: readout.kind, to: temperatureUnit)
-                let unit =
-                    TemperatureDisplay.unit(for: readout.kind, temperatureUnit: temperatureUnit)
-                    ?? readout.unit
-                return ReadingFormatting.text(for: displayReading, unit: unit)
-            }
-            .joined(separator: "  ")
+        return MenuBarReadoutFormatting.stripText(
+            for: viewModel.readouts, temperatureUnit: temperatureUnit)
     }
 
     /// Honest about reclamation and thermal state rather than a fixed icon — see

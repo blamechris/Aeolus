@@ -77,4 +77,29 @@ struct SensorCatalogTests {
             #expect(CatalogConfidence(schemaValue: confidence.schemaValue) == confidence)
         }
     }
+
+    // MARK: - isConfirmed
+
+    /// `.verified` and `.community` are the two levels someone stands behind; both must
+    /// read as confirmed.
+    @Test("Verified and community confidence are confirmed")
+    func verifiedAndCommunityAreConfirmed() {
+        #expect(CatalogConfidence.verified.isConfirmed)
+        #expect(CatalogConfidence.community.isConfirmed)
+    }
+
+    /// A `.guess` is documented as "a plausible mapping nobody has confirmed" — it must
+    /// never read as confirmed.
+    @Test("Guess confidence is not confirmed")
+    func guessIsNotConfirmed() {
+        #expect(!CatalogConfidence.guess.isConfirmed)
+    }
+
+    /// An unrecognised future confidence string must default to the safe side, the same
+    /// posture this project takes with an unrecognised `kind` — not to whatever `.guess`
+    /// happens to resolve to.
+    @Test("An unrecognised confidence string is not confirmed")
+    func unknownConfidenceIsNotConfirmed() {
+        #expect(!CatalogConfidence.unknown("future-level").isConfirmed)
+    }
 }
