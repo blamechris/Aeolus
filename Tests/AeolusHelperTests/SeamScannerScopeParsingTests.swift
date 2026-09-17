@@ -214,6 +214,105 @@ struct SeamScannerScopeParsingTests {
         #expect(found.first?.type == "LeaseRequest?")
     }
 
+    /// **A multi-line closure initialiser is read to its closing brace**, so the type named only
+    /// inside it is reported.
+    ///
+    /// This is the spelling that walked past `theClientStoresNoFanState`, and the reason it is a
+    /// defect rather than a curiosity is `.swift-format`: `lineLength` is 100 and CI runs `swift
+    /// format lint --strict`, so an initialiser of any substance **must** be broken across lines
+    /// to merge at all — while the one-line `= { nil as SystemSnapshot? }()` this parser did
+    /// catch is the form the formatter would reflow. The guard fired only on a spelling nobody can
+    /// commit, which is a guard evaded by the house style rather than by an author.
+    ///
+    /// Proven on a scratch `actor` in `Sources/AeolusXPCClient`, not by reading: `private var
+    /// lastSnapshot = {` with `let remembered: SystemSnapshot? = nil` on the line below left the
+    /// whole of `HelperClientStateSeamTests` green, and the one-line form of the same property was
+    /// red. The initialiser stopped at the first newline, so it was the single character `{`.
+    ///
+    /// **Mutation:** drop the `braces` accounting from `fragment(in:from:stoppingAt:)` — the
+    /// one-line change that restores a line-bounded initialiser. Run: red here, and green across
+    /// every other fixture in this suite, which is the point.
+    @Test("A multi-line closure initialiser is read past its first line")
+    func multiLineClosureInitialisersAreRead() {
+        let found = properties(
+            """
+            actor Client {
+                private var lastSnapshot = {
+                    let remembered: SystemSnapshot? = nil
+                    return remembered
+                }()
+            }
+            """)
+
+        #expect(found.map(\.name) == ["lastSnapshot"])
+        #expect(found.first?.isStored == true)
+        #expect(found.first?.names.contains("SystemSnapshot") == true)
+    }
+
+    /// A closure initialiser **ends at its own closing brace**, and a comparison inside it does
+    /// not carry it into the next declaration.
+    ///
+    /// `fragment` guesses that `<` and `>` bracket a generic argument list. That is right in a
+    /// type position and wrong in a closure body, and the direction it fails in is the dangerous
+    /// one: one `if attempts < 3` leaves the bracket depth unbalanced, so the newline that should
+    /// end the initialiser arrives at depth one and the scan runs on — through the closing brace
+    /// of the type and into whatever is declared below. The initialiser then reports types from
+    /// other declarations, which is a tripwire naming the wrong property in its failure message
+    /// and firing on a tree that is correct. So the bracket accounting is switched off while a
+    /// brace is open: inside a closure body there is nothing to balance, because the brace depth
+    /// is already what decides where the initialiser ends.
+    ///
+    /// **Mutation:** count `(`/`[`/`<` regardless of brace depth — `} else if braces == 0 {` →
+    /// `} else {`. Run: red here, green on the fixture above, which is why the two are separate.
+    @Test("A closure initialiser ends at its own brace, not at the next declaration")
+    func closureInitialisersDoNotRunOn() {
+        let found = properties(
+            """
+            actor Client {
+                private var lastSnapshot = {
+                    let attempts = 2
+                    if attempts < 3 { return nil as SystemSnapshot? }
+                    return nil
+                }()
+
+                private var pending: LeaseRequest?
+            }
+            """)
+
+        #expect(found.map(\.name) == ["lastSnapshot", "pending"])
+        #expect(found.first?.names.contains("SystemSnapshot") == true)
+        #expect(found.first?.names.contains("LeaseRequest") == false)
+    }
+
+    /// The widening above is the **initialiser** half alone: a computed property's accessor block
+    /// still terminates the type.
+    ///
+    /// `var health: HelperConnectionHealth { currentHealth }` is written in the client, and a type
+    /// parse that counted that `{` as an opening depth would run on through the accessor block and
+    /// past the end of the declaration — so `isStored` would never be consulted and a computed
+    /// property would read as storage. The `{` is a terminator for the type and a depth for the
+    /// initialiser, and both directions have to hold at once.
+    ///
+    /// **Mutation:** count `{` as a depth even when the caller named it a terminator. Run: red
+    /// here.
+    @Test("A closure depth does not swallow a computed property's accessor block")
+    func closureDepthDoesNotSwallowAccessorBlocks() {
+        let found = properties(
+            """
+            actor Client {
+                private var currentHealth: Health = .idle
+                var health: Health {
+                    currentHealth
+                }
+                private var pending: LeaseRequest?
+            }
+            """)
+
+        #expect(found.map(\.name) == ["currentHealth", "health", "pending"])
+        #expect(found.filter(\.isStored).map(\.name) == ["currentHealth", "pending"])
+        #expect(found.last?.type == "LeaseRequest?")
+    }
+
     /// A string literal contributes nothing to a header and hides nothing inside itself. A
     /// `struct` written in a literal must not flip the next brace to a type scope, and a `var`
     /// written in one is not a declaration — the tripwires' own failure messages quote the
