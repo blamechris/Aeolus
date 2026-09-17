@@ -69,9 +69,14 @@ struct HelperClientConnectionTests {
         let gate = AsyncSignal()
         let authority = GatedSnapshotAuthority(gate: gate)
         let harness = ClientListenerHarness(authority: authority)
+        // The gated verb is deliberately long: it has to stay parked while the helper is
+        // killed under it. The handshake is not asserted here and only has to succeed, so it
+        // takes the shipping bound rather than a tighter invention — see #250.
         let client = harness.client(
             deadlines: HelperClientDeadlines(
-                gatedVerb: .seconds(10), panicVerb: .seconds(10), handshakeVerb: .seconds(10)))
+                gatedVerb: .seconds(10),
+                panicVerb: .seconds(10),
+                handshakeVerb: HelperClientDeadlines.handshakeVerb))
 
         // The hello is answered without touching the authority, so by the time the
         // authority has been asked the message in flight is the gated verb and not the
