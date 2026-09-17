@@ -285,6 +285,66 @@ struct SeamScannerParsingTests {
         #expect(try SeamScanner.unstructuredTaskSpawns(inSource: source) == 0)
     }
 
+    // MARK: - Struct bodies
+
+    /// **`structBody` reads the struct it was asked for, not one whose name it is a prefix of.**
+    ///
+    /// `struct \(type)` with no boundary after the name matches `struct FanStateReport` when it
+    /// was asked for `FanState`, and `range(of:)` answers the **first** match in the file — so
+    /// which struct a caller gets depends on declaration order. Both callers are completeness
+    /// checks, and both fail the quiet way:
+    /// `HelperClientStateSeamTests.theFanStateListNamesEveryTypeTheseDTOsCarry` is the test that
+    /// makes the forbidden lists self-maintaining, and reading a neighbour's fields instead
+    /// audits a type nobody asked about, accounts for all of them, and stays green while the
+    /// listed type's own fields are validated by nothing;
+    /// `WriteAuthorisationTests.anAuthorisationTypeCannotBeMintedElsewhere` counts the stored
+    /// properties of the two types that gate minting a write permit.
+    ///
+    /// The tree matches correctly today by declaration order alone — `Fan` above `FanState`,
+    /// `FanTargetRPM` above `FanControlEnvelope` — which is why this is a fixture and not an
+    /// assertion about `Sources`: the order is what a guard must not depend on, so a scan over
+    /// the tree cannot show the boundary is doing anything.
+    ///
+    /// **Mutation:** drop the `(?![A-Za-z0-9_])` boundary from the pattern. Run: red here, and
+    /// green across every other test in this package — which is the whole finding.
+    @Test("A struct body is read from the named struct, not one it is a prefix of")
+    func structBodiesMatchWholeNames() throws {
+        let source = """
+            public struct FanStateReport: Sendable {
+                public let index: Int
+            }
+
+            public struct FanState: Sendable {
+                public let mode: FanControlMode
+            }
+            """
+
+        let body = try SeamScanner.structBody(of: "FanState", inSource: source, file: "Fan.swift")
+
+        #expect(body.contains("mode: FanControlMode"))
+        #expect(!body.contains("index: Int"))
+    }
+
+    /// The same boundary the other way round: a prefix *is* still readable when it is the name
+    /// asked for, so the fix cannot have been "require a longer name".
+    @Test("A struct whose name is a prefix of a later one is still readable")
+    func prefixNamedStructsAreStillReadable() throws {
+        let source = """
+            public struct Fan: Sendable {
+                public let index: Int
+            }
+
+            public struct FanState: Sendable {
+                public let mode: FanControlMode
+            }
+            """
+
+        let body = try SeamScanner.structBody(of: "Fan", inSource: source, file: "Fan.swift")
+
+        #expect(body.contains("index: Int"))
+        #expect(!body.contains("mode: FanControlMode"))
+    }
+
     // MARK: - The premise the block-comment stripper rests on
 
     /// `strippingBlockComments` argues that its quote-counter cannot weaken a scan because
