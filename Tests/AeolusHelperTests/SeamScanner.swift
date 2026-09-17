@@ -226,9 +226,41 @@ enum SeamScanner {
         let url = try #require(
             swiftFiles().first { $0.lastPathComponent == file },
             "\(file) is not in the source tree")
-        let source = try String(contentsOf: url, encoding: .utf8)
+        return try structBody(
+            of: type, inSource: try String(contentsOf: url, encoding: .utf8), file: file)
+    }
+
+    /// `structBody(of:in:)`'s parse, over one file's text.
+    ///
+    /// **The name is matched whole.** `struct \(type)` with nothing after it is a *prefix*
+    /// match, and `range(of:)` answers the first one in the file, so `structBody(of: "Fan", …)`
+    /// resolved to whichever of `Fan` and `FanState` came first in `Fan.swift` — and a
+    /// `FanStateReport` added above `FanState` would silently hand every caller the wrong
+    /// struct's body. The consequence is worse for the callers than for the parser:
+    ///
+    /// - `HelperClientStateSeamTests.theFanStateListNamesEveryTypeTheseDTOsCarry` is the check
+    ///   that makes the forbidden lists "self-maintaining rather than hand-written". Reading a
+    ///   colliding struct's fields instead audits a type nobody asked about, finds them all
+    ///   accounted for, and stays **green** — so the audited type's own fields go on being
+    ///   validated by nothing, which is exactly the gap that hid `FanControlMode` for a review
+    ///   round. A completeness check that can read the wrong type is not one.
+    /// - `WriteAuthorisationTests.anAuthorisationTypeCannotBeMintedElsewhere` counts the stored
+    ///   properties of `CommandableFan` and `AuthorisedFanTarget` to decide who can mint a write
+    ///   permit. Auditing a neighbour with the same field count would pass on a type nobody
+    ///   checked.
+    ///
+    /// Today's tree matches by luck — `Fan` precedes `FanState`, `FanTargetRPM` precedes
+    /// `FanControlEnvelope` — and declaration order is not a thing a guard may depend on.
+    ///
+    /// The limits: the body ends at the first `\n}` in column zero, so this reads a **top-level**
+    /// struct and a nested one is part of its parent's body; and an `extension` of the type is not
+    /// its declaration and is not read.
+    static func structBody(of type: String, inSource source: String, file: String) throws -> String
+    {
         let body = try #require(
-            source.range(of: #"struct \#(type)[^{]*\{[\s\S]*?\n\}"#, options: .regularExpression),
+            source.range(
+                of: #"struct \#(type)(?![A-Za-z0-9_])[^{]*\{[\s\S]*?\n\}"#,
+                options: .regularExpression),
             "\(type) was not found in \(file)")
         return String(source[body])
     }
@@ -370,7 +402,11 @@ enum SeamScanner {
 
     /// Copies an opening `delimiter`, everything up to the matching closing one, and that
     /// one too — honouring `\` escapes — and answers where to carry on.
-    private static func copyDelimited(
+    ///
+    /// `internal` rather than `private`, like the three below it: `SeamScannerScopes` is this
+    /// same type in a sibling file, `private` at type scope does not reach there, and a second
+    /// copy of a string-literal walker is precisely the drift this suite exists to catch.
+    static func copyDelimited(
         _ source: String, from open: String.Index, delimiter: String, into output: inout String
     ) -> String.Index {
         var index = source.index(open, offsetBy: delimiter.count)
@@ -400,7 +436,7 @@ enum SeamScanner {
     /// `func read<T: Decoding<Wire>>(…)` matched nothing at all and went **silently
     /// uncounted** — the same failure mode as `\([^)]*\)` on a nested `)`, and the reason an
     /// allowlist cannot be built on either.
-    private static func parameterListStart(
+    static func parameterListStart(
         in code: String, after name: String.Index
     ) -> String.Index? {
         var index = name
@@ -446,7 +482,7 @@ enum SeamScanner {
     /// scan does not match such a declaration **at all** — it goes silently uncounted rather
     /// than failing. `docs/ADR/0008` calls that out and
     /// [#120](https://github.com/blamechris/Aeolus/issues/120) asks for it to be parsed.
-    private static func closingParenthesis(
+    static func closingParenthesis(
         in code: String, openingAt open: String.Index
     ) -> String.Index? {
         var depth = 0
@@ -595,7 +631,7 @@ enum SeamScanner {
         return (parameter, "")
     }
 
-    private static func collapsingWhitespace(_ text: String) -> String {
+    static func collapsingWhitespace(_ text: String) -> String {
         text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 }
