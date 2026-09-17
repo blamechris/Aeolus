@@ -126,21 +126,37 @@ private struct MenuBarReadoutRow: View {
                     .help("System reclaimed control of this fan")
             }
 
-            Text(displayText)
-                .fontDesign(.monospaced)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(displayText)
+                    .fontDesign(.monospaced)
+                if let controlStateText {
+                    Text(controlStateText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 
-    /// Converts `readout.reading` for `temperatureUnit` before formatting — the same
-    /// `TemperatureDisplay` seam `SensorRowModel` uses for the main window, so a
-    /// temperature reading never shows two different converted values depending on which
+    /// The value alone, through `MenuBarReadoutFormatting.value(for:temperatureUnit:)` —
+    /// the same seam the strip (`MenuBarLabelView`) formats through, so a temperature (or
+    /// any other) reading never shows two different converted values depending on which
     /// view rendered it.
     private var displayText: String {
-        let displayReading = TemperatureDisplay.convert(
-            readout.reading, kind: readout.kind, to: temperatureUnit)
-        let unit =
-            TemperatureDisplay.unit(for: readout.kind, temperatureUnit: temperatureUnit)
-            ?? readout.unit
-        return ReadingFormatting.text(for: displayReading, unit: unit)
+        MenuBarReadoutFormatting.value(for: readout, temperatureUnit: temperatureUnit)
+    }
+
+    /// What this row's control state says, if it has one — see
+    /// `MenuBarReadoutFormatting.controlStateSuffix(for:)`. `nil` for every
+    /// `.sensor`-sourced readout — `F0Md` picked deliberately via the preferences picker
+    /// included — because this only ever reports a *fan's* own mode (a `.fan`-sourced
+    /// readout's live control state), never a raw mode/target key being read as an
+    /// ordinary sensor. What keeps a picked `F0Md`'s `0` from being misread here is this
+    /// row's own label and key, shown above regardless of whether `controlStateText` is
+    /// `nil`; per `#249`, this property's own job is narrower — bringing the main
+    /// window's fan list's control-state wording to the dropdown for a readout that
+    /// already has a real control state to report.
+    private var controlStateText: String? {
+        MenuBarReadoutFormatting.controlStateSuffix(for: readout)
     }
 }
