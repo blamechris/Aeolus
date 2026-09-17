@@ -24,7 +24,7 @@ extension SeamScanner {
     /// The distinction is the whole subject. `HelperClientVerbs.swift` decodes a
     /// `SystemSnapshot` into a local in the verb that asked for one and must go on doing so;
     /// the same type *stored* on the actor is the rule-6 defect
-    /// `HelperClientSeamTests.theClientStoresNoFanState` exists to catch. The two read almost
+    /// `HelperClientStateSeamTests.theClientStoresNoFanState` exists to catch. The two read almost
     /// identically, which is why a pattern scan cannot tell them apart and this is parsed.
     struct Property {
         let file: String
@@ -37,6 +37,13 @@ extension SeamScanner {
         /// SystemSnapshot(…)` names its type nowhere else: a type-position-only scan does
         /// not see that declaration at all, and inference is the one spelling an author
         /// reaches for without thinking about it.
+        ///
+        /// A brace-delimited initialiser is collected **whole**, newlines and all — see
+        /// `fragment(in:from:stoppingAt:)` for why a line-bounded one was an evasion this
+        /// repository's own formatter forced. One consequence, deliberate: a stored property
+        /// written `= .idle { didSet { … } }` carries its observer's body here too. An
+        /// observer is part of what the declaration says, and a `didSet` that names a
+        /// forbidden type is a declaration worth reporting.
         let initialiser: String
         /// Whether the declaration has storage. A computed property and a protocol
         /// requirement do not; a `willSet`/`didSet` observer does not stop one having it.
@@ -102,7 +109,10 @@ extension SeamScanner {
     /// - A **tuple binding** — `let (a, b) = …` — is skipped rather than guessed at: there is
     ///   no single name to record. None in the target.
     /// - A declaration whose type is left to inference has `type == ""` and its initialiser
-    ///   instead, which is why `names` reads both.
+    ///   instead, which is why `names` reads both. A **multi-line** initialiser is read to its
+    ///   closing brace, so the type named only inside `= { … }()` is read too: a line-bounded
+    ///   initialiser made that spelling invisible, and it is the only spelling of a substantial
+    ///   initialiser the repository's 100-column formatter accepts.
     /// - `willSet`/`didSet` keep `isStored`; `get`/`set` and a bare getter do not. A stored
     ///   property with an observer read as computed would be the one silent miss here, so the
     ///   first keyword inside the accessor block is what decides it, not the brace.
@@ -261,8 +271,8 @@ extension SeamScanner {
     /// correctness fix rather than a generalisation. `HelperConnectionPinning.swift` declares
     /// the protocol requirement `func pinnedConnection(over:)` above
     /// `SignedHelperPinning.pinnedConnection`, so a first-match scan answered `nil` for the one
-    /// function in this target that builds a connection — and `HelperClientSeamTests.sendPath()`
-    /// dropped it from the population without a word. A three-attempt retry of
+    /// function in this target that builds a connection — and the send-path suite's
+    /// `sendPath()` dropped it from the population without a word. A three-attempt retry of
     /// `transport.makeConnection()`, which is the boot-loop amplifier that test exists to
     /// forbid, was green. The requirement and the conformer are written in that order because
     /// the protocol comes first in the file, which is the ordinary way to write one.
@@ -361,10 +371,31 @@ extension SeamScanner {
     ///
     /// The newline rule is what lets a wrapped type — a `:` with the type on the line below —
     /// still be read, while a complete declaration does not run on into the next one.
+    ///
+    /// **A `{` the caller did not name as a terminator opens a brace depth, and the newline rule
+    /// is suspended inside it.** Without that, an initialiser is cut off at the end of its first
+    /// line, and `private var lastSnapshot = {` is a complete initialiser as far as this parser
+    /// is concerned: the closure below it contributes nothing, so a stored `SystemSnapshot?`
+    /// whose type is written only inside the closure is invisible to
+    /// `theClientStoresNoFanState`. That is not a contrived spelling — `.swift-format`'s
+    /// `lineLength` is 100, so an initialiser of any substance **has** to be broken across lines
+    /// to be accepted by the formatter this repository gates on, and the one-line form that this
+    /// parser did catch is the one form that cannot merge. A guard evaded by the house style is a
+    /// guard that only ever fires on a spelling nobody can commit.
+    ///
+    /// Braces are counted separately from `(`/`[`/`<`, and the bracket accounting is switched off
+    /// while a brace is open, because the clamped `>` rule below is a guess that is right in a
+    /// type position and wrong in a closure body: one `if count > 3` inside the closure would
+    /// otherwise drop the depth back to zero and truncate the initialiser at the next newline,
+    /// which is the same hole one level in.
+    ///
+    /// A `{` that *is* named as a terminator still terminates — that is how the type half stops
+    /// at a computed property's accessor block — so this widens the initialiser half alone.
     private static func fragment(
         in code: String, from start: String.Index, stoppingAt terminators: Set<Character>
     ) -> (text: String, end: String.Index) {
         var depth = 0
+        var braces = 0
         var text = ""
         var index = start
         var previous: Character = " "
@@ -384,17 +415,23 @@ extension SeamScanner {
                 index = endOfStringLiteral(in: code, from: index)
                 continue
             }
-            switch character {
-            case "(", "[", "<": depth += 1
-            // Clamped at zero and blind to a `>` that closes nothing, for
-            // `topLevelComponents`' reasons: a return arrow's `>` and a bare `>` in a default
-            // value both drive an unclamped depth negative, and a negative depth here loses
-            // the terminator that ends the declaration.
-            case ")", "]": depth = max(0, depth - 1)
-            case ">" where previous != "-": depth = max(0, depth - 1)
-            default: break
+            if character == "{", !terminators.contains("{") {
+                braces += 1
+            } else if character == "}" {
+                braces = max(0, braces - 1)
+            } else if braces == 0 {
+                switch character {
+                case "(", "[", "<": depth += 1
+                // Clamped at zero and blind to a `>` that closes nothing, for
+                // `topLevelComponents`' reasons: a return arrow's `>` and a bare `>` in a default
+                // value both drive an unclamped depth negative, and a negative depth here loses
+                // the terminator that ends the declaration.
+                case ")", "]": depth = max(0, depth - 1)
+                case ">" where previous != "-": depth = max(0, depth - 1)
+                default: break
+                }
             }
-            if depth == 0 {
+            if depth == 0, braces == 0 {
                 if character == ";" || terminators.contains(character) { break }
                 if character == "\n", !text.trimmingCharacters(in: .whitespaces).isEmpty { break }
             }
