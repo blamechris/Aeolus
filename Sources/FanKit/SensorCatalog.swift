@@ -204,6 +204,22 @@ public enum CatalogConfidence: Sendable, Hashable, Codable {
         }
     }
 
+    /// True for `.verified` and `.community` — someone, a maintainer or the community,
+    /// stands behind this label. False for `.guess` ("a plausible mapping nobody has
+    /// confirmed", by its own documentation) and for `.unknown` — a confidence string this
+    /// build cannot interpret is never trusted by default, the same "cannot vouch for it,
+    /// so don't" posture this project already takes with an unrecognised `kind`. Callers
+    /// deciding whether a label is confirmed enough to skip a further check (see
+    /// `MenuBarReadoutSelection`'s "labelled is trusted" documentation) read this rather
+    /// than comparing against `.guess` directly, so a future confidence level added here
+    /// defaults to the safe side without every call site needing to be revisited.
+    public var isConfirmed: Bool {
+        switch self {
+        case .verified, .community: return true
+        case .guess, .unknown: return false
+        }
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         self.init(schemaValue: try container.decode(String.self))

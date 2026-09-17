@@ -56,6 +56,39 @@ final class ClientListenerHarness {
         listener.resume()
     }
 
+    /// **Measured, because #250 turned on it.** `NSXPCListenerEndpoint` does not retain the
+    /// listener, so ARC is *permitted* to release a harness whose last use is the
+    /// `client()` line and leave that client talking to a listener this `deinit` has already
+    /// invalidated — the reading [#239](https://github.com/blamechris/Aeolus/issues/239)
+    /// raises and the one #250 was filed expecting.
+    ///
+    /// **It did not happen on the development machine, in either configuration CI builds —
+    /// which is not the same statement as "it does not happen on CI", and the difference is
+    /// the point.** Instrumenting this `deinit` and `shouldAcceptNewConnection`, every test in
+    /// `HelperClientTests` and `HelperClientConnectionTests` — the ones #250 lists among its
+    /// failures included — logs the connection attempt **before** the harness deinitialises,
+    /// under `swift test` and under `swift test -c release -Xswiftc -enable-testing` alike.
+    /// Both of those are configurations CI builds; the machine was `Mac16,5` / macOS 26.6.2 /
+    /// Swift 6.2, and **the runner's own toolchain was never probed.** These are `async`
+    /// functions and the locals live in the async frame, so release lands at frame exit rather
+    /// than at last use — an optimiser's liberty, not a language guarantee, and the optimiser
+    /// measured was not the runner's.
+    ///
+    /// So this settles one thing and not another. It is enough to say that #250's block of
+    /// `helperNeverAnswered(after: 0.75 seconds)` was a shared constant rather than a dead
+    /// listener: a dead listener cannot fail eighteen tests at *precisely* the bound the
+    /// constant names, and driving this constant far enough down to expire on *this* machine
+    /// reproduces #250's shape — the same two suites, every failure
+    /// `helperNeverAnswered(after: …)`, including the derived-state ones (`health == .refused`,
+    /// `health == .versionMismatched`). **Matched by assertion, not by line number**: 750 ms
+    /// does not expire on a quiet `Mac16,5` at all, which is the whole point of #250, so the
+    /// reproduction runs at `.nanoseconds(1)`, and the line numbers in #250's list are from a
+    /// tree several comment inserts ago.
+    ///
+    /// It is not enough to retire #239. The only portable guard against the lifetime reading
+    /// is still the one the tests that care already use — pinning the harness past the last
+    /// call, `sessions.isEmpty` in `aRefusingHelperIsPromptAndNamesBothPossibilities` being
+    /// the pattern — and #239's second defect stays open for exactly that reason.
     deinit {
         delegate.invalidateConnections()
         listener.invalidate()
@@ -94,18 +127,59 @@ final class ClientListenerHarness {
         delegate.invalidateConnections()
     }
 
-    /// A client wired to this harness, with no requirement and short deadlines.
+    /// The deadlines a client gets when the test does not name its own: **the shipping
+    /// trio**, not a tighter one.
     ///
-    /// Short deadlines because two of these tests assert on the deadline expiring, and five
-    /// seconds of a suite's wall clock to observe a constant is a cost with no assertion in
-    /// it. Everything else here answers in milliseconds.
+    /// This was `.milliseconds(750)` on all three verbs, and
+    /// [#250](https://github.com/blamechris/Aeolus/issues/250) is what that cost. The
+    /// justification written here was that "two of these tests assert on the deadline
+    /// expiring, and five seconds of a suite's wall clock to observe a constant is a cost
+    /// with no assertion in it" — which is true, and is an argument for those two tests
+    /// passing their own deadline, which both of them already do. It is not an argument for
+    /// the *default*, and as a default it protected nothing while making a 750 ms bound
+    /// load-bearing for eighteen tests that never intended to measure a deadline.
+    ///
+    /// On a contended GitHub runner a cold anonymous-listener round trip exceeds 750 ms, and
+    /// because all eighteen shared this one constant they failed **together, at the identical
+    /// bound** — which read as a teardown race and was not one. A test that asserts a fault
+    /// round-trips has no business failing because a round trip was slow.
+    ///
+    /// So the default is `HelperClientDeadlines.default`: the numbers the product ships, the
+    /// handshake's derived from the helper's own reconciliation budget by
+    /// `HelperClientDeadlines.reconciliationBudget`. That is the only bound whose expiry is a
+    /// real defect rather than an artefact of the machine the suite is running on — a client
+    /// that cannot get an answer inside it is broken for a user too.
+    ///
+    /// **What holds this value there, and exactly how far that reaches.**
+    /// `HelperClientDeadlineTests.noHarnessDefaultImposesATighterDeadlineThanTheProduct`
+    /// requires this constant to **equal** the shipping trio, and `FanctlResetTests.unhurried`
+    /// to be no tighter than it. Those two are every *default* in the test target, so no test
+    /// inherits a bound tighter than the product's without that test going red. It says nothing
+    /// about a deadline a test passes **explicitly** at its call site: ten call sites do, and
+    /// five of those are below the product's bound on a verb they do not assert — the panic
+    /// terms and handshake terms in `HelperClientTeardownTests` that
+    /// [#255](https://github.com/blamechris/Aeolus/issues/255) carries, plus two panic terms on
+    /// a verb the test never sends at all. That test's own doc enumerates which is which. Read
+    /// the invariant as "no test inherits a tighter bound", never as "no tighter bound exists".
+    ///
+    /// Because this constant is *defined* as the product's trio, the comparison is a value
+    /// against itself: it is a source tripwire that fires when a literal is written back in, not
+    /// a runtime check, and it is blind to tightening `HelperClientDeadlines` itself. The
+    /// absolute floor comes from two other tests —
+    /// `HelperClientDeadlineTests.aPeerASecondSlowToAnswerHelloStillRoundTrips` and
+    /// `aPeerASecondSlowToAnswerAGatedVerbStillRoundTrips` hold a message for a second and
+    /// require the round trip to survive it — which redden whichever side moved.
+    ///
+    /// It costs nothing on a healthy run: everything here answers in milliseconds and never
+    /// reaches the deadline at all. It costs the shipping deadline on a *failing* run, which
+    /// is a slower red and still a red — the suite's `.timeLimit` bounds it either way.
+    static let defaultDeadlines = HelperClientDeadlines.default
+
+    /// A client wired to this harness, with no requirement.
     func client(
         description: String = "test client",
         pinning: any HelperConnectionPinning = UnenforcedClientPinning(),
-        deadlines: HelperClientDeadlines = HelperClientDeadlines(
-            gatedVerb: .milliseconds(750),
-            panicVerb: .milliseconds(750),
-            handshakeVerb: .milliseconds(750))
+        deadlines: HelperClientDeadlines = ClientListenerHarness.defaultDeadlines
     ) -> HelperClient {
         HelperClient(
             transport: .endpoint(endpoint),

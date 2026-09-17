@@ -342,9 +342,15 @@ struct HelperClientTests {
         let gate = AsyncSignal()
         let harness = ClientListenerHarness(authority: GatedSnapshotAuthority(gate: gate))
         let deadline = Duration.milliseconds(250)
+        // The gated verb's bound is the assertion, so it is short and explicit. The
+        // handshake's is not asserted by anything here and must simply succeed, so it is the
+        // shipping one — a `hello` that lost a race with a contended runner would fail this
+        // on `helperNeverAnswered(after: 5 seconds)`, which is #250 in miniature.
         let client = harness.client(
             deadlines: HelperClientDeadlines(
-                gatedVerb: deadline, panicVerb: deadline, handshakeVerb: .seconds(5)))
+                gatedVerb: deadline,
+                panicVerb: deadline,
+                handshakeVerb: HelperClientDeadlines.handshakeVerb))
 
         await #expect(throws: HelperClientError.helperNeverAnswered(after: deadline)) {
             try await client.snapshot()

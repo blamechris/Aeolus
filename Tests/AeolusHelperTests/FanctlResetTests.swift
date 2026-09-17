@@ -41,13 +41,36 @@ struct FanctlResetTests {
     /// Deadlines long enough that a loaded runner cannot fake a failure.
     ///
     /// **Three of these tests assert text and an exit code and nothing about timing**, so a
-    /// short deadline buys them nothing and costs a red CI run: `ClientListenerHarness`
-    /// defaults to 750 ms, which this machine never approaches and a GitHub runner exceeded
-    /// for a message the helper had already answered — reporting a working helper as one that
-    /// never answered, which is the exact misreport this suite exists to forbid. A generous
-    /// deadline costs nothing when the reply arrives, and every reply in those three does.
-    private static let unhurried = HelperClientDeadlines(
-        gatedVerb: .seconds(10), panicVerb: .seconds(10), handshakeVerb: .seconds(10))
+    /// short deadline buys them nothing and costs a red CI run — a working helper reported as
+    /// one that never answered, which is the exact misreport this suite exists to forbid. That
+    /// is what happened to the client suites in
+    /// [#250](https://github.com/blamechris/Aeolus/issues/250), where `ClientListenerHarness`
+    /// defaulted to 750 ms: a bound this machine never approaches and a contended GitHub runner
+    /// exceeded for a message the helper had already answered. That harness now defaults to the
+    /// shipping trio, so this comment no longer describes a 750 ms default anywhere.
+    ///
+    /// The generous terms are `gatedVerb` and `panicVerb`, which may sit **above** the product's
+    /// 5 s and 10 s — tolerating a slow machine is never the defect. Of those two, `panicVerb`
+    /// is the one that matters here: `fanctl reset --all` *is* the panic path, so that term is
+    /// the bound every round trip in this suite actually runs under.
+    ///
+    /// `handshakeVerb` is the product's own 15 s and not a fourth invention — it was
+    /// `.seconds(10)`, 5 s *tighter* than what a cold `hello` is allowed. **What that fixed was
+    /// an invention, not a live misreport, and the difference is worth stating precisely because
+    /// this is the reasoning a later reader will reuse to decide which bounds matter.** No test
+    /// in this suite sends a handshake at all: `run()` reaches the helper through
+    /// `HelperClient.restoreAllToAutomatic()`, which takes the ungated proxy with no `hello` in
+    /// front of it (ADR 0005's exemption), and `theCommandSendsNoHandshake` asserts exactly that
+    /// — `session.handshakeState == nil`. So this term was inert, and a contended runner could
+    /// not have turned it red; the misreport #250 is about needs a handshake to be sent. It is
+    /// held to the product's value anyway, because an invented bound is what the first test that
+    /// *does* send one would silently inherit.
+    /// `noHarnessDefaultImposesATighterDeadlineThanTheProduct` reads this constant, which is why
+    /// it is not `private`.
+    static let unhurried = HelperClientDeadlines(
+        gatedVerb: .seconds(10),
+        panicVerb: .seconds(10),
+        handshakeVerb: HelperClientDeadlines.handshakeVerb)
 
     /// The one deadline this suite asserts on, in the one test whose peer never replies.
     ///
@@ -205,12 +228,16 @@ struct FanctlResetTests {
         let authority = GatedRestoreAuthority(gate: gate)
         let harness = ClientListenerHarness(authority: authority)
 
+        // The two short terms are the assertion — `observableDeadline` is what the message below
+        // must name. The handshake term is not asserted by anything and no test here sends a
+        // `hello` in any case, so it is the product's value rather than the tenth explicitly
+        // passed invention in the target: the same reason `unhurried` carries it.
         let emitted = try await Self.emitted(
             over: harness,
             waiting: HelperClientDeadlines(
                 gatedVerb: Self.observableDeadline,
                 panicVerb: Self.observableDeadline,
-                handshakeVerb: .seconds(10)))
+                handshakeVerb: HelperClientDeadlines.handshakeVerb))
 
         #expect(emitted.exitCode != .success)
         #expect(emitted.message.contains("did not confirm the reset request"))
