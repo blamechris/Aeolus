@@ -65,18 +65,32 @@ final class ScriptedPowerObserver: SystemPowerObserving, @unchecked Sendable {
     }
 
     /// Delivers one event on a task of its own, for a responder that will not come back.
-    func deliverWithoutWaiting(_ event: SystemPowerEvent) throws -> Task<Void, Never> {
+    ///
+    /// `acknowledged` fires when *this* delivery is acknowledged, and it is the only way to
+    /// await that more than once per observer. `didAcknowledge` latches — `AsyncSignal.signal()`
+    /// is a one-way door by design — so it answers "something has been acknowledged at some
+    /// point", which is exactly right for a suite that delivers one event and silently wrong
+    /// for one that sleeps three times: cycle 2's `wait()` returns on cycle 1's signal with
+    /// nothing having answered cycle 2, and every assertion after it reads state from the
+    /// wrong cycle while the test stays green. A signal bound to one notification cannot do
+    /// that.
+    func deliverWithoutWaiting(
+        _ event: SystemPowerEvent, acknowledged: AsyncSignal? = nil
+    ) throws -> Task<Void, Never> {
         let handler = try #require(
             lock.withLock { self.handler }, "nothing is observing this seam")
-        let notification = notification(for: event)
+        let notification = notification(for: event, alsoSignalling: acknowledged)
         return Task { await handler(notification) }
     }
 
-    private func notification(for event: SystemPowerEvent) -> SystemPowerNotification {
+    private func notification(
+        for event: SystemPowerEvent, alsoSignalling acknowledged: AsyncSignal? = nil
+    ) -> SystemPowerNotification {
         SystemPowerNotification(event: event) { [self] in
             await lock.withLock { observing }()
             lock.withLock { recorded.append(event) }
             await didAcknowledge.signal()
+            await acknowledged?.signal()
         }
     }
 }
