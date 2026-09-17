@@ -122,18 +122,29 @@ struct HelperClientStateSeamTests {
     /// **A type-name tripwire, and that is a limit rather than an oversight.** What it forbids
     /// is a stored declaration *naming* one of these types, so a spelling that names none of
     /// them escapes: `private var wasReclaimed: Bool` remembers one bit of `FanState` and this
-    /// cannot see it. The three routes worth having were closed — the type position, the
-    /// initialiser (`private let cached = SystemSnapshot(…)`, which `Property.names` reads), and
-    /// the wire form (`private var lastSnapshotPayload: Data?`, which `Data`'s move off
-    /// `scalars` and onto `fanStateTypes` now catches) — and a scalar field copied out one at a
-    /// time is not reachable from any list of type names. What would catch that is a review of
-    /// a declaration whose name says what it remembers, which is a reader's job.
+    /// cannot see it. The four routes worth having were closed — the type position, the
+    /// initialiser (`private let cached = SystemSnapshot(…)`, which `Property.names` reads), a
+    /// **multi-line** initialiser whose type is named only below its first line, and the wire
+    /// form (`private var lastSnapshotPayload: Data?`, which `Data`'s move off `scalars` and onto
+    /// `fanStateTypes` now catches) — and a scalar field copied out one at a time is not
+    /// reachable from any list of type names. What would catch that is a review of a declaration
+    /// whose name says what it remembers, which is a reader's job.
+    ///
+    /// The third of those was the one that mattered, because the formatter chose it. `= { … }()`
+    /// broken across lines was read as the single character `{`, so the closure below contributed
+    /// nothing and the stored snapshot was invisible — while the one-line form this test *did*
+    /// catch is the form `.swift-format`'s 100-column limit reflows. A guard that fires only on a
+    /// spelling nobody can commit is evaded by the house style rather than by an author. See
+    /// `SeamScanner.fragment(in:from:stoppingAt:)` and the two fixtures in
+    /// `SeamScannerScopeParsingTests` that pin it.
     ///
     /// **Mutation:** add `private var lastSnapshot: SystemSnapshot?` to `HelperClient`. Run:
     /// red, naming the declaration. **Mutation:** add `private let cached = SystemSnapshot(…)`,
     /// whose type is written nowhere — red too, because `Property.names` reads the initialiser
-    /// as well as the type position. **Mutation:** add `private var lastSnapshotPayload: Data?`
-    /// — red, which it was not while `Data` sat on `scalars`.
+    /// as well as the type position. **Mutation:** add `private var lastSnapshot = {` with `let
+    /// remembered: SystemSnapshot? = nil` on the line below — red, which it was **not** before
+    /// the initialiser was read past its first line. **Mutation:** add `private var
+    /// lastSnapshotPayload: Data?` — red, which it was not while `Data` sat on `scalars`.
     @Test("The client stores no fan state")
     func theClientStoresNoFanState() throws {
         let stored = try SeamScanner.properties(in: Self.target).filter(\.isStored)
@@ -235,6 +246,14 @@ struct HelperClientStateSeamTests {
     /// is a decoration rather than a guard. Deleting `FanState` from `fanStateTypes` leaves
     /// `theClientStoresNoFanState` green — that is silent. It fails *here*, loudly, whatever
     /// the client currently contains.
+    ///
+    /// It descends through `SeamScanner.structBody(of:inSource:file:)`, which matches the struct's
+    /// name **whole**. That is not a detail: the pattern was a prefix match answered by the first
+    /// hit in the file, so a `FanStateReport` declared above `FanState` would hand this check a
+    /// neighbour's fields, find them all accounted for, and stay green — auditing a type nobody
+    /// asked about while the listed one went on being validated by nothing. This tree matched
+    /// correctly by declaration order alone, and declaration order is not something a
+    /// completeness check may rest on.
     ///
     /// **Mutation:** delete `"FanState"` from `fanStateTypes`. Run: red here, green there.
     /// **Mutation:** delete `"FanControlMode"`. Run: red here, because `FanState`'s own fields
