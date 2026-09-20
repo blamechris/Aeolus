@@ -50,14 +50,18 @@ public struct FanCurve: Sendable, Hashable, Codable {
     /// Curve points, kept sorted by temperature.
     ///
     /// **Always entirely finite, and always in the order above.** Both initialisers
-    /// guarantee it: a payload or a caller that supplied even one non-finite point yields
-    /// `[]`, never a curve missing just the bad point. See `init(points:source:
-    /// hysteresisCelsius:maximumRampRPMPerSecond:)` for why dropping the offending point
-    /// was rejected in favour of dropping the whole curve. The payoff is that nothing past
-    /// construction has to check: E8b's evaluator can never be handed a NaN point, and
-    /// `Point.<(_:_:)` can never be asked to order one — which matters because NaN is never
-    /// `<` anything, so a `sorted()` fed one does not raise, it silently produces an
-    /// incoherent order. That was the defect; this is what closes it.
+    /// guarantee it, and they do it by **different means**: a caller that supplied even one
+    /// non-finite point gets `[]`, never a curve missing just the bad point, while a payload
+    /// that carried one is *refused* — `init(from:)` throws. Stating the two apart matters
+    /// here because this comment is the first one a reader meets, and an earlier version of
+    /// it said a payload "yields `[]`" too, which is the one thing `init(from:)` is written
+    /// not to do. See `init(points:source:hysteresisCelsius:maximumRampRPMPerSecond:)` for
+    /// why dropping the offending point was rejected in favour of dropping the whole curve.
+    ///
+    /// The payoff is that nothing past construction has to check: E8b's evaluator can never
+    /// be handed a NaN point, and `Point.<(_:_:)` can never be asked to order one — which
+    /// matters because NaN is never `<` anything, so a `sorted()` fed one does not raise, it
+    /// silently produces an incoherent order. That was the defect; this is what closes it.
     public let points: [Point]
     /// The sensors driving this curve, aggregated by `aggregation`.
     public let source: SensorGroup
@@ -167,25 +171,36 @@ extension FanCurve {
     /// for those is meaningfully answerable — "as gentle a ramp as the compiled cap allows"
     /// is a coherent thing to substitute for a bad request. `points` is different: there is
     /// no default curve to substitute, and silently emptying a badly-formed one, the way
-    /// the memberwise initialiser does for a caller in this process, would hide exactly
-    /// what a *client* needs told. So the boundary here does what
-    /// `FanControlEnvelope.target(for:)`'s doc comment calls "the last line before
-    /// firmware, not the only one", in the opposite order: this **is** the outer line, the
-    /// one a client can be answered from, and it throws so the client hears what was wrong
-    /// with its payload rather than receiving a curve that quietly does nothing. The
-    /// memberwise initialiser's empty-on-bad-input behaviour is the inner line, the one
-    /// that cannot be forgotten, for every other route a `FanCurve` gets built — a test
-    /// fixture, a future call site, anything that isn't this decoder.
+    /// the memberwise initialiser does for a caller in this process, would hand a client
+    /// back a setting that means something other than what it sent. So the boundary here
+    /// does what `FanControlEnvelope.target(for:)`'s doc comment calls "the last line before
+    /// firmware, not the only one", in the opposite order: this **is** the outer line, and
+    /// it refuses the payload rather than repairing it. The memberwise initialiser's
+    /// empty-on-bad-input behaviour is the inner line, the one that cannot be forgotten, for
+    /// every other route a `FanCurve` gets built — a test fixture, a future call site,
+    /// anything that isn't this decoder.
     ///
     /// Because `AeolusXPCValidation.decodeFanSettings(from:)` wraps any `DecodingError`
     /// into `AeolusXPCFault.malformedPayload`, this refusal already reaches an XPC client
     /// with no protocol bump and no change to `AeolusXPC` — the throw here is enough; do
     /// not add a parallel finiteness check there.
     ///
-    /// The debug description is deliberately value-free, the same discipline
+    /// **What the client is told is "is not well-formed JSON", which is wrong, and this
+    /// paragraph used to claim the opposite.** `AeolusXPCValidation.malformedDetail(for:)`
+    /// maps every `DecodingError.dataCorrupted` to that one fixed string and discards
+    /// `debugDescription`, so the message below reaches nobody and the payload a client is
+    /// sent looking for a syntax error in had no syntax error in it. The refusal is still
+    /// the right answer — a client that gets an error rather than a silently different
+    /// setting has been told the important half — but "it throws *so the client hears what
+    /// was wrong*" was a claim about a mechanism that does not exist. Corrected in place
+    /// rather than deleted, because the argument for refusing over repairing does not rest
+    /// on it. Plumbing a real detail through is
+    /// [#276](https://github.com/blamechris/Aeolus/issues/276).
+    ///
+    /// The debug description is kept value-free anyway, the same discipline
     /// `FanBoundsImplausibility.description` documents for itself: a root daemon must not
-    /// echo a client's bytes into its own log, and a value-free message is what lets this
-    /// be compared in a test without that test also pinning Foundation's own wording.
+    /// echo a client's bytes into its own log, and whatever surfaces it later will want a
+    /// message that was already safe to surface.
     ///
     /// Every field stays required. `FanCurve`'s Swift-side defaults are a convenience for
     /// constructing one in code; a payload that omits a field is a client that did not say
