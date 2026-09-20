@@ -595,9 +595,19 @@ actor LeaseAuthority {
 
     /// Drops every lease and restores every fan they covered.
     ///
-    /// The lease core's half of `restoreAllToAutomatic`. The control plane additionally
-    /// restores every enumerated fan, because that message's contract is global rather than
-    /// lease-scoped.
+    /// The lease core's half of `restoreAllToAutomatic` — and, on every build that exists, the
+    /// whole of what that message performs. The contract is global rather than lease-scoped, so
+    /// it additionally specifies `restoreToAutomatic(.everyFan)` on the plane; the shipped
+    /// handler deliberately issues no such call, and the decision lives at
+    /// `SupervisedFanAuthority.restoreAllToAutomatic`. Read that before changing either.
+    ///
+    /// **Releasing leases is not restoring the machine**, and this paragraph was present
+    /// indicative about the `.everyFan` call until
+    /// [#228](https://github.com/blamechris/Aeolus/issues/228). What reaches the plane from
+    /// here is one `restoreToAutomatic(.fan(index))` per fan a dropped lease covered, through
+    /// `KeystoneRestoreAttempt`. A fan another tool left in manual under no live lease is not
+    /// touched, and neither is the machine-wide `Ftst` force key — `.everyFan` is the only
+    /// scope that clears it, and this is not one of its three call sites.
     ///
     /// **Consults no per-`ConnectionID` state**, which is the precondition
     /// `HelperConnectionSession` documents for exempting that message from its teardown
