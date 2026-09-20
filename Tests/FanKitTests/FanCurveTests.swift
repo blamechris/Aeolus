@@ -105,3 +105,137 @@ struct FanCurveHysteresisTests {
         #expect(curve.hysteresisCelsius == FanCurve.defaultHysteresisCelsius)
     }
 }
+
+/// #190: the second `FanCurve` field with a non-finite hole — `Point`, not
+/// `hysteresisCelsius` — closed with the opposite fallback. There is no default *curve* to
+/// fall back to the way there is a default hysteresis, so the built-in-code initialiser
+/// empties the whole curve rather than substituting anything, and the decode-side
+/// initialiser refuses outright. See `FanCurve.points` and `init(points:source:
+/// hysteresisCelsius:maximumRampRPMPerSecond:)` for the reasoning.
+@Suite("FanCurve.points refuses any non-finite point, all or nothing")
+struct FanCurvePointFinitenessTests {
+
+    private let source = SensorGroup(sensorKeys: ["TC0P"])
+
+    /// The defect this closes: NaN is never `<` anything, so a `sorted()` fed one does not
+    /// raise, it silently produces an incoherent order. Delete the
+    /// `points.allSatisfy(\.isFinite)` guard in the memberwise initialiser and this goes
+    /// red, because the very same input would then decode to a non-empty, wrongly-ordered
+    /// curve instead of an empty one.
+    @Test("A curve containing one NaN temperature is emptied, not silently re-sorted")
+    func nanTemperaturePointEmptiesTheCurve() {
+        let points = [
+            FanCurve.Point(temperatureCelsius: 80, rpm: 4000),
+            FanCurve.Point(temperatureCelsius: .nan, rpm: 2000),
+            FanCurve.Point(temperatureCelsius: 40, rpm: 1500),
+        ]
+
+        let curve = FanCurve(points: points, source: source)
+        #expect(curve.points.isEmpty)
+    }
+
+    /// The control for the test above: the same finite points, minus the bad one, sort
+    /// correctly — so a passing suite is distinguishing "the guard fired" from "sorting
+    /// itself is broken", not accidentally passing both by emptying every curve.
+    @Test("The same finite points, without the bad one, still sort by temperature")
+    func sameFinitePointsWithoutTheBadOneSort() {
+        let points = [
+            FanCurve.Point(temperatureCelsius: 80, rpm: 4000),
+            FanCurve.Point(temperatureCelsius: 40, rpm: 1500),
+        ]
+
+        let curve = FanCurve(points: points, source: source)
+        #expect(curve.points.map(\.temperatureCelsius) == [40, 80])
+    }
+
+    /// NaN is not orderable, but an infinity *is* — `sorted()` would place it without
+    /// complaint at whichever end it belongs. A guard that only checked `isNaN` would leave
+    /// this half of the defect open; `isFinite` closes both from one condition.
+    @Test(
+        "An infinite temperature is refused the same as NaN",
+        arguments: [Double.infinity, -.infinity])
+    func infiniteTemperatureEmptiesTheCurve(_ badTemperature: Double) {
+        let points = [
+            FanCurve.Point(temperatureCelsius: 40, rpm: 1500),
+            FanCurve.Point(temperatureCelsius: badTemperature, rpm: 2000),
+        ]
+
+        #expect(FanCurve(points: points, source: source).points.isEmpty)
+    }
+
+    @Test(
+        "A non-finite rpm empties the curve the same as a non-finite temperature",
+        arguments: [Double.nan, .infinity, -.infinity])
+    func nonFiniteRPMEmptiesTheCurve(_ badRPM: Double) {
+        let points = [
+            FanCurve.Point(temperatureCelsius: 40, rpm: 1500),
+            FanCurve.Point(temperatureCelsius: 80, rpm: badRPM),
+        ]
+
+        #expect(FanCurve(points: points, source: source).points.isEmpty)
+    }
+}
+
+/// `FanCurve.init(from:)`'s half of #190: the decode boundary refuses a non-finite point
+/// rather than reproducing the in-process empty-curve fallback, so a client that sent one
+/// is told so instead of receiving a curve that quietly commands nothing.
+@Suite("FanCurve.init(from:) refuses a non-finite point rather than emptying it")
+struct FanCurveDecodeFinitenessTests {
+
+    /// `.convertFromString` is what makes a non-finite `Double` reachable through JSON at
+    /// all. `AeolusXPCCoding.decoder()` uses the default `nonConformingFloatDecodingStrategy`
+    /// (`.throw`), under which `JSONDecoder` refuses a `NaN`/`Infinity` token before
+    /// `FanCurve.init(from:)` is ever entered — so a test against that decoder could not
+    /// reach this guard at all, and would prove nothing about it either way. This
+    /// configuration is what a *future* decoder would need to look like for the guard to
+    /// matter, which is exactly the shape `FanCurveHysteresisTests` already uses for the
+    /// same reason.
+    private func decoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.nonConformingFloatDecodingStrategy = .convertFromString(
+            positiveInfinity: "Infinity", negativeInfinity: "-Infinity", nan: "NaN")
+        return decoder
+    }
+
+    /// Delete the `points.allSatisfy(\.isFinite)` guard in `init(from:)` and this decodes
+    /// to an empty curve instead of throwing.
+    @Test("A curve payload with a non-finite temperature throws rather than decoding empty")
+    func nonFiniteTemperatureThrows() {
+        let json = """
+            {"points":[{"temperatureCelsius":"NaN","rpm":1500}],\
+            "source":{"sensorKeys":["TC0P"],"aggregation":"maximum"},\
+            "hysteresisCelsius":2,"maximumRampRPMPerSecond":100}
+            """
+        #expect(throws: DecodingError.self) {
+            try self.decoder().decode(FanCurve.self, from: Data(json.utf8))
+        }
+    }
+
+    @Test("A curve payload with a non-finite rpm throws rather than decoding empty")
+    func nonFiniteRPMThrows() {
+        let json = """
+            {"points":[{"temperatureCelsius":40,"rpm":"Infinity"}],\
+            "source":{"sensorKeys":["TC0P"],"aggregation":"maximum"},\
+            "hysteresisCelsius":2,"maximumRampRPMPerSecond":100}
+            """
+        #expect(throws: DecodingError.self) {
+            try self.decoder().decode(FanCurve.self, from: Data(json.utf8))
+        }
+    }
+
+    /// The guard has to be selective, not "decoding is broken under this decoder
+    /// configuration" — a well-formed curve still has to decode under the same decoder, or
+    /// the two tests above would pass just as happily with `init(from:)` throwing on
+    /// everything.
+    @Test("A well-formed curve still decodes under the same decoder")
+    func wellFormedCurveStillDecodes() throws {
+        let json = """
+            {"points":[{"temperatureCelsius":80,"rpm":4000},\
+            {"temperatureCelsius":40,"rpm":1500}],\
+            "source":{"sensorKeys":["TC0P"],"aggregation":"maximum"},\
+            "hysteresisCelsius":2,"maximumRampRPMPerSecond":100}
+            """
+        let curve = try self.decoder().decode(FanCurve.self, from: Data(json.utf8))
+        #expect(curve.points.map(\.temperatureCelsius) == [40, 80])
+    }
+}

@@ -312,6 +312,13 @@ struct XPCPayloadBoundsTests {
                 aggregation: .maximum
             )
         )
+        // Asserted before the payload is built, because "maximal" is this test's entire
+        // premise and nothing else here checks it. `FanCurve.init` empties a curve that
+        // carries a non-finite point (#190), so a regression there — or any future rule that
+        // drops points — would shrink this payload, and a cap test whose fixture quietly got
+        // smaller passes while the cap stops bounding anything.
+        #expect(curve.points.count == AeolusXPCPayloadBounds.maxCurvePoints)
+
         let settings = (0..<AeolusXPCPayloadBounds.maxFansPerPayload).map {
             FanSetting(fanIndex: $0, control: .curve(curve))
         }
