@@ -2,6 +2,7 @@ import AeolusXPC
 import FanKit
 import Foundation
 import Security
+import os
 
 @testable import AeolusHelper
 @testable import AeolusXPCClient
@@ -133,6 +134,25 @@ final class EmptyReplyListenerHarness {
 
     deinit { listener.invalidate() }
 
+    /// How many connections this listener accepted — the precondition its one test needs, and
+    /// [#239](https://github.com/blamechris/Aeolus/issues/239)'s second site.
+    ///
+    /// `ClientListenerHarness` has `sessions` for this; this one had nothing, so
+    /// `emptyReplyIsAProtocolViolation`'s last use of the harness was the `client()` line.
+    /// `NSXPCListenerEndpoint` does not retain the listener, so ARC is permitted to release the
+    /// harness there, run the `deinit` above, and leave the client talking to an invalidated
+    /// listener — which fails as `helperUnreachable` rather than passing vacuously, so it is a
+    /// flake and not a false green. #254's measurement is that it does not currently happen on
+    /// `Mac16,5` under either configuration CI builds, and that release lands at async frame exit
+    /// rather than at last use is an optimiser's liberty and not a language guarantee.
+    ///
+    /// Reading this in the test is the portable fix for both halves at once: it states that the
+    /// peer was reached — so a green run means the rogue exported object answered, not that the
+    /// listener had gone away — and a read after the last call is what keeps the harness alive to
+    /// get there. `withExtendedLifetime` was the other candidate and is not available: its
+    /// closure is not `async`, and the body that has to be extended over is.
+    var acceptedConnections: Int { delegate.accepted }
+
     /// Deadlines taken from `ClientListenerHarness`, never restated, and **deliberately not
     /// overridable**.
     ///
@@ -153,11 +173,19 @@ final class EmptyReplyListenerHarness {
     }
 }
 
+/// `Sendable` by way of a lock rather than `@unchecked`: libxpc calls the delegate on a thread it
+/// owns, and `CLAUDE.md` rule 10 treats an unchecked conformance as a claim needing review.
 private final class EmptyReplyListenerDelegate: NSObject, NSXPCListenerDelegate, Sendable {
+
+    private let count = OSAllocatedUnfairLock(initialState: 0)
+
+    var accepted: Int { count.withLock { $0 } }
+
     func listener(
         _ listener: NSXPCListener,
         shouldAcceptNewConnection connection: NSXPCConnection
     ) -> Bool {
+        count.withLock { $0 += 1 }
         connection.exportedInterface = NSXPCInterface(with: AeolusXPCProtocol.self)
         connection.exportedObject = EmptyReplyService()
         connection.resume()

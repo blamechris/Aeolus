@@ -246,9 +246,17 @@ struct HelperClientTeardownTests {
         let gate = AsyncSignal()
         let harness = ClientListenerHarness(authority: GatedSnapshotAuthority(gate: gate))
         let deadline = Duration.milliseconds(250)
+        // The **gated** bound is the assertion, so it is short and explicit. Neither of the
+        // other two is asserted by anything here — the `hello` only has to succeed, and the
+        // panic path is never sent at all, this test's second verb being `acquireLease` — so
+        // both take the shipping value rather than an invented one. `.seconds(5)` on each was
+        // a third of the product's handshake bound and half its panic bound, which is #250's
+        // exposure at a call site instead of in a default (#255).
         let client = harness.client(
             deadlines: HelperClientDeadlines(
-                gatedVerb: deadline, panicVerb: .seconds(5), handshakeVerb: .seconds(5)))
+                gatedVerb: deadline,
+                panicVerb: HelperClientDeadlines.panicVerb,
+                handshakeVerb: HelperClientDeadlines.handshakeVerb))
 
         await #expect(throws: HelperClientError.helperNeverAnswered(after: deadline)) {
             try await client.snapshot()
@@ -274,6 +282,12 @@ struct HelperClientTeardownTests {
     /// C5 fix reddens this. What it exists to catch is a future change to the teardown
     /// making `restoreAllToAutomatic` depend on a connection the client has just discarded.
     /// #159 is built on this working in exactly the state a user reaches for it in.
+    ///
+    /// The **gated** bound is the assertion. The panic round trip below is one this test
+    /// requires to *succeed* and never measures, and the `hello` in front of it likewise, so
+    /// both take the shipping value: a 5 s panic bound here was half what the product allows on
+    /// a round trip whose only job is to arrive, which is #250's own shape at a call site
+    /// (#255).
     @Test("The panic path still reaches the helper after a gated verb has timed out")
     func thePanicPathSurvivesATimedOutVerb() async throws {
         let gate = AsyncSignal()
@@ -282,7 +296,9 @@ struct HelperClientTeardownTests {
         let deadline = Duration.milliseconds(250)
         let client = harness.client(
             deadlines: HelperClientDeadlines(
-                gatedVerb: deadline, panicVerb: .seconds(5), handshakeVerb: .seconds(5)))
+                gatedVerb: deadline,
+                panicVerb: HelperClientDeadlines.panicVerb,
+                handshakeVerb: HelperClientDeadlines.handshakeVerb))
 
         await #expect(throws: HelperClientError.helperNeverAnswered(after: deadline)) {
             try await client.snapshot()
@@ -303,6 +319,18 @@ struct HelperClientTeardownTests {
     /// message that is wrong. `OrderingExemptionTests` asserts the helper's half against
     /// `HelperXPCService` directly; this one asserts the pair.
     ///
+    /// **The panic bound is what kills the mutation, and it is still the product's.** #255 was
+    /// filed expecting the opposite — that raising `panicVerb` from `.seconds(5)` to the
+    /// shipping 10 s would leave the mutation below alive, because nothing else here measures
+    /// the panic path. Measured on `Mac16,5`, it does not: the queued panic path never answers
+    /// at all, so the deadline expires whatever its value is and the only thing 5 s bought was
+    /// a red five seconds sooner. What the short bound did buy was **attribution**, and that is
+    /// kept by moving the *gated* term instead: at `.seconds(30)` against the panic path's 10 s
+    /// the thrown `helperNeverAnswered(after: 10 seconds)` can only be the panic bound, where
+    /// two equal bounds would have made the reported figure ambiguous between them. So nothing
+    /// at this call site is now tighter than the product, and a contended runner cannot fail a
+    /// panic round trip the client got right.
+    ///
     /// **Mutation:** in `HelperXPCService.restoreAllToAutomatic(reply:)`, replace `Task { … }`
     /// with `sequencer.enqueue { … }`. Run: red — the panic path queues behind the parked
     /// snapshot and this client's `panicVerb` deadline expires.
@@ -311,9 +339,14 @@ struct HelperClientTeardownTests {
         let gate = AsyncSignal()
         let authority = GatedSnapshotAuthority(gate: gate)
         let harness = ClientListenerHarness(authority: authority)
+        // The gated verb has to outlast the panic path rather than race it: it is parked for
+        // the whole test, and under the mutation it is the term that would otherwise expire
+        // first and make the reported bound ambiguous. See the note above.
         let client = harness.client(
             deadlines: HelperClientDeadlines(
-                gatedVerb: .seconds(10), panicVerb: .seconds(5), handshakeVerb: .seconds(10)))
+                gatedVerb: .seconds(30),
+                panicVerb: HelperClientDeadlines.panicVerb,
+                handshakeVerb: HelperClientDeadlines.handshakeVerb))
 
         let parked = Task { try await client.snapshot() }
         try await waitUntil("the snapshot reached the authority") { await authority.hasBeenAsked }
