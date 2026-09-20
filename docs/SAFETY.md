@@ -123,6 +123,21 @@ recorded here rather than made silently, for the reason the status block above g
 The heartbeat interval is a third of the TTL so that two consecutive missed beats are
 tolerated. A single scheduling hiccup must not surrender control; a dead client must.
 
+**That tolerance is a property of the client's *sending*, and the helper used to be able to
+defeat it** ([#229](https://github.com/blamechris/Aeolus/issues/229)). After #90 six of the
+seven XPC verbs shared one per-connection queue, `renewLease` among them, and § 3 has the app
+rendering the snapshot at 1 Hz on the connection it also holds its lease on — so on a machine
+whose reads cost more than a second the backlog grew monotonically, and once it was longer than
+the TTL a beat sent exactly on schedule reached the lease table after the lease had gone. The
+direction was fail-safe, and it was still a live, healthy client losing manual control for a
+reason it could neither see nor avoid. `renewLease` and `releaseLease` are now dispatched on
+arrival rather than queued, on the same argument that exempts § 7's panic path: a beat and a
+handback are the messages whose whole value is promptness, and a queue in front of either is a
+precondition neither may acquire. The queue itself is still unbounded, deliberately — bounding
+it would answer some other message with a refusal a compliant client could not avoid either,
+which is the defect moved rather than closed. `AeolusXPCProtocol`'s ordering section states
+exactly which verbs are sequenced and what the remaining cost is.
+
 **"Persist across app quit" is not an exception.** It is a lease the helper renews on the
 user's behalf, kept alive by the helper's own launchd job. The failure mode above is
 prevented in that mode too — what keeps the fans under control is a live supervised
