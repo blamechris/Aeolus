@@ -199,8 +199,16 @@ struct HelperClientConnectionTests {
     /// **Mutation:** revert the `case invalidated` doc comment in
     /// `Sources/AeolusXPCClient/HelperConnectionHealth.swift` to its pre-fix wording
     /// ("Consistent with the helper being absent or not yet approved — those cannot be told
-    /// apart here."). Run: red — "refused" is no longer in the scanned comment, so `named`
-    /// drops to 2 of the 3 `possibilities`.
+    /// apart here."). Run: red — "refused this client" is no longer in the scanned comment,
+    /// so `named` drops to 2 of the 3 `possibilities`.
+    ///
+    /// The third possibility is matched as the phrase `"refused this client"`, not the bare
+    /// word `"refused"`. This same comment block also says, of the *unrelated* `.refused`
+    /// case, "is `.refused` instead" a few lines later — a bare `"refused"` substring check
+    /// is satisfied by that sentence alone, so the two-item undercount can be reintroduced
+    /// in the enumerating sentence while this other, untouched sentence keeps the check
+    /// green. Anchoring on the phrase as it actually appears in the enumeration is what
+    /// makes the undercount observable again.
     @Test("HelperConnectionHealth.invalidated's doc comment names every possibility it covers")
     func invalidatedDocCommentNamesEveryPossibility() throws {
         let url = SeamScanner.sourcesRoot
@@ -214,12 +222,21 @@ struct HelperClientConnectionTests {
         let end = try #require(
             source.range(of: "case invalidated"),
             "HelperConnectionHealth.swift no longer declares case invalidated")
+        try #require(
+            start.upperBound <= end.lowerBound,
+            """
+            found "case invalidated" before the doc comment's opening line — the scan bounds \
+            assume the opening line precedes the case, and this file no longer does
+            """)
         let comment = String(source[start.lowerBound..<end.lowerBound])
 
-        // The possibilities the doc comment must enumerate. Its count, not a hand-typed "3",
-        // is what the assertion below checks against, for the same reason the errorDescription
-        // test above does it this way.
-        let possibilities = ["absent", "not yet approved", "refused"]
+        // The possibilities the doc comment must enumerate, anchored on the phrase each one
+        // is actually named with in the enumerating sentence — not a bare word, which this
+        // same block's unrelated mention of the `.refused` case ("is `.refused` instead")
+        // would also satisfy. Its count, not a hand-typed "3", is what the assertion below
+        // checks against, for the same reason the errorDescription test above does it this
+        // way.
+        let possibilities = ["the helper being absent", "not yet approved", "refused this client"]
         let named = possibilities.filter { comment.contains($0) }
         #expect(
             named.count == possibilities.count,
