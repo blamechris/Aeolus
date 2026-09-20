@@ -136,8 +136,16 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// it revokes, and `manualControlReleased(fanAt:)` drops the entry — so § 5 has no
         /// entry left to cycle over. That gap is
         /// [#181](https://github.com/blamechris/Aeolus/issues/181)'s, which owns
-        /// re-registration. Until it lands, the refusal is for the life of the helper
-        /// process and `docs/RECOVERY.md` is the user's route out.
+        /// re-registration.
+        ///
+        /// **One route out short of a restart, since
+        /// [#189](https://github.com/blamechris/Aeolus/issues/189)**, and only for the lease
+        /// teardown producer: `restoreAllToAutomatic` — § 7's panic verb, `fanctl reset --all` —
+        /// asks the firmware for this fan again, and a write it accepts lifts the refusal. One it
+        /// refuses again does not, and neither does anything at all for the reconciliation
+        /// producer below. So `docs/RECOVERY.md` is still the answer when the firmware keeps
+        /// saying no; what is gone is the case where it was the answer to a fan that would have
+        /// gone back if anybody had asked twice.
         ///
         /// **Two producers, and the second is not a lease teardown.** Startup reconciliation
         /// hands back every fan it finds in manual at bring-up

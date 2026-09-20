@@ -191,9 +191,22 @@ this document:
 - **Nothing watches it.** Every path that reaches this state has already cleared § 5's
   registry, so § 5 has no entry left to cycle over — see § 5 and #181, which owns
   re-registration.
-- **Nothing clears it.** The ledger is append-only for the life of the helper process, so a
-  later restore the firmware *does* accept leaves the refusal standing. #189 owns the
-  clearing path; § 7's panic restore is the first caller that will need it.
+- **A later restore the firmware accepts clears it, and nothing else does**
+  ([#189](https://github.com/blamechris/Aeolus/issues/189)). The ledger was append-only for
+  the life of the helper process until then, which made this the one state in this document
+  with no route out short of a restart. The clearing signal is the restorer reporting it did
+  *not* give the fan up — the same signal `HelperFanRestorer` deregisters § 3's registry on,
+  which is the place where forgetting a still-manual fan is the unsafe direction, and the
+  strongest one a build with no read-back inside the keystone has. A restore that is refused
+  again, and one that never returns, both leave the refusal standing.
+
+  **The path that reaches it is § 7's, and it had to be built** — the line above said the panic
+  restore would be the first caller to need the clear, and the panic restore could not reach
+  such a fan at all. Every restore the lease core issued derived its fans from table entries,
+  and `acquireLease` refuses every fan in this ledger, so no entry covering one could exist:
+  the register sealed off the only route to its own exit. `LeaseAuthority.releaseEveryLease`
+  therefore sweeps the register beside the table. It touches nothing foreign and nothing
+  reconciliation recorded, and it cannot make the v1 message fail — see § 7.
 - **§ 4's acknowledgement budget no longer produces it, and did until #209.** That is a
   correction to the paragraph above rather than a new bullet's worth of mechanism: a handback
   the budget stopped waiting for was recorded here, on the argument that a fan nobody answered
@@ -217,7 +230,9 @@ this document:
   `Fan.ManualControlAvailability.Reason.restoreToAutomaticFailed` documents both producers on the
   case itself.
 
-A helper restart is the route out, and § 6's reconciliation is what makes it safe: the next
+A helper restart is **still** the route out for the two cases the clear above does not reach —
+a firmware that keeps refusing, and a restore that never returns — and § 6's reconciliation is
+what makes it safe: the next
 process reads `F<n>Md` before it serves anything and hands back whatever it finds in manual,
 so the fan this refusal named is no longer one whose mode nothing has read. Built in #164,
 and **still not a route out on today's build** — the restore it issues is refused with
@@ -233,8 +248,10 @@ the softer of two refusals.** `StartupReconciliation.refusalForGrant` answers
 `.foreignManualControl` is the *different* answer, and its case is narrow: a fan reconciliation
 found **automatic** at bring-up that a fresh grant-time read then finds in manual — something else
 took it after the pass ran. The distinction matters here rather than being a naming detail,
-because the refusal actually carried over is the permanent terminal state this section has just
-said nothing watches and nothing clears.
+because the refusal actually carried over is the terminal state this section has just said
+nothing watches. Nor does #189's clear reach it: that is `LeaseAuthority.restoreAbandoned`, and
+reconciliation's `handbackRefused` is a separate set in a separate type, which no lease teardown
+and no panic sweep writes to.
 
 *Tested by:* unit tests on expiry arithmetic, including a wall clock moved in either
 direction and a monotonic jump (`LeaseExpiryTests`); tests on the supervisor's *schedule* as
@@ -1105,12 +1122,25 @@ true.
 **The built implementation satisfies that contract only through the lease core.**
 `SupervisedFanAuthority.restoreAllToAutomatic` is `await leases.releaseEveryLease()` and a log
 line: no `restoreToAutomatic(.everyFan)` reaches the control plane, so a fan held in manual under
-no live lease — one another tool pinned, one reconciliation recorded as `handbackRefused` — is
-outside what today's message touches, and no force-key clear is issued. That is deliberate and
-recorded at the source: the plane verb throws `.controlPathNotBuilt`, so calling it would make a
+no live lease that Aeolus is *not* accountable for — one another tool pinned, one reconciliation
+recorded as `handbackRefused` — is outside what today's message touches, and no force-key clear is
+issued. That is deliberate and recorded at the source: the plane verb throws
+`.controlPathNotBuilt`, so calling it would make a
 v1 message that succeeds into one that always fails for no change in machine state, and the
 contract is frozen at v1 ([#159](https://github.com/blamechris/Aeolus/issues/159)). It is
 nonetheless a third missing piece, and it is not obtainable from the two named below.
+
+**One fan under no live lease *is* touched, and it is the fan this path exists for**
+([#189](https://github.com/blamechris/Aeolus/issues/189)). `releaseEveryLease()` sweeps
+`LeaseAuthority.restoreAbandoned` — § 1's terminal state — beside the lease table, per fan
+through the same `restoreToAutomatic(.fan(index))` every teardown uses. Those fans are Aeolus's
+own: it leased them, put them off automatic, asked for them back and was refused, so
+`fansAeolusIsAccountableFor` counts them and ADR 0011's decline-the-contest rule does not apply.
+Before this they were unreachable by any restore the helper issued, because § 1's own refusal kept
+a lease over them from existing — so § 7 could not recover the one state § 1 called terminal, and
+a fan that entered it stayed there for the life of the process. A write the firmware accepts
+clears the refusal; one it refuses again leaves it standing, and the message succeeds either way,
+which is why this does not have the v1 problem the machine-wide call has.
 
 [RECOVERY.md](RECOVERY.md) documents the procedure for when even that is unavailable,
 including SMC reset key combinations by Mac family.
