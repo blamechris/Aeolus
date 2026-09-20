@@ -177,10 +177,14 @@ struct HelperClientTests {
     func theHandshakeIsSentWithinItsOwnDeadline() async throws {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
         let handshakeDeadline = Duration.nanoseconds(1)
+        // The handshake bound is the assertion and is therefore impossibly small. The other two
+        // are the shipping values: the gated verb has to be *generous* for the arrangement to
+        // distinguish them at all, and the panic path is never sent here, so a bound under the
+        // product's would be an invented number on a verb nothing measures (#255).
         let client = harness.client(
             deadlines: HelperClientDeadlines(
-                gatedVerb: .seconds(5),
-                panicVerb: .seconds(5),
+                gatedVerb: HelperClientDeadlines.gatedVerb,
+                panicVerb: HelperClientDeadlines.panicVerb,
                 handshakeVerb: handshakeDeadline))
 
         await #expect(throws: HelperClientError.helperNeverAnswered(after: handshakeDeadline)) {
@@ -275,12 +279,33 @@ struct HelperClientTests {
     /// Run: red — and on the *detail*, which is the point: the empty answer then fails at
     /// the decode instead, which is the same case with a different cause and would let the
     /// defect through a test that only checked the error's shape.
+    ///
+    /// The `acceptedConnections` read is [#239](https://github.com/blamechris/Aeolus/issues/239)'s
+    /// second site, and it is a **precondition with a lifetime pin in it** rather than a second
+    /// behavioural assertion — written down as such, because the two are not the same thing. It
+    /// states that the rogue peer was reached, and reading the harness after the call is what
+    /// keeps it, and the listener its `deinit` invalidates, alive to be reached.
+    ///
+    /// **Mutation:** insert `harness.listener.invalidate()` — what that `deinit` does — between
+    /// the `client()` line and the call. Run: red here first, on zero accepted connections, and
+    /// the error becomes `helperUnreachable(code: 4099)`. That is the failure an early release
+    /// produces: a flake rather than a false green, which is why #239 reported this site as the
+    /// milder of its two.
     @Test("A reply carrying neither payload nor error is a protocol violation")
     func emptyReplyIsAProtocolViolation() async throws {
         let harness = EmptyReplyListenerHarness()
         let client = harness.client()
 
         let error = await #expect(throws: HelperClientError.self) { try await client.snapshot() }
+
+        // Ahead of the `guard`, which would otherwise return before this is read. See above.
+        #expect(
+            harness.acceptedConnections == 1,
+            """
+            the listener accepted \(harness.acceptedConnections) connections. One is the \
+            precondition: zero means this observed an invalidated listener rather than the \
+            rogue exported object, which is a different failure wearing the same error type.
+            """)
 
         guard case .protocolViolation(let detail) = try #require(error) else {
             Issue.record("an empty reply became \(String(describing: error))")
@@ -345,11 +370,13 @@ struct HelperClientTests {
         // The gated verb's bound is the assertion, so it is short and explicit. The
         // handshake's is not asserted by anything here and must simply succeed, so it is the
         // shipping one — a `hello` that lost a race with a contended runner would fail this
-        // on `helperNeverAnswered(after: 5 seconds)`, which is #250 in miniature.
+        // on `helperNeverAnswered(after: 5 seconds)`, which is #250 in miniature. The panic
+        // path is never sent at all, so it takes the shipping bound for the same reason rather
+        // than inheriting the 250 ms the gated verb needs (#255).
         let client = harness.client(
             deadlines: HelperClientDeadlines(
                 gatedVerb: deadline,
-                panicVerb: deadline,
+                panicVerb: HelperClientDeadlines.panicVerb,
                 handshakeVerb: HelperClientDeadlines.handshakeVerb))
 
         await #expect(throws: HelperClientError.helperNeverAnswered(after: deadline)) {
