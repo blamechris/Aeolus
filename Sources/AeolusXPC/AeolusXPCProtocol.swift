@@ -70,9 +70,9 @@ import Foundation
 /// and its completion is still the plane's to give. "Each fan" read as every fan on the
 /// machine until [#228](https://github.com/blamechris/Aeolus/issues/228); the scope is the
 /// declaration's own paragraph below, and the argument about promptness is unaffected by it.
-/// A client may therefore send it at any time,
-/// including on a connection it has already pipelined work onto, and it is answered on its
-/// own schedule rather than the queue's. Its reply is the one that may arrive out of order.
+/// A client may therefore send it at any time, including on a connection it has already
+/// pipelined work onto, and it is answered on its own schedule rather than the queue's. Its
+/// reply is the one that may arrive out of order.
 ///
 /// **The hazard every exemption creates, stated plainly and once.** Because an unsequenced
 /// message is not in the queue, a message sent *before* it on the same connection may still be
