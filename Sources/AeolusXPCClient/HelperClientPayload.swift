@@ -39,7 +39,8 @@ enum HelperClientPayload {
             return try AeolusXPCCoding.encoder().encode(value)
         } catch {
             throw HelperClientError.protocolViolation(
-                detail: "this client could not encode its own \(type(of: value)) request")
+                detail:
+                    "this client could not encode its own \(type(of: value)) request: \(error)")
         }
     }
 
@@ -50,7 +51,7 @@ enum HelperClientPayload {
             return try AeolusXPCCoding.decoder().decode(type, from: data)
         } catch {
             throw HelperClientError.protocolViolation(
-                detail: "the helper's \(type) did not decode")
+                detail: "the helper's \(type) did not decode: \(error)")
         }
     }
 }
