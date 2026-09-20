@@ -9,7 +9,8 @@ import Testing
 /// bound a test can *inherit*, and says so precisely: two harness defaults, both defined by
 /// reference to the shipping trio. It covers no explicitly passed deadline at all, and
 /// [#255](https://github.com/blamechris/Aeolus/issues/255) left deciding whether a source scan
-/// should exist as its own acceptance bullet. This is that decision, taken rather than left implied.
+/// should exist as its own acceptance bullet. This is that decision, taken rather than left
+/// implied.
 ///
 /// **Why a source scan rather than review.** The defect
 /// [#250](https://github.com/blamechris/Aeolus/issues/250) is not a wrong number; it is a
@@ -21,7 +22,10 @@ import Testing
 ///
 /// **The rule, verb by verb.** Every term of every `HelperClientDeadlines` construction under
 /// `Tests/` must either resolve to a duration **no tighter than the product's** for that verb, or
-/// appear in `exemptions` below with a reason.
+/// appear in `exemptions` below with a reason. A term resolves if it is a duration literal or a
+/// `HelperClientDeadlines.<constant>` reference; anything else — a local, a `Self.` constant — is
+/// opaque to a scanner and must be exempted by name. That is the correct default: an opaque term
+/// is exactly how a short bound gets in unremarked, and writing one costs a line here.
 ///
 /// **"Every construction" is enforced, not assumed.** The scan reads the spelling
 /// `HelperClientDeadlines(`, so a construction written `.init(…)` — whether spelled
@@ -29,10 +33,7 @@ import Testing
 /// terms this scan never sees. Rather than widen the pattern and hope it stays wide,
 /// `noDeadlineIsConstructedInAFormThisScanCannotRead` fails on that spelling and names the
 /// explicit form to use. A scanner whose completeness rests on nobody choosing a legal
-/// alternative spelling is the shape of guard this file exists to replace. A term resolves if it is a duration literal or a
-/// `HelperClientDeadlines.<constant>` reference; anything else — a local, a `Self.` constant — is
-/// opaque to a scanner and must be exempted by name. That is the correct default: an opaque term
-/// is exactly how a short bound gets in unremarked, and writing one costs a line here.
+/// alternative spelling is the shape of guard this file exists to replace.
 ///
 /// **Two limits, stated rather than discovered later.**
 ///
@@ -368,7 +369,8 @@ struct HelperClientDeadlineLiteralTests {
             offenders.isEmpty,
             """
             A client deadline is constructed with `.init(`, which this file's scan does not read, \
-            so its terms are unchecked while looking checked: \(offenders.joined(separator: " | ")). \
+            so its terms are unchecked while looking checked: \
+            \(offenders.joined(separator: " | ")). \
             Spell it `HelperClientDeadlines(…)` at the call site — the scan reads that form, and \
             reading it is the whole point of #255's acceptance bullet.
             """)
