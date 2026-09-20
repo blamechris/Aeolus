@@ -71,7 +71,16 @@ struct PanicPathScopeTripwireTests {
     /// arriving elsewhere in it one day must not be able to redden this — and equally must not be
     /// able to satisfy it.
     ///
-    /// **Mutation:** add `try? await plane.restoreToAutomatic(.everyFan)` to the body. Run: red.
+    /// The mutations are cited as run, not as they would read most neatly. The type holds no
+    /// plane, so the shortest thing that both compiles and has the defect's shape is a `nil`
+    /// existential — an implementer wiring E3/E4 would inject a real one, and the scan cannot
+    /// tell the two apart, which is the point.
+    ///
+    /// **Mutation:** add `let plane: (any FanControlPlane)? = nil` and
+    /// `try await plane?.restoreToAutomatic(.everyFan)` to the body. Run: red at both
+    /// forbidden tokens, and red at `everyMachineWideRestoreIsOneOfTheThreeKnownCallSites` too.
+    /// **Mutation:** delete `await leases.releaseEveryLease()` from the body. Run: red on the
+    /// coverage assertion — the guard against a scan that reads nothing and reports it clean.
     @Test("The shipped panic verb issues no control-plane restore")
     func theShippedPanicVerbIssuesNoControlPlaneRestore() throws {
         let body = try Self.functionBody(
@@ -125,8 +134,10 @@ struct PanicPathScopeTripwireTests {
     /// these sites names the token repeatedly, and a tripwire that fires on the sentence stating
     /// the rule is a tripwire nobody keeps.
     ///
-    /// **Mutation:** add `try await writer.restoreToAutomatic(.everyFan)` to any other file under
-    /// `Sources/`. Run: red.
+    /// **Mutation:** add `let plane: (any FanControlPlane)? = nil` and
+    /// `try await plane?.restoreToAutomatic(.everyFan)` to
+    /// `ReadOnlyFanAuthority.restoreAllToAutomatic`. Run: red **here only** — the test above
+    /// stays green, which is what proves this one discriminates rather than echoing it.
     @Test("The machine-wide restore is issued from exactly three non-lease paths")
     func everyMachineWideRestoreIsOneOfTheThreeKnownCallSites() throws {
         let expected: Set<String> = [
