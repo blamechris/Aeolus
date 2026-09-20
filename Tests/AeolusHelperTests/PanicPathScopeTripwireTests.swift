@@ -9,7 +9,7 @@ import Testing
 ///
 /// [#228](https://github.com/blamechris/Aeolus/issues/228) is what this exists for, and the
 /// defect it records is worth restating because it is not a typo. The issue names three sites;
-/// `documentationSites` below is the verified list, and it is **seven**.
+/// `documentationSites` below is the verified list, and it has **seven entries**.
 /// `SupervisedFanAuthority.restoreAllToAutomatic` has always been right. Four said, in plain
 /// present indicative, that the verb additionally restores every enumerated fan —
 /// `LeaseAuthority.releaseEveryLease`, `LeaseTeardownTests`,
@@ -32,7 +32,7 @@ import Testing
 ///
 /// **The limit, stated rather than discovered later.** This is text matching over stripped
 /// source, so it catches the realistic regression — somebody wiring E3/E4's write path into the
-/// panic verb and not revisiting six comments — and not a plane call reached through a name it
+/// panic verb and not revisiting the list below — and not a plane call reached through a name it
 /// cannot recognise. `everyMachineWideRestoreIsOneOfTheThreeKnownCallSites` is what narrows
 /// that: the machine-wide scope has to be *named* somewhere to be issued, and a fourth place
 /// naming it is a failure whatever calls it.
