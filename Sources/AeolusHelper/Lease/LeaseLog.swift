@@ -304,37 +304,27 @@ struct LeaseLog: Sendable {
         )
     }
 
-    /// A wake was answered before the seal it belonged to had been set.
-    ///
-    /// `.fault` rather than `.notice`: reaching it means a `.willSleep` body was starved past
-    /// the kernel's acknowledgement window, so the machine slept without this helper having
-    /// handed a single fan back — the failure § 4 exists to prevent, arriving by a route § 4
-    /// cannot see. The banked credit below keeps the *seal* from outliving the episode; it
-    /// does not undo the missed handback, and this line is the only record that one was
-    /// missed.
-    func wokeBeforeItsSealWasSet() {
-        log.fault(
-            """
-            The machine woke before the sleep that preceded it had been sealed: the \
-            will-sleep handler had not run by the time the wake handler did. Every fan \
-            crossed that sleep however the last lease left it, and the seal for that sleep \
-            will be declined when it finally arrives so it cannot refuse manual control on a \
-            machine that is already awake.
-            """
-        )
-    }
-
     /// A seal arrived after its own wake had already been answered, and was declined.
     ///
-    /// The other half of `wokeBeforeItsSealWasSet()`, and `.notice` rather than `.fault`
-    /// because by itself it is the mechanism working: the fault was logged when the ordering
-    /// was discovered, and this is the credit being spent.
+    /// `.fault`, and it is the only record that this happened. Reaching it means a
+    /// `.willSleep` body was starved past the kernel's acknowledgement window, so the machine
+    /// slept without this helper having handed a single fan back — the failure § 4 exists to
+    /// prevent, arriving by a route § 4 cannot see. Declining keeps the seal from outliving
+    /// the episode; it does not undo the missed handback.
+    ///
+    /// **The fault is here rather than on the wake**, which is where an earlier version put
+    /// it. A wake that finds no seal standing is not by itself evidence of anything — a helper
+    /// that restarted inside a sleep window hears exactly one, legitimately — and logging a
+    /// `.fault` for it would have fired on every ordinary wake once the seal stopped being
+    /// set. A declined seal *is* evidence: it can only happen when a sleep was stamped before
+    /// a wake that was answered first.
     func declinedASealItsWakeAlreadyAnswered() {
-        log.notice(
+        log.fault(
             """
-            Declining to close the table for a sleep whose wake has already been answered. \
-            Sealing now would refuse manual control until the next sleep and wake, on a \
-            machine that is awake in front of its user.
+            A sleep was sealed too late to matter: its wake had already been answered, so the \
+            will-sleep handler had not run by the time the machine came back. Every fan \
+            crossed that sleep however the last lease left it. Declining the seal so it \
+            cannot refuse manual control on a machine that is already awake.
             """
         )
     }

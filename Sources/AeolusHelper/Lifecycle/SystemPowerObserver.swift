@@ -48,13 +48,38 @@ struct SystemPowerNotification: Sendable {
 
     let event: SystemPowerEvent
 
+    /// Where this notification sits in the order the system delivered them.
+    ///
+    /// **It stamps an order that already exists rather than imposing one.**
+    /// `IOKitSystemPowerObserver` delivers on a *serial* queue by construction — see its
+    /// `queue`, whose whole doc is that a notification arriving while the previous one is
+    /// still being spawned queues behind it — so at the moment `received(messageType:)` runs,
+    /// the sequence is a fact. What was missing is that the fact was then discarded:
+    /// `deliver(_:acknowledging:)` hands each event to an unstructured `Task`, the queue
+    /// orders the **spawns**, and nothing orders the bodies.
+    ///
+    /// Stamping here is deliberately much weaker than making the bodies run in order, which
+    /// would mean reshaping the seam. A monotonic number lets a *reader* of two events tell
+    /// which came first, whatever order their bodies ran in, which is all § 4's seal needs —
+    /// see `LeaseAuthority.sealForSleep(generation:)`.
+    ///
+    /// The first fix for that defect counted "wakes heard before their seal" instead, and it
+    /// was wrong in a way worth recording: credits are **fungible**, carrying no episode, so
+    /// counting bounds how many seals are declined without determining *which*. Worse, a
+    /// declined seal leaves the table unsealed, so the wake that followed it banked a fresh
+    /// credit and the count never returned to zero — one unpaired wake disabled the seal for
+    /// the life of the process. A generation cannot do that: it is compared, never spent.
+    let generation: UInt64
+
     private let allowPowerChange: @Sendable () async -> Void
 
     init(
         event: SystemPowerEvent,
+        generation: UInt64,
         acknowledging allowPowerChange: @escaping @Sendable () async -> Void
     ) {
         self.event = event
+        self.generation = generation
         self.allowPowerChange = allowPowerChange
     }
 
@@ -253,6 +278,12 @@ private final class SystemPowerRegistration: Sendable {
     private let rootPort = OSAllocatedUnfairLock<io_connect_t>(initialState: 0)
     private let handler: @Sendable (SystemPowerNotification) async -> Void
 
+    /// The next generation to stamp. Read and bumped only from `deliver(_:acknowledging:)`,
+    /// which runs on IOKit's serial queue, so the sequence it produces is the delivery order.
+    /// In a lock rather than a bare `var` because this type is `Sendable` without the
+    /// unchecked escape hatch (`CLAUDE.md` rule 10), not because two queues can reach it.
+    private let nextGeneration = OSAllocatedUnfairLock<UInt64>(initialState: 0)
+
     init(handler: @escaping @Sendable (SystemPowerNotification) async -> Void) {
         self.handler = handler
     }
@@ -300,7 +331,15 @@ private final class SystemPowerRegistration: Sendable {
     private func deliver(
         _ event: SystemPowerEvent, acknowledging allow: @escaping @Sendable () -> Void
     ) {
-        let notification = SystemPowerNotification(event: event) { allow() }
+        // Stamped here, before the Task is spawned, because here is the last point at which
+        // the delivery order is still known — see `SystemPowerNotification.generation`.
+        let generation = nextGeneration.withLock { generation -> UInt64 in
+            generation += 1
+            return generation
+        }
+        let notification = SystemPowerNotification(
+            event: event, generation: generation
+        ) { allow() }
         let handler = self.handler
         Task { await handler(notification) }
     }

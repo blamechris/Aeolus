@@ -32,6 +32,12 @@ final class ScriptedPowerObserver: SystemPowerObserving, @unchecked Sendable {
 
     private var observing: @Sendable () async -> Void
 
+    /// Mirrors what `SystemPowerRegistration` does on IOKit's serial queue: stamp the
+    /// delivery order before the notification leaves the seam. A double that always stamped
+    /// the same number would make every seal look stale, and one that stamped nothing could
+    /// not express the out-of-order episode these suites exist to drive.
+    private var nextGeneration: UInt64 = 0
+
     init(observing: @escaping @Sendable () async -> Void = {}) {
         self.observing = observing
     }
@@ -64,6 +70,23 @@ final class ScriptedPowerObserver: SystemPowerObserving, @unchecked Sendable {
         await handler(notification(for: event))
     }
 
+    /// Mints a notification now and delivers it later, so a test can control the *order the
+    /// generations were stamped in* independently of the order the bodies run.
+    ///
+    /// That separation is the whole of the out-of-order episode: in production, IOKit stamps
+    /// on a serial queue and the unstructured `Task` bodies then run in whatever order the
+    /// cooperative pool picks. A test that could only deliver in stamp order could not
+    /// express the interleaving § 4's seal is built against.
+    func mint(_ event: SystemPowerEvent) -> SystemPowerNotification {
+        notification(for: event)
+    }
+
+    /// Delivers a notification minted earlier by `mint(_:)`.
+    func deliver(_ notification: SystemPowerNotification) async {
+        guard let handler = lock.withLock({ self.handler }) else { return }
+        await handler(notification)
+    }
+
     /// Delivers one event on a task of its own, for a responder that will not come back.
     ///
     /// `acknowledged` fires when *this* delivery is acknowledged, and it is the only way to
@@ -86,7 +109,11 @@ final class ScriptedPowerObserver: SystemPowerObserving, @unchecked Sendable {
     private func notification(
         for event: SystemPowerEvent, alsoSignalling acknowledged: AsyncSignal? = nil
     ) -> SystemPowerNotification {
-        SystemPowerNotification(event: event) { [self] in
+        let generation = lock.withLock { () -> UInt64 in
+            nextGeneration += 1
+            return nextGeneration
+        }
+        return SystemPowerNotification(event: event, generation: generation) { [self] in
             await lock.withLock { observing }()
             lock.withLock { recorded.append(event) }
             await didAcknowledge.signal()
