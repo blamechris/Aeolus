@@ -320,6 +320,56 @@ struct HelperClientTests {
             """)
     }
 
+    /// A payload verb answered with bytes this build cannot decode is also a protocol
+    /// violation — the other shape `protocolViolation` has four producers for and the only
+    /// one of them a version-skewed or hostile peer actually reaches, since the helper never
+    /// answers `(nil, nil)` but a schema drift between the two sides is exactly bytes this
+    /// client cannot read.
+    ///
+    /// The detail must name the underlying decode failure, not just restate that decoding
+    /// failed — `HelperClientPayload.decode`'s catch interpolates `error` for precisely this,
+    /// so a schema drift surfaces with the field it tripped on instead of a message with
+    /// nothing to grep for.
+    ///
+    /// **Mutation:** in `HelperClientPayload.decode(_:from:)`, delete the `do`/`catch` and let
+    /// `AeolusXPCCoding.decoder().decode(type, from: data)` throw directly. Run: red — the
+    /// thrown error is a bare `DecodingError`, which is not a `HelperClientError`, so
+    /// `#expect(throws: HelperClientError.self)` fails.
+    @Test("A reply this build cannot decode is also a protocol violation, naming the failure")
+    func garbledReplyIsAProtocolViolation() async throws {
+        let harness = EmptyReplyListenerHarness(garblingSnapshotReply: true)
+        let client = harness.client()
+
+        let error = await #expect(throws: HelperClientError.self) { try await client.snapshot() }
+
+        // Ahead of the `guard`, for the same reason as the empty-reply test above: it states
+        // that the rogue peer was reached rather than an invalidated listener, and keeps the
+        // harness alive to get there.
+        #expect(
+            harness.acceptedConnections == 1,
+            """
+            the listener accepted \(harness.acceptedConnections) connections. One is the \
+            precondition: zero means this observed an invalidated listener rather than the \
+            rogue exported object, which is a different failure wearing the same error type.
+            """)
+
+        guard case .protocolViolation(let detail) = try #require(error) else {
+            Issue.record("an undecodable reply became \(String(describing: error))")
+            return
+        }
+        #expect(
+            detail.contains("did not decode"),
+            "the violation was reported as \"\(detail)\"")
+        #expect(
+            detail.contains("DecodingError") || detail.contains("corrupted")
+                || detail.contains("JSON"),
+            """
+            the violation was reported as "\(detail)", which names nothing about *why* the \
+            decode failed — the whole point of carrying \\(error) into the detail rather than \
+            a fixed string.
+            """)
+    }
+
     // MARK: - The panic path
 
     /// `restoreAllToAutomatic` reaches the helper with no handshake behind it, and sends no
