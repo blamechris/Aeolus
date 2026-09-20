@@ -9,10 +9,10 @@ import Testing
 /// bound a test can *inherit*, and says so precisely: two harness defaults, both defined by
 /// reference to the shipping trio. It covers no explicitly passed deadline at all, and
 /// [#255](https://github.com/blamechris/Aeolus/issues/255) left deciding whether a source scan
-/// should was its own acceptance bullet. This is that decision, taken rather than left implied.
+/// should exist as its own acceptance bullet. This is that decision, taken rather than left implied.
 ///
 /// **Why a source scan rather than review.** The defect
-/// [#250](https://github.com/blamechris/Aeolus/issues/250) was is not a wrong number; it is a
+/// [#250](https://github.com/blamechris/Aeolus/issues/250) is not a wrong number; it is a
 /// number nobody had a reason to look at. A bound below the product's is legitimate where the
 /// expiry *is* the assertion, and indistinguishable at a glance from one invented to keep a
 /// suite quick — so the two have to be told apart by something that fails when nobody is
@@ -21,7 +21,15 @@ import Testing
 ///
 /// **The rule, verb by verb.** Every term of every `HelperClientDeadlines` construction under
 /// `Tests/` must either resolve to a duration **no tighter than the product's** for that verb, or
-/// appear in `exemptions` below with a reason. A term resolves if it is a duration literal or a
+/// appear in `exemptions` below with a reason.
+///
+/// **"Every construction" is enforced, not assumed.** The scan reads the spelling
+/// `HelperClientDeadlines(`, so a construction written `.init(…)` — whether spelled
+/// `HelperClientDeadlines.init(…)` or left to inference as `deadlines: .init(…)` — would carry
+/// terms this scan never sees. Rather than widen the pattern and hope it stays wide,
+/// `noDeadlineIsConstructedInAFormThisScanCannotRead` fails on that spelling and names the
+/// explicit form to use. A scanner whose completeness rests on nobody choosing a legal
+/// alternative spelling is the shape of guard this file exists to replace. A term resolves if it is a duration literal or a
 /// `HelperClientDeadlines.<constant>` reference; anything else — a local, a `Self.` constant — is
 /// opaque to a scanner and must be exempted by name. That is the correct default: an opaque term
 /// is exactly how a short bound gets in unremarked, and writing one costs a line here.
@@ -322,4 +330,48 @@ struct HelperClientDeadlineLiteralTests {
         else { return "file scope" }
         return SeamScanner.collapsingWhitespace(String(code[declaration]))
     }
+
+    /// `.init(…)` carries the same terms and this scan cannot read them.
+    ///
+    /// `terms()` finds the spelling `HelperClientDeadlines(`. Swift accepts two others for the
+    /// same call — `HelperClientDeadlines.init(…)`, and bare `.init(…)` where the parameter type
+    /// makes it unambiguous — and a term inside either is invisible to the assertion above while
+    /// looking exactly like one that was checked. That is the one route a fixed pattern leaves
+    /// open, so it is closed here rather than documented as a limit: the remedy is one word at
+    /// the call site, and the failure says so.
+    ///
+    /// Keyed on the verb labels rather than on the type name, because the inferred spelling
+    /// never names the type. Any of the three is enough — a construction carrying none of them
+    /// sets no deadline and is not this scan's business.
+    @Test("No deadline is constructed in a form this scan cannot read")
+    static func noDeadlineIsConstructedInAFormThisScanCannotRead() throws {
+        let needle = ".init" + "("
+        var offenders: [String] = []
+
+        for file in try SeamScanner.swiftFilesUnderTests() {
+            let code = SeamScanner.strippingComments(try String(contentsOf: file, encoding: .utf8))
+            var searched = code.startIndex
+            while let start = code.range(of: needle, range: searched..<code.endIndex) {
+                searched = start.upperBound
+                guard
+                    let open = code.index(start.upperBound, offsetBy: -1, limitedBy: code.endIndex),
+                    let close = SeamScanner.closingParenthesis(in: code, openingAt: open)
+                else { continue }
+                let clause = String(code[code.index(after: open)..<close])
+                guard product.keys.contains(where: { clause.contains($0 + ":") }) else { continue }
+                offenders.append(
+                    "\(file.lastPathComponent): \(SeamScanner.collapsingWhitespace(clause))")
+            }
+        }
+
+        #expect(
+            offenders.isEmpty,
+            """
+            A client deadline is constructed with `.init(`, which this file's scan does not read, \
+            so its terms are unchecked while looking checked: \(offenders.joined(separator: " | ")). \
+            Spell it `HelperClientDeadlines(…)` at the call site — the scan reads that form, and \
+            reading it is the whole point of #255's acceptance bullet.
+            """)
+    }
+
 }
