@@ -1,3 +1,4 @@
+import FanKit
 import Foundation
 import Testing
 
@@ -164,34 +165,110 @@ struct XPCFaultDetailBoundTests {
         }
     }
 
+    /// Builds an oversized exemplar of the case `code` decodes to, with every field the
+    /// case carries set to `Self.megabytes` (or a harmless placeholder for a field that
+    /// is not free text, such as `versionMismatch`'s integers).
+    ///
+    /// Exhaustive over `AeolusXPCFault.KnownCode`, which is `CaseIterable` since #231 for
+    /// exactly this reason: a new code is a compile error here until this switch says how
+    /// to build one, so the wire-shape coverage below cannot silently omit it the way a
+    /// hand-typed template list could. This is the structural tie #231 asked for — one
+    /// switch, forced by the compiler, standing in for the second hand-maintained
+    /// enumeration `AeolusXPCFault`'s associated values rule out.
+    static func oversizedExemplar(for code: AeolusXPCFault.KnownCode) -> AeolusXPCFault {
+        switch code {
+        case .handshakeRequired: return .handshakeRequired
+        case .versionMismatch:
+            return .versionMismatch(
+                clientVersion: 1,
+                helperRange: ProtocolVersionRange(minimumSupported: 1, current: 1))
+        case .malformedPayload: return .malformedPayload(detail: megabytes)
+        case .invalidParameter: return .invalidParameter(name: megabytes, detail: megabytes)
+        case .manualControlUnavailable:
+            return .manualControlUnavailable(
+                reason: ManualControlAvailability.Reason(wireValue: megabytes))
+        case .leaseExpired: return .leaseExpired
+        case .leaseUnknown: return .leaseUnknown
+        case .leaseNotHeldByThisConnection: return .leaseNotHeldByThisConnection
+        case .thermalEmergencyActive: return .thermalEmergencyActive
+        case .reclaimedBySystem: return .reclaimedBySystem
+        case .boundsImplausible: return .boundsImplausible(fanIndex: 0, detail: megabytes)
+        case .helperFailed: return .helperFailed(detail: megabytes)
+        }
+    }
+
+    /// Every exemplar `oversizedExemplar(for:)` can build, plus `.unknown` — the one case
+    /// with deliberately no entry in `KnownCode`, because it is what a code *outside* that
+    /// closed set decodes to. That is a fixed structural exception rather than a case that
+    /// could ever be silently added, so it is listed here by hand and nowhere else.
+    static let everyExemplar: [AeolusXPCFault] =
+        AeolusXPCFault.KnownCode.allCases.map(oversizedExemplar(for:))
+        + [.unknown(code: megabytes, detail: megabytes)]
+
     /// The decode-side bound names an adversary — a peer, or anything that can forge an
     /// `NSError` in this domain — and that adversary chooses the wire code. #93 bounded
     /// `helperFailed` alone, which left `malformedPayload`, `invalidParameter`,
     /// `boundsImplausible` and `unknown` decoding their free text unbounded: the same 4 MB
     /// string reached a client through any of them by changing one word on the wire.
     ///
-    /// Driven from templates rather than written out five times, so the next arm to carry
-    /// free text is one line here and cannot be half-added.
+    /// Parameterised over `KnownCode.allCases` rather than a hand-typed template per case
+    /// — the tie #231 asked for — and rather than over the oversized exemplars themselves:
+    /// `AeolusXPCFault` embeds its associated values in a parameterised test's own name, so
+    /// arguing over `everyExemplar` directly would put a 4 MB string in every test-case
+    /// name Swift Testing prints, pass or fail. The exemplar is built inside the test body
+    /// instead, and is round-tripped through the real encoder and decoder, so this
+    /// exercises the actual wire path, not a JSON literal that could drift from it. A case
+    /// with no free text (`freeText` returns `[]`) is included too and simply has nothing
+    /// to check — the point is that every case is *reachable* here at all, which #231 found
+    /// was not true of the old hand-typed list.
     @Test(
         "Every free-text field arriving over-long is bounded on decode",
-        arguments: [
-            #"{"code":"malformedPayload","detail":"@"}"#,
-            #"{"code":"invalidParameter","name":"@","detail":"@"}"#,
-            #"{"code":"manualControlUnavailable","reason":"@"}"#,
-            #"{"code":"boundsImplausible","fanIndex":0,"detail":"@"}"#,
-            #"{"code":"helperFailed","detail":"@"}"#,
-            #"{"code":"@","detail":"@"}"#,
-        ])
-    func everyFreeTextFieldIsBoundedOnDecode(template: String) throws {
-        let wire = Data(template.replacingOccurrences(of: "@", with: Self.megabytes).utf8)
+        arguments: AeolusXPCFault.KnownCode.allCases)
+    func everyFreeTextFieldIsBoundedOnDecode(code: AeolusXPCFault.KnownCode) throws {
+        let exemplar = Self.oversizedExemplar(for: code)
+        let wire = try AeolusXPCCoding.encoder().encode(exemplar)
+        let fault = try AeolusXPCCoding.decoder().decode(AeolusXPCFault.self, from: wire)
 
+        for text in Self.freeText(fault) {
+            #expect(text.count <= FaultDetailBounds.maxLength)
+            #expect(text.utf8.count <= FaultDetailBounds.maxUTF8Bytes)
+        }
+    }
+
+    /// `.unknown`'s own arm of the check above: the one case with deliberately no entry in
+    /// `KnownCode`, because it is what a code *outside* that closed set decodes to, so it
+    /// cannot be reached by parameterising over `KnownCode.allCases`. A fixed structural
+    /// exception rather than a case that could ever be silently added — nothing else in
+    /// this file needs a second hand-written entry for it.
+    @Test("An unrecognised code's free text is bounded on decode too")
+    func unknownCodeFreeTextIsBoundedOnDecode() throws {
+        let exemplar = AeolusXPCFault.unknown(code: Self.megabytes, detail: Self.megabytes)
+        let wire = try AeolusXPCCoding.encoder().encode(exemplar)
         let fault = try AeolusXPCCoding.decoder().decode(AeolusXPCFault.self, from: wire)
 
         let strings = Self.freeText(fault)
-        #expect(!strings.isEmpty, "this arm carries no free text, so the case proves nothing")
+        #expect(!strings.isEmpty)
         for text in strings {
             #expect(text.count <= FaultDetailBounds.maxLength)
             #expect(text.utf8.count <= FaultDetailBounds.maxUTF8Bytes)
+        }
+    }
+
+    /// `everyFreeTextFieldIsBoundedOnDecode` proves nothing for a case whose free text
+    /// never actually got long — a builder that forgot to substitute `megabytes` would
+    /// leave the case in `everyExemplar` but make its check vacuous. This is the
+    /// independent proof that every case `freeText(_:)` says carries text really carries
+    /// oversized text going in, for every exemplar this file builds.
+    @Test("Every exemplar that carries free text carries it over both bounds")
+    func everyCarriedFieldIsActuallyOversized() {
+        for exemplar in Self.everyExemplar {
+            for text in Self.freeText(exemplar) {
+                #expect(
+                    text.count > FaultDetailBounds.maxLength
+                        || text.utf8.count > FaultDetailBounds.maxUTF8Bytes,
+                    "\(exemplar) carries free text that was never long enough to prove the bound"
+                )
+            }
         }
     }
 }

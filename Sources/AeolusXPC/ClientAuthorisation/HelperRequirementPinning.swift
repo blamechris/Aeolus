@@ -144,7 +144,7 @@ public enum HelperRequirementPinning {
     public static func resolveForRunningProcess() -> Result<
         PinnedHelperRequirement, HelperPinningRefusal
     > {
-        resolveForRunningProcess(inspection: HelperSigningIdentity.inspect())
+        resolveForRunningProcess(inspection: RunningProcessSigningIdentity.inspect())
     }
 
     /// The injection seam the façade above is a one-line wrapper around.

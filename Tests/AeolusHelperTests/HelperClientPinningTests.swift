@@ -44,7 +44,7 @@ struct HelperClientPinningTests {
         defer { listener.invalidate() }
         let transport = HelperClientTransport.endpoint(listener.endpoint)
 
-        switch HelperSigningIdentity.inspect() {
+        switch RunningProcessSigningIdentity.inspect() {
         case .noTeamIdentifier:
             #expect(
                 throws: HelperClientError.clientCannotVerifyHelper(

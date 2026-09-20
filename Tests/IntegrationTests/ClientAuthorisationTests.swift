@@ -313,13 +313,13 @@ struct ClientAuthorisationHostTests {
     /// genuine one, with no test between that state and a release.
     @Test("Reading this process's own code signature succeeds on any host that can run tests")
     func selfInspectionSucceedsOnTheHost() {
-        let inspection = HelperSigningIdentity.inspect()
+        let inspection = RunningProcessSigningIdentity.inspect()
         if case .inspectionFailed(let status) = inspection {
             Issue.record(
                 """
                 Reading our own signature failed with OSStatus \(status). Any binary this \
                 runner can execute is at least linker-signed, so this is a defect in \
-                HelperSigningIdentity.inspect(), not a property of the host.
+                RunningProcessSigningIdentity.inspect(), not a property of the host.
                 """
             )
         }
@@ -334,7 +334,7 @@ struct ClientAuthorisationHostTests {
     /// being silently skipped.
     @Test("The production entry point agrees with whatever this host actually is")
     func productionEntryPointMatchesTheHost() {
-        let inspection = HelperSigningIdentity.inspect()
+        let inspection = RunningProcessSigningIdentity.inspect()
         let outcome = ClientAuthorisation.resolveForRunningProcess()
 
         switch inspection {

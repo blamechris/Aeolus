@@ -15,8 +15,10 @@ import Security
 /// damage does not reach it: a requirement that lost only its Team ID clause, or only its
 /// certificate chain clauses, or that lost the parentheses around the identifier
 /// disjunction, still rejects `/bin/ls` and this control stays silent. Those are caught by
-/// the exact-match requirement text tests in `ClientRequirementTextTests`, which is where
-/// a reader should look for clause-level coverage — not here.
+/// the exact-match requirement text tests — `ClientRequirementTextTests` for the client
+/// requirement, and `HelperRequirementTextTests` and `HelperMirrorSpecificationTests` for
+/// the helper-pinning requirement — which is where a reader should look for clause-level
+/// coverage, not here.
 ///
 /// One of those has a second net as well: the identifier disjunction's precedence is also
 /// covered by `Tests/IntegrationTests/ClientAuthorisationProbeTests.swift`, which builds an
