@@ -81,6 +81,62 @@ import Foundation
 /// pipelined*, which is the round trip pipelining exists to skip. A capability is feature
 /// discovery, never authorisation. So the only correct client-side rule is the one that is
 /// safe against every helper: send `hello`, wait for it, then send everything else.
+///
+/// ## Why this is one long file, and where the split stops
+///
+/// This file is over SwiftLint's 400-line `file_length` warning and stays that way on
+/// purpose. **229 of its lines are code**; the rest is the reasoning around them, and the
+/// rule counts comment lines. That figure did not move when this section was added — the file
+/// grew by fifty-odd lines and by none of the thing the threshold is worth measuring, which
+/// is the whole argument in one measurement. The warning is deliberately **not** suppressed —
+/// no `swiftlint:disable`, no `file_length` override in `.swiftlint.yml` — because a file that
+/// grew by two hundred lines of *logic* should draw exactly the attention this one drew.
+///
+/// The split was evaluated on [#242](https://github.com/blamechris/Aeolus/issues/242) and
+/// refused. Swift `private` is file-scoped, so every remaining seam needs a member of this
+/// actor reachable from a sibling file — and D36 is that stored state stays `private` and is
+/// mutated only from its declaring file, while only what a sibling *must* call widens to
+/// `internal`. Trading that for a line count is the wrong side of the trade anywhere, and
+/// this is the privilege boundary, which is why #237 declined it too. What was weighed:
+///
+/// - **The verbs are already gone**, and that was the seam worth having.
+///   `HelperClientVerbs.swift` holds all six, written over `withHandshakenProxy` and
+///   `withProxy`, and no verb touches this client's state. Its own comment records that it
+///   was split along a seam rather than along a line count.
+/// - **`translate(_:on:)` and the transport mapping** would move eighty-odd lines and need
+///   `hasEverHandshaken` widened — a stored input one arm of it decides on — and
+///   `discardConnection` with it, which is the single function that invalidates the
+///   connection and moves the generation. Reshaping it to return a verdict the actor then
+///   applies splits the classification from its consequence, which its own comment treats as
+///   one thing, and writes more lines into a new file than it takes out of this one.
+/// - **The connection's own lifecycle cannot leave this file at all**, and that is the
+///   compiler's ruling rather than a rule anybody chose. `exchange`, `liveConnection` and
+///   `handshakenConnection` each take or return `ConnectionGeneration`, which is `private`
+///   and nested; widening one without widening that type is *"method must be declared
+///   private because its parameter uses a private type"*. Anything built on those three
+///   stays here, so a split would have to start by publishing the type whose whole purpose
+///   is that a generation travels with its connection instead of being read back off the
+///   actor. `HelperClientAccessTests` records the attempt.
+/// - **The health signal** — `currentHealth`, `observers`, `publish`, `observe`,
+///   `stopObserving` — is the one slice that could own its state outright in a type of its
+///   own rather than borrowing this actor's, so it is the one that would widen nothing. It is
+///   worth about twenty-five lines against an overage past two hundred and fifty, in exchange
+///   for an indirection on the path that reports whether this client can see the helper at
+///   all. Not worth doing for a line count; worth reconsidering on its own merits if the
+///   signal grows.
+///
+/// The threshold is not this file's problem in particular either: thirty-four files in the
+/// tree are over it, ten of them under `Sources`, and four of those are longer than this one —
+/// `ReclamationWatchdog` at 980, `LeaseAuthority` at 884, `SMCConnection` at 813 and
+/// `SMCReadScheduler` at 679. Splitting whichever one a review round happened to open, at the
+/// cost of the access rule, buys a tidier number and a wider gate.
+///
+/// **`HelperClientAccessTests` is what makes the decision keepable.** The lesson D36 exists
+/// because of is #128's — a paragraph is not enforcement — and until #242 nothing asserted
+/// access anywhere in this target, so a later split could have widened every property named
+/// above with the whole suite green. Each is now held `private` by a test, and the two
+/// exhaustive halves beside it report a member that stops being private whether or not
+/// anybody thought to list it.
 public actor HelperClient {
 
     private let transport: HelperClientTransport
