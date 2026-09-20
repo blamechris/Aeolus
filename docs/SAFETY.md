@@ -105,7 +105,9 @@ per-lease teardown, which may be running alongside another client's still-live l
 different fan. The three `.everyFan` call sites in `Sources/` are all non-lease paths, and they
 are § 4's sleep handback (`Lifecycle/SystemPowerResponder.swift`), § 6's orderly exit
 (`Lifecycle/SignalTeardown.swift`) and § 6's startup-reconciliation fallback
-(`Safety/StartupReconciliation.swift`).
+(`Safety/StartupReconciliation.swift`). **That count and that list are asserted, not merely
+stated** — `PanicPathScopeTripwireTests` scans the tree for them, so a fourth site cannot arrive
+while this sentence goes on saying there are three (#228).
 
 **§ 7's panic path is not among them, and this paragraph said it was until the review of #104.**
 The machine-wide clear is § 7's by design, and the shipped verb does not issue it:

@@ -63,7 +63,12 @@ protocol FanAuthority: Sendable {
         from connection: ConnectionID
     ) async throws
 
-    /// The panic path. Returns every fan to automatic and drops every lease.
+    /// The panic path. Its contract is global — every fan to automatic, every lease dropped —
+    /// and how much of it a build performs is each conformer's own documentation to state.
+    /// `SupervisedFanAuthority` releases every lease and issues no machine-wide restore;
+    /// `ReadOnlyFanAuthority` succeeds as a no-op. Neither clears the force key on this build,
+    /// which this requirement read as promising until
+    /// [#228](https://github.com/blamechris/Aeolus/issues/228).
     ///
     /// Reached without a handshake — see `AeolusXPCProtocol.restoreAllToAutomatic` — and
     /// never without the code-signing requirement.
