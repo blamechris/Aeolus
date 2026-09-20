@@ -209,7 +209,8 @@ struct HelperClientConnectionTests {
 
         let start = try #require(
             source.range(of: "/// The connection is dead and will not come back."),
-            "HelperConnectionHealth.swift no longer opens .invalidated's doc comment with the expected line")
+            "HelperConnectionHealth.swift no longer opens .invalidated's doc comment with the expected line"
+        )
         let end = try #require(
             source.range(of: "case invalidated"),
             "HelperConnectionHealth.swift no longer declares case invalidated")
