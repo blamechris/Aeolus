@@ -222,12 +222,18 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         self.latch = latch
         self.ledger = ledger
 
+        // `writeCapability: plane` is the same seam `LeaseAuthority` is given below, and the
+        // sharing is the point of #194: the snapshot's `manualControlAvailability` and the
+        // grant path's refusal are then two readings of one property rather than two claims
+        // that happen to agree. A second conformer here would be a helper that can grant a
+        // lease while reporting the write path absent, or the reverse.
         let reading = ReadOnlyFanAuthority(
             provider: snapshotProvider,
             fanMode: SnapshotFanModeReads(provider: snapshotProvider),
             log: log,
             thermalEmergency: latch,
-            reclamation: ledger)
+            reclamation: ledger,
+            writeCapability: plane)
         self.reading = reading
 
         let telemetry = CuratedCriticalTemperatures(

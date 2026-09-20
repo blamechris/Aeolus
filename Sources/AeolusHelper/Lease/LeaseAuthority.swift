@@ -707,9 +707,25 @@ actor LeaseAuthority {
     /// `fansAeolusIsAccountableFor` calls *"a considerably worse thing to be told is
     /// somebody else's fault"*. The grant path has always judged against this set; the
     /// snapshot now asks the same question of the same state, in the same hop.
-    func activeLeaseView() async -> (lease: Lease?, accountableFans: Set<Int>) {
+    ///
+    /// **Since [#187](https://github.com/blamechris/Aeolus/issues/187) it also carries the
+    /// three registers apart**, not merely their union. The union answers *"is this fan
+    /// somebody else's?"*; it cannot answer *"why would a grant over it be refused?"*, and
+    /// those were the same question only while the snapshot had no way to say either. A fan
+    /// mid-handback and a fan whose handback was abandoned are both accountable, and
+    /// `acquireLease` refuses them with different reasons — one meaning *retry in a moment*
+    /// and one meaning *this is over* — so a snapshot that had only the union reported both as
+    /// available. The registers are returned rather than exposed as three more properties for
+    /// the reason this method exists at all: three reads are three views of this actor.
+    func activeLeaseView() async -> LeaseAccountability {
         await expireLapsedLeases()
-        return (table.all.first?.asLease(), fansAeolusIsAccountableFor)
+        return LeaseAccountability(
+            lease: table.all.first?.asLease(),
+            accountableFans: fansAeolusIsAccountableFor,
+            abandonedHandbacks: restoreAbandoned,
+            unconfirmedHandbacks: handbackUnconfirmed,
+            handbacksInFlight: Set(releasing.keys)
+        )
     }
 
     var leaseCount: Int { table.count }

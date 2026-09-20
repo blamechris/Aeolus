@@ -144,6 +144,7 @@ struct ReadOnlyFanAuthorityLatchTests {
             log: HelperLog(subsystem: "dev.aeolus.AeolusHelperTests", category: "Authority"),
             thermalEmergency: thermalEmergency,
             reclamation: reclamation,
+            writeCapability: LeaseFixture.writePathNotBuilt(),
             now: { Date(timeIntervalSince1970: 1_000_000) }
         )
     }

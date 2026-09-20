@@ -30,6 +30,7 @@ struct ReadOnlyFanAuthorityTests {
             log: Self.log,
             thermalEmergency: thermalEmergency,
             reclamation: reclamation,
+            writeCapability: LeaseFixture.writePathNotBuilt(),
             now: { Date(timeIntervalSince1970: 1_000_000) }
         )
     }

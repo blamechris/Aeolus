@@ -56,6 +56,7 @@ struct ReadOnlyFanAuthorityModeTests {
             log: Self.log,
             thermalEmergency: ThermalEmergencyLatch(),
             reclamation: ReclamationLedger(),
+            writeCapability: LeaseFixture.writePathNotBuilt(),
             now: { Date(timeIntervalSince1970: 1_000_000) }
         )
         return Fixture(authority: authority, provider: provider)
@@ -217,6 +218,7 @@ struct ReadOnlyFanAuthorityModeTests {
                 recordingFanLines: { recorder.append($0, $1) }),
             thermalEmergency: ThermalEmergencyLatch(),
             reclamation: ReclamationLedger(),
+            writeCapability: LeaseFixture.writePathNotBuilt(),
             now: { Date(timeIntervalSince1970: 1_000_000) }
         )
 

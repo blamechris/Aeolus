@@ -50,7 +50,8 @@ struct HelperHardwareTests {
             provider: provider,
             fanMode: SnapshotFanModeReads(provider: provider), log: Self.log,
             thermalEmergency: ThermalEmergencyLatch(),
-            reclamation: ReclamationLedger())
+            reclamation: ReclamationLedger(),
+            writeCapability: LeaseFixture.writePathNotBuilt())
 
         let snapshot = try await authority.snapshot()
 
@@ -171,7 +172,8 @@ struct HelperHardwareTests {
             provider: provider,
             fanMode: SnapshotFanModeReads(provider: provider), log: Self.log,
             thermalEmergency: ThermalEmergencyLatch(),
-            reclamation: ReclamationLedger())
+            reclamation: ReclamationLedger(),
+            writeCapability: LeaseFixture.writePathNotBuilt())
 
         let coldStart = ContinuousClock.now
         let first = try await authority.snapshot()
@@ -265,7 +267,8 @@ struct HelperHardwareTests {
             provider: scheduler.snapshotReader,
             fanMode: SnapshotFanModeReads(provider: scheduler.snapshotReader), log: Self.log,
             thermalEmergency: ThermalEmergencyLatch(),
-            reclamation: ReclamationLedger())
+            reclamation: ReclamationLedger(),
+            writeCapability: LeaseFixture.writePathNotBuilt())
         let plane = SMCFanControlPlane(scheduler: scheduler, connection: connection)
         let critical = CriticalSensorSet.resolve(for: HardwareIdentity.current())
         try #require(!critical.isEmpty, "no curated critical set on the machine it was cut for")
@@ -329,7 +332,8 @@ struct HelperHardwareTests {
             provider: provider,
             fanMode: SnapshotFanModeReads(provider: provider), log: Self.log,
             thermalEmergency: ThermalEmergencyLatch(),
-            reclamation: ReclamationLedger())
+            reclamation: ReclamationLedger(),
+            writeCapability: LeaseFixture.writePathNotBuilt())
         let harness = AnonymousListenerHarness(authority: authority)
 
         _ = await harness.payloadMessage { proxy, reply in
