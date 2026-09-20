@@ -60,11 +60,17 @@ extension SeamScanner {
         /// which is how a tripwire earns a reputation for crying wolf and then gets deleted.
         /// `[UUID: Lease]` reports `UUID` and `Lease`; `Task<Lease, Error>` reports `Lease`
         /// too.
-        var names: [String] {
-            (type + " " + initialiser)
-                .split(whereSeparator: { !($0.isLetter || $0.isNumber || $0 == "_") })
-                .map(String.init)
-        }
+        var names: [String] { SeamScanner.identifiers(in: type + " " + initialiser) }
+    }
+
+    /// Every identifier in `text`, split on everything that cannot be part of a name.
+    ///
+    /// One copy, because `Property.names` and `TypeAlias.names` compare against the same
+    /// forbidden lists and a list checked by two different splitters is two lists.
+    static func identifiers(in text: String) -> [String] {
+        text
+            .split(whereSeparator: { !($0.isLetter || $0.isNumber || $0 == "_") })
+            .map(String.init)
     }
 
     /// Every `var` and `let` declared outside a function body in one target.
@@ -251,6 +257,110 @@ extension SeamScanner {
         return typeKeywords.contains(last)
     }
 
+    // MARK: - Type aliases
+
+    /// One `typealias`: the name it introduces, and every identifier in the type it stands for.
+    ///
+    /// A forbidden-type tripwire compares a declaration's identifiers against a list of type
+    /// names, and an alias is the one construct that puts a *different* name on a listed type
+    /// without wrapping it in anything. `private typealias Remembered = SystemSnapshot` followed
+    /// by `private var last: Remembered?` reports the identifier `Remembered`, which is on no
+    /// list — so the client stores a snapshot and `theClientStoresNoFanState` says nothing. That
+    /// was verified on a scratch type in `Sources/AeolusXPCClient`, and the lease half escaped
+    /// with it, because `held: Grant?` splits to no `lease` word either.
+    struct TypeAlias {
+        let file: String
+        let name: String
+        /// Every identifier in the aliased type, by `Property.names`' own rule.
+        let names: [String]
+    }
+
+    /// Every `typealias` under `Sources`, or under one target of it.
+    ///
+    /// Read across the whole tree rather than one target by default, because an alias does not
+    /// have to be declared where it is used: `public typealias Grant = Lease` in `FanKit` is
+    /// nameable from every client of it, and a resolver that only read the storing target would
+    /// close the shorter route while leaving the one an author reaches for when the alias is
+    /// meant to be shared.
+    ///
+    /// The limits: an alias declared **outside `Sources`** — in a dependency, or in the test
+    /// target — is not resolved, and an alias to a nested type is resolved by its identifiers, so
+    /// `A.B` contributes both `A` and `B`. The first is the direction that fails open and is
+    /// stated rather than closed; a forbidden DTO is declared in this tree by construction.
+    static func typeAliases(in target: String?) throws -> [TypeAlias] {
+        var found: [TypeAlias] = []
+        for file in try swiftFiles(under: target) {
+            found += typeAliases(
+                inSource: try String(contentsOf: file, encoding: .utf8),
+                file: file.lastPathComponent)
+        }
+        return found
+    }
+
+    /// `typeAliases(in:)`'s parser, over one file's text.
+    ///
+    /// Comments are dropped and string literals are stepped over, as everywhere else here: the
+    /// prose in these targets discusses a remembered snapshot at length, and a tripwire that
+    /// resolves an alias written in a sentence is a tripwire that fires on its own explanation.
+    ///
+    /// The right-hand side goes through `fragment(in:from:stoppingAt:)`, the same collector the
+    /// initialiser half uses, so a wrapped alias is read past its first line for the same reason
+    /// a wrapped initialiser is.
+    static func typeAliases(inSource source: String, file: String) -> [TypeAlias] {
+        let code = strippingComments(source)
+        var found: [TypeAlias] = []
+        var index = code.startIndex
+
+        while index < code.endIndex {
+            if code[index] == "\"" {
+                index = endOfStringLiteral(in: code, from: index)
+                continue
+            }
+            guard code[index].isLetter || code[index] == "_" else {
+                index = code.index(after: index)
+                continue
+            }
+            let wordEnd = identifier(in: code, from: index)
+            guard String(code[index..<wordEnd]) == "typealias" else {
+                index = wordEnd
+                continue
+            }
+            guard let alias = typeAlias(in: code, after: wordEnd, file: file) else {
+                index = wordEnd
+                continue
+            }
+            found.append(alias.alias)
+            index = alias.end
+        }
+        return found
+    }
+
+    /// One `typealias` declaration, from just after its keyword.
+    private static func typeAlias(
+        in code: String, after start: String.Index, file: String
+    ) -> (alias: TypeAlias, end: String.Index)? {
+        var index = skippingWhitespace(in: code, from: start)
+        if index < code.endIndex, code[index] == "`" { index = code.index(after: index) }
+        guard index < code.endIndex, code[index].isLetter || code[index] == "_" else { return nil }
+        let nameEnd = identifier(in: code, from: index)
+        let name = String(code[index..<nameEnd])
+
+        // To the `=`. A generic parameter clause — `typealias Pair<T> = (T, T)` — contains none,
+        // so scanning for the first one needs no bracket accounting; a declaration that reaches a
+        // newline, a `;` or a `{` first is not an alias assignment and is refused rather than
+        // guessed at.
+        var equals = nameEnd
+        while equals < code.endIndex, !"=\n;{".contains(code[equals]) {
+            equals = code.index(after: equals)
+        }
+        guard equals < code.endIndex, code[equals] == "=" else { return nil }
+
+        let aliased = fragment(in: code, from: code.index(after: equals), stoppingAt: [])
+        return (
+            TypeAlias(file: file, name: name, names: identifiers(in: aliased.text)), aliased.end
+        )
+    }
+
     // MARK: - Function bodies
 
     /// The body of the `func` named `name`, brace-matched from its declaration — the text
@@ -389,12 +499,25 @@ extension SeamScanner {
     /// otherwise drop the depth back to zero and truncate the initialiser at the next newline,
     /// which is the same hole one level in.
     ///
+    /// **`<`/`>` are counted apart from `(`/`[` for the same reason, one level out.** A `>` that
+    /// closes nothing is clamped at zero, and while the two shared one counter that clamp was
+    /// applied to the sum — so a `>` inside a parenthesised continuation cancelled the `(` that
+    /// opened it. `= scratchMake(\n    isHot: 1 > 0,\n    snapshot: SystemSnapshot(…)\n)` dropped
+    /// to depth zero on the comparison and was cut off at the newline after it, so the stored
+    /// `SystemSnapshot` on the line below was invisible to `theClientStoresNoFanState`. Separate
+    /// counters make a bare comparison unable to close a bracket it never opened, while a wrapped
+    /// generic — `: Task<\n    Lease, Error\n>?` — still holds the continuation open on the angle
+    /// count alone. The three delimiters the formatter actually emits for a long initialiser —
+    /// paren, bracket, and brace — were each read correctly before this and still are; what was
+    /// wrong was a comparison written *inside* one of them.
+    ///
     /// A `{` that *is* named as a terminator still terminates — that is how the type half stops
     /// at a computed property's accessor block — so this widens the initialiser half alone.
     private static func fragment(
         in code: String, from start: String.Index, stoppingAt terminators: Set<Character>
     ) -> (text: String, end: String.Index) {
         var depth = 0
+        var angles = 0
         var braces = 0
         var text = ""
         var index = start
@@ -421,17 +544,19 @@ extension SeamScanner {
                 braces = max(0, braces - 1)
             } else if braces == 0 {
                 switch character {
-                case "(", "[", "<": depth += 1
+                case "(", "[": depth += 1
+                case "<": angles += 1
+                case ")", "]": depth = max(0, depth - 1)
                 // Clamped at zero and blind to a `>` that closes nothing, for
                 // `topLevelComponents`' reasons: a return arrow's `>` and a bare `>` in a default
-                // value both drive an unclamped depth negative, and a negative depth here loses
-                // the terminator that ends the declaration.
-                case ")", "]": depth = max(0, depth - 1)
-                case ">" where previous != "-": depth = max(0, depth - 1)
+                // value both drive an unclamped count negative, and a negative one here loses the
+                // terminator that ends the declaration. Clamped on its **own** counter, so the
+                // clamp cannot spend a `(` that a comparison never opened.
+                case ">" where previous != "-": angles = max(0, angles - 1)
                 default: break
                 }
             }
-            if depth == 0, braces == 0 {
+            if depth == 0, angles == 0, braces == 0 {
                 if character == ";" || terminators.contains(character) { break }
                 if character == "\n", !text.trimmingCharacters(in: .whitespaces).isEmpty { break }
             }

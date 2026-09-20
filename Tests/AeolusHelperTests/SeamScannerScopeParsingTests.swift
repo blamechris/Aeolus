@@ -284,6 +284,53 @@ struct SeamScannerScopeParsingTests {
         #expect(found.first?.names.contains("LeaseRequest") == false)
     }
 
+    /// **A paren-delimited continuation survives a comparison written inside it**, so the type
+    /// named below the comparison is still reported.
+    ///
+    /// The three delimiters `.swift-format` reaches for when an initialiser crosses 100 columns —
+    /// a paren, a bracket, and a brace — were each read past their first line already; each was
+    /// proven so on a scratch type in `Sources/AeolusXPCClient`, and each went red. What was not
+    /// read was a **comparison inside one of them**. `<` and `>` shared one counter with `(` and
+    /// `[`, and a `>` that closes nothing is clamped at zero — clamped on the *sum*, so the
+    /// comparison spent the `(` that opened the continuation. The scan then hit depth zero on the
+    /// comparison's own line and stopped at the next newline, and the `SystemSnapshot` below it was
+    /// invisible to `theClientStoresNoFanState`. Verified on that same scratch type, not reasoned
+    /// about: with only this spelling in the tree the tripwire was **green**.
+    ///
+    /// The second half is the direction the separation must not break: a generic clause wrapped
+    /// across lines has a real `<` to balance, and the angle count alone has to hold the
+    /// continuation open — a type that stopped at its first newline would report as unannotated.
+    ///
+    /// **Mutation:** count `<`/`>` on `depth` again — `case "(", "[": depth += 1` / `case "<":
+    /// angles += 1` back to `case "(", "[", "<": depth += 1`, and the `>` arm back to `depth`. Run:
+    /// red on the first half, green on the second, which is why both are here.
+    @Test("A parenthesised initialiser is not cut short by a comparison inside it")
+    func parenthesisedInitialisersSurviveComparisons() {
+        let found = properties(
+            """
+            actor Client {
+                private let cached = scratchMake(
+                    isHot: 1 > 0,
+                    snapshot: SystemSnapshot(fans: [], sensors: [])
+                )
+            }
+            """)
+
+        #expect(found.map(\.name) == ["cached"])
+        #expect(found.first?.names.contains("SystemSnapshot") == true)
+
+        let wrapped = properties(
+            """
+            actor Client {
+                private var handle: Task<
+                    Lease, Error
+                >?
+            }
+            """)
+
+        #expect(wrapped.first?.names.contains("Lease") == true)
+    }
+
     /// The widening above is the **initialiser** half alone: a computed property's accessor block
     /// still terminates the type.
     ///
@@ -365,6 +412,37 @@ struct SeamScannerScopeParsingTests {
             """)
 
         #expect(found.map(\.name) == ["connection"])
+    }
+
+    // MARK: - Type aliases
+
+    /// An alias is read with the identifiers of what it stands for, which is what lets a
+    /// forbidden-type list see through one.
+    ///
+    /// The generic case is here because the parser scans to the first `=` rather than parsing a
+    /// parameter clause, and a clause is the one thing that could put a `<` between the name and
+    /// the assignment. The prose case is the safe direction this suite asserts everywhere: an
+    /// alias written in a comment or inside a literal is not an alias, because the tripwires'
+    /// own failure messages spell the forbidden declarations out in full.
+    @Test("A typealias is read with the identifiers of the type it names")
+    func typeAliasesAreReadWithTheirIdentifiers() {
+        let found = SeamScanner.typeAliases(
+            inSource: """
+                private typealias Remembered = SystemSnapshot
+                typealias Grant = FanKit.Lease
+                typealias Pair<T> = (T, T)
+                typealias Wrapped =
+                    Task<SystemSnapshot, Error>
+                // typealias Commented = SystemSnapshot
+                let prose = "typealias InALiteral = SystemSnapshot"
+                """,
+            file: "Fixture.swift")
+
+        #expect(found.map(\.name) == ["Remembered", "Grant", "Pair", "Wrapped"])
+        #expect(found.first?.names == ["SystemSnapshot"])
+        #expect(found[1].names == ["FanKit", "Lease"])
+        #expect(found[2].names == ["T", "T"])
+        #expect(found[3].names == ["Task", "SystemSnapshot", "Error"])
     }
 
     // MARK: - Function bodies
