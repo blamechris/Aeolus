@@ -25,13 +25,18 @@ import Testing
 ///
 /// ## Both directions, for the reason `WriteVerbAllowlistTests` gives
 ///
-/// `theSessionStateStaysPrivate` fails when a listed member loses its `private`, **and** when
-/// it is no longer declared as written. A guard naming a member that has been renamed away
-/// asserts nothing while still reading like protection.
+/// `theSessionStateStaysPrivate` fails when a listed member loses its `private`, when it is no
+/// longer declared as written, **and** when a second line of the file matches the same
+/// spelling. A guard naming a member that has been renamed away asserts nothing while still
+/// reading like protection — and one that had two lines to choose from was judging whichever
+/// came first, which #236 turned into a green suite over an internal `hasInvalidated`.
 ///
 /// `onlyTheAcknowledgedPropertiesAreInternal` and `onlyTheAcknowledgedMethodsAreInternal` are
-/// the halves that catch the widening nobody listed. They scan all three files the actor is
-/// written in, so a member cannot be widened simply by being written in one of the new ones.
+/// the halves that catch the widening nobody listed. They scan every file the actor is written
+/// in, so a member cannot be widened simply by being written in one of the new ones — and
+/// `sessionFiles` is checked against the tree by `theScannedFilesAreEveryFileTheActorIsIn`,
+/// because until [#236](https://github.com/blamechris/Aeolus/issues/236) that list was
+/// hand-written and a *fourth* file was scanned by nothing.
 ///
 /// ## What this suite cannot see, stated rather than implied
 ///
@@ -44,12 +49,23 @@ struct HelperConnectionSessionAccessTests {
     /// The file that declares the storage, and so the only one that can write it.
     private static let declaringFile = "HelperConnectionSession.swift"
 
-    /// All three files `HelperConnectionSession`'s members are written in.
+    /// The type whose members these guards are about, and the target it is written in.
+    private static let sessionType = "HelperConnectionSession"
+    private static let helperTarget = "AeolusHelper"
+
+    /// All three files `HelperConnectionSession`'s members are written in, **sorted**, and
+    /// checked against the tree rather than trusted.
     ///
     /// None of them declares a second type — `NegotiatedClient` was moved to
     /// `NegotiatedClient.swift` by #98 for exactly this reason — so everything at member
     /// indent in them is a member of the actor, which is the precondition
     /// `MemberAccessScan.members(in:keyword:)` states.
+    ///
+    /// It stays written out rather than being derived at the point of use, because a list this
+    /// suite compares against the tree is a *decision* a maintainer makes once: adding a
+    /// fourth file to the actor means saying so here, in the file that records what each of
+    /// them is allowed to widen. Deriving it silently would make the scan follow the split
+    /// instead of reporting it.
     private static let sessionFiles = [
         "HelperConnectionSession.swift",
         "HelperConnectionSessionGates.swift",
@@ -104,48 +120,83 @@ struct HelperConnectionSessionAccessTests {
     /// as a widened `var` deliberately: it increments by one and does nothing else, where
     /// `var deliveredMessages` would have handed the same callers an assignment. A **second**
     /// mutating method appearing in this list is the thing to argue about.
+    ///
+    /// **Spelled as signatures, not names**, since #236: `invalidate()` is acknowledged and
+    /// `invalidate(reopening: Bool)` — which sets `hasInvalidated = false` and clears
+    /// `negotiated`, reopening both gates — collapsed onto it under a bare-name key and left
+    /// 38 tests in 4 suites green. A parameter's *type* is in the key for the reason
+    /// `SeamScanner.Function.key` records: labels alone cannot see an overload.
     private static let acknowledgedInternalMethods: Set<String> = [
-        "hello",
-        "invalidate",
-        "countDeliveredMessage",
-        "snapshot",
-        "acquireLease",
-        "renewLease",
-        "releaseLease",
-        "apply",
-        "restoreAllToAutomatic",
-        "handshakeRefusal",
-        "invalidationRefusal",
-        "handshakeAcknowledgementRefusal",
-        "invalidationAcknowledgementRefusal",
-        "refuse",
-        "acknowledgeRefusal",
+        "hello(payload: Data)",
+        "invalidate()",
+        "countDeliveredMessage()",
+        "snapshot()",
+        "acquireLease(payload: Data)",
+        "renewLease(id: String)",
+        "releaseLease(id: String)",
+        "apply(settings: Data, leaseID: String)",
+        "restoreAllToAutomatic()",
+        "handshakeRefusal(message: String)",
+        "invalidationRefusal(message: String)",
+        "handshakeAcknowledgementRefusal(message: String)",
+        "invalidationAcknowledgementRefusal(message: String)",
+        "refuse(_: AeolusXPCFault, message: String)",
+        "acknowledgeRefusal(_: AeolusXPCFault, message: String)",
     ]
+
+    /// The file set is a claim about the tree, so it is read off the tree.
+    ///
+    /// #236's first mutation: `Sources/AeolusHelper/HelperConnectionSessionExtra.swift`
+    /// declaring `extension HelperConnectionSession { func reopenTheGateSideways(…) }` — a
+    /// fourth file, listed nowhere, scanned by nothing, and green across 8 tests in 2 suites.
+    /// `private` keeps the *storage* out of its reach and `WriteVerbAllowlistTests` catches an
+    /// `async` member dispatching onto the authority, so what survived was precisely a
+    /// synchronous internal member; this is what fails when the next one arrives.
+    ///
+    /// The declaring file is checked the same way, because `theSessionStateStaysPrivate` reads
+    /// that one file and nothing else: if the `actor` declaration moved and `declaringFile`
+    /// did not, that test would assert the state of a file the storage had left.
+    @Test("Every file the connection session is written in is one this suite scans")
+    func theScannedFilesAreEveryFileTheActorIsIn() throws {
+        let sites = try MemberAccessScan.filesDeclaring(
+            Self.sessionType, inTarget: Self.helperTarget)
+
+        #expect(
+            sites.members == Self.sessionFiles.sorted(),
+            """
+            the files \(Self.sessionType) is written in changed: the tree declares it in \
+            \(sites.members), this suite scans \(Self.sessionFiles.sorted()). A file this \
+            suite does not scan can widen any member of the actor — including a synchronous \
+            internal method with `negotiated` and `hasInvalidated` in scope — and every \
+            assertion here stays green. Add it to `sessionFiles` and say what it is allowed \
+            to widen.
+            """
+        )
+        #expect(
+            sites.declarations == [Self.declaringFile],
+            """
+            \(Self.sessionType)'s own declaration is in \(sites.declarations), and \
+            `declaringFile` names \(Self.declaringFile). That name is what \
+            `theSessionStateStaysPrivate` opens, so a declaration that has moved leaves it \
+            asserting about a file the stored state no longer lives in.
+            """
+        )
+    }
 
     @Test("Every property a gate reads is private to the file that writes it")
     func theSessionStateStaysPrivate() throws {
         let code = try MemberAccessScan.strippedSource(of: Self.declaringFile)
 
         for member in Self.mustStayPrivate {
-            let line =
-                code
-                .split(separator: "\n", omittingEmptySubsequences: false)
-                .first { $0.contains(member) }
-            let declaration = try #require(
-                line,
-                """
-                \(member) is no longer declared in \(Self.declaringFile). This guard names \
-                the gates' inputs; one that has been renamed, moved to a sibling file or \
-                respelled has to be re-stated here, or the entry is protecting nothing.
-                """
-            )
+            let declaration = try MemberAccessScan.declaration(
+                of: member, in: code, from: Self.declaringFile)
             #expect(
-                declaration.trimmingCharacters(in: .whitespaces).hasPrefix("private "),
+                declaration.hasPrefix("private "),
                 """
-                `\(declaration.trimmingCharacters(in: .whitespaces))` is no longer private. \
-                A gate whose input is writable from every file in AeolusHelper is no longer \
-                a gate — see HelperConnectionSession.swift for the widenings that were \
-                taken on purpose and why this one is not among them.
+                `\(declaration)` is no longer private. A gate whose input is writable from \
+                every file in AeolusHelper is no longer a gate — see \
+                HelperConnectionSession.swift for the widenings that were taken on purpose \
+                and why this one is not among them.
                 """
             )
         }
@@ -156,7 +207,7 @@ struct HelperConnectionSessionAccessTests {
         let internalProperties = Set(
             try MemberAccessScan.members(in: Self.sessionFiles, keyword: .property)
                 .filter { !$0.isPrivate }
-                .map(\.name))
+                .map(\.key))
 
         #expect(
             internalProperties == Self.acknowledgedInternalProperties,
@@ -176,7 +227,7 @@ struct HelperConnectionSessionAccessTests {
         let internalMethods = Set(
             try MemberAccessScan.members(in: Self.sessionFiles, keyword: .method)
                 .filter { !$0.isPrivate }
-                .map(\.name))
+                .map(\.key))
 
         #expect(
             internalMethods == Self.acknowledgedInternalMethods,

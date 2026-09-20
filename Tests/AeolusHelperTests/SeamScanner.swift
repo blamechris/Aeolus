@@ -207,14 +207,14 @@ enum SeamScanner {
             else { continue }
 
             let clause = String(code[code.index(after: open)..<close])
-            let parameters = topLevelComponents(of: clause).map(splitOnFirstColon(_:))
+            let split = parameters(in: clause)
             let effects = effectsClause(of: code, after: close)
             found.append(
                 Function(
                     file: file,
                     name: String(code[nameRange]),
-                    labels: parameters.map(\.label),
-                    parameterTypes: parameters.map(\.type),
+                    labels: split.map(\.label),
+                    parameterTypes: split.map(\.type),
                     effects: effects,
                     text: collapsingWhitespace(
                         String(code[whole.lowerBound...close]) + " " + effects)))
@@ -567,6 +567,16 @@ enum SeamScanner {
         let wrapped = line(from: code.index(after: first.end)).text
         let starters = ["async", "throws", "rethrows", "->"]
         return starters.contains(where: wrapped.hasPrefix) ? wrapped : first.text
+    }
+
+    /// A parameter clause split into each parameter's external label and its type.
+    ///
+    /// `internal` rather than `private` so `MemberAccessScan` can compose a member's signature
+    /// from the same parse `Function.key` is built on. A second depth-aware parameter split,
+    /// agreeing with this one only by inspection, is precisely the arrangement this type's own
+    /// doc comment records replacing.
+    static func parameters(in clause: String) -> [(label: String, type: String)] {
+        topLevelComponents(of: clause).map(splitOnFirstColon(_:))
     }
 
     /// A comma-separated clause split at depth zero, so a `[String: Int]` or a `() -> Void`
