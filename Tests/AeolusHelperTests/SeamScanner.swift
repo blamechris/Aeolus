@@ -120,6 +120,17 @@ enum SeamScanner {
         try swiftFiles(beneath: testsRoot.appendingPathComponent(target))
     }
 
+    /// Every `.swift` file under **every** test target.
+    ///
+    /// The sibling above takes one target because its callers assert about one. A tripwire whose
+    /// subject is "no test anywhere may do this" needs the whole tree instead, and naming today's
+    /// targets in the caller would make it blind to tomorrow's — which is the failure
+    /// `HelperClientDeadlineLiteralTests` exists to prevent, reached by the one route a fixed list
+    /// leaves open.
+    static func swiftFilesUnderTests() throws -> [URL] {
+        try swiftFiles(beneath: testsRoot)
+    }
+
     private static func swiftFiles(beneath root: URL) throws -> [URL] {
         let enumerator = try #require(
             FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
