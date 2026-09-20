@@ -167,9 +167,11 @@ final class ClientListenerHarness {
     /// [#255](https://github.com/blamechris/Aeolus/issues/255) settled it with a source scan:
     /// `HelperClientDeadlineLiteralTests` requires every term of every such construction under
     /// `Tests/` to resolve to a bound no tighter than the product's, or to be licensed by name
-    /// with what asserts it. The five terms that were below the product's bound on a verb their
-    /// test does not assert — the handshake and panic terms in `HelperClientTeardownTests` — are
-    /// gone rather than documented.
+    /// with what asserts it. The **eight** terms that were below the product's bound on a verb
+    /// their test does not assert are gone rather than documented: all six of
+    /// `HelperClientTeardownTests`' handshake and panic terms, plus two panic terms in
+    /// `HelperClientTests`. Not the "five" this paragraph counted before the scan existed, which
+    /// is itself the argument for the scan.
     ///
     /// Because this constant is *defined* as the product's trio, the comparison is a value
     /// against itself: it is a source tripwire that fires when a literal is written back in, not
