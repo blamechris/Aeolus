@@ -125,11 +125,14 @@ import Foundation
 ///   all. Not worth doing for a line count; worth reconsidering on its own merits if the
 ///   signal grows.
 ///
-/// The threshold is not this file's problem in particular either: thirty-four files in the
-/// tree are over it, ten of them under `Sources`, and four of those are longer than this one —
-/// `ReclamationWatchdog` at 980, `LeaseAuthority` at 884, `SMCConnection` at 813 and
-/// `SMCReadScheduler` at 679. Splitting whichever one a review round happened to open, at the
-/// cost of the access rule, buys a tidier number and a wider gate.
+/// The threshold is not this file's problem in particular either. Over thirty files in the tree
+/// are past it, ten-odd of them under `Sources`, and **four of those are longer than this
+/// one** — `ReclamationWatchdog` at 980, `LeaseAuthority` at 884, `SMCConnection` at 813 and
+/// `SMCReadScheduler` at 679. Those four are the argument; the tally is left approximate on
+/// purpose, because it moves on merges that have nothing to do with this file — it went up by
+/// one, in `AeolusXPC`, between this section being written and the branch being brought up to
+/// date. Splitting whichever file a review round happened to open, at the cost of the access
+/// rule, buys a tidier number and a wider gate.
 ///
 /// **`HelperClientAccessTests` is what makes the decision keepable.** The lesson D36 exists
 /// because of is #128's — a paragraph is not enforcement — and until #242 nothing asserted
