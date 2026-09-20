@@ -198,6 +198,16 @@ struct SupervisedFanAuthority: FanAuthority {
     /// ([#164](https://github.com/blamechris/Aeolus/issues/164)), and E5.4d wires the machine-wide
     /// restore to the signal handlers ([#166](https://github.com/blamechris/Aeolus/issues/166))
     /// once there is a write path for it to use.
+    ///
+    /// **This paragraph is the one place that decision lives, and `PanicPathScopeTripwireTests`
+    /// is what makes that structural.** Three other sites described this verb as issuing the
+    /// machine-wide restore — `LeaseAuthority.releaseEveryLease`, `LeaseTeardownTests`, and
+    /// `AeolusXPCProtocol.restoreAllToAutomatic`'s own declaration, which named `Ftst` outright —
+    /// and `docs/SAFETY.md` § 7 inherited the claim from them
+    /// ([#228](https://github.com/blamechris/Aeolus/issues/228),
+    /// [#222](https://github.com/blamechris/Aeolus/issues/222)). The tripwire fails the moment a
+    /// plane verb appears in the body below, and its message is the list of documentation that
+    /// has to move in the same commit.
     func restoreAllToAutomatic(from connection: ConnectionID) async throws {
         await leases.releaseEveryLease()
         log.restoredAllToAutomatic(connection: connection)
