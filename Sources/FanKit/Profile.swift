@@ -132,9 +132,7 @@ extension FanSetting {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let control = try container.decode(Control.self, forKey: .control)
         guard control.isHonourable else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .control, in: container,
-                debugDescription: "the control names nothing this helper can carry out")
+            throw DecodingError.refusing(.controlNotHonourable, forKey: .control, in: container)
         }
         self.init(
             fanIndex: try container.decode(Int.self, forKey: .fanIndex),

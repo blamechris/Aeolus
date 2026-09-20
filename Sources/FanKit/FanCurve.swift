@@ -188,22 +188,22 @@ extension FanCurve {
     /// with no protocol bump and no change to `AeolusXPC` — the throw here is enough; do
     /// not add a parallel finiteness check there.
     ///
-    /// **What the client is told is "is not well-formed JSON", which is wrong, and this
-    /// paragraph used to claim the opposite.** `AeolusXPCValidation.malformedDetail(for:)`
-    /// maps every `DecodingError.dataCorrupted` to that one fixed string and discards
-    /// `debugDescription`, so the message below reaches nobody and the payload a client is
-    /// sent looking for a syntax error in had no syntax error in it. The refusal is still
-    /// the right answer — a client that gets an error rather than a silently different
-    /// setting has been told the important half — but "it throws *so the client hears what
-    /// was wrong*" was a claim about a mechanism that does not exist. Corrected in place
-    /// rather than deleted, because the argument for refusing over repairing does not rest
-    /// on it. Plumbing a real detail through is
-    /// [#276](https://github.com/blamechris/Aeolus/issues/276).
+    /// **The client now hears what was wrong, and until #276 it did not.** This
+    /// paragraph first claimed the throw was chosen *"so the client hears what was wrong
+    /// with its payload"*; `AeolusXPCValidation.malformedDetail(for:)` mapped every
+    /// `DecodingError.dataCorrupted` to one fixed string and discarded `debugDescription`,
+    /// so a client that sent syntactically perfect JSON was told its JSON was malformed and
+    /// went looking for a syntax error that did not exist. The claim was corrected in place
+    /// rather than deleted — the argument for refusing over repairing never rested on it —
+    /// and [#276](https://github.com/blamechris/Aeolus/issues/276) then built the mechanism
+    /// it had assumed. The refusal below travels as `PayloadRefusal.curvePointNotFinite`,
+    /// which `malformedDetail` recognises and renders, and
+    /// `PayloadRefusalTests` asserts the sentence a client actually receives.
     ///
-    /// The debug description is kept value-free anyway, the same discipline
-    /// `FanBoundsImplausibility.description` documents for itself: a root daemon must not
-    /// echo a client's bytes into its own log, and whatever surfaces it later will want a
-    /// message that was already safe to surface.
+    /// The description is value-free, the same discipline `FanBoundsImplausibility`
+    /// documents for itself, and since #276 that is load bearing rather than prudent: the
+    /// case's own text *is* what crosses the boundary. A root daemon must not echo a
+    /// client's bytes into its own log, and it now must not echo them to the client either.
     ///
     /// Every field stays required. `FanCurve`'s Swift-side defaults are a convenience for
     /// constructing one in code; a payload that omits a field is a client that did not say
@@ -213,9 +213,7 @@ extension FanCurve {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let points = try container.decode([Point].self, forKey: .points)
         guard points.allSatisfy(\.isFinite) else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .points, in: container,
-                debugDescription: "a curve point is not finite")
+            throw DecodingError.refusing(.curvePointNotFinite, forKey: .points, in: container)
         }
         self.init(
             points: points,

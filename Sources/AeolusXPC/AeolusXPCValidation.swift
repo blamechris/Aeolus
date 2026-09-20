@@ -350,8 +350,27 @@ public enum AeolusXPCValidation {
             let path = context.codingPath.map(\.stringValue).joined(separator: ".")
             return path.isEmpty
                 ? "a field has the wrong type" : "field '\(path)' has the wrong type"
-        case .dataCorrupted:
-            return "is not well-formed JSON"
+        case .dataCorrupted(let context):
+            // Foundation authors `debugDescription` for a genuine syntax error and it can
+            // carry fragments of the client's own bytes, so it is never surfaced. This
+            // project's own refusals arrive as a `PayloadRefusal` in `underlyingError`.
+            //
+            // **The cast is what makes that sound, not the absence of an underlying error.**
+            // Foundation does put one there — a `JSONSerialization` failure arrives as a
+            // `.dataCorrupted` whose `underlyingError` is an `NSCocoaError` reading, for
+            // example, "Number 1e400 is not representable in Swift". So this must stay a
+            // conditional cast to our own type and must never be relaxed to a presence
+            // check: `if let u = context.underlyingError { return "\(u)" }` compiles, looks
+            // equivalent, and puts the client's bytes in a root daemon's log line. A
+            // fabricated `NSError` cannot satisfy the cast — Swift carries an `Error` enum's
+            // payload in `userInfo`, so domain and code alone do not bridge back.
+            //
+            // See `PayloadRefusal`, and #276 for the period in which every refusal here read
+            // as a syntax error that did not exist.
+            guard let refusal = context.underlyingError as? PayloadRefusal else {
+                return "is not well-formed JSON"
+            }
+            return refusal.description
         @unknown default:
             return "could not be decoded"
         }
