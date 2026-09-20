@@ -842,13 +842,6 @@ actor LeaseAuthority {
     /// so two overlapping restores of the same fan — a teardown and the panic path — cannot
     /// have the first to finish clear a flag the second still needs.
     ///
-    /// - Note: **That overlap is unreachable in this build, and the count is therefore not
-    ///   load-bearing today.** Replacing the count with set membership passes the whole suite;
-    ///   it is written this way because the overlap becomes reachable the moment either of the
-    ///   two facts that make it unreachable changes. Recorded rather than implied, so nobody
-    ///   simplifies it believing a test is watching — handback-ledger.md
-    ///   § *"`releasing` — the transient half"* names both facts.
-    ///
     /// It is also the one place the other two registers are cleared, and where each clear sits
     /// is load-bearing in both cases. The `defer` is **inside the same loop as the decrement**,
     /// after it, so `handbackUnconfirmed` loses a fan exactly when its last outstanding restore
@@ -863,6 +856,13 @@ actor LeaseAuthority {
     /// restore that never returns leaves a fan unconfirmed for the life of the process, and why
     /// the intersection below is not a blanket subtraction: handback-ledger.md § *"Where each
     /// register ends"*.
+    ///
+    /// - Note: **The overlap the count exists for is unreachable in this build, and the count
+    ///   is therefore not load-bearing today.** Replacing it with set membership passes the
+    ///   whole suite; it is written this way because the overlap becomes reachable the moment
+    ///   either of the two facts that make it unreachable changes. Recorded rather than
+    ///   implied, so nobody simplifies it believing a test is watching — handback-ledger.md
+    ///   § *"`releasing` — the transient half"* names both facts.
     private func restore(_ fans: Set<Int>, because cause: FanRestoreCause) async {
         log.restored(fans: fans, because: cause)
         for fan in fans { releasing[fan, default: 0] += 1 }
