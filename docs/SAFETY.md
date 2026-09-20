@@ -637,11 +637,36 @@ the fan, in the order it can act:
 
 - **The parked restore may still land.** Nothing cancels it; § 4 stops waiting, and
   `BoundedFanRestorer` keeps attempting inside a task that does not inherit cancellation.
-- **Every fan still outstanding is recorded as an *unconfirmed* handback before the sleep is
-  acknowledged** (`LeaseAuthority.recordUnconfirmedHandbacks()`, decision D33 — ADR 0007,
-  amendment 2026-09-06, #209). No client can take a lease over a fan the helper never saw
-  return to automatic control: it is refused `.handbackUnconfirmed`, exactly as hard as the
-  durable refusal, for as long as it stands. **This bullet said "an abandoned handback" and
+- **Every fan a dropped lease covered is recorded as an *unconfirmed* handback before the
+  sleep is acknowledged** (`LeaseAuthority.recordUnconfirmedHandbacks()`, decision D33 —
+  ADR 0007, amendment 2026-09-06, #209). No client can take a lease over a fan the helper
+  never saw return to automatic control: it is refused `.handbackUnconfirmed`, exactly as
+  hard as the durable refusal, for as long as it stands.
+
+  **This bullet said "every fan still outstanding", and that over-claimed** (#202 item 2,
+  corrected in place). `recordUnconfirmedHandbacks()` reads `releasing`, which only
+  `releaseEveryLease()`'s sweep populates — so what it records is *what the sweep covered*,
+  not every fan on the machine.
+
+  The sweep is **not** lease-scoped, and calling it that is the other way to be wrong here:
+  its union is seeded from `restoreAbandoned` (#189's second source), so a sleep with no lease
+  held still restores, and still records, any fan whose handback the firmware refused earlier.
+  What it does not cover is a fan no sweep ever touched.
+
+  What that leaves is the **keystone**, which is machine-wide, consumes no lease, and is the
+  call that clears the Apple Silicon force key. A wedge in it is invisible to every register
+  the lease core keeps, so it is **observed and reported rather than inferred**: the
+  acknowledgement carries whether `restoreToAutomatic(.everyFan)` had returned, and the
+  fault line says so either way. Before #202 that line described an empty set as *"the
+  keystone restore is what is outstanding"* — true on a keystone-only wedge and false when
+  every restore had simply come back, which are opposite facts about whether the force key
+  was cleared.
+
+  The completeness of the recorded set rests on one property, stated here because it is a
+  property of a *call site* rather than of the register: `releaseEveryLease()` issues **one**
+  `restore` over the whole union — every dropped lease's fans, plus `restoreAbandoned` — and
+  `restore` marks that set before it suspends. Restoring per fan in a loop would leave every
+  fan after the first wedged write neither restored nor recorded (#202 item 4). **This bullet said "an abandoned handback" and
   named decision D17, and the ordering claim it makes is unchanged — only the state recorded
   is** (corrected in place, for the reason the bullet below this one gives about its own
   staleness). How it ends, and the three endings are the whole of D33:
@@ -654,8 +679,20 @@ the fan, in the order it can act:
     still the one thing that produces the terminal state.
   - **The restore never returns**, and the refusal stands for the life of the process. That is
     the fail-safe direction, and it is the honest report of a fan nothing can answer for.
-- **The restore is issued unconditionally, after and regardless of the lease teardown**,
-  because the keystone verb needs no data at all — see [Precedence](#precedence).
+- **The keystone restore is issued after the lease teardown, and needs no data from it** —
+  see [Precedence](#precedence).
+
+  **This bullet said "unconditionally", and in the one case this list exists for it is not**
+  (#202, corrected in place — the same failure this section already records against the TTL
+  bullet above, one bullet down). `handBackEveryFan(reportingTo:)` *awaits*
+  `releaseEveryLease()` first, and on a wedged `io_connect_t` that never returns, so the
+  keystone is never reached. `SleepCycleSurvivalTests` measured exactly this: on cycle 1 the
+  teardown's per-fan restore parks and the machine-wide keystone is never issued.
+
+  That is why the budget's fault line distinguishes **never issued** from **issued and still
+  outstanding**. They are not shades of the same thing: an outstanding keystone leaves a
+  parked call that may yet land and clear the Apple Silicon force key, while one that was
+  never issued means nothing in that sleep episode ever will.
 - **§ 3 still acts on it above the ceiling.** The thermal override's registry entry is
   deliberately retained across the handback, so such a fan coming back hot is taken to full
   scale. Above the ceiling only — that is an override, not a restore.
@@ -718,6 +755,16 @@ lets the machine sleep and says at `.fault` that it did not land; a lease reques
 inside the sleep window is refused `systemSleeping` until the wake clears it; and **three
 `.willSleep`/`.didWake` cycles through one helper** each seal, reopen and acknowledge exactly
 once — the cycle count is asserted outside the loop, so a loop that runs once is red.
+
+**`SleepOrderingTests`** (#202) covers the three edges this section's own claims rested on and
+nothing pinned. That the seal is paired with *its own* episode: a `.willSleep` whose body is
+starved until after its wake does not close the table, a wake older than the seal standing
+does not reopen it, and — the sequence that matters most — `.didWake`, `.willSleep`,
+`.didWake`, `.willSleep` still seals on the second ordinary sleep, so one unpaired wake cannot
+disable the seal for the life of the process. That the keystone is **observed** in each of its
+four states rather than inferred from an empty register: never issued, issued and outstanding,
+landed, refused. And that a wedge on the first fan still records every fan the sweep covered,
+on a two-fan machine, which is the smallest that can tell "every fan" from "the first fan".
 
 That last line also claimed those three cycles left "nothing accumulated in either register",
 and **the claim was vacuous**: on a healthy sleep the budget never expires, so

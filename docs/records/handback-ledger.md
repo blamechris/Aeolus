@@ -418,3 +418,56 @@ in order to cool the machine, not a recovery verb: a fan whose handback was aban
 took — so the emergency can bridge it to maximum RPM. Sweeping it there would have § 3 hand
 back, on the way into an emergency, the one fan it may need to command hardest.
 `PanicPathScopeTripwireTests` holds the two verbs apart.
+
+## Pairing a sleep with its own wake
+
+`docs/SAFETY.md` § 4's seal is set on `.willSleep` and cleared on `.didWake`, and until #202
+those two calls were assumed to arrive in that order. They need not.
+`SystemPowerObserver.deliver(_:acknowledging:)` hands each event to an unstructured `Task`, so
+IOKit's serial queue orders the **spawns** and nothing orders the bodies. A `.willSleep` body
+starved past the kernel's ~30 s acknowledgement window means the machine sleeps and wakes
+regardless, and on wake the `.didWake` body can reach the lease core first. The seal then
+arrives after its own wake and, if set, refuses every lease on a machine that is awake in
+front of its user until the next sleep and wake.
+
+**The first fix counted, and it latched.** It banked a credit per early wake and spent one per
+seal. Two things were wrong with it, and the second is the one that mattered:
+
+1. Credits are **fungible**. They carry no episode, so counting bounds *how many* seals are
+   declined without determining *which*. With two episodes in flight, episode 2's timely seal
+   is as likely to be the declined one as episode 1's late seal — the exact failure the design
+   was justified by rejecting ("a flag would let the first wake's credit cancel the second
+   episode's seal").
+2. A *declined* seal leaves `sleepSeal` false. So the next ordinary `.didWake` took the
+   no-seal branch and banked a **fresh** credit: the count never returned to zero, and the
+   table was never sealed again for the life of the process. One unpaired wake — a helper that
+   restarted inside a sleep window hears exactly one — disabled § 4's seal permanently.
+
+That is a fail-safe defect (over-refusal, self-clearing at the next sleep) replaced by a
+fail-dangerous one (a lease granted, and its fan pinned, across every subsequent sleep, until
+the process restarts). Recorded here rather than deleted, because "count the anomalies" is the
+obvious fix and this is the evidence that it is not the right one.
+
+**What replaced it stamps rather than counts.** The order is not missing — it is discarded.
+`IOKitSystemPowerObserver` delivers on a serial queue by construction, so
+`SystemPowerRegistration.received(messageType:)` knows the sequence at the moment it runs, and
+a monotonic number minted there survives into the `Task` body. `sealForSleep(generation:)`
+declines only when a **strictly later** wake has been seen; `unsealAfterWake(generation:)`
+clears only a seal **older** than itself, so a stale wake cannot reopen a table a newer sleep
+has closed. Nothing accumulates and nothing is spent, so there is no reachable state in which
+the seal stops being set and stays that way.
+
+Stamping is deliberately much weaker than making the bodies run in order, which would reshape
+the seam. It lets a *reader* of two events tell which came first, whatever order their bodies
+ran in, which is all the seal needs.
+
+**What it does not fix**, stated because the fix is easy to over-read: the starved `.willSleep`
+body still runs `releaseEveryLease()` and the keystone after the wake, so a lease taken in
+between is dropped and its fan handed back at a moment nothing asked for. The fan goes back to
+**automatic** — the safe direction — and what the client is never told is that it lost the
+lease, since there is no revocation callback. That is `CLAUDE.md` rule 6, bounded and honest
+rather than thermal.
+
+`SleepOrderingTests` pins all of it, including the sequence the counting version could not
+survive: `.didWake`, `.willSleep`, `.didWake`, `.willSleep`, with the second ordinary sleep
+required to seal.

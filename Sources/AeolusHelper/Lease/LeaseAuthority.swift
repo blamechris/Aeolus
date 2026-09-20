@@ -224,7 +224,45 @@ actor LeaseAuthority {
     /// life of the process. That is the fail-safe direction and is deliberately not guarded
     /// against: refusing manual control is safe, and a lease taken on a machine this process
     /// believes is asleep is not.
+    ///
+    /// **Hearing them out of order is a different case, and it is guarded** — see
+    /// `wakesAheadOfTheirSeal`. The fail-safe argument above covers a wake that never comes;
+    /// it does not cover one that came and was answered before the seal it belonged to was
+    /// ever set, which leaves the seal standing over a machine that is demonstrably awake.
     private var sleepSeal = false
+
+    /// The generation of the latest `.didWake` this actor has been told about.
+    ///
+    /// `SystemPowerObserver.deliver(_:acknowledging:)` spawns an unstructured `Task` per
+    /// event, so IOKit's serial queue orders the **spawns** and nothing orders the bodies. If
+    /// the `.willSleep` body is starved past the kernel's ~30 s acknowledgement window the
+    /// machine sleeps regardless, and on wake the `.didWake` body can reach
+    /// `unsealAfterWake(generation:)` first. The seal for that episode then arrives *after*
+    /// its own wake, and setting it would refuse every lease on a machine that is awake in
+    /// front of its user until the next sleep and wake.
+    ///
+    /// Comparing generations answers that exactly: a seal is declined when a **strictly
+    /// later** wake has already been seen, because that wake proves the episode is over. No
+    /// state accumulates and nothing is spent, so there is no reachable state in which the
+    /// seal stops being set and stays that way.
+    ///
+    /// **The first attempt counted instead, and it latched** — one unpaired wake disabled the
+    /// seal for the life of the process, turning a fail-safe defect into a fail-dangerous one.
+    /// Why counting cannot work here, and what a declined seal did to the count:
+    /// handback-ledger.md § *"Pairing a sleep with its own wake"*.
+    private var latestWakeGeneration: UInt64 = 0
+
+    /// **What this does not claim**: the starved body still drops every lease and restores
+    /// after the wake, and the client is never told it lost the lease. Bounded and honest
+    /// rather than thermal — handback-ledger.md § *"Pairing a sleep with its own wake"*.
+
+    /// The generation of the `.willSleep` whose seal is currently standing.
+    ///
+    /// Without it a *stale* wake would clear a live seal: if episode 2's `.willSleep` body
+    /// runs before episode 1's starved `.didWake` body, that late wake is older than the seal
+    /// it would otherwise open, and the machine is at that moment going to sleep. A wake
+    /// clears the seal only when it is newer than the seal standing.
+    private var sealGeneration: UInt64 = 0
 
     init(
         enumeration: some FanEnumerating,
@@ -645,6 +683,27 @@ actor LeaseAuthority {
     /// on the same safe state. Making this consult per-connection state would invalidate the
     /// exemption and needs revisiting alongside it —
     /// [#95](https://github.com/blamechris/Aeolus/issues/95).
+    /// **One `restore` call over the union, and that is what makes § 4's record complete
+    /// rather than partial** ([#202](https://github.com/blamechris/Aeolus/issues/202) item 4).
+    /// `restore(_:because:)` increments `releasing` for every fan in the set *before* its
+    /// suspension point, so the whole union is mid-handback the instant this awaits — and
+    /// `recordUnconfirmedHandbacks()`, which reads `releasing.keys`, therefore sees all of it
+    /// even if the first fan's write wedges and nothing after it ever lands. Restoring
+    /// per-lease or per-fan in a loop would put each subsequent fan's increment *after* the
+    /// previous one's suspension, so a wedge on the first would leave the rest neither
+    /// restored nor recorded: § 4 would acknowledge the sleep having registered one fan out of
+    /// however many crossed it under manual control.
+    ///
+    /// **The set is the sweep's, not the lease table's**, and the difference is #189's second
+    /// source: the union is seeded from `restoreAbandoned`, so a sleep with *no lease held*
+    /// still restores — and still records — any fan the firmware refused earlier. A review
+    /// caught this file about to claim the set was lease-scoped, which is wrong in both
+    /// directions.
+    ///
+    /// `SleepOrderingTests.aWedgeOnOneFanStillRecordsTheWholeLease` is what pins it, on a
+    /// two-fan machine — the smallest that can tell "every fan" from "the first fan".
+    /// `SleepCycleSurvivalTests` was cited here and cannot: its lease covers one fan, so a
+    /// per-fan loop over a one-element set is behaviourally identical and stays green.
     func releaseEveryLease() async {
         let dropped = table.removeAll()
         let fans = dropped.reduce(into: restoreAbandoned) { $0.formUnion($1.fanIndices) }
@@ -659,15 +718,37 @@ actor LeaseAuthority {
     /// Synchronous, and called *before* the teardown rather than after it, so there is no
     /// instant at which the table is empty and unsealed — which is the whole window. See
     /// `sleepSeal`.
-    func sealForSleep() {
+    /// A seal whose own wake has already been answered is **not** set: see
+    /// `latestWakeGeneration` for the ordering that produces one, and for why declining is
+    /// the safe direction here even though sealing is the safe direction everywhere else.
+    ///
+    /// Declining leaves any *newer* seal standing untouched, which is what makes overlapping
+    /// episodes safe: a late `.willSleep` from episode 1 cannot reopen the table that episode
+    /// 2 has already closed.
+    ///
+    /// - Parameter generation: the notification's place in the delivery order, stamped on
+    ///   IOKit's serial queue — see `SystemPowerNotification.generation`.
+    func sealForSleep(generation: UInt64) {
+        guard generation > latestWakeGeneration else {
+            log.declinedASealItsWakeAlreadyAnswered()
+            return
+        }
         guard !sleepSeal else { return }
         sleepSeal = true
+        sealGeneration = generation
         log.sealedForSleep()
     }
 
     /// Reopens acquisition after a wake. Touches no fan and issues no write.
-    func unsealAfterWake() {
-        guard sleepSeal else { return }
+    ///
+    /// The generation is recorded **whether or not there was a seal to clear**, because that
+    /// is the record a later-arriving seal is compared against. A wake that is older than the
+    /// seal standing is ignored for the clearing, and still counted for the ordering.
+    ///
+    /// - Parameter generation: as `sealForSleep(generation:)`.
+    func unsealAfterWake(generation: UInt64) {
+        latestWakeGeneration = max(latestWakeGeneration, generation)
+        guard sleepSeal, generation > sealGeneration else { return }
         sleepSeal = false
         log.unsealedAfterWake()
     }

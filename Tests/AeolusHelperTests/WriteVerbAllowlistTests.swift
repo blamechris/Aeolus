@@ -279,10 +279,10 @@ struct WriteVerbAllowlistTests {
     ///
     /// [#167](https://github.com/blamechris/Aeolus/issues/167)'s five entries are filed here
     /// on the same rule, and the one worth defending is
-    /// `SystemPowerResponder.handBackEveryFan()`. It drops every lease and then issues the
-    /// machine-wide keystone, so it *causes* two writes — and causing a write is not what the
-    /// restore list is for. Its entries are the verbs ADR 0007 names, spelled as ADR 0007
-    /// spells them; this one reaches the firmware only through
+    /// `SystemPowerResponder.handBackEveryFan(reportingTo:)`. It drops every lease and then
+    /// issues the machine-wide keystone, so it *causes* two writes — and causing a write is
+    /// not what the restore list is for. Its entries are the verbs ADR 0007 names, spelled
+    /// as ADR 0007 spells them; this one reaches the firmware only through
     /// `SafetyActorWriter.restoreToAutomatic(_:)` and `LeaseAuthority.releaseEveryLease()`,
     /// both already acknowledged, which is exactly the shape of `revokeEveryLease(because:)`
     /// and `ReclamationWatchdog.finaliseRelease(fanAt:because:)` here. `allowSleepAfterHandback`
@@ -432,7 +432,7 @@ struct WriteVerbAllowlistTests {
         "SystemPowerObserver.swift: acknowledge()",
         "SystemPowerResponder.swift: acknowledge(_: Outcome)",
         "SystemPowerResponder.swift: allowSleepAfterHandback(_: SystemPowerNotification)",
-        "SystemPowerResponder.swift: handBackEveryFan()",
+        "SystemPowerResponder.swift: handBackEveryFan(reportingTo: SleepAcknowledgement)",
         "SystemPowerResponder.swift: respond(to: SystemPowerNotification)",
         "ThermalEmergency.swift: cycle()",
         "ThermalEmergency.swift: cycleSawNothing(_: String)",

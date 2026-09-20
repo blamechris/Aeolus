@@ -95,6 +95,12 @@ struct LeaseAuthorityAccessTests {
         "var restoreAbandoned: Set<Int> = []",
         "var handbackUnconfirmed: Set<Int> = []",
         "var sleepSeal = false",
+        // The two halves of § 4's episode pairing. Listed beside `sleepSeal` because they can
+        // *cancel* it: a `sealForSleep(generation:)` whose generation is not newer than
+        // `latestWakeGeneration` declines, so anything able to write these could hold the
+        // table open across a sleep without ever touching `sleepSeal` itself (#202 item 1).
+        "var latestWakeGeneration: UInt64 = 0",
+        "var sealGeneration: UInt64 = 0",
         "static let invalidatedInFlight",
         "func restore(_ fans: Set<Int>, because cause: FanRestoreCause) async {",
         "func refuseIfInvalidated(_ connection: ConnectionID) throws {",
@@ -171,8 +177,8 @@ struct LeaseAuthorityAccessTests {
         "revokeLeases(coveringFan: Int, because: FanRestoreCause)",
         "revokeEveryLease(because: FanRestoreCause)",
         "releaseEveryLease()",
-        "sealForSleep()",
-        "unsealAfterWake()",
+        "sealForSleep(generation: UInt64)",
+        "unsealAfterWake(generation: UInt64)",
         "recordUnconfirmedHandbacks()",
         "activeLease()",
         "activeLeaseView()",

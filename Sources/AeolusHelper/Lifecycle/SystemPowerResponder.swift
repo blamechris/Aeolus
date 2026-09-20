@@ -39,11 +39,21 @@ enum SystemPowerLimits {
     /// - **The parked restore may still land.** Nothing cancels it; § 4 stops *waiting*, and
     ///   `BoundedFanRestorer` keeps attempting inside a task that does not inherit
     ///   cancellation. On a machine that only sleeps slowly, the write arrives.
-    /// - **Every fan still outstanding is recorded as an unconfirmed handback before the
-    ///   acknowledgement** — `LeaseAuthority.recordUnconfirmedHandbacks()`, decision D33
+    /// - **Every fan a dropped lease covered is recorded as an unconfirmed handback before
+    ///   the acknowledgement** — `LeaseAuthority.recordUnconfirmedHandbacks()`, decision D33
     ///   (ADR 0007, amendment 2026-09-06, #209). A lease over such a fan is refused exactly
     ///   as hard as one over an abandoned handback while it stands, so nothing can be leased
     ///   on a machine that never confirmed the fan went back to automatic.
+    ///
+    ///   **This said "every fan still outstanding" until #202 item 2, and that over-claimed.**
+    ///   `recordUnconfirmedHandbacks()` reads `releasing`, which only `releaseEveryLease()`'s
+    ///   sweep populates, so what it records is what the *sweep* covered. Not "lease-scoped",
+    ///   which is the other way to be wrong: the union is seeded from `restoreAbandoned`, so a
+    ///   sleep with no lease held still records any fan the firmware refused earlier. The
+    ///   machine-wide
+    ///   keystone is the part no register covers — it consumes no lease and is what clears the
+    ///   Apple Silicon force key — so whether *it* returned is carried on the acknowledgement
+    ///   and reported in the fault line, observed rather than inferred from an empty set.
     ///
     ///   **It records that, and not the durable `.restoreToAutomaticFailed`, and the bullet
     ///   said the opposite until D33 — decision D17, corrected here rather than deleted.**
@@ -72,6 +82,28 @@ enum SystemPowerLimits {
     /// on its own timeout and this process learns less by being cut off than by giving up
     /// deliberately and writing the fault line.
     static let acknowledgementBudget: Duration = .seconds(5)
+}
+
+/// What the machine-wide keystone restore did in one sleep episode, as observed.
+///
+/// The keystone is `restoreToAutomatic(.everyFan)` — machine-wide, consuming no lease, and
+/// the call that clears the Apple Silicon force key. Because it consumes no lease, a wedge in
+/// it is invisible to every register the lease core keeps, so § 4's fault line is the only
+/// record of it and the line can only be as honest as this type.
+enum KeystoneOutcome: Sendable, Hashable {
+
+    /// Never reached. The lease teardown ahead of it did not return.
+    case notIssued
+
+    /// Issued, and has not come back. Something is parked that may still land.
+    case outstanding
+
+    /// Returned without throwing: the force key was cleared.
+    case landed
+
+    /// Returned by throwing: the firmware refused, so the force key was **not** cleared.
+    /// Distinct from `.outstanding` because it is an answer rather than the absence of one.
+    case refused
 }
 
 /// The one acknowledgement of one `.willSleep`, whoever gets there first.
@@ -104,6 +136,21 @@ actor SleepAcknowledgement {
 
     private var settledOutcome: Outcome?
 
+    /// What the machine-wide keystone restore was doing, as observed.
+    ///
+    /// Starts `.notIssued` because `allowSleepAfterHandback(_:)` constructs this object
+    /// *before* `handBackEveryFan(reportingTo:)` gets anywhere near the keystone.
+    ///
+    /// **Four states rather than a flag, and each pair of them is a different fact about
+    /// whether the Apple Silicon force key was cleared.** A two-state version of this field
+    /// shipped in review and was wrong twice over: it called a throw a "return" and let the
+    /// log claim the key was cleared when the firmware had refused, and it reported the #68
+    /// wedge — where `releaseEveryLease()` never comes back and the keystone is therefore
+    /// never reached — as "did not return", beside a sentence promising that the parked
+    /// restore might still land. Nothing was parked. Telling an operator that a recovery is
+    /// pending when none was started is `CLAUDE.md` rule 6 in the one line § 4 has for it.
+    private var keystone: KeystoneOutcome = .notIssued
+
     init(
         _ notification: SystemPowerNotification,
         leases: LeaseAuthority,
@@ -118,6 +165,14 @@ actor SleepAcknowledgement {
 
     /// The outcome that answered the system, or `nil` while nobody has.
     var outcome: Outcome? { settledOutcome }
+
+    /// Records what the keystone did. Called at each of the three points that learn something.
+    func keystoneReached(_ outcome: KeystoneOutcome) {
+        keystone = outcome
+    }
+
+    /// What the keystone did, for a test to assert on without reading a log line.
+    var keystoneOutcome: KeystoneOutcome { keystone }
 
     /// Allows the power change, once.
     ///
@@ -150,10 +205,11 @@ actor SleepAcknowledgement {
 
         switch outcome {
         case .handedBack:
-            log.allowingSleepAfterHandback()
+            log.allowingSleepAfterHandback(keystone: keystone)
         case .budgetExpired:
             let unconfirmed = await leases.recordUnconfirmedHandbacks()
-            log.allowingSleepWithHandbackUnconfirmed(after: budget, leaving: unconfirmed)
+            log.allowingSleepWithHandbackUnconfirmed(
+                after: budget, leaving: unconfirmed, keystone: keystone)
         }
 
         await notification.acknowledge()
@@ -178,10 +234,16 @@ actor SleepAcknowledgement {
 ///   lease's fans through `HelperFanRestorer`, so both safety registries are told and § 5's
 ///   next cycle does not read the handback as a system reclamation.
 /// - **`restoreToAutomatic(.everyFan)`** through the keystone is machine-wide and additionally
-///   clears the Apple Silicon force key. It is issued unconditionally, after and regardless
-///   of the first: the keystone "consumes no bounds, no clamp, no sensor reading, no lease and
-///   no prior call of any kind", so a fan left in manual by something this process no longer
-///   has a lease for is still covered.
+///   clears the Apple Silicon force key. It needs nothing from the teardown — the keystone
+///   "consumes no bounds, no clamp, no sensor reading, no lease and no prior call of any
+///   kind" — so a fan left in manual by something this process no longer has a lease for is
+///   still covered.
+///
+///   **It is not, however, issued *unconditionally*, and this said it was until #202.** The
+///   teardown is `await`ed first, so on a wedged `io_connect_t` — the case § 4's budget exists
+///   for — the keystone is never reached at all. That is why `KeystoneOutcome` separates
+///   `.notIssued` from `.outstanding`: one leaves a parked call that may yet clear the force
+///   key, the other means nothing in this episode ever will.
 ///
 /// **The lease teardown is first, and that ordering is the one a test pins.** On a wedged
 /// connection the keystone never returns, so a version that issued it first would sleep the
@@ -292,7 +354,7 @@ struct SystemPowerResponder<Plane: FanControlPlane>: Sendable {
             // Clearing the seal is not a write and does not make this branch one. It touches
             // no fan, issues no read, and reaches no plane — it reopens acquisition, which is
             // the only thing about a wake this helper acts on. See `LeaseAuthority.sleepSeal`.
-            await leases.unsealAfterWake()
+            await leases.unsealAfterWake(generation: notification.generation)
             log.wokeWithoutWriting()
         }
     }
@@ -321,7 +383,7 @@ struct SystemPowerResponder<Plane: FanControlPlane>: Sendable {
         // and still open. A request parked on `refuseIfBlind`'s 34-key read that resumes into
         // the window would otherwise find an empty table, take a lease, and engage manual
         // control on a machine that is about to stop running this process.
-        await leases.sealForSleep()
+        await leases.sealForSleep(generation: notification.generation)
 
         let acknowledgement = SleepAcknowledgement(
             notification, leases: leases, budget: acknowledgementBudget, log: log)
@@ -331,7 +393,7 @@ struct SystemPowerResponder<Plane: FanControlPlane>: Sendable {
             await acknowledgement.acknowledge(.budgetExpired)
         }
 
-        await handBackEveryFan()
+        await handBackEveryFan(reportingTo: acknowledgement)
 
         // Cancelled before the acknowledgement rather than after it, so the two paths cannot
         // both be live across this actor hop. The guard inside `SleepAcknowledgement` is what
@@ -348,13 +410,31 @@ struct SystemPowerResponder<Plane: FanControlPlane>: Sendable {
     /// firmware said. `.fault` is the level `SafetyLog` reserves for exactly this — *"a write
     /// on its path did not land"* — and on a build with no write path at all it is what a
     /// reader will see, truthfully, on every sleep.
-    private func handBackEveryFan() async {
+    /// - Parameter acknowledgement: told when the keystone returns, so that the budget path —
+    ///   which runs concurrently with this one and may answer the system before it finishes —
+    ///   can report whether the force key was cleared instead of guessing. See
+    ///   `SleepAcknowledgement.keystoneOutstanding` and issue #202 item 2.
+    private func handBackEveryFan(reportingTo acknowledgement: SleepAcknowledgement) async {
         await leases.releaseEveryLease()
+
+        // Before the call, not after it, and this is the distinction a two-state version of
+        // this could not make. `releaseEveryLease()` above awaits the lease teardown's own
+        // restore, which on a wedged `io_connect_t` never returns — so on the very case § 4's
+        // budget exists for, the line below is never reached and the keystone is never
+        // *issued*. "Issued and still outstanding" leaves a parked call that may yet land and
+        // clear the force key; "never issued" means nothing in this episode ever will.
+        await acknowledgement.keystoneReached(.outstanding)
         do {
             try await writer.restoreToAutomatic(.everyFan)
             log.handedEveryFanBackBeforeSleep()
+            await acknowledgement.keystoneReached(.landed)
         } catch {
             log.couldNotHandEveryFanBackBeforeSleep(error)
+            // A refusal is a *return*, and it is also a firmware answer: the force key was
+            // not cleared, and unlike `.outstanding` that is something this process observed
+            // rather than failed to observe. On a build with no write path this is every
+            // sleep, which is exactly why it may not share a sentence with `.landed`.
+            await acknowledgement.keystoneReached(.refused)
         }
     }
 }

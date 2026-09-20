@@ -1115,10 +1115,21 @@ extension SafetyLog {
     }
 
     /// The system was allowed to sleep with the handback complete.
-    func allowingSleepAfterHandback() {
+    ///
+    /// It names the keystone's outcome too, and that is not decoration: on a build with no
+    /// SMC write path the keystone is refused on **every** sleep, so a line that said only
+    /// "the handback finished" would read as success on a machine where the force key was
+    /// never cleared. It is also the one acknowledgement whose keystone state is reached
+    /// deterministically, which is what lets a test pin the production reporting path — the
+    /// budget path's is reachable only in the instant between the keystone returning and the
+    /// budget being cancelled.
+    func allowingSleepAfterHandback(keystone: KeystoneOutcome) {
         emit(
             .notice,
-            "Allowing the system to sleep: the handback finished inside its budget."
+            """
+            Allowing the system to sleep: the handback finished inside its budget. \
+            \(Self.describeKeystone(keystone))
+            """
         )
     }
 
@@ -1150,8 +1161,17 @@ extension SafetyLog {
     ///   - budget: how long the handback was waited for before the wait was given up.
     ///   - unconfirmed: the fans recorded as unconfirmed handbacks by decision D33, named
     ///     rather than counted so the line identifies which fan to go and look at.
+    ///   - keystone: what the machine-wide `restoreToAutomatic(.everyFan)` was observed doing.
+    ///     **Observed, not inferred**, which is the whole of this parameter's reason to exist:
+    ///     this line used to describe an empty `unconfirmed` set as *"the keystone restore is
+    ///     what is outstanding"*, which was a guess dressed as a finding. An empty set has two
+    ///     causes — a keystone-only wedge with no lease held, and a handback in which every
+    ///     restore came back — and they are opposite facts about whether the Apple Silicon
+    ///     force key was cleared. Issue #202 item 2 is exactly that: with no lease held,
+    ///     `recordUnconfirmedHandbacks()` reads an empty `releasing` and nothing records that
+    ///     the keystone never cleared the key.
     func allowingSleepWithHandbackUnconfirmed(
-        after budget: Duration, leaving unconfirmed: Set<Int>
+        after budget: Duration, leaving unconfirmed: Set<Int>, keystone: KeystoneOutcome
     ) {
         emit(
             .fault,
@@ -1159,24 +1179,80 @@ extension SafetyLog {
             Allowing the system to sleep with the handback still outstanding after \
             \(budget). Fan(s) \(Self.describeFans(unconfirmed)) may cross the sleep still \
             under manual control, and a new lease over one is refused until something \
-            confirms its mode. What can still act: the parked restore may yet land — and \
-            that is what clears this — § 3 takes any such fan to full scale if it comes back \
-            above the thermal ceiling, and startup reconciliation returns it to automatic at \
-            the next helper start. § 1's TTL cannot — this handback dropped every lease \
-            before it wrote. See docs/SAFETY.md § 4 and docs/RECOVERY.md.
+            confirms its mode. \
+            \(Self.describeKeystone(keystone)) \
+            What can still act: \(Self.describeParkedRestore(keystone)) § 3 takes any such fan \
+            to full scale if it comes back above the thermal ceiling, and startup \
+            reconciliation returns it to automatic at the next helper start. § 1's TTL cannot \
+            — this handback dropped every lease before it wrote. See docs/SAFETY.md § 4 and \
+            docs/RECOVERY.md.
             """
         )
     }
 
     /// Fan indices for a log line, or a phrase for the empty set.
     ///
-    /// "none" rather than an empty list, because the empty case is meaningful here: the
-    /// budget expired with nothing outstanding at the lease core, which means whatever is
-    /// parked is the machine-wide keystone rather than a fan this helper held.
+    /// "none" rather than an empty list, because the empty case is meaningful here: no fan
+    /// this helper held a lease over was still mid-handback when the budget fired. What that
+    /// says about the machine-wide keystone is a **separate** observation and is reported
+    /// separately — see `describeKeystone(outstanding:)`. This phrase used to answer both
+    /// questions from one of them.
     private static func describeFans(_ fans: Set<Int>) -> String {
         fans.isEmpty
-            ? "none (the keystone restore is what is outstanding)"
+            ? "none at the lease core"
             : fans.sorted().map(String.init).joined(separator: ", ")
+    }
+
+    /// What the machine-wide keystone restore was observed doing.
+    ///
+    /// The keystone is what clears the Apple Silicon force key, and it consumes no lease, so a
+    /// wedge in it is invisible to every register the lease core keeps and this sentence is
+    /// the only record of it. Four states because the fact has four, and collapsing any two of
+    /// them is how this line came to claim things nobody had looked at — see `KeystoneOutcome`.
+    private static func describeKeystone(_ keystone: KeystoneOutcome) -> String {
+        switch keystone {
+        case .notIssued:
+            return """
+                The machine-wide restore was never issued — the lease teardown ahead of it did \
+                not return — so the Apple Silicon force key was certainly not cleared, and \
+                nothing in this sleep will clear it.
+                """
+        case .outstanding:
+            return """
+                The machine-wide restore was issued and had not returned either, so the Apple \
+                Silicon force key may still be set and no fan is known to be back on automatic \
+                control — including fans this helper never held a lease over.
+                """
+        case .landed:
+            return "The machine-wide restore landed, so the force key was cleared."
+        case .refused:
+            return """
+                The machine-wide restore came back refused, so the force key was **not** \
+                cleared — observed rather than merely unconfirmed. On a build with no SMC \
+                write path that is every sleep.
+                """
+        }
+    }
+
+    /// Whether there is in fact a parked restore that could still land.
+    ///
+    /// Split from the sentence above because the old line promised one unconditionally, and
+    /// on the `.notIssued` wedge — the most common one, since the lease teardown is what
+    /// wedges — there is nothing parked at all. A root daemon telling its own log that a
+    /// recovery is pending when none was started is the failure `CLAUDE.md` rule 6 names.
+    private static func describeParkedRestore(_ keystone: KeystoneOutcome) -> String {
+        switch keystone {
+        case .notIssued:
+            return """
+                the lease teardown's own restore is still parked and may yet land, which is \
+                what would clear the fans it covers; nothing will clear the force key until \
+                the next helper start.
+                """
+        case .outstanding:
+            return "the parked restore may yet land — and that is what clears this."
+        case .landed, .refused:
+            return "the lease teardown's own restore may yet land."
+        }
     }
 
     /// The machine woke, and the helper wrote nothing.
