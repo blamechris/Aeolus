@@ -65,11 +65,14 @@ import Foundation
 /// **dispatched** the moment it arrives and is never queued behind another message, so a
 /// `snapshot` still in flight, or an operation that never returns at all, cannot hold it in
 /// a queue. What that buys is promptness, not a bounded reply: the restore's own body drops
-/// every lease and writes each fan back to automatic through the same control plane, so on
-/// the wedged `io_connect_t` of `docs/SAFETY.md` § 4 it is *started* immediately and its
-/// completion is still the plane's to give. A client may therefore send it at any time,
-/// including on a connection it has already pipelined work onto, and it is answered on its
-/// own schedule rather than the queue's. Its reply is the one that may arrive out of order.
+/// every lease and writes the fans they covered back to automatic through the same control
+/// plane, so on the wedged `io_connect_t` of `docs/SAFETY.md` § 4 it is *started* immediately
+/// and its completion is still the plane's to give. "Each fan" read as every fan on the
+/// machine until [#228](https://github.com/blamechris/Aeolus/issues/228); the scope is the
+/// declaration's own paragraph below, and the argument about promptness is unaffected by it.
+/// A client may therefore send it at any time, including on a connection it has already
+/// pipelined work onto, and it is answered on its own schedule rather than the queue's. Its
+/// reply is the one that may arrive out of order.
 ///
 /// **The hazard every exemption creates, stated plainly and once.** Because an unsequenced
 /// message is not in the queue, a message sent *before* it on the same connection may still be
@@ -290,9 +293,21 @@ import Foundation
     ///   - reply: Receives the failure, or `nil` on success.
     func apply(settings: Data, leaseID: String, reply: @escaping @Sendable (Error?) -> Void)
 
-    /// The panic path. Restores every fan to automatic, clears the Apple Silicon force
-    /// key, and drops all leases. Must succeed even when the helper's state is
-    /// inconsistent — this is what `fanctl reset --all` calls.
+    /// The panic path. Its contract is global: restore every fan to automatic, clear the
+    /// Apple Silicon force key, drop all leases, and succeed even when the helper's state is
+    /// inconsistent. This is what `fanctl reset --all` calls.
+    ///
+    /// **That sentence is the contract and not the behaviour of any helper that exists**, and
+    /// it was written as plain present indicative until
+    /// [#228](https://github.com/blamechris/Aeolus/issues/228). Read as a statement about
+    /// today's binary it is false in the one direction that matters to a user reaching for
+    /// this verb because the fans are stuck: the shipped handler drops every lease and hands
+    /// back the fans those leases covered, and issues no machine-wide
+    /// `restoreToAutomatic(.everyFan)` — so the force key is never cleared, and a fan another
+    /// tool pinned under no lease is not touched. `SupervisedFanAuthority.restoreAllToAutomatic`
+    /// is where the decision and its reason live; `docs/SAFETY.md` § 7 is the user-facing
+    /// consequence. The contract stays frozen at v1 and the machine-wide restore arrives with
+    /// E3/E4's write path, behind it rather than before it.
     ///
     /// **Exempt from the handshake gate** — never from the authorisation gate — **and from
     /// the per-connection ordering above**, and its semantics are frozen at v1 permanently.

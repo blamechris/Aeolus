@@ -178,6 +178,16 @@ fence that stopped a panicked user's older `fanctl` from restoring automatic con
 safety mechanism defeating safety — precisely the defect class this project keeps finding. The panic
 path must carry the fewest preconditions of anything in the protocol.
 
+> **Amended 2026-09-19 ([#228](https://github.com/blamechris/Aeolus/issues/228)).** The first
+> sentence states the **contract** and was read as the behaviour. No helper that exists clears
+> the force key: `SupervisedFanAuthority.restoreAllToAutomatic` releases every lease and hands
+> back the fans those leases covered, and issues no `restoreToAutomatic(.everyFan)` — a recorded
+> decision, because the plane verb throws `.controlPathNotBuilt` on this build and the message's
+> contract is frozen at v1 ([#159](https://github.com/blamechris/Aeolus/issues/159)). The
+> exemption's argument is untouched by that: *"its only expressible effect is the safe state"* is
+> a claim about what the verb can express, which is exactly what makes a version fence in front
+> of it indefensible, and it holds whether or not this build can perform the whole of it.
+
 ## The lease: client-renewed, helper-enforced, two independent teardown paths
 
 - **Renewal is client-driven** on the heartbeat interval (TTL/3, per [SAFETY.md](../SAFETY.md) §1).

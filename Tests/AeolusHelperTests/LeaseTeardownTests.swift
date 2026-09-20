@@ -125,9 +125,16 @@ struct LeaseReleaseTests {
         #expect(await restorer.restores == [.init(fans: [0, 1], cause: .leaseReleased)])
     }
 
-    /// The panic path's half of the job. `restoreAllToAutomatic` additionally restores every
-    /// enumerated fan in the control plane; what the lease core owes it is that no lease
-    /// survives it.
+    /// The panic path's half of the job, and what this test pins is that half exactly: no lease
+    /// survives the call, and every fan a dropped lease covered is handed back per fan.
+    ///
+    /// It pins nothing about a machine-wide restore, and the sentence here asserted one until
+    /// [#228](https://github.com/blamechris/Aeolus/issues/228).
+    /// `restoreAllToAutomatic`'s contract specifies `restoreToAutomatic(.everyFan)` on top of
+    /// this; the shipped handler issues no such call, so nothing here may be read as evidence
+    /// that the force key is cleared. `SupervisedFanAuthority.restoreAllToAutomatic` holds that
+    /// decision and `PanicPathScopeTripwireTests` is what keeps this comment from drifting back
+    /// out of step with it.
     @Test("Dropping every lease restores every fan they covered")
     func everyLeaseIsDropped() async throws {
         let restorer = RecordingFanRestorer()
