@@ -28,9 +28,12 @@ struct HelperClientConnectionTests {
     /// claim about a peer nobody has spoken to.
     ///
     /// **Mutation:** in `HelperClient.connectionWasInterrupted(_:)`, stop clearing
-    /// `negotiatedReply`. Run: red — the second session never sees a `hello`, so its
-    /// `messageCount` is 1 and its `handshakeState` is `nil`, and the snapshot is refused
-    /// with `handshakeRequired`.
+    /// `negotiatedReply`. Run: red — but not on `messageCount` or `handshakeState` below;
+    /// this test dies earlier, at line 46's `#expect(await client.negotiated == nil, …)`,
+    /// which fails first because the stale reply was kept. The second `snapshot()` at line 48
+    /// then throws `handshakeRequired` — the helper still refuses a verb with no `hello`
+    /// behind it, since only the *client's* record of the negotiation was left stale — and
+    /// that throw escapes the test before `messageCount` or `handshakeState` is ever read.
     @Test("Interruption discards the negotiated reply and the next verb re-handshakes")
     func interruptionDiscardsTheHandshake() async throws {
         let harness = ClientListenerHarness(authority: RecordingFanAuthority())
