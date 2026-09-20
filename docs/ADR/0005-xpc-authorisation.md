@@ -427,7 +427,7 @@ lines apart, and filing them together retired a question that was still open:
    is `CLAUDE.md` rule 8 with nothing behind it, and it was not the survivor's fault.
 
 It is covered now. `HelperClientPinningTests.theShippingPolicyRefusesAHostThatCannotVerifyItself`
-switches exhaustively on `HelperSigningIdentity.inspect()` and, in the `.noTeamIdentifier` arm that
+switches exhaustively on `RunningProcessSigningIdentity.inspect()` and, in the `.noTeamIdentifier` arm that
 `swift build`, `swift test` and every CI runner produce, requires the refusal before any connection
 object exists. Re-running the same mutation against it is red on one expectation. The signed arm
 asserts the other direction, so a suite run from a signed host tests the mechanism rather than

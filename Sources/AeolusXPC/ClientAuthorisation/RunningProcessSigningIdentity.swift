@@ -21,9 +21,9 @@ enum SelfSigningInspection: Sendable, Hashable {
 ///
 /// Under `swift test` the host is always ad-hoc signed, so this returns `.noTeamIdentifier`
 /// on CI and on the maintainer's machine alike. That is not a gap in the tests — it is the
-/// fail-closed row "the helper is ad-hoc signed" being exercised by the test runner itself,
-/// for free, on every CI run.
-enum HelperSigningIdentity {
+/// fail-closed row "this process is ad-hoc signed" being exercised by the test runner
+/// itself, for free, on every CI run.
+enum RunningProcessSigningIdentity {
 
     /// `SecCodeCopySelf` → `SecCodeCopySigningInformation` → `kSecCodeInfoTeamIdentifier`.
     static func inspect() -> SelfSigningInspection {
