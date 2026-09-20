@@ -100,6 +100,29 @@ struct LeaseLog: Sendable {
         )
     }
 
+    /// A fan the helper had given up on went back after all, and the durable refusal is gone.
+    ///
+    /// The correction to `abandonedHandback(fanAt:because:after:error:)` above — a `.fault`
+    /// telling the reader Aeolus has stopped trying and they should check the fan physically and
+    /// read `docs/RECOVERY.md`. Without this line the log's last word on the fan is that advice,
+    /// and a user following it would be acting on a refusal that no longer exists. `.notice` for
+    /// `restored(fans:because:)`'s reason: nothing is wrong here.
+    ///
+    /// **It reports what was observed and not where the fan is**, which is `abandonedHandback`'s
+    /// own limit from the other side: `FanRestoring` promises a return and never a read-back, so
+    /// "the write was not refused this time" is the whole of what the helper knows. Claiming the
+    /// fan is under Apple's management would be `CLAUDE.md` rule 6 in the optimistic direction.
+    func recoveredAbandonedHandback(fans: Set<Int>, because cause: FanRestoreCause) {
+        log.notice(
+            """
+            Fan(s) \(Self.describe(fans), privacy: .public) were handed back without being \
+            refused this time (\(Self.describe(cause), privacy: .public)), after an earlier \
+            handback Aeolus gave up on. The durable refusal over them is lifted and manual \
+            control of them may be taken again.
+            """
+        )
+    }
+
     /// A client asked for a fan whose handback was given up on.
     ///
     /// `.notice` rather than `.fault`: the fault was logged once, where it happened. This is
