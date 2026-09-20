@@ -120,13 +120,19 @@ actor LeaseGrantingAuthority: FanAuthority {
 ///
 /// `hello` is answered properly, because the case under test is a *gated verb* answering
 /// emptily and a client that never got past the handshake would never reach one.
+///
+/// `garblingSnapshotReply` swaps the empty `(nil, nil)` reply for bytes no client can decode —
+/// the other rogue-peer shape `AeolusXPCProtocol`'s payload contract admits, and the one
+/// `HelperClientPayload.decode`'s catch block actually reaches. Both are the same class of
+/// peer — one this project does not control — so one harness carries both rather than a second
+/// listener duplicating this one's scaffolding.
 final class EmptyReplyListenerHarness {
 
     let listener: NSXPCListener
     private let delegate: EmptyReplyListenerDelegate
 
-    init() {
-        delegate = EmptyReplyListenerDelegate()
+    init(garblingSnapshotReply: Bool = false) {
+        delegate = EmptyReplyListenerDelegate(garblingSnapshotReply: garblingSnapshotReply)
         listener = NSXPCListener.anonymous()
         listener.delegate = delegate
         listener.resume()
@@ -178,6 +184,11 @@ final class EmptyReplyListenerHarness {
 private final class EmptyReplyListenerDelegate: NSObject, NSXPCListenerDelegate, Sendable {
 
     private let count = OSAllocatedUnfairLock(initialState: 0)
+    private let garblingSnapshotReply: Bool
+
+    init(garblingSnapshotReply: Bool) {
+        self.garblingSnapshotReply = garblingSnapshotReply
+    }
 
     var accepted: Int { count.withLock { $0 } }
 
@@ -187,13 +198,19 @@ private final class EmptyReplyListenerDelegate: NSObject, NSXPCListenerDelegate,
     ) -> Bool {
         count.withLock { $0 += 1 }
         connection.exportedInterface = NSXPCInterface(with: AeolusXPCProtocol.self)
-        connection.exportedObject = EmptyReplyService()
+        connection.exportedObject = EmptyReplyService(garblingSnapshotReply: garblingSnapshotReply)
         connection.resume()
         return true
     }
 }
 
 private final class EmptyReplyService: NSObject, AeolusXPCProtocol, Sendable {
+
+    private let garblingSnapshotReply: Bool
+
+    init(garblingSnapshotReply: Bool) {
+        self.garblingSnapshotReply = garblingSnapshotReply
+    }
 
     func hello(request: Data, reply: @escaping @Sendable (Data?, Error?) -> Void) {
         let helloReply = HelloReply(
@@ -204,7 +221,13 @@ private final class EmptyReplyService: NSObject, AeolusXPCProtocol, Sendable {
         reply(try? AeolusXPCCoding.encoder().encode(helloReply), nil)
     }
 
-    func snapshot(reply: @escaping @Sendable (Data?, Error?) -> Void) { reply(nil, nil) }
+    func snapshot(reply: @escaping @Sendable (Data?, Error?) -> Void) {
+        guard garblingSnapshotReply else {
+            reply(nil, nil)
+            return
+        }
+        reply(Data("garbage".utf8), nil)
+    }
 
     func acquireLease(request: Data, reply: @escaping @Sendable (Data?, Error?) -> Void) {
         reply(nil, nil)

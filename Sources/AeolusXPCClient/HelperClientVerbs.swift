@@ -2,7 +2,12 @@ import AeolusXPC
 import FanKit
 import Foundation
 
-/// The seven messages, as functions a caller can hold onto.
+/// Six of the protocol's seven messages, as functions a caller can hold onto.
+///
+/// The seventh, `hello`, has no public wrapper anywhere: `HelperClient` negotiates it
+/// privately, inside `performHandshake`, before any of these six ever cross the wire. A
+/// caller cannot issue it on its own, so `versionMismatch` — ADR 0006's source switch —
+/// is discoverable only as a side effect of calling one of the six below.
 ///
 /// Split from the actor's own file, and along a real seam rather than a line count:
 /// everything here is a **verb**, and no verb touches this client's state. Each one encodes
