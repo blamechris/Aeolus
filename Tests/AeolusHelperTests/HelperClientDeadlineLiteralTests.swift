@@ -34,10 +34,11 @@ import Testing
 ///   `noHarnessDefaultImposesATighterDeadlineThanTheProduct` documents, closed by the same two
 ///   slow-peer tests, which exercise a real round trip against no constant at all.
 /// - Comments are stripped first, as everywhere in this suite, so a construction quoted in prose
-///   is invisible. Three doc comments in this target quote one while explaining a mutation, and a
-///   tripwire that fires on the sentence explaining the rule is a tripwire nobody keeps. String
-///   literals are *not* stripped, so this file's own failure messages deliberately never spell
-///   the constructor's name followed by an open parenthesis.
+///   is invisible. Three doc comments in this target carry the token — two of them spelling out a
+///   mutation, one quoting a `grep` for it — and a tripwire that fires on the sentence explaining
+///   the rule is a tripwire nobody keeps. String literals are *not* stripped, so this file's own
+///   failure messages deliberately never spell the constructor's name followed by an open
+///   parenthesis.
 @Suite("Explicitly passed client deadlines")
 struct HelperClientDeadlineLiteralTests {
 
