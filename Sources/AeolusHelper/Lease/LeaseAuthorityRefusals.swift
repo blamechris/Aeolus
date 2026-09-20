@@ -98,8 +98,10 @@ extension LeaseAuthority {
     /// ## What it costs, since #134
     ///
     /// Not a read per call. `SightednessProving` is answered by `CriticalTemperatureCache`,
-    /// which serves § 3's own most recent reading while it is less than one cycle period
-    /// old and coalesces concurrent callers onto a single read when it is not — so a client
+    /// which serves the most recent reading while it is less than one cycle period old —
+    /// § 3's own in the usual case, or a grant-path read's *failure*, which is remembered
+    /// ahead of a later cycle sighting (ADR 0010's 2026-09-20 amendment) — and coalesces
+    /// concurrent callers onto a single read when there is none. So a client
     /// retrying `acquireLease` in a tight loop can no longer queue an unbounded number of
     /// `.supervisor` turns ahead of the cycle that would take its fans back. A cold cache,
     /// or a helper whose thermal supervisor is not running, still costs one real 34-key read
