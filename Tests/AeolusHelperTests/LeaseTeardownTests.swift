@@ -135,6 +135,13 @@ struct LeaseReleaseTests {
     /// that the force key is cleared. `SupervisedFanAuthority.restoreAllToAutomatic` holds that
     /// decision and `PanicPathScopeTripwireTests` is what keeps this comment from drifting back
     /// out of step with it.
+    ///
+    /// **"Every fan a dropped lease covered" is no longer the whole sweep**, since
+    /// [#189](https://github.com/blamechris/Aeolus/issues/189): the pass also names every fan in
+    /// `LeaseAuthority.restoreAbandoned`, which is empty here because nothing in this test
+    /// refuses a write. `AbandonedHandbackRecoveryTests` is where that half is driven. The
+    /// single recorded restore is also #188's shape — one call for the sweep, not one per entry
+    /// — and is unchanged by it only because the table holds one entry.
     @Test("Dropping every lease restores every fan they covered")
     func everyLeaseIsDropped() async throws {
         let restorer = RecordingFanRestorer()

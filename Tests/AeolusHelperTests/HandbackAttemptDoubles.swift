@@ -137,6 +137,75 @@ actor RefusesThenSucceeds: FanRestoreAttempting {
     }
 }
 
+/// An attempt seam whose per-fan verdict the test changes **between** `restoreToAutomatic`
+/// calls, and which can be made to park inside one attempt.
+///
+/// The double [#189](https://github.com/blamechris/Aeolus/issues/189) needs and no other one
+/// here can stand in for: a firmware that refuses a fan's handback until the attempt budget is
+/// spent — so the lease core records it in `restoreAbandoned` — and then takes the write when
+/// the same fan is offered again. `RefusesThenSucceeds` comes good *within* one call, so the
+/// fan is never recorded as abandoned at all, and `PartiallyRefusingRestore` never changes its
+/// mind about a fan.
+///
+/// The park is what makes the handback window observable across a sweep with more than one
+/// source of fans ([#188](https://github.com/blamechris/Aeolus/issues/188)):
+/// `RecordingFanRestorer` can suspend, but it abandons nothing, and the two facts have to be
+/// true of one restorer to reach that state.
+///
+/// It gives in at `AttemptCeiling.perFan`; see there for why a double must not be what
+/// enforces the bound, and must not be a time limit either.
+actor RecoverableRefusal: FanRestoreAttempting {
+
+    private var refusing: Set<Int>
+    private var gate: (entered: AsyncSignal, release: AsyncSignal)?
+    private(set) var attempts: [Int] = []
+    private(set) var breachedCeiling = false
+
+    init(refusing: Set<Int>) {
+        self.refusing = refusing
+    }
+
+    /// The firmware comes good for `fans`, from the next attempt onwards. Nothing tells the
+    /// lease core that — a later restore asking again is the only way it can find out, which is
+    /// the whole subject of #189.
+    func takesTheWrite(for fans: Set<Int>) {
+        refusing.subtract(fans)
+    }
+
+    /// Parks the **next** attempt, whichever fan it is for, until `release` is signalled —
+    /// having signalled `entered` first, so the test can act while the restore is genuinely in
+    /// flight rather than racing it.
+    ///
+    /// One-shot: the attempt that consumes the gate disarms it, so the rest of the sweep runs
+    /// normally once the test lets go. A gate that re-armed would park every attempt and the
+    /// release the test signals would free only the first.
+    func park(signalling entered: AsyncSignal, until release: AsyncSignal) {
+        gate = (entered, release)
+    }
+
+    func restoreOnce(fanAt index: Int) async throws {
+        attempts.append(index)
+        if let gate {
+            self.gate = nil
+            await gate.entered.signal()
+            // Swallowed for `RecordingFanRestorer`'s reason: `wait()`'s cancellation-awareness
+            // exists to let a `.timeLimit` unblock the awaiting *test*, not to make this double
+            // report the cancellation.
+            try? await gate.release.wait()
+        }
+        guard refusing.contains(index) else { return }
+        guard attemptCount(forFan: index) < AttemptCeiling.perFan else {
+            breachedCeiling = true
+            return
+        }
+        throw AeolusXPCFault.helperFailed(detail: "the firmware discarded the mode write")
+    }
+
+    func attemptCount(forFan index: Int) -> Int {
+        attempts.filter { $0 == index }.count
+    }
+}
+
 /// An attempt seam that fails **only** because the task it runs on was cancelled.
 ///
 /// The firmware is fine here: `landed` counts the writes that reached it. A restorer that

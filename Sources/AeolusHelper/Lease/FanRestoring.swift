@@ -55,7 +55,16 @@ import Foundation
 /// keeps them, and refuses a later lease over one with
 /// `ManualControlAvailability.Reason.restoreToAutomaticFailed` — durable, and deliberately
 /// distinct from the transient `.releaseInProgress`, so a client can tell *retrying* from
-/// *gave up*. Returning an empty set from a restore that threw is the inversion this whole
+/// *gave up*.
+///
+/// **What is *not* in the returned set is load-bearing too**, since
+/// [#189](https://github.com/blamechris/Aeolus/issues/189): a fan the lease core already holds
+/// a durable refusal over, and that this call does not name, has its refusal lifted. So this
+/// set is read in both directions, and the empty set is not a neutral answer — it says every
+/// fan asked for came back. The scope sentence below is what bounds that: it means *nothing was
+/// refused*, never *every fan is confirmed automatic*.
+///
+/// Returning an empty set from a restore that threw is the inversion this whole
 /// subsystem exists to prevent: it converts "the write was refused" into "the teardown
 /// completed", and the next client is then handed a lease over a fan in a mode nothing has
 /// confirmed. `BoundedFanRestorer` is the shipped implementation of all of this.

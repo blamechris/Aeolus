@@ -79,12 +79,15 @@ enum RestoreLimits {
 /// in the same teardown, and the fans that were never tried would then be reported as
 /// abandoned — a lie in the safe direction, which is still a lie a client acts on.
 ///
-/// **Giving up here is durable and nothing takes it back.** The set this returns lands in
-/// `LeaseAuthority.restoreAbandoned`, which is append-only: a later restore that the firmware
-/// *does* accept leaves the refusal standing. #110 decided that, and it is the honest answer
-/// while no code path restores a fan outside lease teardown.
-/// [#189](https://github.com/blamechris/Aeolus/issues/189) owns the clearing path for when
-/// one arrives — § 7's panic restore first.
+/// **Giving up here is durable, and exactly one thing takes it back.** The set this returns
+/// lands in `LeaseAuthority.restoreAbandoned`, which was append-only until
+/// [#189](https://github.com/blamechris/Aeolus/issues/189): a later restore the firmware *did*
+/// accept left the refusal standing, which #110 decided on the argument that no code path
+/// restored a fan outside lease teardown. #189 is what made one, because the register had made
+/// itself unreachable — a lease over such a fan is refused, so no teardown could ever name it
+/// again. § 7's panic pass now sweeps the register, and a fan this type does **not** report on
+/// that pass leaves it. The report is still the only signal: a fan this type names again stays
+/// refused, whatever asked.
 ///
 /// A `struct` over a `Sendable` attempt seam: it holds no mutable state of its own, so two
 /// teardown paths restoring the same fan at the same instant need no isolation here. The
