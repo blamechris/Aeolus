@@ -304,6 +304,41 @@ struct LeaseLog: Sendable {
         )
     }
 
+    /// A wake was answered before the seal it belonged to had been set.
+    ///
+    /// `.fault` rather than `.notice`: reaching it means a `.willSleep` body was starved past
+    /// the kernel's acknowledgement window, so the machine slept without this helper having
+    /// handed a single fan back — the failure § 4 exists to prevent, arriving by a route § 4
+    /// cannot see. The banked credit below keeps the *seal* from outliving the episode; it
+    /// does not undo the missed handback, and this line is the only record that one was
+    /// missed.
+    func wokeBeforeItsSealWasSet() {
+        log.fault(
+            """
+            The machine woke before the sleep that preceded it had been sealed: the \
+            will-sleep handler had not run by the time the wake handler did. Every fan \
+            crossed that sleep however the last lease left it, and the seal for that sleep \
+            will be declined when it finally arrives so it cannot refuse manual control on a \
+            machine that is already awake.
+            """
+        )
+    }
+
+    /// A seal arrived after its own wake had already been answered, and was declined.
+    ///
+    /// The other half of `wokeBeforeItsSealWasSet()`, and `.notice` rather than `.fault`
+    /// because by itself it is the mechanism working: the fault was logged when the ordering
+    /// was discovered, and this is the credit being spent.
+    func declinedASealItsWakeAlreadyAnswered() {
+        log.notice(
+            """
+            Declining to close the table for a sleep whose wake has already been answered. \
+            Sealing now would refuse manual control until the next sleep and wake, on a \
+            machine that is awake in front of its user.
+            """
+        )
+    }
+
     /// § 4 reopened the table after a wake. No fan was touched to do it.
     func unsealedAfterWake() {
         log.notice(

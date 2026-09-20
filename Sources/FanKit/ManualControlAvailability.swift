@@ -168,6 +168,19 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// Transient, and the advice is to retry after the machine wakes rather than
         /// immediately: nothing the client does shortens it, and the helper clears it on
         /// `kIOMessageSystemHasPoweredOn`.
+        ///
+        /// **"Transient" has one exception, and it is a helper that never hears the wake at
+        /// all** — a process that heard `kIOMessageSystemWillSleep` and then never received
+        /// `kIOMessageSystemHasPoweredOn` refuses every lease for the rest of its life. That
+        /// is the fail-safe direction and is deliberately not guarded against: refusing
+        /// manual control is safe, and granting it on a machine the helper believes is asleep
+        /// is not. A client that retries after a wake and is still refused is looking at that
+        /// case, not at a sleep that is taking a long time; `docs/RECOVERY.md` is the route
+        /// out.
+        ///
+        /// Hearing the two *out of order* used to produce the same symptom and is no longer
+        /// this case — see `LeaseAuthority.wakesAheadOfTheirSeal`
+        /// ([#202](https://github.com/blamechris/Aeolus/issues/202) item 1).
         case systemSleeping
         /// The helper cannot currently see any critical temperature, so the mechanism
         /// that would protect a leased fan is blind.

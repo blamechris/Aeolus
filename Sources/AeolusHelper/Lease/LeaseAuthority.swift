@@ -224,7 +224,41 @@ actor LeaseAuthority {
     /// life of the process. That is the fail-safe direction and is deliberately not guarded
     /// against: refusing manual control is safe, and a lease taken on a machine this process
     /// believes is asleep is not.
+    ///
+    /// **Hearing them out of order is a different case, and it is guarded** — see
+    /// `wakesAheadOfTheirSeal`. The fail-safe argument above covers a wake that never comes;
+    /// it does not cover one that came and was answered before the seal it belonged to was
+    /// ever set, which leaves the seal standing over a machine that is demonstrably awake.
     private var sleepSeal = false
+
+    /// Wakes answered while no seal was standing, each owed to a `.willSleep` whose body has
+    /// not run yet.
+    ///
+    /// `SystemPowerObserver.deliver(_:acknowledging:)` spawns an unstructured `Task` per
+    /// event, so IOKit's serial queue orders the **spawns** and nothing orders the bodies. If
+    /// the `.willSleep` body is starved past the kernel's ~30 s acknowledgement window the
+    /// machine sleeps regardless, and on wake the `.didWake` body can reach
+    /// `unsealAfterWake()` first. Before this counter that call found `sleepSeal` already
+    /// `false`, returned without doing anything, and the starved `sealForSleep()` then set a
+    /// seal with nothing left to clear it — every lease refused as `.systemSleeping` until the
+    /// *next* sleep and wake, on a machine sitting awake in front of its user.
+    ///
+    /// So a wake that arrives early is not discarded, it is **banked**: the next
+    /// `sealForSleep()` spends the credit and declines to seal, because the sleep episode that
+    /// seal belonged to is over and the machine is already awake. Counted rather than a flag
+    /// for the same reason `releasing` is counted — two sleep/wake pairs can be in flight at
+    /// once on a machine sleeping repeatedly, and a flag would let the first wake's credit
+    /// cancel the second episode's seal.
+    ///
+    /// It does **not** claim the rest of the starved `.willSleep` body is harmless. That body
+    /// still runs `releaseEveryLease()` and the keystone restore after the wake, so a lease
+    /// taken in between is dropped and its fan handed back at a moment nothing asked for.
+    /// `acquireLease` refuses a fan that is mid-`releasing`, which narrows the window rather
+    /// than closing it. Stated here rather than fixed because ordering two unstructured task
+    /// bodies from a `@convention(c)` callback is a change to `SystemPowerObserver`'s shape,
+    /// and this counter is what keeps the *seal* — the part that outlives the episode — from
+    /// being the thing that survives it.
+    private var wakesAheadOfTheirSeal = 0
 
     init(
         enumeration: some FanEnumerating,
@@ -645,6 +679,17 @@ actor LeaseAuthority {
     /// on the same safe state. Making this consult per-connection state would invalidate the
     /// exemption and needs revisiting alongside it —
     /// [#95](https://github.com/blamechris/Aeolus/issues/95).
+    /// **One `restore` call over the union, and that is what makes § 4's record complete
+    /// rather than partial** ([#202](https://github.com/blamechris/Aeolus/issues/202) item 4).
+    /// `restore(_:because:)` increments `releasing` for every fan in the set *before* its
+    /// suspension point, so the whole union is mid-handback the instant this awaits — and
+    /// `recordUnconfirmedHandbacks()`, which reads `releasing.keys`, therefore sees all of it
+    /// even if the first fan's write wedges and nothing after it ever lands. Restoring
+    /// per-lease or per-fan in a loop would put each subsequent fan's increment *after* the
+    /// previous one's suspension, so a wedge on the first would leave the rest neither
+    /// restored nor recorded: § 4 would acknowledge the sleep having registered one fan out of
+    /// however many crossed it under manual control. `SleepCycleSurvivalTests` pins this, so
+    /// a refactor to a loop goes red rather than silently narrowing the record.
     func releaseEveryLease() async {
         let dropped = table.removeAll()
         let fans = dropped.reduce(into: restoreAbandoned) { $0.formUnion($1.fanIndices) }
@@ -659,15 +704,30 @@ actor LeaseAuthority {
     /// Synchronous, and called *before* the teardown rather than after it, so there is no
     /// instant at which the table is empty and unsealed — which is the whole window. See
     /// `sleepSeal`.
+    /// A seal whose wake has already been answered is **not** set: see
+    /// `wakesAheadOfTheirSeal` for the ordering that produces one, and for why declining is
+    /// the safe direction here even though sealing is the safe direction everywhere else.
     func sealForSleep() {
+        guard wakesAheadOfTheirSeal == 0 else {
+            wakesAheadOfTheirSeal -= 1
+            log.declinedASealItsWakeAlreadyAnswered()
+            return
+        }
         guard !sleepSeal else { return }
         sleepSeal = true
         log.sealedForSleep()
     }
 
     /// Reopens acquisition after a wake. Touches no fan and issues no write.
+    ///
+    /// A wake with no seal standing banks a credit rather than returning silently. That
+    /// silent return was the defect: it made the two calls look paired when they were not.
     func unsealAfterWake() {
-        guard sleepSeal else { return }
+        guard sleepSeal else {
+            wakesAheadOfTheirSeal += 1
+            log.wokeBeforeItsSealWasSet()
+            return
+        }
         sleepSeal = false
         log.unsealedAfterWake()
     }
