@@ -153,6 +153,28 @@ struct HelperClientSendPathSeamTests {
         try callCount(of: name, in: body) > 0
     }
 
+    /// How often `body` calls `name` **on this object**: unqualified, or through `self.`, never
+    /// through a receiver.
+    ///
+    /// `proxy.snapshot { … }` is the protocol message the verb `snapshot()` sends, and the two
+    /// share a name by design — the recursion half below already excludes the qualified spelling
+    /// for exactly that reason. The two halves that count *callees* need the same exclusion, and
+    /// the second of them found out why: with a send factored into `snapshotFirstAttempt()`, that
+    /// helper's body names `withHandshakenProxy` and `proxy.snapshot`, and a receiver-blind count
+    /// reads two callees in a function making one attempt. A count that fires on a correct
+    /// refactor is the crying-wolf failure this file argues about three times over.
+    ///
+    /// The population derivation above stays on `callCount`, deliberately: excluding a receiver
+    /// there could only *shrink* the set a tripwire scans, and a shrinking population is the
+    /// failure `sendPathFloor` exists to catch rather than one to introduce.
+    private static func localCallCount(of name: String, in body: String) throws -> Int {
+        let bare = try NSRegularExpression(pattern: #"(?<![\w.])\#(name)\s*[({]"#)
+        let qualified = try NSRegularExpression(pattern: #"self\.\#(name)\s*[({]"#)
+        let range = NSRange(body.startIndex..<body.endIndex, in: body)
+        return bare.numberOfMatches(in: body, range: range)
+            + qualified.numberOfMatches(in: body, range: range)
+    }
+
     /// Every function on the path that **reaches a send**: a gate, or anything whose body calls
     /// one of these.
     ///
@@ -195,8 +217,10 @@ struct HelperClientSendPathSeamTests {
     /// verbs take a non-`async` closure, so a retried `await` cannot be written with one. What
     /// does escape is **recursion**, so the second half of this test forbids a function on the
     /// path from calling itself — bare or through `self.`, not through `proxy.`, since a verb
-    /// and the protocol message it sends share a name by design. Mutual recursion between two
-    /// of them is the remaining hole, and it is stated rather than closed.
+    /// and the protocol message it sends share a name by design. It shares
+    /// `localCallCount(of:in:)` with the two halves below rather than spelling that rule a second
+    /// time, which also counts a recursive call written with a trailing closure — `snapshot { … }`
+    /// — where the previous pattern required a `(`.
     ///
     /// The third half is a **second send in one body**, and it is the retry an author actually
     /// writes: `do { … } catch { /* second attempt */ … }` around the same gate is neither a loop
@@ -219,8 +243,28 @@ struct HelperClientSendPathSeamTests {
     /// body may call the same one twice.** Per callee rather than summed, because a sum is wrong
     /// here: `withHandshakenProxy` legitimately calls `handshakenConnection` and `exchange`, which
     /// is a handshake and a message, two sends by design. A function excludes itself, since
-    /// calling itself at all is the recursion half. Mutual recursion between two of them remains
-    /// the stated hole, and now covers one more shape: two helpers that call each other.
+    /// calling itself at all is the recursion half.
+    ///
+    /// The fifth half is **two different helpers**, and it exists because the fourth counts one
+    /// callee twice and nothing else. The same refactor, written the way a `do`/`catch` invites —
+    /// one helper per arm, `snapshotFirstAttempt()` in the `do` and `snapshotSecondAttempt()` in
+    /// the `catch` — calls each of them exactly once, so the fourth half reads one and one. That
+    /// was verified against this tree rather than reasoned about: with exactly that written into
+    /// `HelperClientVerbs.swift`, **all four** halves above were green on a real two-attempt
+    /// `snapshot()`. The previous version of this paragraph said mutual recursion was "the
+    /// remaining hole", which was a completeness claim and was false — two distinct helpers need
+    /// no recursion at all, and writing the second attempt as its own function is the *more*
+    /// natural spelling once the first exists.
+    ///
+    /// So a body may reach at most **one** send-reaching function, counted distinctly. Exactly
+    /// one body in this target legitimately reaches two — `withHandshakenProxy`, whose
+    /// `handshakenConnection` and `exchange` are a handshake and a message — and it is named in
+    /// `sendPathHandshakeGate` rather than inferred, on the same terms as `sendPathFanOut`: it is
+    /// on `sendPathFloor`, so a rename reddens the floor rather than emptying the exemption, and
+    /// it is still scanned by all four halves above, so a *repeated* call inside it is still a
+    /// retry. Mutual recursion between two functions on the path remains the stated hole — a pair
+    /// that call each other, each once — and it is the last shape here that is stated rather than
+    /// closed.
     ///
     /// **Mutation:** wrap `exchange`'s body in `for attempt in 0..<3 { … }`. Run: red, naming
     /// `exchange`. **Mutation:** write the same loop with a typed binding, `for attempt: Int in
@@ -232,50 +276,16 @@ struct HelperClientSendPathSeamTests {
     /// sees. **Mutation:** factor that second attempt into `private func snapshotOnce() async
     /// throws -> Data` and call it from both arms of the `do`/`catch`. Run: red on the fourth
     /// half, which is the **only** one that sees it — the other three were green with it in the
-    /// tree. **Mutation:** rename `exchange`. Run: red on the floor, which is what stops a rename
-    /// from emptying the population silently.
+    /// tree. **Mutation:** write that second attempt as a *second* helper instead —
+    /// `snapshotFirstAttempt()` in the `do` and `snapshotSecondAttempt()` in the `catch`. Run: red
+    /// on the fifth half, which is the only one that sees it; the other four were green with a
+    /// real two-attempt `snapshot()` in the tree. **Mutation:** rename `exchange`. Run: red on the
+    /// floor, which is what stops a rename from emptying the population silently.
     @Test("Nothing on the send path loops or calls itself")
     func nothingOnTheSendPathRetries() throws {
         let path = try Self.sendPath()
         let reaching = try Self.sendReaching(in: path)
-        let loop = try NSRegularExpression(pattern: Self.loopPattern)
-        var looping: [String] = []
-        var recursive: [String] = []
-        var sendingTwice: [String] = []
-        var attemptingTwice: [String] = []
-
-        for function in path {
-            // A leading space, so a loop written as the body's first token is still preceded by
-            // something the lookbehind accepts.
-            let body = " " + function.body
-            let range = NSRange(body.startIndex..<body.endIndex, in: body)
-            if loop.numberOfMatches(in: body, range: range) > 0,
-                !Self.sendPathFanOut.contains(function.name)
-            {
-                looping.append("\(function.file): \(function.name)")
-            }
-
-            let bare = try NSRegularExpression(pattern: #"(?<![\w.])\#(function.name)\s*\("#)
-            let qualified = try NSRegularExpression(pattern: #"self\.\#(function.name)\s*\("#)
-            let calls =
-                bare.numberOfMatches(in: body, range: range)
-                + qualified.numberOfMatches(in: body, range: range)
-            if calls > 0 { recursive.append("\(function.file): \(function.name)") }
-
-            let sends = try Self.sendGates.reduce(0) {
-                $0 + (try Self.callCount(of: $1, in: function.body))
-            }
-            if sends > 1 { sendingTwice.append("\(function.file): \(function.name)") }
-
-            let repeated =
-                try reaching
-                .subtracting([function.name])
-                .filter { try Self.callCount(of: $0, in: function.body) > 1 }
-                .sorted()
-            if !repeated.isEmpty {
-                attemptingTwice.append("\(function.file): \(function.name) calls \(repeated)")
-            }
-        }
+        let found = try Self.retries(on: path, reaching: reaching)
 
         #expect(
             Self.sendPathFloor.union(Self.sendPathCallees).subtracting(path.map(\.name)).isEmpty,
@@ -288,24 +298,24 @@ struct HelperClientSendPathSeamTests {
             contains a function is a guard that no longer watches it, silently.
             """)
         #expect(
-            looping.isEmpty,
+            found.looping.isEmpty,
             """
-            \(looping.sorted()) loops. A client-side retry is invisible to its caller and \
+            \(found.looping.sorted()) loops. A client-side retry is invisible to its caller and \
             amplifies a helper launchd is already restarting; every one of the four situations \
             `HelperClient` gives up a connection in is a teardown, and the caller asks again at \
             its own cadence or does not.
             """)
         #expect(
-            recursive.isEmpty,
+            found.recursive.isEmpty,
             """
-            \(recursive.sorted()) calls itself. Recursion is the one retry that is not a loop, \
+            \(found.recursive.sorted()) calls itself. Recursion is the one retry that is not a loop, \
             and it is the same defect: a second attempt this client decided to make, reported \
             to nobody.
             """)
         #expect(
-            sendingTwice.isEmpty,
+            found.sendingTwice.isEmpty,
             """
-            \(sendingTwice.sorted()) reaches a gate more than once. That is the retry an author \
+            \(found.sendingTwice.sorted()) reaches a gate more than once. That is the retry an author \
             writes without a loop and without recursion — a second attempt in a `catch` — and it \
             is the same defect for the same reason: the caller cannot tell a verb that succeeded \
             first time from one that succeeded on the second try.
@@ -319,15 +329,98 @@ struct HelperClientSendPathSeamTests {
             and a check fed by a set that reached no helper cannot see a retry factored into one.
             """)
         #expect(
-            attemptingTwice.isEmpty,
+            found.attemptingTwice.isEmpty,
             """
-            \(attemptingTwice.sorted()) calls the same send-reaching function twice. A second \
+            \(found.attemptingTwice.sorted()) calls the same send-reaching function twice. A second \
             attempt factored into its own helper and called from two branches names no gate in \
             the body that retries, so the gate count above reads zero for it — and it is the \
             spelling an author reaches for, because a second attempt that has to be written \
             twice is the one that gets lifted out. It is still a retry this client decided to \
             make and reported to nobody.
             """)
+        #expect(
+            found.branchingTwice.isEmpty,
+            """
+            \(found.branchingTwice.sorted()) reaches two different send-reaching functions. A second \
+            attempt written as its own helper per branch — one in the `do`, one in the `catch` — \
+            calls each of them exactly once, so every count above reads one and the retry is \
+            invisible to all of them. Only `withHandshakenProxy` may reach two, because a \
+            handshake and a message are two sends by design; anything else is a client deciding \
+            to try again and telling nobody.
+            """)
+    }
+
+    /// The one body that legitimately reaches **two** send-reaching functions.
+    ///
+    /// `withHandshakenProxy` calls `handshakenConnection` and then `exchange`: a handshake and a
+    /// message, which is the gate's whole job rather than a second attempt at the first. Every
+    /// other body on the path reaches at most one.
+    ///
+    /// Named rather than inferred, on the same terms as `sendPathFanOut` — and guarded the same
+    /// way, by two things that already exist rather than by a third test. It is on
+    /// `sendPathFloor`, so a rename reddens the floor instead of leaving an exemption that covers
+    /// nothing; and it is still scanned by all four halves above, so a version of it that called
+    /// either callee **twice** is still caught. What the exemption buys is the one shape a count
+    /// cannot distinguish from a retry, and nothing more.
+    private static let sendPathHandshakeGate = ["withHandshakenProxy"]
+
+    /// One pass over the population, classifying each body into the five halves above.
+    ///
+    /// Extracted from the test rather than written inline, because the test crossed SwiftLint's
+    /// `function_body_length` error when the fifth half arrived. The seam is the honest one: this
+    /// derives the findings and the test asserts on them, so the five `#expect`s each name what
+    /// they rule out instead of sharing one loop with them.
+    private struct Retries {
+        var looping: [String] = []
+        var recursive: [String] = []
+        var sendingTwice: [String] = []
+        var attemptingTwice: [String] = []
+        var branchingTwice: [String] = []
+    }
+
+    private static func retries(
+        on path: [(name: String, file: String, body: String)], reaching: Set<String>
+    ) throws -> Retries {
+        let loop = try NSRegularExpression(pattern: Self.loopPattern)
+        var found = Retries()
+
+        for function in path {
+            // A leading space, so a loop written as the body's first token is still preceded by
+            // something the lookbehind accepts.
+            let body = " " + function.body
+            let range = NSRange(body.startIndex..<body.endIndex, in: body)
+            if loop.numberOfMatches(in: body, range: range) > 0,
+                !Self.sendPathFanOut.contains(function.name)
+            {
+                found.looping.append("\(function.file): \(function.name)")
+            }
+
+            if try Self.localCallCount(of: function.name, in: body) > 0 {
+                found.recursive.append("\(function.file): \(function.name)")
+            }
+
+            let sends = try Self.sendGates.reduce(0) {
+                $0 + (try Self.callCount(of: $1, in: function.body))
+            }
+            if sends > 1 { found.sendingTwice.append("\(function.file): \(function.name)") }
+
+            let called =
+                try reaching
+                .subtracting([function.name])
+                .filter { try Self.localCallCount(of: $0, in: function.body) > 0 }
+                .sorted()
+            let repeated = try called.filter {
+                try Self.localCallCount(of: $0, in: function.body) > 1
+            }
+            if !repeated.isEmpty {
+                found.attemptingTwice.append(
+                    "\(function.file): \(function.name) calls \(repeated)")
+            }
+            if called.count > 1, !Self.sendPathHandshakeGate.contains(function.name) {
+                found.branchingTwice.append("\(function.file): \(function.name) calls \(called)")
+            }
+        }
+        return found
     }
 
     /// The gates a body may call at most once. `exchange` is the send itself; the two `withProxy`
@@ -393,10 +486,27 @@ struct HelperClientSendPathSeamTests {
     /// — `func send(for name: String)` — and which also skipped a loop binding written with a
     /// type: `for attempt: Int in 0..<3 { … }` inside `exchange` left this test **green**, one
     /// word away from the mutation the body cites as red. Requiring the `in` separates the two
-    /// without a lookahead: a label is `for name:` and never reaches one, a loop always does. The
-    /// scan stops at a `{`, `}` or `;` so it cannot run out of a header into a body.
+    /// without a lookahead. The scan stops at a `{`, `}` or `;` so it cannot run out of a header
+    /// into a body.
+    ///
+    /// **The `in` must not be a label either**, which is the half the previous version of this
+    /// comment got wrong. It claimed "a label is `for name:` and never reaches [an `in`]", and
+    /// that is only true of a declaration carrying **one** label. `func send(to sink: Sink, for
+    /// name: String, in scope: Scope)` reaches one, and so does the call `reset(index, for: fan,
+    /// in: container)`. Both read as loops, in the direction that fires on a correct tree — which
+    /// is how a tripwire earns a reputation for crying wolf and then gets deleted, and this file
+    /// makes that argument about three other patterns.
+    ///
+    /// What separates them is what may **follow** the `in`. A parameter's is followed by a name
+    /// and a colon — `in scope: Scope` in a declaration, `in:` in a call — and a loop's is
+    /// followed by the expression it iterates, whose first token is never an identifier ending in
+    /// a colon: `in 0..<3`, `in pairs`, `in observers.values`, `in [key: value]`, `in f(a: 1)`.
+    /// So `\bin\b(?!\s*\w*\s*:)` refuses both label shapes with the `\w*` collapsing to nothing
+    /// for the call form, and keeps every loop spelling in the fixtures below. A bare `(?!\s*:)`
+    /// is **not** enough and was the first attempt: it reads the call correctly and the
+    /// declaration not at all, because a declaration's colon sits after the internal name.
     static let loopPattern =
-        #"(?<=[\s{};])(?:while|repeat)\b|(?<=[\s{};])for\b[^{};]*?\bin\b"#
+        #"(?<=[\s{};])(?:while|repeat)\b|(?<=[\s{};])for\b[^{};]*?\bin\b(?!\s*\w*\s*:)"#
 
     /// The loop pattern reads loops and not argument labels — **fixtures, because nothing else
     /// pins it.**
@@ -408,6 +518,10 @@ struct HelperClientSendPathSeamTests {
     ///
     /// **Mutation:** restore the `(?!\s*\w+\s*:)` lookahead. Run: red on the typed binding.
     /// **Mutation:** drop the `\bin\b` requirement. Run: red on the argument label.
+    /// **Mutation:** drop the `(?!\s*\w*\s*:)` after it. Run: red on the two-label declaration and
+    /// the two-label call, which the `\bin\b` requirement alone reads as loops. **Mutation:**
+    /// narrow it to `(?!\s*:)`. Run: red on the declaration alone, which is the half a colon after
+    /// the internal name hides.
     @Test("The loop pattern reads loops and not argument labels")
     func theLoopPatternReadsLoopsAndNotLabels() throws {
         let loop = try NSRegularExpression(pattern: Self.loopPattern)
@@ -437,6 +551,11 @@ struct HelperClientSendPathSeamTests {
             "func reset(index: Int, for fan: Fan) async throws -> Fan { fan }",
             "reset(index, for: fan) { error in resolve(error) }",
             "let deadline = deadlines.forVerb",
+            // A second label named `in`, which is what the `\bin\b` requirement alone reads as a
+            // loop. Both spellings are ordinary — the declaration is how a verb takes a scope,
+            // the call is how one is passed — and both fire on a correct tree.
+            "func send(to sink: Sink, for name: String, in scope: Scope) { }",
+            "reset(index, for: fan, in: container)",
         ] {
             #expect(!matches(notALoop), "\(notALoop) is not a loop and this pattern reads one")
         }
