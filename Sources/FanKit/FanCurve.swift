@@ -95,9 +95,12 @@ public struct FanCurve: Sendable, Hashable, Codable {
     /// cannot be honoured.
     public static let defaultHysteresisCelsius: Double = 2.0
 
-    /// - Parameter points: The curve's points. If even one is non-finite, the stored
-    ///   curve holds none of them — see the reasoning below, and the invariant on `points`
-    ///   above.
+    /// If even one of `points` is non-finite the stored curve holds none of them — see the
+    /// reasoning below, and the invariant on `points` above.
+    ///
+    /// Written as prose rather than a `- Parameter points:` section because `swift format
+    /// --strict` refuses a singular inline parameter on a four-parameter initialiser, and
+    /// documenting the other three to satisfy it would be three lines restating their names.
     public init(
         points: [Point],
         source: SensorGroup,
