@@ -8,14 +8,17 @@ import Testing
 /// against the source tree.
 ///
 /// [#228](https://github.com/blamechris/Aeolus/issues/228) is what this exists for, and the
-/// defect it records is worth restating because it is not a typo. Six places describe
-/// `restoreAllToAutomatic`. `SupervisedFanAuthority.restoreAllToAutomatic` has always been
-/// right; `LeaseAuthority.releaseEveryLease`, `LeaseTeardownTests`,
-/// `AeolusXPCProtocol.restoreAllToAutomatic`'s declaration and `ADR 0005` all said, in plain
-/// present indicative, that the verb additionally restores every enumerated fan — and the
-/// declaration named the `Ftst` force key outright. `docs/SAFETY.md` § 7 inherited the claim
-/// and [#222](https://github.com/blamechris/Aeolus/issues/222) corrected the document side
-/// without touching the source comments it came from.
+/// defect it records is worth restating because it is not a typo. The issue names three sites;
+/// `documentationSites` below is the verified list, and it is **seven**.
+/// `SupervisedFanAuthority.restoreAllToAutomatic` has always been right. Four said, in plain
+/// present indicative, that the verb additionally restores every enumerated fan —
+/// `LeaseAuthority.releaseEveryLease`, `LeaseTeardownTests`,
+/// `AeolusXPCProtocol.restoreAllToAutomatic`'s declaration, which named the `Ftst` force key
+/// outright beside `fanctl reset --all`, and `ADR 0005`. A fifth, the ordering paragraph above
+/// that declaration, said "each fan" where it meant the fans the dropped leases covered. The
+/// seventh, `FanAuthority`'s requirement, was merely silent about the gap. `docs/SAFETY.md` § 7
+/// inherited the claim and [#222](https://github.com/blamechris/Aeolus/issues/222) corrected
+/// the document side without touching the source comments it came from.
 ///
 /// **Why a tripwire and not a behavioural test.** A behavioural test can only assert what the
 /// handler does, and what the handler does is already covered —
@@ -104,7 +107,7 @@ struct PanicPathScopeTripwireTests {
                 !body.contains(verb),
                 """
                 SupervisedFanAuthority.restoreAllToAutomatic names `\(verb)`. That is the \
-                machine-wide restore, and the whole of #228 is that six places describe this \
+                machine-wide restore, and the whole of #228 is that seven places describe this \
                 verb and four of them used to claim it already issues one. If the write path \
                 now exists and this is intended, every site below has to say so in the same \
                 commit:
