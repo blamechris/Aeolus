@@ -80,20 +80,22 @@ struct TeardownSweepTripwireTests {
 
         // Coverage, not decoration. A regex that stopped matching, a renamed file or a brace
         // walk that fell over would leave `offenders` empty over source nobody read — which is
-        // exactly how a tripwire passes for the life of a defect. Both numbers are floors: the
-        // file has four loops and six restore call sites as this lands, and a change that adds
-        // either must not have to come back here.
+        // exactly how a tripwire passes for the life of a defect. Both numbers are floors set AT
+        // what the file holds as this lands — four loops, six restore call sites — so a change
+        // that ADDS either need not come back here, while one that stops a currently-detected
+        // site from matching does. A floor one below the true count is the same hole, one notch
+        // smaller: a whole expected site can go undetected and still read as coverage.
         #expect(
-            loops >= 3,
+            loops >= 4,
             """
             the loop scan found \(loops) for-in loops in \(Self.leaseCoreFile). It is supposed \
-            to find at least the two log loops in the revocation paths and the two in \
+            to find the two log loops in the revocation paths and the two in \
             `restore(_:because:)` itself, so the assertion below is green over nothing.
             """)
         #expect(
-            code.components(separatedBy: Self.restoreCall).count - 1 >= 5,
+            code.components(separatedBy: Self.restoreCall).count - 1 >= 6,
             """
-            \(Self.leaseCoreFile) names `\(Self.restoreCall)` fewer than five times. Either the \
+            \(Self.leaseCoreFile) names `\(Self.restoreCall)` fewer than six times. Either the \
             teardown paths no longer restore — which is docs/SAFETY.md § 1's whole substance — \
             or this scan is not reading the lease core.
             """)
