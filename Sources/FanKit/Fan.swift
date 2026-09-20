@@ -303,8 +303,25 @@ public struct FanState: Sendable, Hashable, Codable {
     /// `.unavailable(.boundsImplausible)` — and offering them as one answer is what stops a
     /// caller handling only the half it happened to think of.
     public var controlEnvelope: Result<FanControlEnvelope, FanBoundsImplausibility> {
-        guard let fan else { return .failure(.notMeasured) }
-        return fan.controlEnvelope
+        Self.controlEnvelope(declaredMinimum: minimumRPM, declaredMaximum: maximumRPM)
+    }
+
+    /// The same judgement, asked of two readings rather than of an assembled `FanState`.
+    ///
+    /// It exists because the availability a producer has to state in the initialiser above
+    /// depends on this answer, so a producer cannot reach the instance property: the value
+    /// whose field it would read does not exist yet. The property delegates here rather than
+    /// the other way round, so there is **one** derivation of "no envelope" and both callers
+    /// get the `.notMeasured`-versus-implausible distinction from the same place.
+    public static func controlEnvelope(
+        declaredMinimum: FanReading,
+        declaredMaximum: FanReading
+    ) -> Result<FanControlEnvelope, FanBoundsImplausibility> {
+        guard let minimum = declaredMinimum.value, let maximum = declaredMaximum.value else {
+            return .failure(.notMeasured)
+        }
+        return FanControlEnvelope.validating(
+            declaredMinimumRPM: minimum, declaredMaximumRPM: maximum)
     }
 
     public init(
