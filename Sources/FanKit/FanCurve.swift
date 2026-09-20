@@ -28,12 +28,36 @@ public struct FanCurve: Sendable, Hashable, Codable {
             self.rpm = rpm
         }
 
+        /// Finiteness only. Deliberately not a plausibility range on `rpm` — `FanKit` has
+        /// no fan identity, so it has no bounds to judge a speed against (see
+        /// `FanTargetRPM`'s own admission of that gap), and the clamp into a real fan's
+        /// envelope is `FanControlEnvelope.target(for:)`'s job, applied once a curve's
+        /// output actually reaches a write. A range check here would be a second,
+        /// unreachable clamp: nothing this type does can tell a plausible RPM for one fan
+        /// from an implausible one for another, so a guard drawn here could only ever be
+        /// wrong for some machine. NaN and the infinities, in contrast, are wrong for
+        /// every fan on every machine, which is what makes finiteness the one condition
+        /// that earns its place — a guard no test can kill is worse than no guard.
+        var isFinite: Bool {
+            temperatureCelsius.isFinite && rpm.isFinite
+        }
+
         public static func < (lhs: Point, rhs: Point) -> Bool {
             lhs.temperatureCelsius < rhs.temperatureCelsius
         }
     }
 
     /// Curve points, kept sorted by temperature.
+    ///
+    /// **Always entirely finite, and always in the order above.** Both initialisers
+    /// guarantee it: a payload or a caller that supplied even one non-finite point yields
+    /// `[]`, never a curve missing just the bad point. See `init(points:source:
+    /// hysteresisCelsius:maximumRampRPMPerSecond:)` for why dropping the offending point
+    /// was rejected in favour of dropping the whole curve. The payoff is that nothing past
+    /// construction has to check: E8b's evaluator can never be handed a NaN point, and
+    /// `Point.<(_:_:)` can never be asked to order one — which matters because NaN is never
+    /// `<` anything, so a `sorted()` fed one does not raise, it silently produces an
+    /// incoherent order. That was the defect; this is what closes it.
     public let points: [Point]
     /// The sensors driving this curve, aggregated by `aggregation`.
     public let source: SensorGroup
@@ -67,13 +91,27 @@ public struct FanCurve: Sendable, Hashable, Codable {
     /// cannot be honoured.
     public static let defaultHysteresisCelsius: Double = 2.0
 
+    /// - Parameter points: The curve's points. If even one is non-finite, the stored
+    ///   curve holds none of them — see the reasoning below, and the invariant on `points`
+    ///   above.
     public init(
         points: [Point],
         source: SensorGroup,
         hysteresisCelsius: Double = FanCurve.defaultHysteresisCelsius,
         maximumRampRPMPerSecond: Double = FanSafetyLimits.maximumRampRPMPerSecond
     ) {
-        self.points = points.sorted()
+        // All-or-nothing, not "drop the bad point and keep the rest". Dropping one point
+        // would yield a *different working curve* and apply it without a word to anyone —
+        // exactly the "silently substituted" failure #190 exists to close, just moved one
+        // level down from a whole setting to a single point within one. An empty curve
+        // commands nothing at all, which is legible and, more importantly, safe: with no
+        // points to evaluate against, this fan is left on Apple's own thermal management,
+        // the same designed-safe fallback state `docs/SAFETY.md` reaches for everywhere
+        // else a mechanism cannot be trusted — CLAUDE.md rule 2's lease expiry restores
+        // exactly this, and `FanSetting`'s own non-finite `.fixed(rpm:)` falls back to
+        // `.automatic` for the identical reason. A curve that silently kept going with one
+        // point quietly discarded is a curve nobody asked for.
+        self.points = points.allSatisfy(\.isFinite) ? points.sorted() : []
         self.source = source
         self.hysteresisCelsius = FanCurve.effectiveHysteresisCelsius(
             requested: hysteresisCelsius)
@@ -115,7 +153,8 @@ extension FanCurve {
         case maximumRampRPMPerSecond
     }
 
-    /// Decoding applies the same clamp and the same sort as the memberwise initialiser.
+    /// Decoding applies the same clamp and the same sort as the memberwise initialiser —
+    /// and, for `points`, **refuses rather than repairs**.
     ///
     /// A synthesised `init(from:)` assigns the stored properties directly, which would
     /// have made the guarantees on `points` and `maximumRampRPMPerSecond` true of curves
@@ -123,14 +162,45 @@ extension FanCurve {
     /// one ever reaches the helper. A rule that holds everywhere except across the
     /// privilege boundary is not a rule.
     ///
+    /// `hysteresisCelsius` and `maximumRampRPMPerSecond` still route through the
+    /// memberwise initialiser's fallback-to-default clamp once decoded, because a request
+    /// for those is meaningfully answerable — "as gentle a ramp as the compiled cap allows"
+    /// is a coherent thing to substitute for a bad request. `points` is different: there is
+    /// no default curve to substitute, and silently emptying a badly-formed one, the way
+    /// the memberwise initialiser does for a caller in this process, would hide exactly
+    /// what a *client* needs told. So the boundary here does what
+    /// `FanControlEnvelope.target(for:)`'s doc comment calls "the last line before
+    /// firmware, not the only one", in the opposite order: this **is** the outer line, the
+    /// one a client can be answered from, and it throws so the client hears what was wrong
+    /// with its payload rather than receiving a curve that quietly does nothing. The
+    /// memberwise initialiser's empty-on-bad-input behaviour is the inner line, the one
+    /// that cannot be forgotten, for every other route a `FanCurve` gets built — a test
+    /// fixture, a future call site, anything that isn't this decoder.
+    ///
+    /// Because `AeolusXPCValidation.decodeFanSettings(from:)` wraps any `DecodingError`
+    /// into `AeolusXPCFault.malformedPayload`, this refusal already reaches an XPC client
+    /// with no protocol bump and no change to `AeolusXPC` — the throw here is enough; do
+    /// not add a parallel finiteness check there.
+    ///
+    /// The debug description is deliberately value-free, the same discipline
+    /// `FanBoundsImplausibility.description` documents for itself: a root daemon must not
+    /// echo a client's bytes into its own log, and a value-free message is what lets this
+    /// be compared in a test without that test also pinning Foundation's own wording.
+    ///
     /// Every field stays required. `FanCurve`'s Swift-side defaults are a convenience for
     /// constructing one in code; a payload that omits a field is a client that did not say
     /// what it wanted, and the helper should not decide that for it — the same reasoning
     /// `AeolusXPCValidation.decodeLeaseRequest(from:)` records for `LeaseRequest`.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let points = try container.decode([Point].self, forKey: .points)
+        guard points.allSatisfy(\.isFinite) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .points, in: container,
+                debugDescription: "a curve point is not finite")
+        }
         self.init(
-            points: try container.decode([Point].self, forKey: .points),
+            points: points,
             source: try container.decode(SensorGroup.self, forKey: .source),
             hysteresisCelsius: try container.decode(Double.self, forKey: .hysteresisCelsius),
             maximumRampRPMPerSecond: try container.decode(
