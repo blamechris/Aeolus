@@ -1150,8 +1150,17 @@ extension SafetyLog {
     ///   - budget: how long the handback was waited for before the wait was given up.
     ///   - unconfirmed: the fans recorded as unconfirmed handbacks by decision D33, named
     ///     rather than counted so the line identifies which fan to go and look at.
+    ///   - keystoneOutstanding: whether the machine-wide `restoreToAutomatic(.everyFan)` had
+    ///     still not returned when the budget fired. **Observed, not inferred**, which is the
+    ///     whole of this parameter's reason to exist: this line used to describe an empty
+    ///     `unconfirmed` set as *"the keystone restore is what is outstanding"*, which was a
+    ///     guess dressed as a finding. An empty set has two causes — a keystone-only wedge
+    ///     with no lease held, and a handback in which every restore came back — and they are
+    ///     opposite facts about whether the Apple Silicon force key was cleared. Issue #202
+    ///     item 2 is exactly that: with no lease held, `recordUnconfirmedHandbacks()` reads an
+    ///     empty `releasing` and nothing records that the keystone never cleared the key.
     func allowingSleepWithHandbackUnconfirmed(
-        after budget: Duration, leaving unconfirmed: Set<Int>
+        after budget: Duration, leaving unconfirmed: Set<Int>, keystoneOutstanding: Bool
     ) {
         emit(
             .fault,
@@ -1159,7 +1168,9 @@ extension SafetyLog {
             Allowing the system to sleep with the handback still outstanding after \
             \(budget). Fan(s) \(Self.describeFans(unconfirmed)) may cross the sleep still \
             under manual control, and a new lease over one is refused until something \
-            confirms its mode. What can still act: the parked restore may yet land — and \
+            confirms its mode. \
+            \(Self.describeKeystone(outstanding: keystoneOutstanding)) \
+            What can still act: the parked restore may yet land — and \
             that is what clears this — § 3 takes any such fan to full scale if it comes back \
             above the thermal ceiling, and startup reconciliation returns it to automatic at \
             the next helper start. § 1's TTL cannot — this handback dropped every lease \
@@ -1170,13 +1181,32 @@ extension SafetyLog {
 
     /// Fan indices for a log line, or a phrase for the empty set.
     ///
-    /// "none" rather than an empty list, because the empty case is meaningful here: the
-    /// budget expired with nothing outstanding at the lease core, which means whatever is
-    /// parked is the machine-wide keystone rather than a fan this helper held.
+    /// "none" rather than an empty list, because the empty case is meaningful here: no fan
+    /// this helper held a lease over was still mid-handback when the budget fired. What that
+    /// says about the machine-wide keystone is a **separate** observation and is reported
+    /// separately — see `describeKeystone(outstanding:)`. This phrase used to answer both
+    /// questions from one of them.
     private static func describeFans(_ fans: Set<Int>) -> String {
         fans.isEmpty
-            ? "none (the keystone restore is what is outstanding)"
+            ? "none at the lease core"
             : fans.sorted().map(String.init).joined(separator: ", ")
+    }
+
+    /// What the machine-wide keystone restore was doing when the budget fired.
+    ///
+    /// The outstanding case is the one worth a sentence of its own: the keystone is what
+    /// clears the Apple Silicon force key, and it consumes no lease, so a wedge in it is
+    /// invisible to every register the lease core keeps. On a machine with no lease held it is
+    /// the *only* thing that was in flight, and before #202 the line above claimed that
+    /// without having looked.
+    private static func describeKeystone(outstanding: Bool) -> String {
+        outstanding
+            ? """
+            The machine-wide restore had not returned either, so the Apple Silicon force key \
+            may still be set and no fan is known to be back on automatic control — including \
+            fans this helper never held a lease over.
+            """
+            : "The machine-wide restore did return, so the force key was cleared."
     }
 
     /// The machine woke, and the helper wrote nothing.

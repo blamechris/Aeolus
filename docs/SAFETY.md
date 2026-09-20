@@ -637,11 +637,32 @@ the fan, in the order it can act:
 
 - **The parked restore may still land.** Nothing cancels it; § 4 stops waiting, and
   `BoundedFanRestorer` keeps attempting inside a task that does not inherit cancellation.
-- **Every fan still outstanding is recorded as an *unconfirmed* handback before the sleep is
-  acknowledged** (`LeaseAuthority.recordUnconfirmedHandbacks()`, decision D33 — ADR 0007,
-  amendment 2026-09-06, #209). No client can take a lease over a fan the helper never saw
-  return to automatic control: it is refused `.handbackUnconfirmed`, exactly as hard as the
-  durable refusal, for as long as it stands. **This bullet said "an abandoned handback" and
+- **Every fan a dropped lease covered is recorded as an *unconfirmed* handback before the
+  sleep is acknowledged** (`LeaseAuthority.recordUnconfirmedHandbacks()`, decision D33 —
+  ADR 0007, amendment 2026-09-06, #209). No client can take a lease over a fan the helper
+  never saw return to automatic control: it is refused `.handbackUnconfirmed`, exactly as
+  hard as the durable refusal, for as long as it stands.
+
+  **This bullet said "every fan still outstanding", and that over-claimed** (#202 item 2,
+  corrected in place). `recordUnconfirmedHandbacks()` reads `releasing`, and only a lease
+  teardown populates it — so the fans it records are the ones *this helper held a lease
+  over*, not every fan on the machine. On a sleep with no lease held it records nothing at
+  all, correctly, because there was no lease-scoped handback to be outstanding.
+
+  What that leaves is the **keystone**, which is machine-wide, consumes no lease, and is the
+  call that clears the Apple Silicon force key. A wedge in it is invisible to every register
+  the lease core keeps, so it is **observed and reported rather than inferred**: the
+  acknowledgement carries whether `restoreToAutomatic(.everyFan)` had returned, and the
+  fault line says so either way. Before #202 that line described an empty set as *"the
+  keystone restore is what is outstanding"* — true on a keystone-only wedge and false when
+  every restore had simply come back, which are opposite facts about whether the force key
+  was cleared.
+
+  The completeness of the recorded set rests on one property, stated here because it is a
+  property of a *call site* rather than of the register: `releaseEveryLease()` issues **one**
+  `restore` over the union of every dropped lease's fans, and `restore` marks the whole set
+  before it suspends. Restoring per fan in a loop would leave every fan after the first
+  wedged write neither restored nor recorded (#202 item 4). **This bullet said "an abandoned handback" and
   named decision D17, and the ordering claim it makes is unchanged — only the state recorded
   is** (corrected in place, for the reason the bullet below this one gives about its own
   staleness). How it ends, and the three endings are the whole of D33:
