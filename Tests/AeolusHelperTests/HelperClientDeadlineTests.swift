@@ -107,37 +107,23 @@ struct HelperClientDeadlineTests {
     /// than only one that is tighter. `unhurried` keeps `>=`, because being generous is
     /// deliberate there.
     ///
-    /// **What it does not cover, and why that is not hidden.** Ten call sites pass a deadline
-    /// explicitly. A bound below the product's is legitimate at a site where the expiry *is*
-    /// the assertion — `HelperClientTests.aMessageNobodyAnswersHasItsOwnError`'s 250 ms gated
-    /// verb, `theHandshakeIsSentWithinItsOwnDeadline`'s 1 ns handshake,
-    /// `FanctlResetTests.aHelperThatNeverAnswersIsReportedAsUnknown`'s 2 s panic path — and
-    /// that is what most of those sites are for. Verb by verb, what is left over is two
-    /// different things:
+    /// **What it does not cover, and what now does.** Eleven constructions pass a deadline
+    /// explicitly, and this test reads none of them. A bound below the product's is legitimate at
+    /// a site where the expiry *is* the assertion — `aMessageNobodyAnswersHasItsOwnError`'s 250 ms
+    /// gated verb, `theHandshakeIsSentWithinItsOwnDeadline`'s 1 ns handshake,
+    /// `FanctlResetTests.aHelperThatNeverAnswersIsReportedAsUnknown`'s 2 s panic path — and that
+    /// is what those sites are for. What this comment used to enumerate beside them was five
+    /// terms that were *not*: handshake terms below the product's 15 s at all three of
+    /// `HelperClientTeardownTests`' short sites, and panic terms at half the product's 10 s, on
+    /// round trips those tests require to succeed or never send at all.
     ///
-    /// - **Below the product on a round trip the test requires to *succeed*** — live exposure,
-    ///   #250's own shape. In `HelperClientTeardownTests`: `panicVerb: .seconds(5)`, half the
-    ///   product's 10 s, in `thePanicPathSurvivesATimedOutVerb` and
-    ///   `thePanicPathIsNotBlockedByAParkedVerb`, both of which then `await
-    ///   client.restoreAllToAutomatic()` and assert it arrived; and the handshake term below
-    ///   the product's 15 s at **all three** of that file's short sites —
-    ///   `handshakeVerb: .seconds(5)` in `aTimedOutVerbDoesNotWedgeTheVerbsAfterIt` and
-    ///   `thePanicPathSurvivesATimedOutVerb`, `.seconds(10)` in
-    ///   `thePanicPathIsNotBlockedByAParkedVerb` — each of which sends a `hello` that only has
-    ///   to succeed.
-    /// - **Below the product on a verb the test never sends** — inert, no exposure, named only
-    ///   so this list cannot be read as shorter than the truth: `panicVerb: .seconds(5)` in
-    ///   `aTimedOutVerbDoesNotWedgeTheVerbsAfterIt` (whose second verb is `acquireLease`) and
-    ///   in `HelperClientTests.theHandshakeIsSentWithinItsOwnDeadline`, and
-    ///   `panicVerb: deadline` in `aMessageNobodyAnswersHasItsOwnError`. None of the three
-    ///   touches the panic path.
-    ///
-    /// [#255](https://github.com/blamechris/Aeolus/issues/255) carries the first category —
-    /// the handshake terms it was filed for **and** the panic terms, which are in its
-    /// acceptance rather than only in this comment, because a category named here and absent
-    /// there is a category nobody fixes. Deciding whether a `SeamScanner` pass over the target
-    /// is worth its own tripwire is part of that issue too. This test is cover for none of it
-    /// and must not be read as it.
+    /// [#255](https://github.com/blamechris/Aeolus/issues/255) closed that category and decided
+    /// the scan question it left open: `HelperClientDeadlineLiteralTests` holds every term of
+    /// every explicit construction under `Tests/` to the product's bound, or to a named licence
+    /// saying what asserts the tighter one. So the enumeration that lived here is not maintained
+    /// here any more — a list in a doc comment is what let the panic column survive the issue the
+    /// comment pointed at. This test is still cover for the *defaults* alone and must not be read
+    /// as more.
     ///
     /// **It is also a relative check, deliberately, and that leaves a second route open.**
     /// Both sides move together if `HelperClientDeadlines` itself is tightened — a reachable
@@ -265,9 +251,11 @@ struct HelperClientDeadlineTests {
     ///
     /// **It is not a guard over the whole category either, and the honest limit is: it exercises
     /// `ClientListenerHarness`.** A *new* harness written with a fresh 750 ms literal of its own
-    /// would be caught by neither test, and nothing mechanical in this target would catch it —
-    /// [#255](https://github.com/blamechris/Aeolus/issues/255) is where deciding on a source scan
-    /// lives.
+    /// is still not caught by either test here. What catches it now is the source scan
+    /// [#255](https://github.com/blamechris/Aeolus/issues/255) settled on —
+    /// `HelperClientDeadlineLiteralTests`, which reads the literal rather than the round trip —
+    /// and that has its own limit in the other direction: it cannot see a bound expressed as a
+    /// local whose value it does not know, which is why each of those is licensed by name.
     ///
     /// The lag is constructed rather than raced, by the harness's existing
     /// `holdingHandshakeReplies` signal: `hello` reaches the real session, the handshake is

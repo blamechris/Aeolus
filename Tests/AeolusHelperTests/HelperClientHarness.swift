@@ -85,10 +85,16 @@ final class ClientListenerHarness {
     /// reproduction runs at `.nanoseconds(1)`, and the line numbers in #250's list are from a
     /// tree several comment inserts ago.
     ///
-    /// It is not enough to retire #239. The only portable guard against the lifetime reading
-    /// is still the one the tests that care already use — pinning the harness past the last
-    /// call, `sessions.isEmpty` in `aRefusingHelperIsPromptAndNamesBothPossibilities` being
-    /// the pattern — and #239's second defect stays open for exactly that reason.
+    /// It was not enough to retire #239, and the portable guard is the one the tests that care
+    /// now use at both sites: pin the harness past the last call by asserting the **precondition**
+    /// it can observe. `sessions.isEmpty` in `aRefusingHelperIsPromptAndNamesBothPossibilities`
+    /// is the pattern, and `EmptyReplyListenerHarness.acceptedConnections` — read by
+    /// `HelperClientTests.emptyReplyIsAProtocolViolation` — is the other, that harness having had
+    /// nothing observable to read until #239 was closed. Both hold whatever ARC is permitted to
+    /// do, which is why they are the answer rather than another measurement of this toolchain.
+    ///
+    /// `withExtendedLifetime` is not an alternative at either site: its closure is not `async`
+    /// and the bodies that need extending over are.
     deinit {
         delegate.invalidateConnections()
         listener.invalidate()
@@ -154,13 +160,16 @@ final class ClientListenerHarness {
     /// `HelperClientDeadlineTests.noHarnessDefaultImposesATighterDeadlineThanTheProduct`
     /// requires this constant to **equal** the shipping trio, and `FanctlResetTests.unhurried`
     /// to be no tighter than it. Those two are every *default* in the test target, so no test
-    /// inherits a bound tighter than the product's without that test going red. It says nothing
-    /// about a deadline a test passes **explicitly** at its call site: ten call sites do, and
-    /// five of those are below the product's bound on a verb they do not assert — the panic
-    /// terms and handshake terms in `HelperClientTeardownTests` that
-    /// [#255](https://github.com/blamechris/Aeolus/issues/255) carries, plus two panic terms on
-    /// a verb the test never sends at all. That test's own doc enumerates which is which. Read
-    /// the invariant as "no test inherits a tighter bound", never as "no tighter bound exists".
+    /// inherits a bound tighter than the product's without that test going red.
+    ///
+    /// It still says nothing about a deadline a test passes **explicitly** at its call site —
+    /// eleven constructions do — but that half is no longer uncovered either.
+    /// [#255](https://github.com/blamechris/Aeolus/issues/255) settled it with a source scan:
+    /// `HelperClientDeadlineLiteralTests` requires every term of every such construction under
+    /// `Tests/` to resolve to a bound no tighter than the product's, or to be licensed by name
+    /// with what asserts it. The five terms that were below the product's bound on a verb their
+    /// test does not assert — the handshake and panic terms in `HelperClientTeardownTests` — are
+    /// gone rather than documented.
     ///
     /// Because this constant is *defined* as the product's trio, the comparison is a value
     /// against itself: it is a source tripwire that fires when a literal is written back in, not
