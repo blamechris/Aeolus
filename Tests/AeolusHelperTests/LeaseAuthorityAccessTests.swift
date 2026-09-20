@@ -21,16 +21,26 @@ import Testing
 ///
 /// ## Both directions, for the reason `WriteVerbAllowlistTests` gives
 ///
-/// `theRegistryStaysPrivate` fails when a listed member loses its `private`, **and** when it
-/// is no longer declared at all. A guard naming a member that has been renamed away asserts
-/// nothing while still reading like protection.
+/// `theRegistryStaysPrivate` fails when a listed member loses its `private`, when it is no
+/// longer declared at all, **and** when a second line of the file matches the same spelling. A
+/// guard naming a member that has been renamed away asserts nothing while still reading like
+/// protection, and one with two lines to choose from was silently judging the first of them —
+/// see `MemberAccessScan.declaration(of:in:from:)` for what that cost on the sibling suite.
 ///
 /// `onlyTheAcknowledgedPropertiesAreInternal` and `onlyTheAcknowledgedMethodsAreInternal` are
 /// the halves that catch the widening nobody listed. They scan every property and every
-/// method declared at the actor's own member indent — across **both** files the actor is
+/// method declared at the actor's own member indent — across **every** file the actor is
 /// written in — and require the internal ones to be exactly the acknowledged sets, so a new
 /// one is a failure a maintainer has to answer for here, in the file that says why the
 /// existing ones were acceptable.
+///
+/// That the two files below are every file is itself asserted, by
+/// `theScannedFilesAreEveryFileTheActorIsIn`. The list was hand-written until
+/// [#236](https://github.com/blamechris/Aeolus/issues/236), which is the same gap #236
+/// reproduced on `HelperConnectionSessionAccessTests`: a *third* file declaring
+/// `extension LeaseAuthority` was scanned by nothing, so a synchronous internal method written
+/// there — with `table`, `tombstones` and `restore(_:because:)` all in scope — widened the
+/// lease core while every assertion here passed.
 ///
 /// ## Where the parse lives
 ///
@@ -38,7 +48,9 @@ import Testing
 /// [#98](https://github.com/blamechris/Aeolus/issues/98) split
 /// `HelperConnectionSession.swift` the same way and needed the same guard. It records why
 /// the modifier run is parsed rather than assumed absent — `private(set) var table` is the
-/// spelling that motivated it — and why a method is scanned as well as a property:
+/// spelling that motivated it — why an attribute is skipped by its parentheses rather than by
+/// its whitespace, why a method's key carries its signature, and why a method is scanned as
+/// well as a property:
 /// `WriteVerbAllowlistTests` filters its population on `isAsync || mentions(anyOf: permits)`,
 /// so `func forceRelease(fanAt: Int) { table.remove(...) }` added here would be reachable
 /// from every file in `AeolusHelper` and caught by nothing else.
@@ -47,11 +59,18 @@ struct LeaseAuthorityAccessTests {
 
     private static let authorityFile = "LeaseAuthority.swift"
 
-    /// Both files `LeaseAuthority`'s members are written in.
+    /// The type whose members these guards are about, and the target it is written in.
+    private static let authorityType = "LeaseAuthority"
+    private static let helperTarget = "AeolusHelper"
+
+    /// Both files `LeaseAuthority`'s members are written in, **sorted**, and checked against
+    /// the tree by `theScannedFilesAreEveryFileTheActorIsIn` rather than trusted.
     ///
     /// The extension's members sit at the same indent and are members of the same actor, so
     /// scanning only the main file would let the next split widen a member simply by putting
-    /// it in the second one — which is the move that made this suite necessary.
+    /// it in the second one — which is the move that made this suite necessary. Adding a third
+    /// file is a decision about what it may widen, so it is written here rather than derived
+    /// silently at the point of use.
     private static let authorityFiles = [
         "LeaseAuthority.swift",
         "LeaseAuthorityRefusals.swift",
@@ -133,52 +152,78 @@ struct LeaseAuthorityAccessTests {
     /// down is a widening this suite would not have caught. A **new** name appearing here is
     /// the thing to argue about: `table` and `restore(_:because:)` are private, and a new
     /// internal method is the shortest route to reaching them from outside this actor.
+    ///
+    /// **Spelled as signatures, not names**, since #236. A bare-name key cannot tell a second
+    /// method that reuses an acknowledged name from the one that was acknowledged, and the
+    /// shortest route it leaves open here is the worst: `releaseEveryLease()` is on this list,
+    /// so `releaseEveryLease(sparing: Set<Int>)` would have been too, for free.
     private static let acknowledgedInternalMethods: Set<String> = [
-        "refuseIfWritePathNotBuilt",
-        "refuseIfBlind",
-        "refuseIfForeignManualControl",
-        "acquireLease",
-        "renewLease",
-        "releaseLease",
-        "heldLease",
-        "expireLapsedLeases",
-        "nextExpiryDeadline",
-        "connectionDidInvalidate",
-        "revokeLeases",
-        "revokeEveryLease",
-        "releaseEveryLease",
-        "sealForSleep",
-        "unsealAfterWake",
-        "recordUnconfirmedHandbacks",
-        "activeLease",
-        "activeLeaseView",
-        "holdsTombstone",
+        "refuseIfWritePathNotBuilt(_: ConnectionID)",
+        "refuseIfBlind(_: ConnectionID)",
+        "refuseIfForeignManualControl(_: ConnectionID, wanting: Set<Int>)",
+        "acquireLease(_: LeaseRequest, from: ConnectionID)",
+        "renewLease(id: UUID, from: ConnectionID)",
+        "releaseLease(id: UUID, from: ConnectionID)",
+        "heldLease(id: UUID, from: ConnectionID)",
+        "expireLapsedLeases()",
+        "nextExpiryDeadline()",
+        "connectionDidInvalidate(_: ConnectionID)",
+        "revokeLeases(coveringFan: Int, because: FanRestoreCause)",
+        "revokeEveryLease(because: FanRestoreCause)",
+        "releaseEveryLease()",
+        "sealForSleep()",
+        "unsealAfterWake()",
+        "recordUnconfirmedHandbacks()",
+        "activeLease()",
+        "activeLeaseView()",
+        "holdsTombstone(for: ConnectionID)",
     ]
+
+    /// The file set is a claim about the tree, so it is read off the tree — see
+    /// `HelperConnectionSessionAccessTests`, where #236's mutation was reproduced, for the
+    /// shape of the hole this closes. `authorityFile` is checked the same way, because
+    /// `theRegistryStaysPrivate` opens that one file and asserts nothing about any other.
+    @Test("Every file the lease core is written in is one this suite scans")
+    func theScannedFilesAreEveryFileTheActorIsIn() throws {
+        let sites = try MemberAccessScan.filesDeclaring(
+            Self.authorityType, inTarget: Self.helperTarget)
+
+        #expect(
+            sites.members == Self.authorityFiles.sorted(),
+            """
+            the files \(Self.authorityType) is written in changed: the tree declares it in \
+            \(sites.members), this suite scans \(Self.authorityFiles.sorted()). A file this \
+            suite does not scan can widen any member of the lease core — and inside one \
+            `table`, `tombstones` and `restore(_:because:)` are all in scope — while every \
+            assertion here stays green. Add it to `authorityFiles` and say what it is allowed \
+            to widen.
+            """
+        )
+        #expect(
+            sites.declarations == [Self.authorityFile],
+            """
+            \(Self.authorityType)'s own declaration is in \(sites.declarations), and \
+            `authorityFile` names \(Self.authorityFile). That name is what \
+            `theRegistryStaysPrivate` opens, so a declaration that has moved leaves it \
+            asserting about a file the registry no longer lives in.
+            """
+        )
+    }
 
     @Test("Every member that decides who may hold or release a fan is still private")
     func theRegistryStaysPrivate() throws {
         let code = try Self.strippedSource(of: Self.authorityFile)
 
         for member in Self.mustStayPrivate {
-            let line =
-                code
-                .split(separator: "\n", omittingEmptySubsequences: false)
-                .first { $0.contains(member) }
-            let declaration = try #require(
-                line,
-                """
-                \(member) is no longer declared in \(Self.authorityFile). This guard names \
-                the members whose privacy is load-bearing; one that has been renamed or \
-                removed has to be re-stated here, or the entry is protecting nothing.
-                """
-            )
+            let declaration = try MemberAccessScan.declaration(
+                of: member, in: code, from: Self.authorityFile)
             #expect(
-                declaration.trimmingCharacters(in: .whitespaces).hasPrefix("private "),
+                declaration.hasPrefix("private "),
                 """
-                `\(declaration.trimmingCharacters(in: .whitespaces))` is no longer private. \
-                An internal member of the lease core is reachable from every file in \
-                AeolusHelper — see LeaseAuthorityRefusals.swift for the ones that were \
-                widened on purpose and why this one is not among them.
+                `\(declaration)` is no longer private. An internal member of the lease core \
+                is reachable from every file in AeolusHelper — see \
+                LeaseAuthorityRefusals.swift for the ones that were widened on purpose and \
+                why this one is not among them.
                 """
             )
         }
@@ -187,7 +232,7 @@ struct LeaseAuthorityAccessTests {
     @Test("Only the acknowledged properties of the lease core are internal")
     func onlyTheAcknowledgedPropertiesAreInternal() throws {
         let internalProperties = Set(
-            try Self.members(keyword: .property).filter { !$0.isPrivate }.map(\.name))
+            try Self.members(keyword: .property).filter { !$0.isPrivate }.map(\.key))
 
         #expect(
             internalProperties == Self.acknowledgedInternalProperties,
@@ -204,7 +249,7 @@ struct LeaseAuthorityAccessTests {
     @Test("Only the acknowledged methods of the lease core are internal")
     func onlyTheAcknowledgedMethodsAreInternal() throws {
         let internalMethods = Set(
-            try Self.members(keyword: .method).filter { !$0.isPrivate }.map(\.name))
+            try Self.members(keyword: .method).filter { !$0.isPrivate }.map(\.key))
 
         #expect(
             internalMethods == Self.acknowledgedInternalMethods,
