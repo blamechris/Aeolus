@@ -40,7 +40,7 @@ import Testing
 ///
 /// - **A synchronous function that spawns an unstructured `Task` and writes inside it.**
 ///   That is the one route around "a synchronous function cannot `await`".
-///   `Sources/AeolusHelper` has **fourteen** such spawn sites today, and an earlier draft of
+///   `Sources/AeolusHelper` has **sixteen** such spawn sites today, and an earlier draft of
 ///   this bullet said five and called them all supervisors — which was both the wrong number
 ///   and the wrong description, so the containment argument it offered was not the one the
 ///   tree supports. The count then said fourteen for one wave after
@@ -50,11 +50,14 @@ import Testing
 ///   `everyUnstructuredTaskHandsOffToThePopulation` below: **no spawn site writes in its own
 ///   body; each hands off to an `async` method that is itself in this population.** One is
 ///   `MessageSequencer.enqueue(_:)`, which replaced six of `HelperXPCService`'s seven XPC
-///   entry points in [#90](https://github.com/blamechris/Aeolus/issues/90) and is pinned by
-///   `MessageOrderingTests`; one is `HelperXPCService.restoreAllToAutomatic(reply:)`, the
-///   seventh, which keeps its own `Task` because the panic path may not acquire the
-///   precondition a queue is (D27) and whose body is a single `await` of
-///   `HelperConnectionSession.restoreAllToAutomatic()`; one is `HelperListenerDelegate`'s
+///   entry points in [#90](https://github.com/blamechris/Aeolus/issues/90) — four of them
+///   today — and is pinned by `MessageOrderingTests`; **three** are `HelperXPCService`'s
+///   `restoreAllToAutomatic(reply:)`, `renewLease(id:reply:)` and `releaseLease(id:reply:)`,
+///   which keep their own `Task`s because a queue is a precondition the panic path may not
+///   acquire (D27) and a lease heartbeat may not either
+///   ([#229](https://github.com/blamechris/Aeolus/issues/229)), and whose bodies are each a
+///   single `await` of the matching `HelperConnectionSession` method; one is
+///   `HelperListenerDelegate`'s
 ///   invalidation hop; one is
 ///   `ReadOnlyFanAuthority`'s single-flight sensor walk; three are the supervisors'
 ///   `Task.detached` handing control to an `async run(…)`; one is
@@ -604,7 +607,7 @@ struct WriteVerbAllowlistTests {
     ///
     /// An unstructured `Task` lets a synchronous function reach an `async` write, so every
     /// spawn site is a hole in the population — unless what it spawns is itself acknowledged.
-    /// That is what holds here: none of the fourteen bodies writes, and each hands off to an
+    /// That is what holds here: none of the sixteen bodies writes, and each hands off to an
     /// `async` method in the population. (The three supervisors also await a synchronous
     /// `loopEnded(generation:)` that only clears a task handle; `BoundedFanRestorer`'s and
     /// `CriticalTemperatureCache`'s spawners are themselves `async`, so their `Task`s shield
@@ -625,19 +628,25 @@ struct WriteVerbAllowlistTests {
     ///
     /// **Re-pinned by [#90](https://github.com/blamechris/Aeolus/issues/90):** nineteen to
     /// fourteen, because `HelperXPCService`'s seven became two — the single spawn inside
-    /// `MessageSequencer.enqueue(_:)`, which six of its entry points now call instead, and
-    /// the seventh's own `Task`. Those six call sites are still a route around `await` and
+    /// `MessageSequencer.enqueue(_:)`, which six of its entry points then called instead, and
+    /// the seventh's own `Task`. Those call sites are still a route around `await` and
     /// this scanner cannot see them; `MessageOrderingTests` pins them by the same
     /// discipline, and pins the *shape* of each closure too, because the body
     /// `MessageSequencer` awaits is an opaque `@Sendable` closure that no allowlist here can
     /// name.
     ///
-    /// The seventh is `restoreAllToAutomatic`, which keeps its `Task` because the panic path
-    /// may not wait on a message sent before it (D27). It is an ordinary member of this
-    /// population: a synchronous spawner whose body is one `await` of
-    /// `HelperConnectionSession.restoreAllToAutomatic()`.
+    /// **Re-pinned again by [#229](https://github.com/blamechris/Aeolus/issues/229):** fourteen
+    /// to sixteen, because `renewLease` and `releaseLease` came back out of the sequencer. A
+    /// lease heartbeat queued behind the client's own 1 Hz reads could arrive after the TTL it
+    /// was renewing had expired, and `docs/SAFETY.md` § 1's tolerance for two missed beats is a
+    /// property of the client's sending that a helper-side backlog defeated. They are ordinary
+    /// members of this population again: each body is one `await` of the matching
+    /// `HelperConnectionSession` method, and neither writes.
     ///
-    /// The count is asserted per file so it cannot drift silently. A fifteenth spawn site
+    /// The third in that file is `restoreAllToAutomatic`, which keeps its `Task` because the
+    /// panic path may not wait on a message sent before it (D27), on the same argument.
+    ///
+    /// The count is asserted per file so it cannot drift silently. A seventeenth spawn site
     /// fails this with the file it was added to, and the maintainer either shows it hands off
     /// the same way and updates the number, or has found the hole.
     ///
@@ -659,7 +668,7 @@ struct WriteVerbAllowlistTests {
             "ConnectionHealth.swift": 1,
             "CriticalTemperatureCache.swift": 1,
             "HelperListenerDelegate.swift": 1,
-            "HelperXPCService.swift": 1,
+            "HelperXPCService.swift": 3,
             "LeaseExpirySupervisor.swift": 1,
             "MessageSequencer.swift": 1,
             "ReadOnlyFanAuthority.swift": 1,

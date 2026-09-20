@@ -31,14 +31,33 @@ import Foundation
 ///
 /// ## Messages are processed in the order they were sent
 ///
-/// Per connection, **every message except `restoreAllToAutomatic`**, and it is the
-/// **helper's** guarantee rather than a client's discipline. A client may pipeline `hello`
-/// and `snapshot` without awaiting the handshake's reply: the `snapshot` is answered after
-/// the `hello` it was sent behind, and never with `handshakeRequired` for having overtaken
-/// it. The helper calls message N's reply block before it begins message N+1, so the answers
-/// come back in the order the questions went out. "Fire `hello` and `snapshot` together to
-/// save a round trip at launch" is therefore a legal optimisation and not a race a client
-/// has to know about.
+/// Per connection, and it is the **helper's** guarantee rather than a client's discipline. A
+/// client may pipeline `hello` and `snapshot` without awaiting the handshake's reply: the
+/// `snapshot` is answered after the `hello` it was sent behind, and never with
+/// `handshakeRequired` for having overtaken it. The helper calls message N's reply block
+/// before it begins message N+1, so the answers come back in the order the questions went
+/// out. "Fire `hello` and `snapshot` together to save a round trip at launch" is therefore a
+/// legal optimisation and not a race a client has to know about.
+///
+/// **Exactly which messages are sequenced, and which are not.** Sequenced: `hello`,
+/// `snapshot`, `acquireLease`, `apply`. Not sequenced: `restoreAllToAutomatic`, `renewLease`,
+/// `releaseLease` — each **dispatched** the moment it arrives, in no order relative to
+/// anything, and answered on its own schedule rather than the queue's. The line between the
+/// two lists is not the verb's importance: it is whether waiting is a precondition the message
+/// is allowed to acquire. The three unsequenced ones are the ones whose whole value is
+/// promptness — restoring the safe state, proving the client is still alive, and handing the
+/// fans back — and every one of them is an *unlock*, so the queue in front of it is time the
+/// fans spend held by something nobody is checking. The four sequenced ones are the ones a
+/// client pipelines ahead of a reply it has not received, which is the only place ordering
+/// buys anything.
+///
+/// The three carry no ordering guarantee **in either direction**: they may overtake a message
+/// sent before them, and a message sent before them may still complete after them. Each is
+/// idempotent-or-safe under both interleavings — `restoreAllToAutomatic` is global,
+/// `renewLease` extends a TTL it can only extend from now, and `releaseLease` releases a lease
+/// that expiry would have taken anyway — so the reordering costs a *correct* client nothing.
+/// What it can cost is an effect a client wanted last: see the panic path's own paragraph
+/// below, which states the hazard once for all three.
 ///
 /// **The panic path is exempt, and the exemption is the point of it.** Ordering is a
 /// precondition — "every message sent earlier on this connection has returned" — and
@@ -52,24 +71,39 @@ import Foundation
 /// including on a connection it has already pipelined work onto, and it is answered on its
 /// own schedule rather than the queue's. Its reply is the one that may arrive out of order.
 ///
-/// **The hazard the exemption creates, stated plainly.** Because it is not in the queue, a
-/// message sent *before* it on the same connection may still be executing when the restore
-/// runs — and may therefore take effect *after* it, leaving a fan in manual that the panic
-/// was meant to clear. A client that needs the restore to be the last thing that happens
-/// must await its earlier replies first; the exemption buys promptness, not ordering.
+/// **The hazard every exemption creates, stated plainly and once.** Because an unsequenced
+/// message is not in the queue, a message sent *before* it on the same connection may still be
+/// executing when it runs — and may therefore take effect *after* it. For the panic path that
+/// means a fan left in manual that the restore was meant to clear; for `releaseLease` it means
+/// an `apply` sent ahead of it landing on a lease the release had already dropped, or after it.
+/// A client that needs one of the three to be the last thing that happens must await its
+/// earlier replies first; the exemption buys promptness, not ordering.
 /// [#180](https://github.com/blamechris/Aeolus/issues/180) is the mechanism that makes the
 /// interleaving harmless — a write away from the safe state requires a live lease, checked
 /// at the write — and until it is built, this ordering is the client's to manage.
 ///
 /// **What ordering costs a client that pipelines.** One message at a time is one message at
-/// a time in both directions: while message N is being handled, N+1 has not started, so a
-/// message the helper is slow to answer delays every later message on that connection until
-/// it returns. There is no queue bound and no per-message deadline
-/// ([#229](https://github.com/blamechris/Aeolus/issues/229)), so a client that pipelines
-/// faster than the helper answers grows its own backlog and should treat its round-trip
-/// latency as the budget for everything behind it — a heartbeat in particular. Two
-/// connections cost nothing to hold and are the way to keep an unrelated message off a slow
-/// one's queue; the panic path needs neither, being exempt.
+/// a time in both directions: while a sequenced message N is being handled, the sequenced
+/// message N+1 has not started, so a message the helper is slow to answer delays every later
+/// *sequenced* message on that connection until it returns. There is still no queue bound and
+/// no per-message deadline, so a client that pipelines faster than the helper answers grows
+/// its own backlog and should treat its round-trip latency as the budget for everything
+/// sequenced behind it.
+///
+/// **A heartbeat is no longer in that budget, and that is why the bound was not added**
+/// ([#229](https://github.com/blamechris/Aeolus/issues/229)). It used to be: `renewLease` sat
+/// in the queue, `docs/SAFETY.md` § 3 has a client rendering the snapshot at 1 Hz on the
+/// connection it also holds its lease on, and a read costs 0.56–2.9 s on the maintainer's
+/// Mac16,5 — so the backlog grew monotonically and, once it exceeded the TTL, a beat sent
+/// exactly on schedule arrived after the lease it was renewing had expired. § 1 grants a 30 s
+/// TTL with a 10 s beat so that two consecutive missed beats are tolerated, and that is a
+/// property of the *client's sending*; a helper-side backlog defeated it with the client doing
+/// nothing wrong. Bounding the queue would have answered the dropped message with a refusal a
+/// compliant client could not have avoided either, and a ceiling wide enough not to do that is
+/// wider than the TTL. So the heartbeat left the queue instead, and `releaseLease` with it.
+///
+/// Two connections still cost nothing to hold and are the way to keep an unrelated *sequenced*
+/// message off a slow one's queue. The three unsequenced verbs need neither.
 ///
 /// Nothing between connections is ordered, and nothing will be: two connections are two
 /// clients as far as this boundary is concerned, and one must never be able to delay the
@@ -213,6 +247,15 @@ import Foundation
     /// Renews an existing lease. Clients must call this on their heartbeat interval or
     /// the helper will restore all fans to automatic.
     ///
+    /// **Exempt from the per-connection ordering above** — never from the handshake gate, and
+    /// never from the authorisation gate. A beat is the message that proves the client is
+    /// still alive, and `docs/SAFETY.md` § 1 tolerates two missed beats as a property of the
+    /// client's *sending*; queueing it behind the client's own reads defeated that with the
+    /// client doing nothing wrong ([#229](https://github.com/blamechris/Aeolus/issues/229)).
+    /// So a beat is dispatched on arrival and may be answered before a `snapshot` sent ahead
+    /// of it. The exemption costs a client nothing it has to handle: this extends a TTL from
+    /// now, so an earlier message completing afterwards cannot shorten it.
+    ///
     /// Renewal is refused on any connection other than the one that acquired the lease,
     /// and after expiry — an expired lease is re-acquired, never resurrected, because
     /// resurrection would let a client that stopped proving it was alive carry on as
@@ -224,6 +267,15 @@ import Foundation
     func renewLease(id: String, reply: @escaping @Sendable (Data?, Error?) -> Void)
 
     /// Voluntarily releases a lease and returns the affected fans to automatic.
+    ///
+    /// **Exempt from the per-connection ordering above**, for `renewLease`'s reason pointing
+    /// the other way: every message queued in front of this one is time the fans stay in manual
+    /// after the client has already asked for them back, with nothing renewing the lease and
+    /// nobody wanting it. Unlike `renewLease`, this exemption *is* observable — an `apply` sent
+    /// ahead of it may land after the release and be refused, or before it and be undone — so a
+    /// client that wants a last setting to stick awaits that reply before releasing. See the
+    /// hazard paragraph in the ordering section above, which states it once for all three
+    /// unsequenced verbs.
     ///
     /// `id` is checked with `AeolusXPCValidation.validateLeaseID(_:)`, as for `renewLease`.
     func releaseLease(id: String, reply: @escaping @Sendable (Error?) -> Void)
@@ -252,6 +304,12 @@ import Foundation
     /// returns is a permanent one. The exemption is over *dispatch*: a message pipelined
     /// ahead of this one may still complete after it, so a client that wants this to be the
     /// last effect on the connection awaits its earlier replies first.
+    ///
+    /// It is the only verb exempt from the handshake gate; since
+    /// [#229](https://github.com/blamechris/Aeolus/issues/229) it is **not** the only one
+    /// exempt from ordering — `renewLease` and `releaseLease` are too, on the same argument
+    /// about preconditions. It is still the only one that carries *all* of the exemptions,
+    /// which is what "fewest preconditions of anything in this protocol" means.
     func restoreAllToAutomatic(reply: @escaping @Sendable (Error?) -> Void)
 }
 

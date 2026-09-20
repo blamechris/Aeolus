@@ -96,7 +96,7 @@ struct MessageOrderingTests {
     /// A fast message sent after a slow one is answered after it — which is the ordering
     /// property stated in terms a client can observe.
     ///
-    /// `snapshot` is the slow one, parked in the authority; `renewLease` is the fast one,
+    /// `snapshot` is the slow one, parked in the authority; `acquireLease` is the fast one,
     /// refused by the lease core without touching hardware and so ready to finish the
     /// instant it is allowed to start. Both are gated, so the handshake is completed first
     /// — the gate this test is *not* about has to be open for either message to reach the
@@ -107,11 +107,21 @@ struct MessageOrderingTests {
     /// when the panic path was exempted from the sequencer (D27): it is now the one message
     /// that is *allowed* to overtake, and `OrderingExemptionTests` asserts exactly that.
     ///
+    /// **The fast one was `renewLease` until [#229](https://github.com/blamechris/Aeolus/issues/229)**,
+    /// which exempted it and `releaseLease` for the panic path's reason — so it became a
+    /// second verb that is allowed to overtake, and this test would have asserted the
+    /// opposite of `LeaseHeartbeatStarvationTests`. `acquireLease` replaces it because it is
+    /// still sequenced *and* still refused without touching hardware, which are the two
+    /// properties the test needs; it is also the verb a client genuinely does pipeline behind
+    /// `hello`, so the ordering being asserted is one somebody relies on.
+    ///
     /// Both calls are made synchronously from this test's thread, one after the other,
     /// which is exactly how libxpc invokes the exported object.
     ///
     /// **Mutation:** delete `await predecessor?.value` from `MessageSequencer.enqueue(_:)`.
-    /// Run: red — the replies come back `["renewLease", "snapshot"]`.
+    /// Run: red at `MessageOrderingTests.swift:139:9`, a reply arriving while the parked
+    /// message was still being handled, and at `:145:9` with the replies in
+    /// `["acquireLease", "snapshot"]`.
     @Test("A fast message does not overtake the slow one sent before it")
     func aFastMessageIsAnsweredAfterTheSlowOneBeforeIt() async throws {
         let gate = AsyncSignal()
@@ -122,7 +132,7 @@ struct MessageOrderingTests {
         try await MessageOrderingFixtures.handshake(on: service)
 
         service.snapshot { _, _ in replies.append("snapshot") }
-        service.renewLease(id: UUID().uuidString) { _, _ in replies.append("renewLease") }
+        service.acquireLease(request: try leasePayload()) { _, _ in replies.append("acquireLease") }
 
         try await waitUntil("the slow message reached the authority") {
             await authority.hasBeenAsked
@@ -134,7 +144,7 @@ struct MessageOrderingTests {
 
         await gate.signal()
         try await waitUntil("both messages were answered") { replies.entries.count == 2 }
-        #expect(replies.entries == ["snapshot", "renewLease"])
+        #expect(replies.entries == ["snapshot", "acquireLease"])
     }
 
     // MARK: - The wire
@@ -189,6 +199,12 @@ struct MessageOrderingTests {
     /// population exactly the size of the one the spawn count was watching. So the call
     /// sites are pinned here for the same reason and with the same discipline.
     ///
+    /// **Four since [#229](https://github.com/blamechris/Aeolus/issues/229)**, which moved
+    /// `renewLease` and `releaseLease` back onto their own tasks so a lease heartbeat could
+    /// not be queued behind the client's own reads. Those two are now ordinary members of
+    /// `WriteVerbAllowlistTests`'s spawn population again, which is where the count they left
+    /// here reappears.
+    ///
     /// **The count is not enough on its own, and this is the second thing it asserts.** The
     /// re-pin in `WriteVerbAllowlistTests` is justified by a containment argument — no spawn
     /// site writes in its own body; each hands off to a method that suite acknowledges — and
@@ -200,8 +216,13 @@ struct MessageOrderingTests {
     /// `[session] in` capture and a single `await` of a `HelperConnectionSession` method
     /// delivered to `reply`, and nothing else in the body.
     ///
-    /// Six, not seven: `restoreAllToAutomatic` keeps its own `Task` (D27), and that spawn
-    /// site is visible to `WriteVerbAllowlistTests` in the ordinary way.
+    /// Four, not seven: `restoreAllToAutomatic` (D27), `renewLease` and `releaseLease` (#229)
+    /// keep their own `Task`s, and those spawn sites are visible to
+    /// `WriteVerbAllowlistTests` in the ordinary way.
+    ///
+    /// **A count is all this is, and any four verbs satisfy it.** *Which* four take which route
+    /// is asserted by `LeaseHeartbeatStarvationTests.theSequencedVerbsAreTheOnesAClientPipelines`,
+    /// because a swap reopens #90 or #229 and leaves every number here unchanged.
     ///
     /// **Mutation:** add `sequencer.enqueue { }` to any file under `Sources/AeolusHelper`.
     /// Run: red, naming the file. **Second mutation:** change one existing closure's body to
@@ -219,7 +240,7 @@ struct MessageOrderingTests {
         }
 
         #expect(
-            sites == ["HelperXPCService.swift x6"],
+            sites == ["HelperXPCService.swift x4"],
             """
             the message sequencer's call sites changed: \(sites). Each existing one is a \
             single `await` of a `HelperConnectionSession` method — the same acknowledgement \
@@ -227,12 +248,12 @@ struct MessageOrderingTests {
             `enqueue` replaced and what its spawn scanner can no longer see here.
             """)
         #expect(
-            shaped == 6,
+            shaped == 4,
             """
             \(shaped) of the enqueued closures are a single `await session.<method>(…)\
-            .deliver(to: reply)`; six are expected. A body that does anything else is work \
+            .deliver(to: reply)`; four are expected. A body that does anything else is work \
             running inside the one spawn site `WriteVerbAllowlistTests` cannot look into, \
-            which is the containment its re-pin from nineteen to fourteen rests on.
+            which is the containment its re-pin rests on.
             """)
     }
 

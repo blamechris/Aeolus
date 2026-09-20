@@ -60,11 +60,25 @@ import os
 ///
 /// ## What it does not do
 ///
-/// It does not carry `restoreAllToAutomatic`. `HelperXPCService` dispatches the panic path
-/// on its own task: an operation queued here waits for everything handed over before it, and
-/// waiting is a precondition ADR 0005 forbids that one message to have. Nothing in this type
-/// knows that — the exemption is one method's body upstairs, because a sequencer that could
-/// tell a `hello` from a panic would be the judgement this type is defined by not having.
+/// It does not carry `restoreAllToAutomatic`, `renewLease` or `releaseLease`.
+/// `HelperXPCService` dispatches all three on their own tasks: an operation queued here waits
+/// for everything handed over before it, and waiting is a precondition ADR 0005 forbids the
+/// panic path to have and [#229](https://github.com/blamechris/Aeolus/issues/229) forbids a
+/// lease heartbeat to have. Nothing in this type knows that — each exemption is one method's
+/// body upstairs, because a sequencer that could tell a `hello` from a heartbeat would be the
+/// judgement this type is defined by not having.
+///
+/// ## It is still unbounded, and #229 decided that on purpose
+///
+/// There is no depth ceiling and no per-operation deadline, so a client that pipelines faster
+/// than the helper answers grows its own backlog. #229 was filed because the lease heartbeat
+/// was in that backlog; it was closed by taking the heartbeat *out*, not by bounding this.
+/// A bound here would have to answer the message it drops with a fault, which is a new
+/// refusal at the privilege boundary for a backlog the refused message did not create — and a
+/// ceiling generous enough not to refuse a legitimate pipeline is wider than the 30 s TTL that
+/// was the thing at risk. What remains behind the queue is `snapshot`, `acquireLease` and
+/// `apply`, whose worst case is a client waiting for its own reads; `AeolusXPCProtocol` states
+/// that cost so a client can budget for it.
 ///
 /// It does not order a message against `connectionDidInvalidate`, which is not a message at
 /// all: `invalidationHandler` spawns its own detached task and can interleave anywhere. That
