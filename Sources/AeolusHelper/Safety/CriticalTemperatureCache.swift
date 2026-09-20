@@ -233,6 +233,11 @@ actor CriticalTemperatureCache: SightednessProving, CriticalTemperatureRecording
     /// can least afford one — and each of those reads would fail, so the amplification would
     /// be pure cost.
     ///
+    /// The cycle is no longer the only caller: `sighting()`'s `catch` records a flight's
+    /// blindness through here too, deliberately bypassing the supersession guard — see
+    /// `record(_:unlessSupersededSince:)`'s last section for the argument. Anything auditing
+    /// who may write to this cache has to count both.
+    ///
     /// Synchronous and returning nothing: the cycle owes this no attention, and a result it
     /// could branch on would be a result it might one day wait for.
     func record(_ sighting: CriticalTemperatureSighting) {
@@ -263,8 +268,13 @@ actor CriticalTemperatureCache: SightednessProving, CriticalTemperatureRecording
         }
 
         let source = self.source
-        // Stamped **before** the flight, and the only thing this caller's own recording is
-        // allowed to be newer than. See `record(_:unlessSupersededSince:)`.
+        // Stamped **before** the flight, and the only thing this caller's own *sighting* is
+        // allowed to be newer than — its blindness bypasses the comparison entirely. The
+        // placement is the assertion, not an incidental line: taken at the resume instead it
+        // is never older than anything the cycle recorded during the flight, so the guard
+        // silently becomes a no-op. Pinned by the clock advance in
+        // `aFlightDoesNotOverwriteWhatWasRecordedWhileItWasAway`; see
+        // `record(_:unlessSupersededSince:)`.
         let startedAt = clock.now
         let flight = Task<CriticalTemperatureReport, any Error> {
             try await source.readCriticalTemperatures()
@@ -283,7 +293,11 @@ actor CriticalTemperatureCache: SightednessProving, CriticalTemperatureRecording
             record(.sighted(report), unlessSupersededSince: startedAt)
             return report
         } catch {
-            record(.blind(error), unlessSupersededSince: startedAt)
+            // Unconditional, and asymmetric with the success path above on purpose. A
+            // blindness is the conservative outcome in both directions, so the supersession
+            // guard has nothing to protect here and something to discard — see
+            // `record(_:unlessSupersededSince:)`'s last section.
+            record(.blind(error))
             throw error
         }
     }
@@ -310,6 +324,39 @@ actor CriticalTemperatureCache: SightednessProving, CriticalTemperatureRecording
     /// when `sighting()` looked, so it cannot be a leftover this flight was started to
     /// replace — under any clock whose resolution makes the two instants equal, keeping it is
     /// the correct answer and dropping the flight's costs one read.
+    ///
+    /// ## Only a flight's **sighting** comes through here
+    ///
+    /// The whole argument above is about one direction: a sighting overwriting a blindness
+    /// grants leases on a helper already found unable to see. Run the same guard over a
+    /// flight's `.blind` and it works the other way — a failed read is discarded, and what
+    /// stays is whatever the cycle recorded during the flight.
+    ///
+    /// **That is an honesty defect, not a read storm, and the distinction is worth being
+    /// exact about because the first version of this comment got it wrong.** The guard only
+    /// fires when something *is* recorded — that is its precondition — so the next grant is
+    /// served from memory and issues no read either way. Nothing is amplified. What happens
+    /// instead is that the record left standing can be a `.sighted`, so the cache answers
+    /// "the helper can see" while the most recent real read of the machine **failed**, and
+    /// the next `acquireLease` is granted on the strength of it. `docs/SAFETY.md`'s rule is
+    /// that no lease is granted while the helper is blind; CLAUDE.md's rule 6 is that we
+    /// never claim control we do not have. This is that claim, at the one seam where it is
+    /// about the safety mechanism rather than about a fan.
+    ///
+    /// So `sighting()`'s `catch` calls `record(_:)` directly. The cost is over-refusal: a
+    /// blindness can displace a sighting that genuinely was newer, and grants are refused for
+    /// up to `maxAge`. That is the fail-safe direction and it clears itself on the same bound
+    /// as everything else — `unexpiredSighting()` serves without restamping, so a blindness
+    /// cannot perpetuate itself off the grants it refuses; it ages out, and the next grant
+    /// reads the machine for itself.
+    ///
+    /// **What this does not establish**, and the amendment to ADR 0010 says so too:
+    /// `ThermalEmergency.cycle()` records its `.sighted` through the unguarded `record(_:)`,
+    /// across a suspension point of its own. So a cycle reading taken *before* a flight's
+    /// failure can still be recorded *after* it and displace the blindness. Closing that
+    /// needs the instant a read was taken at to travel with the reading, which is a change to
+    /// what this cache remembers rather than to how it remembers it — filed rather than
+    /// guessed at.
     private func record(
         _ sighting: CriticalTemperatureSighting,
         unlessSupersededSince startedAt: ContinuousClock.Instant

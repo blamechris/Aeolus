@@ -9,11 +9,17 @@ import Testing
 /// `CriticalTemperatureCacheTests` cannot reach.
 ///
 /// Every property in that suite is about a cache at rest: something is recorded, or nothing
-/// is, and then a caller arrives. Both defects below live in the gap between a flight
+/// is, and then a caller arrives. The first two defects below live in the gap between a flight
 /// starting and its caller resuming — a gap in which § 3's cycle can record, and in which the
 /// flight's own error reaches callers that never issued it. Neither is observable from a test
 /// that lets a read complete before doing anything else, which is why they were both invisible
 /// to a suite that already had five tests on this actor.
+///
+/// Two of the four tests here no longer sit inside that gap, and the thesis is amended rather
+/// than left standing: `aFlightsOutcomeLandsWhenNothingSupersededIt` exercises the same guard
+/// with the gate already open, because the record it needs to be *older* than the flight
+/// cannot be made during one. They live here because the mechanism is
+/// `record(_:unlessSupersededSince:)`, not because the interleaving is.
 ///
 /// The gate is what makes each one a scenario rather than a race: nothing completes until the
 /// test opens it, so the interleaving is a fact rather than a hope
@@ -42,6 +48,23 @@ struct CriticalTemperatureCacheFlightTests {
             unreadableKeys: [])
     }
 
+    /// § 3's cadence, named from the supervisor that runs it rather than from the bound
+    /// under test.
+    ///
+    /// `CriticalTemperatureCacheTests.oneCyclePeriod`'s argument, and it is not a style
+    /// point: an advance written against `CriticalTemperatureCache.defaultMaxAge` moves
+    /// *with* a mutation of that constant, so the ageing still happens and the suite stays
+    /// green while the grant path serves readings many cycles old.
+    ///
+    /// Duplicated from that suite rather than shared, deliberately and for the same reason
+    /// `strippingComments` is duplicated in `HelperCompositionTests`: a single definition
+    /// reachable from both files is one edit away from being pointed at `defaultMaxAge` for
+    /// both, which is the mutation this constant exists to survive. Two independent spellings
+    /// of the cadence is the property, not an oversight.
+    private static var oneCyclePeriod: Duration {
+        ThermalSupervisor<ScriptedControlPlane>.defaultInterval
+    }
+
     // MARK: - The flight's stamp is not evidence of its freshness
 
     /// A flight resumes **after** § 3 recorded a blindness, and must not overwrite it.
@@ -63,14 +86,35 @@ struct CriticalTemperatureCacheFlightTests {
     /// `source.reads` stays at 1 either way — the discriminator is the **throw**, because a
     /// cache serving the flight's stale sighting also serves it without reading.
     ///
+    /// ## The clock advance is what makes `startedAt`'s *placement* an assertion
+    ///
+    /// The guard compares against the instant the flight **started**, and the doc block on
+    /// `record(_:unlessSupersededSince:)` says why that is the only instant the actor knows
+    /// the flight to be no fresher than. Nothing pinned it. On a frozen `TestClock` the
+    /// flight's start and the caller's resume are the same value, so moving
+    /// `let startedAt = clock.now` down to the `record` call left the whole repository green
+    /// — while in the daemon it makes the guard a no-op, because every record the cycle made
+    /// during the flight is then strictly *older* than a stamp taken after it.
+    ///
+    /// Advancing one millisecond after § 3's record separates the two placements: the cycle's
+    /// blindness now lands strictly before the resume and at the same instant as the start, so
+    /// `>=` still holds for the start and fails for the resume. One millisecond, because the
+    /// blindness must stay well inside `maxAge` — this test is about the comparison, and
+    /// `aStaleSightingIsNotServed` owns the age bound.
+    ///
     /// **Mutation (M8):** drop the guard — `record(.sighted(report))` on the success path of
     /// `sighting()`, as it was written before this. Run: red, because the second grant is
     /// handed a reading and § 3's blindness is gone.
+    ///
+    /// **Mutation (M9):** move `let startedAt = clock.now` from above the flight to
+    /// immediately before the `record(.sighted(...))` call. Run: red here, and green
+    /// everywhere else in the repository — which is what this advance is for.
     @Test("A flight does not overwrite what § 3 recorded while it was away")
     func aFlightDoesNotOverwriteWhatWasRecordedWhileItWasAway() async throws {
         let plane = Self.sightedPlane()
         let source = GatedCriticalTemperatures(Self.curated(over: plane))
-        let cache = CriticalTemperatureCache(source: source, clock: TestClock())
+        let clock = TestClock()
+        let cache = CriticalTemperatureCache(source: source, clock: clock)
 
         // A cold cache: this grant issues a real read, which parks in the gated source.
         let grant = observing { try await cache.sighting() }
@@ -81,6 +125,10 @@ struct CriticalTemperatureCacheFlightTests {
 
         // § 3's cycle, mid-flight: the SMC has stopped answering.
         await cache.record(.blind(FanControlPlaneError.readFailed(detail: "stale port")))
+
+        // See the doc block: this is what makes the flight's *start* the thing being
+        // compared against, rather than the instant its caller happens to resume at.
+        clock.advance(by: .milliseconds(1))
 
         await source.open()
         let served = try await finished("the grant", grant)
@@ -147,5 +195,116 @@ struct CriticalTemperatureCacheFlightTests {
         let afterwards = try await cache.sighting()
         #expect(afterwards.readings.map(\.celsius) == [44])
         #expect(await cache.readsIssued == 2)
+    }
+
+    // MARK: - The other direction of the same comparison
+
+    /// **Nothing** landed while the flight was away, so its outcome is what the cache holds.
+    ///
+    /// `aFlightDoesNotOverwriteWhatWasRecordedWhileItWasAway` pins the `>=` side of
+    /// `record(_:unlessSupersededSince:)` — a record stamped at or after `startedAt` wins.
+    /// Nothing pinned the other side, and the whole guard survived being rewritten as
+    /// `if recorded != nil { return }`: "a newer record wins" becomes "any record wins", and
+    /// a flight that finishes on an otherwise-idle cache can never land its outcome once
+    /// anything has ever been recorded. The doc block above the guard argues for the
+    /// comparison at length; until this test the suite did not exercise the argument.
+    ///
+    /// The older record has to be **aged out**, or `sighting()` would serve it and never
+    /// start the flight this is about — which is why the discriminator is the call *after*
+    /// the flight rather than the flight's own return value. With the comparison intact the
+    /// flight's reading is in the cache and that call is served from it; with the guard
+    /// mutated the cache still holds the expired blindness and the call reads the machine
+    /// again.
+    ///
+    /// [#203](https://github.com/blamechris/Aeolus/issues/203) asked for the record to land
+    /// *while the flight is in flight*, and that form is unconstructible rather than merely
+    /// awkward: `record(_:)` stamps with `clock.now`, so under a monotonic clock anything
+    /// landing during a flight is necessarily at or after `startedAt` and takes the `>=`
+    /// branch — which is the sibling test above. An aged-out leftover is the only reachable
+    /// record strictly older than a flight's start, so this test opens the gate first and is
+    /// the weaker suite member for it. Said here so the next reader need not re-derive it.
+    ///
+    /// **Mutation:** `if recorded != nil { return }` in
+    /// `record(_:unlessSupersededSince:)`. Run: red — `source.reads` is 2, `readsIssued` is
+    /// 2, and nothing coalesced.
+    @Test("A flight's outcome lands when nothing newer arrived while it was away")
+    func aFlightsOutcomeLandsWhenNothingSupersededIt() async throws {
+        let plane = Self.sightedPlane()
+        let source = GatedCriticalTemperatures(Self.curated(over: plane))
+        await source.open()
+        let clock = TestClock()
+        let cache = CriticalTemperatureCache(source: source, clock: clock)
+
+        // Older than any flight below, and aged out so it cannot be served in place of one.
+        await cache.record(.blind(FanControlPlaneError.readFailed(detail: "stale port")))
+        clock.advance(by: Self.oneCyclePeriod + .milliseconds(1))
+
+        let served = try await cache.sighting()
+        #expect(served.readings.isEmpty == false)
+        #expect(await source.reads == 1, "the expired blindness was served instead of re-read")
+
+        // The flight's own reading is what the cache holds now, so this takes no turn.
+        let afterwards = try await cache.sighting()
+        #expect(afterwards.readings.map(\.celsius) == served.readings.map(\.celsius))
+        #expect(
+            await source.reads == 1,
+            "the flight's outcome was dropped, so the next grant read the machine again")
+        #expect(await cache.readsIssued == 1)
+        #expect(await cache.coalescedSightings == 1)
+    }
+
+    // MARK: - A flight's blindness is not superseded
+
+    /// A flight **fails** while § 3 records a sighting, and the failure is what the next
+    /// grant is served.
+    ///
+    /// The mirror of the guard's intended direction, and the one it got wrong.
+    /// [ADR 0010](../../../docs/ADR/0010-coalesced-supervisor-reads.md) names one unsafe
+    /// direction — a **sighting** overwriting a **blindness** — and the guard that stops it
+    /// shielded a flight's `.blind` too. A failed read was then discarded in favour of an
+    /// older success, so the next grant proved sightedness from a reading the machine had
+    /// since refused to repeat, and the cache was written only on success:
+    /// [#134](https://github.com/blamechris/Aeolus/issues/134)'s storm one seam in from
+    /// where ADR 0010 names it.
+    ///
+    /// The instants are the daemon's rather than a contrivance. `record(_:)` stamps with
+    /// `clock.now`, so a cycle recording during a flight stamps at or after the instant that
+    /// flight was started at — exactly the condition the guard tested.
+    ///
+    /// `ThrowOnceCriticalTemperatures` recovers on its second read, so the two outcomes are
+    /// unambiguous: the remembered blindness **throws** without reading, while a cache that
+    /// dropped it hands back § 3's 44 °C. `source.reads` is 1 either way, which is why the
+    /// throw is the discriminator and not the read count.
+    ///
+    /// **Mutation:** `record(.blind(error), unlessSupersededSince: startedAt)` in
+    /// `sighting()`'s `catch`, as it was written before this. Run: red — the second grant is
+    /// handed a reading on a helper whose last real read of the machine failed.
+    @Test("A flight's blindness is recorded even when a sighting landed while it was away")
+    func aFlightsBlindnessIsRecordedEvenWhenASightingLanded() async throws {
+        let source = GatedCriticalTemperatures(
+            ThrowOnceCriticalTemperatures(
+                FanControlPlaneError.readFailed(detail: "stale port"),
+                then: try Self.report(celsius: 44)))
+        let cache = CriticalTemperatureCache(source: source, clock: TestClock())
+
+        let grant = observing { try await cache.sighting() }
+        let started = await yieldUntil("the grant to reach the source") {
+            await source.reads == 1
+        }
+        #expect(started, "the grant never issued the read this scenario interleaves with")
+
+        // § 3's cycle, mid-flight: the machine answered *it*.
+        await cache.record(.sighted(try Self.report(celsius: 44)))
+
+        await source.open()
+        await #expect(throws: FanControlPlaneError.self) {
+            _ = try await finished("the grant", grant)
+        }
+
+        await #expect(throws: FanControlPlaneError.self) { _ = try await cache.sighting() }
+        #expect(
+            await source.reads == 1, "the remembered blindness cost a read of its own anyway")
+        #expect(await cache.readsIssued == 1)
+        #expect(await cache.coalescedSightings == 1)
     }
 }

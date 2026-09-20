@@ -153,15 +153,17 @@ The mechanism:
   which is the staleness this ADR accepts on the grant path arriving on the decision path by a
   route the trick above does not cover. `CriticalTemperatureRecording` has one method,
   `record(_:)`, so the cycle can write to the cache and **cannot read from it**.
-- **A flight never overwrites what landed while it was away.** `sighting()` stamps its outcome
-  when the caller *resumes*, not when its read finished, and nothing orders a resumed
-  continuation against a fresh `record(_:)` on the same actor — so without a guard a flight
-  that began before § 3's cycle can stamp the older of two readings as the newer one, and a
-  sighting can replace a blindness the cycle recorded in the interval. The recorded stamp is
-  compared against the flight's own start instead, which is the only instant the actor knows
+- **A flight's *sighting* never overwrites what landed while it was away.** `sighting()`
+  stamps its outcome when the caller *resumes*, not when its read finished, and nothing orders
+  a resumed continuation against a fresh `record(_:)` on the same actor — so without a guard a
+  flight that began before § 3's cycle can stamp the older of two readings as the newer one,
+  and a sighting can replace a blindness the cycle recorded in the interval. The recorded stamp
+  is compared against the flight's own start instead, which is the only instant the actor knows
   the flight to be no fresher than. Dropping the flight's reading costs one later read; keeping
   it would serve a reading for a full `maxAge` measured from a moment it was never taken at,
-  which is outside the bound below rather than at its edge.
+  which is outside the bound below rather than at its edge. A flight's **blindness** is
+  recorded unconditionally — see the amendment below, which corrects this bullet's original
+  wording.
 - **A cold cache, or a stopped supervisor, degrades to one real read per grant** — still
   single-flight. Nothing here can answer "sighted" without evidence.
 
@@ -181,6 +183,68 @@ nothing is recorded, so the next caller reads. Pinned by
 `CriticalTemperatureCacheFlightTests.aJoinerReceivesTheFlightsCancellation`, which will go red
 the day a conformer beneath `source` starts throwing one.
 
+#### Amendment, 2026-09-20 ([#203](https://github.com/blamechris/Aeolus/issues/203)) — the supersession guard is for sightings only
+
+D3's guard was written for one direction and applied to both. The direction it argues about is
+a **sighting** overwriting a **blindness**: that grants leases on a helper already found unable
+to see, for a full `maxAge` measured from an instant the reading was never taken at. Applied to
+a flight's `.blind` the same comparison discards the failed read, and what stays in the cache
+is whatever the cycle recorded during the flight.
+
+**The harm is an honesty defect, not read amplification.** The first draft of this amendment
+said the old behaviour was "a cache written only on success" and therefore #134's storm, and
+that was wrong: the guard fires *only* when a record is already present, so the next grant is
+served from memory and issues no read either way. Nothing is amplified. What actually happens
+is that the surviving record can be a `.sighted`, so the cache answers "the helper can see"
+while the most recent real read of the machine failed — and the next `acquireLease` is
+**granted**. `docs/SAFETY.md` § 3's rule is that no lease is granted while the helper is blind.
+This ADR's own D3 calls that direction unsafe. It is recorded here in its corrected form rather
+than quietly rewritten, because an ADR that reasons from a failure mode the code could not
+produce is worse than one that reasons from none.
+
+So `CriticalTemperatureCache.sighting()`'s `catch` records unconditionally, and only the
+success path is superseded. The cost is over-refusal: a blindness can displace a sighting that
+genuinely was newer, and grants are refused for up to `maxAge`. That is the fail-safe direction
+and it clears itself — `unexpiredSighting()` serves without restamping, so a blindness cannot
+perpetuate itself off the grants it refuses; it ages out on the same bound as everything else
+and the next grant reads the machine for itself. No state accumulates.
+
+**What this does not establish, stated plainly so the next reader need not re-derive it.**
+`ThermalEmergency.cycle()` records its own `.sighted` through the unguarded `record(_:)`, and
+does so across a suspension point: the read completes, then the cycle hops to the cache actor
+to record. A cycle reading taken *before* a flight's failure can therefore be recorded *after*
+it and displace the blindness this amendment just made unconditional. The window is one actor
+job — microseconds normally — and both reads go through the same `CuratedCriticalTemperatures`
+instance, which is this ADR's own argument for tolerating staleness of that order. But the
+invariant "a blindness is not displaced by a sighting taken before it" does **not** hold end to
+end, and nothing here should be read as claiming it does. Closing it means the instant a read
+was *taken* at has to travel with the reading, which changes `CriticalTemperatureRecording`'s
+shape rather than its implementation — a decision, not a patch, and
+[#280](https://github.com/blamechris/Aeolus/issues/280) carries it. It gates this ADR leaving
+`Proposed`.
+
+A second residual, in the mirror direction. When the guard *does* drop a flight's `.sighted`,
+`sighting()` still returns that reading — to the caller that started the flight **and to every
+joiner**. So `1 + N` grants proceed on a reading the cache deliberately refused to keep, with
+`N` bounded only by how many clients arrived inside the flight window. Their reads did
+complete, which is the argument for it; the bullet above says only that "dropping the flight's
+reading costs one later read", which is not the whole consequence.
+
+Neither half of the comparison was pinned by a test, and neither was the premise underneath it.
+The guard survived being rewritten as `if recorded != nil { return }` — "a newer record wins"
+becomes "any record wins", so a flight finishing on an otherwise-idle cache could never land
+its outcome once anything had ever been recorded. It *also* survived moving
+`let startedAt = clock.now` from above the flight down to the `record` call, which makes the
+comparison a no-op in the daemon because every record the cycle made during the flight is then
+strictly older than the stamp; the whole 1,627-test suite stayed green.
+`CriticalTemperatureCacheFlightTests.aFlightsOutcomeLandsWhenNothingSupersededIt` pins the
+first, `aFlightsBlindnessIsRecordedEvenWhenASightingLanded` pins this amendment, and a
+one-millisecond clock advance in `aFlightDoesNotOverwriteWhatWasRecordedWhileItWasAway` pins
+the placement.
+
+This amendment corrects a clause of a Proposed ADR rather than the decision it sits under.
+**Status stays Proposed.**
+
 ## Alternatives considered
 
 | Alternative | Why not |
@@ -199,6 +263,12 @@ the day a conformer beneath `source` starts throwing one.
   that is the granularity at which blindness is detected at all, and the refusal is
   fail-safe in the interval where it differs (a *remembered failure* keeps refusing; a
   remembered sighting can be at most one cycle stale).
+- **A grant can be refused on a machine that is currently readable**, as of the amendment
+  above. A grant-path flight's blindness is recorded unconditionally, so it displaces a
+  sighting the cycle took later, and every grant is refused for up to `maxAge`. Accepted for
+  the reason the amendment gives — it is the fail-safe direction, it accumulates no state, and
+  it clears itself when the reading ages out — and named here because it is a user-visible
+  refusal that the bullet above does not cover.
 - **`LeaseAuthority` no longer accepts a `CriticalTemperatureSensing`.** Every construction
   site supplies a `SightednessProving`. That is a compile error rather than a behaviour
   change, which is the point of the split.

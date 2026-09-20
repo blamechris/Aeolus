@@ -455,10 +455,13 @@ enforced, until #104.
 
 **A client retrying `acquireLease` cannot delay this cycle without bound.** While the
 override is latched a retry is refused from the latch alone, before any sensor is read;
-while it is not, every grant-time sightedness check within one cycle period is served from
-that cycle's own reading, and concurrent checks share a single read — so at most one
+while it is not, every grant-time sightedness check within one cycle period is served from a
+reading no more than that old, and concurrent checks share a single read — so at most one
 grant-time read is ever outstanding, and this cycle reaches the SMC connection within four
-turns of asking. The mechanism is
+turns of asking. *"§ 3's own reading"* is the usual case and not the guarantee: a cold cache
+reads for itself, and a grant-path read that fails is remembered ahead of a later cycle
+sighting, which is ADR 0010's amendment of 2026-09-20. The bound that matters to this
+paragraph — one outstanding read, four turns — holds in every case. The mechanism is
 [ADR 0010](ADR/0010-coalesced-supervisor-reads.md); the arithmetic that made it necessary,
 and the third priority level that was rejected instead, are recorded there.
 

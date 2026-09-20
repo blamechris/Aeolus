@@ -429,6 +429,63 @@ struct HelperCompositionTests {
             "§ 3's cycle no longer records into the cache the lease core reads")
     }
 
+    /// `CriticalTemperatureCache` is named in **type-annotation position** in the composition
+    /// root and nowhere else under `Sources/AeolusHelper`.
+    ///
+    /// `ThermalEmergency` and `LeaseAuthority` take `CriticalTemperatureRecording` and
+    /// `SightednessProving` so that neither can reach the other's half — the compile error
+    /// both protocols' doc comments are written around. Nothing stops a later change widening
+    /// a stored property back to `CriticalTemperatureCache`, and the day one does, the
+    /// exclusion is a doc comment again: the cycle would be one line from proving sightedness
+    /// from the cache it writes, which is § 3 deciding a thermal emergency from a reading up
+    /// to a cycle old.
+    ///
+    /// The construction count above cannot see that. Widening `ThermalEmergency.sightings` to
+    /// the concrete type adds no construction — the composition root still builds exactly one
+    /// cache and still hands it to both consumers — so `onlyOneSightingCacheIsEverBuilt`
+    /// stays green while the type-level exclusion is gone.
+    ///
+    /// Asserted as an **equality against the allowed site** rather than as "nothing else
+    /// names it", and that is this scan's own positive control: an emptiness check over a
+    /// pattern that had quietly stopped matching anything would pass for ever. Requiring
+    /// `HelperComposition.swift` to still be in the list means the pattern is proven against
+    /// real source on every run.
+    ///
+    /// ## What this does **not** assert, so nobody reads it as more than it is
+    ///
+    /// It scans for a type *name* in annotation position. It is not a stored-property scan —
+    /// it matches parameters and explicitly annotated locals too, and misses a stored property
+    /// whose type is inferred. More importantly, the exclusion it guards can be removed without
+    /// the name ever appearing: `protocol CriticalTemperatureRecording: SightednessProving`, or
+    /// a field widened to `any CriticalTemperatureRecording & SightednessProving`, each put
+    /// `sighting()` back in the cycle's reach with this test green and the construction count
+    /// unchanged. The honest assertion is about the protocols' *shape*, and
+    /// [#281](https://github.com/blamechris/Aeolus/issues/281) carries it with the rest of the
+    /// misses enumerated. This test is the cheap half, and it is worth having, but the doc
+    /// block that used to sit here claimed the whole property.
+    ///
+    /// **Mutation:** widen `ThermalEmergency`'s field to `let sightings:
+    /// CriticalTemperatureCache` (its initialiser takes `some CriticalTemperatureRecording`,
+    /// so the parameter widens with it). Run: red — two sites, naming the file that broke it.
+    @Test("CriticalTemperatureCache is named in type position only in the composition root")
+    func onlyTheConcreteCacheAnnotationIsInTheCompositionRoot() throws {
+        var sites: [String] = []
+        for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
+            let code = Self.strippingComments(try String(contentsOf: file, encoding: .utf8))
+            let count = Self.occurrences(of: ": CriticalTemperatureCache", in: code)
+            if count > 0 { sites.append("\(file.lastPathComponent) x\(count)") }
+        }
+
+        #expect(
+            sites == ["HelperComposition.swift x1"],
+            """
+            CriticalTemperatureCache is named in type position outside the composition \
+            root: \(sites). Every other holder takes CriticalTemperatureRecording or \
+            SightednessProving, so that the cycle writing to the cache cannot read from it \
+            — see both protocols. A concrete field puts sighting() one line from § 3 again.
+            """)
+    }
+
     /// The Mach service is advertised **after** the safety subsystem is up, and never before.
     ///
     /// #103's decision A1 states the property and the reason in one sentence: *"an advertised
