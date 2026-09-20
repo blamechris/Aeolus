@@ -60,8 +60,8 @@ extension ReadOnlyFanReport {
     ///
     /// The two halves are separate functions because they answer to different mechanisms —
     /// § 6's post-reconciliation baseline and the lease core's handback ledgers — and they
-    /// compose in either order for the reason this type's own documentation gives: the fans
-    /// they speak about are disjoint by construction.
+    /// compose in either order for the reason this file's header gives: the fans they speak
+    /// about are disjoint by construction.
     static func restatingAvailability(
         of fan: FanState, given leases: LeaseAccountability
     ) -> FanState {
