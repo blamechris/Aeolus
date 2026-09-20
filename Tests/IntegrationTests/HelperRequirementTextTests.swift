@@ -299,7 +299,7 @@ struct HelperRequirementPinningTests {
     /// the answer the host actually gives.
     @Test("The production entry point agrees with this host's own signature")
     func productionEntryPointMatchesTheHost() {
-        let inspection = HelperSigningIdentity.inspect()
+        let inspection = RunningProcessSigningIdentity.inspect()
         let outcome = HelperRequirementPinning.resolveForRunningProcess()
 
         switch inspection {

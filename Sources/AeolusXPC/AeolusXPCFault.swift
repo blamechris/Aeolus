@@ -130,7 +130,18 @@ extension AeolusXPCFault {
     /// decoding switches over a closed set: adding a case to `AeolusXPCFault` without
     /// teaching the coder about it becomes a compile error rather than a value that
     /// silently round-trips into `.unknown`.
-    private enum KnownCode: String {
+    ///
+    /// `internal` rather than `private`, and `CaseIterable`, since #231: `AeolusXPCFault`
+    /// itself cannot be `CaseIterable` — several cases carry associated values Swift
+    /// cannot default-construct — so this closed set is the one enumerable stand-in for
+    /// it, and it is a faithful one: a code with no case here can never be *produced* by
+    /// `init(from:)` (it falls through to `.unknown` instead), so "every code" and "every
+    /// case the wire can actually decode to" are the same set. `Tests/IntegrationTests/
+    /// XPCFaultDetailBoundTests.swift` switches over `KnownCode.allCases` to build its
+    /// decode-side exemplars, so a new code is a compile error there until it is taught
+    /// one — the tie #231 asked for, closed at the compiler rather than at a hand-typed
+    /// list a new case could silently miss.
+    enum KnownCode: String, CaseIterable {
         case handshakeRequired
         case versionMismatch
         case malformedPayload
