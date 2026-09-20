@@ -221,6 +221,15 @@ everything behind it. E2 ships `ReadOnlyFanAuthority`:
   > managed. The mode is now read per fan; an unreadable `F<n>Md` still falls back to
   > `.automatic`, because v1's `FanControlMode` has no way to say "not known" —
   > [#178](https://github.com/blamechris/Aeolus/issues/178) holds that open half.
+
+  > **Amended 2026-09-20 (#194).** The availability in this bullet was a **literal** in
+  > `ReadOnlyFanReport`, while `LeaseAuthority.acquireLease` sourced the identical refusal from
+  > `FanControlPlane.writeCapability` — the same defect as #148's, one field across. It is now
+  > read from that seam, so E3/E4 flipping the plane to `.built` stops the snapshot claiming the
+  > write path is absent. **The answer is unchanged on every build that exists**, because
+  > `SMCFanControlPlane` still answers `.notBuilt`; what changed is where it comes from, which is
+  > the whole of the amendment. The reasons reachable once the seam flips, and the order between
+  > them, are in `Sources/AeolusHelper/AvailabilityRestatement.swift`.
 - `acquireLease`/`renewLease`/`releaseLease`/`apply` **refuse** with `.manualControlUnavailable`.
   Never a stubbed success: a lease you can acquire that controls nothing is a lie about control —
   rule 6's exact shape.

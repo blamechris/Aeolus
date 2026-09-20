@@ -12,6 +12,12 @@ import SMCCore
 /// `ReadOnlyFanAuthority.swift` inside the 400-line limit without making the actor's
 /// `private` state module-visible, which is the trade `SnapshotSensorReads` refused for the
 /// same reason and [#128](https://github.com/blamechris/Aeolus/issues/128) records.
+///
+/// **The availability ladder is in `AvailabilityRestatement.swift`**, which holds the two
+/// re-statements `SupervisedFanAuthority.snapshot()` makes over this file's answer and states
+/// the full order in one place. Read it before changing
+/// `availability(whenLedgerSays:writeCapabilityIs:bounds:)` below: that method produces five of
+/// the ladder's nine answers and the other four can overwrite them.
 enum ReadOnlyFanReport {
 
     /// One enumerated fan as the wire reports it.
@@ -27,9 +33,15 @@ enum ReadOnlyFanReport {
     static func fanState(
         for fan: SMCFanEnumeration.Fan,
         reclamation: [Int: ReclamationLedger.Cause],
-        mode: FirmwareFanMode?
+        mode: FirmwareFanMode?,
+        writeCapability: FanWriteCapability
     ) -> FanState {
         let cause = reclamation[fan.index]
+        // Read once and named, because the availability below is a function of them: the
+        // bounds gate needs both declarations, and `FanState.controlEnvelope` is unreachable
+        // from inside the initialiser of the value that would answer it.
+        let minimumRPM = reading(for: fan.minimum)
+        let maximumRPM = reading(for: fan.maximum)
         return FanState(
             index: fan.index,
             // `{fds`, the firmware fan-descriptor struct, is absent on this project's
@@ -37,8 +49,8 @@ enum ReadOnlyFanReport {
             // honest; an invented one is not.
             firmwareName: nil,
             actualRPM: reading(for: fan.actual),
-            minimumRPM: reading(for: fan.minimum),
-            maximumRPM: reading(for: fan.maximum),
+            minimumRPM: minimumRPM,
+            maximumRPM: maximumRPM,
             // "No target is set" rather than "the target could not be read": this helper is
             // asking for nothing, and that is an answer — a build-level fact of the same kind
             // as `activeLease: nil`, not an unconfirmed observation. `SMCConnection.write` is
@@ -63,77 +75,52 @@ enum ReadOnlyFanReport {
             // system at all, and this field's contract — rendered verbatim as "Reclaimed by
             // system" — cannot carry it. #140.
             isReclaimedBySystem: cause == .systemReclaimed,
-            manualControlAvailability: availability(whenLedgerSays: cause)
+            manualControlAvailability: availability(
+                whenLedgerSays: cause,
+                writeCapabilityIs: writeCapability,
+                bounds: FanState.controlEnvelope(
+                    declaredMinimum: minimumRPM, declaredMaximum: maximumRPM))
         )
     }
 
-    /// Re-states one fan's availability once the lease core has been consulted.
+    /// What the **machine and the build** say about whether this fan could be leased: steps
+    /// 4 and 6–9 of the ladder in `AvailabilityRestatement.swift`.
     ///
-    /// `ReadOnlyFanAuthority` cannot answer this. It reads the machine and knows nothing
-    /// about leases, and `SupervisedFanAuthority.snapshot()` reads the lease **after** the
-    /// machine on purpose — so the composition is: the read path produces the fan, this
-    /// re-states one field of it, and the ordering that makes a lapsing lease honest is
-    /// preserved.
+    /// ## `.writePathNotBuilt` comes from the seam, and that is
+    /// [#194](https://github.com/blamechris/Aeolus/issues/194)
     ///
-    /// ## The rule, and the two fans it leaves alone
+    /// It was a **literal** here until #194 — `.unavailable(.writePathNotBuilt)` written out,
+    /// while `LeaseAuthority.acquireLease` sourced the identical refusal from
+    /// `FanControlPlane.writeCapability`. The literal was true of every build that has ever
+    /// shipped, because `SMCFanControlPlane` answers `.notBuilt`, and it would have stayed
+    /// written here on the day E3/E4 made that answer `.built`: every client would then be
+    /// told manual control does not exist by the same helper that was granting leases. That is
+    /// `CLAUDE.md` rule 6 arriving through the read path, and it is the same defect this file's
+    /// three other fields were each corrected for — the latch, the ledger and the fan mode were
+    /// all literals that stayed true only until the mechanism behind them arrived.
     ///
-    /// A fan whose firmware mode is not automatic, that no live lease covers, is under
-    /// somebody else's control — startup reconciliation restored anything it found in manual
-    /// before this process served a single client, so a fan in manual now was put there
-    /// afterwards and not by Aeolus. See
-    /// [ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md).
+    /// It is checked **before** the bounds gate, which preserves the argument the literal
+    /// carried: a build-level fact outranks a per-fan one, so reporting `.boundsImplausible` on
+    /// a build that can write nothing would imply that better bounds would grant control. What
+    /// changes is that the argument is now *conditional* — on a `.built` seam the per-fan gates
+    /// below are reached, which is exactly what #194 asks for.
     ///
-    /// It is **not** applied over § 5's two causes. `.supervisorBlind` and a system
-    /// reclamation are statements about a fan Aeolus *engaged* — the ledger's registry holds
-    /// nothing else — and both are more specific than this one. Overwriting either would
-    /// replace a diagnosis with a guess, and in the reclamation case would blame a third
-    /// party for the operating system's act.
+    /// ## The bounds gate, now that it is reachable
     ///
-    /// **The two causes are asked for differently, and that is the correction rather than a
-    /// quirk.** Blindness is read off the availability, because `availability(whenLedgerSays:)`
-    /// publishes it there. A reclamation is read off `isReclaimedBySystem`, because that
-    /// method deliberately does *not* publish `.reclaimedBySystem` as an availability —
-    /// #140's rule is that a reclaimed fan is still `.writePathNotBuilt` in this build — so
-    /// a switch looking for `.unavailable(.reclaimedBySystem)` matched nothing at all. That
-    /// arm was dead code, and its deletion is not a loosening: the guard it promised is the
-    /// `isReclaimedBySystem` check that replaces it, which is keyed on the ledger's own
-    /// cause and therefore cannot be made dead by a change to what the availability says.
+    /// `FanState.controlEnvelope` — E5's § 2 gate, whose failures all map to
+    /// `.boundsImplausible` through `FanBoundsImplausibility.manualControlAvailability`, so no
+    /// second vocabulary is invented here. It was deliberately not consulted while the answer
+    /// above was unconditional.
     ///
-    /// Everything else is overwritten, including `.available`. Writing the guard as "only
-    /// when the read path said `.writePathNotBuilt`" would pass today and silently stop
-    /// applying on the day E3 makes that answer something else.
-    static func reportingForeignControl(
-        of fan: FanState, heldByAeolus held: Set<Int>
-    ) -> FanState {
-        guard fan.mode != .automatic, !held.contains(fan.index), !fan.isReclaimedBySystem
-        else { return fan }
-        switch fan.manualControlAvailability {
-        case .unavailable(.supervisorBlind): return fan
-        default: break
-        }
-        return FanState(
-            index: fan.index,
-            firmwareName: fan.firmwareName,
-            actualRPM: fan.actualRPM,
-            minimumRPM: fan.minimumRPM,
-            maximumRPM: fan.maximumRPM,
-            targetRPM: fan.targetRPM,
-            mode: fan.mode,
-            isReclaimedBySystem: fan.isReclaimedBySystem,
-            manualControlAvailability: .unavailable(.foreignManualControl)
-        )
-    }
-
-    /// What a fan's disposition means for whether it could be leased.
+    /// - Warning: `acquireLease` has **no** bounds gate, so on a `.built` build a
+    ///   bounds-implausible fan is reported unavailable here and would nonetheless be granted a
+    ///   lease — a divergence from this type's own agreement rule, in the safe direction
+    ///   (claiming less control than the helper has). It is not resolved by dropping the check:
+    ///   such a fan has no envelope, so `apply` could never mint an `AuthorisedFanTarget` for
+    ///   it and the lease could never be used. The grant path is the half that should move, and
+    ///   that is [#270](https://github.com/blamechris/Aeolus/issues/270)'s.
     ///
-    /// `.writePathNotBuilt` is the build-level answer, and it stays the answer for every
-    /// fan whose bounds this executable could not judge either: E5's bounds gate —
-    /// `FanKit.FanControlEnvelope.validating(declaredMinimumRPM:declaredMaximumRPM:)`,
-    /// whose failures map to `.boundsImplausible` — is deliberately not consulted here,
-    /// because a build-level fact outranks a per-fan one. No fan in this build can be
-    /// controlled, so reporting `.boundsImplausible` on one would imply that better bounds
-    /// would grant control, which is false of every fan this executable serves. The gate
-    /// plugs in here in the epic that also brings the write path it guards.
+    /// ## Blindness outranks the build, and a reclamation does not
     ///
     /// **Blindness is the exception, and it is not one of those per-fan facts.** It is § 5
     /// saying it gave a fan up because it could not see it — a claim about the supervisor,
@@ -143,16 +130,26 @@ enum ReadOnlyFanReport {
     /// this build it is unreachable for the ledger's own reason — nothing is ever held, so
     /// nothing can go blind — and what changed is where the answer comes from.
     ///
-    /// **A system reclamation deliberately produces no availability of its own**, which is
-    /// #140's rule and the reason `reportingForeignControl(of:heldByAeolus:)` has to consult
-    /// `FanState.isReclaimedBySystem` rather than switch on what this returns.
+    /// **A system reclamation sits below the build fact, and that asymmetry is #140's.** In
+    /// this build it produces no availability of its own — a reclaimed fan is still
+    /// `.writePathNotBuilt` — which is why `reportingForeignControl(of:heldByAeolus:)` consults
+    /// `FanState.isReclaimedBySystem` rather than switching on what this returns, and that stays
+    /// true. What #194 adds is the answer for a build that *can* write: `.reclaimedBySystem`,
+    /// rather than the `.available` a bare fall-through would produce. Blindness needs the
+    /// availability because no other field can carry it; a reclamation does not, because
+    /// `isReclaimedBySystem` carries it on the same fan.
     private static func availability(
-        whenLedgerSays cause: ReclamationLedger.Cause?
+        whenLedgerSays cause: ReclamationLedger.Cause?,
+        writeCapabilityIs capability: FanWriteCapability,
+        bounds: Result<FanControlEnvelope, FanBoundsImplausibility>
     ) -> ManualControlAvailability {
-        switch cause {
-        case .supervisorBlind: return .unavailable(.supervisorBlind)
-        case .systemReclaimed, nil: return .unavailable(.writePathNotBuilt)
+        if cause == .supervisorBlind { return .unavailable(.supervisorBlind) }
+        guard capability == .built else { return .unavailable(.writePathNotBuilt) }
+        if cause == .systemReclaimed { return .unavailable(.reclaimedBySystem) }
+        if case .failure(let implausibility) = bounds {
+            return implausibility.manualControlAvailability
         }
+        return .available
     }
 
     /// What the wire is told about who owns a fan, given what `F<n>Md` said.

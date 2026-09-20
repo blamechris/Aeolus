@@ -21,6 +21,11 @@ import Foundation
 /// have to perform the write. The mechanisms behind it — the lease table, both teardown
 /// paths, § 3, § 5 — are now running rather than merely present.
 ///
+/// Since [#194](https://github.com/blamechris/Aeolus/issues/194) the *snapshot's* answer is
+/// sourced from that same seam rather than written out — `ReadOnlyFanAuthority.writeCapability`
+/// — so the sentence above stays true of this build and stops being true of the build that can
+/// write, which is the whole point of it.
+///
 /// ## It holds no plane, no capability reporter, and cannot write
 ///
 /// It holds the read path and the lease core. Not a `FanControlPlane`: that would put
@@ -117,21 +122,31 @@ struct SupervisedFanAuthority: FanAuthority {
     /// give back as another program's doing, which is the worst of the available wrong
     /// answers: it sends a user to quit software that is not holding their fan.
     ///
-    /// **The re-statement touches one field of one fan and nothing else.** The rule, and the
-    /// § 5 causes it deliberately does not overwrite, are in
-    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:)`. The other three
-    /// snapshot fields are the read path's own and are passed through untouched: this
-    /// re-assembles the value rather than producing a second opinion about any of them.
+    /// **The view carries the three handback registers apart as well, since
+    /// [#187](https://github.com/blamechris/Aeolus/issues/187).** Before it, those registers
+    /// reached a client only as an `acquireLease` fault, so a fan mid-handback — or one whose
+    /// handback had been abandoned and never would complete — rendered as `.available` in the
+    /// same instant a grant over it was refused. `CLAUDE.md` rule 6 in the read path: the user
+    /// clicks, and the click fails for a reason the screen never showed. They are read in the
+    /// same hop as the lease for the reason above, one cardinality down — a fan reported
+    /// mid-handback from one view of the lease core and accountable-to-nobody from another
+    /// would be one instant's report built from two.
+    ///
+    /// **The re-statement touches one field of one fan and nothing else.** The whole ordering,
+    /// and the § 5 causes each half deliberately does not overwrite, are in
+    /// `ReadOnlyFanReport` — see its type documentation for the ladder and
+    /// `restatingAvailability(of:given:)` for the entry point. The other three snapshot fields
+    /// are the read path's own and are passed through untouched: this re-assembles the value
+    /// rather than producing a second opinion about any of them.
     func snapshot() async throws -> SystemSnapshot {
         let machine = try await reading.snapshot()
-        let held = await leases.activeLeaseView()
+        let view = await leases.activeLeaseView()
         return SystemSnapshot(
             fans: machine.fans.map {
-                ReadOnlyFanReport.reportingForeignControl(
-                    of: $0, heldByAeolus: held.accountableFans)
+                ReadOnlyFanReport.restatingAvailability(of: $0, given: view)
             },
             sensors: machine.sensors,
-            activeLease: held.lease,
+            activeLease: view.lease,
             isThermalEmergencyActive: machine.isThermalEmergencyActive,
             capturedAt: machine.capturedAt
         )

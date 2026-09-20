@@ -447,6 +447,22 @@ enum LeaseFixture {
         ScriptedControlPlane(fans: [:], stages: [.nominal()])
     }
 
+    /// A build that cannot write — the **real** `SMCFanControlPlane`, for
+    /// `writePathBuilt()`'s reason in the other direction.
+    ///
+    /// What every read-path suite hands `ReadOnlyFanAuthority` since
+    /// [#194](https://github.com/blamechris/Aeolus/issues/194) made the snapshot's
+    /// `manualControlAvailability` a reading of this seam rather than a literal. A bespoke
+    /// `.notBuilt` double would make those suites assert against a stand-in for the build they
+    /// are describing; this is the conformer the daemon ships, so
+    /// `theProductionPlaneHasNoWritePath` going red would take them with it.
+    ///
+    /// It touches no hardware: `InertSMCConnection` is attached to nothing, and the capability
+    /// is answered without reaching the scheduler at all.
+    static func writePathNotBuilt() -> any FanWriteCapabilityReporting {
+        supervisorPlane(over: FakeSensorProvider())
+    }
+
     /// Telemetry that cannot see: the SMC answers nothing, for every stage, forever.
     static func blindTelemetry() -> any SightednessProving {
         cache(over: ScriptedControlPlane(fans: [:], stages: [.blind()]))

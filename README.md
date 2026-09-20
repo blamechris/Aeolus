@@ -203,6 +203,9 @@ behave differently on hardware we have not seen.
   with community reports kept separate from behaviour verified on real hardware.
 - [docs/ADR/](docs/ADR) — the decision records, from the licence to XPC client
   authorisation.
+- [docs/records/](docs/records) — mechanism rationale that outgrew the doc comment it was
+  written in, relocated whole and pointed at from the declarations it belongs to. Not
+  decisions, and not normative.
 - [CHANGELOG.md](CHANGELOG.md) — what has actually landed. There being no release yet,
   everything sits under *Unreleased*, honestly.
 

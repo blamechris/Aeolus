@@ -71,6 +71,22 @@ import Foundation
 /// register step in `acquireLease` is the one that matters —
 /// [#95](https://github.com/blamechris/Aeolus/issues/95) is precisely what happens when a
 /// liveness check and the registration it guards are separated by a suspension point.
+///
+/// ## The handback ledger lives in a document
+///
+/// The three registers below — `releasing`, `handbackUnconfirmed`, `restoreAbandoned` — are
+/// one mechanism documented in five places, and the whole of it is now
+/// [docs/records/handback-ledger.md](../../../docs/records/handback-ledger.md): what enters
+/// each register and what clears it, why the grant gate answers with three different
+/// refusals in the order it does, why every teardown hands its sweep back in one call, and
+/// why the panic sweep has two sources. Each declaration below keeps the fact it states and
+/// cites the section that argues it.
+///
+/// That relocation is why this file is under the 1000-line `file_length` **error** it crossed
+/// when #271 and #273 met. The document's first section records what was refused to get there
+/// — no `swiftlint:disable`, no `.swiftlint.yml` override, and no split that would widen the
+/// `private` state `LeaseAuthorityAccessTests` holds — and #128 had already taken the one
+/// seam available without widening it.
 actor LeaseAuthority {
 
     private let clock: any MonotonicClock
@@ -151,39 +167,21 @@ actor LeaseAuthority {
     /// write. The durable half of the same ledger `releasing` holds the transient half of —
     /// see `BoundedFanRestorer` for the bound, and #110 for why there is one.
     ///
-    /// **One producer here, and it is a firmware refusal.** `restore(_:because:)` unions in
-    /// whatever the restorer reports it could not hand back. `docs/SAFETY.md` § 4's
-    /// acknowledgement budget expiring is **not** a second producer and was one until ADR
-    /// 0007, amendment 2026-09-06 (#209): a budget is evidence about time rather than about
-    /// the firmware, so it records `handbackUnconfirmed` below instead, and a fan reaches
-    /// this set from there only when the outstanding restore comes back refused — through
-    /// the union in `restore(_:because:)`, which is the path that already exists.
+    /// **One producer, and it is a firmware refusal**: the union in `restore(_:because:)`.
+    /// `docs/SAFETY.md` § 4's acknowledgement budget expiring is **not** a second one and was
+    /// one until ADR 0007, amendment 2026-09-06 (#209) — a budget is evidence about time
+    /// rather than about the firmware, so it records `handbackUnconfirmed` below instead, and
+    /// a fan reaches this set from there only when the outstanding restore comes back refused.
     ///
-    /// **Not append-only since [#189](https://github.com/blamechris/Aeolus/issues/189), and
-    /// the one thing that clears it is a restore the restorer reports it did *not* give up
-    /// on.** It was append-only until then, on #110's argument that nothing in `Sources/`
-    /// restored a fan outside lease teardown, so a clearing path would be code no test could
-    /// drive. That argument was sound and its premise outlived it by less than it looks:
-    /// #189 recorded § 7's panic pass as the first path that would need the clear, and the
-    /// panic pass **could not reach such a fan at all** — `releaseEveryLease` restored the
-    /// fans of dropped table entries, and this set refuses every lease over a fan in it, so
-    /// no entry covering one could exist. The refusal was self-sealing: the register made the
-    /// only route to its own exit unreachable. `releaseEveryLease` therefore sweeps this set
-    /// beside the table, which is what gives the clear below something to clear.
+    /// **Not append-only since [#189](https://github.com/blamechris/Aeolus/issues/189)**, and
+    /// the one thing that clears it is a restore the restorer reports it did *not* give up on.
+    /// **A restore that never returns leaves it standing**, as does one refused again, and
+    /// both are the fail-safe direction.
     ///
-    /// **The standard for clearing is the standard `HelperFanRestorer` already deregisters
-    /// § 3's registry on**, deliberately, and it is the strongest one this build has: the fan
-    /// is in `fans.subtracting(abandoned)` — the restorer was asked, came back, and did not
-    /// name it. `FanRestoring` promises no read-back, and § 3's registry is the place where
-    /// *forgetting* a still-manual fan is the unsafe direction, so a signal good enough to
-    /// stop the thermal bridge watching a fan is good enough to stop refusing leases over it.
-    /// A weaker one — "the panic pass ran" — would clear a refusal three observed firmware
-    /// refusals set, on evidence about a call rather than about a fan.
-    ///
-    /// **A restore that never returns still leaves it standing**, as does one that comes back
-    /// refused again, and both are the fail-safe direction. What is gone is only the case
-    /// #189 names: a fan Aeolus put into manual, could not hand back, and later *did* hand
-    /// back, refused for the life of the process on the strength of the older failure.
+    /// Why the register was self-sealing until #189, why the clearing standard is the one
+    /// `HelperFanRestorer` already deregisters § 3's registry on, and why a weaker one would
+    /// lift a refusal three observed firmware refusals set on evidence about a call:
+    /// handback-ledger.md § *"`restoreAbandoned` — the durable half"*.
     private var restoreAbandoned: Set<Int> = []
 
     /// Fans whose restore-to-automatic was issued, stopped being waited for, and has not come
@@ -193,22 +191,18 @@ actor LeaseAuthority {
     /// `restoreAbandoned`, and it is a distinct fact from either: the write is still in
     /// flight, nothing cancelled it, and this process has no answer about the fan's mode.
     /// Decision D33 on [#209](https://github.com/blamechris/Aeolus/issues/209) — ADR 0007,
-    /// amendment 2026-09-06 (#209).
+    /// amendment 2026-09-06.
     ///
     /// **Invariant: it is always a subset of `releasing.keys`.** A fan enters only from
     /// `releasing.keys`, in `recordUnconfirmedHandbacks()`, and leaves only when its
     /// `releasing` count drops to `nil` in `restore(_:because:)`'s `defer` — the instant the
-    /// restore that put it there returns. Nothing else writes it.
+    /// restore that put it there returns. Nothing else writes it, which is why
+    /// `fansAeolusIsAccountableFor` needs no third union, and why
+    /// `UnconfirmedHandbackTests` asserts the subset rather than leaving it a sentence.
     ///
-    /// That invariant is why `fansAeolusIsAccountableFor` needs no third union: this set is
-    /// contained in `releasing.keys`, which it already unions, so adding it would change
-    /// nothing and would invite a reader to believe the two registers can diverge.
-    ///
-    /// **Not append-only, and that is the whole of D33.** A restore that lands clears the
-    /// fan; a restore that comes back refused after `RestoreLimits.attemptBudget` clears it
-    /// here and lands it in `restoreAbandoned` through the union `restore(_:because:)`
-    /// already performs; a restore that never returns leaves it standing for the life of the
-    /// process, which is the fail-safe direction.
+    /// **Not append-only, and that is the whole of D33**: the three outcomes a handback can
+    /// reach, and which register each ends in, are handback-ledger.md § *"The three
+    /// registers"*.
     private var handbackUnconfirmed: Set<Int> = []
 
     /// Whether `docs/SAFETY.md` § 4 has closed this table for a sleep that is under way.
@@ -324,16 +318,15 @@ actor LeaseAuthority {
             request.fanIndices, enumeratedFanIndices: enumerated)
         try refuseIfInvalidated(connection)
         // The four refusals in this straight-line region are ordered by how long they last,
-        // most durable first, for the reason the next comment gives at length. This one is
-        // the most durable *of the four*: a fan whose handback was given up on is not coming
-        // back on its own, so a client told any of the others retries — past the other
-        // client's release, past the handback window — into this refusal in the end.
+        // most durable first: a client told a transient refusal retries, and if it retries
+        // into a durable one in the end, the first answer wasted the round trip and told it
+        // something less true than what was available. handback-ledger.md § "The grant gate's
+        // ordering" argues each of the four positions, including why the two refusals above
+        // the marker are transient and above it anyway.
         //
-        // It is not the first refusal in the method, and that is not an inconsistency.
-        // `refuseIfThermalEmergencyActive` and `refuseIfBlind` run above, both transient,
-        // because both need a suspension point and everything here is below every await by
-        // construction — the same "a consequence rather than a choice" `refuseIfBlind`
-        // documents about its own position relative to `validateFanIndices`.
+        // This one is the most durable of the four: a fan whose handback was given up on is
+        // not coming back on its own, so a client told any of the others retries — past the
+        // other client's release, past the handback window — into this refusal in the end.
         let abandoned = request.fanIndices.filter { restoreAbandoned.contains($0) }
         guard abandoned.isEmpty else {
             log.refusedAbandonedHandback(connection, fans: Set(abandoned))
@@ -343,30 +336,16 @@ actor LeaseAuthority {
         // also mid-`releasing` by this set's own invariant, so without this check the
         // `.releaseInProgress` guard at the bottom would answer for it — "retry in a moment"
         // about a restore that has already outlived a five-second budget, which is the one
-        // thing a client must not be told here. It is checked *before* the seal for the same
-        // reason the durable refusal above is: the seal lifts on the next `.didWake` and this
-        // does not, so a client told `.systemSleeping` retries after the wake and has to land
-        // on the answer that is actually about this fan rather than on a window that has
-        // already closed.
-        //
-        // Below the durable check, because the two cannot overlap by construction — a fan
-        // leaves this set in the same `defer` that would put it in `restoreAbandoned` — and
-        // because durable-first is this region's documented ordering whether or not any
-        // particular pair can co-occur.
+        // thing a client must not be told here.
         let unconfirmed = request.fanIndices.filter { handbackUnconfirmed.contains($0) }
         guard unconfirmed.isEmpty else {
             log.refusedUnconfirmedHandback(connection, fans: Set(unconfirmed))
             throw AeolusXPCFault.manualControlUnavailable(reason: .handbackUnconfirmed)
         }
         // Third, by the same durability ordering: the seal lifts on the next `.didWake`,
-        // where an abandoned handback never lifts. A client told `.systemSleeping` retries
-        // after the wake — and if this fan's handback was also abandoned, that retry has to
-        // land on the durable answer rather than being told to wait for a wake that has
-        // already happened.
-        //
-        // Above both lease-table refusals, though, and that is not a durability judgement:
-        // neither of those is worth telling a client about a machine that is going to stop
-        // running this process before it can act on the answer.
+        // where an abandoned handback never lifts. Above both lease-table refusals, though,
+        // and that is not a durability judgement: neither of those is worth telling a client
+        // about a machine that is going to stop running this process before it can act on it.
         guard !sleepSeal else {
             log.refusedSystemSleeping(connection)
             throw AeolusXPCFault.manualControlUnavailable(reason: .systemSleeping)
@@ -477,40 +456,22 @@ actor LeaseAuthority {
     /// safety mechanism ends in.
     ///
     /// Entries are removed **before** the restore is awaited, so a call interleaving during
-    /// the restore finds an empty table and cannot restore the same fans twice.
+    /// the restore finds an empty table and cannot restore the same fans twice. The whole
+    /// sweep is then handed back in **one** `restore` call, not one per entry
+    /// ([#188](https://github.com/blamechris/Aeolus/issues/188)), which is how every teardown
+    /// path here is written — handback-ledger.md § *"One restore call per sweep"* has the
+    /// argument, and `TeardownSweepTripwireTests` makes a return to the per-entry shape fail.
     ///
-    /// - Warning: That is the whole of what it buys, and the empty table cuts both ways. An
-    ///   emptied table is exactly what makes `acquireLease`'s liveness check pass, so a new
-    ///   lease **can** be granted over a fan whose restore is still parked inside
-    ///   `FanRestoring`. Demonstrated against this code, not theorised. **#163 built the
-    ///   restorer this warning said did not exist** — `HelperFanRestorer`, constructed by
-    ///   `HelperComposition` over the daemon's own plane — so the remaining reason it is
-    ///   harmless is narrower and worth stating exactly: `SMCFanControlPlane` still answers
-    ///   `.notBuilt`, so its restore verb throws before touching the firmware and no lease
-    ///   can be granted to race in the first place. The window is real code now and is held
-    ///   shut by the capability gate alone. Once #102 wires the control plane, the losing
-    ///   order is: A's connection dies, A's
-    ///   restore is enqueued, B acquires and writes a target, A's restore lands and returns
-    ///   the fan to automatic. B then holds a live lease over a fan nothing is honouring,
-    ///   which is `CLAUDE.md` rule 6 arriving through a door this comment used to claim was
-    ///   shut.
-    ///   **#102 owns the interlock**, and the reclamation watchdog is a backstop for it
-    ///   rather than a substitute.
-    ///
-    /// **The whole sweep is handed back in one `restore` call, not one per entry**
-    /// ([#188](https://github.com/blamechris/Aeolus/issues/188)). `restore(_:because:)`
-    /// registers every fan it is given in `releasing` *before* it awaits anything, so one call
-    /// puts the entire sweep inside the handback window; a loop puts entry 1 inside it and
-    /// leaves entries 2..n outside for the whole duration of entry 1's restore, which is the
-    /// window `.releaseInProgress` exists to close, reopened for every entry but the first.
-    /// It is also the shape `BoundedFanRestorer`'s per-fan attempt budget is already built for.
-    ///
-    /// It is unreachable *here* while `guard table.isEmpty` holds this table to a single entry
-    /// — and that is an invariant enforced somewhere else entirely, by a guard whose subject is
-    /// concurrent-lease refusal rather than handback safety, so nothing links the two. The
-    /// panic path reaches the same hazard today, through a second source of fans rather than a
-    /// second entry; see `releaseEveryLease()`. All four sweeps are written the one way so the
-    /// reachable one is not a special case whose reason nobody can see.
+    /// - Warning: Removing before restoring is the whole of what that buys, and the empty
+    ///   table cuts both ways. An emptied table is exactly what makes `acquireLease`'s
+    ///   liveness check pass, so a new lease **can** be granted over a fan whose restore is
+    ///   still parked inside `FanRestoring`. Demonstrated against this code, not theorised.
+    ///   What holds it shut today is the capability gate alone — `SMCFanControlPlane` answers
+    ///   `.notBuilt`, so `HelperFanRestorer`'s restore verb throws before touching the
+    ///   firmware and no lease can be granted to race in the first place. **#102 owns the
+    ///   interlock** for when that stops being true, and the reclamation watchdog is a
+    ///   backstop for it rather than a substitute. The losing order, and why #163 narrowed
+    ///   this warning rather than closing it, are in the same section of that document.
     func expireLapsedLeases() async {
         let lapsed = table.removeLapsed(asOf: clock.now)
         guard !lapsed.isEmpty else { return }
@@ -573,11 +534,10 @@ actor LeaseAuthority {
     /// paths do it, and the sweep is restored in one call for `expireLapsedLeases`' #188
     /// reason.
     ///
-    /// **The log line stays per entry, and only the restore is unified.** A revocation is a
-    /// claim being taken from a named client, so `log show` has to carry one line per client
-    /// — that is this method's own argument for owning a distinct `FanRestoreCause`, and a
-    /// single line naming a union of fans would undo it. The two loops were one until #188;
-    /// what was shared between them was never the logging.
+    /// **The log line stays per entry, and only the restore is unified** — a revocation is a
+    /// claim being taken from a *named* client, which is this method's own argument for owning
+    /// a distinct `FanRestoreCause`, and a single line naming a union of fans would undo it.
+    /// handback-ledger.md § *"One restore call per sweep"*, last paragraph.
     func revokeLeases(coveringFan fan: Int, because cause: FanRestoreCause) async {
         let revoked = table.removeAll(covering: fan)
         guard !revoked.isEmpty else { return }
@@ -626,11 +586,10 @@ actor LeaseAuthority {
     /// predicate remover is the first step towards one mechanism wearing several names, and
     /// an operator reading `log show` must be able to tell the panic path from § 3.
     /// **It is lease-scoped and stays lease-scoped**, which is a decision worth writing down
-    /// now that `releaseEveryLease()` is not. § 3 is a mechanism *taking* fans in order to
-    /// cool the machine, not a recovery verb: a fan whose handback was abandoned is one § 3's
-    /// own registry deliberately keeps — `HelperFanRestorer` drops only the fans the firmware
-    /// took — so the emergency can bridge it to maximum RPM. Sweeping it here would have § 3
-    /// hand back, on the way into an emergency, the one fan it may need to command hardest.
+    /// now that `releaseEveryLease()` is not: § 3 is a mechanism *taking* fans in order to
+    /// cool the machine, not a recovery verb, and a fan whose handback was abandoned is one
+    /// it may need to command hardest. handback-ledger.md § *"Why `revokeEveryLease` is not
+    /// given the same sweep"*; `PanicPathScopeTripwireTests` holds the two verbs apart.
     func revokeEveryLease(because cause: FanRestoreCause) async {
         let revoked = table.removeAll()
         guard !revoked.isEmpty else { return }
@@ -663,23 +622,17 @@ actor LeaseAuthority {
     ///
     /// [#189](https://github.com/blamechris/Aeolus/issues/189) is why, and the reason is not a
     /// widening of scope for its own sake: an abandoned fan was **unreachable by every restore
-    /// this actor issues**. Every other teardown path derives its fans from table entries, an
-    /// entry exists only because `acquireLease` granted one, and `acquireLease` refuses every
-    /// fan in `restoreAbandoned` — so the register sealed off the only route to its own exit,
-    /// and a fan that entered it could never be handed back again by this process. #189 named
-    /// this method as the first path that would need the clearing rule and described it as
-    /// already restoring every fan on the machine; it did not.
+    /// this actor issues**, because every other teardown path derives its fans from table
+    /// entries and `acquireLease` refuses every fan in `restoreAbandoned`. It is this verb
+    /// rather than another because this verb is the recovery one — § 7 is what a user reaches
+    /// for when the fans are stuck, and `docs/RECOVERY.md` is the step after it.
+    /// `revokeEveryLease(because:)` is deliberately not given the same sweep — see there.
     ///
-    /// It is this verb rather than another because this verb is the recovery one. § 7 is what a
-    /// user reaches for when the fans are stuck, `docs/RECOVERY.md` is the step after it, and a
-    /// fan Aeolus itself put into manual and could not take back is the case most in need of
-    /// it. `revokeEveryLease(because:)` is deliberately not given the same sweep — see there.
-    ///
-    /// **It touches nothing foreign, so ADR 0011 is intact.** `restoreAbandoned` is fans that
-    /// were under an Aeolus lease and whose handback this process observed the firmware refuse
-    /// — `fansAeolusIsAccountableFor` counts them as Aeolus's for exactly that reason. A fan
-    /// another tool pinned, and one § 6's reconciliation recorded in its own `handbackRefused`
-    /// set, are still outside what this touches; `docs/SAFETY.md` § 7 itemises what remains.
+    /// **It touches nothing foreign, so ADR 0011 is intact**, and **one `restore` call for the
+    /// whole sweep is load-bearing here rather than uniform** — the sweep has two sources, so
+    /// a per-source shape would leave one of them outside `releasing` while the other's
+    /// restore was on the wire. Both, with the losing order spelled out:
+    /// handback-ledger.md § *"The panic sweep has two sources"*.
     ///
     /// **It does not make the message fail**, which is the reason the *machine-wide* restore
     /// was declined here (#159): `restore(_:because:)` cannot throw, and a firmware that
@@ -692,13 +645,6 @@ actor LeaseAuthority {
     /// on the same safe state. Making this consult per-connection state would invalidate the
     /// exemption and needs revisiting alongside it —
     /// [#95](https://github.com/blamechris/Aeolus/issues/95).
-    /// **One `restore` call for the whole sweep, and here that is load-bearing rather than
-    /// uniform** ([#188](https://github.com/blamechris/Aeolus/issues/188)). The sweep now has
-    /// two sources, so the per-source shape would put one of them outside `releasing` while
-    /// the other's restore was on the wire — and in the order that reads most naturally, the
-    /// abandoned fans first, a fan whose lease this method has just dropped becomes grantable
-    /// while its own handback is in flight. That is #188's hazard reached without concurrent
-    /// leases, which its acceptance criteria assumed was the only way to reach it.
     func releaseEveryLease() async {
         let dropped = table.removeAll()
         let fans = dropped.reduce(into: restoreAbandoned) { $0.formUnion($1.fanIndices) }
@@ -734,22 +680,11 @@ actor LeaseAuthority {
     /// in a mode nothing has confirmed, and a lease over one would be `CLAUDE.md` rule 6.
     ///
     /// **It records `handbackUnconfirmed`, not `restoreAbandoned`, and the difference is
-    /// decision D33** — ADR 0007, amendment 2026-09-06 (#209). This method used to write the
-    /// durable set, and the argument for that was: the helper asked, was not answered in the
-    /// window it had, so treat the fan as one the handback failed on. That argument does not
-    /// hold, because **a budget expiring is evidence about time, not about the firmware.**
-    /// Nothing here observed a refused write; what was observed is that five seconds passed.
-    /// Two consequences followed from conflating them, and both are the reason this changed:
-    /// a *healthy* machine that merely slept slowly lost a fan to manual control permanently,
-    /// with `docs/RECOVERY.md` as the only route out; and the log said the firmware refused a
-    /// write nothing had yet reported on.
-    ///
-    /// What survives from the old argument is the refusal itself. An unconfirmed fan is
-    /// refused exactly as hard as an abandoned one for as long as it stands — see the grant
-    /// gate in `acquireLease`. What differs is how it ends: the outstanding restore's own
-    /// completion resolves it, a refusal after `RestoreLimits.attemptBudget` converts it to
-    /// the durable set through `restore(_:because:)`'s existing union, and a restore that
-    /// never returns leaves it standing for the life of the process.
+    /// decision D33** — ADR 0007, amendment 2026-09-06 (#209) — because **a budget expiring is
+    /// evidence about time, not about the firmware.** Nothing here observed a refused write;
+    /// what was observed is that five seconds passed. What the durable set cost a healthy
+    /// machine that merely slept slowly, and what survives of the old argument, are
+    /// handback-ledger.md § *"Why recording it belongs to the lease core"*.
     ///
     /// **Additive and idempotent.** It is called from inside `SleepAcknowledgement`'s
     /// once-only guard, so it runs at most once per sleep; being safe to call twice is a
@@ -776,24 +711,27 @@ actor LeaseAuthority {
     /// The lease a client is shown **and every fan Aeolus is accountable for**, read in one
     /// hop.
     ///
-    /// The fan set is not on the wire — `Lease` carries no indices — and the snapshot needs
-    /// it anyway, to tell a fan Aeolus is holding from one somebody else is. Two calls would
-    /// answer that question from two views of this actor: a lease reported live beside an
-    /// empty fan set, and therefore a fan under Aeolus's own lease reported as foreign
-    /// control. One hop cannot disagree with itself.
+    /// One hop rather than two, because two would answer from two views of this actor: a lease
+    /// reported live beside an empty fan set, and therefore a fan under Aeolus's own lease
+    /// reported as foreign control. It is `fansAeolusIsAccountableFor` rather than the lease's
+    /// own fans, and **since [#187](https://github.com/blamechris/Aeolus/issues/187) it carries
+    /// the three registers apart** as well as their union — the union cannot answer *"why would
+    /// a grant over this fan be refused?"*, and a snapshot that had only it reported a
+    /// mid-handback fan and an abandoned one alike as available.
     ///
-    /// **It is `fansAeolusIsAccountableFor`, not the lease's own fans, and the two are not
-    /// the same set.** An earlier version returned `table.all.first`'s indices, which was
-    /// wrong twice over: it named only the *first* entry's fans, so a second table entry's
-    /// fans read as foreign; and it omitted the fans that are mid-handback or whose handback
-    /// was abandoned. A fan Aeolus itself put into manual and could not give back would then
-    /// be reported to the user as another program's — `CLAUDE.md` rule 6, in the direction
-    /// `fansAeolusIsAccountableFor` calls *"a considerably worse thing to be told is
-    /// somebody else's fault"*. The grant path has always judged against this set; the
-    /// snapshot now asks the same question of the same state, in the same hop.
-    func activeLeaseView() async -> (lease: Lease?, accountableFans: Set<Int>) {
+    /// The grant path has always judged against this set; the snapshot asks the same question of
+    /// the same state, in the same hop. Both wrong answers an earlier version gave, and why the
+    /// registers are returned rather than exposed as three more properties:
+    /// handback-ledger.md § *"What the snapshot is told"*.
+    func activeLeaseView() async -> LeaseAccountability {
         await expireLapsedLeases()
-        return (table.all.first?.asLease(), fansAeolusIsAccountableFor)
+        return LeaseAccountability(
+            lease: table.all.first?.asLease(),
+            accountableFans: fansAeolusIsAccountableFor,
+            abandonedHandbacks: restoreAbandoned,
+            unconfirmedHandbacks: handbackUnconfirmed,
+            handbacksInFlight: Set(releasing.keys)
+        )
     }
 
     var leaseCount: Int { table.count }
@@ -802,11 +740,9 @@ actor LeaseAuthority {
     /// The fans § 4's budget gave up waiting for and nothing has answered for since.
     ///
     /// Read-only and derived from state that stays `private`, exactly as
-    /// `fansAeolusIsAccountableFor` is: a caller can see the set, and nothing it does with
-    /// the answer can put a fan into it or take one out. The two registers below are how a
-    /// test says which of D33's three outcomes a handback actually reached — cleared,
-    /// converted to the durable set, or still standing — and asserting that from the refusal
-    /// alone cannot distinguish the first from a fan that was never recorded.
+    /// `fansAeolusIsAccountableFor` is: a caller can see the set, and nothing it does with the
+    /// answer can put a fan into it or take one out. handback-ledger.md § *"The read-only rule
+    /// the accessors are allowed under"* says what the three are for.
     var fansWithUnconfirmedHandbacks: Set<Int> { handbackUnconfirmed }
 
     /// The fans a restorer gave up on: the firmware refused every attempt. The durable half,
@@ -814,11 +750,8 @@ actor LeaseAuthority {
     var fansWithAbandonedHandbacks: Set<Int> { restoreAbandoned }
 
     /// The fans with a restore issued and not yet returned — `releasing`'s keys, and nothing
-    /// about its counts. Read-only, under the same rule as the two sets above.
-    ///
-    /// Exists so that `handbackUnconfirmed ⊆ releasing.keys` is a fact a test asserts rather
-    /// than a sentence a doc comment states: `fansAeolusIsAccountableFor` rests on it, and
-    /// an invariant nothing can observe is one a refactor can break with the suite green.
+    /// about its counts. Read-only, under the same rule as the two sets above, and what makes
+    /// `handbackUnconfirmed ⊆ releasing.keys` a fact a test asserts rather than a sentence.
     var fansMidHandback: Set<Int> { Set(releasing.keys) }
 
     func holdsTombstone(for connection: ConnectionID) -> Bool {
@@ -873,29 +806,18 @@ actor LeaseAuthority {
 
     /// Every fan whose manual state is Aeolus's own doing, and therefore not foreign.
     ///
-    /// Three registers, and each one has a **more precise** refusal further down this
-    /// method — which is the whole reason they are excluded rather than judged. `F<n>Md`
-    /// reads `1` for all three and names no owner, so without this a client would be told
-    /// "another program holds it" about:
-    ///
-    /// - a fan under a live lease (`.leaseHeldByAnotherClient` — another *client*, not
-    ///   another program);
-    /// - a fan mid-handback (`.releaseInProgress` — retry in a moment);
-    /// - a fan whose handback was given up on (`.restoreToAutomaticFailed` — Aeolus put it
-    ///   there and could not take it back, which is a considerably worse thing to be told
-    ///   is somebody else's fault).
-    ///
-    /// **`handbackUnconfirmed` is deliberately not a fourth union.** It is a subset of
-    /// `releasing.keys` by its own invariant — entered only from there, left only when the
-    /// fan's `releasing` count reaches `nil` — so every fan in it is already accounted for by
-    /// the third register. Adding it would change no answer and would suggest the two can
-    /// disagree. The invariant is asserted, not merely stated: `UnconfirmedHandbackTests`
-    /// reads `fansMidHandback` beside `fansWithUnconfirmedHandbacks` and requires the subset.
+    /// Three registers, and each one has a **more precise** refusal further down the grant
+    /// path — which is the whole reason they are excluded rather than judged. `F<n>Md` reads
+    /// `1` for all three and names no owner, so without this a client would be told "another
+    /// program holds it" about a fan another *client* legitimately leases, one that is
+    /// mid-handback, and one Aeolus put into manual and could not take back.
+    /// `handbackUnconfirmed` is deliberately not a fourth union: it is a subset of
+    /// `releasing.keys` by its own invariant, so adding it would change no answer.
     ///
     /// **Read by the snapshot as well as by the gate**, through `activeLeaseView()`. One
-    /// definition, because two would disagree the moment either moved — and the way they
-    /// disagreed before was the snapshot naming a fan Aeolus could not hand back as another
-    /// program's, while the gate refused it correctly.
+    /// definition, because two would disagree the moment either moved. The three refusals it
+    /// stands in for, and what the disagreement looked like:
+    /// handback-ledger.md § *"What the snapshot is told"*.
     ///
     /// `internal` since #128 moved `refuseIfForeignManualControl(_:wanting:)` out. It is
     /// **derived and read-only**, and `activeLeaseView()` — `internal`, and what the control
@@ -920,49 +842,27 @@ actor LeaseAuthority {
     /// so two overlapping restores of the same fan — a teardown and the panic path — cannot
     /// have the first to finish clear a flag the second still needs.
     ///
-    /// - Note: **That overlap is unreachable in this build, and the count is therefore not
-    ///   load-bearing today.** `guard table.isEmpty` holds the table to a single entry, and
-    ///   every teardown path removes its entry synchronously before restoring, so whichever
-    ///   path removes first is the only one that restores. Replacing the count with set
-    ///   membership passes the whole suite. It is written this way because the overlap
-    ///   becomes reachable the moment either of those two facts changes — E5.3's control
-    ///   plane issuing a restore outside lease teardown, or the table holding more than one
-    ///   lease — and both are cheaper to be already correct for than to retrofit. Recorded
-    ///   rather than implied, so nobody simplifies it believing a test is watching.
+    /// It is also the one place the other two registers are cleared, and where each clear sits
+    /// is load-bearing in both cases. The `defer` is **inside the same loop as the decrement**,
+    /// after it, so `handbackUnconfirmed` loses a fan exactly when its last outstanding restore
+    /// returns rather than while another is in flight, and being **in a `defer`** is what makes
+    /// a fan the firmware refused leave that set and land in `restoreAbandoned` through the
+    /// union below — D33's *"converts to the durable set through the path that already exists"*.
+    /// The `restoreAbandoned` clear below the await is the **only** one
+    /// ([#189](https://github.com/blamechris/Aeolus/issues/189)) and is conditioned on the
+    /// restorer's own report rather than on the call having been made.
     ///
-    /// ## Where an unconfirmed handback ends
+    /// Why that ordering survives clearing having made this mutation non-additive, why a
+    /// restore that never returns leaves a fan unconfirmed for the life of the process, and why
+    /// the intersection below is not a blanket subtraction: handback-ledger.md § *"Where each
+    /// register ends"*.
     ///
-    /// The `defer` below is also the one place `handbackUnconfirmed` is cleared, and both
-    /// halves of where it sits are load-bearing. It is **inside the same loop as the
-    /// decrement**, after it, so the removal sees the decremented count and fires exactly
-    /// when the fan's last outstanding restore returns rather than while another is still in
-    /// flight. It is **in a `defer`**, so it happens whether the restorer reported an empty
-    /// abandoned set or a full one — a fan the firmware refused leaves this set and lands in
-    /// `restoreAbandoned` through the union below, which is D33's "converts to the durable
-    /// set through the path that already exists".
-    ///
-    /// A restore that never returns never reaches either statement, so the fan stays
-    /// unconfirmed for the life of the process. That is the fail-safe direction and is
-    /// deliberately not guarded against.
-    ///
-    /// ## Where an abandoned handback ends
-    ///
-    /// Below the await, and it is the **only** place `restoreAbandoned` is cleared
-    /// ([#189](https://github.com/blamechris/Aeolus/issues/189)). The clear is conditioned on
-    /// the restorer's own report — the fans it was given minus the fans it named — and not on
-    /// the call having been made, which is the whole of the issue's hard half: a refusal set by
-    /// three observed firmware refusals must not be lifted by evidence about a call. See
-    /// `restoreAbandoned` for why that report is the same standard `HelperFanRestorer`
-    /// deregisters § 3's registry on, and why this build has no stronger one to offer.
-    ///
-    /// **Clearing makes this method's mutation of the register non-additive, and the
-    /// reentrancy that made additivity load-bearing is still handled — by `releasing`, not by
-    /// the ordering.** Two restores of the same fan overlapping would let the later completion
-    /// overwrite the earlier one's verdict either way round; what matters is that no *grant*
-    /// can happen in between, and none can, because the fan's `releasing` count is still
-    /// non-`nil` until the last of them returns. A fan cleared early is therefore refused
-    /// `.releaseInProgress` rather than granted, and a sibling restore that comes back refused
-    /// re-enters it through the union above before the count ever drops.
+    /// - Note: **The overlap the count exists for is unreachable in this build, and the count
+    ///   is therefore not load-bearing today.** Replacing it with set membership passes the
+    ///   whole suite; it is written this way because the overlap becomes reachable the moment
+    ///   either of the two facts that make it unreachable changes. Recorded rather than
+    ///   implied, so nobody simplifies it believing a test is watching — handback-ledger.md
+    ///   § *"`releasing` — the transient half"* names both facts.
     private func restore(_ fans: Set<Int>, because cause: FanRestoreCause) async {
         log.restored(fans: fans, because: cause)
         for fan in fans { releasing[fan, default: 0] += 1 }

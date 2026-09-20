@@ -194,6 +194,22 @@ verified cannot happen — and that is too load-bearing to rest on a manual page
   availability in this build (#140), so a guard looking for one matched nothing; the check is
   on `FanState.isReclaimedBySystem`, which comes straight from the ledger.
 
+  > **Amended 2026-09-20 (#194).** "Never published in this build" is now load-bearing rather
+  > than incidental: with the snapshot's availability sourced from
+  > `FanControlPlane.writeCapability`, a `.built` seam **does** publish `.reclaimedBySystem` —
+  > chosen over the `.available` a bare fall-through would produce. A guard switching on the
+  > availability value would therefore have come back to life silently, with a reachability
+  > nobody argued for. Keying it on `FanState.isReclaimedBySystem` was correct for the reason
+  > this bullet gives, and is now correct for a second one.
+- **The snapshot also states the three handback registers apart**, not merely their union
+  ([#187](https://github.com/blamechris/Aeolus/issues/187)). The union answers *"is this fan
+  somebody else's?"*, which is this ADR's question; it cannot answer *"why would a grant over it
+  be refused?"*, and a fan mid-handback or with an abandoned handback read as `.available` until
+  it did. `LeaseAuthority.activeLeaseView()` returns both, still in one hop. The two
+  re-statements can compose in either order because they speak about disjoint fans — a fan in
+  any register is accountable, and an accountable fan is never judged foreign — which
+  `SnapshotAvailabilityTests` asserts rather than assumes.
+
 **On today's helper none of the restores can land.** `SMCFanControlPlane` answers
 `FanWriteCapability.notBuilt` and every write verb throws `.controlPathNotBuilt`, so the pass
 reads, finds nothing to do on a healthy machine, and would be refused if it did. That refusal

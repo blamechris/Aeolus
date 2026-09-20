@@ -10,9 +10,12 @@ import SMCCore
 ///
 /// `snapshot` returns **real data** — fans through `SMCFanEnumeration`, sensors through
 /// `SMCCore`'s public read API, each fan's mode through `F<n>Md` — with `activeLease: nil`
-/// and every fan `manualControlAvailability: .unavailable(.writePathNotBuilt)`. That makes
-/// E2 demonstrable end to end on hardware, app to XPC to root helper to SMC and back, with
-/// no write existing anywhere in the tree.
+/// and, on every build that has shipped, every fan
+/// `manualControlAvailability: .unavailable(.writePathNotBuilt)`. That availability is
+/// **sourced from `writeCapability` rather than written**, which is
+/// [#194](https://github.com/blamechris/Aeolus/issues/194). All of it makes E2 demonstrable end
+/// to end on hardware, app to XPC to root helper to SMC and back, with no write existing
+/// anywhere in the tree.
 ///
 /// The mode is **read, not assumed** — a literal `.automatic` until
 /// [#148](https://github.com/blamechris/Aeolus/issues/148). Nothing in this build can take a
@@ -110,6 +113,17 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// compile and report a bit nothing sets.
     private let reclamation: ReclamationLedger
 
+    /// Whether the build behind the seam can write at all, read once per snapshot.
+    ///
+    /// **The fourth instance of the rule the three fields above each record**, and
+    /// [#194](https://github.com/blamechris/Aeolus/issues/194) names it: the availability this
+    /// type reports was a literal while the grant path read the seam. The narrow role rather
+    /// than the plane, exactly as `LeaseAuthority` holds it, and required with no default —
+    /// `.notBuilt` is the literal being removed, so a defaulted one would put it back where
+    /// nothing could see it. See
+    /// `ReadOnlyFanReport.availability(whenLedgerSays:writeCapabilityIs:bounds:)`.
+    private let writeCapability: any FanWriteCapabilityReporting
+
     /// The sensor keys this machine exposes, discovered once. `nil` until the first
     /// successful discovery; a failed discovery leaves it `nil` so the next snapshot tries
     /// again rather than caching a machine with no sensors on it.
@@ -152,6 +166,7 @@ actor ReadOnlyFanAuthority: FanAuthority {
         log: HelperLog,
         thermalEmergency: ThermalEmergencyLatch,
         reclamation: ReclamationLedger,
+        writeCapability: some FanWriteCapabilityReporting,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.provider = provider
@@ -159,6 +174,7 @@ actor ReadOnlyFanAuthority: FanAuthority {
         self.log = log
         self.thermalEmergency = thermalEmergency
         self.reclamation = reclamation
+        self.writeCapability = writeCapability
         self.now = now
     }
 
@@ -175,11 +191,16 @@ actor ReadOnlyFanAuthority: FanAuthority {
         // the same reason — reading "which fans are reclaimed" and "which are blind" as two
         // hops could observe one fan in neither set or in both.
         let reclamationCauses = await reclamation.causes
+        // Once per snapshot for the ledger's reason, and free: the role is synchronous.
+        let capability = writeCapability.writeCapability
 
         return SystemSnapshot(
             fans: fans.fans.map {
                 ReadOnlyFanReport.fanState(
-                    for: $0, reclamation: reclamationCauses, mode: modes[$0.index])
+                    for: $0,
+                    reclamation: reclamationCauses,
+                    mode: modes[$0.index],
+                    writeCapability: capability)
             },
             sensors: sensors,
             // No lease can exist: every path that would grant one refuses below.
@@ -244,6 +265,13 @@ actor ReadOnlyFanAuthority: FanAuthority {
     func connectionDidInvalidate(_ connection: ConnectionID) async {}
 
     /// The one refusal every control path here raises.
+    ///
+    /// **Still a literal, and deliberately left as one by
+    /// [#194](https://github.com/blamechris/Aeolus/issues/194)**, which sourced the
+    /// *availability* above. Not the same claim: this type has no lease table, no restorer and
+    /// no control loop, so these verbs refuse because **there is nothing here to grant with**,
+    /// which no seam can change. Same argument at `SupervisedFanAuthority.apply`, pinned by
+    /// `supervisedApplyRefusesEvenWhenTheSeamCanWrite`.
     private static let noWritePath = AeolusXPCFault.manualControlUnavailable(
         reason: .writePathNotBuilt)
 
@@ -369,15 +397,4 @@ actor ReadOnlyFanAuthority: FanAuthority {
         log.discoveredSensors(count: discovered.count, duration: ContinuousClock.now - started)
         return discovered
     }
-}
-
-/// A sensor key the helper found once, and the kind it was classified as at discovery.
-///
-/// Metadata, never a value. The kind is fixed at discovery for the same reason
-/// `AeolusUI`'s `DiscoveredSensor` fixes it: it is a property of the key's name, not of
-/// the reading, so re-deriving it every tick would be work that cannot produce a different
-/// answer.
-struct DiscoveredSensorKey: Sendable, Hashable {
-    let key: String
-    let kind: SensorReading.Kind
 }

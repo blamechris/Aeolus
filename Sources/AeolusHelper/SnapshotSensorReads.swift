@@ -59,3 +59,20 @@ struct SnapshotSensorReads: SensorProvider {
         try await scheduler.read(keys: keys, at: .snapshot)
     }
 }
+
+// `DiscoveredSensorKey` moved here from `ReadOnlyFanAuthority.swift` by
+// [#194](https://github.com/blamechris/Aeolus/issues/194), which put that file over the
+// 400-line threshold. It is the cheapest thing in it to move and the only *type* in it
+// besides the actor, and this file is already the snapshot read path's other half — see the
+// header above for why that half is separate. Nothing widens: it was `internal` there too.
+
+/// A sensor key the helper found once, and the kind it was classified as at discovery.
+///
+/// Metadata, never a value. The kind is fixed at discovery for the same reason
+/// `AeolusUI`'s `DiscoveredSensor` fixes it: it is a property of the key's name, not of
+/// the reading, so re-deriving it every tick would be work that cannot produce a different
+/// answer.
+struct DiscoveredSensorKey: Sendable, Hashable {
+    let key: String
+    let kind: SensorReading.Kind
+}
