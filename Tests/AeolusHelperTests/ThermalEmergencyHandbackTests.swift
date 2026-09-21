@@ -76,6 +76,33 @@ struct ThermalEmergencyHandbackTests {
                 == [.notice])
     }
 
+    /// A second handback of a fan that still reads manual is reported again.
+    ///
+    /// "Once per handback" is the logging rule, and a new acceptance is a new handback: the
+    /// firmware was asked again and said yes again, and a fan still manual after *that* is a
+    /// second fact worth a line. `handbackAccepted(fanAt:)` builds a fresh `OwedReadBack`,
+    /// whose `reported` set starts empty.
+    ///
+    /// **Mutation:** in `ThermalEmergency.handbackAccepted(fanAt:)`, carry the old set over —
+    /// `OwedReadBack(generation: handbackGeneration, reported: handbackOwed[index]?.reported
+    /// ?? [])`. Run: red on `stillManual == [.fault, .fault]`.
+    @Test("A fan still manual after a second accepted handback is reported again")
+    func aReAcceptedHandbackIsReportedAfresh() async throws {
+        let machine = ThermalMachine(stages: [.at(44)], fans: [0: .held(at: 2_400)])
+        try await machine.engageManualControl(fan: 0)
+
+        await machine.emergency.handbackAccepted(fanAt: 0)
+        await machine.emergency.cycle()
+        await machine.emergency.handbackAccepted(fanAt: 0)
+        await machine.emergency.cycle()
+
+        let stillManual = machine.safetyLog.levels(containing: "still reads manual")
+        #expect(
+            stillManual == [.fault, .fault],
+            "a second accepted handback of a still-manual fan was not reported")
+        #expect(await machine.emergency.fansOwedHandbackReadBack == [0])
+    }
+
     // MARK: - Staleness across the read
 
     /// A read asked for one handback must not clear a newer one.
