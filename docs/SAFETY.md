@@ -200,10 +200,12 @@ this document:
   ([#189](https://github.com/blamechris/Aeolus/issues/189)). The ledger was append-only for
   the life of the helper process until then, which made this the one state in this document
   with no route out short of a restart. The clearing signal is the restorer reporting it did
-  *not* give the fan up — the same signal `HelperFanRestorer` deregisters § 3's registry on,
-  which is the place where forgetting a still-manual fan is the unsafe direction, and the
-  strongest one a build with no read-back inside the keystone has. A restore that is refused
-  again, and one that never returns, both leave the refusal standing.
+  *not* give the fan up, **and**, since [#291](https://github.com/blamechris/Aeolus/issues/291),
+  a later read reporting the fan automatic — accepted is not automatic. § 3 holds its own
+  registry to the same two signals since [#295](https://github.com/blamechris/Aeolus/issues/295),
+  because that is the place where forgetting a still-manual fan is the unsafe direction: the
+  restorer only marks an accepted fan owed a read-back, and § 3's own cycle forgets it. A
+  restore that is refused again, and one that never returns, both leave the refusal standing.
 
   **The path that reaches it is § 7's, and it had to be built** — the line above said the panic
   restore would be the first caller to need the clear, and the panic restore could not reach
@@ -532,6 +534,26 @@ single supervisor no runtime scenario separates it from a bare release: the same
 that nothing in `Sources/` clears the latch except the supervised cycle, and that the cycle
 names the episode it judged when it does.
 
+**Which fans it holds, and when it lets one go.** § 3's registry is every fan Aeolus took off
+automatic control, each with the permit its maximum write needs. A fan leaves it when § 3 bridges
+and restores it (firing, or taking back a late engagement), and — since
+[#295](https://github.com/blamechris/Aeolus/issues/295) — **not** when a lease teardown hands it
+back. A handback the firmware *refused* keeps the fan registered, as it always did. A handback
+the firmware *accepted* keeps it registered too, marked owed a read-back, because a write the
+firmware accepted is not a fan in automatic (#291): the fan leaves only when § 3's own cycle reads
+`F<n>Md` and finds it automatic. That read runs last in a cycle, and only on one that could see,
+found the latch clear and did not fire; it is never taken on the restorer's path, because § 4's
+sleep handback and SIGTERM's teardown await that path before the machine-wide keystone. A read
+that finds the fan manual or cannot read it keeps the fan; a read that began before the fan was
+engaged or handed back again cannot clear the newer state. A fan that keeps reading manual stays
+registered indefinitely: `F<n>Md` names no owner, and keeping it costs one bridge per emergency,
+while dropping it would leave a fan off automatic control that no emergency bridges.
+
+*Tested by:* `AcceptedHandbackCompositionTests` (an accepted-but-manual fan is still bridged by
+the next emergency; an unreadable fan is kept; the restorer returns while § 3's read-back is
+parked) and `ThermalEmergencyHandbackTests` (a stale read cannot clear a newer handback or a
+re-engagement; no read on a blind, firing or latched cycle; marking never registers).
+
 **What the user is actually told.** `isThermalEmergencyActive` on the snapshot, which the
 app renders at 1 Hz, and a `.fault` line in the log. That is the whole of it: a root daemon
 cannot post a user notification, so a `fanctl`-held lease with no app running gets no visual
@@ -707,7 +729,9 @@ the fan, in the order it can act:
   never issued means nothing in that sleep episode ever will.
 - **§ 3 still acts on it above the ceiling.** The thermal override's registry entry is
   deliberately retained across the handback, so such a fan coming back hot is taken to full
-  scale. Above the ceiling only — that is an override, not a restore.
+  scale. Above the ceiling only — that is an override, not a restore. Since #295 the same is
+  true of a handback the firmware *accepted*: the entry stays until § 3 itself reads the fan
+  automatic (see § 3, "Which fans it holds").
 - **Startup reconciliation at the next helper start** (#164, landed in #199) is what returns it
   to automatic. **This bullet said it "is not built yet" until #104, and that was stale** — the
   same failure the status block above records against § 4 and § 5, corrected in place here for

@@ -110,7 +110,7 @@ the register made the only route to its own exit unreachable. `releaseEveryLease
 sweeps this set beside the table, which is what gives the clear something to clear.
 
 **The standard for clearing is two signals since [#291](https://github.com/blamechris/Aeolus/issues/291).**
-The first is the one `HelperFanRestorer` deregisters § 3's registry on: the fan is in
+The first is the one `HelperFanRestorer` marks § 3's registry on: the fan is in
 `fans.subtracting(abandoned)` — the restorer was asked, came back, and did not name it. A weaker
 one — "the panic pass ran" — would clear a refusal three observed firmware refusals set, on
 evidence about a call rather than about a fan. But the first signal is itself evidence about a
@@ -143,9 +143,15 @@ accepted write never becomes `.restoreToAutomaticFailed` for a fan that did not 
 The set is re-read after the await, on `ReclamationWatchdog.cycle()`'s rule: a restore refused
 while the read was out removed the fan from it, and that refusal is the newer fact.
 
-§ 3's deregistration still rests on the first signal alone. That is a separate question — a
-wrong answer there stops the thermal bridge watching a still-manual fan — and is tracked as
-[#295](https://github.com/blamechris/Aeolus/issues/295) rather than folded in here.
+§ 3's deregistration rested on the first signal alone until
+[#295](https://github.com/blamechris/Aeolus/issues/295), where a wrong answer stops the thermal
+bridge watching a still-manual fan. It now uses both, on the same placement rule: the restorer
+only *marks* an accepted fan owed a read-back (`ThermalEmergency.handbackAccepted(fanAt:)`), and
+§ 3 takes the read from its own cycle — on a sighted, unlatched cycle that did not fire — and
+forgets the fan only when it reads automatic under the generation the read was asked for. § 3's
+cycle is awaited by nothing on a keystone's path, which is what lets it read where
+`restore(_:because:)` cannot. It reads through `HandbackReadingBack`, the non-logging sibling of
+`fansReadingAutomatic`, because it asks at 1 Hz and logs transitions itself.
 
 **A restore that never returns still leaves it standing**, as does one that comes back refused
 again, and both are the fail-safe direction. What is gone is only the case #189 names: a fan
@@ -295,9 +301,9 @@ Below the await, and it is the **only** place `restoreAbandoned` is cleared
 restorer's own report — the fans it was given minus the fans it named — and not on the call
 having been made, which is the whole of the issue's hard half: a refusal set by three observed
 firmware refusals must not be lifted by evidence about a call. See
-[`restoreAbandoned`](#restoreabandoned--the-durable-half) for why that report is the same
-standard `HelperFanRestorer` deregisters § 3's registry on, and why this build has no stronger
-one to offer.
+[`restoreAbandoned`](#restoreabandoned--the-durable-half) for why that report is only the first
+of the two signals it now needs (#291), and why § 3's registry is held to the same two since
+#295.
 
 **Clearing makes that mutation of the register non-additive, and the reentrancy that made
 additivity load-bearing is still handled — by `releasing`, not by the ordering.** Two restores
