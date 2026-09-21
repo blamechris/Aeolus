@@ -1109,6 +1109,13 @@ threw (ADR 0011 D3). Being one-shot is enforced rather
 than assumed — a second `reconcile()` is declined, because it would discard those refusals
 and hand a fan back a second time.
 
+**The keystone clears nothing until it is read back** ([#204](https://github.com/blamechris/Aeolus/issues/204)).
+A machine-wide write that did not throw earns a read of `F<n>Md` for every fan a refusal stands
+over and every fan the pass handed back by name, inside the same budget. Only a fan read back
+automatic loses its refusal; one still in manual, unreadable, or past the budget stays
+`.supervisorBlind` for the life of the process — not `.restoreToAutomaticFailed`, because the
+firmware accepted the write and one read cannot say why the fan is still in manual.
+
 **A fan the firmware refuses to hand back is refused a lease durably**, as
 `.restoreToAutomaticFailed` — this process asked for automatic, spent #110's attempts, and
 stopped asking. It is watched by nothing, § 3 included, because it was never in either
@@ -1135,8 +1142,10 @@ afterwards is refused and not restored, a fan the firmware would not hand back i
 durably, and the snapshot reports the firmware's own mode.
 `StartupReconciliationReadBackTests` holds [#204](https://github.com/blamechris/Aeolus/issues/204):
 a keystone the firmware accepts but does not apply leaves that fan refused, only a read-back of
-`F<n>Md` clears a refusal, the read-back stays inside the budget, and the snapshot names each
-durable refusal with the reason a grant over the same fan throws.
+`F<n>Md` clears a refusal, a fan handed back by name is read back too, the budget bounds the
+enumeration and the read-back, and on a seam that can write the snapshot names each durable
+refusal with the reason a grant over the same fan throws — while on one that cannot, it names
+none.
 `ForeignManualControlReportingTests` covers the three fans the snapshot must **not** call
 somebody else's: one under a live lease, one whose handback was abandoned, and one § 5
 diagnosed as reclaimed by the system.

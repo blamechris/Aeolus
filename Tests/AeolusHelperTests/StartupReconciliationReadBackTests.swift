@@ -28,9 +28,14 @@ struct StartupReconciliationReadBackTests {
 
     /// The case #204 names: firmware accepts `.everyFan` and does not apply it to one fan.
     ///
+    /// What the pre-#204 code did here was not grant a lease — the grant path's fresh read
+    /// refuses a fan reading manual — but refuse it as `.foreignManualControl`, blaming
+    /// another program, and only for as long as it kept reading manual.
+    ///
     /// **Mutation:** in `restoreEveryFan(because:until:)`, replace
     /// `await confirmKeystone(until: deadline)` with the pre-#204 body,
-    /// `unreconciled = []; nothingEstablished = false`. Run: red — fan 1 is granted.
+    /// `unreconciled = []; nothingEstablished = false`. Run: red — fan 1 is refused as
+    /// `.foreignManualControl`, not durably.
     @Test("A keystone the firmware accepts but does not apply leaves that fan refused")
     func anUnappliedKeystoneKeepsTheRefusal() async throws {
         let scripted = ScriptedControlPlane(
@@ -46,19 +51,21 @@ struct StartupReconciliationReadBackTests {
         #expect(await Self.everyFanRestores(scripted) == 1, "the keystone was never issued")
         #expect(
             await reconciliation.refusalForGrant(overFans: [1], heldByAeolus: [])
-                == .restoreToAutomaticFailed,
+                == .supervisorBlind,
             """
             Fan 1 still reads manual after a machine-wide restore the firmware accepted, and \
-            the grant path did not refuse it as Aeolus's own failed handback. Before #204 the \
-            write not throwing was taken as the fan being automatic: a lease would be granted \
-            over a fan still pinned, held in neither safety registry.
+            was not refused durably. Before #204 the write not throwing cleared the refusal, \
+            so the grant path fell through to its fresh read and blamed another program — \
+            and granted the moment anything toggled the fan, over a mode never confirmed.
             """)
         #expect(
-            await reconciliation.fansWithRefusedHandback == [1],
+            await reconciliation.unreconciledFans == [1],
             """
-            A fan read back in manual after Aeolus asked for automatic control is a refused \
-            handback — it was looked at, so it is not `unreconciled`.
+            A fan still manual after an accepted keystone stays unreconciled (#204's spec). It \
+            is not a refused handback: the firmware said yes, and one read cannot tell an \
+            unapplied write from a foreign writer re-asserting, or from a write not settled.
             """)
+        #expect(await reconciliation.fansWithRefusedHandback.isEmpty)
         #expect(
             await reconciliation.refusalForGrant(overFans: [0], heldByAeolus: []) == nil,
             "fan 0 read back automatic, and was refused anyway — the read-back over-refuses")
@@ -66,8 +73,9 @@ struct StartupReconciliationReadBackTests {
 
     /// The other direction, so the read-back is not simply "refuse everything".
     ///
-    /// **Mutation:** in `confirmKeystone(until:)`, replace `unreconciled = unknown` with
-    /// `unreconciled = owed`. Run: red.
+    /// **Mutation:** in `confirmKeystone(until:)`, replace
+    /// `unreconciled = unconfirmed.subtracting(handbackRefused)` with `unreconciled = owed`.
+    /// Run: red.
     @Test("A keystone every fan reads back automatic from clears every refusal")
     func aConfirmedKeystoneClears() async throws {
         let scripted = ScriptedControlPlane(
@@ -115,8 +123,8 @@ struct StartupReconciliationReadBackTests {
             """)
         #expect(
             await reconciliation.refusalForGrant(overFans: [0], heldByAeolus: [])
-                == .restoreToAutomaticFailed,
-            "fan 0 read back manual after the keystone and was not refused as a failed handback")
+                == .supervisorBlind,
+            "fan 0 read back manual after the keystone and was not refused durably")
         #expect(
             await reconciliation.refusalForGrant(overFans: [1], heldByAeolus: []) == nil,
             "fan 1 read back automatic and was refused anyway")
@@ -155,19 +163,105 @@ struct StartupReconciliationReadBackTests {
             """)
     }
 
+    /// A fan handed back by name is read back too, when the keystone runs.
+    ///
+    /// Fan 0 reads manual and is restored by name; the firmware accepts that write, and the
+    /// keystone after it, and applies neither. Fan 1's mode never reads, so the keystone runs. A read-back over the
+    /// refused fans alone would leave fan 0 with a clean record.
+    ///
+    /// **Mutation:** in `confirmKeystone(until:)`, replace
+    /// `owed = unreconciled.union(handedBackByName)` with `owed = unreconciled`. Run: red —
+    /// fan 0 is refused as `.foreignManualControl`, not durably.
+    @Test("A fan handed back by name is read back when the keystone runs")
+    func aFanHandedBackByNameIsReadBack() async throws {
+        let scripted = ScriptedControlPlane(
+            fans: [0: .held(at: 2_400), 1: .held(at: 2_400)],
+            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+        let reconciliation = LeaseFixture.reconciliation(
+            over: ReadBackScriptedPlane(
+                wrapping: scripted, unreadableModes: [1], keystoneMisses: [0],
+                perFanMisses: [0]),
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]))
+
+        await reconciliation.reconcile()
+
+        #expect(
+            await reconciliation.refusalForGrant(overFans: [0], heldByAeolus: [])
+                == .supervisorBlind,
+            """
+            Fan 0 was handed back by name, the write did not throw, and it still reads manual \
+            after the keystone. It was not read back, so nothing durable refuses it.
+            """)
+    }
+
+    // MARK: - The deadline bounds the whole pass
+
+    /// The deadline starts before the enumeration, so a slow `FNum` read spends the budget.
+    ///
+    /// **Mutation:** in `reconcile()`, move `let deadline = …` down to just above
+    /// `var remaining`, and give the enumeration `catch` `until: clock.now.advanced(by:
+    /// budget)`. Run: red — both fans are read and cleared.
+    @Test("An enumeration that spends the budget leaves every fan unread and refused")
+    func theEnumerationSpendsTheBudget() async throws {
+        let clock = TestClock()
+        let scripted = ScriptedControlPlane(
+            fans: [0: .automatic(at: 1_800), 1: .automatic(at: 1_800)],
+            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+        let reconciliation = LeaseFixture.reconciliation(
+            over: ReadBackScriptedPlane(wrapping: scripted),
+            enumeration: RecoveringFanEnumeration(
+                indices: [0, 1], failingFirst: 0, advancing: clock, by: .seconds(10)),
+            clock: clock, budget: .seconds(1))
+
+        await reconciliation.reconcile()
+
+        #expect(
+            await reconciliation.unreconciledFans == [0, 1],
+            "the enumeration took ten times the budget and the pass read the fans anyway")
+    }
+
+    /// The same bound on the enumeration-failed branch: the keystone's read-back asks the
+    /// enumeration again, and the time the failed one took counts.
+    ///
+    /// **Mutation:** in `reconcile()`'s enumeration `catch`, pass
+    /// `until: clock.now.advanced(by: budget)` instead of `until: deadline`. Run: red.
+    @Test("A failed enumeration that spent the budget reads nothing back")
+    func aFailedEnumerationSpendsTheBudget() async throws {
+        let clock = TestClock()
+        let scripted = ScriptedControlPlane(
+            fans: [0: .automatic(at: 1_800), 1: .automatic(at: 1_800)],
+            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+        let reconciliation = LeaseFixture.reconciliation(
+            over: ReadBackScriptedPlane(wrapping: scripted),
+            enumeration: RecoveringFanEnumeration(
+                indices: [0, 1], failingFirst: 1, advancing: clock, by: .seconds(10),
+                onlyWhileFailing: true),
+            clock: clock, budget: .seconds(1))
+
+        await reconciliation.reconcile()
+
+        #expect(await reconciliation.establishedNothing == false)
+        #expect(
+            await reconciliation.unreconciledFans == [0, 1],
+            "the failed enumeration took ten times the budget and the read-back ran anyway")
+    }
+
     // MARK: - The snapshot agrees with the grant
 
     /// #204's item 2: the snapshot names the refusal the grant path would throw.
     ///
     /// Fan 0 reads automatic and is clean. Fan 1's mode never reads, so it stays
-    /// `unreconciled`. Fan 2 is left in manual by a keystone the firmware accepted. The
-    /// sensor provider reports all three automatic with plausible bounds on a seam that can
-    /// write, so before #204 the snapshot offered all three as `.available` while the grant
-    /// path refused two of them.
+    /// `unreconciled`. Fan 2 is left in manual by a keystone the firmware accepted, and the
+    /// snapshot's own `F2Md` read says manual too — the sequence a real machine produces —
+    /// so the durable refusal has to outrank foreign control, not merely replace
+    /// `.available`. On a seam that can write, before #204 the snapshot offered fan 1 as
+    /// `.available` and blamed another program for fan 2.
     ///
-    /// **Mutation:** in `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:
-    /// reconciliation:)`, delete the `if let durable = …` block. Run: red — fans 1 and 2
-    /// read `.available`.
+    /// **Mutation A:** in `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:
+    /// reconciliation:)`, delete the `if … let durable = …` block. Run: red — fan 1 reads
+    /// `.available`, fan 2 `.foreignManualControl`.
+    /// **Mutation B:** insert `if fan.mode != .automatic { return restating(fan, as:
+    /// .unavailable(.foreignManualControl)) }` above that block. Run: red — fan 2.
     @Test("The snapshot reports reconciliation's refusal with the reason a grant throws")
     func theSnapshotNamesReconciliationsRefusal() async throws {
         let scripted = ScriptedControlPlane(
@@ -178,7 +272,8 @@ struct StartupReconciliationReadBackTests {
         let helper = HelperComposition(
             plane: ReadBackScriptedPlane(
                 wrapping: scripted, unreadableModes: [1], keystoneMisses: [2]),
-            snapshotProvider: fanProvider(fanCount: 3),
+            snapshotProvider: fanProvider(
+                fanCount: 3, extraKeys: ["F2Md": .reading("F2Md", 1)]),
             criticalSensors: .mac16x5,
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
@@ -190,7 +285,7 @@ struct StartupReconciliationReadBackTests {
         let expected: [Int: ManualControlAvailability] = [
             0: .available,
             1: .unavailable(.supervisorBlind),
-            2: .unavailable(.restoreToAutomaticFailed),
+            2: .unavailable(.supervisorBlind),
         ]
         for fan in snapshot.fans {
             #expect(
@@ -211,6 +306,57 @@ struct StartupReconciliationReadBackTests {
         }
         await helper.shutDown()
     }
+
+    /// The same machine on today's seam, which cannot write: every grant is refused
+    /// `.writePathNotBuilt` first, and the snapshot must not name a reconciliation refusal
+    /// no grant returns — least of all `.restoreToAutomaticFailed`, whose firmware was never
+    /// written to. Fan 2 still reads manual and keeps the pre-#204 answer, foreign control,
+    /// which `HelperHardwareTests.expectHonestAvailability` holds this machine to.
+    ///
+    /// **Mutation:** delete `fan.manualControlAvailability != .unavailable(.writePathNotBuilt),`
+    /// from `reportingForeignControl`. Run: red — fans 1 and 2 read `.supervisorBlind`.
+    @Test("On a seam that cannot write, the snapshot names no reconciliation refusal")
+    func aSeamThatCannotWriteShowsNoDurableRefusal() async throws {
+        let scripted = ScriptedControlPlane(
+            fans: [
+                0: .automatic(at: 1_800), 1: .automatic(at: 1_800), 2: .held(at: 2_400),
+            ],
+            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+        let helper = HelperComposition(
+            plane: ReadBackScriptedPlane(
+                wrapping: scripted, unreadableModes: [1], keystoneMisses: [2],
+                writeCapability: .notBuilt),
+            snapshotProvider: fanProvider(
+                fanCount: 3, extraKeys: ["F2Md": .reading("F2Md", 1)]),
+            criticalSensors: .mac16x5,
+            log: HelperRestorerTests.helperLog,
+            leaseLog: LeaseFixture.log,
+            safetyLog: Self.safetyLog)
+
+        await helper.bringUp()
+
+        let snapshot = try await helper.authority.snapshot()
+        let expected: [Int: ManualControlAvailability] = [
+            0: .unavailable(.writePathNotBuilt),
+            1: .unavailable(.writePathNotBuilt),
+            2: .unavailable(.foreignManualControl),
+        ]
+        for fan in snapshot.fans {
+            #expect(
+                fan.manualControlAvailability == expected[fan.index],
+                "fan \(fan.index) reads \(fan.manualControlAvailability) on a seam that cannot write"
+            )
+        }
+        for index in [0, 1] {
+            await #expect(
+                throws: AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
+            ) {
+                _ = try await helper.leases.acquireLease(
+                    LeaseFixture.request(fans: [index]), from: ConnectionID())
+            }
+        }
+        await helper.shutDown()
+    }
 }
 
 // MARK: - Doubles
@@ -225,25 +371,31 @@ actor ReadBackScriptedPlane: FanControlPlane {
     private var modeReadsFailingFirst: Int
     private let unreadableModes: Set<Int>
     private let keystoneMisses: Set<Int>
+    private let perFanMisses: Set<Int>
+    nonisolated let writeCapability: FanWriteCapability
 
     /// - Parameters:
     ///   - wrapped: the plane every call is forwarded to.
     ///   - modeReadsFailingFirst: how many `readControlState` calls throw before any answers.
     ///   - unreadableModes: fans whose `readControlState` always throws.
     ///   - keystoneMisses: fans a `.everyFan` restore leaves in manual while returning normally.
+    ///   - perFanMisses: fans a `.fan(n)` restore leaves in manual while returning normally.
+    ///   - writeCapability: what the seam reports; `.notBuilt` is today's production plane.
     init(
         wrapping wrapped: ScriptedControlPlane,
         modeReadsFailingFirst: Int = 0,
         unreadableModes: Set<Int> = [],
-        keystoneMisses: Set<Int> = []
+        keystoneMisses: Set<Int> = [],
+        perFanMisses: Set<Int> = [],
+        writeCapability: FanWriteCapability = .built
     ) {
         self.wrapped = wrapped
         self.modeReadsFailingFirst = modeReadsFailingFirst
         self.unreadableModes = unreadableModes
         self.keystoneMisses = keystoneMisses
+        self.perFanMisses = perFanMisses
+        self.writeCapability = writeCapability
     }
-
-    nonisolated var writeCapability: FanWriteCapability { .built }
 
     func readControlState(ofFan index: Int) async throws -> FanControlState {
         if modeReadsFailingFirst > 0 {
@@ -270,8 +422,12 @@ actor ReadBackScriptedPlane: FanControlPlane {
 
     func restoreToAutomatic(_ scope: FanRestoreScope) async throws {
         try await wrapped.restoreToAutomatic(scope)
-        guard scope == .everyFan else { return }
-        for fan in keystoneMisses {
+        let misses: Set<Int>
+        switch scope {
+        case .everyFan: misses = keystoneMisses
+        case .fan(let index): misses = perFanMisses.intersection([index])
+        }
+        for fan in misses {
             await wrapped.setMode(.manual, ofFan: fan)
         }
     }
@@ -286,18 +442,29 @@ actor ReadBackScriptedPlane: FanControlPlane {
     }
 }
 
-/// An enumeration that throws for its first `failingFirst` calls and then answers.
+/// An enumeration that throws for its first `failingFirst` calls and then answers, and can
+/// cost virtual time — on every call, or only on the calls that fail.
 actor RecoveringFanEnumeration: FanEnumerating {
 
     private let indices: Set<Int>
     private var failuresLeft: Int
+    private let clock: TestClock?
+    private let cost: Duration
+    private let onlyWhileFailing: Bool
 
-    init(indices: Set<Int>, failingFirst: Int) {
+    init(
+        indices: Set<Int>, failingFirst: Int, advancing clock: TestClock? = nil,
+        by cost: Duration = .zero, onlyWhileFailing: Bool = false
+    ) {
         self.indices = indices
         self.failuresLeft = failingFirst
+        self.clock = clock
+        self.cost = cost
+        self.onlyWhileFailing = onlyWhileFailing
     }
 
     func enumeratedFanIndices() async throws -> Set<Int> {
+        if !onlyWhileFailing || failuresLeft > 0 { clock?.advance(by: cost) }
         guard failuresLeft == 0 else {
             failuresLeft -= 1
             throw FanControlPlaneError.readFailed(detail: "FNum did not answer")

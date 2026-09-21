@@ -4,10 +4,11 @@ import FanKit
 //
 // Lifted out of `StartupReconciliation.swift` by
 // [#204](https://github.com/blamechris/Aeolus/issues/204), which gave the durable refusals a
-// second reader. Until then only `refusalForGrant(overFans:heldByAeolus:)` consulted them, and
-// the snapshot answered `.writePathNotBuilt` for a fan the grant path would have refused as
-// `.supervisorBlind` or `.restoreToAutomaticFailed` — benign while the plane answers
-// `.notBuilt`, and `CLAUDE.md` rule 6 the day it answers `.built`.
+// second reader. Until then only `refusalForGrant(overFans:heldByAeolus:)` consulted them, so
+// on a seam that can write the snapshot offered a fan as `.available` — or blamed another
+// program — while the grant path refused it as `.supervisorBlind` or
+// `.restoreToAutomaticFailed`. On today's `.notBuilt` seam both answer `.writePathNotBuilt`
+// first, and the snapshot keeps doing so; see `ReadOnlyFanReport.reportingForeignControl`.
 
 // MARK: - The baseline
 
@@ -28,12 +29,12 @@ struct ReconciliationBaseline: Sendable, Hashable {
     /// read after the keystone could enumerate them either.
     var establishedNothing: Bool
 
-    /// Fans Aeolus asked the firmware to return to automatic control and found still in
-    /// manual afterwards — by name through the restorer, or by the machine-wide keystone and
-    /// a read-back that disagreed with it.
+    /// Fans the pass found in manual, handed back by name through the restorer, and whose
+    /// write the firmware refused until the restorer gave up.
     var refusedHandbacks: Set<Int>
 
-    /// Fans whose mode this pass never established: never read, or read and not confirmed.
+    /// Fans whose mode this pass never established — never read — or that the keystone's
+    /// read-back did not confirm automatic: in manual, unreadable, or past the budget.
     var unreconciled: Set<Int>
 
     /// A pass that ran to completion and left nothing to refuse.

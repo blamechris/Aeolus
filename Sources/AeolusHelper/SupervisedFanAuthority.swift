@@ -148,7 +148,7 @@ struct SupervisedFanAuthority: FanAuthority {
     /// **The re-statement touches one field of one fan and nothing else.** The whole ordering,
     /// and the § 5 causes each half deliberately does not overwrite, are in
     /// `ReadOnlyFanReport` — see its type documentation for the ladder and
-    /// `restatingAvailability(of:given:)` for the entry point. The other three snapshot fields
+    /// `restatingAvailability(of:given:reconciliation:)` for the entry point. The other three snapshot fields
     /// are the read path's own and are passed through untouched: this re-assembles the value
     /// rather than producing a second opinion about any of them.
     func snapshot() async throws -> SystemSnapshot {

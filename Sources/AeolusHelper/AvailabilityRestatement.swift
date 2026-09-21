@@ -43,13 +43,21 @@ import FanKit
 //
 // **Step 5 answers two questions, in `StartupReconciliation.refusalForGrant`'s order.** First
 // the durable refusals the one-shot pass left — `.supervisorBlind` for a fan whose mode it
-// never established, `.restoreToAutomaticFailed` for one it could not hand back — through the
-// same `ReconciliationBaseline.durableRefusal(overFans:)` the grant path calls, so the two
-// cannot drift ([#204](https://github.com/blamechris/Aeolus/issues/204)). Then foreign
-// control, judged from the snapshot's own mode read where the grant path takes a fresh one.
-// Before #204 only the second question was asked here, and a fan reconciliation had refused
-// was reported `.writePathNotBuilt` while the grant path refused it for a reason the screen
-// never showed.
+// never established or confirmed, `.restoreToAutomaticFailed` for one it could not hand back
+// — through the same `ReconciliationBaseline.durableRefusal(overFans:)` the grant path calls,
+// so the two cannot drift ([#204](https://github.com/blamechris/Aeolus/issues/204)). Then
+// foreign control, judged from the snapshot's own mode read where the grant path takes a
+// fresh one. Before #204 only the second question was asked here, so on a seam that can
+// write a fan reconciliation had refused read `.available`, or `.foreignManualControl`.
+//
+// **The first question is not asked over step 6's `.writePathNotBuilt`**, which is where it
+// differs from foreign control. `acquireLease` refuses a seam that cannot write before it
+// asks anything else, so on today's build a grant over every fan answers `.writePathNotBuilt`
+// — and every reconciliation restore is refused by the *build*, which is not the firmware
+// refusal `.restoreToAutomaticFailed` names. Answering the durable refusal there would state a
+// reason no grant returns and blame firmware that was never written to. Foreign control keeps
+// its pre-existing place above step 6: it is a fact about the machine, true on any build, and
+// is what `HelperHardwareTests.expectHonestAvailability` holds this machine to.
 //
 // **`.leaseHeldByAnotherClient` is absent from the ladder and cannot be added.** See
 // `LeaseAccountability`: a snapshot has no `ConnectionID`, so the helper cannot know whether
@@ -203,6 +211,12 @@ extension ReadOnlyFanReport {
     /// exemptions hold, for the same reason — and cannot in practice meet a durable refusal,
     /// because § 5's registry holds only fans Aeolus engaged and a refused fan is never
     /// granted to be engaged.
+    ///
+    /// **Except over `.writePathNotBuilt`**, which the grant path answers first — see this
+    /// file's header. Keyed on the read path's own answer rather than on a capability passed
+    /// in, and in the direction that cannot go quietly dead: the day E3 makes the seam
+    /// `.built`, the read path stops saying `.writePathNotBuilt` and the durable refusal
+    /// starts applying, with nothing here to change.
     static func reportingForeignControl(
         of fan: FanState, heldByAeolus held: Set<Int>,
         reconciliation baseline: ReconciliationBaseline
@@ -212,7 +226,9 @@ extension ReadOnlyFanReport {
         case .unavailable(.supervisorBlind): return fan
         default: break
         }
-        if let durable = baseline.durableRefusal(overFans: [fan.index]) {
+        if fan.manualControlAvailability != .unavailable(.writePathNotBuilt),
+            let durable = baseline.durableRefusal(overFans: [fan.index])
+        {
             return restating(fan, as: .unavailable(durable))
         }
         guard fan.mode != .automatic else { return fan }

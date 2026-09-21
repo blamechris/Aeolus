@@ -555,13 +555,13 @@ struct ForeignManualControlReportingTests {
     ///
     /// `F<n>Md` reads `1` for a fan Aeolus is holding and for a fan somebody else is
     /// holding, and names no owner either way — so the lease exclusion in
-    /// `reportingForeignControl(of:heldByAeolus:)` is the only thing between a user and
+    /// `reportingForeignControl(of:heldByAeolus:reconciliation:)` is the only thing between a user and
     /// being told to go and quit software that is not running. Until this test existed the
     /// clause could be deleted with the whole non-hardware suite staying green: nothing put
     /// a fan under a live lease *and* in manual at once.
     ///
     /// **Mutation:** delete `!held.contains(fan.index)` from
-    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:)`. Run: red.
+    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:reconciliation:)`. Run: red.
     @Test("A fan under a live lease is Aeolus's own on the snapshot, not somebody else's")
     func aLeasedFanIsNotReportedAsForeign() async throws {
         let helper = Self.helperSeeingFanZeroInManual()
@@ -628,7 +628,7 @@ struct ForeignManualControlReportingTests {
     /// documented did not exist.
     ///
     /// **Mutation:** delete `!fan.isReclaimedBySystem` from
-    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:)`. Run: red.
+    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:reconciliation:)`. Run: red.
     @Test("A fan the system reclaimed is not reported as another program's")
     func aReclaimedFanIsNotReportedAsForeign() async throws {
         let reclaimed = HelperComposition(

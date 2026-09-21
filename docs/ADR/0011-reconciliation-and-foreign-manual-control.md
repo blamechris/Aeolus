@@ -137,19 +137,33 @@ and "lands", for the keystone, means **read back** — not merely "did not throw
 
 **Amended by [#204](https://github.com/blamechris/Aeolus/issues/204).** Until then a keystone
 write that returned normally cleared both durable refusals on its own, and `SafetyActorWriter`
-forwards to the plane with no read-back, so on firmware that accepts a mode write and does not
-apply it — the case `docs/SAFETY.md` § 5's primary signal exists for — a still-pinned fan
-would have been recorded as established and granted a lease. The keystone now earns a read of
-`F<n>Md` for every fan a refusal stands over, under the pass's own budget. A fan read back
-automatic is cleared; one read back manual becomes a refused handback
-(`.restoreToAutomaticFailed`), since Aeolus asked for automatic control and did not get it;
-one whose read fails, or that the budget no longer covers, stays unreconciled. On the budget
-branch the deadline has already passed, so the keystone is issued and nothing is cleared.
+forwards to the plane with no read-back — so on firmware that accepts a mode write and does not
+apply it, the case `docs/SAFETY.md` § 5's primary signal exists for, a fan still in manual lost
+its durable refusal. It was not granted a lease: the grant path's fresh read refuses a fan
+reading manual. It was refused as `.foreignManualControl` instead, blaming another program, and
+only for as long as it kept reading manual.
+
+The keystone now earns a read of `F<n>Md` for every fan a refusal stands over **and every fan
+the pass handed back by name**, under the pass's own budget, which now starts before the
+enumeration. A fan read back automatic is cleared. Anything else — manual, unreadable, or past
+the budget — stays unreconciled (`.supervisorBlind`). Manual is deliberately *not*
+`.restoreToAutomaticFailed`: the firmware accepted the write, and one read straight after it
+cannot tell firmware that did not apply it from a live foreign writer re-asserting manual — this
+ADR's premise — or from a write that has not settled. On the budget branch the deadline has
+already passed, so the keystone is issued and nothing is cleared.
 
 The same issue put these refusals into the snapshot. `ReconciliationBaseline.durableRefusal
 (overFans:)` is the one function both the grant path and step 5 of the availability ladder
-call, so a fan reconciliation refused can no longer be offered as `.available` or reported
-`.writePathNotBuilt` while a grant over it throws something else.
+call, so on a seam that can write, a fan reconciliation refused can no longer be offered as
+`.available`, or blamed on another program, while a grant over it is refused for this reason.
+On a seam that cannot write, the ladder does not ask it: `acquireLease` refuses
+`.writePathNotBuilt` before anything else, and every reconciliation restore there is refused by
+the build rather than by firmware.
+
+What the amendment does not cover: a pass that completes without the keystone does not read
+back its per-fan restores, and the lease core's #189 clearing of `restoreAbandoned` still
+accepts a write that did not throw. Both are the same evidence standard on other verbs, and are
+recorded as a follow-on.
 
 ### D4 — The pass is bounded, and the listener resumes either way
 

@@ -962,22 +962,22 @@ extension SafetyLog {
 
     /// The keystone was accepted and the read-back could not confirm it for some fans.
     ///
-    /// `.fault`: either the firmware took a mode write and did not apply it — the case
-    /// `docs/SAFETY.md` § 5's written-versus-read-back signal exists for — or the fans could
-    /// not be read at all. Both leave a fan whose state Aeolus cannot vouch for, refused a
-    /// lease for the life of this process. An empty set means the enumeration itself would
-    /// not answer, so no fan could be named.
+    /// `.fault`: a fan still reading manual after a mode write the firmware accepted — which
+    /// one read cannot attribute to the firmware rather than to another writer — or a fan that
+    /// could not be read, or read in time. Each leaves a fan whose state Aeolus cannot vouch
+    /// for, refused a lease for the life of this process. An empty set means the enumeration
+    /// itself would not answer, so no fan could be named.
     func reconciliationKeystoneUnconfirmed(unconfirmed: Set<Int>, detail: String) {
         let which =
             unconfirmed.isEmpty
             ? "no fan could be enumerated to read it back"
-            : "fan(s) \(Self.describe(unconfirmed)) did not read back automatic"
+            : "fan(s) \(Self.describe(unconfirmed)) could not be confirmed automatic"
         emit(
             .fault,
             """
             Startup reconciliation's machine-wide restore was accepted, but \(which) \
             (\(detail)). Manual control of \(unconfirmed.isEmpty ? "every fan" : "those fans") \
-            is refused for the life of this process; see docs/RECOVERY.md.
+            is refused for the life of this process, because nothing runs this pass again.
             """
         )
     }
@@ -1061,7 +1061,7 @@ extension SafetyLog {
     ///
     /// `.fault`: a helper that cannot read `FNum` cannot name a fan and cannot issue a
     /// per-fan restore. The machine-wide keystone is issued instead — it needs no fan index
-    /// — and until it lands every grant is refused, because nothing has established
+    /// — and until it lands and is read back every grant is refused, because nothing has established
     /// anything about any fan. A machine in this state is broken and the log should say so
     /// once, at start.
     ///
