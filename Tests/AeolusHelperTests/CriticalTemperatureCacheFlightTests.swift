@@ -19,7 +19,7 @@ import Testing
 /// than left standing: `aFlightsOutcomeLandsWhenNothingSupersededIt` exercises the same guard
 /// with the gate already open, because the record it needs to be *older* than the flight
 /// cannot be made during one. They live here because the mechanism is
-/// `record(_:unlessSupersededSince:)`, not because the interleaving is.
+/// `record(_:since:)`, not because the interleaving is.
 ///
 /// The gate is what makes each one a scenario rather than a race: nothing completes until the
 /// test opens it, so the interleaving is a fact rather than a hope
@@ -89,7 +89,7 @@ struct CriticalTemperatureCacheFlightTests {
     /// ## The clock advance is what makes `startedAt`'s *placement* an assertion
     ///
     /// The guard compares against the instant the flight **started**, and the doc block on
-    /// `record(_:unlessSupersededSince:)` says why that is the only instant the actor knows
+    /// `record(_:since:)` says why that is the only instant the actor knows
     /// the flight to be no fresher than. Nothing pinned it. On a frozen `TestClock` the
     /// flight's start and the caller's resume are the same value, so moving
     /// `let startedAt = clock.now` down to the `record` call left the whole repository green
@@ -124,7 +124,8 @@ struct CriticalTemperatureCacheFlightTests {
         #expect(started, "the grant never issued the read this scenario interleaves with")
 
         // § 3's cycle, mid-flight: the SMC has stopped answering.
-        await cache.record(.blind(FanControlPlaneError.readFailed(detail: "stale port")))
+        await cache.recordAsACycleWould(
+            .blind(FanControlPlaneError.readFailed(detail: "stale port")))
 
         // See the doc block: this is what makes the flight's *start* the thing being
         // compared against, rather than the instant its caller happens to resume at.
@@ -202,7 +203,7 @@ struct CriticalTemperatureCacheFlightTests {
     /// **Nothing** landed while the flight was away, so its outcome is what the cache holds.
     ///
     /// `aFlightDoesNotOverwriteWhatWasRecordedWhileItWasAway` pins the `>=` side of
-    /// `record(_:unlessSupersededSince:)` — a record stamped at or after `startedAt` wins.
+    /// `record(_:since:)` — a record stamped at or after `startedAt` wins.
     /// Nothing pinned the other side, and the whole guard survived being rewritten as
     /// `if recorded != nil { return }`: "a newer record wins" becomes "any record wins", and
     /// a flight that finishes on an otherwise-idle cache can never land its outcome once
@@ -225,7 +226,7 @@ struct CriticalTemperatureCacheFlightTests {
     /// the weaker suite member for it. Said here so the next reader need not re-derive it.
     ///
     /// **Mutation:** `if recorded != nil { return }` in
-    /// `record(_:unlessSupersededSince:)`. Run: red — `source.reads` is 2, `readsIssued` is
+    /// `record(_:since:)`. Run: red — `source.reads` is 2, `readsIssued` is
     /// 2, and nothing coalesced.
     @Test("A flight's outcome lands when nothing newer arrived while it was away")
     func aFlightsOutcomeLandsWhenNothingSupersededIt() async throws {
@@ -236,7 +237,8 @@ struct CriticalTemperatureCacheFlightTests {
         let cache = CriticalTemperatureCache(source: source, clock: clock)
 
         // Older than any flight below, and aged out so it cannot be served in place of one.
-        await cache.record(.blind(FanControlPlaneError.readFailed(detail: "stale port")))
+        await cache.recordAsACycleWould(
+            .blind(FanControlPlaneError.readFailed(detail: "stale port")))
         clock.advance(by: Self.oneCyclePeriod + .milliseconds(1))
 
         let served = try await cache.sighting()
@@ -276,9 +278,13 @@ struct CriticalTemperatureCacheFlightTests {
     /// dropped it hands back § 3's 44 °C. `source.reads` is 1 either way, which is why the
     /// throw is the discriminator and not the read count.
     ///
-    /// **Mutation:** `record(.blind(error), unlessSupersededSince: startedAt)` in
-    /// `sighting()`'s `catch`, as it was written before this. Run: red — the second grant is
-    /// handed a reading on a helper whose last real read of the machine failed.
+    /// **Mutation:** fold `.blind` into the compared branch of
+    /// `CriticalTemperatureCache.record(_:since:)` — delete `case .blind: record(sighting)`
+    /// and let the `switch` compare both outcomes against `start`. That is where the bypass
+    /// lives since [#280](https://github.com/blamechris/Aeolus/issues/280) moved it off the
+    /// callers; before that it was this `catch` calling an unguarded `record(_:)`. Run: red
+    /// — the second grant is handed a reading on a helper whose last real read of the
+    /// machine failed.
     @Test("A flight's blindness is recorded even when a sighting landed while it was away")
     func aFlightsBlindnessIsRecordedEvenWhenASightingLanded() async throws {
         let source = GatedCriticalTemperatures(
@@ -294,7 +300,7 @@ struct CriticalTemperatureCacheFlightTests {
         #expect(started, "the grant never issued the read this scenario interleaves with")
 
         // § 3's cycle, mid-flight: the machine answered *it*.
-        await cache.record(.sighted(try Self.report(celsius: 44)))
+        await cache.recordAsACycleWould(.sighted(try Self.report(celsius: 44)))
 
         await source.open()
         await #expect(throws: FanControlPlaneError.self) {

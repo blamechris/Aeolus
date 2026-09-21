@@ -322,12 +322,19 @@ struct WriteVerbAllowlistTests {
     /// updated is the evidence that a file split in the helper cannot happen quietly.
     private static let permitFreeFunctions: Set<String> = [
         "BoundedFanRestorer.swift: attemptUncancellably(fanAt: Int)",
-        // `CriticalTemperatureRecording`'s single requirement, declared beside the cache in
-        // the same file. The scan sees it because the requirement is `async` — an actor's
-        // isolated method witnesses it — and it is permit-free for the same reason
+        // `CriticalTemperatureRecording`'s two requirements, declared beside the cache in the
+        // same file. The scan sees them because the requirements are `async` — an actor's
+        // isolated methods witness them — and they are permit-free for the same reason
         // `sighting()` below is: the type holds no writer and no plane, and the whole of the
-        // conformer's body is an assignment to a stored property.
-        "CriticalTemperatureCache.swift: record(_: CriticalTemperatureSighting)",
+        // conformer's body is a comparison and an assignment to a stored property.
+        //
+        // There were one of these until [#280](https://github.com/blamechris/Aeolus/issues/280).
+        // The unguarded `record(_: CriticalTemperatureSighting)` that used to be here is
+        // `private` now and out of the scan entirely, which is the point of that change: the
+        // only ways into this cache's memory are the two entries below, and both compare.
+        "CriticalTemperatureCache.swift: beganReading()",
+        "CriticalTemperatureCache.swift: record(_: CriticalTemperatureSighting, "
+            + "since: CriticalTemperatureReadingStart)",
         "CriticalTemperatureCache.swift: sighting()",
         "HelperComposition.swift: reconcileFans()",
         "LeaseAuthority.swift: activeLeaseView()",

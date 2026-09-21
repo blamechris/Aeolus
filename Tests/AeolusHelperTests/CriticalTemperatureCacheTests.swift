@@ -101,7 +101,7 @@ struct CriticalTemperatureCacheTests {
         await source.open()
         let cache = CriticalTemperatureCache(source: source, clock: TestClock())
 
-        await cache.record(.sighted(try Self.report(celsius: 44)))
+        await cache.recordAsACycleWould(.sighted(try Self.report(celsius: 44)))
         let served = try await cache.sighting()
 
         #expect(served.readings.map(\.celsius) == [44])
@@ -133,7 +133,8 @@ struct CriticalTemperatureCacheTests {
         await source.open()
         let cache = CriticalTemperatureCache(source: source, clock: TestClock())
 
-        await cache.record(.blind(FanControlPlaneError.readFailed(detail: "stale port")))
+        await cache.recordAsACycleWould(
+            .blind(FanControlPlaneError.readFailed(detail: "stale port")))
 
         await #expect(throws: FanControlPlaneError.self) { _ = try await cache.sighting() }
         #expect(await source.reads == 0, "a remembered blindness cost a read anyway")
@@ -229,7 +230,8 @@ struct CriticalTemperatureCacheTests {
         let clock = TestClock()
         let cache = CriticalTemperatureCache(source: source, clock: clock)
 
-        await cache.record(.blind(FanControlPlaneError.readFailed(detail: "stale port")))
+        await cache.recordAsACycleWould(
+            .blind(FanControlPlaneError.readFailed(detail: "stale port")))
         await #expect(throws: FanControlPlaneError.self) { _ = try await cache.sighting() }
         #expect(await source.reads == 0, "the recorded blindness was not being served at all")
 
@@ -380,5 +382,22 @@ actor ThrowOnceCriticalTemperatures: CriticalTemperatureSensing {
         reads += 1
         guard reads > 1 else { throw failure }
         return recovery
+    }
+}
+
+/// Records exactly as § 3's cycle does: a start minted by this cache, then the outcome
+/// handed back against it.
+///
+/// Every scenario here that "§ 3 recorded something" goes through this rather than through
+/// `record(_:since:)` directly, so a test cannot accidentally record against a start it
+/// chose — which is the thing `CriticalTemperatureReadingStart` exists to prevent callers
+/// doing, and a test double that did it would be modelling a daemon that cannot exist.
+///
+/// Named for what it models rather than `record`, so it cannot become an overload the
+/// compiler picks in place of the protocol requirement.
+extension CriticalTemperatureCache {
+
+    func recordAsACycleWould(_ sighting: CriticalTemperatureSighting) {
+        record(sighting, since: beganReading())
     }
 }
