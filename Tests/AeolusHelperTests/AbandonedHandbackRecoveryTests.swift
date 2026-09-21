@@ -272,6 +272,32 @@ struct AbandonedHandbackRecoveryTests {
         await Self.expectRefused(leases, fan: 0)
     }
 
+    /// The delta review of #291: a fan owed a read-back whose *next* restore is refused is no
+    /// longer owed one. In plain sequence, no overlap: a sleep's teardown hands fan 0 back and
+    /// the write is accepted (owed); § 7 then restores it again and the firmware refuses; the
+    /// read that follows finds it automatic. Lifting the refusal then would lift it over a fan
+    /// whose latest write was refused.
+    ///
+    /// **Mutation:** in `LeaseAuthority.restore`, delete
+    /// `handbackAcceptedUnconfirmed.subtract(abandoned)`. Run: red — the refusal is lifted.
+    @Test("A fan owed a read-back whose next restore is refused stays refused")
+    func aRefusalAfterAnAcceptedHandbackIsNotLifted() async throws {
+        let (leases, firmware) = try await Self.abandoned(leasing: [0], refusing: [0])
+
+        await firmware.takesTheWrite(for: [0])
+        await leases.releaseEveryLease()
+        await firmware.refusesTheWrite(for: [0])
+        await Self.panicPass(leases)
+
+        #expect(
+            await leases.fansWithAbandonedHandbacks == [0],
+            """
+            fan 0's latest restore was refused and the durable refusal was lifted anyway, on \
+            a read-back owed for the earlier acceptance.
+            """)
+        await Self.expectRefused(leases, fan: 0)
+    }
+
     /// #291 review finding 3: a read that throws is not a read that says automatic.
     ///
     /// **Mutation:** in `StartupReconciliation.fansReadingAutomatic`, add
