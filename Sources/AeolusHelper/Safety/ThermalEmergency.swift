@@ -498,8 +498,10 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     ///
     /// **Only on a sighted cycle with the latch clear that did not fire, and last.** The
     /// other paths already settle an owed fan without a read, or must not spend a turn on
-    /// one: a firing cycle bridges and forgets every registered fan, owed or not; a latched
-    /// cycle takes back whatever is registered; and a blind cycle is a machine whose SMC is
+    /// one: a firing cycle attempts to bridge and restore every registered fan, owed or not,
+    /// and forgets each whatever those writes did (that forgetting is itself unconfirmed —
+    /// [#300](https://github.com/blamechris/Aeolus/issues/300)); a latched cycle takes back
+    /// whatever is registered, the same way; and a blind cycle is a machine whose SMC is
     /// not answering, where one more `.supervisor` read would only fail. Taken last so it
     /// never delays a decision the cycle exists to make. It runs inside `isCycling`, so an
     /// overlapping entrant cannot issue a second read.
@@ -526,8 +528,8 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// program that has since taken the fan — stays registered and owed for as long as it
     /// does, at one read per eligible cycle. `F<n>Md` names no owner, so the two are
     /// indistinguishable, and the costs are not symmetrical. Wrongly *keeping* it costs one
-    /// bridge in the next emergency, after which `fire(_:from:)` forgets it: one act per
-    /// emergency, never ADR 0011's standing fight. Wrongly *dropping* it is #295 itself — a
+    /// bridge in the next emergency, after which `fire(_:from:)` forgets it (unconfirmed,
+    /// #300): one act per emergency, never ADR 0011's standing fight. Wrongly *dropping* it is #295 itself — a
     /// fan off automatic control that no emergency will bridge. Throttling the read is a
     /// later cost optimisation, not a safety question.
     private func readBackAcceptedHandbacks() async {

@@ -85,8 +85,9 @@ struct KeystoneRestoreAttempt<Plane: FanControlPlane>: FanRestoreAttempting {
 ///   whether the restore threw.
 ///
 /// - **`ThermalEmergency` — after, and only for fans the firmware accepted — and it is
-///   *marked*, not dropped.** Its registry is read by `fire(_:from:)`, which bridges each
-///   entry to maximum RPM and then restores it. A stale entry there is harmless in a way a
+///   *marked*, not dropped.** Its registry is read by `fire(_:from:)`, which attempts to
+///   bridge each entry to maximum RPM and then restore it — and forgets it whatever those
+///   writes did, which is #300. A stale entry there is harmless in a way a
 ///   stale § 5 entry is not: a redundant bridge and a redundant restore of a fan already on
 ///   Apple's management, not an unsafe state. A **missing** entry is not harmless: a fan
 ///   whose restore the firmware refused three times is still off automatic control,

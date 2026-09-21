@@ -535,8 +535,10 @@ that nothing in `Sources/` clears the latch except the supervised cycle, and tha
 names the episode it judged when it does.
 
 **Which fans it holds, and when it lets one go.** § 3's registry is every fan Aeolus took off
-automatic control, each with the permit its maximum write needs. A fan leaves it when § 3 bridges
-and restores it (firing, or taking back a late engagement), and — since
+automatic control, each with the permit its maximum write needs. A fan leaves it when § 3 *attempts*
+to bridge and restore it (firing, or taking back a late engagement) — whatever those writes
+did, which is its own accepted-is-not-automatic gap, tracked as
+[#300](https://github.com/blamechris/Aeolus/issues/300) — and, since
 [#295](https://github.com/blamechris/Aeolus/issues/295) — **not** when a lease teardown hands it
 back. A handback the firmware *refused* keeps the fan registered, as it always did. A handback
 the firmware *accepted* keeps it registered too, marked owed a read-back, because a write the
