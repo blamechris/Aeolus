@@ -242,6 +242,10 @@ struct SupervisedFanAuthority: FanAuthority {
     /// has to move in the same commit.
     func restoreAllToAutomatic(from connection: ConnectionID) async throws {
         await leases.releaseEveryLease()
+        // #291: the read-back that lifts a refusal whose handback the firmware just accepted.
+        // A read, never a write, and here rather than inside the teardown because this verb
+        // has no keystone queued behind it — see `LeaseAuthority.confirmAcceptedHandbacks()`.
+        await leases.confirmAcceptedHandbacks()
         log.restoredAllToAutomatic(connection: connection)
     }
 

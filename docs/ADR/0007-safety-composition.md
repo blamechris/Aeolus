@@ -210,6 +210,37 @@ re-acquire on every dark wake, which raises the frequency without changing the r
 This amendment corrects a clause of a Proposed ADR rather than the decision it sits under.
 **Status stays Proposed.**
 
+#### Amendment, 2026-09-20 ([#204](https://github.com/blamechris/Aeolus/issues/204), [#291](https://github.com/blamechris/Aeolus/issues/291)) — a read-back *beside* the keystone, never *ahead of* it
+
+The amendment above rejected "a read-back on or beside the keystone verb". Two changes have since
+put one beside it, and this note says where, and why neither reopens what the rejection protects.
+
+- **Startup reconciliation** (#204, ADR 0011's amendment): a refusal over a fan of unknown mode is
+  cleared only when a read after the keystone reports that fan automatic, under the pass's own
+  budget. Since #291 every fan the pass handed back by name is read back too, whether or not the
+  keystone ran; if the keystone itself is refused, those fans are refused unread.
+- **The lease core's `restoreAbandoned`** (#291): #189's clear additionally requires a fresh read
+  reporting the fan automatic, asked through `ForeignManualControlSensing` so the lease core still
+  reads no firmware of its own.
+
+**The keystone verb itself is unchanged, still depends on no data, and no read is queued ahead
+of it.** Every read is issued after a write has returned, and only ever decides whether a
+**refusal** is lifted. A read that throws or answers manual leaves the refusal standing, so the
+failure branches the rejection worried about all resolve to the state the system was already in.
+What the rejection said about clearing — *a move toward granting must be gated on positive
+evidence* — is exactly the rule these read-backs implement.
+
+**The lease core's read runs only on § 7.** Its first draft took the read inside the lease
+teardown, which § 4's sleep handback and SIGTERM's teardown both await *before* issuing the
+keystone — so an unbounded read would have held the keystone. The review of #291 caught it. The
+teardown now only marks such a fan as owed a read-back, and the read runs on § 7's panic verb,
+which has no keystone behind it (handback-ledger.md § *"Accepted is not automatic"*). § 4 itself
+reads nothing back: the machine sleeps whatever a read would say, and § 4 forbids firmware
+contact on wake. Its log line says the firmware *accepted* the write, not that the fans returned.
+
+This amendment corrects a clause of a Proposed ADR rather than the decision it sits under.
+**Status stays Proposed.**
+
 ## Alternatives considered
 
 **In-process crash restore.** A signal handler calling IOKit is undefined behaviour on the one path

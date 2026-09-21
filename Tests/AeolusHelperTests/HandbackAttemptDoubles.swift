@@ -172,6 +172,11 @@ actor RecoverableRefusal: FanRestoreAttempting {
         refusing.subtract(fans)
     }
 
+    /// The firmware goes back to refusing `fans`, from the next attempt onwards.
+    func refusesTheWrite(for fans: Set<Int>) {
+        refusing.formUnion(fans)
+    }
+
     /// Parks the **next** attempt, whichever fan it is for, until `release` is signalled —
     /// having signalled `entered` first, so the test can act while the restore is genuinely in
     /// flight rather than racing it.

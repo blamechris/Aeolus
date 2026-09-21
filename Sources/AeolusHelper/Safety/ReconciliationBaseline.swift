@@ -84,6 +84,20 @@ protocol ForeignManualControlSensing: Sendable {
     func refusalForGrant(
         overFans fans: Set<Int>, heldByAeolus held: Set<Int>
     ) async -> ManualControlAvailability.Reason?
+
+    /// The subset of `fans` a **fresh** read reports under automatic control. A fan whose
+    /// read throws is not in it.
+    ///
+    /// The evidence `LeaseAuthority` needs before it lifts `restoreAbandoned` (#291): a
+    /// restore the restorer did not give up on is a write that did not throw, which
+    /// `FanRestoring` is explicit is never a claim about the fan's mode. Asked here rather
+    /// than of a plane for the reason this protocol is narrow — the lease core reads no
+    /// firmware of its own — and it is a read, never a write, so it cannot become the
+    /// restore contest ADR 0011 declines. It judges nothing, and a fan reading manual is not
+    /// logged: unlike `refusalForGrant`, such a fan is one Aeolus has just tried to hand back,
+    /// and calling it foreign would be the wrong reason in the log. A read that throws is
+    /// logged, as `SafetyLog.handbackReadBackFailed`.
+    func fansReadingAutomatic(among fans: Set<Int>) async -> Set<Int>
 }
 
 // MARK: - The bound

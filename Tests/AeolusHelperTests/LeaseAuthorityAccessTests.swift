@@ -177,6 +177,7 @@ struct LeaseAuthorityAccessTests {
         "revokeLeases(coveringFan: Int, because: FanRestoreCause)",
         "revokeEveryLease(because: FanRestoreCause)",
         "releaseEveryLease()",
+        "confirmAcceptedHandbacks()",
         "sealForSleep(generation: UInt64)",
         "unsealAfterWake(generation: UInt64)",
         "recordUnconfirmedHandbacks()",

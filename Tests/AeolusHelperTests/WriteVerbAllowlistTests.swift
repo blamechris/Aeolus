@@ -361,6 +361,18 @@ struct WriteVerbAllowlistTests {
         "ReconciliationBaseline.swift: baseline()",
         "ReconciliationBaseline.swift: refusalForGrant(overFans: Set<Int>, "
             + "heldByAeolus: Set<Int>)",
+        // #291's five. `readBack(_:until:)` is the loop `confirmKeystone(until:)` used to
+        // hold, and `confirmHandbacksByName(until:fans:)` calls it for a complete pass: both
+        // read `F<n>Md` and write nothing. `fansReadingAutomatic(among:)` is the lease core's
+        // read-back seam and its one conformer — a read per fan, and no writer in reach.
+        "StartupReconciliation.swift: readBack(_: Set<Int>, until: ContinuousClock.Instant)",
+        "StartupReconciliation.swift: confirmHandbacksByName("
+            + "until: ContinuousClock.Instant, fans: Int)",
+        "StartupReconciliation.swift: fansReadingAutomatic(among: Set<Int>)",
+        "ReconciliationBaseline.swift: fansReadingAutomatic(among: Set<Int>)",
+        // And the lease core's caller of it, which § 7 alone invokes: a read and two set
+        // subtractions, no restorer and no plane in its body.
+        "LeaseAuthority.swift: confirmAcceptedHandbacks()",
         // #168's five. None of them can express a fan write: `withExclusiveAccess` runs an
         // arbitrary body under a scheduler turn and could in principle carry one — but the
         // body is supplied by the caller, so what it may do is the *caller's* classification,
