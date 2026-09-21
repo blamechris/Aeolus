@@ -248,9 +248,9 @@ expresses — and under test each is given its own frozen `TestClock`, every ins
 equal, and the guard passes every assertion while being a no-op in the daemon. That is the
 defect this ADR's own amendment shipped once already, two paragraphs down. One clock, held by
 the thing doing the comparing, cannot fail that way.
-`ThermalEmergencyStalenessTests.aCycleDoesNotOverwriteABlindnessRecordedDuringItsRead` pins the
-placement with two clock advances, and the mutation that moves `beganReading()` below the read
-is red there and green everywhere else in the repository.
+`ThermalEmergencyRecordStalenessTests.aCycleDoesNotOverwriteABlindnessRecordedDuringItsRead`
+pins the placement with two clock advances, and the mutation that moves `beganReading()`
+below the read is red there and green everywhere else in the repository.
 
 **The gate this ADR named is therefore met.** Whether it leaves `Proposed` is the maintainer's
 call, and the second residual below is still unpinned.
