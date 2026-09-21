@@ -319,6 +319,34 @@ reach and would force every lease test through three 1 Hz supervisor loops it do
   discard what the first established and hand a fan back a second time — the first move of
   the contest D2 declines.
 
+## Amendment (2026-09-21, [#300](https://github.com/blamechris/Aeolus/issues/300)) — § 3 bridges a fan it cannot prove is still its own, once per episode
+
+The consequence above says that writing during an emergency to a fan which may belong to
+another program is "the contest D1 and D2 exist to decline". Since #295 (a handback the
+firmware accepted) and #300 (§ 3's own restore), § 3 does exactly that, within a bound. A fan
+Aeolus engaged, whose restore returned cleanly but which still reads manual, stays in one of
+§ 3's registers. The next thermal emergency bridges it to maximum and restores it again.
+`F<n>Md` names no owner, so if another program took the fan in the meantime, that program's
+fan is what gets written.
+
+**This is ruled acceptable, and the ruling is scoped narrowly:**
+
+- **Only fans Aeolus itself engaged**, each with the permit minted when it did. D23's
+  reconciliation fans are still never registered: § 3 holds no permit for them, and minting
+  one is still declined.
+- **At most once per episode, never at loop rate.** A restored fan is bridged only by `fire`,
+  which the latch admits once per clear-to-engaged transition, and never by the take-back that
+  runs on every latched cycle. D2's standing fight is a write repeated for as long as the other
+  program re-asserts. This is one write per thermal emergency, and only above the ceiling.
+- **The asymmetry decides it.** Dropping the fan leaves one that may be off automatic control
+  with no emergency to bridge it, and that is under-firing. Keeping it costs another program
+  one maximum-then-automatic pair per emergency, on a machine that is over its ceiling.
+
+**Revisit if** a competing tool is observed re-asserting through every episode during E3/E4
+bring-up, or if E4's `commandTarget` gains a mode write or an `Ftst` unlock. Either would turn
+"one target write per episode" into something heavier. The ruling is the architect's #300
+consult, run on Opus.
+
 ## Assumptions and what would invalidate them
 
 | Assumption | Basis | If it fails |

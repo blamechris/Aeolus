@@ -131,6 +131,50 @@ struct AcceptedHandbackCompositionTests {
         #expect(await helper.thermalEmergency.fansOwedHandbackReadBack == [0])
     }
 
+    // MARK: - § 3's own restore (#300)
+
+    /// A fan § 3 bridged and restored, whose restore the firmware discarded, is bridged once in
+    /// the episode that fired — not again on every latched cycle after it.
+    ///
+    /// Composed because the path that could turn the fix into ADR 0011 D2's standing fight
+    /// runs through the real restorer: `fire` revokes the lease, the restorer restores fan 0
+    /// and calls `handbackAccepted(fanAt: 0)`, and a `ThermalEmergency` that answered by
+    /// putting fan 0 back in `engagedFans` would have take-back bridge it every cycle.
+    ///
+    /// **Mutation:** in `ThermalEmergency.handbackAccepted(fanAt:)`, promote a restored fan
+    /// first — `if engagedFans[index] == nil, let restored = restoredUnconfirmed[index]
+    /// { engagedFans[index] = restored.fan; restoredUnconfirmed[index] = nil }`. Run: red —
+    /// two bridges: the next latched cycle's take-back bridges the promoted fan, and with no
+    /// lease left to revoke nothing promotes it again.
+    /// **Mutation:** in `ThermalEmergency.takeBackAnythingEngagedSinceFiring()`, bridge
+    /// `restoredUnconfirmed` as well — `let engagedSince = (Array(engagedFans.values) +
+    /// restoredUnconfirmed.values.map(\.fan)).sorted { $0.index < $1.index }`, with the empty
+    /// guard widened to match. Run: red — four bridges.
+    @Test("A fan § 3's restore left manual is bridged once per episode, not per cycle")
+    func aRestoredButManualFanIsNotBridgedEveryLatchedCycle() async throws {
+        let helper = Self.composed(writes: .reverted)
+        await helper.bindSafetyRegistries()
+        try await HelperRestorerTests.engage(fan: 0, in: helper)
+        let connection = ConnectionID()
+        _ = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: connection)
+        await helper.plane.wrapped.setMode(.manual, ofFan: 0)
+
+        await helper.plane.wrapped.advance()
+        await helper.thermalEmergency.cycle()
+        #expect(
+            await helper.plane.restoreAttempts.count >= 2,
+            "the lease teardown never reached the restorer, so handbackAccepted never ran")
+        await helper.thermalEmergency.cycle()
+        await helper.thermalEmergency.cycle()
+        await helper.thermalEmergency.cycle()
+
+        let commanded = await helper.plane.wrapped.attempts.compactMap(\.commandedRPM)
+        #expect(commanded == [5_777], "a latched cycle bridged a fan § 3 had already restored")
+        #expect(await helper.thermalEmergency.fansRestoredUnconfirmed == [0])
+        #expect(await helper.thermalEmergency.fansUnderManualControl.isEmpty)
+    }
+
     // MARK: - Unreadable
 
     /// A fan owed a read-back whose `F<n>Md` will not read stays registered and owed, and says

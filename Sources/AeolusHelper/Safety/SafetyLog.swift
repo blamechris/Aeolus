@@ -132,9 +132,9 @@ struct SafetyLog: Sendable {
             """
             Thermal emergency engaged: \(hottest.key.rawValue) read \
             \(Self.celsius(hottest.celsius)) against a \(Self.celsius(ceiling)) ceiling. \
-            \(fansHeld) fan(s) under manual control go to maximum and then back to \
-            automatic; any lease covering them is revoked and no new lease is granted \
-            while this holds.
+            \(fansHeld) fan(s) Aeolus engaged, or restored without seeing the restore take, \
+            go to maximum and then back to automatic; any lease covering them is revoked \
+            and no new lease is granted while this holds.
             """
         )
     }
@@ -320,7 +320,7 @@ struct SafetyLog: Sendable {
             """
             Fan \(fan) still reads manual after the firmware accepted its handback to \
             automatic control. § 3 keeps it registered, so a thermal emergency bridges it to \
-            maximum, and reads it again each cycle until it reads automatic.
+            maximum, and reads it again on each clear cycle until it reads automatic.
             """
         )
     }
@@ -348,6 +348,48 @@ struct SafetyLog: Sendable {
             """
             Fan \(fan) reads automatic after its handback; § 3 no longer lists it as under \
             manual control.
+            """
+        )
+    }
+
+    // MARK: - docs/SAFETY.md § 3 — its own restores (#300)
+
+    /// A fan § 3 bridged and restored still reads manual, and the next emergency bridges it.
+    ///
+    /// `.fault` for `thermalEmergencyHandbackStillManual`'s reason: a restore on a safety path
+    /// the firmware accepted and did not act on. Once per restore, on the transition.
+    func thermalEmergencyRestoreStillManual(fan: Int) {
+        emit(
+            .fault,
+            """
+            Fan \(fan) is still manual after the thermal emergency restored it to \
+            automatic control. § 3 keeps it, so the next thermal emergency bridges it to \
+            maximum again, and reads it again on each clear cycle until it reads \
+            automatic.
+            """
+        )
+    }
+
+    /// A fan § 3 restored could not be read back, and § 3 keeps it.
+    ///
+    /// `.notice`, for `thermalEmergencyHandbackUnreadable`'s reason. Once per restore.
+    func thermalEmergencyRestoreUnreadable(fan: Int, detail: String) {
+        emit(
+            .notice,
+            """
+            Fan \(fan)'s control state could not be read back after the thermal emergency \
+            restored it (\(detail)). § 3 keeps it until a read reports automatic.
+            """
+        )
+    }
+
+    /// A fan § 3 restored reads automatic, and § 3 has let it go.
+    func thermalEmergencyRestoreConfirmed(fan: Int) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) reads automatic after the thermal emergency restored it; the next \
+            emergency will not bridge it unless it is taken off automatic control again.
             """
         )
     }
