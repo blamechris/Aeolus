@@ -537,8 +537,9 @@ names the episode it judged when it does.
 **Which fans it holds, and when it lets one go.** § 3's registry is every fan Aeolus took off
 automatic control, each with the permit its maximum write needs. A fan leaves it when § 3 bridges
 and restores it (firing, or taking back a late engagement) — unless it was engaged again while
-that bridge awaited its writes, in which case the newer registration stands and the next latched
-cycle takes it back ([#305](https://github.com/blamechris/Aeolus/issues/305)) — and, since
+that bridge awaited its writes, in which case the newer registration stands: the next latched cycle
+takes it back if the episode still holds, and the next emergency bridges it otherwise
+([#305](https://github.com/blamechris/Aeolus/issues/305)) — and, since
 [#295](https://github.com/blamechris/Aeolus/issues/295), **not** when a lease teardown hands it
 back.
 

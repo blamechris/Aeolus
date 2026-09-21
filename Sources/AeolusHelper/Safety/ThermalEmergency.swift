@@ -582,8 +582,10 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// **Only on a sighted cycle with the latch clear that did not fire, and last.** The
     /// other paths already act on an owed fan without a read, or must not spend a turn on
     /// one: a firing cycle bridges and restores every registered and every restored fan, and
-    /// moves each into `restoredUnconfirmed` whatever those writes did; a latched cycle
-    /// takes back whatever is registered, the same way; and a blind cycle is a machine whose
+    /// moves each into `restoredUnconfirmed` whatever those writes did — except one engaged
+    /// again mid-bridge, which stays registered and is bridged again (#305, see
+    /// `bridgeThenFileRestored(_:)`); a latched cycle takes back whatever is registered, the
+    /// same way; and a blind cycle is a machine whose
     /// SMC is not answering, where one more `.supervisor` read would only fail. A read that
     /// never runs keeps the fan owed — a machine blind between episodes still bridges it in
     /// the next one. Taken last so it
@@ -771,13 +773,21 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// `manualControlEngaged(_:)` for the same fan that lands after the restore write is a
     /// client taking the fan off automatic *after* § 3 put it back, and filing the fan as
     /// restored would forget that newer registration: take-back reads only `engagedFans`, so
-    /// the fan would go unbridged for the rest of the episode. Left registered, the next
-    /// latched cycle's take-back bridges it — the over-firing direction. Registration already
-    /// moved it out of `restoredUnconfirmed`, so the two maps still never share a fan.
+    /// the fan would go unbridged for the rest of the episode. Left registered, it is taken
+    /// back by the next latched cycle if the episode still holds, and otherwise handed back
+    /// by `fire`'s revocation and bridged by the next `fire` if it reads manual — the
+    /// over-firing direction either way. Registration already moved it out of
+    /// `restoredUnconfirmed`, so the two maps still never share a fan.
+    ///
+    /// **It also catches an engagement that lands during the maximum write**, before the
+    /// restore. The fan then ends automatic, and keeping it costs one more bridge: over-firing,
+    /// and deliberately not told apart, because "engaged during the bridge" is decidable from
+    /// the stamp and "engaged after which write" is not. Do not narrow the guard to the
+    /// restore-write case.
     ///
     /// "Engaged again" means a registration carrying a stamp other than the one captured
-    /// before the bridge. A fan with no stamp now — nothing registers it, whether it came
-    /// from `restoredUnconfirmed` or was forgotten — is filed as before.
+    /// before the bridge — **including a fan that had none**, one `fire` took from
+    /// `restoredUnconfirmed`. A fan with no stamp now is filed as before.
     private func bridgeThenFileRestored(_ fan: CommandableFan) async {
         let registration = engagedAt[fan.index]
         await bridgeToMaximumThenRelease(fan)
