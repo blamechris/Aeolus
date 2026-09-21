@@ -108,17 +108,37 @@ struct LeaseLog: Sendable {
     /// and a user following it would be acting on a refusal that no longer exists. `.notice` for
     /// `restored(fans:because:)`'s reason: nothing is wrong here.
     ///
-    /// **It reports what was observed and not where the fan is**, which is `abandonedHandback`'s
-    /// own limit from the other side: `FanRestoring` promises a return and never a read-back, so
-    /// "the write was not refused this time" is the whole of what the helper knows. Claiming the
-    /// fan is under Apple's management would be `CLAUDE.md` rule 6 in the optimistic direction.
+    /// **It reports a read-back, not only a write** (#291). `FanRestoring` promises a return
+    /// and never a read-back, so until #291 "the write was not refused this time" was the whole
+    /// of what the helper knew and this line said no more. The refusal is now lifted only after
+    /// a fresh read reports the fan automatic, so that is what this line reports — at the
+    /// instant of the read, which is all any read can say.
     func recoveredAbandonedHandback(fans: Set<Int>, because cause: FanRestoreCause) {
         log.notice(
             """
             Fan(s) \(Self.describe(fans), privacy: .public) were handed back without being \
             refused this time (\(Self.describe(cause), privacy: .public)), after an earlier \
-            handback Aeolus gave up on. The durable refusal over them is lifted and manual \
-            control of them may be taken again.
+            handback Aeolus gave up on, and read back under automatic control. The durable \
+            refusal over them is lifted and manual control of them may be taken again.
+            """
+        )
+    }
+
+    /// A fan the helper had given up on took the write this time, and did not read back
+    /// automatic — so the durable refusal over it stands.
+    ///
+    /// `.notice`, not `.fault`: the fault was `abandonedHandback`, and nothing got worse. The
+    /// line exists so that a reader who sees a handback go through is not left believing the
+    /// refusal lifted. It names no cause: a fan still reading manual after an accepted write may
+    /// be firmware that did not apply it, a write that has not settled, or another program —
+    /// and one read cannot tell them apart.
+    func abandonedHandbackStillUnconfirmed(fans: Set<Int>, because cause: FanRestoreCause) {
+        log.notice(
+            """
+            Fan(s) \(Self.describe(fans), privacy: .public) were handed back without being \
+            refused this time (\(Self.describe(cause), privacy: .public)), after an earlier \
+            handback Aeolus gave up on, but did not read back under automatic control. The \
+            durable refusal over them stands.
             """
         )
     }

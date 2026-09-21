@@ -152,8 +152,17 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
     private var handbackRefused: Set<Int> = []
 
     /// Fans this pass handed back by name and the restorer did not report abandoned — owed a
-    /// read-back if the keystone runs, because a per-fan write that did not throw is no more
-    /// a fan in automatic than a machine-wide one is. See `confirmKeystone(until:)`.
+    /// read-back before the pass ends, because a per-fan write that did not throw is no more
+    /// a fan in automatic than a machine-wide one is.
+    ///
+    /// **Owed on every pass, not only when the keystone runs** — #291. Before it, a pass that
+    /// read every fan and restored one by name never read that fan back, while the same fan
+    /// on a pass where an *unrelated* fan's read threw was read back by
+    /// `confirmKeystone(until:)`. So whether a by-name handback that did not take ended up
+    /// durably `.supervisorBlind` or only transiently `.foreignManualControl` — blaming
+    /// another program for a write the firmware may simply not have applied — depended on a
+    /// different fan. One rule now: `confirmHandbacksByName(until:)` on a complete pass, the
+    /// keystone's read-back otherwise, and both answer through `readBack(_:until:)`.
     private var handedBackByName: Set<Int> = []
 
     /// Whether the one-shot pass has run.
@@ -194,7 +203,9 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
     ///    logged at fault. Except a `.controlPathNotBuilt` refusal, which is *this build's
     ///    expected state* and logs at notice: `SMCFanControlPlane` has no write path, so
     ///    every restore here is refused, and a `.fault` line per fan per start would train
-    ///    a reader to ignore the one that matters.
+    ///    a reader to ignore the one that matters. Every fan handed back this way is read
+    ///    back before the pass returns, whichever branch it returns from — see
+    ///    `handedBackByName`.
     /// 2. **A read throws** → the per-fan pass is abandoned and one unconditional
     ///    `restoreToAutomatic(.everyFan)` is issued. ADR 0007's assumption table already
     ///    settles this: *"`F0Md`/`Ftst` are readable for reconciliation … If it fails:
@@ -273,7 +284,7 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
 
         unreconciled = Set(remaining)
         guard !unreconciled.isEmpty else {
-            log.reconciliationCompleted(fans: fans.count)
+            await confirmHandbacksByName(until: deadline, fans: fans.count)
             return
         }
         log.reconciliationBudgetExhausted(unreconciled: unreconciled, budget: budget)
@@ -373,6 +384,47 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
             owed = unreconciled.union(handedBackByName)
         }
 
+        let unconfirmed = await readBack(owed, until: deadline)
+
+        // Every fan is accounted for now, so the machine-wide flag gives way to the set: an
+        // index exists for each fan still refused.
+        nothingEstablished = false
+        unreconciled = unconfirmed
+        guard unconfirmed.isEmpty else {
+            log.reconciliationKeystoneUnconfirmed(
+                unconfirmed: unconfirmed, detail: "read back in manual, unreadable, or unread")
+            return
+        }
+        log.reconciliationKeystoneConfirmed(fans: owed.count)
+    }
+
+    /// The read-back a complete pass owes its by-name handbacks — the same two answers per
+    /// fan as `confirmKeystone(until:)`, under the same deadline, for the reason
+    /// `handedBackByName` gives.
+    ///
+    /// A fan read back in manual goes into `unreconciled`, never `handbackRefused`, and for
+    /// exactly the reason that set's documentation gives about the keystone: the firmware
+    /// accepted the per-fan write, and one read cannot tell a write it did not apply from a
+    /// foreign writer re-asserting manual since, or from a write that has not settled. The
+    /// cost is stated rather than hidden: a fan another tool re-takes inside this window is
+    /// refused as `.supervisorBlind` for the life of the process, and quitting that tool does
+    /// not lift it. That is the fail-safe direction, and it is the answer the keystone path
+    /// already gave the same fan.
+    private func confirmHandbacksByName(until deadline: ContinuousClock.Instant, fans: Int) async {
+        let unconfirmed = await readBack(handedBackByName, until: deadline)
+        unreconciled = unconfirmed
+        guard unconfirmed.isEmpty else {
+            log.reconciliationHandbackUnconfirmed(unconfirmed: unconfirmed)
+            return
+        }
+        log.reconciliationCompleted(fans: fans)
+    }
+
+    /// The fans in `owed` that could not be confirmed automatic: read back in manual, a read
+    /// that threw, or no budget left to read them.
+    private func readBack(
+        _ owed: Set<Int>, until deadline: ContinuousClock.Instant
+    ) async -> Set<Int> {
         var unconfirmed: Set<Int> = []
         for fan in owed.sorted() {
             guard clock.now < deadline else {
@@ -388,17 +440,7 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
                 unconfirmed.insert(fan)
             }
         }
-
-        // Every fan is accounted for now, so the machine-wide flag gives way to the set: an
-        // index exists for each fan still refused.
-        nothingEstablished = false
-        unreconciled = unconfirmed
-        guard unconfirmed.isEmpty else {
-            log.reconciliationKeystoneUnconfirmed(
-                unconfirmed: unconfirmed, detail: "read back in manual, unreadable, or unread")
-            return
-        }
-        log.reconciliationKeystoneConfirmed(fans: owed.count)
+        return unconfirmed
     }
 
     /// Whether a refused write is this build's expected state or a real firmware refusal.
@@ -455,6 +497,26 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
             }
         }
         return nil
+    }
+
+    /// See `ForeignManualControlSensing`. One `.supervisor` turn per fan, sequentially, for
+    /// `reconcile()`'s reason; no budget, because the lease core calls it only for fans that
+    /// were already refused, and a read that never returns leaves them refused.
+    func fansReadingAutomatic(among fans: Set<Int>) async -> Set<Int> {
+        var automatic: Set<Int> = []
+        for fan in fans.sorted() {
+            do {
+                guard try await plane.readControlState(ofFan: fan).mode == .automatic else {
+                    continue
+                }
+                automatic.insert(fan)
+            } catch {
+                // Not swallowed: an unreadable fan is left out of the answer, which keeps the
+                // refusal the caller was asking about standing.
+                log.handbackReadBackFailed(fanAt: fan, detail: String(describing: error))
+            }
+        }
+        return automatic
     }
 
     /// Questions 1–3 above, as the value the snapshot reads too.

@@ -174,7 +174,9 @@ actor LeaseAuthority {
     /// a fan reaches this set from there only when the outstanding restore comes back refused.
     ///
     /// **Not append-only since [#189](https://github.com/blamechris/Aeolus/issues/189)**, and
-    /// the one thing that clears it is a restore the restorer reports it did *not* give up on.
+    /// the one thing that clears it is a restore the restorer reports it did *not* give up on
+    /// **and a fresh read then reports automatic** — the second half since
+    /// [#291](https://github.com/blamechris/Aeolus/issues/291); see `restore(_:because:)`.
     /// **A restore that never returns leaves it standing**, as does one refused again, and
     /// both are the fail-safe direction.
     ///
@@ -970,7 +972,22 @@ actor LeaseAuthority {
         // intersection is what keeps this from being a blanket subtraction: it names only fans
         // the register actually held, so the log line below reports a refusal being lifted
         // rather than firing on every ordinary teardown.
-        let recovered = restoreAbandoned.intersection(fans.subtracting(abandoned))
+        //
+        // **Not refused is not automatic** (#291), which is #204's rule on reconciliation's
+        // keystone applied to this clear: a write that did not throw is the firmware saying
+        // yes, not the fan being back. So a candidate is lifted only once a fresh read says
+        // automatic. One that reads manual, or will not read, stays refused as it was — the
+        // refusal is *kept*, never newly minted from a read, so the constraint on #204 holds:
+        // a manual read-back after an accepted write never becomes `.restoreToAutomaticFailed`
+        // for a fan that did not already carry it. The read is issued before the `defer`
+        // above runs, so the fan is still mid-handback to `acquireLease` while it is taken.
+        let candidates = restoreAbandoned.intersection(fans.subtracting(abandoned))
+        guard !candidates.isEmpty else { return }
+        let recovered = await foreignControl.fansReadingAutomatic(among: candidates)
+        let unconfirmed = candidates.subtracting(recovered)
+        if !unconfirmed.isEmpty {
+            log.abandonedHandbackStillUnconfirmed(fans: unconfirmed, because: cause)
+        }
         guard !recovered.isEmpty else { return }
         restoreAbandoned.subtract(recovered)
         log.recoveredAbandonedHandback(fans: recovered, because: cause)

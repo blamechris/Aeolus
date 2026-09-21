@@ -29,9 +29,12 @@ import Testing
 /// That is not a weaker signal invented to make the clear easy; it is the signal
 /// `HelperFanRestorer` already deregisters § 3's registry on, in the one place where
 /// *forgetting* a still-manual fan is the unsafe direction. `FanRestoring` promises a return
-/// and explicitly not a read-back, so there is no stronger answer in this build, and
-/// `aRefusedPanicPassLeavesTheRefusalStanding` is what keeps the clear from degenerating into
-/// the genuinely weaker one — "the panic pass ran".
+/// and explicitly not a read-back, and `aRefusedPanicPassLeavesTheRefusalStanding` is what
+/// keeps the clear from degenerating into the genuinely weaker one — "the panic pass ran".
+///
+/// **Since [#291](https://github.com/blamechris/Aeolus/issues/291) that signal is necessary but
+/// not sufficient**: a fresh read through `ForeignManualControlSensing` must also report the fan
+/// automatic, and `anAcceptedWriteThatDoesNotReadBackKeepsTheRefusal` holds that half.
 ///
 /// Every fan reaches the register the way `Sources/` reaches it: a lease, released, with
 /// `BoundedFanRestorer` spending the real `RestoreLimits.attemptBudget` against a firmware that
@@ -46,11 +49,13 @@ struct AbandonedHandbackRecoveryTests {
     /// The setup asserts the state it claims to have reached. Without that, a change that
     /// stopped recording the register at all would leave every test below green on an empty set.
     private static func abandoned(
-        leasing: [Int], refusing: Set<Int>
+        leasing: [Int], refusing: Set<Int>,
+        foreignControl: any ForeignManualControlSensing = LeaseFixture.automaticFans()
     ) async throws -> (leases: LeaseAuthority, firmware: RecoverableRefusal) {
         let firmware = RecoverableRefusal(refusing: refusing)
         let leases = LeaseFixture.authority(
-            restorer: BoundedFanRestorer(attempting: firmware, log: LeaseFixture.log))
+            restorer: BoundedFanRestorer(attempting: firmware, log: LeaseFixture.log),
+            foreignControl: foreignControl)
         let connection = ConnectionID()
 
         let lease = try await leases.acquireLease(
@@ -128,6 +133,44 @@ struct AbandonedHandbackRecoveryTests {
         _ = try await leases.acquireLease(LeaseFixture.request(fans: [0]), from: ConnectionID())
         #expect(await leases.leaseCount == 1)
         #expect(await firmware.breachedCeiling == false)
+    }
+
+    /// [#291](https://github.com/blamechris/Aeolus/issues/291): the write going through is not
+    /// the fan going back. The firmware takes the panic pass's write this time, and the fan
+    /// still reads manual — so the refusal it already carried stands.
+    ///
+    /// The fresh read comes from the real `StartupReconciliation` over scripted firmware, set
+    /// to manual only *after* the lease was granted and abandoned: set earlier, the grant-time
+    /// read would have refused the setup's own lease.
+    ///
+    /// **Mutation:** in `LeaseAuthority.restore`, replace
+    /// `await foreignControl.fansReadingAutomatic(among: candidates)` with `candidates`.
+    /// Run: red — the register is empty and the fan is granted over a mode nothing confirmed.
+    @Test("A fan the firmware takes the write for but still reads manual stays refused")
+    func anAcceptedWriteThatDoesNotReadBackKeepsTheRefusal() async throws {
+        let modes = ScriptedControlPlane(
+            fans: [0: ScriptedControlPlane.FanCondition()],
+            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+        let (leases, firmware) = try await Self.abandoned(
+            leasing: [0], refusing: [0],
+            foreignControl: LeaseFixture.reconciliation(
+                over: modes, enumeration: ScriptedFanEnumeration(indices: [0])))
+
+        await modes.setMode(.manual, ofFan: 0)
+        await firmware.takesTheWrite(for: [0])
+        await leases.releaseEveryLease()
+
+        #expect(
+            await firmware.attemptCount(forFan: 0) == RestoreLimits.attemptBudget + 1,
+            "the panic pass did not reach fan 0, so this test cannot say anything about the clear")
+        #expect(
+            await leases.fansWithAbandonedHandbacks == [0],
+            """
+            the firmware accepted the write and fan 0 still reads manual, and the durable \
+            refusal was lifted anyway — on a write that did not throw, which is not a fan in \
+            automatic (#291).
+            """)
+        await Self.expectRefused(leases, fan: 0)
     }
 
     /// The half that keeps the clear honest: a pass the firmware refuses again changes nothing.

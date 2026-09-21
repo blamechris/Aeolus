@@ -982,6 +982,23 @@ extension SafetyLog {
         )
     }
 
+    /// A complete pass handed fans back by name, and the read-back could not confirm some.
+    ///
+    /// `.fault`, on `reconciliationKeystoneUnconfirmed`'s argument: the firmware accepted a
+    /// per-fan write and the fan still reads manual, or could not be read, or read in time.
+    /// One read cannot say which program is responsible, so this line does not either.
+    func reconciliationHandbackUnconfirmed(unconfirmed: Set<Int>) {
+        emit(
+            .fault,
+            """
+            Startup reconciliation handed fan(s) \(Self.describe(unconfirmed)) back to \
+            automatic control and the write was accepted, but reading them back could not \
+            confirm it (read back in manual, unreadable, or unread). Manual control of those \
+            fans is refused for the life of this process, because nothing runs this pass again.
+            """
+        )
+    }
+
     /// The machine-wide restore was refused too, so the helper knows nothing about any fan.
     func reconciliationEveryFanRestoreFailed(
         because reason: KeystoneReason, detail: String, capability: FanWriteCapability
@@ -1041,6 +1058,20 @@ extension SafetyLog {
             does. Refusing manual control of it rather than restoring it a second time: a \
             restore loop against a live writer is the fight, not the fix (ADR 0011). \
             F<n>Md cannot name the holder, so neither can this line.
+            """
+        )
+    }
+
+    /// A fan's control state could not be read back after the lease core handed it back
+    /// over a durable refusal (#291). `.fault` for `grantTimeStateUnreadable`'s reason: the
+    /// fan's mode is unknown, so the refusal over it stands.
+    func handbackReadBackFailed(fanAt fan: Int, detail: String) {
+        emit(
+            .fault,
+            """
+            Fan \(fan)'s control state could not be read back after Aeolus handed it back to \
+            automatic control (\(detail)). The refusal over it stands: nothing has confirmed \
+            where the fan is.
             """
         )
     }
@@ -1121,12 +1152,19 @@ extension SafetyLog {
         )
     }
 
-    /// The machine-wide keystone restore landed before the sleep.
+    /// The machine-wide keystone restore was accepted before the sleep.
+    ///
+    /// **Accepted, not confirmed**, and until #291 this line said every fan *returned* to
+    /// automatic control — a read-back it never did. `SafetyActorWriter` forwards the write and
+    /// reads nothing back, and § 4 deliberately does not add a read here: the budget it answers
+    /// the system inside is for the handback itself, the machine sleeps whatever a read would
+    /// say, and § 4 forbids firmware contact on wake, so nothing could act on the answer. The
+    /// line therefore says what this process observed — the firmware took the write.
     func handedEveryFanBackBeforeSleep() {
         emit(
             .notice,
-            "Every fan returned to automatic control before sleep, and the Apple Silicon "
-                + "force key cleared with them."
+            "The firmware accepted the machine-wide restore to automatic control before sleep, "
+                + "which also clears the Apple Silicon force key. It was not read back."
         )
     }
 
