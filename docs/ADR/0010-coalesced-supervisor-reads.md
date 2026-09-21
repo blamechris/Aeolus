@@ -209,19 +209,44 @@ and it clears itself — `unexpiredSighting()` serves without restamping, so a b
 perpetuate itself off the grants it refuses; it ages out on the same bound as everything else
 and the next grant reads the machine for itself. No state accumulates.
 
-**What this does not establish, stated plainly so the next reader need not re-derive it.**
-`ThermalEmergency.cycle()` records its own `.sighted` through the unguarded `record(_:)`, and
-does so across a suspension point: the read completes, then the cycle hops to the cache actor
-to record. A cycle reading taken *before* a flight's failure can therefore be recorded *after*
-it and displace the blindness this amendment just made unconditional. The window is one actor
-job — microseconds normally — and both reads go through the same `CuratedCriticalTemperatures`
-instance, which is this ADR's own argument for tolerating staleness of that order. But the
-invariant "a blindness is not displaced by a sighting taken before it" does **not** hold end to
-end, and nothing here should be read as claiming it does. Closing it means the instant a read
-was *taken* at has to travel with the reading, which changes `CriticalTemperatureRecording`'s
-shape rather than its implementation — a decision, not a patch, and
-[#280](https://github.com/blamechris/Aeolus/issues/280) carries it. It gates this ADR leaving
-`Proposed`.
+**This held end to end only after [#280](https://github.com/blamechris/Aeolus/issues/280),
+and the paragraph that stood here estimated the gap wrongly — recorded rather than rewritten,
+for the same reason as the correction above.** `ThermalEmergency.cycle()` recorded its own
+`.sighted` through an unguarded `record(_:)`, across a suspension point of its own, so a cycle
+reading taken *before* a flight's failure could be recorded *after* it and displace the
+blindness this amendment had just made unconditional.
+
+The estimate was "one actor job — microseconds normally". That is the gap between the cycle's
+read *returning* and its record *reaching* the actor. It is not the exposed window. The
+comparison has to be against the instant the cycle's read **began**, so everything recorded
+for the whole duration of that read was unguarded — and `CuratedCriticalTemperatures` is a
+`struct` with no serialisation of its own, so a flight's read and the cycle's interleave
+freely. This repository's own hardware test measures the curated read on `Mac16,5` at
+**~6 ms uncontended and ~20 ms worst against an in-flight snapshot**
+(`HelperHardwareTests`, "A safety cycle stays prompt while a real snapshot is on the
+connection"). Four orders of magnitude above the figure this ADR reasoned from, and it widened
+in exactly the wrong conditions: an SMC slow enough to lengthen the cycle's read is the one
+whose flights are failing.
+
+**The fix, as decided:** the instant a read was taken at now travels with the reading, and it
+is *minted by the cache* rather than supplied by the reader.
+`CriticalTemperatureRecording` gained `beganReading()`, which returns an opaque
+`CriticalTemperatureReadingStart`; `record(_:since:)` takes one back. The unguarded
+`record(_:)` is `private`, so the protocol has **no** entry point that skips the comparison,
+and the blindness bypass is an invariant of the cache rather than a choice each writer re-takes.
+
+The rejected alternative was a `ContinuousClock.Instant` the caller stamps. It is correct only
+while the reader and the cache hold the *same clock instance*, which nothing in the type system
+expresses — and under test each is given its own frozen `TestClock`, every instant compares
+equal, and the guard passes every assertion while being a no-op in the daemon. That is the
+defect this ADR's own amendment shipped once already, two paragraphs down. One clock, held by
+the thing doing the comparing, cannot fail that way.
+`ThermalEmergencyStalenessTests.aCycleDoesNotOverwriteABlindnessRecordedDuringItsRead` pins the
+placement with two clock advances, and the mutation that moves `beganReading()` below the read
+is red there and green everywhere else in the repository.
+
+**The gate this ADR named is therefore met.** Whether it leaves `Proposed` is the maintainer's
+call, and the second residual below is still unpinned.
 
 A second residual, in the mirror direction. When the guard *does* drop a flight's `.sighted`,
 `sighting()` still returns that reading — to the caller that started the flight **and to every
