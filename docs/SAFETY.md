@@ -167,9 +167,14 @@ either key in a daemon plist, and that needs the signing identity — row 16 of 
 **A lease is also refused outright while the helper cannot currently prove it can see a critical
 temperature.** That is the grant-time half of the no-telemetry-no-lease rule, and this section
 never mentioned it until #104: `acquireLease` runs a sightedness check that is answered from § 3's
-own most recent reading, and a failure to obtain one is refused
+own most recent reading — **the usual case and not the guarantee**, exactly as § 3's own
+paragraph below now says — and a failure to obtain one is refused
 `.noThermalTelemetry` rather than granted and watched
-([ADR 0010](ADR/0010-coalesced-supervisor-reads.md)). § 3 having working telemetry is a
+([ADR 0010](ADR/0010-coalesced-supervisor-reads.md)). The reading answering the check can also be
+a grant-path flight's, and after #280 it can be a flight's *blindness* that displaced a § 3
+sighting taken later: the cache prefers refusal on every tie it can see, so the check is
+conservative rather than exact, and a grant can be refused on a machine that is currently
+readable. § 3 having working telemetry is a
 precondition of § 1 granting a lease at all — § 5 states the same rule from the divergence side,
 where being unable to read is itself divergence.
 
@@ -515,8 +520,11 @@ mechanism through its own loop.
 point, where the facts a cycle gathered stop being true before it acts on them: the latch is
 never released against a temperature report older than the episode holding, the qualifying
 key set that arms the degraded-view guard belongs to the episode that is holding rather than
-one that has ended, a release clears the episode it was judged against and no other, and a
-cycle that could not read at all still revokes whatever lease it finds.
+one that has ended, a release clears the episode it was judged against and no other, a
+cycle that could not read at all still revokes whatever lease it finds, and — since
+[#280](https://github.com/blamechris/Aeolus/issues/280) — a cycle's own reading never displaces
+anything recorded while that read was in flight, in either the blindness direction (a safety
+defect) or the fresher-sighting direction (a staleness-bound defect).
 
 The compare-and-clear is additionally asserted against the **source tree**, because under a
 single supervisor no runtime scenario separates it from a bare release: the same suite checks

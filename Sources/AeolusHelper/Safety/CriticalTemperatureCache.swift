@@ -70,10 +70,72 @@ protocol SightednessProving: Sendable {
 /// Narrowing the field to this makes that a compile error rather than a thing to remember —
 /// symmetric with the exclusion already enforced on the reading side, and for the same
 /// argument: *what a consumer may be given* is expressed as a type.
+///
+/// ## Two calls, because *when a reading was taken* is not the caller's to assert
+///
+/// A recorder has to know the instant a reading was taken at, or it cannot tell a stale
+/// reading from a fresh one — and the unsafe direction of getting that wrong is a sighting
+/// displacing a blindness, which grants leases on a helper already found unable to see
+/// ([#280](https://github.com/blamechris/Aeolus/issues/280)).
+///
+/// The instant is therefore **minted by the conformer**, not supplied by the caller: a
+/// reader calls `beganReading()` before it reads and hands the result back with the
+/// outcome. `CriticalTemperatureReadingStart` is opaque and constructible only inside
+/// `CriticalTemperatureCache.swift`, so there is no way to record against an instant this
+/// cache did not observe.
+///
+/// The alternative — a `ContinuousClock.Instant` parameter the caller stamps — was
+/// rejected, and the reason is not aesthetic. It makes the comparison correct only while
+/// two mechanisms hold *the same clock instance*, which nothing in the type system
+/// expresses. Under test each would be given its own frozen `TestClock`, every instant
+/// would compare equal, and the guard would pass every assertion while being a no-op in the
+/// daemon. That is the exact shape of the defect
+/// [#279](https://github.com/blamechris/Aeolus/issues/279) shipped and
+/// `aFlightDoesNotOverwriteWhatWasRecordedWhileItWasAway` now pins. One clock, held by the
+/// thing that does the comparing, has no such failure mode.
 protocol CriticalTemperatureRecording: Sendable {
 
-    /// Remembers what a real read of the curated set produced.
-    func record(_ sighting: CriticalTemperatureSighting) async
+    /// Marks the instant a real read of the curated set is **about to be taken**.
+    ///
+    /// Call this *before* the read, and hand the result to `record(_:since:)` afterwards.
+    /// The start — not the finish, and not the moment the outcome reaches the recorder — is
+    /// the only instant the recorder knows the reading to be no fresher than.
+    func beganReading() async -> CriticalTemperatureReadingStart
+
+    /// Remembers what a real read of the curated set produced, unless something newer
+    /// landed while the read was away.
+    ///
+    /// - Parameters:
+    ///   - sighting: what the read produced.
+    ///   - start: what `beganReading()` returned before the read this is the outcome of.
+    ///
+    /// Whether `start` is consulted at all depends on the outcome, and the asymmetry is
+    /// deliberate — see `CriticalTemperatureCache.record(_:since:)`. There is no unguarded
+    /// entry point on this protocol on purpose: the guard is not something a caller can
+    /// forget, because there is nothing else to call.
+    func record(
+        _ sighting: CriticalTemperatureSighting, since start: CriticalTemperatureReadingStart
+    ) async
+}
+
+/// The instant a real read of the curated set began, as observed by the cache that will
+/// remember its outcome.
+///
+/// Opaque, and mintable only inside this file: the initialiser and the instant are both
+/// `fileprivate`, so `CriticalTemperatureCache.beganReading()` is the only way to obtain
+/// one. A caller can hold one and hand it back; it cannot manufacture one from a clock of
+/// its own, which is what makes "the reading is no fresher than this" a fact the cache
+/// observed rather than a claim the caller made.
+///
+/// It is `FanStateSensing`'s trick once more, applied to an *instant*: the thing a caller
+/// may not do is expressed as a type it cannot construct.
+struct CriticalTemperatureReadingStart: Sendable {
+
+    fileprivate let instant: ContinuousClock.Instant
+
+    fileprivate init(_ instant: ContinuousClock.Instant) {
+        self.instant = instant
+    }
 }
 
 /// What one real read of the curated critical set produced — the unit this cache remembers.
@@ -225,24 +287,54 @@ actor CriticalTemperatureCache: SightednessProving, CriticalTemperatureRecording
 
     // MARK: - Recording
 
-    /// Remembers what a real § 3 cycle read produced.
+    /// Remembers what a real read of the curated set produced.
     ///
-    /// Called by `ThermalEmergency.cycle()` on **both** paths, which is what makes the grant
-    /// path free during blindness as well as during health. A cache written only on success
-    /// would leave every retry of a storm issuing its own read on exactly the machine that
-    /// can least afford one — and each of those reads would fail, so the amplification would
-    /// be pure cost.
+    /// Its only caller is `record(_:since:)`, on both of that method's branches. Reaching it
+    /// requires being inside this file, which is the point — see below. Every *writer* still
+    /// records on both its own paths, success and failure alike, which is what makes the
+    /// grant path free during blindness as well as during health: a cache written only on
+    /// success would leave every retry of a storm issuing its own read on exactly the machine
+    /// that can least afford one, and each of those reads would fail.
     ///
-    /// The cycle is no longer the only caller: `sighting()`'s `catch` records a flight's
-    /// blindness through here too, deliberately bypassing the supersession guard — see
-    /// `record(_:unlessSupersededSince:)`'s last section for the argument. Anything auditing
-    /// who may write to this cache has to count both.
+    /// **`private`**, and that is the whole of
+    /// [#280](https://github.com/blamechris/Aeolus/issues/280)'s fix. This is the unguarded
+    /// store; every writer — the cycle and `sighting()`'s own
+    /// flight alike — reaches it through `record(_:since:)`, which decides whether this
+    /// outcome may displace what is already here. While it was the protocol's only
+    /// requirement, § 3's cycle recorded a `.sighted` across its read with no comparison at
+    /// all, so a reading taken *before* a flight's failure could be stamped *after* it and
+    /// displace the blindness.
     ///
     /// Synchronous and returning nothing: the cycle owes this no attention, and a result it
     /// could branch on would be a result it might one day wait for.
-    func record(_ sighting: CriticalTemperatureSighting) {
+    private func record(_ sighting: CriticalTemperatureSighting) {
         guard sighting.isAboutTheMachine else { return }
         recorded = (sighting, clock.now)
+    }
+
+    /// The instant a caller's read began, stamped by **this actor's** clock.
+    ///
+    /// The one clock in the comparison, which is the property `CriticalTemperatureRecording`
+    /// is shaped around: a caller that stamped its own would be correct only while it held
+    /// the same clock instance this does, and wrong — silently, and green under test —
+    /// the moment it did not.
+    ///
+    /// Not `nonisolated`, though `clock` is an immutable `Sendable` and it could be — and
+    /// the honest reason is **accuracy, not safety**. The first version of this comment said
+    /// the hop was load-bearing against a start stamped before a record already queued here.
+    /// That reading runs the *safe* way: a `nonisolated` stamp is taken earlier, so
+    /// `recorded.at >= start.instant` fires more often, so more sightings are dropped, which
+    /// is over-refusal — the same cost the `.blind` bypass already accepts, bounded by
+    /// `maxAge`.
+    ///
+    /// What the hop actually buys is not spuriously discarding a cycle's sighting that is
+    /// genuinely newer than a record queued ahead of it. Stated correctly because a wrong
+    /// reason on a right mechanism is this repository's recorded way of losing the
+    /// mechanism: a later reader who works out that `nonisolated` is conservative would
+    /// conclude this paragraph is simply wrong, remove the isolation, and be right about the
+    /// safety direction while losing the property the paragraph was protecting.
+    func beganReading() -> CriticalTemperatureReadingStart {
+        CriticalTemperatureReadingStart(clock.now)
     }
 
     // MARK: - Proving
@@ -269,13 +361,12 @@ actor CriticalTemperatureCache: SightednessProving, CriticalTemperatureRecording
 
         let source = self.source
         // Stamped **before** the flight, and the only thing this caller's own *sighting* is
-        // allowed to be newer than — its blindness bypasses the comparison entirely. The
-        // placement is the assertion, not an incidental line: taken at the resume instead it
-        // is never older than anything the cycle recorded during the flight, so the guard
-        // silently becomes a no-op. Pinned by the clock advance in
-        // `aFlightDoesNotOverwriteWhatWasRecordedWhileItWasAway`; see
-        // `record(_:unlessSupersededSince:)`.
-        let startedAt = clock.now
+        // allowed to be newer than — a blindness bypasses the comparison inside
+        // `record(_:since:)`. The placement is the assertion, not an incidental line: taken
+        // at the resume instead it is never older than anything the cycle recorded during
+        // the flight, so the guard silently becomes a no-op. Pinned by the clock advance in
+        // `aFlightDoesNotOverwriteWhatWasRecordedWhileItWasAway`; see `record(_:since:)`.
+        let startedAt = beganReading()
         let flight = Task<CriticalTemperatureReport, any Error> {
             try await source.readCriticalTemperatures()
         }
@@ -290,47 +381,48 @@ actor CriticalTemperatureCache: SightednessProving, CriticalTemperatureRecording
 
         do {
             let report = try await flight.value
-            record(.sighted(report), unlessSupersededSince: startedAt)
+            record(.sighted(report), since: startedAt)
             return report
         } catch {
-            // Unconditional, and asymmetric with the success path above on purpose. A
-            // blindness is the conservative outcome in both directions, so the supersession
-            // guard has nothing to protect here and something to discard — see
-            // `record(_:unlessSupersededSince:)`'s last section.
-            record(.blind(error))
+            // Both arms go through the same call, and it is `record(_:since:)` that knows a
+            // blindness bypasses the comparison — see its last section. The asymmetry used
+            // to live here, as a second entry point this `catch` chose instead; it is an
+            // invariant of the cache rather than a decision each caller re-takes, so it
+            // belongs on the one side that can enforce it.
+            record(.blind(error), since: startedAt)
             throw error
         }
     }
 
-    /// The flight's own outcome, dropped if anything landed on this actor while it was away.
+    /// A reader's own outcome, dropped if anything landed on this actor while it was away.
     ///
-    /// `record(_:)` stamps with `clock.now`, which for a flight is the instant the caller
+    /// `record(_:)` stamps with `clock.now`, which for a reader is the instant it
     /// **resumes** rather than the instant its read finished — and nothing orders a resumed
-    /// continuation against a fresh call arriving at the same actor. So a flight that began
-    /// before § 3's cycle can resume after it and stamp the older of the two readings as the
-    /// newer one.
+    /// continuation against a fresh call arriving at the same actor. So a read that began
+    /// before another mechanism's can resume after it and stamp the older of the two
+    /// readings as the newer one.
     ///
     /// That is not merely a stale answer. The reading is then served for a full `maxAge`
     /// measured from a moment it was never taken at, so the bound ADR 0010 promises — *"at
     /// most one cycle period old"* — is quietly exceeded, and the direction that matters is
-    /// the unsafe one: a sighting overwriting a blindness the cycle recorded in the interval
-    /// grants leases on a helper that has already been found unable to see.
+    /// the unsafe one: a sighting overwriting a blindness recorded in the interval grants
+    /// leases on a helper that has already been found unable to see.
     ///
-    /// The test is the flight's **start**, not its finish, because the start is the only
-    /// instant this actor knows the flight to be no fresher than. Anything recorded at or
+    /// The test is the read's **start**, not its finish, because the start is the only
+    /// instant this actor knows the reading to be no fresher than. Anything recorded at or
     /// after it came from a mechanism that looked at the machine no earlier, so it stays.
     ///
-    /// `>=` rather than `>`: a record landed at exactly `startedAt` would have been unexpired
-    /// when `sighting()` looked, so it cannot be a leftover this flight was started to
-    /// replace — under any clock whose resolution makes the two instants equal, keeping it is
-    /// the correct answer and dropping the flight's costs one read.
+    /// `>=` rather than `>`: a record landed at exactly `start` would have been unexpired
+    /// when `sighting()` looked, so it cannot be a leftover a flight was started to replace
+    /// — under any clock whose resolution makes the two instants equal, keeping it is the
+    /// correct answer and dropping the reader's costs one read.
     ///
-    /// ## Only a flight's **sighting** comes through here
+    /// ## Only a **sighting** is compared
     ///
     /// The whole argument above is about one direction: a sighting overwriting a blindness
     /// grants leases on a helper already found unable to see. Run the same guard over a
-    /// flight's `.blind` and it works the other way — a failed read is discarded, and what
-    /// stays is whatever the cycle recorded during the flight.
+    /// `.blind` and it works the other way — a failed read is discarded, and what stays is
+    /// whatever was recorded during it.
     ///
     /// **That is an honesty defect, not a read storm, and the distinction is worth being
     /// exact about because the first version of this comment got it wrong.** The guard only
@@ -343,26 +435,38 @@ actor CriticalTemperatureCache: SightednessProving, CriticalTemperatureRecording
     /// never claim control we do not have. This is that claim, at the one seam where it is
     /// about the safety mechanism rather than about a fan.
     ///
-    /// So `sighting()`'s `catch` calls `record(_:)` directly. The cost is over-refusal: a
-    /// blindness can displace a sighting that genuinely was newer, and grants are refused for
-    /// up to `maxAge`. That is the fail-safe direction and it clears itself on the same bound
-    /// as everything else — `unexpiredSighting()` serves without restamping, so a blindness
+    /// So a `.blind` bypasses the comparison. The cost is over-refusal: a blindness can
+    /// displace a sighting that genuinely was newer, and grants are refused for up to
+    /// `maxAge`. That is the fail-safe direction and it clears itself on the same bound as
+    /// everything else — `unexpiredSighting()` serves without restamping, so a blindness
     /// cannot perpetuate itself off the grants it refuses; it ages out, and the next grant
     /// reads the machine for itself.
     ///
-    /// **What this does not establish**, and the amendment to ADR 0010 says so too:
-    /// `ThermalEmergency.cycle()` records its `.sighted` through the unguarded `record(_:)`,
-    /// across a suspension point of its own. So a cycle reading taken *before* a flight's
-    /// failure can still be recorded *after* it and displace the blindness. Closing that
-    /// needs the instant a read was taken at to travel with the reading, which is a change to
-    /// what this cache remembers rather than to how it remembers it — filed rather than
-    /// guessed at.
-    private func record(
-        _ sighting: CriticalTemperatureSighting,
-        unlessSupersededSince startedAt: ContinuousClock.Instant
+    /// ## Why the bypass lives here rather than at each caller
+    ///
+    /// It used to be the caller's: `sighting()`'s `catch` called an unguarded `record(_:)`
+    /// while its success path called the guarded one, and `ThermalEmergency.cycle()` called
+    /// the unguarded one on **both** paths — so the cycle's `.sighted` was never compared
+    /// against anything. That was
+    /// [#280](https://github.com/blamechris/Aeolus/issues/280), and it was reachable for the
+    /// whole duration of the cycle's read rather than for the actor hop after it: a cycle
+    /// reading taken before a flight's failure could be recorded after it and displace the
+    /// blindness. The window widened exactly when it mattered, since an SMC slow enough to
+    /// lengthen the cycle's read is the one whose flights fail.
+    ///
+    /// Moving the asymmetry inside means there is no unguarded entry point to choose, so
+    /// the property is one this type enforces rather than one every writer must re-derive.
+    /// `CriticalTemperatureRecording` has no other requirement that records.
+    func record(
+        _ sighting: CriticalTemperatureSighting, since start: CriticalTemperatureReadingStart
     ) {
-        if let recorded, recorded.at >= startedAt { return }
-        record(sighting)
+        switch sighting {
+        case .blind:
+            record(sighting)
+        case .sighted:
+            if let recorded, recorded.at >= start.instant { return }
+            record(sighting)
+        }
     }
 
     /// The recorded outcome, if it is still inside the age bound.
