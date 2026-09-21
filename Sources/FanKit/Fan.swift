@@ -179,31 +179,18 @@ extension FanReading: Codable {
         switch (value, reason) {
         case (let value?, nil):
             guard value.isFinite else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .value,
-                    in: container,
-                    debugDescription: "a fan reading must be finite, got \(value)"
-                )
+                throw DecodingError.refusing(
+                    .fanReadingNotFinite, forKey: .value, in: container)
             }
             self = .measuredFinite(value)
         case (nil, let reason?):
             self = .unavailable(reason: reason)
         case (nil, nil):
-            throw DecodingError.dataCorruptedError(
-                forKey: .value,
-                in: container,
-                debugDescription:
-                    "a fan reading carries either a value or a reason it is unavailable, "
-                    + "and this carries neither"
-            )
+            throw DecodingError.refusing(
+                .fanReadingCarriesNeitherValueNorReason, forKey: .value, in: container)
         case (.some, .some):
-            throw DecodingError.dataCorruptedError(
-                forKey: .value,
-                in: container,
-                debugDescription:
-                    "a fan reading carries either a value or a reason it is unavailable, "
-                    + "and this carries both"
-            )
+            throw DecodingError.refusing(
+                .fanReadingCarriesBothValueAndReason, forKey: .value, in: container)
         }
     }
 }
