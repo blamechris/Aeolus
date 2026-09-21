@@ -100,6 +100,42 @@ protocol ForeignManualControlSensing: Sendable {
     func fansReadingAutomatic(among fans: Set<Int>) async -> Set<Int>
 }
 
+// MARK: - The seam § 3 sees
+
+/// What one fresh `F<n>Md` read said about a fan Aeolus has just handed back.
+///
+/// Three outcomes rather than the two-way answer `fansReadingAutomatic(among:)` gives,
+/// because § 3 treats "reads manual" and "will not read" the same way — both keep the fan —
+/// but logs them differently, and a set of automatic fans has already thrown that
+/// difference away.
+enum HandbackReading: Sendable, Hashable {
+    /// The fan reads automatic: the handback took.
+    case automatic
+    /// The fan reads manual. `F<n>Md` names no owner, so this says nothing about who.
+    case manual
+    /// The read threw. `detail` is the plane's own error description, helper-authored.
+    case unreadable(detail: String)
+}
+
+/// What `ThermalEmergency` asks before it forgets a fan whose handback the firmware
+/// accepted (#295), and the whole of what it may ask.
+///
+/// **Separate from `ForeignManualControlSensing`, and non-logging, on purpose.** § 3 runs at
+/// 1 Hz and keeps asking about a fan for as long as it stays owed, so a read that logged
+/// every throw — as `fansReadingAutomatic(among:)` does, at `.fault` — would write one
+/// `.fault` line per second for as long as a fan would not read. The caller logs the
+/// *transition*, which only the caller can see.
+///
+/// A read, never a write, so it cannot become the restore contest ADR 0011 declines; and
+/// nothing is minted from its answer — a caller may only ever *keep* or *drop* an entry it
+/// already holds.
+protocol HandbackReadingBack: Sendable {
+
+    /// One fresh `.supervisor` read of each fan in `fans`. Every fan asked about is in the
+    /// answer; one that is absent must be treated as `.unreadable` by the caller.
+    func handbackReadings(of fans: Set<Int>) async -> [Int: HandbackReading]
+}
+
 // MARK: - The bound
 
 enum ReconciliationLimits {

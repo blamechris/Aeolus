@@ -373,6 +373,11 @@ struct WriteVerbAllowlistTests {
         // And the lease core's caller of it, which § 7 alone invokes: a read and two set
         // subtractions, no restorer and no plane in its body.
         "LeaseAuthority.swift: confirmAcceptedHandbacks()",
+        // #295's seam: `handbackReadings(of:)` is § 3's non-logging read-back and its one
+        // conformer, which `fansReadingAutomatic(among:)` is now built on — a read per fan
+        // and no writer in reach.
+        "StartupReconciliation.swift: handbackReadings(of: Set<Int>)",
+        "ReconciliationBaseline.swift: handbackReadings(of: Set<Int>)",
         // #168's five. None of them can express a fan write: `withExclusiveAccess` runs an
         // arbitrary body under a scheduler turn and could in principle carry one — but the
         // body is supplied by the caller, so what it may do is the *caller's* classification,
