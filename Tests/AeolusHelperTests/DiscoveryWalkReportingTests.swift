@@ -252,30 +252,6 @@ struct DiscoveryWalkReportingTests {
             SMCReadScheduler.longestContendedDiscoveryWalk
                 >= SMCReadScheduler.longestMeasuredDiscoveryWalk)
     }
-
-    // MARK: - An empty walk is not cached
-
-    /// A walk that returned nothing is walked again on the next snapshot, not kept.
-    ///
-    /// **Mutation:** in `discoverSensorKeys()`, replace
-    /// `if !discovered.isEmpty { discoveredSensors = discovered }` with
-    /// `discoveredSensors = discovered`. Run: red — the second snapshot never walks.
-    @Test("An empty discovery walk is not cached for the life of the daemon")
-    func anEmptyWalkIsNotCached() async throws {
-        let provider = GatedSensorProvider()
-        let authority = Self.authority(over: provider, clock: GatedClock())
-
-        _ = try? await authority.snapshot()
-        _ = try? await authority.snapshot()
-
-        #expect(
-            await provider.readAllCount == 2,
-            """
-            The second snapshot did not walk again after a walk that returned nothing. That \
-            walk is what a handle that died after #KEY returns, and ConnectionHealth counts it \
-            as a failure — caching it keeps the machine sensorless after the rebuild succeeds.
-            """)
-    }
 }
 
 // MARK: - Doubles

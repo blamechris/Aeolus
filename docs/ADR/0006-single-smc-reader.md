@@ -208,7 +208,9 @@ outcome would otherwise find nothing.
   on its own.
 - **A short set is not judged**, and cannot be from what the scheduler sees. It is
   [#292](https://github.com/blamechris/Aeolus/issues/292), which also records that a walk's
-  `.returned` is evidence from the walk's *start*. An **empty** walk is not cached.
+  `.returned` is evidence from the walk's *start*. An **empty** walk is still cached: not
+  caching it re-walks on every 1 Hz snapshot while it stays empty, which holds the shared
+  connection (#293) — so it needs a backoff, also #292's.
 - **A walk that does not end raises an alarm, never a timeout.** `ReadOnlyFanAuthority` logs a
   `.fault` at `SMCReadScheduler.discoveryWalkOverrunAlarm` (twice the longest contended walk,
   49.8 s) and cancels nothing, for D22's reason: a recycle that stopped waiting would close the

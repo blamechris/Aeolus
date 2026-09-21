@@ -199,8 +199,8 @@ enum DiscoveryWalkOutcome: Sendable, Hashable {
     /// The walk returned, with this many readings. Zero is a failure to `ConnectionHealth`:
     /// the walk enumerates only keys the machine declared, so none of them reading is almost
     /// always the handle failing. Almost: a firmware declaring zero keys, or a decoding
-    /// regression that fails every key, would read the same — each costs one outcome, and
-    /// neither is cached (see `ReadOnlyFanAuthority.discoverSensorKeys()`).
+    /// regression that fails every key, would read the same — each costs one outcome. What
+    /// the authority then caches is #292's.
     case returned(readings: Int)
 
     /// The walk threw — `open()` or `#KEY` failed before any key was reached. `detail` is

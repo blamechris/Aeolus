@@ -388,12 +388,13 @@ actor ReadOnlyFanAuthority: FanAuthority {
         defer { if discovery == walk { discovery = nil } }
 
         let discovered = try await walk.value
-        // An empty walk is not cached (#290): it is what a handle that died after `#KEY`
-        // returns, and `ConnectionHealth` counts it as a failure — caching it would keep a
-        // machine sensorless for the life of the daemon even after that rebuild succeeded.
-        // The next snapshot walks again, which is this property's documented rule for a
-        // failed discovery. A *short* walk is still cached; that is #292.
-        if !discovered.isEmpty { discoveredSensors = discovered }
+        // Cached even when empty, and that is a limit kept on purpose rather than fixed. An
+        // empty walk is what a handle that died after `#KEY` returns, and caching it keeps
+        // the machine sensorless after the rebuild `ConnectionHealth` triggers — but *not*
+        // caching it, which #290's first revision did, re-runs a 6–25 s walk on every 1 Hz
+        // snapshot for as long as the walk stays empty, holding the one SMC connection the
+        // safety cycle reads through (#293). Both halves need a backoff, not a flag: #292.
+        discoveredSensors = discovered
         return discovered
     }
 
@@ -422,7 +423,8 @@ actor ReadOnlyFanAuthority: FanAuthority {
         let started = ContinuousClock.now
         let alarmAt = clock.now.advanced(by: SMCReadScheduler.discoveryWalkOverrunAlarm)
         let alarm = Task { [clock] in
-            // `sleep(until:)` throws only `CancellationError`, which is the walk ending first.
+            // `sleep(until:)` throws only `CancellationError`: the walk ended first, or the
+            // task running the walk was itself cancelled. Either way there is nothing to report.
             do { try await clock.sleep(until: alarmAt) } catch { return }
             // Checked again, because a clock may finish its sleep without noticing a cancel.
             guard !Task.isCancelled else { return }
