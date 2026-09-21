@@ -174,17 +174,22 @@ struct HelperRestorerTests {
             """)
     }
 
-    /// § 3 stops listing a fan whose lease ended and whose handback the firmware took.
+    /// § 3 keeps a fan whose handback the firmware accepted until its **own** cycle reads it
+    /// automatic, and then stops listing it (#295).
     ///
-    /// A stale entry here is bounded and in the safe direction — a redundant bridge and a
-    /// redundant restore of a fan already on Apple's management — but the registry is what
-    /// `fire(_:from:)` reads as *"every fan under manual control"*, and a registry that says
-    /// more than it can deliver is the shape `ThermalEmergency.manualControlReleased(fanAt:)`
-    /// was written against.
+    /// Two halves, and each is a different mutation. Straight after the release the fan is
+    /// still registered and owed a read-back: accepted is not automatic (#291), so the
+    /// restorer only marks it. One sighted § 3 cycle with the latch clear then reads fan 0
+    /// automatic — the scripted firmware honoured the restore — and forgets it. The cycle is
+    /// driven by hand because the supervisors are not started here (see the suite's note).
     ///
-    /// **Mutation:** delete the `thermalEmergency?.manualControlReleased(fanAt:)` loop in
-    /// `HelperFanRestorer.restoreToAutomatic(fans:because:)`. Run: red.
-    @Test("Releasing a lease stops the thermal emergency listing its fan")
+    /// **Mutation:** in `HelperFanRestorer.restoreToAutomatic(fans:because:)`, replace
+    /// `thermalEmergency?.handbackAccepted(fanAt: fan)` with a call that drops the entry —
+    /// the pre-#295 `manualControlReleased` — and the first expectation goes red.
+    /// **Mutation:** delete `forget(fanAt: fan)` from the `.automatic` case of
+    /// `ThermalEmergency.readBackAcceptedHandbacks()`, and the post-cycle expectation goes
+    /// red: the fan never clears.
+    @Test("Releasing a lease leaves its fan owed a read-back, and § 3's cycle clears it")
     func theThermalRegistryIsToldWhenALeaseEnds() async throws {
         let helper = Self.composed()
         await helper.bindSafetyRegistries()
@@ -193,9 +198,21 @@ struct HelperRestorerTests {
 
         try await Self.acquireAndRelease(in: helper)
 
+        #expect(await helper.thermalEmergency.fansOwedHandbackReadBack == [0])
+        #expect(
+            await helper.thermalEmergency.fansUnderManualControl == [0],
+            """
+            § 3 forgot fan 0 on the strength of an accepted write, before anything read it \
+            back. Accepted is not automatic: a firmware that took the write and left the fan \
+            manual now has a fan no emergency will bridge.
+            """)
+
+        await helper.thermalEmergency.cycle()
+
         #expect(
             await helper.thermalEmergency.fansUnderManualControl.isEmpty,
-            "§ 3 still lists a fan that is back on Apple's thermal management")
+            "§ 3 still lists a fan its own read-back found on Apple's thermal management")
+        #expect(await helper.thermalEmergency.fansOwedHandbackReadBack.isEmpty)
     }
 
     // MARK: - The asymmetry
@@ -208,8 +225,14 @@ struct HelperRestorerTests {
     /// whose own `finaliseRelease(fanAt:because:)` drops a fan *"regardless"*, has nothing
     /// left to do about it.
     ///
+    /// **And it is not even marked owed a read-back** (#295). Since #295 the restorer no longer
+    /// removes anything from § 3, so "stays registered" alone could no longer fail: the
+    /// discriminating half is the owed set. A refused fan owes no read — nothing was accepted
+    /// — and marking it would let a later automatic read forget a fan whose refusal is the
+    /// newer fact about it.
+    ///
     /// **Mutation:** replace `fans.subtracting(abandoned)` with `fans` in
-    /// `HelperFanRestorer.restoreToAutomatic(fans:because:)`. Run: red.
+    /// `HelperFanRestorer.restoreToAutomatic(fans:because:)`. Run: red on the owed set.
     @Test("A fan whose handback the firmware refused stays in the thermal registry")
     func anAbandonedFanStaysWhereItCanStillBeBridged() async throws {
         let helper = Self.composed(writes: .refused(reason: "the firmware refused the mode write"))
@@ -224,6 +247,9 @@ struct HelperRestorerTests {
             § 3 has forgotten a fan that is still off automatic control, so a machine going \
             over its ceiling would not bridge it to maximum.
             """)
+        #expect(
+            await helper.thermalEmergency.fansOwedHandbackReadBack.isEmpty,
+            "a fan whose handback the firmware refused was marked owed a read-back")
         #expect(
             await helper.reclamationWatchdog.fansUnderManualControl.isEmpty,
             "§ 5 kept a fan whose handback was given up on")
@@ -262,9 +288,18 @@ struct HelperRestorerTests {
     /// is about the end state, and the end state is identical whichever way round the two
     /// loops run.
     ///
+    /// **The § 3 half is the owed set since #295.** The restorer no longer removes anything
+    /// from § 3, so `observed.thermal == [0]` holds whichever side § 3 is told on and pins
+    /// nothing about the order; a review confirmed that marking before the write left the
+    /// suite green. What differs is the owed set: marked after the write, fan 0 is not yet
+    /// owed at it. Marked before, it is owed at the write — and every fan asked for is marked,
+    /// refused or not, because the refusal is not yet known.
+    ///
     /// **Mutation:** move the `reclamationWatchdog` loop below the `bounded` call in
     /// `HelperFanRestorer.restoreToAutomatic(fans:because:)`. Run: red — the fan is still in
     /// § 5's registry at the write.
+    /// **Mutation:** move the `thermalEmergency?.handbackAccepted(fanAt:)` loop, over `fans`,
+    /// above the `bounded` call. Run: red on `observed.thermalOwed.isEmpty`.
     @Test("The watchdog is told before the write and the thermal registry after it")
     func theRegistriesAreToldOnOppositeSidesOfTheWrite() async throws {
         let plane = RegistryObservingPlane(
@@ -300,6 +335,12 @@ struct HelperRestorerTests {
             """
             § 3 had already forgotten fan 0 when its mode write was issued, so a write the \
             firmware refuses leaves a fan off automatic control that no emergency can bridge.
+            """)
+        #expect(
+            observed.thermalOwed.isEmpty,
+            """
+            § 3 was told of the handback before its mode write was issued, so it is told of \
+            fans whose write the firmware then refuses.
             """)
     }
 }

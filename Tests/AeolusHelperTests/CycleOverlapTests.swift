@@ -85,7 +85,8 @@ struct CycleOverlapTests {
             sightings: CriticalTemperatureCache(source: telemetry),
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
             leases: LeaseFixture.authority(thermalEmergency: latch),
-            latch: latch)
+            latch: latch,
+            handbackReadBack: LeaseFixture.reconciliation(over: plane))
 
         let first = Task { await emergency.cycle() }
         #expect(await yieldUntil("the first cycle's sample") { await telemetry.reads == 1 })

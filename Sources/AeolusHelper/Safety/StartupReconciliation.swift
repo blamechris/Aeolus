@@ -75,7 +75,8 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
     ///
     /// **It does not buy registry parity with an expiring lease, and an earlier version of
     /// this comment claimed it did.** `HelperFanRestorer` *deregisters*: it drops a fan from
-    /// § 5's registry before the write and from § 3's after a write that landed. A fan
+    /// § 5's registry before the write, and after a write that landed marks § 3's entry owed
+    /// a read-back that § 3 clears from its own cycle (#295) — marking never inserts. A fan
     /// reconciliation found in manual was in neither to begin with, because nothing in this
     /// process engaged it. So a restore that lands leaves it correctly in neither — and a
     /// restore the firmware **refuses** leaves it in neither while it is still pinned: § 3
@@ -504,24 +505,48 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
     }
 
     /// See `ForeignManualControlSensing`. One `.supervisor` turn per fan, sequentially, for
-    /// `reconcile()`'s reason. No budget: its one caller is § 7's panic verb, after the lease
+    /// `reconcile()`'s reason. No budget: its one caller is the lease core's
+    /// `confirmAcceptedHandbacks()`, which only § 7's panic verb reaches, after the lease
     /// teardown, with no keystone queued behind it — a read that never returns holds that
     /// client's reply and leaves the fans refused, and holds nothing else.
+    ///
+    /// Built on `handbackReadings(of:)`, so the lease core and § 3 share one read loop and
+    /// cannot disagree about what a fan read. What this adds is the log line for a throw,
+    /// which suits a caller that asks once per panic pass and would not suit § 3's 1 Hz.
     func fansReadingAutomatic(among fans: Set<Int>) async -> Set<Int> {
         var automatic: Set<Int> = []
-        for fan in fans.sorted() {
-            do {
-                guard try await plane.readControlState(ofFan: fan).mode == .automatic else {
-                    continue
-                }
+        for (fan, reading) in await handbackReadings(of: fans).sorted(by: { $0.key < $1.key }) {
+            switch reading {
+            case .automatic:
                 automatic.insert(fan)
-            } catch {
+            case .manual:
+                continue
+            case .unreadable(let detail):
                 // Not swallowed: an unreadable fan is left out of the answer, which keeps the
                 // refusal the caller was asking about standing.
-                log.handbackReadBackFailed(fanAt: fan, detail: String(describing: error))
+                log.handbackReadBackFailed(fanAt: fan, detail: detail)
             }
         }
         return automatic
+    }
+
+    /// See `HandbackReadingBack`. One `.supervisor` turn per fan, sequentially, for
+    /// `reconcile()`'s reason, and **logs nothing** — § 3 logs transitions, and only it can
+    /// see them. No budget, and none is needed: § 3 asks from inside its own cycle, which
+    /// nothing awaits before issuing a keystone.
+    func handbackReadings(of fans: Set<Int>) async -> [Int: HandbackReading] {
+        var readings: [Int: HandbackReading] = [:]
+        for fan in fans.sorted() {
+            do {
+                switch try await plane.readControlState(ofFan: fan).mode {
+                case .automatic: readings[fan] = .automatic
+                case .manual: readings[fan] = .manual
+                }
+            } catch {
+                readings[fan] = .unreadable(detail: String(describing: error))
+            }
+        }
+        return readings
     }
 
     /// Questions 1–3 above, as the value the snapshot reads too.
@@ -546,3 +571,6 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
 
 /// The snapshot's seam — `baseline()` above is the whole of it.
 extension StartupReconciliation: ReconciliationBaselineReporting {}
+
+/// § 3's seam — `handbackReadings(of:)` above is the whole of it (#295).
+extension StartupReconciliation: HandbackReadingBack {}

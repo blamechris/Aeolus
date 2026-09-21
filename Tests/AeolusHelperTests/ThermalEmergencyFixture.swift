@@ -62,6 +62,12 @@ struct ThermalMachine {
     /// proves sightedness from, exactly as it does in the helper.
     let sightings: CriticalTemperatureCache
 
+    /// § 3's read-back of fans whose handback the firmware accepted (#295): the **real**
+    /// `StartupReconciliation` over this machine's plane, behind a gate a test can close.
+    /// Open unless a test holds it, so every scenario that does not ask behaves as the
+    /// daemon does.
+    let handbackReadBack: GatedHandbackReadBack
+
     /// Everything § 3 said about itself, with levels. Empty unless a test asked for it.
     let safetyLog = RecordedLog()
 
@@ -99,6 +105,9 @@ struct ThermalMachine {
         leaseTelemetry = InterferingCriticalTemperatures(curated)
         let sightings = CriticalTemperatureCache(source: leaseTelemetry, clock: clock)
         self.sightings = sightings
+        let handbackReadBack = GatedHandbackReadBack(
+            LeaseFixture.reconciliation(over: plane))
+        self.handbackReadBack = handbackReadBack
         leases = LeaseFixture.authority(
             restorer: restorer, telemetry: sightings, thermalEmergency: latch, clock: clock)
         emergency = ThermalEmergency(
@@ -107,6 +116,7 @@ struct ThermalMachine {
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
             leases: leases,
             latch: latch,
+            handbackReadBack: handbackReadBack,
             requestedCeilingCelsius: requestedCeilingCelsius,
             log: SafetyLog(recording: { [safetyLog] in safetyLog.append($0, $1) })
         )

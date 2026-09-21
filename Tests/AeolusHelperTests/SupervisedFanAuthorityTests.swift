@@ -49,12 +49,18 @@ struct SupervisedFanAuthorityTests {
         return helper
     }
 
+    /// § 5's registry, and the fans § 3 has been told were handed back.
+    ///
+    /// `thermalOwed` rather than § 3's registry since #295: an accepted handback leaves the
+    /// fan registered with § 3 and marks it owed a read-back, so "§ 3 was told" is the owed
+    /// set, and the registry empties only on § 3's own next cycle — which these tests do not
+    /// drive. `HelperRestorerTests.theThermalRegistryIsToldWhenALeaseEnds` drives it.
     private static func bothRegistries(
         of helper: HelperComposition<ScriptedControlPlane>
-    ) async -> (reclamation: Set<Int>, thermal: Set<Int>) {
+    ) async -> (reclamation: Set<Int>, thermalOwed: Set<Int>) {
         (
             await helper.reclamationWatchdog.fansUnderManualControl,
-            await helper.thermalEmergency.fansUnderManualControl
+            await helper.thermalEmergency.fansOwedHandbackReadBack
         )
     }
 
@@ -86,7 +92,8 @@ struct SupervisedFanAuthorityTests {
 
     // MARK: - Renewal and release
 
-    /// Renewal moves the deadline, and release empties the table and both registries.
+    /// Renewal moves the deadline, and release empties the table and § 5's registry and tells
+    /// § 3 of the handback (#295: marked owed a read-back, not yet forgotten).
     ///
     /// The asserted field is `expiresAt`, and it moves on the **real wall clock**:
     /// `LeaseAuthority` derives it from its injected `wallClock()`, which
@@ -134,8 +141,8 @@ struct SupervisedFanAuthorityTests {
             registries.reclamation.isEmpty,
             "§ 5 is still watching a fan whose lease was released through the authority")
         #expect(
-            registries.thermal.isEmpty,
-            "§ 3 still lists a fan whose lease was released through the authority")
+            registries.thermalOwed == [0],
+            "§ 3 was not told of the handback of a fan released through the authority")
     }
 
     // MARK: - Connection death
@@ -170,7 +177,8 @@ struct SupervisedFanAuthorityTests {
             """)
         let registries = await Self.bothRegistries(of: helper)
         #expect(registries.reclamation.isEmpty, "§ 5 is still watching a dead client's fan")
-        #expect(registries.thermal.isEmpty, "§ 3 still lists a dead client's fan")
+        #expect(
+            registries.thermalOwed == [0], "§ 3 was not told of a dead client's fan's handback")
     }
 
     // MARK: - The panic verb
