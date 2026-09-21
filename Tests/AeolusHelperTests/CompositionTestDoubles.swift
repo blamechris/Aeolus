@@ -28,6 +28,8 @@ actor RegistryObservingPlane: FanControlPlane {
         let reclamation: Set<Int>
         /// `ThermalEmergency.fansUnderManualControl` at the write.
         let thermal: Set<Int>
+        /// `ThermalEmergency.fansOwedHandbackReadBack` at the write (#295).
+        let thermalOwed: Set<Int>
     }
 
     private let wrapped: ScriptedControlPlane
@@ -60,8 +62,11 @@ actor RegistryObservingPlane: FanControlPlane {
     func restoreToAutomatic(_ scope: FanRestoreScope) async throws {
         let reclamation = await reclamationWatchdog?.fansUnderManualControl ?? []
         let thermal = await thermalEmergency?.fansUnderManualControl ?? []
+        let thermalOwed = await thermalEmergency?.fansOwedHandbackReadBack ?? []
         observations.append(
-            Observation(scope: scope, reclamation: reclamation, thermal: thermal))
+            Observation(
+                scope: scope, reclamation: reclamation, thermal: thermal,
+                thermalOwed: thermalOwed))
         try await wrapped.restoreToAutomatic(scope)
     }
 
