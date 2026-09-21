@@ -270,12 +270,27 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         // storm free during blindness as well as during health. A cache written only on
         // success would leave every retry issuing its own read on precisely the machine that
         // can least afford one, and each of those reads would fail. See ADR 0010.
+        // Taken **before** the read, and handed back with its outcome. The instant is the
+        // cache's own — see `CriticalTemperatureRecording` for why it is not this type's to
+        // stamp — and it is what lets the cache tell this reading from a fresher one
+        // recorded while the read below was in flight.
+        //
+        // The placement is the assertion, not an incidental line. Moved under the read it is
+        // never older than anything recorded during it, so the comparison silently becomes a
+        // no-op and every grant is served a sighting taken before the machine stopped
+        // answering ([#280](https://github.com/blamechris/Aeolus/issues/280)). Pinned by the
+        // clock advance in `aCycleDoesNotOverwriteABlindnessRecordedDuringItsRead`.
+        let readingStart = await sightings.beganReading()
+
         let report: CriticalTemperatureReport
         do {
             report = try await telemetry.readCriticalTemperatures()
-            await sightings.record(.sighted(report))
+            await sightings.record(.sighted(report), since: readingStart)
         } catch {
-            await sightings.record(.blind(error))
+            // Through the same call as the success path. A blindness bypasses the comparison
+            // — that is the cache's invariant, argued at `record(_:since:)`, and it is no
+            // longer a second entry point this `catch` has to know to choose.
+            await sightings.record(.blind(error), since: readingStart)
             await cycleSawNothing(String(describing: error))
             return
         }
