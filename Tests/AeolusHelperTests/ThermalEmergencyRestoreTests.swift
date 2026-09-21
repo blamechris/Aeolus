@@ -78,6 +78,43 @@ struct ThermalEmergencyRestoreTests {
             "the second emergency did not bridge a fan § 3 had left manual")
     }
 
+    /// A fan take-back bridged, whose restore the firmware discarded, is bridged by the next
+    /// emergency too.
+    ///
+    /// The other half of #300. Every other test here reaches the register through `fire`; this
+    /// one reaches it only through take-back. The emergency fires with nothing registered, fan 0
+    /// is engaged while it holds (a lease that raced the latch), and the next latched cycle
+    /// takes it back.
+    ///
+    /// **Mutation:** in `ThermalEmergency.takeBackAnythingEngagedSinceFiring()`, call
+    /// `forget(fanAt: fan.index)` in place of `restoredByEmergency(fan)`. Run: red — the
+    /// register is empty after take-back and the second emergency writes nothing to fan 0.
+    @Test("A fan still manual after take-back's restore is bridged by the next emergency")
+    func aTakenBackButManualFanIsBridgedNextEpisode() async throws {
+        let machine = Self.machine(writes: .reverted)
+        await machine.emergency.cycle()
+        #expect(await machine.emergency.isHolding, "the first episode never fired")
+        #expect(await Self.bridges(machine) == 0, "fire bridged a fan nothing had engaged")
+
+        try await machine.engageManualControl(fan: 0)
+        await machine.emergency.cycle()
+        #expect(await Self.bridges(machine) == 1, "take-back never bridged the late engagement")
+        #expect(
+            await machine.emergency.fansRestoredUnconfirmed == [0],
+            "take-back forgot a fan its restore left manual")
+
+        await machine.plane.advance()
+        await machine.emergency.cycle()
+        #expect(await !machine.emergency.isHolding, "the first episode never released")
+        await machine.emergency.cycle()
+        await machine.plane.advance()
+        await machine.emergency.cycle()
+
+        #expect(
+            await Self.bridges(machine) == 2,
+            "the second emergency did not bridge a fan take-back had left manual")
+    }
+
     /// A fan whose read-back fails is kept for the next emergency.
     ///
     /// This is what separates the register from re-registering a fan only once a read shows
