@@ -92,6 +92,14 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     private let latch: ThermalEmergencyLatch
     private let log: SafetyLog
 
+    /// The fresh `F<n>Md` read that decides whether a fan owed one may be forgotten (#295).
+    ///
+    /// **Required, with no default**, for `sightings`' reason: a defaulted reader would
+    /// compile and answer from something no firmware stands behind, and every owed fan
+    /// would either clear on nothing or never clear, with every test still passing. The
+    /// composition root passes `StartupReconciliation`, whose plane reads are `.supervisor`.
+    private let handbackReadBack: any HandbackReadingBack
+
     /// The ceiling this instance compares against, after the downward-only rule.
     ///
     /// `nonisolated` because it is immutable and `Sendable`: it is settled in the
@@ -126,6 +134,34 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// duplicates. Empty is the ordinary state: no lease, nothing to take back.
     private var engagedFans: [Int: CommandableFan] = [:]
 
+    /// Fans in `engagedFans` whose handback the firmware **accepted**, each owed a read-back
+    /// before this registry forgets it (#295). See `handbackAccepted(fanAt:)`.
+    ///
+    /// **Invariant: its keys are always a subset of `engagedFans`' keys.** A fan enters only
+    /// through `handbackAccepted(fanAt:)`, which refuses one that is not registered, and every
+    /// path that removes a fan from `engagedFans` goes through `forget(fanAt:)`, which removes
+    /// it here too. `manualControlEngaged(_:)` drops the entry as well, without dropping the
+    /// registration: a fan engaged again is held again, and owes nothing.
+    private var handbackOwed: [Int: OwedReadBack] = [:]
+
+    /// Stamps every `handbackAccepted(fanAt:)`, so a read that began before a newer handback
+    /// cannot clear it. Monotonic for the life of the actor; `&+=` because a wrap after
+    /// 2⁶⁴ handbacks is not a case, and a trap in a root daemon's safety actor would be.
+    private var handbackGeneration: UInt64 = 0
+
+    /// One owed read-back: which acceptance it answers, and what has already been logged
+    /// about it — so a fan that reads manual at 1 Hz is one line, not one per second.
+    private struct OwedReadBack {
+        let generation: UInt64
+        var lastReported: ReportedReadBack?
+    }
+
+    /// The last non-clearing outcome logged for an owed fan. See `OwedReadBack`.
+    private enum ReportedReadBack: Equatable {
+        case manual
+        case unreadable
+    }
+
     /// `requestedCeilingCelsius` is what a *configuration* asked the ceiling to be, and it
     /// runs through `ThermalCeiling.effective(requested:default:)` here rather than being
     /// trusted: `CLAUDE.md` rules 5 and 7 put the check on the side that acts. A request to
@@ -139,6 +175,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         writer: SafetyActorWriter<Plane>,
         leases: LeaseAuthority,
         latch: ThermalEmergencyLatch,
+        handbackReadBack: some HandbackReadingBack,
         requestedCeilingCelsius: Double = ThermalCeiling.cpuCelsius,
         log: SafetyLog = SafetyLog()
     ) {
@@ -147,6 +184,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         self.writer = writer
         self.leases = leases
         self.latch = latch
+        self.handbackReadBack = handbackReadBack
         self.log = log
         ceilingCelsius = ThermalCeiling.effective(
             requested: requestedCeilingCelsius, default: ThermalCeiling.cpuCelsius)
@@ -180,37 +218,69 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     ///
     /// So this is a correctness nicety here and a safety rule there, and the two are stated
     /// together so nobody has to derive that difference at the call site.
+    ///
+    /// **A fan engaged again owes no read-back** (#295). Its entry in `handbackOwed` is
+    /// dropped, so a read already in flight for an earlier handback of it — which may yet
+    /// come back automatic, describing the moment before this engagement — finds nothing to
+    /// clear, and the fan stays held.
     func manualControlEngaged(_ fan: CommandableFan) {
         engagedFans[fan.index] = fan
+        handbackOwed[fan.index] = nil
     }
 
-    /// Forgets a fan that has gone back to Apple's thermal management.
+    /// Marks a registered fan whose handback the firmware **accepted** as owed a read-back.
+    /// It stays registered — and bridgeable — until § 3's own cycle reads it automatic.
     ///
-    /// **Called by `HelperFanRestorer.restoreToAutomatic(fans:because:)` since #163**, which
-    /// is the wire this comment previously said was missing. Every lease teardown path —
-    /// released, expired, connection death, revoked, the panic verb — ends in that restorer,
-    /// so a fan handed back leaves this registry as part of the handback rather than sitting
-    /// here as a stale permit for a fan that is already automatic.
+    /// **Called by `HelperFanRestorer.restoreToAutomatic(fans:because:)`**, after the write
+    /// and only for the fans the firmware did not refuse. Every lease teardown path —
+    /// released, expired, connection death, revoked, the panic verb — ends in that restorer.
     ///
-    /// It is told **after** the write and **only** about the fans the firmware took. A fan
-    /// the firmware refused stays registered on purpose: it is still off automatic control,
-    /// possibly pinned low, and is therefore precisely the fan an emergency must be able to
-    /// bridge to maximum. `HelperFanRestorer` argues that asymmetry against § 5's, which is
-    /// told first and unconditionally.
+    /// ## Why accepted is not enough to forget a fan
     ///
-    /// The bound that made a missing caller survivable still holds: `fire(_:)` clears the
-    /// registry for every fan it takes back, so it cannot grow without bound, and a stale
-    /// entry would only cost a redundant bridge and a redundant restore.
+    /// Until #295 this was `manualControlReleased(fanAt:)` and dropped the entry outright.
+    /// But a write the firmware accepted is not a fan in automatic (#291): firmware can take
+    /// `F<n>Md = 0` and leave the fan manual — `ScriptedControlPlane.WriteBehaviour.reverted`
+    /// scripts exactly that — and § 3 then forgot a fan still off Apple's thermal management,
+    /// which is under-firing: the direction this type's header calls dangerous.
     ///
-    /// `LeaseAuthority` deliberately holds no reference to the emergency (see
-    /// `ThermalEmergencyLatch`), so the notification belongs to whoever owns both: E3's
-    /// control plane, at the same point it calls `manualControlEngaged(_:)`.
-    func manualControlReleased(fanAt index: Int) {
+    /// ## Why the read is not taken here, or by the restorer
+    ///
+    /// The restorer's path is awaited by § 4's sleep handback and by SIGTERM's teardown, and
+    /// each issues the machine-wide keystone only after it returns (ADR 0007). A read there
+    /// holds the keystone for as long as the scheduler takes to answer — #294's review
+    /// removed exactly such a read from `LeaseAuthority.restore(_:because:)`. So this only
+    /// marks, synchronously, and `cycle()` reads from inside § 3's own cycle, which nothing
+    /// awaits before a keystone. See `readBackAcceptedHandbacks()`.
+    ///
+    /// ## What it may not do
+    ///
+    /// **It never registers.** A fan not in `engagedFans` is ignored: marking one would mint
+    /// a registration — and a bridge — for a fan § 3 was never given a permit for, such as
+    /// one startup reconciliation handed back (ADR 0011 declines that contest). Each call
+    /// stamps a fresh generation, so a read in flight for an older acceptance cannot clear
+    /// this one.
+    func handbackAccepted(fanAt index: Int) {
+        guard engagedFans[index] != nil else { return }
+        handbackGeneration &+= 1
+        handbackOwed[index] = OwedReadBack(generation: handbackGeneration)
+    }
+
+    /// Removes a fan from the registry **and** from the owed set, together.
+    ///
+    /// The one way anything leaves `engagedFans`, which is what keeps `handbackOwed` a subset
+    /// of it: an owed entry for an unregistered fan would be a read issued for nothing and,
+    /// worse, a later `forget` cleared by a read about a registration that no longer exists.
+    private func forget(fanAt index: Int) {
         engagedFans[index] = nil
+        handbackOwed[index] = nil
     }
 
     /// The fans this instance would fire, for tests and diagnostics.
     var fansUnderManualControl: Set<Int> { Set(engagedFans.keys) }
+
+    /// The registered fans still owed a read-back after an accepted handback, for tests and
+    /// diagnostics. Always a subset of `fansUnderManualControl`.
+    var fansOwedHandbackReadBack: Set<Int> { Set(handbackOwed.keys) }
 
     // MARK: - One cycle
 
@@ -314,7 +384,13 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         // isolated step. Two hops, or a qualifier cached here while the bit lived over
         // there, is #150's shape exactly.
         guard let episode = await latch.holding else {
-            if hottest.celsius > ceilingCelsius { await fire(hottest, from: report) }
+            if hottest.celsius > ceilingCelsius {
+                await fire(hottest, from: report)
+            } else {
+                // Last, and only here: the latch is clear and this cycle did not fire. See
+                // `readBackAcceptedHandbacks()` for why every other path skips it.
+                await readBackAcceptedHandbacks()
+            }
             return
         }
 
@@ -409,9 +485,75 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         log.thermalEmergencyTakingBackLateEngagement(fans: engagedSince.map(\.index))
         for fan in engagedSince {
             await bridgeToMaximumThenRelease(fan)
-            engagedFans[fan.index] = nil
+            forget(fanAt: fan.index)
         }
         await leases.revokeEveryLease(because: .thermalEmergency)
+    }
+
+    // MARK: - Accepted handbacks (#295)
+
+    /// Reads every fan owed a read-back once, and forgets each that reads automatic.
+    ///
+    /// ## Where it runs, and where it does not
+    ///
+    /// **Only on a sighted cycle with the latch clear that did not fire, and last.** The
+    /// other paths already settle an owed fan without a read, or must not spend a turn on
+    /// one: a firing cycle bridges and forgets every registered fan, owed or not; a latched
+    /// cycle takes back whatever is registered; and a blind cycle is a machine whose SMC is
+    /// not answering, where one more `.supervisor` read would only fail. Taken last so it
+    /// never delays a decision the cycle exists to make. It runs inside `isCycling`, so an
+    /// overlapping entrant cannot issue a second read.
+    ///
+    /// **No retry, and it is not on a keystone's path.** A fan that does not read stays owed
+    /// until the next eligible cycle asks again; nothing awaits this cycle before issuing a
+    /// restore — which is the whole reason the read lives here and not in
+    /// `HelperFanRestorer` (see `handbackAccepted(fanAt:)`).
+    ///
+    /// ## What it may conclude
+    ///
+    /// Only *forget*, and only a fan that read automatic **and** whose owed entry still
+    /// carries the generation this read was asked for. The set is snapshotted before the
+    /// await and re-checked after it, on `ReclamationWatchdog.cycle()`'s rule: a fan engaged
+    /// again while the read was out has no entry, and one handed back again has a newer
+    /// generation, and in both cases this read describes a moment that has been superseded.
+    /// A fan that reads manual, will not read, or is absent from the answer keeps its
+    /// registration and its entry. Nothing is ever added from a read, and nothing reaches
+    /// `LeaseAuthority` — this is § 3's registry and no one else's.
+    ///
+    /// ## No cap, deliberately
+    ///
+    /// A fan that keeps reading manual — a firmware that never took the handback, or another
+    /// program that has since taken the fan — stays registered and owed for as long as it
+    /// does, at one read per eligible cycle. `F<n>Md` names no owner, so the two are
+    /// indistinguishable, and the costs are not symmetrical. Wrongly *keeping* it costs one
+    /// bridge in the next emergency, after which `fire(_:from:)` forgets it: one act per
+    /// emergency, never ADR 0011's standing fight. Wrongly *dropping* it is #295 itself — a
+    /// fan off automatic control that no emergency will bridge. Throttling the read is a
+    /// later cost optimisation, not a safety question.
+    private func readBackAcceptedHandbacks() async {
+        guard !handbackOwed.isEmpty else { return }
+        let asked = handbackOwed.mapValues(\.generation)
+        let readings = await handbackReadBack.handbackReadings(of: Set(asked.keys))
+
+        for (fan, generation) in asked.sorted(by: { $0.key < $1.key }) {
+            // Re-fetched after the await, never carried across it.
+            guard var owed = handbackOwed[fan], owed.generation == generation else { continue }
+            switch readings[fan] ?? .unreadable(detail: "the read-back did not answer for it") {
+            case .automatic:
+                forget(fanAt: fan)
+                log.thermalEmergencyHandbackConfirmed(fan: fan)
+            case .manual:
+                guard owed.lastReported != .manual else { continue }
+                owed.lastReported = .manual
+                handbackOwed[fan] = owed
+                log.thermalEmergencyHandbackStillManual(fan: fan)
+            case .unreadable(let detail):
+                guard owed.lastReported != .unreadable else { continue }
+                owed.lastReported = .unreadable
+                handbackOwed[fan] = owed
+                log.thermalEmergencyHandbackUnreadable(fan: fan, detail: detail)
+            }
+        }
     }
 
     // MARK: - Firing
@@ -498,7 +640,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         let held = engagedFans.values.sorted { $0.index < $1.index }
         for fan in held {
             await bridgeToMaximumThenRelease(fan)
-            engagedFans[fan.index] = nil
+            forget(fanAt: fan.index)
         }
         // Every lease, not one per bridged fan. A client can hold a live lease without
         // having engaged manual control under it yet, and such a fan is in no registry —

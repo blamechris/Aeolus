@@ -51,7 +51,8 @@ struct KeystoneRestoreAttempt<Plane: FanControlPlane>: FanRestoreAttempting {
 ///
 /// **This type closes the teardown half of that finding and none of the other.** What the
 /// quote lists is two symmetrical gaps, and only one is #163's: every `manualControlReleased`
-/// gains its production caller here, on both registries, while `manualControlEngaged` still
+/// gained its production caller here, on both registries (§ 3's became
+/// `handbackAccepted(fanAt:)` in #295), while `manualControlEngaged` still
 /// has none in `Sources/` and is E3's to supply — nothing puts a fan *into* manual control in
 /// a build with no write path. Read the sentence as naming the two ends of a missing wire
 /// rather than as naming this file's subject; the engage end stays open, deliberately, and
@@ -64,7 +65,8 @@ struct KeystoneRestoreAttempt<Plane: FanControlPlane>: FanRestoreAttempting {
 /// ## The order, and why the two registries do not share one
 ///
 /// § 5 is told **before** the write; § 3 is told **after** it, and only about the fans the
-/// firmware actually took. They differ because the two registries are read by mechanisms
+/// firmware actually took — and what it is told is "owed a read-back", not "forget". They
+/// differ because the two registries are read by mechanisms
 /// that draw opposite conclusions from the same entry.
 ///
 /// - **`ReclamationWatchdog` — before.** Its cycle asks, of every fan in its registry,
@@ -82,17 +84,31 @@ struct KeystoneRestoreAttempt<Plane: FanControlPlane>: FanRestoreAttempting {
 ///   `finaliseRelease(fanAt:because:)` "drops the fan from its registry **regardless**" of
 ///   whether the restore threw.
 ///
-/// - **`ThermalEmergency` — after, and only for fans that came back.** Its registry is read
-///   by `fire(_:from:)`, which bridges each entry to maximum RPM and then restores it. A
-///   stale entry there is harmless in a way a stale § 5 entry is not, and that type says so
-///   itself: *"the emergency would bridge a fan that is already on Apple's management, which
-///   is a redundant write and then a redundant restore, not an unsafe state."* A **missing**
-///   entry is not harmless: a fan whose restore the firmware refused three times is still
-///   off automatic control, possibly pinned low, and if § 3 has forgotten it then a machine
-///   going over its ceiling will not bridge it to maximum. So the fans in the abandoned set
-///   stay registered, deliberately, and only the ones that went back are dropped. The
-///   asymmetry is the point: for § 5 the failure direction is a false alarm, for § 3 it is a
-///   missed one.
+/// - **`ThermalEmergency` — after, and only for fans the firmware accepted — and it is
+///   *marked*, not dropped.** Its registry is read by `fire(_:from:)`, which bridges each
+///   entry to maximum RPM and then restores it. A stale entry there is harmless in a way a
+///   stale § 5 entry is not: a redundant bridge and a redundant restore of a fan already on
+///   Apple's management, not an unsafe state. A **missing** entry is not harmless: a fan
+///   whose restore the firmware refused three times is still off automatic control,
+///   possibly pinned low, and if § 3 has forgotten it then a machine going over its ceiling
+///   will not bridge it to maximum. So the fans in the abandoned set stay registered,
+///   deliberately. The asymmetry is the point: for § 5 the failure direction is a false
+///   alarm, for § 3 it is a missed one.
+///
+///   **The fans the firmware accepted stay registered too, since
+///   [#295](https://github.com/blamechris/Aeolus/issues/295).** Accepted is not automatic
+///   (#291): firmware can take the mode write and leave the fan manual, and until #295 this
+///   loop dropped such a fan from § 3 on the strength of the call alone. Now it calls
+///   `ThermalEmergency.handbackAccepted(fanAt:)`, which marks the entry owed a read-back,
+///   and § 3 forgets the fan from its **own** cycle once a fresh `F<n>Md` read reports it
+///   automatic.
+///
+///   **The read is not here, and must not be.** This method is awaited by § 4's sleep
+///   handback and by SIGTERM's teardown, and each issues the machine-wide keystone only
+///   after it returns (ADR 0007). A read-back here — even after `bounded` returns — would
+///   hold that keystone for as long as the scheduler took to answer, which is the defect
+///   #294's review removed from `LeaseAuthority.restore(_:because:)`. Marking is a
+///   synchronous actor hop; § 3's cycle is awaited by nothing on a keystone's path.
 ///
 /// `HelperRestorerTests` has one test per registry, each named for the call whose deletion
 /// turns it red.
@@ -148,8 +164,9 @@ actor HelperFanRestorer<Plane: FanControlPlane>: FanRestoring {
     /// Whether both registries have been bound, for the composition tests and diagnostics.
     var isBound: Bool { thermalEmergency != nil && reclamationWatchdog != nil }
 
-    /// Returns `fans` to Apple's thermal management, telling § 5 before the write and § 3
-    /// after it. See this type's documentation for why those are different sides.
+    /// Returns `fans` to Apple's thermal management, telling § 5 before the write and marking
+    /// § 3's entries owed a read-back after it. See this type's documentation for why those
+    /// are different sides, and why § 3 is marked rather than told to forget.
     func restoreToAutomatic(fans: Set<Int>, because cause: FanRestoreCause) async -> Set<Int> {
         if reclamationWatchdog == nil || thermalEmergency == nil {
             log.restoredWithoutSafetyRegistries(fans: fans, because: cause)
@@ -167,11 +184,13 @@ actor HelperFanRestorer<Plane: FanControlPlane>: FanRestoring {
 
         let abandoned = await bounded.restoreToAutomatic(fans: fans, because: cause)
 
-        // Only the fans the firmware took. One it refused is still off automatic control, so
-        // § 3 must keep it: an abandoned fan is precisely the one a thermal emergency would
-        // need to bridge to maximum.
+        // Only the fans the firmware took, and only *marked*: accepted is not automatic
+        // (#291), so § 3 keeps each one registered until its own cycle reads it automatic
+        // (#295). One the firmware refused is not even marked — an abandoned fan is precisely
+        // the one a thermal emergency would need to bridge to maximum. No read here: this
+        // path is awaited before the sleep and SIGTERM keystones (see this type's docs).
         for fan in fans.subtracting(abandoned).sorted() {
-            await thermalEmergency?.manualControlReleased(fanAt: fan)
+            await thermalEmergency?.handbackAccepted(fanAt: fan)
         }
 
         return abandoned

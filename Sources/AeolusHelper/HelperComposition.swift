@@ -294,6 +294,10 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
             leases: leases,
             latch: latch,
+            // § 6's reader, for the read-back that clears a fan whose handback the firmware
+            // accepted (#295). The same `.supervisor` reads the lease core's confirmation
+            // uses, through the seam that does not log each throw — § 3 asks at 1 Hz.
+            handbackReadBack: reconciliation,
             log: safetyLog)
         let reclamationWatchdog = ReclamationWatchdog(
             sensing: plane,

@@ -75,7 +75,8 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
     ///
     /// **It does not buy registry parity with an expiring lease, and an earlier version of
     /// this comment claimed it did.** `HelperFanRestorer` *deregisters*: it drops a fan from
-    /// § 5's registry before the write and from § 3's after a write that landed. A fan
+    /// § 5's registry before the write, and after a write that landed marks § 3's entry owed
+    /// a read-back that § 3 clears from its own cycle (#295) — marking never inserts. A fan
     /// reconciliation found in manual was in neither to begin with, because nothing in this
     /// process engaged it. So a restore that lands leaves it correctly in neither — and a
     /// restore the firmware **refuses** leaves it in neither while it is still pinned: § 3

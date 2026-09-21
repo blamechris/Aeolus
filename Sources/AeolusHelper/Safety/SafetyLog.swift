@@ -306,6 +306,52 @@ struct SafetyLog: Sendable {
         )
     }
 
+    // MARK: - docs/SAFETY.md § 3 — accepted handbacks (#295)
+
+    /// A fan whose handback the firmware accepted still reads manual, and § 3 keeps it.
+    ///
+    /// `.fault`: a restore the firmware said yes to and did not act on is a write on a safety
+    /// path that did not land, which is what the level is for — or another program took the
+    /// fan in between, and `F<n>Md` cannot say which. Logged once per handback, on the
+    /// transition, because § 3 asks again every cycle for as long as it stays manual.
+    func thermalEmergencyHandbackStillManual(fan: Int) {
+        emit(
+            .fault,
+            """
+            Fan \(fan) still reads manual after the firmware accepted its handback to \
+            automatic control. § 3 keeps it registered, so a thermal emergency bridges it to \
+            maximum, and reads it again each cycle until it reads automatic.
+            """
+        )
+    }
+
+    /// A fan owed a read-back could not be read, and § 3 keeps it.
+    ///
+    /// `.notice`, not the `.fault` `handbackReadBackFailed` uses: nothing is refused or lost
+    /// here — the fan stays exactly as bridgeable as before — and the cycle that asked had
+    /// just read the critical set, so this is one fan's key rather than a blind supervisor.
+    /// Once per handback, on the transition.
+    func thermalEmergencyHandbackUnreadable(fan: Int, detail: String) {
+        emit(
+            .notice,
+            """
+            Fan \(fan)'s control state could not be read back after its handback was \
+            accepted (\(detail)). § 3 keeps it registered until a read reports automatic.
+            """
+        )
+    }
+
+    /// A fan owed a read-back read automatic, and § 3 has forgotten it.
+    func thermalEmergencyHandbackConfirmed(fan: Int) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) reads automatic after its handback; § 3 no longer lists it as under \
+            manual control.
+            """
+        )
+    }
+
     /// One decimal place, so a log line does not carry a firmware float's full mantissa.
     private static func celsius(_ value: Double) -> String {
         String(format: "%.1f °C", value)

@@ -174,17 +174,22 @@ struct HelperRestorerTests {
             """)
     }
 
-    /// § 3 stops listing a fan whose lease ended and whose handback the firmware took.
+    /// § 3 keeps a fan whose handback the firmware accepted until its **own** cycle reads it
+    /// automatic, and then stops listing it (#295).
     ///
-    /// A stale entry here is bounded and in the safe direction — a redundant bridge and a
-    /// redundant restore of a fan already on Apple's management — but the registry is what
-    /// `fire(_:from:)` reads as *"every fan under manual control"*, and a registry that says
-    /// more than it can deliver is the shape `ThermalEmergency.manualControlReleased(fanAt:)`
-    /// was written against.
+    /// Two halves, and each is a different mutation. Straight after the release the fan is
+    /// still registered and owed a read-back: accepted is not automatic (#291), so the
+    /// restorer only marks it. One sighted § 3 cycle with the latch clear then reads fan 0
+    /// automatic — the scripted firmware honoured the restore — and forgets it. The cycle is
+    /// driven by hand because the supervisors are not started here (see the suite's note).
     ///
-    /// **Mutation:** delete the `thermalEmergency?.manualControlReleased(fanAt:)` loop in
-    /// `HelperFanRestorer.restoreToAutomatic(fans:because:)`. Run: red.
-    @Test("Releasing a lease stops the thermal emergency listing its fan")
+    /// **Mutation:** in `HelperFanRestorer.restoreToAutomatic(fans:because:)`, replace
+    /// `thermalEmergency?.handbackAccepted(fanAt: fan)` with a call that drops the entry —
+    /// the pre-#295 `manualControlReleased` — and the first expectation goes red.
+    /// **Mutation:** delete `forget(fanAt: fan)` from the `.automatic` case of
+    /// `ThermalEmergency.readBackAcceptedHandbacks()`, and the post-cycle expectation goes
+    /// red: the fan never clears.
+    @Test("Releasing a lease leaves its fan owed a read-back, and § 3's cycle clears it")
     func theThermalRegistryIsToldWhenALeaseEnds() async throws {
         let helper = Self.composed()
         await helper.bindSafetyRegistries()
@@ -193,9 +198,21 @@ struct HelperRestorerTests {
 
         try await Self.acquireAndRelease(in: helper)
 
+        #expect(await helper.thermalEmergency.fansOwedHandbackReadBack == [0])
+        #expect(
+            await helper.thermalEmergency.fansUnderManualControl == [0],
+            """
+            § 3 forgot fan 0 on the strength of an accepted write, before anything read it \
+            back. Accepted is not automatic: a firmware that took the write and left the fan \
+            manual now has a fan no emergency will bridge.
+            """)
+
+        await helper.thermalEmergency.cycle()
+
         #expect(
             await helper.thermalEmergency.fansUnderManualControl.isEmpty,
-            "§ 3 still lists a fan that is back on Apple's thermal management")
+            "§ 3 still lists a fan its own read-back found on Apple's thermal management")
+        #expect(await helper.thermalEmergency.fansOwedHandbackReadBack.isEmpty)
     }
 
     // MARK: - The asymmetry

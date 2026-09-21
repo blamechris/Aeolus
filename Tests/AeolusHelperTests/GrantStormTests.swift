@@ -95,7 +95,8 @@ struct GrantStormTests {
             sightings: sightings,
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
             leases: leases,
-            latch: latch)
+            latch: latch,
+            handbackReadBack: LeaseFixture.reconciliation(over: plane))
 
         let storm = (0..<Self.stormSize).map { _ in
             observing {
