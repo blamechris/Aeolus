@@ -190,7 +190,8 @@ struct WriteVerbAllowlistTests {
     ///   machine is above ceiling. `bridgeToMaximumThenRelease(_:)` is what spends it.
     ///   `ThermalEmergency.restoredByEmergency(_:)` keeps a permit § 3 already held, for a
     ///   fan whose own restore is unconfirmed, so the next emergency can spend it (#300). It
-    ///   writes nothing.
+    ///   writes nothing. `bridgeThenFileRestored(_:)` passes the same permit to those two in
+    ///   turn, and only decides whether the second runs (#305).
     private static let permitBearingVerbs: Set<String> = [
         "FanControlPlane.swift: commandTarget(_: AuthorisedFanTarget)",
         "FanControlPlane.swift: engageManualControl(of: CommandableFan)",
@@ -204,6 +205,7 @@ struct WriteVerbAllowlistTests {
         "ThermalEmergency.swift: manualControlEngaged(_: CommandableFan)",
         "ThermalEmergency.swift: bridgeToMaximumThenRelease(_: CommandableFan)",
         "ThermalEmergency.swift: restoredByEmergency(_: CommandableFan)",
+        "ThermalEmergency.swift: bridgeThenFileRestored(_: CommandableFan)",
         "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan)",
     ]
 
