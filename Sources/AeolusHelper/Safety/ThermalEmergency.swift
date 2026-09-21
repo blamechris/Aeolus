@@ -151,13 +151,19 @@ actor ThermalEmergency<Plane: FanControlPlane> {
 
     /// One owed read-back: which acceptance it answers, and what has already been logged
     /// about it — so a fan that reads manual at 1 Hz is one line, not one per second.
+    ///
+    /// **A set, not a last-reported value, and each outcome is sticky for the generation.**
+    /// A single value flapped: a fan that stays manual while its read intermittently throws
+    /// alternated manual, unreadable, manual, and logged a `.fault`/`.notice` pair every two
+    /// cycles. Each outcome is now logged at most once per handback, whatever comes between;
+    /// a new handback is a new `OwedReadBack` and starts empty.
     private struct OwedReadBack {
         let generation: UInt64
-        var lastReported: ReportedReadBack?
+        var reported: Set<ReportedReadBack> = []
     }
 
-    /// The last non-clearing outcome logged for an owed fan. See `OwedReadBack`.
-    private enum ReportedReadBack: Equatable {
+    /// A non-clearing outcome already logged for an owed fan. See `OwedReadBack`.
+    private enum ReportedReadBack: Hashable {
         case manual
         case unreadable
     }
@@ -545,13 +551,11 @@ actor ThermalEmergency<Plane: FanControlPlane> {
                 forget(fanAt: fan)
                 log.thermalEmergencyHandbackConfirmed(fan: fan)
             case .manual:
-                guard owed.lastReported != .manual else { continue }
-                owed.lastReported = .manual
+                guard owed.reported.insert(.manual).inserted else { continue }
                 handbackOwed[fan] = owed
                 log.thermalEmergencyHandbackStillManual(fan: fan)
             case .unreadable(let detail):
-                guard owed.lastReported != .unreadable else { continue }
-                owed.lastReported = .unreadable
+                guard owed.reported.insert(.unreadable).inserted else { continue }
                 handbackOwed[fan] = owed
                 log.thermalEmergencyHandbackUnreadable(fan: fan, detail: detail)
             }

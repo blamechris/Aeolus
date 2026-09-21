@@ -68,8 +68,8 @@ struct AcceptedHandbackCompositionTests {
     /// **Mutation:** in `ThermalEmergency.readBackAcceptedHandbacks()`, make the `.manual`
     /// case call `forget(fanAt: fan)` as `.automatic` does. Run: red — fan 0 is gone after
     /// the first cycle and the hot cycle issues no `commandTarget`.
-    /// **Mutation:** delete `guard owed.lastReported != .manual else { continue }`. Run: red
-    /// on the line count — two `.fault` lines for one handback.
+    /// **Mutation:** delete `guard owed.reported.insert(.manual).inserted else { continue }`.
+    /// Run: red on the line count — two `.fault` lines for one handback.
     @Test("A fan the firmware accepted but left manual stays bridgeable")
     func anAcceptedButManualFanStaysBridgeable() async throws {
         let log = RecordedLog()
@@ -97,6 +97,38 @@ struct AcceptedHandbackCompositionTests {
             commanded == [5_777],
             "the emergency did not bridge a fan that was still off automatic control")
         #expect(await helper.thermalEmergency.fansOwedHandbackReadBack.isEmpty)
+    }
+
+    /// A fan that stays manual while its read intermittently throws logs "still manual" once.
+    ///
+    /// Manual, then unreadable, then manual again: the second manual is not news — nothing
+    /// was learned about the fan in between — and a last-reported value flapped on exactly this
+    /// sequence, writing a `.fault`/`.notice` pair every two cycles for as long as it lasted.
+    ///
+    /// **Mutation:** revert to the single-value check — replace
+    /// `guard owed.reported.insert(.manual).inserted else { continue }` with
+    /// `guard owed.reported != [.manual] else { continue }; owed.reported = [.manual]`, and the
+    /// `.unreadable` guard likewise with `[.unreadable]`. Run: red on `stillManual == [.fault]`.
+    @Test("A manual fan whose read intermittently throws logs still-manual once")
+    func anIntermittentlyUnreadableManualFanLogsOnce() async throws {
+        let log = RecordedLog()
+        let helper = Self.composed(writes: .reverted, log: log)
+        try await Self.engageThenRelease(in: helper)
+
+        await helper.thermalEmergency.cycle()
+        await helper.plane.modeReads(.failing)
+        await helper.thermalEmergency.cycle()
+        await helper.plane.modeReads(.answered)
+        await helper.thermalEmergency.cycle()
+        await helper.plane.modeReads(.failing)
+        await helper.thermalEmergency.cycle()
+
+        let stillManual = log.levels(containing: "still reads manual")
+        #expect(
+            stillManual == [.fault],
+            "a fan that never stopped reading manual was reported manual again after one throw")
+        #expect(log.levels(containing: "could not be read back after its handback") == [.notice])
+        #expect(await helper.thermalEmergency.fansOwedHandbackReadBack == [0])
     }
 
     // MARK: - Unreadable
