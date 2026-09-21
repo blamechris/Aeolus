@@ -584,6 +584,8 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// await and re-checked after it, on `ReclamationWatchdog.cycle()`'s rule: a fan engaged
     /// again while the read was out has no entry, and one handed back again has a newer
     /// generation, and in both cases this read describes a moment that has been superseded.
+    /// A fan in `restoredUnconfirmed` is re-checked by membership alone — see `RestoredFan`
+    /// for why no generation is needed there.
     /// A fan that reads manual, will not read, or is absent from the answer keeps its
     /// registration and its entry. Nothing is ever added from a read, and nothing reaches
     /// `LeaseAuthority` — this is § 3's registry and no one else's.

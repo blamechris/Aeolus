@@ -132,9 +132,9 @@ struct SafetyLog: Sendable {
             """
             Thermal emergency engaged: \(hottest.key.rawValue) read \
             \(Self.celsius(hottest.celsius)) against a \(Self.celsius(ceiling)) ceiling. \
-            \(fansHeld) fan(s) under manual control go to maximum and then back to \
-            automatic; any lease covering them is revoked and no new lease is granted \
-            while this holds.
+            \(fansHeld) fan(s) Aeolus engaged, or restored without seeing the restore take, \
+            go to maximum and then back to automatic; any lease covering them is revoked \
+            and no new lease is granted while this holds.
             """
         )
     }
@@ -320,7 +320,7 @@ struct SafetyLog: Sendable {
             """
             Fan \(fan) still reads manual after the firmware accepted its handback to \
             automatic control. § 3 keeps it registered, so a thermal emergency bridges it to \
-            maximum, and reads it again each cycle until it reads automatic.
+            maximum, and reads it again on each clear cycle until it reads automatic.
             """
         )
     }
@@ -364,7 +364,8 @@ struct SafetyLog: Sendable {
             """
             Fan \(fan) is still manual after the thermal emergency restored it to \
             automatic control. § 3 keeps it, so the next thermal emergency bridges it to \
-            maximum again, and reads it again each cycle until it reads automatic.
+            maximum again, and reads it again on each clear cycle until it reads \
+            automatic.
             """
         )
     }
