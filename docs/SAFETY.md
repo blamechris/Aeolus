@@ -520,8 +520,9 @@ mechanism through its own loop.
 point, where the facts a cycle gathered stop being true before it acts on them: the latch is
 never released against a temperature report older than the episode holding, the qualifying
 key set that arms the degraded-view guard belongs to the episode that is holding rather than
-one that has ended, a release clears the episode it was judged against and no other, a
-cycle that could not read at all still revokes whatever lease it finds, and — since
+one that has ended, a release clears the episode it was judged against and no other, and a
+cycle that could not read at all still revokes whatever lease it finds. Its sibling,
+`ThermalEmergencyRecordStalenessTests`, covers the mirror case since
 [#280](https://github.com/blamechris/Aeolus/issues/280) — a cycle's own reading never displaces
 anything recorded while that read was in flight, in either the blindness direction (a safety
 defect) or the fresher-sighting direction (a staleness-bound defect).
