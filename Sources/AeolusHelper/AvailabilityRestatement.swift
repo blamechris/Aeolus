@@ -27,7 +27,7 @@ import FanKit
 // | 2 | `.handbackUnconfirmed` | `reportingHandbackState` — § 4's budget expired |
 // | 3 | `.releaseInProgress` | `reportingHandbackState` — a restore on the wire |
 // | 4 | `.supervisorBlind` | `availability(whenLedgerSays:…)` — § 5's ledger |
-// | 5 | § 6's durable refusal (only where step 6 does not apply), then `.foreignManualControl` | `reportingForeignControl` — § 6's baseline |
+// | 5 | § 6's durable refusal (not over step 6), then `.foreignManualControl` | § 6's baseline |
 // | 6 | `.writePathNotBuilt` | `availability(whenLedgerSays:…)` — the seam's capability |
 // | 7 | `.reclaimedBySystem` | `availability(whenLedgerSays:…)` — § 5's ledger |
 // | 8 | `.boundsImplausible` | `availability(whenLedgerSays:…)` — § 2's gate |
