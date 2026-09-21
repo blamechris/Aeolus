@@ -103,9 +103,9 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
 
     /// Fans this pass never established the mode of. Empty after a complete run.
     ///
-    /// Written once, by `reconcile()`, and read for the life of the process. It is
-    /// durable in the strongest available sense: reconciliation is one-shot, so nothing
-    /// revises it.
+    /// Written only inside the one pass — by `reconcile()`, and by the keystone's read-back
+    /// within it — and read for the life of the process. It is durable in the strongest
+    /// available sense: reconciliation is one-shot, so nothing revises it afterwards.
     private var unreconciled: Set<Int> = []
 
     /// The pass established nothing at all, because the machine's fans would not enumerate.
@@ -113,8 +113,9 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
     /// `unreconciled` cannot carry this. It is a set of fan *indices*, and a machine whose
     /// `FNum` will not read has none to put in it — so the fact that nothing was looked at
     /// needs a flag of its own rather than an empty set that reads as "a complete run".
-    /// Cleared only by a machine-wide restore that the firmware took, on the same argument
-    /// `restoreEveryFan()` makes for clearing `unreconciled`.
+    /// Cleared only once a machine-wide restore the firmware took has been **read back** —
+    /// which first needs the enumeration to answer — on the argument `confirmKeystone(_:)`
+    /// makes for `unreconciled`.
     private var nothingEstablished = false
 
     /// Fans this pass found in manual, asked to hand back, and was refused.
@@ -137,9 +138,14 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
     ///
     /// **A later machine-wide restore does not clear it**, unlike `unreconciled` and
     /// `nothingEstablished`. Those two mean "the mode is unknown", which a `.everyFan` write
-    /// the firmware took genuinely resolves. This one means "this fan refused *this* write",
-    /// which a different verb succeeding does not un-demonstrate — and the fail-safe
-    /// direction on a fan with a proven refusal is to keep refusing.
+    /// the firmware took *and a read-back confirmed* genuinely resolves. This one means "this
+    /// fan refused *this* write", which a different verb succeeding does not un-demonstrate —
+    /// and the fail-safe direction on a fan with a proven refusal is to keep refusing.
+    ///
+    /// **The keystone's read-back adds to it** ([#204](https://github.com/blamechris/Aeolus/issues/204)).
+    /// A fan read back in manual after a `.everyFan` write that did not throw is the same fact
+    /// reached through the other verb: Aeolus asked for automatic control, and the firmware's
+    /// own mode key says it did not get it.
     private var handbackRefused: Set<Int> = []
 
     /// Whether the one-shot pass has run.
@@ -218,6 +224,9 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
             return
         }
         hasRun = true
+        // Taken before the enumeration, so the budget bounds the whole pass — the keystone's
+        // read-back included — rather than the part after `FNum` answered.
+        let deadline = clock.now.advanced(by: budget)
 
         let fans: Set<Int>
         do {
@@ -227,11 +236,10 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
             // Set before the write, cleared after one that landed: a throw inside the
             // keystone must leave the durable refusal standing.
             nothingEstablished = true
-            await restoreEveryFan(because: .enumerationFailed)
+            await restoreEveryFan(because: .enumerationFailed, until: deadline)
             return
         }
 
-        let deadline = clock.now.advanced(by: budget)
         var remaining = fans.sorted()
 
         while let fan = remaining.first {
@@ -247,7 +255,7 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
                 unreconciled = Set(remaining).union([fan])
                 log.reconciliationReadFailed(
                     fanAt: fan, detail: String(describing: error), unreconciled: unreconciled)
-                await restoreEveryFan(because: .modeReadFailed)
+                await restoreEveryFan(because: .modeReadFailed, until: deadline)
                 return
             }
 
@@ -261,7 +269,7 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
             return
         }
         log.reconciliationBudgetExhausted(unreconciled: unreconciled, budget: budget)
-        await restoreEveryFan(because: .budgetExhausted)
+        await restoreEveryFan(because: .budgetExhausted, until: deadline)
     }
 
     /// One fan, through the keystone path, with the refusal this build always produces kept
@@ -281,20 +289,104 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
 
     /// The keystone, issued wherever the pass could not see. It needs no data — which is
     /// why every branch that has none reaches for it.
-    private func restoreEveryFan(because reason: SafetyLog.KeystoneReason) async {
+    ///
+    /// **A write that did not throw is not a fan in automatic**, and until
+    /// [#204](https://github.com/blamechris/Aeolus/issues/204) this method treated it as one:
+    /// it cleared both durable refusals on the strength of `restoreToAutomatic(.everyFan)`
+    /// returning. `SafetyActorWriter` forwards to the plane with no read-back, and
+    /// `docs/SAFETY.md` § 5's primary signal is written-versus-read-back precisely because
+    /// firmware can accept a mode write and not apply it. On a plane that could write, that
+    /// fan would have been recorded as established, granted a lease over while still
+    /// pinned, and held in neither safety registry. So the write only earns the read-back;
+    /// `confirmKeystone(until:)` is what clears anything.
+    private func restoreEveryFan(
+        because reason: SafetyLog.KeystoneReason, until deadline: ContinuousClock.Instant
+    ) async {
         do {
             try await panic.restoreToAutomatic(.everyFan)
-            // The write landed, so no fan is off automatic control and nothing is left to
-            // refuse. Cleared *after* the write rather than before, so a throw leaves the
-            // durable refusal standing.
-            unreconciled = []
-            nothingEstablished = false
-            log.reconciliationRestoredEveryFan(because: reason)
         } catch {
             log.reconciliationEveryFanRestoreFailed(
                 because: reason, detail: String(describing: error),
                 capability: capabilityNote)
+            return
         }
+        log.reconciliationRestoredEveryFan(because: reason)
+        await confirmKeystone(until: deadline)
+    }
+
+    /// Reads back `F<n>Md` for every fan the keystone was meant to resolve, and clears a
+    /// refusal only for a fan the firmware now reports automatic.
+    ///
+    /// ## Which fans, and why not every enumerated one
+    ///
+    /// The fans read are the ones a refusal stands over: `unreconciled`, or — when the pass
+    /// established nothing — whatever the enumeration answers now. A fan the pass already
+    /// read as automatic, or already handed back by name, carries no refusal for the
+    /// keystone to clear, and a machine-wide restore cannot move a fan *out* of automatic.
+    /// Re-reading those would spend the budget confirming nothing.
+    ///
+    /// ## Three answers per fan
+    ///
+    /// - **Automatic** → the refusal is cleared. This is the only path that clears one.
+    /// - **Manual** → `handbackRefused`, not `unreconciled`. The issue that asked for this
+    ///   read-back proposed leaving the fan in `unreconciled`, and that set's meaning is
+    ///   "nobody looked"; this fan *was* looked at, after Aeolus asked for automatic control
+    ///   and the firmware accepted the write. That is `.restoreToAutomaticFailed` verbatim,
+    ///   and it is the more durable of the two refusals: it survives nothing.
+    /// - **The read throws, or the budget has run out** → still `unreconciled`. Its mode is
+    ///   as unknown as it was before the keystone.
+    ///
+    /// ## Under the pass's own deadline
+    ///
+    /// `ReconciliationLimits.budget` bounds the whole pass, and the read-back is part of it.
+    /// On the budget-exhausted branch the deadline has already passed, so no fan is read and
+    /// every refusal stands: a machine that could not read its fans' modes inside five
+    /// seconds has not shown it can confirm them either, and serving sooner with refusals is
+    /// the fail-safe direction. Before #204 that branch cleared every refusal on the write
+    /// alone.
+    private func confirmKeystone(until deadline: ContinuousClock.Instant) async {
+        let owed: Set<Int>
+        if nothingEstablished {
+            do {
+                owed = try await enumeration.enumeratedFanIndices()
+            } catch {
+                log.reconciliationKeystoneUnconfirmed(
+                    unconfirmed: [], detail: String(describing: error))
+                return
+            }
+        } else {
+            owed = unreconciled
+        }
+
+        var unknown: Set<Int> = []
+        var stillManual: Set<Int> = []
+        for fan in owed.sorted() {
+            guard clock.now < deadline else {
+                unknown.insert(fan)
+                continue
+            }
+            do {
+                switch try await plane.readControlState(ofFan: fan).mode {
+                case .automatic: continue
+                case .manual: stillManual.insert(fan)
+                }
+            } catch {
+                unknown.insert(fan)
+            }
+        }
+
+        // Every fan is accounted for now, so the machine-wide flag gives way to the sets:
+        // an index exists for each fan still refused.
+        nothingEstablished = false
+        unreconciled = unknown
+        handbackRefused.formUnion(stillManual)
+        guard unknown.isEmpty, stillManual.isEmpty else {
+            log.reconciliationKeystoneUnconfirmed(
+                unconfirmed: unknown.union(stillManual),
+                detail: "read back in manual: \(stillManual.sorted()); unread: \(unknown.sorted())")
+            return
+        }
+        log.reconciliationKeystoneConfirmed(fans: owed.count)
     }
 
     /// Whether a refused write is this build's expected state or a real firmware refusal.
@@ -337,12 +429,7 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
         overFans fans: Set<Int>, heldByAeolus held: Set<Int>
     ) async -> ManualControlAvailability.Reason? {
         let candidates = fans.subtracting(held)
-        guard !candidates.isEmpty else { return nil }
-        guard !nothingEstablished else { return .supervisorBlind }
-        guard candidates.isDisjoint(with: handbackRefused) else {
-            return .restoreToAutomaticFailed
-        }
-        guard candidates.isDisjoint(with: unreconciled) else { return .supervisorBlind }
+        if let durable = currentBaseline.durableRefusal(overFans: candidates) { return durable }
 
         for fan in candidates.sorted() {
             do {
@@ -358,6 +445,15 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
         return nil
     }
 
+    /// Questions 1–3 above, as the value the snapshot reads too.
+    func baseline() async -> ReconciliationBaseline { currentBaseline }
+
+    private var currentBaseline: ReconciliationBaseline {
+        ReconciliationBaseline(
+            establishedNothing: nothingEstablished, refusedHandbacks: handbackRefused,
+            unreconciled: unreconciled)
+    }
+
     /// The fans this pass never established the mode of, for tests and diagnostics.
     var unreconciledFans: Set<Int> { unreconciled }
 
@@ -369,41 +465,5 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
     var establishedNothing: Bool { nothingEstablished }
 }
 
-// MARK: - The seam the lease core sees
-
-/// What `LeaseAuthority` asks before it grants, and the whole of what it may ask.
-///
-/// Narrow on purpose. The lease core has no business driving reconciliation, and giving it
-/// the whole of `StartupReconciliation` would put `reconcile(fans:)` one `await` from a
-/// decoded client message — the same argument `FanAuthority` makes about not holding a
-/// `FanControlPlane`. It asks a question and is told a reason.
-protocol ForeignManualControlSensing: Sendable {
-
-    /// Why manual control of `fans` cannot be granted, or `nil` when this mechanism has no
-    /// objection. `heldByAeolus` is excluded from the judgement, never judged.
-    func refusalForGrant(
-        overFans fans: Set<Int>, heldByAeolus held: Set<Int>
-    ) async -> ManualControlAvailability.Reason?
-}
-
-// MARK: - The bound
-
-enum ReconciliationLimits {
-
-    /// How long the whole pass may take before the helper serves clients anyway.
-    ///
-    /// **A budget, not a timeout.** It is checked between fans, so it bounds the number of
-    /// reads the pass will start — not the duration of any one of them. A single read that
-    /// never returns still hangs the bring-up, and that is deliberate rather than an
-    /// oversight: `HelperComposition.bringUp()` records the same choice for itself, because
-    /// a daemon that answers no connections is the fail-safe direction and a daemon serving
-    /// over unreconciled fans is not. Making one read cancellable would mean abandoning a
-    /// `.supervisor` turn mid-flight, which is the scheduler's invariant to keep, not this
-    /// mechanism's to break.
-    ///
-    /// Five seconds against a machine whose 34-key curated supervisor read costs 5.6 ms and
-    /// whose whole 2930-key snapshot costs 2.3 s (measured, `Mac16,5`): a two-fan
-    /// reconciliation is three orders of magnitude inside it, and a machine that cannot do
-    /// two mode reads in five seconds is one whose lease refusal is the correct outcome.
-    static let budget: Duration = .seconds(5)
-}
+/// The snapshot's seam — `baseline()` above is the whole of it.
+extension StartupReconciliation: ReconciliationBaselineReporting {}

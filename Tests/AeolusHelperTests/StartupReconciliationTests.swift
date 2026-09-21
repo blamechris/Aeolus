@@ -117,10 +117,13 @@ struct StartupReconciliationTests {
             in whatever mode the dead process left it.
             """)
         #expect(
-            await helper.reconciliation.unreconciledFans.isEmpty,
+            await helper.reconciliation.unreconciledFans == [0, 1],
             """
-            The machine-wide restore was honoured, so no fan is left in an unknown mode and \
-            none should be refused a lease on account of reconciliation.
+            The machine-wide restore was accepted, but every F<n>Md read is still failing, \
+            so nothing has confirmed either fan left manual control. Clearing the refusal on \
+            the write alone is #204: firmware can take a mode write and not apply it, and a \
+            lease would then be granted over a fan still pinned. \
+            `StartupReconciliationReadBackTests` covers the read-back that does clear it.
             """)
     }
 
@@ -180,8 +183,12 @@ struct StartupReconciliationTests {
             registry entry, and nothing that will look again.
             """)
         #expect(
-            await helper.reconciliation.establishedNothing == false,
-            "the keystone landed, so nothing is left in an unknown mode to refuse over")
+            await helper.reconciliation.establishedNothing,
+            """
+            The keystone was accepted, but FNum still does not answer, so no fan can be \
+            named to read it back and nothing has confirmed any fan's mode (#204). \
+            `StartupReconciliationReadBackTests` covers an enumeration that recovers.
+            """)
     }
 
     /// The same branch, on firmware that refuses the keystone too.

@@ -122,7 +122,8 @@ taken on exactly the cold restart § 6 exists to cover.
 
 Since no fan index is knowable on that branch, "nothing was established" is recorded as a
 flag rather than as a set of indices, and every grant is refused `.supervisorBlind` until a
-keystone write lands. A budget expiry gets the keystone for the same reason: a fan nobody
+keystone write lands **and is read back** — which on this branch first needs the enumeration
+to answer. A budget expiry gets the keystone for the same reason: a fan nobody
 looked at and a fan whose read threw are the same state, and there is no fact one has that
 the other lacks.
 
@@ -132,8 +133,23 @@ Issuing it over fans the pass *did* reach and found automatic costs nothing: the
 idempotent over them. A fan the pass found in manual and restored by name may therefore be
 restored a second time **in the same pass**, by the keystone — the same instant, the same
 safe direction, and no standing fight, which is the only thing D2's one-shot rule forbids —
-and "lands", for the keystone, means the write did not throw: read-back verification is
-[#204](https://github.com/blamechris/Aeolus/issues/204).
+and "lands", for the keystone, means **read back** — not merely "did not throw".
+
+**Amended by [#204](https://github.com/blamechris/Aeolus/issues/204).** Until then a keystone
+write that returned normally cleared both durable refusals on its own, and `SafetyActorWriter`
+forwards to the plane with no read-back, so on firmware that accepts a mode write and does not
+apply it — the case `docs/SAFETY.md` § 5's primary signal exists for — a still-pinned fan
+would have been recorded as established and granted a lease. The keystone now earns a read of
+`F<n>Md` for every fan a refusal stands over, under the pass's own budget. A fan read back
+automatic is cleared; one read back manual becomes a refused handback
+(`.restoreToAutomaticFailed`), since Aeolus asked for automatic control and did not get it;
+one whose read fails, or that the budget no longer covers, stays unreconciled. On the budget
+branch the deadline has already passed, so the keystone is issued and nothing is cleared.
+
+The same issue put these refusals into the snapshot. `ReconciliationBaseline.durableRefusal
+(overFans:)` is the one function both the grant path and step 5 of the availability ladder
+call, so a fan reconciliation refused can no longer be offered as `.available` or reported
+`.writePathNotBuilt` while a grant over it throws something else.
 
 ### D4 — The pass is bounded, and the listener resumes either way
 

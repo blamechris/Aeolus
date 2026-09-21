@@ -936,14 +936,48 @@ extension SafetyLog {
         }
     }
 
-    /// The machine-wide restore landed, so nothing is left off automatic control.
+    /// The machine-wide restore was accepted. Not yet a claim about any fan's mode: the
+    /// read-back that follows is what establishes that (#204).
     func reconciliationRestoredEveryFan(because reason: KeystoneReason) {
         emit(
             .notice,
             """
-            Startup reconciliation restored every fan to automatic control because \
-            \(reason.clause). No fan is left in an unknown mode, so leases are not refused \
-            on account of it.
+            Startup reconciliation issued the machine-wide restore to automatic control \
+            because \(reason.clause), and the firmware accepted the write. Each fan it was \
+            meant to resolve is now read back before any refusal is cleared.
+            """
+        )
+    }
+
+    /// Every fan the keystone was meant to resolve read back automatic.
+    func reconciliationKeystoneConfirmed(fans: Int) {
+        emit(
+            .notice,
+            """
+            Startup reconciliation read back \(fans) fan(s) after the machine-wide restore \
+            and every one is under automatic control. No lease is refused on account of it.
+            """
+        )
+    }
+
+    /// The keystone was accepted and the read-back could not confirm it for some fans.
+    ///
+    /// `.fault`: either the firmware took a mode write and did not apply it — the case
+    /// `docs/SAFETY.md` § 5's written-versus-read-back signal exists for — or the fans could
+    /// not be read at all. Both leave a fan whose state Aeolus cannot vouch for, refused a
+    /// lease for the life of this process. An empty set means the enumeration itself would
+    /// not answer, so no fan could be named.
+    func reconciliationKeystoneUnconfirmed(unconfirmed: Set<Int>, detail: String) {
+        let which =
+            unconfirmed.isEmpty
+            ? "no fan could be enumerated to read it back"
+            : "fan(s) \(Self.describe(unconfirmed)) did not read back automatic"
+        emit(
+            .fault,
+            """
+            Startup reconciliation's machine-wide restore was accepted, but \(which) \
+            (\(detail)). Manual control of \(unconfirmed.isEmpty ? "every fan" : "those fans") \
+            is refused for the life of this process; see docs/RECOVERY.md.
             """
         )
     }
@@ -989,8 +1023,8 @@ extension SafetyLog {
             Startup reconciliation ran out of its \(budget) budget with fan(s) \
             \(Self.describe(unreconciled)) never read. The machine-wide restore-to-automatic \
             is issued for them — it needs no read — and the helper serves clients anyway, \
-            refusing manual control of those fans for the life of this process unless that \
-            write lands, because nothing runs this pass again.
+            refusing manual control of those fans for the life of this process, because \
+            nothing runs this pass again and no budget is left to read them back.
             """
         )
     }
