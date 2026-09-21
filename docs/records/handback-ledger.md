@@ -109,14 +109,21 @@ lease over a fan in it, so no entry covering one could exist. The refusal was se
 the register made the only route to its own exit unreachable. `releaseEveryLease` therefore
 sweeps this set beside the table, which is what gives the clear something to clear.
 
-**The standard for clearing is the standard `HelperFanRestorer` already deregisters § 3's
-registry on**, deliberately, and it is the strongest one this build has: the fan is in
-`fans.subtracting(abandoned)` — the restorer was asked, came back, and did not name it.
-`FanRestoring` promises no read-back, and § 3's registry is the place where *forgetting* a
-still-manual fan is the unsafe direction, so a signal good enough to stop the thermal bridge
-watching a fan is good enough to stop refusing leases over it. A weaker one — "the panic pass
-ran" — would clear a refusal three observed firmware refusals set, on evidence about a call
-rather than about a fan.
+**The standard for clearing is two signals since [#291](https://github.com/blamechris/Aeolus/issues/291).**
+The first is the one `HelperFanRestorer` deregisters § 3's registry on: the fan is in
+`fans.subtracting(abandoned)` — the restorer was asked, came back, and did not name it. A weaker
+one — "the panic pass ran" — would clear a refusal three observed firmware refusals set, on
+evidence about a call rather than about a fan. But the first signal is itself evidence about a
+call: `FanRestoring` promises no read-back, and a write the firmware accepted is not a fan in
+automatic — #204's finding on reconciliation's keystone. So the second signal is a **fresh read
+reporting the fan automatic**, asked through `ForeignManualControlSensing.fansReadingAutomatic`
+so that the lease core still reads no firmware of its own. A fan that reads manual, or will not
+read, keeps the refusal it already had; nothing *new* is minted from a read, which is the
+constraint #204 set on its own read-back.
+
+§ 3's deregistration still rests on the first signal alone. That is a separate question — a
+wrong answer there stops the thermal bridge watching a still-manual fan — and is tracked as its
+own follow-on rather than folded in here.
 
 **A restore that never returns still leaves it standing**, as does one that comes back refused
 again, and both are the fail-safe direction. What is gone is only the case #189 names: a fan

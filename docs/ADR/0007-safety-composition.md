@@ -210,6 +210,32 @@ re-acquire on every dark wake, which raises the frequency without changing the r
 This amendment corrects a clause of a Proposed ADR rather than the decision it sits under.
 **Status stays Proposed.**
 
+#### Amendment, 2026-09-21 ([#204](https://github.com/blamechris/Aeolus/issues/204), [#291](https://github.com/blamechris/Aeolus/issues/291)) — a read-back *beside* the keystone, never *on* it
+
+The amendment above rejected "a read-back on or beside the keystone verb". Two changes have since
+put one beside it, and this note says where, and why neither reopens what the rejection protects.
+
+- **Startup reconciliation** (#204, ADR 0011's amendment): a refusal over a fan of unknown mode is
+  cleared only when a read after the keystone reports that fan automatic. Since #291 the same
+  read-back covers every fan the pass handed back by name, whether or not the keystone ran.
+- **The lease core's `restoreAbandoned`** (#291): #189's clear additionally requires a fresh read
+  reporting the fan automatic, asked through `ForeignManualControlSensing` so the lease core still
+  reads no firmware of its own.
+
+**The keystone verb itself is unchanged, and still depends on no data.** Every read is issued
+*after* the write returns, by the caller, and only ever decides whether a **refusal** is lifted —
+never whether a write is issued. A read that throws, answers manual, or runs out of budget leaves
+the refusal standing, so the failure branches the rejection worried about all resolve to the state
+the system was already in. What the rejection said about clearing — *a move toward granting must
+be gated on positive evidence* — is exactly the rule these read-backs implement.
+
+**Still no read-back:** § 4's sleep handback. The machine sleeps whatever a read would say, and
+§ 4 forbids firmware contact on wake, so nothing could act on the answer; its log line says the
+firmware *accepted* the write rather than that the fans returned.
+
+This amendment corrects a clause of a Proposed ADR rather than the decision it sits under.
+**Status stays Proposed.**
+
 ## Alternatives considered
 
 **In-process crash restore.** A signal handler calling IOKit is undefined behaviour on the one path
