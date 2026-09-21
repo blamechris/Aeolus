@@ -1,16 +1,13 @@
 // swiftlint:disable file_length
-// This file is exempt from `file_length` by design, not by neglect: `log` and `describe(_:)`
-// below are `private`, so every lease-log line has to live here — that is what keeps this
-// XPC-facing category's vocabulary fixed and reviewable in one place, the same trade
-// `SafetyLog.swift` makes for docs/SAFETY.md § 5 (see its header and its
-// `// MARK: - docs/SAFETY.md § 5` block for the reasoning this file's own extensions repeat).
-// [#272](https://github.com/blamechris/Aeolus/issues/272) split this file across three
-// sibling files first; that PR widened `log` and `describe(_:)` to `internal` so extensions
-// in those other files could reach them, and review caught what that actually costs: any
-// file in `AeolusHelper` could then emit an arbitrary line into the Lease category, which is
-// exactly the vocabulary-fixing property this type exists to have. Reverted to a single file
-// with the members kept `private`. `type_body_length` is still addressed — by the same
-// `extension LeaseLog` shape below, whose bodies are measured separately from the struct's.
+// This file is exempt from `file_length` by design, not by neglect. `log` and `describe(_:)`
+// are `private`, and `private` in Swift is file-scoped, so every lease-log line has to live
+// here. That is what keeps the Lease category's vocabulary fixed and reviewable: widening
+// them to `internal` so sibling files could reach them would let any file in `AeolusHelper`
+// emit an arbitrary line into it. `SafetyLog.swift` makes the same trade, and its
+// `// MARK: - docs/SAFETY.md § 5` block argues it
+// ([#272](https://github.com/blamechris/Aeolus/issues/272)). The subjects are separated by
+// the `extension LeaseLog` blocks below instead, whose bodies SwiftLint measures apart from
+// the struct's.
 
 import FanKit
 import Foundation
