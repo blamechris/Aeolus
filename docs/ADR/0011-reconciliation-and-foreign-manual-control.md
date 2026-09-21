@@ -122,7 +122,8 @@ taken on exactly the cold restart § 6 exists to cover.
 
 Since no fan index is knowable on that branch, "nothing was established" is recorded as a
 flag rather than as a set of indices, and every grant is refused `.supervisorBlind` until a
-keystone write lands. A budget expiry gets the keystone for the same reason: a fan nobody
+keystone write lands **and is read back** — which on this branch first needs the enumeration
+to answer. A budget expiry gets the keystone for the same reason: a fan nobody
 looked at and a fan whose read threw are the same state, and there is no fact one has that
 the other lacks.
 
@@ -132,8 +133,37 @@ Issuing it over fans the pass *did* reach and found automatic costs nothing: the
 idempotent over them. A fan the pass found in manual and restored by name may therefore be
 restored a second time **in the same pass**, by the keystone — the same instant, the same
 safe direction, and no standing fight, which is the only thing D2's one-shot rule forbids —
-and "lands", for the keystone, means the write did not throw: read-back verification is
-[#204](https://github.com/blamechris/Aeolus/issues/204).
+and "lands", for the keystone, means **read back** — not merely "did not throw".
+
+**Amended by [#204](https://github.com/blamechris/Aeolus/issues/204).** Until then a keystone
+write that returned normally cleared both durable refusals on its own, and `SafetyActorWriter`
+forwards to the plane with no read-back — so on firmware that accepts a mode write and does not
+apply it, the case `docs/SAFETY.md` § 5's primary signal exists for, a fan still in manual lost
+its durable refusal. It was not granted a lease: the grant path's fresh read refuses a fan
+reading manual. It was refused as `.foreignManualControl` instead, blaming another program, and
+only for as long as it kept reading manual.
+
+The keystone now earns a read of `F<n>Md` for every fan a refusal stands over **and every fan
+the pass handed back by name**, under the pass's own budget, which now starts before the
+enumeration. A fan read back automatic is cleared. Anything else — manual, unreadable, or past
+the budget — stays unreconciled (`.supervisorBlind`). Manual is deliberately *not*
+`.restoreToAutomaticFailed`: the firmware accepted the write, and one read straight after it
+cannot tell firmware that did not apply it from a live foreign writer re-asserting manual — this
+ADR's premise — or from a write that has not settled. On the budget branch the deadline has
+already passed, so the keystone is issued and nothing is cleared.
+
+The same issue put these refusals into the snapshot. `ReconciliationBaseline.durableRefusal
+(overFans:)` is the one function both the grant path and step 5 of the availability ladder
+call, so on a seam that can write, a fan reconciliation refused can no longer be offered as
+`.available`, or blamed on another program, while a grant over it is refused for this reason.
+On a seam that cannot write, the ladder does not ask it: `acquireLease` refuses
+`.writePathNotBuilt` before anything else, and every reconciliation restore there is refused by
+the build rather than by firmware.
+
+What the amendment does not cover: a pass that completes without the keystone does not read
+back its per-fan restores, and the lease core's #189 clearing of `restoreAbandoned` still
+accepts a write that did not throw. Both are the same evidence standard on other verbs, and are
+recorded as a follow-on.
 
 ### D4 — The pass is bounded, and the listener resumes either way
 

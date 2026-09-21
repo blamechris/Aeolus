@@ -270,10 +270,10 @@ struct SnapshotAvailabilityTests {
     /// Every fan in a handback register is one Aeolus is accountable for.
     ///
     /// The invariant that lets `ReadOnlyFanReport`'s two re-statements compose in either order,
-    /// asserted rather than described. `reportingForeignControl(of:heldByAeolus:)` returns an
+    /// asserted rather than described. `reportingForeignControl(of:heldByAeolus:reconciliation:)` returns an
     /// accountable fan untouched, so while this holds the foreign-control rule and the handback
     /// rule can never speak about the same fan — and the day it stops holding, the composition
-    /// order in `restatingAvailability(of:given:)` starts deciding which reason a user sees,
+    /// order in `restatingAvailability(of:given:reconciliation:)` starts deciding which reason a user sees,
     /// silently.
     ///
     /// **Mutation:** drop `.union(restoreAbandoned)` from

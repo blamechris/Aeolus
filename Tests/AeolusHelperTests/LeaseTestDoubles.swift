@@ -370,13 +370,13 @@ enum LeaseFixture {
     /// The real `StartupReconciliation` over `plane`, wired exactly as the composition root
     /// wires it: the same restorer type, the same `.panicRestore` writer for the
     /// machine-wide verb.
-    static func reconciliation(
-        over plane: ScriptedControlPlane,
+    static func reconciliation<Plane: FanControlPlane>(
+        over plane: Plane,
         enumeration: some FanEnumerating = ScriptedFanEnumeration(),
         clock: some MonotonicClock = SystemMonotonicClock(),
         budget: Duration = ReconciliationLimits.budget,
         log: SafetyLog = SafetyLog(subsystem: "dev.aeolus.AeolusHelperTests", category: "Safety")
-    ) -> StartupReconciliation<ScriptedControlPlane> {
+    ) -> StartupReconciliation<Plane> {
         StartupReconciliation(
             plane: plane,
             enumeration: enumeration,

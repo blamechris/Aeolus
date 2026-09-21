@@ -117,10 +117,13 @@ struct StartupReconciliationTests {
             in whatever mode the dead process left it.
             """)
         #expect(
-            await helper.reconciliation.unreconciledFans.isEmpty,
+            await helper.reconciliation.unreconciledFans == [0, 1],
             """
-            The machine-wide restore was honoured, so no fan is left in an unknown mode and \
-            none should be refused a lease on account of reconciliation.
+            The machine-wide restore was accepted, but every F<n>Md read is still failing, \
+            so nothing has confirmed either fan left manual control. Clearing the refusal on \
+            the write alone is #204: firmware can take a mode write and not apply it, and a \
+            lease would then be granted over a fan still pinned. \
+            `StartupReconciliationReadBackTests` covers the read-back that does clear it.
             """)
     }
 
@@ -180,8 +183,12 @@ struct StartupReconciliationTests {
             registry entry, and nothing that will look again.
             """)
         #expect(
-            await helper.reconciliation.establishedNothing == false,
-            "the keystone landed, so nothing is left in an unknown mode to refuse over")
+            await helper.reconciliation.establishedNothing,
+            """
+            The keystone was accepted, but FNum still does not answer, so no fan can be \
+            named to read it back and nothing has confirmed any fan's mode (#204). \
+            `StartupReconciliationReadBackTests` covers an enumeration that recovers.
+            """)
     }
 
     /// The same branch, on firmware that refuses the keystone too.
@@ -548,13 +555,13 @@ struct ForeignManualControlReportingTests {
     ///
     /// `F<n>Md` reads `1` for a fan Aeolus is holding and for a fan somebody else is
     /// holding, and names no owner either way — so the lease exclusion in
-    /// `reportingForeignControl(of:heldByAeolus:)` is the only thing between a user and
+    /// `reportingForeignControl(of:heldByAeolus:reconciliation:)` is the only thing between a user and
     /// being told to go and quit software that is not running. Until this test existed the
     /// clause could be deleted with the whole non-hardware suite staying green: nothing put
     /// a fan under a live lease *and* in manual at once.
     ///
     /// **Mutation:** delete `!held.contains(fan.index)` from
-    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:)`. Run: red.
+    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:reconciliation:)`. Run: red.
     @Test("A fan under a live lease is Aeolus's own on the snapshot, not somebody else's")
     func aLeasedFanIsNotReportedAsForeign() async throws {
         let helper = Self.helperSeeingFanZeroInManual()
@@ -621,7 +628,7 @@ struct ForeignManualControlReportingTests {
     /// documented did not exist.
     ///
     /// **Mutation:** delete `!fan.isReclaimedBySystem` from
-    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:)`. Run: red.
+    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:reconciliation:)`. Run: red.
     @Test("A fan the system reclaimed is not reported as another program's")
     func aReclaimedFanIsNotReportedAsForeign() async throws {
         let reclaimed = HelperComposition(

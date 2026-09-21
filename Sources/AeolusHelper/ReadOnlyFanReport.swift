@@ -132,7 +132,7 @@ enum ReadOnlyFanReport {
     ///
     /// **A system reclamation sits below the build fact, and that asymmetry is #140's.** In
     /// this build it produces no availability of its own — a reclaimed fan is still
-    /// `.writePathNotBuilt` — which is why `reportingForeignControl(of:heldByAeolus:)` consults
+    /// `.writePathNotBuilt` — which is why `reportingForeignControl(of:heldByAeolus:reconciliation:)` consults
     /// `FanState.isReclaimedBySystem` rather than switching on what this returns, and that stays
     /// true. What #194 adds is the answer for a build that *can* write: `.reclaimedBySystem`,
     /// rather than the `.available` a bare fall-through would produce. Blindness needs the

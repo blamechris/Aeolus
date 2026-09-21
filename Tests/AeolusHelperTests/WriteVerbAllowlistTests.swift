@@ -248,7 +248,8 @@ struct WriteVerbAllowlistTests {
         "FanRestoring.swift: restoreToAutomatic(fans: Set<Int>, because: FanRestoreCause)",
         "LeaseAuthority.swift: restore(_: Set<Int>, because: FanRestoreCause)",
         "StartupReconciliation.swift: restore(fanAt: Int)",
-        "StartupReconciliation.swift: restoreEveryFan(because: SafetyLog.KeystoneReason)",
+        "StartupReconciliation.swift: restoreEveryFan(because: SafetyLog.KeystoneReason, "
+            + "until: ContinuousClock.Instant)",
         "FanAuthority.swift: restoreAllToAutomatic(from: ConnectionID)",
         "ReadOnlyFanAuthority.swift: restoreAllToAutomatic(from: ConnectionID)",
         "HelperConnectionSessionMessages.swift: restoreAllToAutomatic()",
@@ -293,7 +294,7 @@ struct WriteVerbAllowlistTests {
     /// [#164](https://github.com/blamechris/Aeolus/issues/164) added five here and two to
     /// `restoreVerbs`, and the split is worth stating because startup reconciliation both
     /// reads the firmware and restores it. `StartupReconciliation.restore(fanAt:)` and
-    /// `restoreEveryFan(because:)` are on the restore list for
+    /// `restoreEveryFan(because:until:)` are on the restore list for
     /// `LeaseAuthority.restore(_:because:)`'s reason — an index, or nothing at all, and no
     /// permit anywhere. `reconcile()` and `reconcileFans()` are here for
     /// `ReclamationWatchdog.cycle()`'s: they reach the keystone, and can only do it through
@@ -349,6 +350,16 @@ struct WriteVerbAllowlistTests {
         "LeaseAuthority.swift: activeLeaseView()",
         "StartupReconciliation.swift: reconcile()",
         "StartupReconciliation.swift: refusalForGrant(overFans: Set<Int>, "
+            + "heldByAeolus: Set<Int>)",
+        // #204's four. `confirmKeystone(until:)` is the keystone's read-back: it follows
+        // `restoreEveryFan(because:until:)` and reads `F<n>Md`, and writes nothing. The two
+        // `baseline()` entries are the snapshot's seam and its one conformer, which return a
+        // value. `refusalForGrant` in `ReconciliationBaseline.swift` is the protocol
+        // declaration, moved out of `StartupReconciliation.swift` with no change to it.
+        "StartupReconciliation.swift: confirmKeystone(until: ContinuousClock.Instant)",
+        "StartupReconciliation.swift: baseline()",
+        "ReconciliationBaseline.swift: baseline()",
+        "ReconciliationBaseline.swift: refusalForGrant(overFans: Set<Int>, "
             + "heldByAeolus: Set<Int>)",
         // #168's five. None of them can express a fan write: `withExclusiveAccess` runs an
         // arbitrary body under a scheduler turn and could in principle carry one — but the

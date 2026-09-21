@@ -310,7 +310,8 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             watchdog: reclamationWatchdog, log: safetyLog)
         leaseExpirySupervisor = LeaseExpirySupervisor(authority: leases, log: leaseLog)
 
-        let authority = SupervisedFanAuthority(reading: reading, leases: leases, log: log)
+        let authority = SupervisedFanAuthority(
+            reading: reading, leases: leases, reconciliation: reconciliation, log: log)
         self.authority = authority
 
         // § 4, at ADR 0007's level 4 and through `SafetyActorWriter` like every other
