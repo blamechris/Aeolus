@@ -164,6 +164,22 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// 2⁶⁴ handbacks is not a case, and a trap in a root daemon's safety actor would be.
     private var handbackGeneration: UInt64 = 0
 
+    /// Which `manualControlEngaged(_:)` each registered fan's entry in `engagedFans` came from,
+    /// so a bridge can tell whether its fan was engaged **again** while it awaited (#305).
+    ///
+    /// A stamp, not a comparison of permits: `CommandableFan` is a value, and engaging the
+    /// same fan again mints an equal one from the same envelope — the two registrations are
+    /// indistinguishable by the permit alone. Monotonic, drawn from `engagementGeneration`,
+    /// so a later registration never carries an earlier stamp — that, not the clearing, is
+    /// what the guard relies on. Keys track `engagedFans`': set with it in
+    /// `manualControlEngaged(_:)`, cleared with it in `forget(fanAt:)`. A stale stamp left
+    /// behind would change no decision, since any new registration outnumbers it, so the
+    /// clearing is bookkeeping and no test can make it fail.
+    private var engagedAt: [Int: UInt64] = [:]
+
+    /// The source of `engagedAt`'s stamps. `&+=` for `handbackGeneration`'s reason.
+    private var engagementGeneration: UInt64 = 0
+
     /// One fan § 3 restored itself: the permit the next emergency bridges it with, and what
     /// has been logged about its read-back — `OwedReadBack`'s sticky rule, per restore.
     ///
@@ -260,6 +276,8 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// `restoredUnconfirmed` as it enters `engagedFans`, so the two never share a fan.
     func manualControlEngaged(_ fan: CommandableFan) {
         engagedFans[fan.index] = fan
+        engagementGeneration &+= 1
+        engagedAt[fan.index] = engagementGeneration
         handbackOwed[fan.index] = nil
         restoredUnconfirmed[fan.index] = nil
     }
@@ -308,6 +326,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// worse, a later `forget` cleared by a read about a registration that no longer exists.
     private func forget(fanAt index: Int) {
         engagedFans[index] = nil
+        engagedAt[index] = nil
         handbackOwed[index] = nil
     }
 
@@ -548,8 +567,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         log.thermalEmergencyTakingBackLateEngagement(fans: engagedSince.map(\.index))
         // `engagedFans` only. `restoredUnconfirmed` is `fire(_:from:)`'s alone — see it.
         for fan in engagedSince {
-            await bridgeToMaximumThenRelease(fan)
-            restoredByEmergency(fan)
+            await bridgeThenFileRestored(fan)
         }
         await leases.revokeEveryLease(because: .thermalEmergency)
     }
@@ -564,8 +582,10 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// **Only on a sighted cycle with the latch clear that did not fire, and last.** The
     /// other paths already act on an owed fan without a read, or must not spend a turn on
     /// one: a firing cycle bridges and restores every registered and every restored fan, and
-    /// moves each into `restoredUnconfirmed` whatever those writes did; a latched cycle
-    /// takes back whatever is registered, the same way; and a blind cycle is a machine whose
+    /// moves each into `restoredUnconfirmed` whatever those writes did — except one engaged
+    /// again mid-bridge, which stays registered and is bridged again (#305, see
+    /// `bridgeThenFileRestored(_:)`); a latched cycle takes back whatever is registered, the
+    /// same way; and a blind cycle is a machine whose
     /// SMC is not answering, where one more `.supervisor` read would only fail. A read that
     /// never runs keeps the fan owed — a machine blind between episodes still bridges it in
     /// the next one. Taken last so it
@@ -737,14 +757,42 @@ actor ThermalEmergency<Plane: FanControlPlane> {
             hottest: hottest, ceiling: ceilingCelsius, fansHeld: held.count)
 
         for fan in held {
-            await bridgeToMaximumThenRelease(fan)
-            restoredByEmergency(fan)
+            await bridgeThenFileRestored(fan)
         }
         // Every lease, not one per bridged fan. A client can hold a live lease without
         // having engaged manual control under it yet, and such a fan is in no registry —
         // selecting on `engagedFans` here left exactly that lease alive through an
         // emergency. See `LeaseAuthority.revokeEveryLease(because:)`.
         await leases.revokeEveryLease(because: .thermalEmergency)
+    }
+
+    /// Bridges one fan, then files it as restored by § 3 — **unless it was engaged again
+    /// while the bridge awaited** (#305).
+    ///
+    /// The bridge is two writes, and this actor is reentrant across both. A
+    /// `manualControlEngaged(_:)` for the same fan that lands after the restore write is a
+    /// client taking the fan off automatic *after* § 3 put it back, and filing the fan as
+    /// restored would forget that newer registration: take-back reads only `engagedFans`, so
+    /// the fan would go unbridged for the rest of the episode. Left registered, it is taken
+    /// back by the next latched cycle if the episode still holds, and otherwise handed back
+    /// by `fire`'s revocation and bridged by the next `fire` if it reads manual — the
+    /// over-firing direction either way. Registration already moved it out of
+    /// `restoredUnconfirmed`, so the two maps still never share a fan.
+    ///
+    /// **It also catches an engagement that lands during the maximum write**, before the
+    /// restore. The fan then ends automatic, and keeping it costs one more bridge: over-firing,
+    /// and deliberately not told apart, because "engaged during the bridge" is decidable from
+    /// the stamp and "engaged after which write" is not. Do not narrow the guard to the
+    /// restore-write case.
+    ///
+    /// "Engaged again" means a registration carrying a stamp other than the one captured
+    /// before the bridge — **including a fan that had none**, one `fire` took from
+    /// `restoredUnconfirmed`. A fan with no stamp now is filed as before.
+    private func bridgeThenFileRestored(_ fan: CommandableFan) async {
+        let registration = engagedAt[fan.index]
+        await bridgeToMaximumThenRelease(fan)
+        if let now = engagedAt[fan.index], now != registration { return }
+        restoredByEmergency(fan)
     }
 
     /// One fan: maximum in a single write, then back to automatic.
