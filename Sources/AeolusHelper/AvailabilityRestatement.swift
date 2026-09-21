@@ -27,7 +27,7 @@ import FanKit
 // | 2 | `.handbackUnconfirmed` | `reportingHandbackState` — § 4's budget expired |
 // | 3 | `.releaseInProgress` | `reportingHandbackState` — a restore on the wire |
 // | 4 | `.supervisorBlind` | `availability(whenLedgerSays:…)` — § 5's ledger |
-// | 5 | `.foreignManualControl` | `reportingForeignControl` — § 6's baseline |
+// | 5 | § 6's durable refusal, then `.foreignManualControl` | `reportingForeignControl` — § 6's baseline |
 // | 6 | `.writePathNotBuilt` | `availability(whenLedgerSays:…)` — the seam's capability |
 // | 7 | `.reclaimedBySystem` | `availability(whenLedgerSays:…)` — § 5's ledger |
 // | 8 | `.boundsImplausible` | `availability(whenLedgerSays:…)` — § 2's gate |
@@ -40,6 +40,16 @@ import FanKit
 // That disjointness is what lets the two re-statements compose in either order; it is
 // asserted by `SnapshotAvailabilityTests`, because a change to either set would make the
 // composition order start mattering silently.
+//
+// **Step 5 answers two questions, in `StartupReconciliation.refusalForGrant`'s order.** First
+// the durable refusals the one-shot pass left — `.supervisorBlind` for a fan whose mode it
+// never established, `.restoreToAutomaticFailed` for one it could not hand back — through the
+// same `ReconciliationBaseline.durableRefusal(overFans:)` the grant path calls, so the two
+// cannot drift ([#204](https://github.com/blamechris/Aeolus/issues/204)). Then foreign
+// control, judged from the snapshot's own mode read where the grant path takes a fresh one.
+// Before #204 only the second question was asked here, and a fan reconciliation had refused
+// was reported `.writePathNotBuilt` while the grant path refused it for a reason the screen
+// never showed.
 //
 // **`.leaseHeldByAnotherClient` is absent from the ladder and cannot be added.** See
 // `LeaseAccountability`: a snapshot has no `ConnectionID`, so the helper cannot know whether
@@ -63,10 +73,12 @@ extension ReadOnlyFanReport {
     /// compose in either order for the reason this file's header gives: the fans they speak
     /// about are disjoint by construction.
     static func restatingAvailability(
-        of fan: FanState, given leases: LeaseAccountability
+        of fan: FanState, given leases: LeaseAccountability,
+        reconciliation baseline: ReconciliationBaseline
     ) -> FanState {
         reportingHandbackState(
-            of: reportingForeignControl(of: fan, heldByAeolus: leases.accountableFans),
+            of: reportingForeignControl(
+                of: fan, heldByAeolus: leases.accountableFans, reconciliation: baseline),
             given: leases)
     }
 
@@ -182,15 +194,28 @@ extension ReadOnlyFanReport {
     /// Everything else is overwritten, including `.available`. Writing the guard as "only
     /// when the read path said `.writePathNotBuilt`" would pass today and silently stop
     /// applying on the day E3 makes that answer something else.
+    ///
+    /// ## The durable refusal comes first, and applies whatever the fan's mode
+    ///
+    /// A fan reconciliation refused is refused whether it reads automatic now or not: the
+    /// grant path asks the baseline *before* its fresh read, and answers from it without
+    /// reading at all. So the mode guard sits below it rather than above. The same two § 5
+    /// exemptions hold, for the same reason — and cannot in practice meet a durable refusal,
+    /// because § 5's registry holds only fans Aeolus engaged and a refused fan is never
+    /// granted to be engaged.
     static func reportingForeignControl(
-        of fan: FanState, heldByAeolus held: Set<Int>
+        of fan: FanState, heldByAeolus held: Set<Int>,
+        reconciliation baseline: ReconciliationBaseline
     ) -> FanState {
-        guard fan.mode != .automatic, !held.contains(fan.index), !fan.isReclaimedBySystem
-        else { return fan }
+        guard !held.contains(fan.index), !fan.isReclaimedBySystem else { return fan }
         switch fan.manualControlAvailability {
         case .unavailable(.supervisorBlind): return fan
         default: break
         }
+        if let durable = baseline.durableRefusal(overFans: [fan.index]) {
+            return restating(fan, as: .unavailable(durable))
+        }
+        guard fan.mode != .automatic else { return fan }
         return restating(fan, as: .unavailable(.foreignManualControl))
     }
 }

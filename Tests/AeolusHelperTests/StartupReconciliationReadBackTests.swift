@@ -154,6 +154,63 @@ struct StartupReconciliationReadBackTests {
             already too slow.
             """)
     }
+
+    // MARK: - The snapshot agrees with the grant
+
+    /// #204's item 2: the snapshot names the refusal the grant path would throw.
+    ///
+    /// Fan 0 reads automatic and is clean. Fan 1's mode never reads, so it stays
+    /// `unreconciled`. Fan 2 is left in manual by a keystone the firmware accepted. The
+    /// sensor provider reports all three automatic with plausible bounds on a seam that can
+    /// write, so before #204 the snapshot offered all three as `.available` while the grant
+    /// path refused two of them.
+    ///
+    /// **Mutation:** in `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:
+    /// reconciliation:)`, delete the `if let durable = …` block. Run: red — fans 1 and 2
+    /// read `.available`.
+    @Test("The snapshot reports reconciliation's refusal with the reason a grant throws")
+    func theSnapshotNamesReconciliationsRefusal() async throws {
+        let scripted = ScriptedControlPlane(
+            fans: [
+                0: .automatic(at: 1_800), 1: .automatic(at: 1_800), 2: .held(at: 2_400),
+            ],
+            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+        let helper = HelperComposition(
+            plane: ReadBackScriptedPlane(
+                wrapping: scripted, unreadableModes: [1], keystoneMisses: [2]),
+            snapshotProvider: fanProvider(fanCount: 3),
+            criticalSensors: .mac16x5,
+            log: HelperRestorerTests.helperLog,
+            leaseLog: LeaseFixture.log,
+            safetyLog: Self.safetyLog)
+
+        await helper.bringUp()
+
+        let snapshot = try await helper.authority.snapshot()
+        let expected: [Int: ManualControlAvailability] = [
+            0: .available,
+            1: .unavailable(.supervisorBlind),
+            2: .unavailable(.restoreToAutomaticFailed),
+        ]
+        for fan in snapshot.fans {
+            #expect(
+                fan.manualControlAvailability == expected[fan.index],
+                """
+                Fan \(fan.index)'s snapshot says \(fan.manualControlAvailability), and \
+                reconciliation's baseline says \(String(describing: expected[fan.index])). \
+                A screen offering control the grant path refuses is CLAUDE.md rule 6.
+                """)
+        }
+
+        for index in [1, 2] {
+            guard case .unavailable(let reason) = expected[index] else { continue }
+            await #expect(throws: AeolusXPCFault.manualControlUnavailable(reason: reason)) {
+                _ = try await helper.leases.acquireLease(
+                    LeaseFixture.request(fans: [index]), from: ConnectionID())
+            }
+        }
+        await helper.shutDown()
+    }
 }
 
 // MARK: - Doubles

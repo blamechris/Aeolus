@@ -66,6 +66,15 @@ struct SupervisedFanAuthority: FanAuthority {
 
     private let leases: LeaseAuthority
 
+    /// § 6's durable refusals, for step 5 of the availability ladder
+    /// ([#204](https://github.com/blamechris/Aeolus/issues/204)).
+    ///
+    /// Required rather than defaulted, for `controlGate`'s reason turned around: a default of
+    /// "nothing refused" would compile and let a caller build an authority whose snapshot
+    /// offers control the grant path refuses. `HelperComposition` hands it the same
+    /// `StartupReconciliation` the lease core asks.
+    private let reconciliation: any ReconciliationBaselineReporting
+
     /// E5.4d's teardown gate, closed by `SignalTeardown` before it hands the fans back.
     ///
     /// **Owned here and exposed, rather than injected**, which is the opposite of the rule
@@ -84,9 +93,13 @@ struct SupervisedFanAuthority: FanAuthority {
 
     private let log: HelperLog
 
-    init(reading: ReadOnlyFanAuthority, leases: LeaseAuthority, log: HelperLog) {
+    init(
+        reading: ReadOnlyFanAuthority, leases: LeaseAuthority,
+        reconciliation: some ReconciliationBaselineReporting, log: HelperLog
+    ) {
         self.reading = reading
         self.leases = leases
+        self.reconciliation = reconciliation
         self.log = log
     }
 
@@ -141,9 +154,13 @@ struct SupervisedFanAuthority: FanAuthority {
     func snapshot() async throws -> SystemSnapshot {
         let machine = try await reading.snapshot()
         let view = await leases.activeLeaseView()
+        // Its own hop, and that is safe for a reason the lease view does not share: the
+        // baseline is fixed before the listener resumes, so no two reads of it can differ.
+        let baseline = await reconciliation.baseline()
         return SystemSnapshot(
             fans: machine.fans.map {
-                ReadOnlyFanReport.restatingAvailability(of: $0, given: view)
+                ReadOnlyFanReport.restatingAvailability(
+                    of: $0, given: view, reconciliation: baseline)
             },
             sensors: machine.sensors,
             activeLease: view.lease,

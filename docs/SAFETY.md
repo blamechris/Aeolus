@@ -1133,6 +1133,10 @@ enumeration both fall back to the machine-wide verb, a second pass is declined, 
 afterwards is refused and not restored, a fan the firmware would not hand back is refused
 `.restoreToAutomaticFailed`, an exhausted budget takes the keystone and still refuses
 durably, and the snapshot reports the firmware's own mode.
+`StartupReconciliationReadBackTests` holds [#204](https://github.com/blamechris/Aeolus/issues/204):
+a keystone the firmware accepts but does not apply leaves that fan refused, only a read-back of
+`F<n>Md` clears a refusal, the read-back stays inside the budget, and the snapshot names each
+durable refusal with the reason a grant over the same fan throws.
 `ForeignManualControlReportingTests` covers the three fans the snapshot must **not** call
 somebody else's: one under a live lease, one whose handback was abandoned, and one § 5
 diagnosed as reclaimed by the system.
