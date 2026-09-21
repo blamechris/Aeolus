@@ -74,7 +74,7 @@ struct StartupReconciliationReadBackTests {
     /// The other direction, so the read-back is not simply "refuse everything".
     ///
     /// **Mutation:** in `confirmKeystone(until:)`, replace
-    /// `unreconciled = unconfirmed.subtracting(handbackRefused)` with `unreconciled = owed`.
+    /// `unreconciled = unconfirmed` with `unreconciled = owed`.
     /// Run: red.
     @Test("A keystone every fan reads back automatic from clears every refusal")
     func aConfirmedKeystoneClears() async throws {
@@ -310,36 +310,48 @@ struct StartupReconciliationReadBackTests {
     /// The same machine on today's seam, which cannot write: every grant is refused
     /// `.writePathNotBuilt` first, and the snapshot must not name a reconciliation refusal
     /// no grant returns — least of all `.restoreToAutomaticFailed`, whose firmware was never
-    /// written to. Fan 2 still reads manual and keeps the pre-#204 answer, foreign control,
-    /// which `HelperHardwareTests.expectHonestAvailability` holds this machine to.
+    /// written to. Fan 1 is found in manual, its restore is refused by the build exactly as
+    /// the production plane refuses it, and it keeps the pre-#204 answer, foreign control,
+    /// which `HelperHardwareTests.expectHonestAvailability` holds this machine to. Fan 2's
+    /// mode never reads, so it is unreconciled.
     ///
-    /// **Mutation:** delete `fan.manualControlAvailability != .unavailable(.writePathNotBuilt),`
-    /// from `reportingForeignControl`. Run: red — fans 1 and 2 read `.supervisorBlind`.
+    /// **Mutation A:** delete `fan.manualControlAvailability != .unavailable(.writePathNotBuilt),`
+    /// from `reportingForeignControl`. Run: red — fan 1 reads `.restoreToAutomaticFailed` and
+    /// fan 2 `.supervisorBlind`.
+    /// **Mutation B:** append `|| baseline.refusedHandbacks.contains(fan.index)` to that
+    /// condition — the refused-handback half alone. Run: red — fan 1.
     @Test("On a seam that cannot write, the snapshot names no reconciliation refusal")
     func aSeamThatCannotWriteShowsNoDurableRefusal() async throws {
         let scripted = ScriptedControlPlane(
             fans: [
-                0: .automatic(at: 1_800), 1: .automatic(at: 1_800), 2: .held(at: 2_400),
+                0: .automatic(at: 1_800), 1: .held(at: 2_400), 2: .automatic(at: 1_800),
             ],
             stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
         let helper = HelperComposition(
             plane: ReadBackScriptedPlane(
-                wrapping: scripted, unreadableModes: [1], keystoneMisses: [2],
+                wrapping: scripted, unreadableModes: [2],
                 writeCapability: .notBuilt),
             snapshotProvider: fanProvider(
-                fanCount: 3, extraKeys: ["F2Md": .reading("F2Md", 1)]),
+                fanCount: 3, extraKeys: ["F1Md": .reading("F1Md", 1)]),
             criticalSensors: .mac16x5,
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)
 
         await helper.bringUp()
+        #expect(
+            await helper.reconciliation.fansWithRefusedHandback == [1],
+            """
+            Fan 1 was found in manual on a seam that cannot write, so its restore was refused \
+            and it is a refused handback — the case this test exists to render. Without it the \
+            assertions below cannot see `.restoreToAutomaticFailed` leak into the snapshot.
+            """)
 
         let snapshot = try await helper.authority.snapshot()
         let expected: [Int: ManualControlAvailability] = [
             0: .unavailable(.writePathNotBuilt),
-            1: .unavailable(.writePathNotBuilt),
-            2: .unavailable(.foreignManualControl),
+            1: .unavailable(.foreignManualControl),
+            2: .unavailable(.writePathNotBuilt),
         ]
         for fan in snapshot.fans {
             #expect(
@@ -347,7 +359,7 @@ struct StartupReconciliationReadBackTests {
                 "fan \(fan.index) reads \(fan.manualControlAvailability) on a seam that cannot write"
             )
         }
-        for index in [0, 1] {
+        for index in [0, 2] {
             await #expect(
                 throws: AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
             ) {
@@ -421,6 +433,9 @@ actor ReadBackScriptedPlane: FanControlPlane {
     }
 
     func restoreToAutomatic(_ scope: FanRestoreScope) async throws {
+        // What the production plane does: a seam that cannot write refuses every write verb,
+        // so a fan found in manual is abandoned by the restorer and lands in `handbackRefused`.
+        guard writeCapability == .built else { throw FanControlPlaneError.controlPathNotBuilt }
         try await wrapped.restoreToAutomatic(scope)
         let misses: Set<Int>
         switch scope {

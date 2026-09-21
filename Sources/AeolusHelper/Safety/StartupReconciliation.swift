@@ -392,7 +392,7 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
         // Every fan is accounted for now, so the machine-wide flag gives way to the set: an
         // index exists for each fan still refused.
         nothingEstablished = false
-        unreconciled = unconfirmed.subtracting(handbackRefused)
+        unreconciled = unconfirmed
         guard unconfirmed.isEmpty else {
             log.reconciliationKeystoneUnconfirmed(
                 unconfirmed: unconfirmed, detail: "read back in manual, unreadable, or unread")
