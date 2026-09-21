@@ -397,7 +397,7 @@ actor ThrowOnceCriticalTemperatures: CriticalTemperatureSensing {
 /// false for every earlier record, so a `.sighted` written through here *always* lands. A
 /// scenario built on this helper could never observe a stale sighting being dropped, and
 /// would read as evidence the guard is absent.
-/// `ThermalEmergencyStalenessTests.aCycleDoesNotOverwriteABlindnessRecordedDuringItsRead`
+/// `ThermalEmergencyRecordStalenessTests.aCycleDoesNotOverwriteABlindnessRecordedDuringItsRead`
 /// and its sibling drive the real `cycle()` for exactly that reason.
 ///
 /// **On a frozen `TestClock` with something already recorded it silently does nothing.**
