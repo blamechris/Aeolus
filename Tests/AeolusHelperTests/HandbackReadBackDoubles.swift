@@ -31,8 +31,16 @@ actor GatedHandbackReadBack: HandbackReadingBack {
     /// Reads parked on the gate right now.
     private(set) var held = 0
 
+    /// Fans left out of every answer, as a reader that fails to answer for one would.
+    private var omitted: Set<Int> = []
+
     init(_ wrapped: any HandbackReadingBack) {
         self.wrapped = wrapped
+    }
+
+    /// Leaves `fans` out of every answer from now on — not `.unreadable`, *absent*.
+    func omit(_ fans: Set<Int>) {
+        omitted = fans
     }
 
     /// Parks every read from now until `open()`.
@@ -55,7 +63,7 @@ actor GatedHandbackReadBack: HandbackReadingBack {
             await withCheckedContinuation { waiters.append($0) }
             held -= 1
         }
-        return await wrapped.handbackReadings(of: fans)
+        return await wrapped.handbackReadings(of: fans).filter { !omitted.contains($0.key) }
     }
 }
 

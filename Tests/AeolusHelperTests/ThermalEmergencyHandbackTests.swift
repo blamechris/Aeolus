@@ -48,6 +48,34 @@ struct ThermalEmergencyHandbackTests {
         #expect(await machine.handbackReadBack.requests.isEmpty)
     }
 
+    /// A fan the reader leaves out of its answer is treated as unreadable: kept, and owed.
+    ///
+    /// `HandbackReadingBack` promises every fan asked about is in the answer, and a conformer
+    /// that breaks that promise must not be read as "automatic". The firmware under fan 0
+    /// reads automatic here, so only the fallback decides the outcome.
+    ///
+    /// **Mutation:** in `ThermalEmergency.readBackAcceptedHandbacks()`, change
+    /// `readings[fan] ?? .unreadable(detail: …)` to `readings[fan] ?? .automatic`. Run: red —
+    /// fan 0 is forgotten on an answer that never mentioned it.
+    @Test("A fan missing from the read-back's answer is kept")
+    func aFanMissingFromTheAnswerIsKept() async throws {
+        let machine = ThermalMachine(stages: [.at(44)])
+        try await machine.engageManualControl(fan: 0)
+        await machine.emergency.handbackAccepted(fanAt: 0)
+        await machine.handbackReadBack.omit([0])
+
+        await machine.emergency.cycle()
+
+        #expect(await machine.handbackReadBack.requests == [[0]], "the read was never issued")
+        #expect(
+            await machine.emergency.fansUnderManualControl == [0],
+            "§ 3 forgot a fan the read-back said nothing about")
+        #expect(await machine.emergency.fansOwedHandbackReadBack == [0])
+        #expect(
+            machine.safetyLog.levels(containing: "the read-back did not answer for it")
+                == [.notice])
+    }
+
     // MARK: - Staleness across the read
 
     /// A read asked for one handback must not clear a newer one.
