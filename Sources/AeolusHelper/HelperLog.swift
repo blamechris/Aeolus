@@ -201,6 +201,28 @@ struct HelperLog: Sendable {
         )
     }
 
+    /// A discovery walk has outlived twice the longest contended walk, and has not returned.
+    ///
+    /// `.fault` because nothing else would say so. The line names what it cannot tell apart
+    /// rather than guessing: the walk may be wedged inside an IOKit call — which, because
+    /// `SMCConnection` is an actor, holds up **every** SMC read, the safety cycle's included
+    /// (#293) — or it may still be parked behind a connection rebuild that has itself not
+    /// returned. It also cannot rule out a machine that slept mid-walk: the alarm's clock is
+    /// continuous. What a client sees meanwhile is a snapshot that never answers.
+    func discoveryWalkOverran(alarm: Duration) {
+        log.fault(
+            """
+            The SMC sensor discovery walk has not returned after \
+            \(alarm.milliseconds, privacy: .public) ms (longest measured under contention: \
+            \(SMCReadScheduler.longestContendedDiscoveryWalk.milliseconds, privacy: .public) \
+            ms). It is not cancelled. If an SMC call is wedged, every SMC read in the helper \
+            is waiting behind it, including the safety supervisors', and snapshots will not \
+            answer; if a connection rebuild is wedged, the walk is waiting behind that. See \
+            issues #205 and #293.
+            """
+        )
+    }
+
     func sensorDiscoveryFailed(reason: String) {
         log.error(
             """

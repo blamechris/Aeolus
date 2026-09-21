@@ -77,6 +77,16 @@ actor ReadOnlyFanAuthority: FanAuthority {
 
     private let provider: any SensorProvider
     private let log: HelperLog
+
+    /// What the walk's overrun alarm sleeps on — see `walkEveryKey()`. Nothing else here
+    /// reads it: every other instant in this type is a wall-clock `capturedAt` or a logged
+    /// duration, and neither is a deadline.
+    private let clock: any MonotonicClock
+
+    /// How many walks have outlived `SMCReadScheduler.discoveryWalkOverrunAlarm`, for tests
+    /// and diagnostics. The `.fault` line is the operational signal; this is what lets a test
+    /// see that it fired.
+    private(set) var discoveryWalkOverruns = 0
     private let now: @Sendable () -> Date
 
     /// `docs/SAFETY.md` § 3's latch, read once per snapshot.
@@ -167,9 +177,11 @@ actor ReadOnlyFanAuthority: FanAuthority {
         thermalEmergency: ThermalEmergencyLatch,
         reclamation: ReclamationLedger,
         writeCapability: some FanWriteCapabilityReporting,
+        clock: some MonotonicClock = SystemMonotonicClock(),
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.provider = provider
+        self.clock = clock
         self.fanModes = ObservedFanModes(reading: fanMode, log: log)
         self.log = log
         self.thermalEmergency = thermalEmergency
@@ -376,13 +388,49 @@ actor ReadOnlyFanAuthority: FanAuthority {
         defer { if discovery == walk { discovery = nil } }
 
         let discovered = try await walk.value
+        // Cached even when empty, and that is a limit kept on purpose rather than fixed. An
+        // empty walk is what a handle that died after `#KEY` returns, and caching it keeps
+        // the machine sensorless after the rebuild `ConnectionHealth` triggers — but *not*
+        // caching it, which #290's first revision did, re-runs a 6–25 s walk on every 1 Hz
+        // snapshot for as long as the walk stays empty, holding the one SMC connection the
+        // safety cycle reads through (#293). Both halves need a backoff, not a flag: #292.
         discoveredSensors = discovered
         return discovered
     }
 
     /// The walk itself, and the only call to `SensorProvider.readAll()` in the helper.
+    ///
+    /// ## The overrun alarm, and why it is here rather than in the scheduler
+    ///
+    /// [#205](https://github.com/blamechris/Aeolus/issues/205): a walk in which IOKit wedges
+    /// never returns, and D22 makes a recycle wait for it with no bound — correctly, since a
+    /// recycle that stopped waiting would close the handle under the walk. What that left was
+    /// a helper that silently stopped noticing connection failures. The alarm makes it one
+    /// `.fault` line instead, at `SMCReadScheduler.discoveryWalkOverrunAlarm`, and does
+    /// nothing else: the walk is not cancelled, no wait is shortened, and a walk that ends
+    /// after the alarm returns its readings as normal.
+    ///
+    /// It times the whole of `provider.readAll()`, which through the scheduler includes a wait
+    /// behind a connection rebuild already claimed (D22's other direction), and it sleeps on a
+    /// continuous clock, so a machine asleep mid-walk counts. The fault line says both rather
+    /// than asserting which happened.
+    ///
+    /// Here because this is the one caller that owns the walk as a task, and because the
+    /// scheduler deliberately has no clock seam (`SchedulerEvent`'s documentation says why).
+    /// Not in `ConnectionHealth` either: its pump is exactly what is parked while a wedged walk
+    /// holds up the recycle, so an alarm there could not fire when it matters.
     private func walkEveryKey() async throws -> [DiscoveredSensorKey] {
         let started = ContinuousClock.now
+        let alarmAt = clock.now.advanced(by: SMCReadScheduler.discoveryWalkOverrunAlarm)
+        let alarm = Task { [clock] in
+            // `sleep(until:)` throws only `CancellationError`: the walk ended first, or the
+            // task running the walk was itself cancelled. Either way there is nothing to report.
+            do { try await clock.sleep(until: alarmAt) } catch { return }
+            // Checked again, because a clock may finish its sleep without noticing a cancel.
+            guard !Task.isCancelled else { return }
+            await self.discoveryWalkOverran()
+        }
+        defer { alarm.cancel() }
         let readings = try await provider.readAll()
 
         var seen: Set<String> = []
@@ -397,4 +445,11 @@ actor ReadOnlyFanAuthority: FanAuthority {
         log.discoveredSensors(count: discovered.count, duration: ContinuousClock.now - started)
         return discovered
     }
+
+    /// The alarm fired: the walk is still running, and is left running.
+    private func discoveryWalkOverran() {
+        discoveryWalkOverruns += 1
+        log.discoveryWalkOverran(alarm: SMCReadScheduler.discoveryWalkOverrunAlarm)
+    }
+
 }

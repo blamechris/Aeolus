@@ -194,6 +194,33 @@ build*, that is still a claim about the hardware which a stray helper — or ano
 from `F<n>Md` marked community-confidence. Filed with the app-side client work rather than fixed
 here.
 
+## Amendment — a discovery walk's outcome, and a walk that does not end (#205)
+
+Recorded here because the rulings it extends — #198's D21, D22 and D25 — live only in that PR
+and in code comments, and a reviewer searching `docs/` for why a 2930-key walk counts as one
+outcome would otherwise find nothing.
+
+- **One outcome per walk, in the same run.** `SMCReadScheduler.readAll()` emits
+  `SchedulerEvent.discoveryWalkEnded` once. `ConnectionHealth` counts a walk that threw, or
+  returned no readings, as **one** failure in the run the 1 Hz reads build, and resets on a
+  walk with readings (D25: one real value proves the handle answered). A walk is one question
+  put to the handle; weighting it by its key count would let one bad walk rebuild a connection
+  on its own.
+- **A short set is not judged**, and cannot be from what the scheduler sees. It is
+  [#292](https://github.com/blamechris/Aeolus/issues/292), which also records that a walk's
+  `.returned` is evidence from the walk's *start*. An **empty** walk is still cached: not
+  caching it re-walks on every 1 Hz snapshot while it stays empty, which holds the shared
+  connection (#293) — so it needs a backoff, also #292's.
+- **A walk that does not end raises an alarm, never a timeout.** `ReadOnlyFanAuthority` logs a
+  `.fault` at `SMCReadScheduler.discoveryWalkOverrunAlarm` (twice the longest contended walk,
+  49.8 s) and cancels nothing, for D22's reason: a recycle that stopped waiting would close the
+  handle under the walk.
+- **Correction to D22's documentation.** It said reads keep flowing during a wedged walk,
+  because no turn is held. They do not: `SMCConnection` is an actor that makes the IOKit call
+  synchronously, so a wedged call holds up every read on the shared connection, the safety
+  cycle's included. That makes a wedge blindness rather than a missed rebuild, and it is
+  [#293](https://github.com/blamechris/Aeolus/issues/293), for the architect, before E3.
+
 ## Revisit when
 
 Field evidence shows helper residency for read-only monitoring is unacceptable — which would motivate

@@ -231,8 +231,12 @@ actor ConnectionHealth: SchedulerObserving {
     /// process. That is a documented limitation of D22, recorded on
     /// [#205](https://github.com/blamechris/Aeolus/issues/205), and **not** a bug a timeout
     /// would fix: a recycle that gave up waiting would close the handle underneath the walk
-    /// still reading through it, which is the hazard D22 closed. Reads keep flowing
-    /// throughout, because no turn is held.
+    /// still reading through it, which is the hazard D22 closed. **Reads do not keep flowing
+    /// meanwhile**, as this said until #290's review: `SMCConnection` is an actor that makes
+    /// the IOKit call synchronously, so a wedged call queues every read behind it — see
+    /// [#293](https://github.com/blamechris/Aeolus/issues/293). What makes the wedge visible
+    /// at all is `SMCReadScheduler.discoveryWalkOverrunAlarm`, whose `.fault` fires from the
+    /// authority rather than from this type, whose pump is exactly what is parked.
     static let eventBuffer = 64
 
     /// The most whole-read outcomes a second this observer is expected to be sent, on a
@@ -252,7 +256,7 @@ actor ConnectionHealth: SchedulerObserving {
     /// their own.
     nonisolated func schedulerDidObserve(_ event: SchedulerEvent) {
         switch event {
-        case .wholeReadSucceeded, .wholeReadAbsentOnly, .wholeReadFailed:
+        case .wholeReadSucceeded, .wholeReadAbsentOnly, .wholeReadFailed, .discoveryWalkEnded:
             // Numbered here rather than in the pump, because a number assigned after the
             // buffer could not describe what the buffer threw away.
             let next = sequence.withLock { issued -> UInt64 in
@@ -275,13 +279,11 @@ actor ConnectionHealth: SchedulerObserving {
     /// process — reconciliation's — happen during bring-up. A failure there is exactly the
     /// case worth counting.
     ///
-    /// **Discovery's walk is not among them**, and this comment named it until a review
-    /// checked. `SMCReadScheduler.readAll()` emits no scheduler event at all, so a walk that
-    /// fails during bring-up is counted by nothing here. Reporting it would need a decision
-    /// this change does not take: whether a 2.2 s — 5.9 s cold — walk's outcome belongs in the
-    /// same run as reads issued at 1 Hz. Recorded on
-    /// [#205](https://github.com/blamechris/Aeolus/issues/205), with the other limit the
-    /// walk imposes on this type — see `eventBuffer`.
+    /// **Discovery's walk is among them since
+    /// [#205](https://github.com/blamechris/Aeolus/issues/205)**, as one outcome per walk in
+    /// the same run — see `SchedulerEvent.discoveryWalkEnded` for the ruling. It was absent
+    /// before, and this comment named it anyway until a review checked. The other limit the
+    /// walk imposes on this type is unchanged — see `eventBuffer`.
     ///
     /// **`recovery` is carried by the pump rather than stored**, and that is what removes the
     /// unbound state entirely. Late binding is forced by the graph — the plane holds the
@@ -355,10 +357,16 @@ actor ConnectionHealth: SchedulerObserving {
             // counted below like the other two.
             break
         case .wholeReadFailed:
-            consecutiveFailures += 1
-            if consecutiveFailures >= ConnectionHealthLimits.consecutiveWholeReadFailures {
-                await attemptReconnect(through: recovery)
-            }
+            await countFailure(recovering: recovery)
+        case .discoveryWalkEnded(.returned(let readings)) where readings > 0:
+            // One real value is proof the handle answered, exactly as for a subset read. A
+            // short set is not a failure here and cannot be judged here — see
+            // `DiscoveryWalkOutcome` for the limit and #292 for what would judge it.
+            consecutiveFailures = 0
+        case .discoveryWalkEnded:
+            // A walk that threw, or returned nothing from a machine that declared keys: the
+            // handle failed to answer. One outcome in the same run, never one per key.
+            await countFailure(recovering: recovery)
         case .waiterParked, .turnGranted, .turnEnded, .overtakeTaken, .quotaExhausted:
             // Never forwarded, so never seen. Handled exhaustively rather than with a
             // `default`, so adding a case to `SchedulerEvent` is a compile error here — the
@@ -366,6 +374,14 @@ actor ConnectionHealth: SchedulerObserving {
             return
         }
         observedOutcomes += 1
+    }
+
+    /// One failure in the run, and a reconnect once the run is long enough.
+    private func countFailure(recovering recovery: some SMCConnectionRecovering) async {
+        consecutiveFailures += 1
+        if consecutiveFailures >= ConnectionHealthLimits.consecutiveWholeReadFailures {
+            await attemptReconnect(through: recovery)
+        }
     }
 
     /// One reconnect, if the window allows it.
