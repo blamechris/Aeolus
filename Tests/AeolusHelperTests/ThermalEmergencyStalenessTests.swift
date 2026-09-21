@@ -419,7 +419,7 @@ struct ThermalEmergencyStalenessTests {
         let sightings = machine.sightings
         await machine.emergencyTelemetry.interfere {
             clock.advance(by: .milliseconds(1))
-            await sightings.recordAsACycleWould(
+            await sightings.recordAsASetupStep(
                 .blind(FanControlPlaneError.readFailed(detail: "stale port")))
             clock.advance(by: .milliseconds(1))
         }
@@ -440,5 +440,59 @@ struct ThermalEmergencyStalenessTests {
         #expect(
             await machine.latch.holding == nil,
             "44 °C is an idle machine: this scenario is about the cycle's success path")
+    }
+
+    /// The same comparison, in the case where **both** outcomes are sightings.
+    ///
+    /// `aCycleDoesNotOverwriteABlindnessRecordedDuringItsRead` above pins the direction that
+    /// is a safety defect — a sighting displacing a blindness grants leases on a helper
+    /// found unable to see. This pins the direction that is a **staleness** defect, and
+    /// nothing did: narrowing the guard to
+    /// `if let recorded, case .blind = recorded.sighting, recorded.at >= start.instant`
+    /// leaves the entire 1,634-test suite green. Run, not reasoned — the whole suite passed.
+    ///
+    /// What that mutation costs is the bound ADR 0010 states in its headline: the cycle's
+    /// reading, taken at `t0`, is restamped at `t0 + the read` and then served for a full
+    /// `maxAge` from there, so a grant can be answered from a reading close to **two** cycle
+    /// periods old while both documents promise one. No lease is wrongly granted — both
+    /// records are sightings — which is exactly why it needs its own test rather than
+    /// riding on the one above.
+    ///
+    /// The discriminator is the **temperature**. § 3 reads a 44 °C machine; a fresher
+    /// reading of 60 °C lands while that read is in flight; the cache must serve 60. Under
+    /// the mutation it serves 44, which is the stale reading the bound forbids.
+    /// `readsIssued == 0` is the control: it proves the answer came from memory rather than
+    /// from a re-read that would have returned 44 legitimately.
+    ///
+    /// **Mutation (M13):** add `case .blind = recorded.sighting,` to the `.sighted` branch's
+    /// condition in `CriticalTemperatureCache.record(_:since:)`. Run: red here, and green
+    /// across the whole repository before this test existed.
+    @Test("A cycle does not restamp its own reading over a fresher one")
+    func aCycleDoesNotOverwriteAFresherSighting() async throws {
+        let machine = ThermalMachine(stages: [.at(44)])
+        let fresher = try CriticalTemperatureReport(
+            readings: [CriticalTemperature(key: smcKey("Tp01"), celsius: 60)],
+            unreadableKeys: [])
+
+        let clock = machine.clock
+        let sightings = machine.sightings
+        await machine.emergencyTelemetry.interfere {
+            clock.advance(by: .milliseconds(1))
+            await sightings.recordAsASetupStep(.sighted(fresher))
+            clock.advance(by: .milliseconds(1))
+        }
+
+        await machine.emergency.cycle()
+
+        #expect(
+            await machine.emergencyTelemetry.didFire,
+            "the fresher reading never landed inside the cycle's read — this proves nothing")
+        let served = try await machine.sightings.sighting()
+        #expect(
+            served.readings.map(\.celsius) == [60],
+            "the cycle restamped its own older reading over the fresher one")
+        #expect(
+            await machine.sightings.readsIssued == 0,
+            "the answer came from a fresh read, so it says nothing about what was held")
     }
 }

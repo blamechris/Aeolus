@@ -287,13 +287,14 @@ actor CriticalTemperatureCache: SightednessProving, CriticalTemperatureRecording
 
     // MARK: - Recording
 
-    /// Remembers what a real § 3 cycle read produced.
+    /// Remembers what a real read of the curated set produced.
     ///
-    /// Called by `ThermalEmergency.cycle()` on **both** paths, which is what makes the grant
-    /// path free during blindness as well as during health. A cache written only on success
-    /// would leave every retry of a storm issuing its own read on exactly the machine that
-    /// can least afford one — and each of those reads would fail, so the amplification would
-    /// be pure cost.
+    /// Its only caller is `record(_:since:)`, on both of that method's branches. Reaching it
+    /// requires being inside this file, which is the point — see below. Every *writer* still
+    /// records on both its own paths, success and failure alike, which is what makes the
+    /// grant path free during blindness as well as during health: a cache written only on
+    /// success would leave every retry of a storm issuing its own read on exactly the machine
+    /// that can least afford one, and each of those reads would fail.
     ///
     /// **`private`**, and that is the whole of
     /// [#280](https://github.com/blamechris/Aeolus/issues/280)'s fix. This is the unguarded
@@ -318,10 +319,20 @@ actor CriticalTemperatureCache: SightednessProving, CriticalTemperatureRecording
     /// the same clock instance this does, and wrong — silently, and green under test —
     /// the moment it did not.
     ///
-    /// Not `nonisolated`, though `clock` is an immutable `Sendable` and it could be. The
-    /// hop is the point: `beganReading()` must order against records already queued on this
-    /// actor, or a start could be stamped before a `record` that reached the actor first and
-    /// the comparison would be against a moment that had already passed.
+    /// Not `nonisolated`, though `clock` is an immutable `Sendable` and it could be — and
+    /// the honest reason is **accuracy, not safety**. The first version of this comment said
+    /// the hop was load-bearing against a start stamped before a record already queued here.
+    /// That reading runs the *safe* way: a `nonisolated` stamp is taken earlier, so
+    /// `recorded.at >= start.instant` fires more often, so more sightings are dropped, which
+    /// is over-refusal — the same cost the `.blind` bypass already accepts, bounded by
+    /// `maxAge`.
+    ///
+    /// What the hop actually buys is not spuriously discarding a cycle's sighting that is
+    /// genuinely newer than a record queued ahead of it. Stated correctly because a wrong
+    /// reason on a right mechanism is this repository's recorded way of losing the
+    /// mechanism: a later reader who works out that `nonisolated` is conservative would
+    /// conclude this paragraph is simply wrong, remove the isolation, and be right about the
+    /// safety direction while losing the property the paragraph was protecting.
     func beganReading() -> CriticalTemperatureReadingStart {
         CriticalTemperatureReadingStart(clock.now)
     }

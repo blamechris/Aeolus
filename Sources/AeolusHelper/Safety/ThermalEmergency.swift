@@ -70,8 +70,9 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// Where every cycle's reading is left for the grant path to prove sightedness from.
     ///
     /// **Write-only from here, and the type is what makes that true.**
-    /// `CriticalTemperatureRecording` has one method, `record(_:)`, so `sighting()` is not
-    /// reachable from this actor at all. Declaring the concrete `CriticalTemperatureCache`
+    /// `CriticalTemperatureRecording` has two methods — `beganReading()` and
+    /// `record(_:since:)` — and neither reads, so `sighting()` is not reachable from this
+    /// actor at all. Declaring the concrete `CriticalTemperatureCache`
     /// here — as this field first did — left the cycle one line away from deciding a thermal
     /// emergency on a reading up to `maxAge` old, with only a doc comment in the way: exactly
     /// the outcome `SightednessProving` says must never happen, arrived at from the side the

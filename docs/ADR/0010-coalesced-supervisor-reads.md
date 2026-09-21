@@ -221,12 +221,19 @@ read *returning* and its record *reaching* the actor. It is not the exposed wind
 comparison has to be against the instant the cycle's read **began**, so everything recorded
 for the whole duration of that read was unguarded — and `CuratedCriticalTemperatures` is a
 `struct` with no serialisation of its own, so a flight's read and the cycle's interleave
-freely. This repository's own hardware test measures the curated read on `Mac16,5` at
-**~6 ms uncontended and ~20 ms worst against an in-flight snapshot**
-(`HelperHardwareTests`, "A safety cycle stays prompt while a real snapshot is on the
-connection"). Four orders of magnitude above the figure this ADR reasoned from, and it widened
-in exactly the wrong conditions: an SMC slow enough to lengthen the cycle's read is the one
-whose flights are failing.
+freely.
+
+The recorded figure for that read is [ADR 0006](0006-single-smc-reader.md)'s table — **7.0 ms
+for the 34 curated critical keys, uncontended**. `HelperHardwareTests`' "A safety cycle stays
+prompt while a real snapshot is on the connection" prints a consistent pair on this machine
+(6.0 ms solo, 20.3 ms worst of 53 cycles against an in-flight 3,009-key snapshot, run
+2026-09-20), but it asserts a *ratio* rather than either absolute — deliberately, per #118 —
+so it corroborates the order of magnitude and is not the citation. Take 7.0 ms as the number
+and the contended figure as indicative.
+
+That is **three orders of magnitude** above the "microseconds" this ADR reasoned from, and it
+widened in exactly the wrong conditions: an SMC slow enough to lengthen the cycle's read is the
+one whose flights are failing.
 
 **The fix, as decided:** the instant a read was taken at now travels with the reading, and it
 is *minted by the cache* rather than supplied by the reader.
@@ -259,7 +266,8 @@ Neither half of the comparison was pinned by a test, and neither was the premise
 The guard survived being rewritten as `if recorded != nil { return }` — "a newer record wins"
 becomes "any record wins", so a flight finishing on an otherwise-idle cache could never land
 its outcome once anything had ever been recorded. It *also* survived moving
-`let startedAt = clock.now` from above the flight down to the `record` call, which makes the
+`let startedAt = clock.now` from above the flight down to the `record` call (that was its
+spelling before #280 routed the stamp through `beganReading()`), which makes the
 comparison a no-op in the daemon because every record the cycle made during the flight is then
 strictly older than the stamp; the whole 1,627-test suite stayed green.
 `CriticalTemperatureCacheFlightTests.aFlightsOutcomeLandsWhenNothingSupersededIt` pins the

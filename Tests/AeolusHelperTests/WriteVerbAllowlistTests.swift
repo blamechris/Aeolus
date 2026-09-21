@@ -328,10 +328,19 @@ struct WriteVerbAllowlistTests {
         // `sighting()` below is: the type holds no writer and no plane, and the whole of the
         // conformer's body is a comparison and an assignment to a stored property.
         //
-        // There were one of these until [#280](https://github.com/blamechris/Aeolus/issues/280).
-        // The unguarded `record(_: CriticalTemperatureSighting)` that used to be here is
-        // `private` now and out of the scan entirely, which is the point of that change: the
-        // only ways into this cache's memory are the two entries below, and both compare.
+        // There was one of these until [#280](https://github.com/blamechris/Aeolus/issues/280),
+        // and the first version of this note overclaimed what replaced it — corrected here
+        // rather than quietly reworded. `beganReading()` is not a way into the cache's memory
+        // at all: it mints an instant and returns it, and compares nothing. And
+        // `record(_:since:)` compares only a `.sighted`; a `.blind` bypasses on purpose.
+        //
+        // The true property, which is the one worth an allowlist entry: `record(_:since:)` is
+        // the **only recording requirement on the protocol**, and the unguarded
+        // `record(_: CriticalTemperatureSighting)` that used to sit here is `private` now and
+        // out of this scan entirely. Re-adding an unguarded recorder to the protocol is
+        // caught mechanically — it would be `async`, enter `population()`, and fail this test
+        // as unlisted. Where it is *called* is `SightingRecordingSeamTests`' property, not
+        // this one.
         "CriticalTemperatureCache.swift: beganReading()",
         "CriticalTemperatureCache.swift: record(_: CriticalTemperatureSighting, "
             + "since: CriticalTemperatureReadingStart)",

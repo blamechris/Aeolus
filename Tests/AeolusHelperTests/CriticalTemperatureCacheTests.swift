@@ -101,7 +101,7 @@ struct CriticalTemperatureCacheTests {
         await source.open()
         let cache = CriticalTemperatureCache(source: source, clock: TestClock())
 
-        await cache.recordAsACycleWould(.sighted(try Self.report(celsius: 44)))
+        await cache.recordAsASetupStep(.sighted(try Self.report(celsius: 44)))
         let served = try await cache.sighting()
 
         #expect(served.readings.map(\.celsius) == [44])
@@ -133,7 +133,7 @@ struct CriticalTemperatureCacheTests {
         await source.open()
         let cache = CriticalTemperatureCache(source: source, clock: TestClock())
 
-        await cache.recordAsACycleWould(
+        await cache.recordAsASetupStep(
             .blind(FanControlPlaneError.readFailed(detail: "stale port")))
 
         await #expect(throws: FanControlPlaneError.self) { _ = try await cache.sighting() }
@@ -142,14 +142,13 @@ struct CriticalTemperatureCacheTests {
     }
 
     /// The same property reached through `ThermalEmergency.cycle()` rather than through a
-    /// hand-written `record(_:)` call.
+    /// hand-written `recordAsASetupStep` call.
     ///
     /// The unit test above proves the cache remembers a failure; this proves **§ 3 hands it
-    /// one**. Those are different edits away from each other: deleting the
-    /// `sightings.record(.blind(error))` line from the cycle's `catch` leaves the test above
-    /// green, because it never goes near the cycle.
+    /// one**. Those are different edits away from each other: deleting the cycle's `catch`
+    /// recording leaves the test above green, because it never goes near the cycle.
     ///
-    /// **Mutation:** delete `await sightings.record(.blind(error))` from
+    /// **Mutation:** delete `await sightings.record(.blind(error), since: readingStart)` from
     /// `ThermalEmergency.cycle()`'s `catch`. Run: red — the grant reads the blind machine
     /// itself, which is one wasted supervisor turn per retry.
     @Test("A blind cycle leaves the grant path refusing from its own reading")
@@ -173,16 +172,18 @@ struct CriticalTemperatureCacheTests {
     /// is actually delivered.
     ///
     /// `aBlindCycleLeavesTheGrantPathRefusing` above covers the cycle's `catch`. Its twin on
-    /// the `do` branch — `await sightings.record(.sighted(report))` — had no test at all: an
+    /// the `do` branch — the `.sighted` recording — had no test at all: an
     /// adversarial review deleted that one line and the whole suite stayed green, while it is
     /// the line that makes the grant path free in the daemon's *steady state*. Every other
-    /// test in this file reaches the recording through `record(_:)` by hand, and none of them
+    /// test in this file reaches the recording through `recordAsASetupStep` by hand, and
+    /// none of them
     /// goes near `ThermalEmergency`.
     ///
     /// 44 °C is `LeaseFixture.nominalDieTemperatures`' idle band, so the cycle sees a healthy
     /// machine, records a sighting, and latches nothing.
     ///
-    /// **Mutation (M2c):** delete `await sightings.record(.sighted(report))` from
+    /// **Mutation (M2c):** delete the `.sighted` recording —
+    /// `await sightings.record(.sighted(report), since: readingStart)` — from
     /// `ThermalEmergency.cycle()`'s `do` branch. Run: red — the grant re-reads a machine § 3
     /// had just seen, which is one supervisor turn per `acquireLease` and #134 exactly.
     @Test("A sighted cycle leaves the grant path proving from § 3's own reading")
@@ -230,7 +231,7 @@ struct CriticalTemperatureCacheTests {
         let clock = TestClock()
         let cache = CriticalTemperatureCache(source: source, clock: clock)
 
-        await cache.recordAsACycleWould(
+        await cache.recordAsASetupStep(
             .blind(FanControlPlaneError.readFailed(detail: "stale port")))
         await #expect(throws: FanControlPlaneError.self) { _ = try await cache.sighting() }
         #expect(await source.reads == 0, "the recorded blindness was not being served at all")
@@ -385,19 +386,32 @@ actor ThrowOnceCriticalTemperatures: CriticalTemperatureSensing {
     }
 }
 
-/// Records exactly as § 3's cycle does: a start minted by this cache, then the outcome
-/// handed back against it.
+/// Puts a known outcome in the cache as a **setup step**, not as a model of a reader.
 ///
-/// Every scenario here that "§ 3 recorded something" goes through this rather than through
-/// `record(_:since:)` directly, so a test cannot accidentally record against a start it
-/// chose — which is the thing `CriticalTemperatureReadingStart` exists to prevent callers
-/// doing, and a test double that did it would be modelling a daemon that cannot exist.
+/// It was called `recordAsACycleWould` until an adversarial review pointed out that it is
+/// nothing of the sort: a cycle mints its start *before* its read, and this mints one at
+/// record time — which is precisely mutation M10. Two consequences follow, and the name is
+/// now wrong in a direction that cannot mislead rather than right in one that can.
+///
+/// **It can never model #280's failure.** With `start == now`, `recorded.at >= start` is
+/// false for every earlier record, so a `.sighted` written through here *always* lands. A
+/// scenario built on this helper could never observe a stale sighting being dropped, and
+/// would read as evidence the guard is absent.
+/// `ThermalEmergencyStalenessTests.aCycleDoesNotOverwriteABlindnessRecordedDuringItsRead`
+/// and its sibling drive the real `cycle()` for exactly that reason.
+///
+/// **On a frozen `TestClock` with something already recorded it silently does nothing.**
+/// `recorded.at == now`, the guard fires, and a `.sighted` is discarded — a setup step that
+/// did not happen, which is the failure `InterferingCriticalTemperatures` grew `didFire` to
+/// prevent, reintroduced one layer down. Every call site today writes into an empty or
+/// aged-out cache, or writes `.blind` (which bypasses the comparison). The next one that
+/// does neither must advance the clock first.
 ///
 /// Named for what it models rather than `record`, so it cannot become an overload the
 /// compiler picks in place of the protocol requirement.
 extension CriticalTemperatureCache {
 
-    func recordAsACycleWould(_ sighting: CriticalTemperatureSighting) {
+    func recordAsASetupStep(_ sighting: CriticalTemperatureSighting) {
         record(sighting, since: beganReading())
     }
 }
