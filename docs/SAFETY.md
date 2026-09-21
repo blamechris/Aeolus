@@ -535,12 +535,23 @@ that nothing in `Sources/` clears the latch except the supervised cycle, and tha
 names the episode it judged when it does.
 
 **Which fans it holds, and when it lets one go.** § 3's registry is every fan Aeolus took off
-automatic control, each with the permit its maximum write needs. A fan leaves it when § 3 *attempts*
-to bridge and restore it (firing, or taking back a late engagement) — whatever those writes
-did, which is its own accepted-is-not-automatic gap, tracked as
-[#300](https://github.com/blamechris/Aeolus/issues/300) — and, since
-[#295](https://github.com/blamechris/Aeolus/issues/295) — **not** when a lease teardown hands it
-back. A handback the firmware *refused* keeps the fan registered, as it always did. A handback
+automatic control, each with the permit its maximum write needs. A fan leaves it when § 3 bridges
+and restores it (firing, or taking back a late engagement) and, since
+[#295](https://github.com/blamechris/Aeolus/issues/295), **not** when a lease teardown hands it
+back.
+
+**Until [#300](https://github.com/blamechris/Aeolus/issues/300), a fan § 3 restored itself was
+forgotten whatever the restore did** — and nothing else remembered it: § 5 had deregistered it,
+the restorer's mark found nothing to mark, and the lease core records only fans it had
+abandoned. A restore the firmware accepts and discards therefore left a fan manual that no later
+emergency would bridge. It now moves to a second register of its own, `restoredUnconfirmed`,
+holding the same permit, and leaves it only when § 3's read-back (below) finds it automatic or
+the fan is engaged again. **Only firing bridges that register** — never the take-back that runs
+on every latched cycle — and firing happens once per episode, because the latch admits one
+clear-to-engaged transition. So a fan that keeps reading manual is bridged at most once per
+episode: ADR 0011 D2's standing fight is excluded by the latch, not by a counter. A read that
+fails, or a machine blind between episodes, keeps the fan, so the next emergency still bridges
+it. A handback the firmware *refused* keeps the fan registered, as it always did. A handback
 the firmware *accepted* keeps it registered too, marked owed a read-back, because a write the
 firmware accepted is not a fan in automatic (#291): the fan leaves only when § 3's own cycle reads
 `F<n>Md` and finds it automatic. That read runs last in a cycle, and only on one that could see,
@@ -549,12 +560,16 @@ sleep handback and SIGTERM's teardown await that path before the machine-wide ke
 that finds the fan manual or cannot read it keeps the fan; a read that began before the fan was
 engaged or handed back again cannot clear the newer state. A fan that keeps reading manual stays
 registered indefinitely: `F<n>Md` names no owner, and keeping it costs one bridge per emergency,
-while dropping it would leave a fan off automatic control that no emergency bridges.
+while dropping it would leave a fan off automatic control that no emergency bridges. The same
+read, in the same call, covers the fans in `restoredUnconfirmed`.
 
 *Tested by:* `AcceptedHandbackCompositionTests` (an accepted-but-manual fan is still bridged by
 the next emergency; an unreadable fan is kept; the restorer returns while § 3's read-back is
-parked) and `ThermalEmergencyHandbackTests` (a stale read cannot clear a newer handback or a
-re-engagement; no read on a blind, firing or latched cycle; marking never registers).
+parked; a fan § 3's own restore left manual is bridged once per episode, not per latched cycle),
+`ThermalEmergencyHandbackTests` (a stale read cannot clear a newer handback or a
+re-engagement; no read on a blind, firing or latched cycle; marking never registers) and
+`ThermalEmergencyRestoreTests` (a fan § 3's restore left manual, or that cannot be read, is
+bridged by the next emergency; one read automatic is let go; a re-engaged fan is held once).
 
 **What the user is actually told.** `isThermalEmergencyActive` on the snapshot, which the
 app renders at 1 Hz, and a `.fault` line in the log. That is the whole of it: a root daemon
