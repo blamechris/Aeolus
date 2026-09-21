@@ -535,9 +535,9 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// does, at one read per eligible cycle. `F<n>Md` names no owner, so the two are
     /// indistinguishable, and the costs are not symmetrical. Wrongly *keeping* it costs one
     /// bridge in the next emergency, after which `fire(_:from:)` forgets it (unconfirmed,
-    /// #300): one act per emergency, never ADR 0011's standing fight. Wrongly *dropping* it is #295 itself — a
-    /// fan off automatic control that no emergency will bridge. Throttling the read is a
-    /// later cost optimisation, not a safety question.
+    /// #300): one act per emergency, never ADR 0011's standing fight. Wrongly *dropping* it
+    /// is #295 itself — a fan off automatic control that no emergency will bridge. Throttling
+    /// the read is a later cost optimisation, not a safety question.
     private func readBackAcceptedHandbacks() async {
         guard !handbackOwed.isEmpty else { return }
         let asked = handbackOwed.mapValues(\.generation)
