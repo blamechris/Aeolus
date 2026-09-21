@@ -162,6 +162,42 @@ enum SchedulerEvent: Sendable, Hashable {
     ///
     /// `detail` is diagnostic and is never parsed.
     case wholeReadFailed(priority: SMCReadPriority, detail: String)
+
+    /// A discovery walk — `readAll()` — ended, one event per walk however long it ran.
+    ///
+    /// ## Why it exists, and why it is one event and not one per key
+    ///
+    /// Until [#205](https://github.com/blamechris/Aeolus/issues/205) a walk reported nothing,
+    /// so a walk that failed during bring-up on a machine whose SMC was already gone was
+    /// counted by nothing, and the dead connection was noticed by the next 1 Hz subset read
+    /// instead. A walk is a read over the same handle as every other read here, so its outcome
+    /// is evidence about that handle, and the ruling #205 takes is that it joins the same run
+    /// as **one** outcome: a 2930-key walk is one question put to the connection, not 2930 of
+    /// them, and weighting it more would let one bad walk trigger a rebuild on its own.
+    ///
+    /// Emitted inside the walk's own isolation step, before the count that excludes a
+    /// recycle is released — the same ordering every other outcome here has.
+    case discoveryWalkEnded(DiscoveryWalkOutcome)
+}
+
+/// How one discovery walk ended, as the scheduler saw it.
+///
+/// **The scheduler does not judge a short set, and cannot.** `SMCSensorProvider.readAll()`
+/// skips every key that fails and returns normally, so a walk truncated by a connection that
+/// died halfway through reads here as `.returned` with a smaller count. The provider already
+/// computes the check that would tell — `KeyCountCrossCheck`, declared against walked — and
+/// logs it; carrying it here is a `SensorProvider` change and is recorded as #205's follow-on
+/// rather than guessed at from a count this type has nothing to compare against.
+enum DiscoveryWalkOutcome: Sendable, Hashable {
+
+    /// The walk returned, with this many readings. Zero is a failure to `ConnectionHealth`:
+    /// the walk enumerates only keys the machine declared, so none of them reading is the
+    /// handle failing, never an absent key.
+    case returned(readings: Int)
+
+    /// The walk threw — `open()` or `#KEY` failed before any key was reached. `detail` is
+    /// diagnostic and is never parsed.
+    case threw(detail: String)
 }
 
 extension SchedulerEvent {
@@ -183,6 +219,7 @@ extension SchedulerEvent {
         case wholeReadSucceeded
         case wholeReadAbsentOnly
         case wholeReadFailed
+        case discoveryWalkEnded
     }
 
     var kind: Kind {
@@ -195,6 +232,7 @@ extension SchedulerEvent {
         case .wholeReadSucceeded: return .wholeReadSucceeded
         case .wholeReadAbsentOnly: return .wholeReadAbsentOnly
         case .wholeReadFailed: return .wholeReadFailed
+        case .discoveryWalkEnded: return .discoveryWalkEnded
         }
     }
 }

@@ -40,7 +40,7 @@ import Testing
 ///
 /// - **A synchronous function that spawns an unstructured `Task` and writes inside it.**
 ///   That is the one route around "a synchronous function cannot `await`".
-///   `Sources/AeolusHelper` has **sixteen** such spawn sites today, and an earlier draft of
+///   `Sources/AeolusHelper` has **seventeen** such spawn sites today, and an earlier draft of
 ///   this bullet said five and called them all supervisors — which was both the wrong number
 ///   and the wrong description, so the containment argument it offered was not the one the
 ///   tree supports. The count then said fourteen for one wave after
@@ -368,6 +368,10 @@ struct WriteVerbAllowlistTests {
         // `open()` are `SMCConnectionRecycling`'s two verbs: connection lifecycle, no key, no
         // fan, no value on the wire.
         "ConnectionHealth.swift: attemptReconnect(through: some SMCConnectionRecovering)",
+        // #205's one: the run's increment, lifted out of `handle(_:recovering:)` so a walk's
+        // outcome and a subset read's are counted by the same line. It reaches a write only
+        // through `attemptReconnect(through:)`, above, which is connection lifecycle.
+        "ConnectionHealth.swift: countFailure(recovering: some SMCConnectionRecovering)",
         "ConnectionHealth.swift: handle(_: SequencedOutcome, "
             + "recovering: some SMCConnectionRecovering)",
         "SMCFanControlPlane.swift: close()",
@@ -634,8 +638,9 @@ struct WriteVerbAllowlistTests {
     ///
     /// An unstructured `Task` lets a synchronous function reach an `async` write, so every
     /// spawn site is a hole in the population — unless what it spawns is itself acknowledged.
-    /// That is what holds here: none of the sixteen bodies writes, and each hands off to an
-    /// `async` method in the population. (The three supervisors also await a synchronous
+    /// That is what holds here: none of the seventeen bodies writes, and each — bar #205's
+    /// overrun alarm, below, which awaits a synchronous counter — hands off to an `async`
+    /// method in the population. (The three supervisors also await a synchronous
     /// `loopEnded(generation:)` that only clears a task handle; `BoundedFanRestorer`'s and
     /// `CriticalTemperatureCache`'s spawners are themselves `async`, so their `Task`s shield
     /// cancellation and share one read rather than bridging from synchronous code;
@@ -673,7 +678,14 @@ struct WriteVerbAllowlistTests {
     /// The third in that file is `restoreAllToAutomatic`, which keeps its `Task` because the
     /// panic path may not wait on a message sent before it (D27), on the same argument.
     ///
-    /// The count is asserted per file so it cannot drift silently. A seventeenth spawn site
+    /// **Re-pinned by [#205](https://github.com/blamechris/Aeolus/issues/205):** sixteen to
+    /// seventeen, the second in `ReadOnlyFanAuthority.swift`. It is the discovery walk's
+    /// overrun alarm, spawned inside `walkEveryKey()`, which is already `async` — so it is not
+    /// a bridge from synchronous code either, and exists because the alarm must run *beside*
+    /// a walk that may never return. Its body sleeps on the injected clock and then awaits
+    /// `discoveryWalkOverran()`, which increments a counter and logs. It writes nothing.
+    ///
+    /// The count is asserted per file so it cannot drift silently. An eighteenth spawn site
     /// fails this with the file it was added to, and the maintainer either shows it hands off
     /// the same way and updates the number, or has found the hole.
     ///
@@ -698,7 +710,7 @@ struct WriteVerbAllowlistTests {
             "HelperXPCService.swift": 3,
             "LeaseExpirySupervisor.swift": 1,
             "MessageSequencer.swift": 1,
-            "ReadOnlyFanAuthority.swift": 1,
+            "ReadOnlyFanAuthority.swift": 2,
             "ReclamationSupervisor.swift": 1,
             "SignalTeardown.swift": 1,
             "SystemPowerObserver.swift": 1,

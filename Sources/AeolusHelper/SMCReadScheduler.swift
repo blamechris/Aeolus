@@ -206,6 +206,18 @@ actor SMCReadScheduler {
     /// be added on the waiter's side.
     static let longestMeasuredDiscoveryWalk: Duration = .milliseconds(5900)
 
+    /// How long a walk may run before `ReadOnlyFanAuthority` logs it at `.fault` — three cold
+    /// walks, 17.7 s.
+    ///
+    /// **An alarm, not a bound.** Nothing is cancelled, abandoned, or allowed to stop waiting
+    /// when it fires; see `readAll()` and #205 for why a timeout on either side of D22's wait
+    /// would re-open the hazard D22 closed. It makes a wedged walk *visible* — in `log show`,
+    /// instead of as a helper that quietly stopped noticing connection failures — which is the
+    /// one shape #205 recommends. Three cold walks rather than one because a cold walk is
+    /// the measured *worst* case, and an alarm at the worst case would fire on an ordinary
+    /// slow boot.
+    static let discoveryWalkOverrunAlarm: Duration = longestMeasuredDiscoveryWalk * 3
+
     /// The single provider every read here goes to. `SMCSensorProvider` in the daemon, a
     /// double under test.
     private let provider: any SensorProvider
@@ -462,12 +474,12 @@ actor SMCReadScheduler {
     ///
     /// ## Two limits, recorded on [#205](https://github.com/blamechris/Aeolus/issues/205)
     ///
-    /// **It emits no scheduler event.** A walk that fails — or, worse, returns a short set,
-    /// because `SMCSensorProvider.readAll()` skips every key that fails and returns normally
-    /// — is counted by nothing: `ConnectionHealth` sees the snapshot and supervisor paths
-    /// only, and a dead connection at bring-up is noticed by the next 1 Hz subset read rather
-    /// than by the walk. Reporting it needs a decision this file does not take, which is
-    /// whether a 5.9 s walk's outcome belongs in the same run as reads issued at 1 Hz.
+    /// **It reports how it ended, and no more than that.** Since #205 one
+    /// `.discoveryWalkEnded` is emitted per walk, and `ConnectionHealth` counts a walk that
+    /// threw or returned nothing as one failure in the same run as every other read. What it
+    /// still cannot report is a **short** set — `SMCSensorProvider.readAll()` skips every key
+    /// that fails and returns normally, so a walk truncated halfway through is `.returned`
+    /// with a smaller count — and that is `DiscoveryWalkOutcome`'s documented limit.
     ///
     /// **The wait a recycle makes for it has no bound, by design.** A walk in which IOKit
     /// wedges — the round trip under `SMCConnection` never returns — leaves
@@ -489,7 +501,14 @@ actor SMCReadScheduler {
         // and left the count raised would refuse every future recycle for the life of the
         // process, and #68 is exactly the case where walks are failing.
         defer { endDiscoveryWalk() }
-        return try await provider.readAll()
+        do {
+            let readings = try await provider.readAll()
+            report(.discoveryWalkEnded(.returned(readings: readings.count)))
+            return readings
+        } catch {
+            report(.discoveryWalkEnded(.threw(detail: String(describing: error))))
+            throw error
+        }
     }
 
     /// How many turns are queued at `priority`.

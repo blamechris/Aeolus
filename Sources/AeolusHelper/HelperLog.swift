@@ -201,6 +201,25 @@ struct HelperLog: Sendable {
         )
     }
 
+    /// A discovery walk has outlived three cold walks, and is still running (#205).
+    ///
+    /// `.fault` because the consequence is silent otherwise: a recycle waiting for this walk
+    /// cannot take its turn, so `ConnectionHealth` is parked inside it and stops counting
+    /// read failures until the walk returns. Reads themselves keep flowing — the safety
+    /// cycle is not affected — which is why nothing else would say so.
+    func discoveryWalkOverran(alarm: Duration) {
+        log.fault(
+            """
+            The SMC discovery walk has run for more than \(alarm.milliseconds, privacy: .public) \
+            ms without returning; the longest measured walk is \
+            \(SMCReadScheduler.longestMeasuredDiscoveryWalk.milliseconds, privacy: .public) ms. \
+            It is not cancelled. \
+            Until it returns, a connection rebuild waits behind it and read failures are not \
+            counted, so a dead SMC connection would not be rebuilt. See issue #205.
+            """
+        )
+    }
+
     func sensorDiscoveryFailed(reason: String) {
         log.error(
             """

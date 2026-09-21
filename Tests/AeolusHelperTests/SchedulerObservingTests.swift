@@ -109,6 +109,9 @@ struct SchedulerObservingTests {
             provider: OutcomeScriptedProvider { .failure(.unknownKey($0)) }, observer: observer)
         _ = try await absent.read(keys: ["FNum"], at: .snapshot)
 
+        // Discovery, which takes no turn and reports once when it ends (#205).
+        _ = try await scheduler.readAll()
+
         let seen = Set(observer.events.map(\.kind))
         let missing = Set(SchedulerEvent.Kind.allCases).subtracting(seen).map(
             String.init(describing:))
