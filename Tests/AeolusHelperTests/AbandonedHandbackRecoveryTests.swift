@@ -72,6 +72,12 @@ struct AbandonedHandbackRecoveryTests {
         return (leases, firmware)
     }
 
+    /// § 7's two lease-core calls, in `SupervisedFanAuthority.restoreAllToAutomatic`'s order.
+    private static func panicPass(_ leases: LeaseAuthority) async {
+        await leases.releaseEveryLease()
+        await leases.confirmAcceptedHandbacks()
+    }
+
     /// The durable refusal, asked for as a client would meet it.
     private static func expectRefused(_ leases: LeaseAuthority, fan: Int) async {
         await #expect(
@@ -91,14 +97,13 @@ struct AbandonedHandbackRecoveryTests {
     /// grant and leave the count at the budget; four attempts is the pass having reached the
     /// fan, which is the half `releaseEveryLease()`'s sweep provides.
     ///
-    /// `releaseEveryLease()` is called directly rather than through
-    /// `SupervisedFanAuthority.restoreAllToAutomatic`, whose body is that call and a log line —
-    /// `PanicPathScopeTripwireTests` is what holds it to that, and `LeaseTeardownTests` drives
-    /// the same verb the same way.
+    /// `panicPass(_:)` makes the two lease-core calls
+    /// `SupervisedFanAuthority.restoreAllToAutomatic` makes, rather than going through it —
+    /// `PanicPathScopeTripwireTests` is what holds that body to those two calls.
     ///
     /// **Mutation:** delete `restoreAbandoned.subtract(recovered)` from
-    /// `LeaseAuthority.restore`. Run: red — the fan is still refused after a handback the
-    /// firmware took.
+    /// `LeaseAuthority.confirmAcceptedHandbacks`. Run: red — the fan is still refused after a
+    /// handback the firmware took and a read confirmed.
     /// **Mutation:** restore `releaseEveryLease()`'s old seed, `reduce(into: Set<Int>())`
     /// rather than `reduce(into: restoreAbandoned)`. Run: red on the attempt count and on the
     /// grant — the pass never names fan 0, which is the state the issue was filed against.
@@ -110,7 +115,7 @@ struct AbandonedHandbackRecoveryTests {
         // The firmware comes good. Nothing informs the lease core; § 7's pass asks it again,
         // which is the only way this process can find out.
         await firmware.takesTheWrite(for: [0])
-        await leases.releaseEveryLease()
+        await Self.panicPass(leases)
 
         let attempts = await firmware.attemptCount(forFan: 0)
         #expect(
@@ -143,8 +148,8 @@ struct AbandonedHandbackRecoveryTests {
     /// to manual only *after* the lease was granted and abandoned: set earlier, the grant-time
     /// read would have refused the setup's own lease.
     ///
-    /// **Mutation:** in `LeaseAuthority.restore`, replace
-    /// `await foreignControl.fansReadingAutomatic(among: candidates)` with `candidates`.
+    /// **Mutation:** in `LeaseAuthority.confirmAcceptedHandbacks`, replace
+    /// `await foreignControl.fansReadingAutomatic(among: owed)` with `owed`.
     /// Run: red — the register is empty and the fan is granted over a mode nothing confirmed.
     @Test("A fan the firmware takes the write for but still reads manual stays refused")
     func anAcceptedWriteThatDoesNotReadBackKeepsTheRefusal() async throws {
@@ -158,7 +163,7 @@ struct AbandonedHandbackRecoveryTests {
 
         await modes.setMode(.manual, ofFan: 0)
         await firmware.takesTheWrite(for: [0])
-        await leases.releaseEveryLease()
+        await Self.panicPass(leases)
 
         #expect(
             await firmware.attemptCount(forFan: 0) == RestoreLimits.attemptBudget + 1,
@@ -182,10 +187,11 @@ struct AbandonedHandbackRecoveryTests {
     /// all refused.
     ///
     /// **Mutation:** in `LeaseAuthority.restore`, make the signal the sweep rather than the
-    /// report — `cause == .allLeasesDropped ? restoreAbandoned.intersection(fans) : …`. Run:
-    /// red here and in `onlyTheFanTheFirmwareTookBackIsCleared`, while both the acceptance test
-    /// and the handback-window test stay green, which is what makes this one discriminate
-    /// rather than echo them.
+    /// report — `let accepted = restoreAbandoned.intersection(fans)`, dropping
+    /// `.subtracting(abandoned)`. Run: red here and in `onlyTheFanTheFirmwareTookBackIsCleared`,
+    /// while the acceptance test stays green, which is what makes this one discriminate rather
+    /// than echo it. (Mutating `formUnion(accepted)` instead is shielded here by the
+    /// `guard !accepted.isEmpty` above it, and was run: red in the per-fan test only.)
     ///
     /// **The two simpler mutants do not show that, and both were run.** Subtracting `fans`
     /// instead of `recovered` is shielded by the `guard !recovered.isEmpty` above it — with the
@@ -197,7 +203,7 @@ struct AbandonedHandbackRecoveryTests {
     func aRefusedPanicPassLeavesTheRefusalStanding() async throws {
         let (leases, firmware) = try await Self.abandoned(leasing: [0], refusing: [0])
 
-        await leases.releaseEveryLease()
+        await Self.panicPass(leases)
 
         #expect(
             await firmware.attemptCount(forFan: 0) == RestoreLimits.attemptBudget * 2,
@@ -217,15 +223,15 @@ struct AbandonedHandbackRecoveryTests {
     /// blanket reset of the register the first time any fan in a sweep came back.
     ///
     /// **Mutation:** `restoreAbandoned.removeAll()` in place of
-    /// `restoreAbandoned.subtract(recovered)`. Run: red **here only** — every other test in the
-    /// suite abandons a single fan, so a blanket reset and a per-fan clear are the same act to
-    /// them.
+    /// `restoreAbandoned.subtract(recovered)` in `confirmAcceptedHandbacks`. Run: red **here
+    /// only** — every other test in the suite abandons a single fan, so a blanket reset and a
+    /// per-fan clear are the same act to them.
     @Test("Only the fan the firmware took back is cleared")
     func onlyTheFanTheFirmwareTookBackIsCleared() async throws {
         let (leases, firmware) = try await Self.abandoned(leasing: [0, 1], refusing: [0, 1])
 
         await firmware.takesTheWrite(for: [0])
-        await leases.releaseEveryLease()
+        await Self.panicPass(leases)
 
         #expect(await leases.fansWithAbandonedHandbacks == [1])
         _ = try await leases.acquireLease(LeaseFixture.request(fans: [0]), from: ConnectionID())
@@ -234,6 +240,61 @@ struct AbandonedHandbackRecoveryTests {
         // `acquireLease`'s straight-line region documents.
         await Self.expectRefused(leases, fan: 1)
         #expect(await firmware.breachedCeiling == false)
+    }
+
+    /// #291 review finding 1: the teardown alone lifts nothing and reads nothing. § 4's sleep
+    /// handback and SIGTERM's teardown call `releaseEveryLease()` and then issue the keystone,
+    /// so a read inside it would hold the keystone for as long as the read took.
+    ///
+    /// The fresh read is the real `StartupReconciliation` over a plane whose mode read for
+    /// fan 0 throws once the setup is done — so a teardown that read anyway would log a fault
+    /// and this test checks it did not ask at all.
+    ///
+    /// **Mutation:** in `LeaseAuthority.restore`, call `await confirmAcceptedHandbacks()` after
+    /// `handbackAcceptedUnconfirmed.formUnion(accepted)`. Run: red — the refusal is lifted by
+    /// the teardown the keystone waits on.
+    @Test("The lease teardown sleep and SIGTERM wait on reads nothing back and lifts nothing")
+    func theTeardownAloneLiftsNothing() async throws {
+        let (leases, firmware) = try await Self.abandoned(leasing: [0], refusing: [0])
+
+        await firmware.takesTheWrite(for: [0])
+        await leases.releaseEveryLease()
+
+        #expect(
+            await firmware.attemptCount(forFan: 0) == RestoreLimits.attemptBudget + 1,
+            "the teardown did not reach fan 0, so this test cannot say anything about the clear")
+        #expect(
+            await leases.fansWithAbandonedHandbacks == [0],
+            """
+            the teardown lifted the refusal itself, which means it read the fan back — or \
+            trusted the write — before returning to a caller whose keystone waits on it.
+            """)
+        await Self.expectRefused(leases, fan: 0)
+    }
+
+    /// #291 review finding 3: a read that throws is not a read that says automatic.
+    ///
+    /// **Mutation:** in `StartupReconciliation.fansReadingAutomatic`, add
+    /// `automatic.insert(fan)` to the `catch`. Run: red — the refusal lifts on no evidence.
+    @Test("A fan whose read-back throws keeps its refusal")
+    func anUnreadableReadBackKeepsTheRefusal() async throws {
+        let scripted = ScriptedControlPlane(
+            fans: [0: ScriptedControlPlane.FanCondition()],
+            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+        let modes = ReadBackScriptedPlane(wrapping: scripted)
+        let (leases, firmware) = try await Self.abandoned(
+            leasing: [0], refusing: [0],
+            foreignControl: LeaseFixture.reconciliation(
+                over: modes, enumeration: ScriptedFanEnumeration(indices: [0])))
+
+        await modes.makeUnreadable(0)
+        await firmware.takesTheWrite(for: [0])
+        await Self.panicPass(leases)
+
+        #expect(
+            await leases.fansWithAbandonedHandbacks == [0],
+            "fan 0's read-back threw and the refusal was lifted anyway")
+        await Self.expectRefused(leases, fan: 0)
     }
 
     // MARK: - The handback window over a sweep with two sources
@@ -273,7 +334,7 @@ struct AbandonedHandbackRecoveryTests {
         await firmware.takesTheWrite(for: [0])
         await firmware.park(signalling: entered, until: release)
 
-        let sweep = Task { await leases.releaseEveryLease() }
+        let sweep = Task { await Self.panicPass(leases) }
         try await entered.wait()
 
         let midHandback = await leases.fansMidHandback

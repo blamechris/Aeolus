@@ -333,6 +333,10 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
         do {
             try await panic.restoreToAutomatic(.everyFan)
         } catch {
+            // No read-back follows a refused keystone, so a fan handed back by name earlier in
+            // the pass would otherwise escape the one rule `handedBackByName` states. Refused
+            // unread instead: the fail-safe direction, and no firmware contact to add.
+            unreconciled.formUnion(handedBackByName)
             log.reconciliationEveryFanRestoreFailed(
                 because: reason, detail: String(describing: error),
                 capability: capabilityNote)
@@ -500,8 +504,9 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
     }
 
     /// See `ForeignManualControlSensing`. One `.supervisor` turn per fan, sequentially, for
-    /// `reconcile()`'s reason; no budget, because the lease core calls it only for fans that
-    /// were already refused, and a read that never returns leaves them refused.
+    /// `reconcile()`'s reason. No budget: its one caller is § 7's panic verb, after the lease
+    /// teardown, with no keystone queued behind it — a read that never returns holds that
+    /// client's reply and leaves the fans refused, and holds nothing else.
     func fansReadingAutomatic(among fans: Set<Int>) async -> Set<Int> {
         var automatic: Set<Int> = []
         for fan in fans.sorted() {

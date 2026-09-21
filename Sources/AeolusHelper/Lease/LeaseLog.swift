@@ -113,32 +113,45 @@ struct LeaseLog: Sendable {
     /// of what the helper knew and this line said no more. The refusal is now lifted only after
     /// a fresh read reports the fan automatic, so that is what this line reports — at the
     /// instant of the read, which is all any read can say.
-    func recoveredAbandonedHandback(fans: Set<Int>, because cause: FanRestoreCause) {
+    func recoveredAbandonedHandback(fans: Set<Int>) {
         log.notice(
             """
-            Fan(s) \(Self.describe(fans), privacy: .public) were handed back without being \
-            refused this time (\(Self.describe(cause), privacy: .public)), after an earlier \
-            handback Aeolus gave up on, and read back under automatic control. The durable \
-            refusal over them is lifted and manual control of them may be taken again.
+            Fan(s) \(Self.describe(fans), privacy: .public), whose earlier handback Aeolus \
+            gave up on, were handed back without being refused and have now read back under \
+            automatic control. The durable refusal over them is lifted and manual control of \
+            them may be taken again.
             """
         )
     }
 
-    /// A fan the helper had given up on took the write this time, and did not read back
-    /// automatic — so the durable refusal over it stands.
+    /// A fan the helper had given up on took the write this time — which lifts nothing yet.
     ///
-    /// `.notice`, not `.fault`: the fault was `abandonedHandback`, and nothing got worse. The
-    /// line exists so that a reader who sees a handback go through is not left believing the
-    /// refusal lifted. It names no cause: a fan still reading manual after an accepted write may
-    /// be firmware that did not apply it, a write that has not settled, or another program —
-    /// and one read cannot tell them apart.
-    func abandonedHandbackStillUnconfirmed(fans: Set<Int>, because cause: FanRestoreCause) {
+    /// `.notice`. The refusal stands until `confirmAcceptedHandbacks()` reads the fan back
+    /// automatic (#291); this line exists so a reader who sees the handback go through is not
+    /// left believing the refusal lifted with it.
+    func abandonedHandbackAcceptedUnconfirmed(fans: Set<Int>, because cause: FanRestoreCause) {
         log.notice(
             """
             Fan(s) \(Self.describe(fans), privacy: .public) were handed back without being \
             refused this time (\(Self.describe(cause), privacy: .public)), after an earlier \
-            handback Aeolus gave up on, but did not read back under automatic control. The \
-            durable refusal over them stands.
+            handback Aeolus gave up on. The write was accepted but not yet read back, so the \
+            durable refusal over them stands until docs/SAFETY.md § 7's restore confirms it.
+            """
+        )
+    }
+
+    /// A fan owed a read-back did not read back automatic, so its durable refusal stands.
+    ///
+    /// `.notice`, not `.fault`: the fault was `abandonedHandback`, and nothing got worse. It
+    /// names no cause: a fan still reading manual after an accepted write may be firmware that
+    /// did not apply it, a write that has not settled, or another program — and one read
+    /// cannot tell them apart.
+    func abandonedHandbackStillUnconfirmed(fans: Set<Int>) {
+        log.notice(
+            """
+            Fan(s) \(Self.describe(fans), privacy: .public) were handed back without being \
+            refused after an earlier handback Aeolus gave up on, but did not read back under \
+            automatic control. The durable refusal over them stands.
             """
         )
     }

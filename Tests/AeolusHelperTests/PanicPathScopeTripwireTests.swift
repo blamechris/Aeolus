@@ -102,6 +102,17 @@ struct PanicPathScopeTripwireTests {
             which case the assertions below are green over nothing.
             """)
 
+        // #291: § 7 is the one caller that lifts a refusal whose handback the firmware
+        // accepted, because it is the one with no keystone queued behind the read.
+        //
+        // **Mutation:** delete `await leases.confirmAcceptedHandbacks()` from the body. Run: red.
+        #expect(
+            body.contains("confirmAcceptedHandbacks"),
+            """
+            restoreAllToAutomatic no longer reads back the fans whose handback the firmware \
+            accepted, so nothing lifts a restoreAbandoned refusal for the life of the process.
+            """)
+
         for verb in ["restoreToAutomatic", "everyFan"] {
             #expect(
                 !body.contains(verb),

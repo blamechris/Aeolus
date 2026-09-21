@@ -174,9 +174,8 @@ actor LeaseAuthority {
     /// a fan reaches this set from there only when the outstanding restore comes back refused.
     ///
     /// **Not append-only since [#189](https://github.com/blamechris/Aeolus/issues/189)**, and
-    /// the one thing that clears it is a restore the restorer reports it did *not* give up on
-    /// **and a fresh read then reports automatic** — the second half since
-    /// [#291](https://github.com/blamechris/Aeolus/issues/291); see `restore(_:because:)`.
+    /// the one thing that clears it is a restore the restorer did *not* give up on **and** a
+    /// later read reporting automatic (#291, `confirmAcceptedHandbacks()`).
     /// **A restore that never returns leaves it standing**, as does one refused again, and
     /// both are the fail-safe direction.
     ///
@@ -185,6 +184,11 @@ actor LeaseAuthority {
     /// lift a refusal three observed firmware refusals set on evidence about a call:
     /// handback-ledger.md § *"`restoreAbandoned` — the durable half"*.
     private var restoreAbandoned: Set<Int> = []
+
+    /// Fans in `restoreAbandoned` whose latest restore the firmware **accepted**, owed a
+    /// read-back before the refusal lifts (#291). Always a subset of `restoreAbandoned`:
+    /// handback-ledger.md § *"Accepted is not automatic"*.
+    private var handbackAcceptedUnconfirmed: Set<Int> = []
 
     /// Fans whose restore-to-automatic was issued, stopped being waited for, and has not come
     /// back: `docs/SAFETY.md` § 4's acknowledgement budget expired with it still outstanding.
@@ -925,20 +929,13 @@ actor LeaseAuthority {
     /// so two overlapping restores of the same fan — a teardown and the panic path — cannot
     /// have the first to finish clear a flag the second still needs.
     ///
-    /// It is also the one place the other two registers are cleared, and where each clear sits
-    /// is load-bearing in both cases. The `defer` is **inside the same loop as the decrement**,
-    /// after it, so `handbackUnconfirmed` loses a fan exactly when its last outstanding restore
-    /// returns rather than while another is in flight, and being **in a `defer`** is what makes
-    /// a fan the firmware refused leave that set and land in `restoreAbandoned` through the
-    /// union below — D33's *"converts to the durable set through the path that already exists"*.
-    /// The `restoreAbandoned` clear below the await is the **only** one
-    /// ([#189](https://github.com/blamechris/Aeolus/issues/189)) and is conditioned on the
-    /// restorer's own report rather than on the call having been made.
-    ///
-    /// Why that ordering survives clearing having made this mutation non-additive, why a
-    /// restore that never returns leaves a fan unconfirmed for the life of the process, and why
-    /// the intersection below is not a blanket subtraction: handback-ledger.md § *"Where each
-    /// register ends"*.
+    /// It is also where `handbackUnconfirmed` is cleared, and where that sits is load-bearing:
+    /// the `defer` is **inside the same loop as the decrement**, after it, so a fan leaves
+    /// exactly when its last outstanding restore returns, and being **in a `defer`** is what
+    /// makes a refused fan land in `restoreAbandoned` through the union below — D33. It clears
+    /// nothing from `restoreAbandoned` since #291; `confirmAcceptedHandbacks()` does.
+    /// Why, and why a restore that never returns leaves a fan unconfirmed for the life of the
+    /// process: handback-ledger.md § *"Where each register ends"*.
     ///
     /// - Note: **The overlap the count exists for is unreachable in this build, and the count
     ///   is therefore not load-bearing today.** Replacing it with set membership passes the
@@ -966,30 +963,38 @@ actor LeaseAuthority {
         let abandoned = await restorer.restoreToAutomatic(fans: fans, because: cause)
         restoreAbandoned.formUnion(abandoned)
 
-        // And whatever the restorer did *not* name came back. For a fan that was already in
-        // the durable register that is the one fact that lifts it — the firmware refused this
-        // fan's handback before, was asked again, and this time did not refuse. The
-        // intersection is what keeps this from being a blanket subtraction: it names only fans
-        // the register actually held, so the log line below reports a refusal being lifted
-        // rather than firing on every ordinary teardown.
-        //
-        // **Not refused is not automatic** (#291), which is #204's rule on reconciliation's
-        // keystone applied to this clear: a write that did not throw is the firmware saying
-        // yes, not the fan being back. So a candidate is lifted only once a fresh read says
-        // automatic. One that reads manual, or will not read, stays refused as it was — the
-        // refusal is *kept*, never newly minted from a read, so the constraint on #204 holds:
-        // a manual read-back after an accepted write never becomes `.restoreToAutomaticFailed`
-        // for a fan that did not already carry it. The read is issued before the `defer`
-        // above runs, so the fan is still mid-handback to `acquireLease` while it is taken.
-        let candidates = restoreAbandoned.intersection(fans.subtracting(abandoned))
-        guard !candidates.isEmpty else { return }
-        let recovered = await foreignControl.fansReadingAutomatic(among: candidates)
-        let unconfirmed = candidates.subtracting(recovered)
+        // Refused again: no longer owed a read-back, and a `confirmAcceptedHandbacks()`
+        // mid-read for it will not lift the refusal just renewed.
+        handbackAcceptedUnconfirmed.subtract(abandoned)
+
+        // A fan the register held whose write was accepted is only marked owed a read-back:
+        // accepted is not automatic (#291), and the read is **not** taken here, because sleep
+        // and SIGTERM issue the keystone only after this returns — handback-ledger.md
+        // § *"Accepted is not automatic"*.
+        let accepted = restoreAbandoned.intersection(fans.subtracting(abandoned))
+        guard !accepted.isEmpty else { return }
+        handbackAcceptedUnconfirmed.formUnion(accepted)
+        log.abandonedHandbackAcceptedUnconfirmed(fans: accepted, because: cause)
+    }
+
+    /// Reads back every fan owed one and lifts the refusal over each that reads automatic.
+    /// `docs/SAFETY.md` § 7's second act, after `releaseEveryLease()`, and only § 7's: it is
+    /// the one caller with no keystone queued behind the read. A fan that reads manual or
+    /// will not read keeps the refusal it had, and stays owed. The set is re-read after the
+    /// await, so a refusal renewed meanwhile is not lifted. Why each of these:
+    /// handback-ledger.md § *"Accepted is not automatic"*.
+    func confirmAcceptedHandbacks() async {
+        let owed = handbackAcceptedUnconfirmed
+        guard !owed.isEmpty else { return }
+        let automatic = await foreignControl.fansReadingAutomatic(among: owed)
+        let recovered = automatic.intersection(handbackAcceptedUnconfirmed)
+        let unconfirmed = owed.subtracting(automatic)
         if !unconfirmed.isEmpty {
-            log.abandonedHandbackStillUnconfirmed(fans: unconfirmed, because: cause)
+            log.abandonedHandbackStillUnconfirmed(fans: unconfirmed)
         }
         guard !recovered.isEmpty else { return }
+        handbackAcceptedUnconfirmed.subtract(recovered)
         restoreAbandoned.subtract(recovered)
-        log.recoveredAbandonedHandback(fans: recovered, because: cause)
+        log.recoveredAbandonedHandback(fans: recovered)
     }
 }
