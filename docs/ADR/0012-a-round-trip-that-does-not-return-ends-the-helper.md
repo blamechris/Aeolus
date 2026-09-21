@@ -87,10 +87,12 @@ lock, without an actor hop.
 
 ## Rationale
 
-Process death is the only abandonment that is **ordered**. A task cannot finish exiting
-while one of its threads is inside the kernel, and launchd starts no successor until it
-has. So whatever the wedged call does happens before the next reconciliation reads the
-mode keys. A false positive puts the fans back to automatic, which is the safe direction.
+Process death is the only abandonment that **can be** ordered. The argument rests on two
+assumptions from the table below, neither yet observed on this machine. First, a task is
+fully reaped only after its in-flight kernel calls have unwound. Second, launchd starts no
+successor until that reaping is complete (H2). If both hold, whatever the wedged call does
+happens before the next reconciliation reads the mode keys. If either fails, the ordering
+argument fails with it, and the table says what to revisit. A false positive puts the fans back to automatic, which is the safe direction.
 The recovery it triggers already exists and is tested.
 
 ## Alternatives considered
