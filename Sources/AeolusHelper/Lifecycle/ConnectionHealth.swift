@@ -231,8 +231,12 @@ actor ConnectionHealth: SchedulerObserving {
     /// process. That is a documented limitation of D22, recorded on
     /// [#205](https://github.com/blamechris/Aeolus/issues/205), and **not** a bug a timeout
     /// would fix: a recycle that gave up waiting would close the handle underneath the walk
-    /// still reading through it, which is the hazard D22 closed. Reads keep flowing
-    /// throughout, because no turn is held.
+    /// still reading through it, which is the hazard D22 closed. **Reads do not keep flowing
+    /// meanwhile**, as this said until #290's review: `SMCConnection` is an actor that makes
+    /// the IOKit call synchronously, so a wedged call queues every read behind it — see
+    /// [#293](https://github.com/blamechris/Aeolus/issues/293). What makes the wedge visible
+    /// at all is `SMCReadScheduler.discoveryWalkOverrunAlarm`, whose `.fault` fires from the
+    /// authority rather than from this type, whose pump is exactly what is parked.
     static let eventBuffer = 64
 
     /// The most whole-read outcomes a second this observer is expected to be sent, on a
@@ -357,7 +361,7 @@ actor ConnectionHealth: SchedulerObserving {
         case .discoveryWalkEnded(.returned(let readings)) where readings > 0:
             // One real value is proof the handle answered, exactly as for a subset read. A
             // short set is not a failure here and cannot be judged here — see
-            // `DiscoveryWalkOutcome` for the limit and #205 for its follow-on.
+            // `DiscoveryWalkOutcome` for the limit and #292 for what would judge it.
             consecutiveFailures = 0
         case .discoveryWalkEnded:
             // A walk that threw, or returned nothing from a machine that declared keys: the
@@ -372,13 +376,6 @@ actor ConnectionHealth: SchedulerObserving {
         observedOutcomes += 1
     }
 
-    /// One reconnect, if the window allows it.
-    ///
-    /// The run is reset **before** the window is checked, and that ordering is the whole of
-    /// the rate limit. Resetting only on success would leave `consecutiveFailures` above the
-    /// threshold, so every subsequent failure would ask again and the limiter would be the
-    /// only thing between the helper and a reconnect attempt per read — a check nothing may
-    /// depend on alone.
     /// One failure in the run, and a reconnect once the run is long enough.
     private func countFailure(recovering recovery: some SMCConnectionRecovering) async {
         consecutiveFailures += 1
@@ -387,6 +384,13 @@ actor ConnectionHealth: SchedulerObserving {
         }
     }
 
+    /// One reconnect, if the window allows it.
+    ///
+    /// The run is reset **before** the window is checked, and that ordering is the whole of
+    /// the rate limit. Resetting only on success would leave `consecutiveFailures` above the
+    /// threshold, so every subsequent failure would ask again and the limiter would be the
+    /// only thing between the helper and a reconnect attempt per read — a check nothing may
+    /// depend on alone.
     private func attemptReconnect(through recovery: some SMCConnectionRecovering) async {
         let run = consecutiveFailures
         consecutiveFailures = 0

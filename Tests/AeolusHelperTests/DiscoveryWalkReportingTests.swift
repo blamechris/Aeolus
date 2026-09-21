@@ -196,4 +196,109 @@ struct DiscoveryWalkReportingTests {
             await authority.discoveryWalkOverruns == 0,
             "a walk that had already returned was reported as overrunning")
     }
+
+    /// The alarm sleeps until exactly `discoveryWalkOverrunAlarm` after the walk began.
+    ///
+    /// `GatedClock` ignores its deadline, so the two tests above would pass with the alarm set
+    /// to fire at once — which in production is a false `.fault` on every walk. #290's review
+    /// ran that mutation and the whole suite stayed green.
+    ///
+    /// **Mutation:** in `walkEveryKey()`, replace `let alarmAt = clock.now.advanced(by: …)`
+    /// with `let alarmAt = clock.now`. Run: red.
+    @Test("The alarm is set for the overrun figure after the walk began, not sooner")
+    func theAlarmIsSetForTheOverrunFigure() async throws {
+        let provider = GatedSensorProvider(holdingReadAll: true)
+        let clock = DeadlineRecordingClock()
+        let authority = ReadOnlyFanAuthority(
+            provider: provider,
+            fanMode: SnapshotFanModeReads(provider: provider),
+            log: HelperRestorerTests.helperLog,
+            thermalEmergency: ThermalEmergencyLatch(),
+            reclamation: ReclamationLedger(),
+            writeCapability: LeaseFixture.writePathNotBuilt(),
+            clock: clock)
+
+        let snapshot = Task { try? await authority.snapshot() }
+        #expect(
+            await yieldUntil("the alarm to be set") { await clock.deadlines.count == 1 })
+        let deadlines = await clock.deadlines
+        #expect(
+            deadlines
+                == [
+                    DeadlineRecordingClock.start.advanced(
+                        by: SMCReadScheduler.discoveryWalkOverrunAlarm)
+                ],
+            "the alarm was set for \(deadlines) rather than the overrun figure")
+
+        await provider.releaseReadAll()
+        _ = await snapshot.value
+        await clock.release()
+    }
+
+    /// The figure is derived from the contended walk, and stays above every measured one.
+    ///
+    /// **Mutation:** set `discoveryWalkOverrunAlarm` to `longestMeasuredDiscoveryWalk * 3`
+    /// — #290's first draft, 17.7 s. Run: red.
+    @Test("The alarm fires only past every walk this repository has measured")
+    func theAlarmClearsEveryMeasuredWalk() {
+        #expect(
+            SMCReadScheduler.discoveryWalkOverrunAlarm
+                > SMCReadScheduler.longestContendedDiscoveryWalk,
+            """
+            The overrun alarm is at or below a walk measured under contention on this machine, \
+            so running fanctl during the helper's first walk would raise a fault over nothing.
+            """)
+        #expect(
+            SMCReadScheduler.longestContendedDiscoveryWalk
+                >= SMCReadScheduler.longestMeasuredDiscoveryWalk)
+    }
+
+    // MARK: - An empty walk is not cached
+
+    /// A walk that returned nothing is walked again on the next snapshot, not kept.
+    ///
+    /// **Mutation:** in `discoverSensorKeys()`, replace
+    /// `if !discovered.isEmpty { discoveredSensors = discovered }` with
+    /// `discoveredSensors = discovered`. Run: red — the second snapshot never walks.
+    @Test("An empty discovery walk is not cached for the life of the daemon")
+    func anEmptyWalkIsNotCached() async throws {
+        let provider = GatedSensorProvider()
+        let authority = Self.authority(over: provider, clock: GatedClock())
+
+        _ = try? await authority.snapshot()
+        _ = try? await authority.snapshot()
+
+        #expect(
+            await provider.readAllCount == 2,
+            """
+            The second snapshot did not walk again after a walk that returned nothing. That \
+            walk is what a handle that died after #KEY returns, and ConnectionHealth counts it \
+            as a failure — caching it keeps the machine sensorless after the rebuild succeeds.
+            """)
+    }
+}
+
+// MARK: - Doubles
+
+/// A clock that records every deadline it is asked to sleep until, and parks the sleeper
+/// until released — so a test can read *when* an alarm was set without it firing.
+actor DeadlineRecordingClock: MonotonicClock {
+
+    static let start = ContinuousClock.now
+
+    private(set) var deadlines: [ContinuousClock.Instant] = []
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    nonisolated var now: ContinuousClock.Instant { Self.start }
+
+    func sleep(until deadline: ContinuousClock.Instant) async {
+        deadlines.append(deadline)
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        let parked = waiters
+        waiters = []
+        for waiter in parked { waiter.resume() }
+    }
 }

@@ -206,17 +206,27 @@ actor SMCReadScheduler {
     /// be added on the waiter's side.
     static let longestMeasuredDiscoveryWalk: Duration = .milliseconds(5900)
 
-    /// How long a walk may run before `ReadOnlyFanAuthority` logs it at `.fault` — three cold
-    /// walks, 17.7 s.
+    /// The longest discovery walk measured **under contention** on `Mac16,5`: three concurrent
+    /// `readAll()` walks against one SMC turned a 5.9 s cold walk into 24.9 s
+    /// (`HelperHardwareTests`' header; 22.0 s was measured again for the same file).
+    /// Production can see that contention: `fanctl` and the app call
+    /// `SMCSensorProvider.readAll()` directly, from their own processes.
+    static let longestContendedDiscoveryWalk: Duration = .milliseconds(24_900)
+
+    /// How long a walk may run before `ReadOnlyFanAuthority` logs it at `.fault` — twice the
+    /// longest contended walk, 49.8 s.
     ///
     /// **An alarm, not a bound.** Nothing is cancelled, abandoned, or allowed to stop waiting
     /// when it fires; see `readAll()` and #205 for why a timeout on either side of D22's wait
-    /// would re-open the hazard D22 closed. It makes a wedged walk *visible* — in `log show`,
-    /// instead of as a helper that quietly stopped noticing connection failures — which is the
-    /// one shape #205 recommends. Three cold walks rather than one because a cold walk is
-    /// the measured *worst* case, and an alarm at the worst case would fire on an ordinary
-    /// slow boot.
-    static let discoveryWalkOverrunAlarm: Duration = longestMeasuredDiscoveryWalk * 3
+    /// would re-open the hazard D22 closed. It makes a wedged walk *visible* in `log show` —
+    /// the one shape #205 recommends — and a wedged walk is worse than #205 thought (#293).
+    ///
+    /// **Derived from the contended figure, not the cold one**, and #290's first draft got
+    /// this wrong: three cold walks is 17.7 s, below walks this repository had already
+    /// measured, so `fanctl sensors` run during the helper's first walk after boot would have
+    /// raised a fault over nothing. Twice the worst measured case leaves room for a machine
+    /// slower than this one without making a real wedge wait long to be seen.
+    static let discoveryWalkOverrunAlarm: Duration = longestContendedDiscoveryWalk * 2
 
     /// The single provider every read here goes to. `SMCSensorProvider` in the daemon, a
     /// double under test.
@@ -296,6 +306,11 @@ actor SMCReadScheduler {
     func read(
         keys: [String], at priority: SMCReadPriority
     ) async throws -> [SensorReadOutcome] {
+        // No event, deliberately — the #205 comment asking for one is declined here. An empty
+        // request takes no turn and touches no IOKit, so it proves the handle neither alive
+        // nor dead: the only honest outcome is a neutral one, which `ConnectionHealth` would
+        // count as handled and do nothing with, while spending a buffer slot a real outcome
+        // needs. There is nothing to report.
         guard !keys.isEmpty else { return [] }
 
         var outcomes: [SensorReadOutcome] = []
@@ -479,18 +494,29 @@ actor SMCReadScheduler {
     /// threw or returned nothing as one failure in the same run as every other read. What it
     /// still cannot report is a **short** set — `SMCSensorProvider.readAll()` skips every key
     /// that fails and returns normally, so a walk truncated halfway through is `.returned`
-    /// with a smaller count — and that is `DiscoveryWalkOutcome`'s documented limit.
+    /// with a smaller count — and that is `DiscoveryWalkOutcome`'s documented limit, held open
+    /// by [#292](https://github.com/blamechris/Aeolus/issues/292).
     ///
     /// **The wait a recycle makes for it has no bound, by design.** A walk in which IOKit
     /// wedges — the round trip under `SMCConnection` never returns — leaves
     /// `discoveryWalksInFlight` at 1 for the life of the process; the recycle waiting behind
     /// it never takes its turn and leaves `exclusiveClaims` at 1, so every later walk parks
     /// too; and `ConnectionHealth`'s pump, which is inside that recycle, is parked
-    /// indefinitely — nothing is counted, and its buffer evicts. Reads keep flowing, because
-    /// no turn is held. This is a documented limitation of D22 and **not** a bug a timeout
+    /// indefinitely — nothing is counted, and its buffer evicts.
+    ///
+    /// **Reads do not keep flowing, and this comment said they did until #290's review.** No
+    /// turn is held, but that is not what serialises them: `SMCConnection` is an actor and
+    /// calls `IOConnectCallStructMethod` synchronously inside it, and production shares one
+    /// connection between this scheduler's provider and the plane. A round trip that never
+    /// returns occupies that actor for good, so every read queues behind it — the thermal
+    /// supervisor's included. A wedged walk makes the helper **blind**, not merely unable to
+    /// rebuild its connection; that is [#293](https://github.com/blamechris/Aeolus/issues/293),
+    /// for the architect, before E3. What follows still holds of the wait this method
+    /// imposes. This is a documented limitation of D22 and **not** a bug a timeout
     /// would fix: a recycle that stopped waiting and took its turn would close the handle
     /// underneath the walk still reading through it, which is the exact hazard D22 exists to
-    /// prevent. The bound has to come from the walk's side, and that is #205's subject.
+    /// prevent. The bound has to come from the walk's side, and #205's answer is an alarm
+    /// rather than a bound — `discoveryWalkOverrunAlarm`.
     func readAll() async throws -> [SensorReading] {
         while exclusiveClaims > 0 {
             await withCheckedContinuation { waitingForExclusive.append($0) }

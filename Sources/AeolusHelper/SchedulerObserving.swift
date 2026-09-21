@@ -186,17 +186,27 @@ enum SchedulerEvent: Sendable, Hashable {
 /// skips every key that fails and returns normally, so a walk truncated by a connection that
 /// died halfway through reads here as `.returned` with a smaller count. The provider already
 /// computes the check that would tell — `KeyCountCrossCheck`, declared against walked — and
-/// logs it; carrying it here is a `SensorProvider` change and is recorded as #205's follow-on
-/// rather than guessed at from a count this type has nothing to compare against.
+/// logs it — but it compares declared keys against *resolved* indices, not against readings,
+/// so it cannot see a handle that fails at the value read either. The judgement belongs at
+/// the authority's cache, and is [#292](https://github.com/blamechris/Aeolus/issues/292).
+///
+/// **A `.returned` with readings is old evidence by the time it is reported.** It proves
+/// the handle answered at the walk's start; a handle that died a second into a 5.9 s walk
+/// still ends `.returned(n > 0)`, and resets a run the supervisor path built meanwhile.
+/// That costs one more run before a rebuild, and is #292's too.
 enum DiscoveryWalkOutcome: Sendable, Hashable {
 
     /// The walk returned, with this many readings. Zero is a failure to `ConnectionHealth`:
-    /// the walk enumerates only keys the machine declared, so none of them reading is the
-    /// handle failing, never an absent key.
+    /// the walk enumerates only keys the machine declared, so none of them reading is almost
+    /// always the handle failing. Almost: a firmware declaring zero keys, or a decoding
+    /// regression that fails every key, would read the same — each costs one outcome, and
+    /// neither is cached (see `ReadOnlyFanAuthority.discoverSensorKeys()`).
     case returned(readings: Int)
 
     /// The walk threw — `open()` or `#KEY` failed before any key was reached. `detail` is
-    /// diagnostic and is never parsed.
+    /// diagnostic and is never parsed. Counted as a failure whatever the cause, which is
+    /// broader than it should be: `#KEY` failing to *decode* is a fact about the firmware,
+    /// not the handle — #292.
     case threw(detail: String)
 }
 

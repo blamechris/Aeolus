@@ -388,7 +388,12 @@ actor ReadOnlyFanAuthority: FanAuthority {
         defer { if discovery == walk { discovery = nil } }
 
         let discovered = try await walk.value
-        discoveredSensors = discovered
+        // An empty walk is not cached (#290): it is what a handle that died after `#KEY`
+        // returns, and `ConnectionHealth` counts it as a failure — caching it would keep a
+        // machine sensorless for the life of the daemon even after that rebuild succeeded.
+        // The next snapshot walks again, which is this property's documented rule for a
+        // failed discovery. A *short* walk is still cached; that is #292.
+        if !discovered.isEmpty { discoveredSensors = discovered }
         return discovered
     }
 
@@ -403,6 +408,11 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// `.fault` line instead, at `SMCReadScheduler.discoveryWalkOverrunAlarm`, and does
     /// nothing else: the walk is not cancelled, no wait is shortened, and a walk that ends
     /// after the alarm returns its readings as normal.
+    ///
+    /// It times the whole of `provider.readAll()`, which through the scheduler includes a wait
+    /// behind a connection rebuild already claimed (D22's other direction), and it sleeps on a
+    /// continuous clock, so a machine asleep mid-walk counts. The fault line says both rather
+    /// than asserting which happened.
     ///
     /// Here because this is the one caller that owns the walk as a task, and because the
     /// scheduler deliberately has no clock seam (`SchedulerEvent`'s documentation says why).
