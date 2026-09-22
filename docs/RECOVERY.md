@@ -73,10 +73,10 @@ reached an automatic speed.
 no SMC write path yet, so it answers this message as a no-op — see
 [SAFETY.md § 7](SAFETY.md#7-panic-path) for what is still missing. Running it costs nothing and
 it becomes the real thing the moment the write path lands; until then, if the fans are wrong,
-go to step 4.
+go to step 5.
 
 **Exit 1 — "The helper did not confirm the reset request."** Followed by the reason, and by
-step 4's `bootout` line. The reasons worth knowing in advance:
+step 5's `bootout` line. The reasons worth knowing in advance:
 
 - *Either the helper is not installed or not yet approved, or it refused this copy of
   `fanctl` because the signature did not match.* These possibilities are named together
@@ -88,7 +88,7 @@ step 4's `bootout` line. The reasons worth knowing in advance:
   fault — [#82](https://github.com/blamechris/Aeolus/issues/82) is the signed build. Reads
   (`fanctl list`, `fanctl sensors`) need none of this and keep working.
 - *The helper accepted the request and did not answer within 10 seconds.* Nothing can be said
-  about whether it took effect; go to step 4.
+  about whether it took effect; go to step 5.
 
 If `fanctl` is not installed, it ships inside the app bundle:
 
@@ -100,7 +100,79 @@ There is no per-fan form: `fanctl reset` without `--all` prints usage and exits,
 taking one fan back means holding it under a lease and this build has no write path to grant
 one.
 
-## 4. Stop the helper
+## 4. A specific fan says manual control is not available
+
+If `fanctl` or the app reports that a fan cannot be taken under manual control, it names a
+*reason* — a short identifier such as `restoreToAutomaticUnconfirmed` — alongside a plain
+sentence. Find your reason below by that identifier; the list is exhaustive, so if a reason
+isn't here, the identifier is one this document does not yet know, which is itself the
+`unrecognised reason` case below.
+
+**`writePathNotBuilt`** — This build of Aeolus has no path to write to the SMC yet, so no
+fan can be taken under manual control. This is the answer every fan gives today; there is no
+user action that changes it, and it is expected rather than a fault.
+
+**`boundsImplausible`** — This fan's firmware-reported speed bounds did not pass a
+plausibility check, so there is no safe range to control it within. There is no user action
+that resolves this from a client; it is a property of what the firmware reported for this
+fan.
+
+**`reclaimedBySystem`** — The system has taken this fan back from manual control and Aeolus
+is not driving it right now. There is no user action; it returns to Aeolus's control if the
+system yields the fan again.
+
+**`leaseHeldByAnotherClient`** — Another Aeolus client already holds the manual-control
+lease. It becomes available again once that lease ends or is released.
+
+**`selfRenewalNotBuilt`** — A self-renewing (always-alive) lease was requested and this
+build does not implement one. Ask for a lease without self-renewal instead.
+
+**`releaseInProgress`** — This fan is mid-handback: a previous lease just ended and the
+write that returns it to automatic control has not completed yet. Retry in a moment; this
+normally clears in milliseconds.
+
+**`handbackUnconfirmed`** — Aeolus asked for this fan back and stopped waiting for an answer
+before one arrived, so it does not yet know what mode the fan is in. The outstanding restore
+is still running; retry shortly. A helper restart is not the first action — only reach for it
+if this still stands after the machine wakes from sleep.
+
+**`restoreToAutomaticUnconfirmed`** — Aeolus issued a restore-to-automatic write for this fan
+and has not yet confirmed the fan is back under automatic control. The write may or may not
+have been accepted by the firmware; nothing has read the fan's mode back yet. This ordinarily
+clears within one supervisor cycle — retry shortly. If it persists, the fan may be stuck in
+manual, another program may have taken it, or the firmware may be refusing the write; go to
+step 3 (`fanctl reset --all`) if it does not clear.
+
+**`restoreToAutomaticFailed`** — Aeolus tried to hand this fan back to automatic control and
+the firmware never took the write, so Aeolus no longer knows what mode the fan is in. Run
+`fanctl reset --all` (step 3) to ask the firmware for this fan again — a write it accepts
+lifts the refusal. One it refuses again does not; continue with step 5 if that happens.
+
+**`systemSleeping`** — The machine is going to sleep, or Aeolus believes it is, and every
+fan has already been handed back to automatic control for the duration; new leases are
+refused until the machine wakes. Retry after waking, not immediately. If it is still refused
+after a wake, the helper likely missed the wake notification — go to step 5.
+
+**`noThermalTelemetry`** — Aeolus cannot currently read a critical temperature, so it cannot
+safely watch a fan under manual control and refuses new leases entirely. There is nothing to
+do from here; it clears when the SMC answers again, and retrying does not speed that up. If
+it does not clear, go to step 5.
+
+**`supervisorBlind`** — Aeolus cannot currently read this one fan's own control state, so it
+cannot tell whether something else has taken it back, and refuses a new lease over it. This
+may clear on its own if the connection recovers; if it does not, go to step 5.
+
+**`foreignManualControl`** — Something other than Aeolus — another fan-control tool, or
+firmware that re-asserted manual mode — has put this fan under manual control. Quit or stop
+that other program; Aeolus does not fight it for the fan.
+
+**An unrecognised reason** — a short identifier this document has no section for above means
+this `fanctl` or app build is older than the helper that answered it. The fan is not
+available regardless of what the identifier says; update Aeolus and fanctl to matching
+versions. If updating isn't possible yet, treat it exactly like any other refusal above and
+continue with step 3.
+
+## 5. Stop the helper
 
 If the command above fails — or on the current build, instead of it — stop the daemon
 directly.
@@ -126,7 +198,7 @@ Check it is gone:
 sudo launchctl list | grep -i aeolus
 ```
 
-## 5. Remove Aeolus entirely
+## 6. Remove Aeolus entirely
 
 The helper ships inside the app bundle, and its launchd job description points at
 `Contents/MacOS/AeolusHelper` inside that bundle rather than at any path elsewhere on
@@ -148,12 +220,12 @@ rm -f ~/Library/Preferences/com.blamechris.Aeolus.plist
 Restart afterwards. With nothing left running to hold the fans, macOS resumes full
 control.
 
-## 6. Reboot
+## 7. Reboot
 
 A restart clears any software holding the fans. Firmware resets the Apple Silicon force
 key across power cycles anyway, so a reboot alone resolves most stuck states.
 
-## 7. Reset the SMC
+## 8. Reset the SMC
 
 Only needed if fans remain wrong **after** a reboot with Aeolus removed. At that point the
 cause is almost certainly not Aeolus — but the reset is harmless and rules it out.
@@ -200,6 +272,6 @@ sensors themselves.
 
 Please still [open an issue](https://github.com/blamechris/Aeolus/issues/new?template=bug.yml)
 if Aeolus was involved. Include your model identifier, macOS version, what you had
-configured, and which step above finally resolved it. A recovery that needed step 5 when
+configured, and which step above finally resolved it. A recovery that needed step 6 when
 it should have needed step 2 is a bug in this software, and it is one we want to know
 about.
