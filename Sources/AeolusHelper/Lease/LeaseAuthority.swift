@@ -363,14 +363,14 @@ actor LeaseAuthority {
         await expireLapsedLeases()
         try await refuseIfThermalEmergencyActive(connection)
         try await refuseIfBlind(connection)
-        try await refuseIfForeignManualControl(
+        let exempted = try await refuseIfForeignManualControl(
             connection, wanting: Set(request.fanIndices).intersection(enumerated))
 
         // ---- No `await` below this line. Adding one reopens #95. ----
         try AeolusXPCValidation.validateFanIndices(
             request.fanIndices, enumeratedFanIndices: enumerated)
         try refuseIfInvalidated(connection)
-        // The four refusals in this straight-line region are ordered by how long they last,
+        // The five refusals in this straight-line region are ordered by how long they last,
         // most durable first: a client told a transient refusal retries, and if it retries
         // into a durable one in the end, the first answer wasted the round trip and told it
         // something less true than what was available. handback-ledger.md § "The grant gate's
@@ -417,6 +417,8 @@ actor LeaseAuthority {
             log.refusedMidHandback(connection, fans: Set(midHandback))
             throw AeolusXPCFault.manualControlUnavailable(reason: .releaseInProgress)
         }
+        // Last, and least durable: a fan exempted above whose handback landed since (#311).
+        try refuseIfExemptionLapsed(connection, exempted: exempted)
 
         let entry = LeaseRecord(
             id: UUID(),

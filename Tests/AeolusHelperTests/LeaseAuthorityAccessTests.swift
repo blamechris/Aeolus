@@ -179,6 +179,10 @@ struct LeaseAuthorityAccessTests {
         "refuseIfWritePathNotBuilt(_: ConnectionID)",
         "refuseIfBlind(_: ConnectionID)",
         "refuseIfForeignManualControl(_: ConnectionID, wanting: Set<Int>)",
+        // #311's. Synchronous, in the straight-line region, and like the three above it can
+        // produce a refusal and nothing else: it reads `fansAeolusIsAccountableFor`, which is
+        // already acknowledged below, and no register that set is derived from.
+        "refuseIfExemptionLapsed(_: ConnectionID, exempted: Set<Int>)",
         "acquireLease(_: LeaseRequest, from: ConnectionID)",
         "renewLease(id: UUID, from: ConnectionID)",
         "releaseLease(id: UUID, from: ConnectionID)",
