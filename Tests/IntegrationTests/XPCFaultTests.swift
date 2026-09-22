@@ -290,4 +290,20 @@ struct XPCFaultTests {
         #expect(reason == ManualControlAvailability.Reason.writePathNotBuilt)
         #expect(reason.wireValue == "writePathNotBuilt")
     }
+
+    /// #310: this is the one place a `ManualControlAvailability.Reason` actually reaches a
+    /// user today — `fanctl reset --all`'s `ResetCommand.reason(for:)` prints exactly this
+    /// string. Before #310 it printed the raw wire value and nothing else; every case now
+    /// renders its own sentence and advice, which is the difference this test pins.
+    @Test("manualControlUnavailable renders the reason's sentence and advice, not the wire value")
+    func manualControlUnavailableRendersReasonProse() throws {
+        let reason = ManualControlAvailability.Reason.restoreToAutomaticUnconfirmed
+        let fault = AeolusXPCFault.manualControlUnavailable(reason: reason)
+        let description = try #require(fault.errorDescription)
+        #expect(description.contains(reason.userFacingSummary))
+        #expect(description.contains(reason.recoveryAdvice))
+        // The wire value still appears, so a user can find the matching section of
+        // docs/RECOVERY.md — but it is no longer the *only* thing the message says.
+        #expect(description.contains("restoreToAutomaticUnconfirmed"))
+    }
 }

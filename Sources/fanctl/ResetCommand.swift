@@ -64,7 +64,10 @@ enum ResetCommand {
     /// precisely the additive mutation that walked through the first version of this suite.
     static let acceptanceLine = "The helper accepted the reset request."
 
-    /// `docs/RECOVERY.md` step 4, inline.
+    /// `docs/RECOVERY.md` step 5, inline. #310 added a step 4 ahead of it — per-fan manual
+    /// control refusals — so this comment's number moved with the section it names; the
+    /// printed text below says only "the next step in docs/RECOVERY.md" and carries no number
+    /// of its own to fall out of date.
     ///
     /// The service name is read from `AeolusXPCService`, not typed out, because the launchd
     /// label and the mach service name are the same string and a recovery instruction that
