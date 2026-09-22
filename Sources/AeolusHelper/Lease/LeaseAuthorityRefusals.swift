@@ -39,6 +39,15 @@ import FanKit
 //   `handbackUnconfirmed`, `sleepSeal`, `table` and `releasing` directly, and stay inside it
 //   for the reason that region exists at all.
 //
+// **One addition reads this actor's state, and only through a view already on the seam.**
+// `refuseIfExemptionLapsed(_:exempted:)` ([#311](https://github.com/blamechris/Aeolus/issues/311))
+// runs inside the straight-line region, and consults `fansAeolusIsAccountableFor` — the
+// derived, read-only union #128 already made `internal`, which
+// `refuseIfForeignManualControl(_:wanting:)` above it reads too. No register it is derived
+// from crosses, and nothing it can do changes who holds or releases a fan: it only refuses.
+// It lives here for the line budget `LeaseAuthority.swift` has left, not as an exception to
+// the split.
+//
 // `LeaseAuthorityAccessTests` enforces that split rather than leaving it to this comment.
 //
 // ## What this does not fix
@@ -177,25 +186,56 @@ extension LeaseAuthority {
     /// refusal already applies. `refuseIfWritePathNotBuilt` running first (step 0) is what
     /// keeps it off today's helper's grant path entirely.
     ///
-    /// `fansAeolusIsAccountableFor` is read here rather than passed in because it must be
-    /// this actor's state as it stands at the moment of the question — see that property for
-    /// the three registers it unions and the more precise refusal each of them already has.
+    /// `fansAeolusIsAccountableFor` is read here rather than passed in, as this actor's state
+    /// at the moment of the question — see that property for the three registers it unions
+    /// and the more precise refusal each of them already has. **The moment of the question
+    /// is not the moment of the grant**, and that is #311: the fans it exempts are never read,
+    /// and this suspends before `acquireLease` decides. So it returns them, and
+    /// `refuseIfExemptionLapsed(_:exempted:)` asks again once nothing can suspend.
     ///
     /// `internal` rather than `private` **only because this file is not**
     /// `LeaseAuthority.swift` — a Swift extension in another file cannot see a `private`
-    /// member. Nothing widens with it: calling this from elsewhere in the module can
-    /// produce a refusal and nothing else, and it reads no state the actor owns.
+    /// member. Nothing widens with it: calling this from elsewhere in the module can produce a
+    /// refusal and nothing else, and what it returns is a subset of what the caller asked for.
     func refuseIfForeignManualControl(
         _ connection: ConnectionID, wanting fans: Set<Int>
-    ) async throws {
+    ) async throws -> Set<Int> {
         // § 3's set before this actor's union, for the order `activeLeaseView()` gives: a fan
         // leaving § 3's set by being engaged again is then held by the union read after it.
         let awaiting = await emergencyRestores?.fansAwaitingRestoreConfirmation ?? []
+        let held = fansAeolusIsAccountableFor
         let reason = await foreignControl.refusalForGrant(
-            overFans: fans, heldByAeolus: fansAeolusIsAccountableFor,
-            awaitingConfirmation: awaiting)
-        guard let reason else { return }
-        log.refusedForeignManualControl(connection, fans: fans, reason: reason)
-        throw AeolusXPCFault.manualControlUnavailable(reason: reason)
+            overFans: fans, heldByAeolus: held, awaitingConfirmation: awaiting)
+        if let reason {
+            log.refusedForeignManualControl(connection, fans: fans, reason: reason)
+            throw AeolusXPCFault.manualControlUnavailable(reason: reason)
+        }
+        return fans.intersection(held)
+    }
+
+    /// Refuses a fan the foreign-control step exempted as Aeolus's own that no longer is
+    /// ([#311](https://github.com/blamechris/Aeolus/issues/311)).
+    ///
+    /// **Synchronous, because it has to be in `acquireLease`'s straight-line region.** An
+    /// exempted fan is never read, on the argument that a more precise refusal below the marker
+    /// answers for it. That holds only while the fan is still in `fansAeolusIsAccountableFor`,
+    /// and the foreign-control step suspends — once on the reconciliation actor and once per
+    /// fan it reads — so a handback can land in between. Its `releasing` entry clears, the
+    /// `.releaseInProgress` guard no longer sees it, and before this check nothing refused it
+    /// however it read: a lease over a fan in manual that nothing had read since its restore.
+    ///
+    /// `.releaseInProgress` is the honest answer, not a guess: the fan's handback finished
+    /// inside this request, a retry reads it fresh, and the retry is told whatever is true of
+    /// it then — granted if it reads automatic, and the foreign-control step's answer if not.
+    /// Asked last, because it is the least durable refusal here.
+    ///
+    /// `internal` for `refuseIfForeignManualControl(_:wanting:)`'s reason; it can produce a
+    /// refusal and nothing else.
+    func refuseIfExemptionLapsed(_ connection: ConnectionID, exempted: Set<Int>) throws {
+        let lapsed = exempted.subtracting(fansAeolusIsAccountableFor)
+        guard lapsed.isEmpty else {
+            log.refusedLapsedExemption(connection, fans: lapsed)
+            throw AeolusXPCFault.manualControlUnavailable(reason: .releaseInProgress)
+        }
     }
 }
