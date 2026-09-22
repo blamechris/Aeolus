@@ -48,7 +48,7 @@ struct ResetCommandTests {
     /// out rather than implied.
     ///
     /// `CLAUDE.md` rule 6 in the place it costs the most: this text is read by somebody whose
-    /// fans are wrong, and "restored" would send them away from step 4 of `docs/RECOVERY.md`
+    /// fans are wrong, and "restored" would send them away from step 5 of `docs/RECOVERY.md`
     /// believing the problem was solved. `restoreAllToAutomatic` answers "accepted", never
     /// "done" — see `HelperClient.restoreAllToAutomatic()`.
     ///
@@ -317,7 +317,7 @@ struct ResetCommandTests {
             ResetCommand.stopTheHelper.contains(
                 "sudo launchctl bootout system/com.blamechris.Aeolus.Helper"),
             """
-            the recovery step reads "\(ResetCommand.stopTheHelper)". docs/RECOVERY.md step 4 \
+            the recovery step reads "\(ResetCommand.stopTheHelper)". docs/RECOVERY.md step 5 \
             is the same command, and this is printed to a user whose helper connection has \
             already failed — a name that has drifted cannot be recovered from at that point.
             """)

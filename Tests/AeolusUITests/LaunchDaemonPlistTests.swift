@@ -179,8 +179,8 @@ struct LaunchDaemonPlistTests {
         // are stuck, typed from a phone, and it fails silently against the wrong label —
         // launchctl reports no such service and the daemon keeps running.
         //
-        // The document carries the command twice, in §4 ("Stop the helper") and §5
-        // ("Remove Aeolus entirely"), and §5's variant redirects stderr to /dev/null. So
+        // The document carries the command twice, in §5 ("Stop the helper") and §6
+        // ("Remove Aeolus entirely"), and §6's variant redirects stderr to /dev/null. So
         // "at least one occurrence is right" is not the property worth asserting: a
         // rename that updated §4 and missed §5 would leave a user in the worst state
         // running a command that silently does nothing, and then deleting the app while
@@ -195,7 +195,7 @@ struct LaunchDaemonPlistTests {
         #expect(
             afterCommand.count >= 2,
             """
-            RECOVERY.md documents `launchctl bootout` in both §4 and §5; found \
+            RECOVERY.md documents `launchctl bootout` in both §5 and §6; found \
             \(afterCommand.count). If a section was removed, remove this expectation \
             deliberately rather than weakening it.
             """)

@@ -302,8 +302,19 @@ extension AeolusXPCFault: LocalizedError {
             let field = FaultText.displayable(name)
             return "The helper refused the value of \(field): \(FaultText.displayable(detail))."
         case .manualControlUnavailable(let reason):
+            // `.unknown`'s payload is a helper-authored free-text wire value and gets the same
+            // treatment every other free-text field in this file gets: sanitised once, here,
+            // before it reaches either half of the rendering below or the wire value printed
+            // at the end. Every known case's rendering is fixed prose and needs none of this.
+            let displayReason: ManualControlAvailability.Reason
+            if case .unknown(let raw) = reason {
+                displayReason = .unknown(FaultText.displayable(raw))
+            } else {
+                displayReason = reason
+            }
             return """
-                Manual fan control is not available (\(FaultText.displayable(reason.wireValue))).
+                Manual fan control is not available: \(displayReason.userFacingSummary) \
+                \(displayReason.recoveryAdvice) (reason: \(displayReason.wireValue))
                 """
         case .leaseExpired:
             return """
