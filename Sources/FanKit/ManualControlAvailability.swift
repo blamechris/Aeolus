@@ -109,6 +109,36 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// [#209](https://github.com/blamechris/Aeolus/issues/209), recorded as ADR 0007,
         /// amendment 2026-09-06 (#209).
         case handbackUnconfirmed
+        /// The helper asked for automatic control of this fan, the firmware **accepted** the
+        /// write, and no read has yet reported the fan automatic.
+        ///
+        /// Firmware can take `F<n>Md = 0` and leave the fan in manual, so an accepted write is
+        /// not a fan back on Apple's thermal management. `docs/SAFETY.md` § 3 keeps every such
+        /// fan until one of its own read-backs finds it automatic — whether the restore was a
+        /// lease handback or § 3's own — and a fan it is still keeping, observed in manual, is
+        /// refused with this reason.
+        ///
+        /// **It is not `.foreignManualControl`, and reporting it as that was
+        /// [#303](https://github.com/blamechris/Aeolus/issues/303).** `F<n>Md` names no owner,
+        /// so the read alone cannot tell this fan from one another program took; what tells
+        /// them apart is that Aeolus issued the write that was supposed to hand it back.
+        /// Sending the user to quit a program that is not running is `CLAUDE.md` rule 6 aimed
+        /// at the user. And unlike a foreign fan, this one is still watched: § 3 will bridge it
+        /// to maximum on the next thermal emergency.
+        ///
+        /// **How it differs from the two reasons named for the same write**, one per outcome:
+        ///
+        /// - `restoreToAutomaticFailed` — the firmware *refused* every attempt. Durable.
+        /// - `handbackUnconfirmed` — the write has not *returned*; the helper stopped waiting.
+        ///   Its advice turns on the restore still being outstanding, which this one is not.
+        /// - This case — the write returned *accepted*. It ordinarily clears within one
+        ///   supervisor cycle, when § 3's read-back finds the fan automatic, so the advice is
+        ///   to retry. If it persists, either the firmware is not honouring the mode write or
+        ///   another program has since taken the fan, and `F<n>Md` cannot say which.
+        ///
+        /// Keyed on a fresh mode read, not on the register alone: a fan § 3 is still keeping
+        /// that reads automatic is granted. ADR 0011, amendment 2026-09-21 (#303).
+        case restoreToAutomaticUnconfirmed
         /// The handback failed: the helper spent its attempts trying to return this fan to
         /// automatic control and the firmware never took the write.
         ///
@@ -259,6 +289,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case .selfRenewalNotBuilt: return "selfRenewalNotBuilt"
             case .releaseInProgress: return "releaseInProgress"
             case .handbackUnconfirmed: return "handbackUnconfirmed"
+            case .restoreToAutomaticUnconfirmed: return "restoreToAutomaticUnconfirmed"
             case .restoreToAutomaticFailed: return "restoreToAutomaticFailed"
             case .systemSleeping: return "systemSleeping"
             case .noThermalTelemetry: return "noThermalTelemetry"
@@ -280,6 +311,8 @@ public enum ManualControlAvailability: Sendable, Hashable {
             case Reason.selfRenewalNotBuilt.wireValue: self = .selfRenewalNotBuilt
             case Reason.releaseInProgress.wireValue: self = .releaseInProgress
             case Reason.handbackUnconfirmed.wireValue: self = .handbackUnconfirmed
+            case Reason.restoreToAutomaticUnconfirmed.wireValue:
+                self = .restoreToAutomaticUnconfirmed
             case Reason.restoreToAutomaticFailed.wireValue: self = .restoreToAutomaticFailed
             case Reason.systemSleeping.wireValue: self = .systemSleeping
             case Reason.noThermalTelemetry.wireValue: self = .noThermalTelemetry

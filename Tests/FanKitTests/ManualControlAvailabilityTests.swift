@@ -32,6 +32,7 @@ struct ManualControlAvailabilityTests {
             .unavailable(.selfRenewalNotBuilt),
             .unavailable(.releaseInProgress),
             .unavailable(.handbackUnconfirmed),
+            .unavailable(.restoreToAutomaticUnconfirmed),
             .unavailable(.restoreToAutomaticFailed),
             .unavailable(.systemSleeping),
             .unavailable(.noThermalTelemetry),
@@ -94,6 +95,26 @@ struct ManualControlAvailabilityTests {
         #expect(decoded != .unavailable(.restoreToAutomaticFailed))
     }
 
+    /// #303's case arrives as itself, and not as any of the three reasons a client would act
+    /// on wrongly.
+    ///
+    /// `.foreignManualControl` is the one it replaced for these fans, and the reason it
+    /// exists: that answer sends the user to quit a program that is not running. The other
+    /// two name the same restore-to-automatic write reaching a different outcome —
+    /// `.handbackUnconfirmed` says the write has not returned, `.restoreToAutomaticFailed`
+    /// that the firmware refused it — and each carries advice that is wrong for a write the
+    /// firmware accepted.
+    @Test("restoreToAutomaticUnconfirmed arrives as itself, distinct from all three neighbours")
+    func restoreToAutomaticUnconfirmedDecodesToItsOwnCase() throws {
+        let decoded = try decode(
+            #"{"state":"unavailable","reason":"restoreToAutomaticUnconfirmed"}"#)
+        #expect(decoded == .unavailable(.restoreToAutomaticUnconfirmed))
+        #expect(decoded != .unavailable(.unknown("restoreToAutomaticUnconfirmed")))
+        #expect(decoded != .unavailable(.foreignManualControl))
+        #expect(decoded != .unavailable(.handbackUnconfirmed))
+        #expect(decoded != .unavailable(.restoreToAutomaticFailed))
+    }
+
     /// The direction of the guess is the whole point. If a future version grows a third
     /// state, an old client must read it as "cannot control", never as "can".
     @Test("An unrecognised state fails closed to unavailable, never to available")
@@ -132,6 +153,7 @@ struct ManualControlAvailabilityTests {
             .selfRenewalNotBuilt,
             .releaseInProgress,
             .handbackUnconfirmed,
+            .restoreToAutomaticUnconfirmed,
             .restoreToAutomaticFailed,
             .systemSleeping,
             .noThermalTelemetry,
@@ -166,6 +188,9 @@ struct ManualControlAvailabilityTests {
         #expect(
             ManualControlAvailability.Reason.handbackUnconfirmed.wireValue
                 == "handbackUnconfirmed")
+        #expect(
+            ManualControlAvailability.Reason.restoreToAutomaticUnconfirmed.wireValue
+                == "restoreToAutomaticUnconfirmed")
         #expect(
             ManualControlAvailability.Reason.restoreToAutomaticFailed.wireValue
                 == "restoreToAutomaticFailed")
