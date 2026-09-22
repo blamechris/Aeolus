@@ -1303,7 +1303,7 @@ accepted the reset request* — and says in the same breath that the helper has 
 back under automatic control. It is a truthful acknowledgement of a request the helper answers as a
 no-op, and it is the shape the command keeps once the write path lands, because
 `restoreAllToAutomatic` answers *accepted*, never *done*. Any failure exits non-zero, names what
-the client decided, and prints step 4's `bootout` line; an unreachable helper is reported as **both**
+the client decided, and prints step 5's `bootout` line; an unreachable helper is reported as **both**
 of the two possibilities ADR 0005 measured to be indistinguishable from the client's side.
 
 **Wiring the call was not sufficient, which the previous sentence read as though it were.** The
