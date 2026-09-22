@@ -339,7 +339,7 @@ on every ordinary teardown.
 ## The grant gate's ordering
 
 `acquireLease`'s straight-line region — everything below the
-`// ---- No await below this line ----` marker — holds four refusals, and they are **ordered
+`// ---- No await below this line ----` marker — holds five refusals, and they are **ordered
 by how long they last, most durable first.** A client told a transient refusal retries; if it
 retries into a durable one in the end, the first answer wasted the round trip and told it
 something less true than what was available.
@@ -384,6 +384,17 @@ something less true than what was available.
    holds another — and `.releaseInProgress` documents itself as *"retry in a moment"*. A client
    told that, when the real answer is *"somebody else holds the fans and will for as long as
    they live"*, retries into a different refusal forever.
+
+5. **An exemption that lapsed → `.releaseInProgress`**
+   ([#311](https://github.com/blamechris/Aeolus/issues/311)). The foreign-control step above
+   the marker exempts every fan in `fansAeolusIsAccountableFor` and never reads it, on the
+   argument that one of the four refusals here answers for it. It then suspends — on the
+   reconciliation actor, and once per fan it does read — so a handback can land in between.
+   The fan's `releasing` entry clears, item 4 no longer sees it, and until #311 nothing refused
+   it however it read: a lease over a fan in manual that nothing had read since its restore.
+   `refuseIfExemptionLapsed(_:exempted:)` refuses a requested fan that was exempted and is no
+   longer in the set. Least durable of the five, so last: the retry reads the fan fresh.
+   `GrantExemptionLapseTests` scripts the interleaving.
 
 ## One restore call per sweep
 
