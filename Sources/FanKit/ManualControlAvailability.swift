@@ -109,14 +109,17 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// [#209](https://github.com/blamechris/Aeolus/issues/209), recorded as ADR 0007,
         /// amendment 2026-09-06 (#209).
         case handbackUnconfirmed
-        /// The helper asked for automatic control of this fan, the firmware **accepted** the
-        /// write, and no read has yet reported the fan automatic.
+        /// The helper issued a restore-to-automatic for this fan and no read has yet reported
+        /// the fan automatic.
         ///
-        /// Firmware can take `F<n>Md = 0` and leave the fan in manual, so an accepted write is
-        /// not a fan back on Apple's thermal management. `docs/SAFETY.md` § 3 keeps every such
-        /// fan until one of its own read-backs finds it automatic — whether the restore was a
-        /// lease handback or § 3's own — and a fan it is still keeping, observed in manual, is
-        /// refused with this reason.
+        /// `docs/SAFETY.md` § 3 keeps such a fan until one of its own read-backs finds it
+        /// automatic, and a fan it is still keeping, observed in manual, is refused with this
+        /// reason. Two kinds reach it. A lease handback whose write the firmware **accepted**:
+        /// firmware can take `F<n>Md = 0` and leave the fan manual, so an accepted write is not a
+        /// fan back on Apple's thermal management. And § 3's own restore after a thermal
+        /// emergency, which § 3 keeps **whether or not the firmware took it** — a refused one
+        /// included, until [#308](https://github.com/blamechris/Aeolus/issues/308) records the
+        /// outcome and gives it a reason of its own.
         ///
         /// **It is not `.foreignManualControl`, and reporting it as that was
         /// [#303](https://github.com/blamechris/Aeolus/issues/303).** `F<n>Md` names no owner,
@@ -128,13 +131,15 @@ public enum ManualControlAvailability: Sendable, Hashable {
         ///
         /// **How it differs from the two reasons named for the same write**, one per outcome:
         ///
-        /// - `restoreToAutomaticFailed` — the firmware *refused* every attempt. Durable.
+        /// - `restoreToAutomaticFailed` — the lease core's restorer spent its attempts and the
+        ///   firmware *refused* every one. Durable.
         /// - `handbackUnconfirmed` — the write has not *returned*; the helper stopped waiting.
         ///   Its advice turns on the restore still being outstanding, which this one is not.
-        /// - This case — the write returned *accepted*. It ordinarily clears within one
-        ///   supervisor cycle, when § 3's read-back finds the fan automatic, so the advice is
-        ///   to retry. If it persists, either the firmware is not honouring the mode write or
-        ///   another program has since taken the fan, and `F<n>Md` cannot say which.
+        /// - This case — the write was issued and has returned, and no read has confirmed it.
+        ///   For an accepted write it ordinarily clears within one supervisor cycle, when § 3's
+        ///   read-back finds the fan automatic, so the advice is to retry. If it persists, the
+        ///   firmware is not honouring the mode write, or refused § 3's restore (#308), or
+        ///   another program has since taken the fan — and `F<n>Md` cannot say which.
         ///
         /// Keyed on a fresh mode read, not on the register alone: a fan § 3 is still keeping
         /// that reads automatic is granted. ADR 0011, amendment 2026-09-21 (#303).

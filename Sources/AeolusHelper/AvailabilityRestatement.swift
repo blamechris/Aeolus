@@ -52,7 +52,7 @@ import FanKit
 // write a fan reconciliation had refused read `.available`, or `.foreignManualControl`.
 //
 // **The third is whose manual it is** ([#303](https://github.com/blamechris/Aeolus/issues/303)).
-// A manual fan § 3 is keeping because Aeolus's own restore was accepted and not confirmed is
+// A manual fan § 3 is keeping because Aeolus's own restore was issued and not confirmed is
 // `.restoreToAutomaticUnconfirmed`, and only a fan outside that set is foreign. It is a
 // reclassification of the foreign answer and never an exemption from step 5: § 3's set is
 // carried beside `accountableFans`, not in it, because a fan in `accountableFans` is returned
@@ -232,9 +232,10 @@ extension ReadOnlyFanReport {
     ///
     /// ## A fan § 3 is keeping is not somebody else's
     ///
-    /// `awaiting` is the fans whose restore-to-automatic the firmware accepted and no read has
-    /// confirmed, and one of them in manual is refused `.restoreToAutomaticUnconfirmed` instead
-    /// — `StartupReconciliation.refusalForGrant`'s reclassification, at the same step and keyed
+    /// `awaiting` is the fans § 3 is keeping because a restore-to-automatic Aeolus issued has not
+    /// been confirmed by a read, and one of them in manual is refused
+    /// `.restoreToAutomaticUnconfirmed` instead — `StartupReconciliation.refusalForGrant`'s
+    /// reclassification, at the same step and keyed
     /// on the same mode, so the two answers agree (#303). **After the mode guard, never
     /// before it**: a kept fan reading automatic is available, and a membership test ahead of
     /// the guard would refuse every fan for up to a cycle after each ordinary handback. And

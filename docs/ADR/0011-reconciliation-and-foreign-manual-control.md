@@ -350,12 +350,14 @@ consult, run on Opus.
 ## Amendment (2026-09-21, [#303](https://github.com/blamechris/Aeolus/issues/303)) — a fan § 3 cannot prove is automatic is not foreign control
 
 D2 rules that a fan found in manual after the one-shot pass is foreign control. Since #295 and
-#300 that is no longer exhaustive. § 3 holds two registers of fans whose restore-to-automatic
-the firmware **accepted** and no read has confirmed: `handbackOwed`, from a lease teardown's
-restore, and `restoredUnconfirmed`, from § 3's own. Such a fan reads manual under no live lease
+#300 that is no longer exhaustive. § 3 holds two registers of fans a restore-to-automatic was
+issued for and no read has confirmed: `handbackOwed`, from a lease teardown's restore the
+firmware **accepted**, and `restoredUnconfirmed`, from § 3's own restore **whatever the firmware
+did with it** — a refused one included, which [#308](https://github.com/blamechris/Aeolus/issues/308)
+is to tell apart. Such a fan reads manual under no live lease
 and matches no lease-core register, so both `StartupReconciliation.refusalForGrant` and
 `ReadOnlyFanReport.reportingForeignControl` answered `.foreignManualControl`. That blamed
-another program for a write Aeolus issued and the firmware took. The refusal was correct; the
+another program for a write Aeolus issued. The refusal was correct; the
 reason was not. This is #204's defect class, for a producer #204 could not have known about.
 
 **Decision.** § 3 answers one narrow read-only role, `EmergencyRestoreConfirming`, whose single
@@ -382,7 +384,7 @@ Three properties are the decision rather than its implementation:
 `.handbackUnconfirmed` is **not** reused. Its advice turns on the write still being outstanding
 (wait for it; restart if it survives a wake), and the ladder ordering in
 `AvailabilityRestatement.swift` argues from that register's `⊆ releasing.keys` invariant.
-§ 3's write returned accepted, and the fan is in no `releasing` entry, so reusing the reason
+§ 3's write has returned, and the fan is in no `releasing` entry, so reusing the reason
 would leave the invariant true and the argument standing on it false. The new case is additive
 under `AeolusXPCVersion`'s bump policy; `current` does not move. The wire value was ratified by
 the maintainer.

@@ -486,7 +486,7 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
     /// the caller goes on to produce.
     ///
     /// **`awaiting` changes which refusal question 4 states, never whether it states one**
-    /// (#303). A fan § 3 is keeping after an accepted restore reads exactly like a foreign one,
+    /// (#303). A fan § 3 is keeping after a restore it issued reads exactly like a foreign one,
     /// so it is refused `.restoreToAutomaticUnconfirmed` — and only once the fresh read shows it
     /// manual, so one that reads automatic is granted as before. It does not end the scan: a
     /// fan later in the request that is foreign or unreadable outranks it, because "retry"

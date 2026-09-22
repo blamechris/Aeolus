@@ -962,7 +962,8 @@ extension SafetyLog {
             Startup reconciliation found fan \(fan) in manual control with no live lease — \
             nothing in this process put it there. Returning it to Apple's thermal \
             management (docs/SAFETY.md § 6, ADR 0011). This is done once: a fan later found \
-            in manual is reported as foreign control and refused, never restored again.
+            in manual that Aeolus has not itself asked to hand back is reported as foreign \
+            control and refused, never restored again.
             """
         )
     }
@@ -1150,20 +1151,24 @@ extension SafetyLog {
         )
     }
 
-    /// A fan reads manual that § 3 is keeping because Aeolus's own restore of it was accepted
-    /// and not yet confirmed (#303) — the line `foreignManualControlObserved` would otherwise
+    /// A fan reads manual that § 3 is keeping because Aeolus's own restore of it is not yet
+    /// confirmed (#303) — the line `foreignManualControlObserved` would otherwise
     /// have written about it.
     ///
     /// `.notice` for the same reason: it is a refusal with an ordinary cause, and it usually
-    /// clears at § 3's next read-back. What it rules out is the other program that line names.
+    /// clears at § 3's next read-back. It does not rule another program out — `F<n>Md` cannot —
+    /// but it does not *lead* with one, because the write that should have handed the fan back
+    /// was Aeolus's own.
     func restoreUnconfirmedObserved(fanAt fan: Int) {
         emit(
             .notice,
             """
-            Fan \(fan) is in manual control after Aeolus asked for automatic and the firmware \
-            accepted the write. Refusing manual control of it until a read shows it automatic. \
-            This is Aeolus's own restore not yet confirmed, not another program holding the \
-            fan; the thermal emergency supervisor is still watching it.
+            Fan \(fan) is in manual control after Aeolus asked for automatic control of it. \
+            Refusing manual control of it until a read shows it automatic. Aeolus's own \
+            restore has not been confirmed, and the thermal emergency supervisor is still \
+            watching the fan. If this persists, the firmware is not honouring the mode write, \
+            or refused it, or another program has since taken the fan; F<n>Md cannot say \
+            which.
             """
         )
     }

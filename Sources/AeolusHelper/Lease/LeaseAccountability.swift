@@ -13,6 +13,10 @@ import FanKit
 /// `LeaseAuthority.activeLeaseView()` exists precisely so that cannot happen — *"one hop
 /// cannot disagree with itself."*
 ///
+/// **All but one field.** `restoresAwaitingConfirmation` is § 3's state, not this actor's, and
+/// it is read in a hop of its own just before the rest (#303); its documentation says why that
+/// order, and which direction of the race it leaves open.
+///
 /// ## Why `accountableFans` is carried rather than derived here
 ///
 /// It is the union of the three registers with the fans under lease, and
@@ -37,8 +41,9 @@ struct LeaseAccountability: Sendable {
     /// The lease a client is shown, lapsed ones already swept.
     let lease: Lease?
 
-    /// Every fan whose manual state is Aeolus's own doing — `fansAeolusIsAccountableFor`,
-    /// verbatim. A fan in here is never reported as foreign manual control.
+    /// Every fan the lease core answers for — `fansAeolusIsAccountableFor`, verbatim. A fan in
+    /// here is never reported as foreign manual control. Not every fan Aeolus left in manual:
+    /// § 3's are carried apart, in `restoresAwaitingConfirmation`, and why is the point.
     let accountableFans: Set<Int>
 
     /// Fans a restorer gave up on: the firmware refused every attempt. The durable half.
@@ -54,8 +59,8 @@ struct LeaseAccountability: Sendable {
     /// Fans with a restore-to-automatic on the wire right now: `releasing`'s keys.
     let handbacksInFlight: Set<Int>
 
-    /// Fans § 3 is keeping because the firmware accepted their restore and no read has shown
-    /// them automatic — `EmergencyRestoreConfirming`, read from § 3 (#303).
+    /// Fans § 3 is keeping because a restore Aeolus issued has not been confirmed by a read —
+    /// `EmergencyRestoreConfirming`, read from § 3 (#303).
     ///
     /// **Deliberately not part of `accountableFans`.** That set exempts a fan from the foreign
     /// control step, and nothing else then refuses it, so a union would grant the lease. This
@@ -67,5 +72,10 @@ struct LeaseAccountability: Sendable {
     /// being engaged again — and then the later lease-core read holds it. Read second, a fan
     /// could fall between the two views. No test forces that interleaving; it would need a
     /// gate inside § 3's accessor, which is production code instrumented for a test.
+    ///
+    /// **It closes the leaving direction, not the entering one.** A fan § 3 files *after* this
+    /// read — an accepted handback landing mid-request — is answered `.foreignManualControl`
+    /// for that one request. Still a refusal, so the order is chosen for the direction that
+    /// could matter; the other only mislabels.
     let restoresAwaitingConfirmation: Set<Int>
 }

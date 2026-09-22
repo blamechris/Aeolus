@@ -447,6 +447,11 @@ extension LeaseLog {
     /// persisted by default, and this is precisely the line a user reaches for after finding
     /// the slider inert with another fan-control app open. It names neither the holder nor a
     /// remedy Aeolus could apply, because `F<n>Md` carries neither.
+    ///
+    /// **`.restoreToAutomaticUnconfirmed` gets its own sentence** (#303): the general one
+    /// blames "something outside Aeolus", which for that reason is the misattribution the case
+    /// exists to remove — and it would follow `SafetyLog.restoreUnconfirmedObserved` saying the
+    /// opposite, for the same refusal.
     func refusedForeignManualControl(
         _ connection: ConnectionID, fans: Set<Int>,
         reason: ManualControlAvailability.Reason
@@ -455,12 +460,26 @@ extension LeaseLog {
             """
             Connection \(connection.logDescription, privacy: .public) asked for manual \
             control of fan(s) \(Self.describe(fans), privacy: .public). Refused: \
-            \(reason.wireValue, privacy: .public). Either something outside Aeolus is \
-            holding a named fan, or startup reconciliation never established its mode — \
-            see docs/ADR/0011-reconciliation-and-foreign-manual-control.md. Aeolus does not \
-            take a fan back from another writer.
+            \(reason.wireValue, privacy: .public). \
+            \(Self.whyNotGranted(reason), privacy: .public)
             """
         )
+    }
+
+    private static func whyNotGranted(_ reason: ManualControlAvailability.Reason) -> String {
+        guard reason != .restoreToAutomaticUnconfirmed else {
+            return """
+                Aeolus asked for automatic control of a named fan and no read has confirmed it \
+                yet; if this persists, the firmware is not honouring the mode write, or refused \
+                it, or another program has since taken the fan.
+                """
+        }
+        return """
+            Either something outside Aeolus is holding a named fan, or startup reconciliation \
+            never established its mode — see \
+            docs/ADR/0011-reconciliation-and-foreign-manual-control.md. Aeolus does not take a \
+            fan back from another writer.
+            """
     }
 
     /// `.fault`, not `.info`. Every other refusal here is a normal negotiation outcome —

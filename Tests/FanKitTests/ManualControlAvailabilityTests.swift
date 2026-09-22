@@ -102,8 +102,8 @@ struct ManualControlAvailabilityTests {
     /// exists: that answer sends the user to quit a program that is not running. The other
     /// two name the same restore-to-automatic write reaching a different outcome —
     /// `.handbackUnconfirmed` says the write has not returned, `.restoreToAutomaticFailed`
-    /// that the firmware refused it — and each carries advice that is wrong for a write the
-    /// firmware accepted.
+    /// that the lease core's restorer gave up on a firmware that refused it — and each carries
+    /// advice that is wrong for a write that has returned and awaits only a read.
     @Test("restoreToAutomaticUnconfirmed arrives as itself, distinct from all three neighbours")
     func restoreToAutomaticUnconfirmedDecodesToItsOwnCase() throws {
         let decoded = try decode(

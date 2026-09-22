@@ -126,7 +126,7 @@ actor LeaseAuthority {
     /// `ManualControlAvailability.Reason` and touches no fan.
     let foreignControl: any ForeignManualControlSensing
 
-    /// § 3's fans awaiting an accepted restore's confirmation (#303), as a role and never the
+    /// § 3's fans awaiting confirmation of a restore Aeolus issued (#303), as a role and never the
     /// actor. `nil` until bound, which answers `.foreignManualControl` — still a refusal.
     private(set) var emergencyRestores: (any EmergencyRestoreConfirming)?
 
@@ -884,7 +884,7 @@ actor LeaseAuthority {
         throw AeolusXPCFault.thermalEmergencyActive
     }
 
-    /// Every fan whose manual state is Aeolus's own doing, and therefore not foreign.
+    /// Every fan the lease core answers for itself, so exempt from the foreign-control step.
     ///
     /// Three registers, and each one has a **more precise** refusal further down the grant
     /// path — which is the whole reason they are excluded rather than judged. `F<n>Md` reads

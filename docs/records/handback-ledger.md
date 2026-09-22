@@ -232,10 +232,11 @@ client would be told *"another program holds it"* about:
 register. Adding it would change no answer and would suggest the two can disagree.
 
 **Nor is § 3's kept set, for the opposite reason**
-([#303](https://github.com/blamechris/Aeolus/issues/303)). A fan whose restore the firmware
-*accepted* but no read has confirmed automatic — § 3's `handbackOwed` after a lease handback,
-or `restoredUnconfirmed` after § 3's own restore — is in none of the three registers: its
-`releasing` count returned to `nil` when the write came back. It reads manual, it is Aeolus's
+([#303](https://github.com/blamechris/Aeolus/issues/303)). A fan Aeolus issued a restore for
+that no read has confirmed automatic — § 3's `handbackOwed` after a lease handback the firmware
+*accepted*, or `restoredUnconfirmed` after § 3's own restore, whatever the firmware did with it
+([#308](https://github.com/blamechris/Aeolus/issues/308)) — is in none of the three registers:
+its `releasing` count, if it ever had one, returned to `nil` when the write came back. It reads manual, it is Aeolus's
 own doing, and until #303 both paths called it foreign. The tempting fix is to union it in here,
 and that fix grants the lease. The union is an **exemption**: the gate subtracts it before the
 foreign-control read, the snapshot returns a fan in it untouched, and the three registers the
