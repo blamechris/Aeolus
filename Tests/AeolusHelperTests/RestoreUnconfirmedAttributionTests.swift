@@ -5,7 +5,7 @@ import Testing
 @testable import AeolusHelper
 
 /// [#303](https://github.com/blamechris/Aeolus/issues/303): a fan § 3 is keeping because the
-/// firmware accepted a restore-to-automatic and no read has confirmed it is refused as
+/// restore-to-automatic Aeolus issued has not been confirmed by a read is refused as
 /// `.restoreToAutomaticUnconfirmed`, not blamed on another program as `.foreignManualControl`.
 ///
 /// Composed, for `AcceptedHandbackCompositionTests`' reason: the defect is wiring — § 3's two
@@ -17,7 +17,7 @@ import Testing
 /// is that a snapshot names the reason a grant over the same fan throws, and a fix to one side
 /// alone is a disagreement; so each named mutation below is on one side, and the other side's
 /// assertion is what the test still holds while it goes red.
-@Suite("Accepted-but-unconfirmed restores, as a client is told them", .timeLimit(.minutes(1)))
+@Suite("Unconfirmed restores, as a client is told them", .timeLimit(.minutes(1)))
 struct RestoreUnconfirmedAttributionTests {
 
     /// Fan 0 automatic under nominal temperatures, then above § 3's ceiling, then cool again so
@@ -154,6 +154,74 @@ struct RestoreUnconfirmedAttributionTests {
         #expect(shown == .unavailable(.restoreToAutomaticUnconfirmed))
         #expect(thrown == .restoreToAutomaticUnconfirmed)
         #expect(shown == .unavailable(thrown), "the snapshot and the grant path disagree")
+    }
+
+    // MARK: - A request naming more than one fan
+
+    /// Both fans read manual, and reconciliation has left nothing durable to refuse. Fan 1's
+    /// mode read throws when `fanOneUnreadable`.
+    private static func twoManualFans(
+        fanOneUnreadable: Bool
+    ) -> StartupReconciliation<ReadBackScriptedPlane> {
+        LeaseFixture.reconciliation(
+            over: ReadBackScriptedPlane(
+                wrapping: ScriptedControlPlane(
+                    fans: [0: .held(at: 2_400), 1: .held(at: 2_400)],
+                    stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)]),
+                unreadableModes: fanOneUnreadable ? [1] : []),
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]))
+    }
+
+    /// A fan § 3 is keeping does not end the gate's scan: a foreign or unreadable fan later in
+    /// the same request is the answer the client gets.
+    ///
+    /// "Retry" is the advice `.restoreToAutomaticUnconfirmed` carries, and it is a retry
+    /// forever about a request that also names a fan another program holds, or one nobody can
+    /// read. Fan 0 is the kept one **because** the scan is in index order: kept-first is the only
+    /// order in which stopping early could hide fan 1. The last expectation is non-vacuity —
+    /// fan 0 on its own is the kept reason, so the first is not passing for want of one.
+    ///
+    /// **Mutation:** in `StartupReconciliation.refusalForGrant`, replace
+    /// `firstUnconfirmed = firstUnconfirmed ?? fan` and the `continue` after it with
+    /// `return .restoreToAutomaticUnconfirmed`. Run: red on the first expectation, for both
+    /// arguments; the non-vacuity expectation stays green.
+    @Test(
+        "A fan § 3 is keeping does not hide a foreign or unreadable fan later in the request",
+        arguments: [false, true])
+    func aKeptFanDoesNotEndTheScan(fanOneUnreadable: Bool) async {
+        let reconciliation = Self.twoManualFans(fanOneUnreadable: fanOneUnreadable)
+
+        let reason = await reconciliation.refusalForGrant(
+            overFans: [0, 1], heldByAeolus: [], awaitingConfirmation: [0])
+        #expect(
+            reason == (fanOneUnreadable ? .supervisorBlind : .foreignManualControl),
+            "a kept fan's reason was given for a request fan 1's state outranks")
+
+        #expect(
+            await reconciliation.refusalForGrant(
+                overFans: [0], heldByAeolus: [], awaitingConfirmation: [0])
+                == .restoreToAutomaticUnconfirmed)
+    }
+
+    /// A fan § 3 is keeping whose own grant-time read throws is `.supervisorBlind`, not the kept
+    /// reason: nobody can say what mode it is in, and that outranks an unconfirmed restore.
+    ///
+    /// **Mutation:** in `StartupReconciliation.refusalForGrant`'s `catch`, answer a kept fan as
+    /// kept — `if awaiting.contains(fan) { firstUnconfirmed = firstUnconfirmed ?? fan; continue }`
+    /// ahead of the `.supervisorBlind` return. Run: red.
+    @Test("A fan § 3 is keeping whose read throws is blind, not unconfirmed")
+    func aKeptFanWhoseReadThrowsIsBlind() async {
+        let reconciliation = LeaseFixture.reconciliation(
+            over: ReadBackScriptedPlane(
+                wrapping: ScriptedControlPlane(
+                    fans: [0: .held(at: 2_400)],
+                    stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)]),
+                unreadableModes: [0]),
+            enumeration: ScriptedFanEnumeration(indices: [0]))
+
+        #expect(
+            await reconciliation.refusalForGrant(
+                overFans: [0], heldByAeolus: [], awaitingConfirmation: [0]) == .supervisorBlind)
     }
 
     // MARK: - What the fix must not do
