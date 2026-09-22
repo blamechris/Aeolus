@@ -345,16 +345,17 @@ extension LeaseLog {
         )
     }
 
-    /// A fan the foreign-control step exempted as mid-handback whose handback finished while
-    /// the grant was suspended (#311). Same level and reason as `refusedMidHandback`; a
-    /// separate line because the restore is no longer in flight, and saying so would be false.
+    /// A fan the foreign-control step exempted as Aeolus's own that left that set while the
+    /// grant was suspended (#311) — usually a handback that finished; also a durable refusal
+    /// § 7's read-back lifted. Same level and reason as `refusedMidHandback`; a separate line
+    /// because the restore is no longer in flight, and saying so would be false.
     func refusedLapsedExemption(_ connection: ConnectionID, fans: Set<Int>) {
         log.notice(
             """
             Connection \(connection.logDescription, privacy: .public) asked for fans \
             \(fans.sorted().map(String.init).joined(separator: ", "), privacy: .public) \
-            whose handback finished while the request was being checked, so nothing has read \
-            them since. Refused for now: a retry reads them fresh.
+            whose handback state changed while the request was being checked, so this \
+            request never read them. Refused for now: a retry reads them fresh.
             """
         )
     }
