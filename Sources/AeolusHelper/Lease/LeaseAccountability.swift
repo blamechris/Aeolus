@@ -53,4 +53,19 @@ struct LeaseAccountability: Sendable {
 
     /// Fans with a restore-to-automatic on the wire right now: `releasing`'s keys.
     let handbacksInFlight: Set<Int>
+
+    /// Fans § 3 is keeping because the firmware accepted their restore and no read has shown
+    /// them automatic — `EmergencyRestoreConfirming`, read from § 3 (#303).
+    ///
+    /// **Deliberately not part of `accountableFans`.** That set exempts a fan from the foreign
+    /// control step, and nothing else then refuses it, so a union would grant the lease. This
+    /// one reclassifies that step's refusal instead. See `EmergencyRestoreConfirming`.
+    ///
+    /// **The one field that is not the lease core's, and so not of the same instant.** It is
+    /// § 3's view, read in the hop *before* the four fields above. The order is the argument:
+    /// a fan leaves § 3's set only by reading automatic, which is correctly not refused, or by
+    /// being engaged again — and then the later lease-core read holds it. Read second, a fan
+    /// could fall between the two views. No test forces that interleaving; it would need a
+    /// gate inside § 3's accessor, which is production code instrumented for a test.
+    let restoresAwaitingConfirmation: Set<Int>
 }

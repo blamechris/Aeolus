@@ -132,6 +132,11 @@ struct LeaseAuthorityAccessTests {
     /// pass against a helper that recorded nothing at all. `fansMidHandback` is the third of
     /// the same kind — `releasing`'s keys — and exists so the subset invariant the first two
     /// rest on is asserted by a test rather than stated by a comment.
+    ///
+    /// `emergencyRestores` is #303's: § 3's `EmergencyRestoreConfirming` role, readable from
+    /// `LeaseAuthorityRefusals.swift` for the same reason `foreignControl` is, and `private(set)`
+    /// so only `bind(emergencyRestores:)` can change it. It is a role, not § 3's actor, so
+    /// reading it reaches one read-only question and none of § 3's mutators.
     private static let acknowledgedInternalProperties: Set<String> = [
         "writeCapability",
         "telemetry",
@@ -143,6 +148,7 @@ struct LeaseAuthorityAccessTests {
         "fansWithUnconfirmedHandbacks",
         "fansWithAbandonedHandbacks",
         "fansMidHandback",
+        "emergencyRestores",
     ]
 
     /// Every method of `LeaseAuthority` that is not `private`, and what each of them is.
@@ -163,6 +169,12 @@ struct LeaseAuthorityAccessTests {
     /// method that reuses an acknowledged name from the one that was acknowledged, and the
     /// shortest route it leaves open here is the worst: `releaseEveryLease()` is on this list,
     /// so `releaseEveryLease(sparing: Set<Int>)` would have been too, for free.
+    ///
+    /// `bind(emergencyRestores:)` is #303's, and the one writer of `emergencyRestores`. The worst
+    /// a caller elsewhere in the module can do with it is bind a role that answers the wrong set,
+    /// and that changes **which** refusal a manual fan is given, never **whether** it is refused:
+    /// both consumers consult the set only after a fresh read has already found the fan manual,
+    /// and never as an exemption. It touches no register and no fan.
     private static let acknowledgedInternalMethods: Set<String> = [
         "refuseIfWritePathNotBuilt(_: ConnectionID)",
         "refuseIfBlind(_: ConnectionID)",
@@ -184,6 +196,7 @@ struct LeaseAuthorityAccessTests {
         "activeLease()",
         "activeLeaseView()",
         "holdsTombstone(for: ConnectionID)",
+        "bind(emergencyRestores: some EmergencyRestoreConfirming)",
     ]
 
     /// The file set is a claim about the tree, so it is read off the tree — see

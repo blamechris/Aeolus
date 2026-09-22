@@ -226,7 +226,8 @@ struct StartupReconciliationTests {
             one. That is CLAUDE.md rule 6: control claimed over a fan nothing has looked at.
             """)
         #expect(
-            await helper.reconciliation.refusalForGrant(overFans: [0], heldByAeolus: [])
+            await helper.reconciliation.refusalForGrant(
+                overFans: [0], heldByAeolus: [], awaitingConfirmation: [])
                 == .supervisorBlind,
             "a fan on a machine reconciliation never saw at all was not refused")
     }
@@ -342,7 +343,8 @@ struct StartupReconciliationTests {
     /// — over a fan this process has proved it cannot give up.
     ///
     /// **Mutation:** delete the `handbackRefused` guard from `refusalForGrant(overFans:
-    /// heldByAeolus:)`. Run: red — the refusal becomes `.foreignManualControl`.
+    /// heldByAeolus:awaitingConfirmation:)`. Run: red — the refusal becomes
+    /// `.foreignManualControl`.
     @Test("A fan whose reconciliation handback the firmware refused is refused durably")
     func aRefusedHandbackIsRefusedAsAeolussOwnFailure() async throws {
         let helper = Self.composed(
@@ -385,7 +387,7 @@ struct StartupReconciliationTests {
         // is the correct precedence — § 3 is a precondition of § 1. The fan-state gate is
         // asked directly here so that its own branch is covered rather than shadowed.
         let refusal = await helper.reconciliation.refusalForGrant(
-            overFans: [0], heldByAeolus: [])
+            overFans: [0], heldByAeolus: [], awaitingConfirmation: [])
         #expect(
             refusal == .supervisorBlind,
             """
@@ -555,13 +557,14 @@ struct ForeignManualControlReportingTests {
     ///
     /// `F<n>Md` reads `1` for a fan Aeolus is holding and for a fan somebody else is
     /// holding, and names no owner either way — so the lease exclusion in
-    /// `reportingForeignControl(of:heldByAeolus:reconciliation:)` is the only thing between a user and
-    /// being told to go and quit software that is not running. Until this test existed the
-    /// clause could be deleted with the whole non-hardware suite staying green: nothing put
-    /// a fan under a live lease *and* in manual at once.
+    /// `reportingForeignControl(of:heldByAeolus:awaitingConfirmation:reconciliation:)` is the
+    /// only thing between a user and being told to go and quit software that is not running.
+    /// Until this test existed the clause could be deleted with the whole non-hardware suite
+    /// staying green: nothing put a fan under a live lease *and* in manual at once.
     ///
     /// **Mutation:** delete `!held.contains(fan.index)` from
-    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:reconciliation:)`. Run: red.
+    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:awaitingConfirmation:
+    /// reconciliation:)`. Run: red.
     @Test("A fan under a live lease is Aeolus's own on the snapshot, not somebody else's")
     func aLeasedFanIsNotReportedAsForeign() async throws {
         let helper = Self.helperSeeingFanZeroInManual()
@@ -628,7 +631,8 @@ struct ForeignManualControlReportingTests {
     /// documented did not exist.
     ///
     /// **Mutation:** delete `!fan.isReclaimedBySystem` from
-    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:reconciliation:)`. Run: red.
+    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:awaitingConfirmation:
+    /// reconciliation:)`. Run: red.
     @Test("A fan the system reclaimed is not reported as another program's")
     func aReclaimedFanIsNotReportedAsForeign() async throws {
         let reclaimed = HelperComposition(

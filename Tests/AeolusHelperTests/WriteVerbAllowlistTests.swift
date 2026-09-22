@@ -304,8 +304,8 @@ struct WriteVerbAllowlistTests {
     /// `LeaseAuthority.restore(_:because:)`'s reason — an index, or nothing at all, and no
     /// permit anywhere. `reconcile()` and `reconcileFans()` are here for
     /// `ReclamationWatchdog.cycle()`'s: they reach the keystone, and can only do it through
-    /// those two. `refusalForGrant(overFans:heldByAeolus:)` and
-    /// `refuseIfForeignManualControl(_:wanting:)` read `F<n>Md` and return a refusal — they
+    /// those two. `refusalForGrant(overFans:heldByAeolus:awaitingConfirmation:)`
+    /// and `refuseIfForeignManualControl(_:wanting:)` read `F<n>Md` and return a refusal — they
     /// are the half of ADR 0011 that exists **so that** no second restore happens, which is
     /// the opposite of a write verb. `activeLeaseView()` reads the lease table.
     ///
@@ -356,7 +356,7 @@ struct WriteVerbAllowlistTests {
         "LeaseAuthority.swift: activeLeaseView()",
         "StartupReconciliation.swift: reconcile()",
         "StartupReconciliation.swift: refusalForGrant(overFans: Set<Int>, "
-            + "heldByAeolus: Set<Int>)",
+            + "heldByAeolus: Set<Int>, awaitingConfirmation: Set<Int>)",
         // #204's four. `confirmKeystone(until:)` is the keystone's read-back: it follows
         // `restoreEveryFan(because:until:)` and reads `F<n>Md`, and writes nothing. The two
         // `baseline()` entries are the snapshot's seam and its one conformer, which return a
@@ -366,7 +366,7 @@ struct WriteVerbAllowlistTests {
         "StartupReconciliation.swift: baseline()",
         "ReconciliationBaseline.swift: baseline()",
         "ReconciliationBaseline.swift: refusalForGrant(overFans: Set<Int>, "
-            + "heldByAeolus: Set<Int>)",
+            + "heldByAeolus: Set<Int>, awaitingConfirmation: Set<Int>)",
         // #291's five. `readBack(_:until:)` is the loop `confirmKeystone(until:)` used to
         // hold, and `confirmHandbacksByName(until:fans:)` calls it for a complete pass: both
         // read `F<n>Md` and write nothing. `fansReadingAutomatic(among:)` is the lease core's

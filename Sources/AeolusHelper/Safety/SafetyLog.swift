@@ -1150,6 +1150,24 @@ extension SafetyLog {
         )
     }
 
+    /// A fan reads manual that § 3 is keeping because Aeolus's own restore of it was accepted
+    /// and not yet confirmed (#303) — the line `foreignManualControlObserved` would otherwise
+    /// have written about it.
+    ///
+    /// `.notice` for the same reason: it is a refusal with an ordinary cause, and it usually
+    /// clears at § 3's next read-back. What it rules out is the other program that line names.
+    func restoreUnconfirmedObserved(fanAt fan: Int) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) is in manual control after Aeolus asked for automatic and the firmware \
+            accepted the write. Refusing manual control of it until a read shows it automatic. \
+            This is Aeolus's own restore not yet confirmed, not another program holding the \
+            fan; the thermal emergency supervisor is still watching it.
+            """
+        )
+    }
+
     /// A fan's control state could not be read back after the lease core handed it back
     /// over a durable refusal (#291). `.fault` for `grantTimeStateUnreadable`'s reason: the
     /// fan's mode is unknown, so the refusal over it stands.

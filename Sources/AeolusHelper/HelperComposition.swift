@@ -457,8 +457,13 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         }
     }
 
-    /// Closes the one circular edge in the graph: the restorer learns which registries to
-    /// keep in step with the firmware.
+    /// Closes the two circular edges in the graph: the restorer learns which registries to
+    /// keep in step with the firmware, and the lease core learns which fans § 3 is keeping
+    /// after an accepted restore (#303), because `leases` is built before `thermalEmergency`.
+    ///
+    /// **Unbound is safe for the second edge, and that is why a late bind is acceptable.** A
+    /// lease core with no § 3 role answers an empty set, so a fan § 3 is keeping is refused
+    /// `.foreignManualControl` — the wrong reason, as before #303, but never a grant.
     ///
     /// Its own method rather than two lines inside `bringUp()` so a test can compose the
     /// graph, bind it exactly as the daemon does, and then drive a lease through it without
@@ -468,6 +473,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     func bindSafetyRegistries() async {
         await restorer.bind(
             thermalEmergency: thermalEmergency, reclamationWatchdog: reclamationWatchdog)
+        await leases.bind(emergencyRestores: thermalEmergency)
     }
 
     /// `docs/SAFETY.md` § 6's one-shot pass, over the fans this machine enumerates.

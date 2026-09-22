@@ -356,12 +356,13 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// The fans this instance would fire, for tests and diagnostics.
     var fansUnderManualControl: Set<Int> { Set(engagedFans.keys) }
 
-    /// The registered fans still owed a read-back after an accepted handback, for tests and
-    /// diagnostics. Always a subset of `fansUnderManualControl`.
+    /// The registered fans still owed a read-back after an accepted handback. Always a subset
+    /// of `fansUnderManualControl`. Half of `fansAwaitingRestoreConfirmation`, which the lease
+    /// core reads so a grant and a snapshot do not blame these fans on another program (#303).
     var fansOwedHandbackReadBack: Set<Int> { Set(handbackOwed.keys) }
 
-    /// The fans § 3 restored itself and has not yet read automatic, for tests and
-    /// diagnostics. Never shares a fan with `fansUnderManualControl`.
+    /// The fans § 3 restored itself and has not yet read automatic. Never shares a fan with
+    /// `fansUnderManualControl`. The other half of `fansAwaitingRestoreConfirmation` (#303).
     var fansRestoredUnconfirmed: Set<Int> { Set(restoredUnconfirmed.keys) }
 
     // MARK: - One cycle

@@ -4,7 +4,8 @@ import FanKit
 //
 // Lifted out of `StartupReconciliation.swift` by
 // [#204](https://github.com/blamechris/Aeolus/issues/204), which gave the durable refusals a
-// second reader. Until then only `refusalForGrant(overFans:heldByAeolus:)` consulted them, so
+// second reader. Until then only
+// `refusalForGrant(overFans:heldByAeolus:awaitingConfirmation:)` consulted them, so
 // on a seam that can write the snapshot offered a fan as `.available` — or blamed another
 // program — while the grant path refused it as `.supervisorBlind` or
 // `.restoreToAutomaticFailed`. On today's `.notBuilt` seam both answer `.writePathNotBuilt`
@@ -44,7 +45,8 @@ struct ReconciliationBaseline: Sendable, Hashable {
     /// Why a lease over `candidates` cannot be granted on this baseline's account, or `nil`.
     ///
     /// Most durable and most specific first, so a client is never told the vaguer of two
-    /// true things — see `StartupReconciliation.refusalForGrant(overFans:heldByAeolus:)` for
+    /// true things — see
+    /// `StartupReconciliation.refusalForGrant(overFans:heldByAeolus:awaitingConfirmation:)` for
     /// each question in turn. `candidates` is already stripped of fans Aeolus holds: a fan
     /// Aeolus leases is judged by the lease core, never by this.
     func durableRefusal(overFans candidates: Set<Int>) -> ManualControlAvailability.Reason? {
@@ -81,8 +83,13 @@ protocol ForeignManualControlSensing: Sendable {
 
     /// Why manual control of `fans` cannot be granted, or `nil` when this mechanism has no
     /// objection. `heldByAeolus` is excluded from the judgement, never judged.
+    ///
+    /// `awaitingConfirmation` is judged, and only reclassified: a fan in it that reads manual
+    /// is refused `.restoreToAutomaticUnconfirmed` rather than `.foreignManualControl` (#303).
+    /// It never exempts a fan the way `heldByAeolus` does — see `EmergencyRestoreConfirming`.
     func refusalForGrant(
-        overFans fans: Set<Int>, heldByAeolus held: Set<Int>
+        overFans fans: Set<Int>, heldByAeolus held: Set<Int>,
+        awaitingConfirmation awaiting: Set<Int>
     ) async -> ManualControlAvailability.Reason?
 
     /// The subset of `fans` a **fresh** read reports under automatic control. A fan whose
