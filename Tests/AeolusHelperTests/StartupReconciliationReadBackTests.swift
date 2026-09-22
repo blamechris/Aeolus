@@ -282,8 +282,9 @@ struct StartupReconciliationReadBackTests {
         await reconciliation.reconcile()
 
         #expect(await reconciliation.unreconciledFans.isEmpty)
-        #expect(await reconciliation.refusalForGrant(
-            overFans: [0, 1], heldByAeolus: [], awaitingConfirmation: []) == nil)
+        #expect(
+            await reconciliation.refusalForGrant(
+                overFans: [0, 1], heldByAeolus: [], awaitingConfirmation: []) == nil)
     }
 
     // MARK: - The deadline bounds the whole pass
