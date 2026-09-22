@@ -347,6 +347,59 @@ bring-up, or if E4's `commandTarget` gains a mode write or an `Ftst` unlock. Eit
 "one target write per episode" into something heavier. The ruling is the architect's #300
 consult, run on Opus.
 
+## Amendment (2026-09-21, [#303](https://github.com/blamechris/Aeolus/issues/303)) — a fan § 3 cannot prove is automatic is not foreign control
+
+D2 rules that a fan found in manual after the one-shot pass is foreign control. Since #295 and
+#300 that is no longer exhaustive. § 3 holds two registers of fans whose restore-to-automatic
+the firmware **accepted** and no read has confirmed: `handbackOwed`, from a lease teardown's
+restore, and `restoredUnconfirmed`, from § 3's own. Such a fan reads manual under no live lease
+and matches no lease-core register, so both `StartupReconciliation.refusalForGrant` and
+`ReadOnlyFanReport.reportingForeignControl` answered `.foreignManualControl`. That blamed
+another program for a write Aeolus issued and the firmware took. The refusal was correct; the
+reason was not. This is #204's defect class, for a producer #204 could not have known about.
+
+**Decision.** § 3 answers one narrow read-only role, `EmergencyRestoreConfirming`, whose single
+member is the union of those two registers. `LeaseAuthority` holds it as an existential, bound
+in `HelperComposition.bindSafetyRegistries()` beside the restorer's bind, and threads it to both
+consumers: to the gate through `refusalForGrant(overFans:heldByAeolus:awaitingConfirmation:)`,
+and to the snapshot through `LeaseAccountability.restoresAwaitingConfirmation`. Such a fan,
+observed in manual, is refused `ManualControlAvailability.Reason.restoreToAutomaticUnconfirmed`.
+
+Three properties are the decision rather than its implementation:
+
+- **A reclassification at D2's step, not a new rung, and never an exemption.** The set is
+  deliberately **not** unioned into `fansAeolusIsAccountableFor`. That set exempts a fan from
+  the foreign-control step, and the lease core's registers then match it against nothing, so a
+  union would report the fan available and grant the lease. The misattribution and the refusal
+  would have gone together.
+- **Keyed on the fresh mode read, not on membership.** A fan § 3 is keeping that reads automatic
+  is granted, as before. Refusing on membership alone would refuse re-acquisition for up to one
+  supervisor cycle after every ordinary handback against compliant firmware.
+- **The durable refusal still wins.** A fan in both § 3's set and `restoreAbandoned` is exempted
+  by `heldByAeolus` before the new question is asked, and both paths answer
+  `.restoreToAutomaticFailed`. No existing assertion changes.
+
+`.handbackUnconfirmed` is **not** reused. Its advice turns on the write still being outstanding
+(wait for it; restart if it survives a wake), and the ladder ordering in
+`AvailabilityRestatement.swift` argues from that register's `⊆ releasing.keys` invariant.
+§ 3's write returned accepted, and the fan is in no `releasing` entry, so reusing the reason
+would leave the invariant true and the argument standing on it false. The new case is additive
+under `AeolusXPCVersion`'s bump policy; `current` does not move. The wire value was ratified by
+the maintainer.
+
+**Alternatives considered.** A fourth register in `LeaseAuthority`, pushed by § 3, was rejected
+on drift: one fact mirrored in two actors, where a missed clear leaves a permanently unleasable
+fan, and it would make § 3's synchronous registration surface `async` and re-enter the lease
+core from inside its own `restore`. Routing § 3's self-restore through `HelperFanRestorer` was
+rejected because it records nothing the lease core reads, and it would issue § 3's restore at
+`.leaseExpiry` precedence rather than `.thermalEmergency`. Assembling the set in
+`SupervisedFanAuthority` was rejected because it fixes the snapshot and cannot fix the gate
+without refusing in front of `acquireLease`, which the control plane also calls.
+
+**Revisit if** E3's control plane needs this set *synchronously at the write*: a cross-actor read
+at the write is the check separated from the act, and a lease-core-local register would then be
+worth its drift cost. The ruling is the architect's #303 consult, run on Opus.
+
 ## Assumptions and what would invalidate them
 
 | Assumption | Basis | If it fails |
@@ -356,6 +409,7 @@ consult, run on Opus.
 | A foreign tool does not re-assert within one cycle of the startup restore | **Unverified** — needs E3/E4 bring-up with the tool actually holding a fan | The one-time restore becomes a visible flap; the decision does not change, because the alternative is the standing fight |
 | `F<n>Md == 1` means somebody is holding the fan | Community-reported, and the basis of every mechanism here. Consistent with the 2026-09-05 pair of readings, which moved with a competing tool's behaviour and with nothing else | Reconciliation restores fans nobody held — harmless, and indistinguishable from the healthy case |
 | Whether a fan reads manual is a property of the *machine at that instant*, not of the machine | **Observed 2026-09-05**: the same two fans read `1` and then `0` within an hour, with the same tool running throughout | Nothing here; but a hardware test pinning either value is a report about the reviewer's desktop, which is why `HelperHardwareTests` now asserts the pair |
+| Firmware can accept `F<n>Md = 0` and leave the fan in manual | **Unverified on hardware.** It is the premise of #291, #295, #300 and #303, modelled only by `ScriptedControlPlane.WriteBehaviour.reverted`; no mode write has ever been issued on `Mac16,5` | All four registers stay empty and their mechanisms are inert. Retire them together, not one at a time |
 | `SMAppService` accepts `KeepAlive`/`RunAtLoad` in a daemon plist | Documented-plausible; unverifiable until a signing identity exists | Restart policy needs another mechanism, and reconciliation only runs when a client connects — escalate before shipping self-renewal |
 
 Every hardware observation above is `Mac16,5` on macOS 26.6.2. Intel and M1/M2 ship
