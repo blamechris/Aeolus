@@ -188,8 +188,12 @@ extension LeaseAuthority {
     func refuseIfForeignManualControl(
         _ connection: ConnectionID, wanting fans: Set<Int>
     ) async throws {
+        // § 3's set before this actor's union, for the order `activeLeaseView()` gives: a fan
+        // leaving § 3's set by being engaged again is then held by the union read after it.
+        let awaiting = await emergencyRestores?.fansAwaitingRestoreConfirmation ?? []
         let reason = await foreignControl.refusalForGrant(
-            overFans: fans, heldByAeolus: fansAeolusIsAccountableFor)
+            overFans: fans, heldByAeolus: fansAeolusIsAccountableFor,
+            awaitingConfirmation: awaiting)
         guard let reason else { return }
         log.refusedForeignManualControl(connection, fans: fans, reason: reason)
         throw AeolusXPCFault.manualControlUnavailable(reason: reason)

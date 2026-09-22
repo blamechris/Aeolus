@@ -121,7 +121,9 @@ struct SupervisedFanAuthority: FanAuthority {
     /// accountable for, in one hop — because that fan set is not on the wire and this method
     /// needs it. A fan in manual that Aeolus is not accountable for is under something
     /// else's control and is reported as
-    /// `ManualControlAvailability.Reason.foreignManualControl`
+    /// `ManualControlAvailability.Reason.foreignManualControl` — unless § 3 is keeping it after a
+    /// restore Aeolus issued, which the view carries apart and is `.restoreToAutomaticUnconfirmed`
+    /// (#303)
     /// ([ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md)); a fan
     /// in manual that Aeolus put there is not, and `F<n>Md` cannot tell them apart on its
     /// own. Asking for the lease and the fan set in two hops could answer from two views of

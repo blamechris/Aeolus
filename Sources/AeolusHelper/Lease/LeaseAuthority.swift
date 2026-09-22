@@ -122,9 +122,13 @@ actor LeaseAuthority {
     ///
     /// `internal` since #128 moved `refuseIfForeignManualControl(_:wanting:)` to
     /// `LeaseAuthorityRefusals.swift`. One read verb, `refusalForGrant(overFans:
-    /// heldByAeolus:)`, which answers with a `ManualControlAvailability.Reason` and touches
-    /// no fan.
+    /// heldByAeolus:awaitingConfirmation:)`, which answers with a
+    /// `ManualControlAvailability.Reason` and touches no fan.
     let foreignControl: any ForeignManualControlSensing
+
+    /// § 3's fans awaiting confirmation of a restore Aeolus issued (#303), as a role and never the
+    /// actor. `nil` until bound, which answers `.foreignManualControl` — still a refusal.
+    private(set) var emergencyRestores: (any EmergencyRestoreConfirming)?
 
     /// The one bit that says `docs/SAFETY.md` § 3 is holding. Read at grant time; set by
     /// `ThermalEmergency`, which this type deliberately holds no reference to — see
@@ -292,6 +296,11 @@ actor LeaseAuthority {
         self.wallClock = wallClock
         self.tombstones = ConnectionTombstones(capacity: tombstoneCapacity)
         self.log = log
+    }
+
+    /// Binds § 3's role; `HelperComposition.bindSafetyRegistries()` calls it with the others.
+    func bind(emergencyRestores: some EmergencyRestoreConfirming) {
+        self.emergencyRestores = emergencyRestores
     }
 
     // MARK: - Acquisition
@@ -689,27 +698,8 @@ actor LeaseAuthority {
     /// on the same safe state. Making this consult per-connection state would invalidate the
     /// exemption and needs revisiting alongside it —
     /// [#95](https://github.com/blamechris/Aeolus/issues/95).
-    /// **One `restore` call over the union, and that is what makes § 4's record complete
-    /// rather than partial** ([#202](https://github.com/blamechris/Aeolus/issues/202) item 4).
-    /// `restore(_:because:)` increments `releasing` for every fan in the set *before* its
-    /// suspension point, so the whole union is mid-handback the instant this awaits — and
-    /// `recordUnconfirmedHandbacks()`, which reads `releasing.keys`, therefore sees all of it
-    /// even if the first fan's write wedges and nothing after it ever lands. Restoring
-    /// per-lease or per-fan in a loop would put each subsequent fan's increment *after* the
-    /// previous one's suspension, so a wedge on the first would leave the rest neither
-    /// restored nor recorded: § 4 would acknowledge the sleep having registered one fan out of
-    /// however many crossed it under manual control.
-    ///
-    /// **The set is the sweep's, not the lease table's**, and the difference is #189's second
-    /// source: the union is seeded from `restoreAbandoned`, so a sleep with *no lease held*
-    /// still restores — and still records — any fan the firmware refused earlier. A review
-    /// caught this file about to claim the set was lease-scoped, which is wrong in both
-    /// directions.
-    ///
-    /// `SleepOrderingTests.aWedgeOnOneFanStillRecordsTheWholeLease` is what pins it, on a
-    /// two-fan machine — the smallest that can tell "every fan" from "the first fan".
-    /// `SleepCycleSurvivalTests` was cited here and cannot: its lease covers one fan, so a
-    /// per-fan loop over a one-element set is behaviourally identical and stays green.
+    /// **One `restore` call over the union is what makes § 4's record complete rather than
+    /// partial** (#202 item 4): handback-ledger.md § *"What the one call buys § 4"*.
     func releaseEveryLease() async {
         let dropped = table.removeAll()
         let fans = dropped.reduce(into: restoreAbandoned) { $0.formUnion($1.fanIndices) }
@@ -812,12 +802,15 @@ actor LeaseAuthority {
     /// handback-ledger.md § *"What the snapshot is told"*.
     func activeLeaseView() async -> LeaseAccountability {
         await expireLapsedLeases()
+        // § 3 first, then this actor's fields with no await between them: see the field.
+        let awaiting = await emergencyRestores?.fansAwaitingRestoreConfirmation ?? []
         return LeaseAccountability(
             lease: table.all.first?.asLease(),
             accountableFans: fansAeolusIsAccountableFor,
             abandonedHandbacks: restoreAbandoned,
             unconfirmedHandbacks: handbackUnconfirmed,
-            handbacksInFlight: Set(releasing.keys)
+            handbacksInFlight: Set(releasing.keys),
+            restoresAwaitingConfirmation: awaiting
         )
     }
 
@@ -891,7 +884,7 @@ actor LeaseAuthority {
         throw AeolusXPCFault.thermalEmergencyActive
     }
 
-    /// Every fan whose manual state is Aeolus's own doing, and therefore not foreign.
+    /// Every fan the lease core answers for itself, so exempt from the foreign-control step.
     ///
     /// Three registers, and each one has a **more precise** refusal further down the grant
     /// path — which is the whole reason they are excluded rather than judged. `F<n>Md` reads

@@ -566,13 +566,29 @@ registered indefinitely: `F<n>Md` names no owner, and keeping it costs one bridg
 while dropping it would leave a fan off automatic control that no emergency bridges. The same
 read, in the same call, covers the fans in `restoredUnconfirmed`.
 
+**What a client is told about a fan in either register**
+([#303](https://github.com/blamechris/Aeolus/issues/303)). Such a fan reads manual under no
+live lease, which is what foreign control looks like, and until #303 both the grant path and
+the snapshot called it that — sending the user to quit a program that is not running. Observed
+in manual, it is now refused `.restoreToAutomaticUnconfirmed`: Aeolus asked for automatic and no
+read has confirmed it — for a lease handback the firmware accepted the write, and § 3 keeps its
+own restore whether or not the firmware took it
+([#308](https://github.com/blamechris/Aeolus/issues/308) is to tell the refused one apart). The refusal is unchanged; only its reason
+is. One that reads automatic is granted. See ADR 0011's #303 amendment for why § 3's set
+reclassifies the answer rather than joining the set of fans Aeolus is accountable for, which
+would have granted the lease.
+
 *Tested by:* `AcceptedHandbackCompositionTests` (an accepted-but-manual fan is still bridged by
 the next emergency; an unreadable fan is kept; the restorer returns while § 3's read-back is
 parked; a fan § 3's own restore left manual is bridged once per episode, not per latched cycle),
 `ThermalEmergencyHandbackTests` (a stale read cannot clear a newer handback or a
 re-engagement; no read on a blind, firing or latched cycle; marking never registers) and
 `ThermalEmergencyRestoreTests` (a fan § 3's restore left manual, or that cannot be read, is
-bridged by the next emergency; one read automatic is let go; a re-engaged fan is held once).
+bridged by the next emergency; one read automatic is let go; a re-engaged fan is held once)
+and `RestoreUnconfirmedAttributionTests` (a fan in either register that reads manual is
+`.restoreToAutomaticUnconfirmed` on the snapshot and the grant path alike; where it is also an
+abandoned handback, both say `.restoreToAutomaticFailed`; one that reads automatic is granted;
+the set is never folded into the accountable one).
 
 **What the user is actually told.** `isThermalEmergencyActive` on the snapshot, which the
 app renders at 1 Hz, and a `.fault` line in the log. That is the whole of it: a root daemon
@@ -1133,7 +1149,10 @@ reads the machine, says what it found, and is refused. E3/E4 make the restore re
 reading, the ordering and the refusals are here now.
 
 **A fan found in manual *after* that one pass is foreign control, and is refused rather than
-restored** — [ADR 0011](ADR/0011-reconciliation-and-foreign-manual-control.md). The pass is
+restored** — [ADR 0011](ADR/0011-reconciliation-and-foreign-manual-control.md) — unless it is one
+Aeolus itself asked to hand back and no read has confirmed, which § 3 keeps and a client is told
+apart as `.restoreToAutomaticUnconfirmed`
+([#303](https://github.com/blamechris/Aeolus/issues/303)). The pass is
 unconditional because `F<n>Md` names no owner and the failure directions are not symmetric:
 restoring another program's fan hands it to Apple's thermal management, which is safe,
 visible, and one click to undo, while declining leaves a fan possibly pinned low by Aeolus's
@@ -1191,9 +1210,10 @@ a keystone the firmware accepts but does not apply leaves that fan refused, only
 enumeration and the read-back, and on a seam that can write the snapshot names each durable
 refusal with the reason a grant over the same fan throws — while on one that cannot, it names
 none.
-`ForeignManualControlReportingTests` covers the three fans the snapshot must **not** call
+`ForeignManualControlReportingTests` covers three fans the snapshot must **not** call
 somebody else's: one under a live lease, one whose handback was abandoned, and one § 5
-diagnosed as reclaimed by the system.
+diagnosed as reclaimed by the system. `RestoreUnconfirmedAttributionTests` covers the other
+two, one from each of § 3's registers of restores no read has confirmed (#303).
 `HelperCompositionTests.reconciliationSitsBetweenTheBindAndTheSupervisors` holds the pass in
 its position. `LaunchDaemonPlistTests` holds the restart keys and the exit-code contract.
 *Pending hardware:* rows 2 to 7, 16 and 17 of the

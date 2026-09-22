@@ -28,6 +28,7 @@ import FanKit
 // | 3 | `.releaseInProgress` | `reportingHandbackState` — a restore on the wire |
 // | 4 | `.supervisorBlind` | `availability(whenLedgerSays:…)` — § 5's ledger |
 // | 5 | § 6's durable refusal (not over step 6), then `.foreignManualControl` | § 6's baseline |
+// |   | … or `.restoreToAutomaticUnconfirmed`, for a fan § 3 keeps (#303) | § 3's kept set |
 // | 6 | `.writePathNotBuilt` | `availability(whenLedgerSays:…)` — the seam's capability |
 // | 7 | `.reclaimedBySystem` | `availability(whenLedgerSays:…)` — § 5's ledger |
 // | 8 | `.boundsImplausible` | `availability(whenLedgerSays:…)` — § 2's gate |
@@ -41,7 +42,7 @@ import FanKit
 // asserted by `SnapshotAvailabilityTests`, because a change to either set would make the
 // composition order start mattering silently.
 //
-// **Step 5 answers two questions, in `StartupReconciliation.refusalForGrant`'s order.** First
+// **Step 5 answers three questions, in `StartupReconciliation.refusalForGrant`'s order.** First
 // the durable refusals the one-shot pass left — `.supervisorBlind` for a fan whose mode it
 // never established or confirmed, `.restoreToAutomaticFailed` for one it could not hand back
 // — through the same `ReconciliationBaseline.durableRefusal(overFans:)` the grant path calls,
@@ -49,6 +50,15 @@ import FanKit
 // foreign control, judged from the snapshot's own mode read where the grant path takes a
 // fresh one. Before #204 only the second question was asked here, so on a seam that can
 // write a fan reconciliation had refused read `.available`, or `.foreignManualControl`.
+//
+// **The third is whose manual it is** ([#303](https://github.com/blamechris/Aeolus/issues/303)).
+// A manual fan § 3 is keeping because Aeolus's own restore was issued and not confirmed is
+// `.restoreToAutomaticUnconfirmed`, and only a fan outside that set is foreign. It is a
+// reclassification of the foreign answer and never an exemption from step 5: § 3's set is
+// carried beside `accountableFans`, not in it, because a fan in `accountableFans` is returned
+// untouched and would read `.available`. The steps-1–3 disjointness below is unchanged by it —
+// a fan in both § 3's set and a handback register is in `accountableFans`, so it is exempted
+// before the third question is asked and answered by steps 1–3.
 //
 // **The first question is not asked over step 6's `.writePathNotBuilt`**, which is where it
 // differs from foreign control. `acquireLease` refuses a seam that cannot write before it
@@ -86,7 +96,9 @@ extension ReadOnlyFanReport {
     ) -> FanState {
         reportingHandbackState(
             of: reportingForeignControl(
-                of: fan, heldByAeolus: leases.accountableFans, reconciliation: baseline),
+                of: fan, heldByAeolus: leases.accountableFans,
+                awaitingConfirmation: leases.restoresAwaitingConfirmation,
+                reconciliation: baseline),
             given: leases)
     }
 
@@ -217,8 +229,20 @@ extension ReadOnlyFanReport {
     /// in, and in the direction that cannot go quietly dead: the day E3 makes the seam
     /// `.built`, the read path stops saying `.writePathNotBuilt` and the durable refusal
     /// starts applying, with nothing here to change.
+    ///
+    /// ## A fan § 3 is keeping is not somebody else's
+    ///
+    /// `awaiting` is the fans § 3 is keeping because a restore-to-automatic Aeolus issued has not
+    /// been confirmed by a read, and one of them in manual is refused
+    /// `.restoreToAutomaticUnconfirmed` instead — `StartupReconciliation.refusalForGrant`'s
+    /// reclassification, at the same step and keyed
+    /// on the same mode, so the two answers agree (#303). **After the mode guard, never
+    /// before it**: a kept fan reading automatic is available, and a membership test ahead of
+    /// the guard would refuse every fan for up to a cycle after each ordinary handback. And
+    /// not unioned into `held`, which would return the fan untouched — `.available` on a seam
+    /// that can write, with the lease then granted.
     static func reportingForeignControl(
-        of fan: FanState, heldByAeolus held: Set<Int>,
+        of fan: FanState, heldByAeolus held: Set<Int>, awaitingConfirmation awaiting: Set<Int>,
         reconciliation baseline: ReconciliationBaseline
     ) -> FanState {
         guard !held.contains(fan.index), !fan.isReclaimedBySystem else { return fan }
@@ -232,6 +256,9 @@ extension ReadOnlyFanReport {
             return restating(fan, as: .unavailable(durable))
         }
         guard fan.mode != .automatic else { return fan }
+        if awaiting.contains(fan.index) {
+            return restating(fan, as: .unavailable(.restoreToAutomaticUnconfirmed))
+        }
         return restating(fan, as: .unavailable(.foreignManualControl))
     }
 }

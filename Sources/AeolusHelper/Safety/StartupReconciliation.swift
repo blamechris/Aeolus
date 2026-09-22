@@ -41,8 +41,8 @@ import Foundation
 /// the pass could not see: the same instant, the same safe direction, and no standing fight.
 /// A restore loop against a live writer *is* the fight: two programs
 /// undoing each other's mode write several times a second over a machine's cooling. That is
-/// what `refusalForGrant(overFans:heldByAeolus:)` below is for, and it is why this type
-/// outlives the bring-up that ran it.
+/// what `refusalForGrant(overFans:heldByAeolus:awaitingConfirmation:)` below is for, and it is
+/// why this type outlives the bring-up that ran it.
 ///
 /// ## What it deliberately does not do
 ///
@@ -484,16 +484,33 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
     /// — `F<n>Md` names no owner — so without this the lease core would tell a second client
     /// "another program has it" about its own work, instead of the `.leaseHeldByAnotherClient`
     /// the caller goes on to produce.
+    ///
+    /// **`awaiting` changes which refusal question 4 states, never whether it states one**
+    /// (#303). A fan § 3 is keeping after a restore it issued reads exactly like a foreign one,
+    /// so it is refused `.restoreToAutomaticUnconfirmed` — and only once the fresh read shows it
+    /// manual, so one that reads automatic is granted as before. It does not end the scan: a
+    /// fan later in the request that is foreign or unreadable outranks it, because "retry"
+    /// about a request that also names a fan another program holds is a retry forever.
+    ///
+    /// It is asked *after* `held` is subtracted, and that is the precedence rule with the
+    /// lease core's registers: a fan in both is exempted here and answered by the lease core's
+    /// more durable refusal — `.restoreToAutomaticFailed` for one the firmware also refused.
     func refusalForGrant(
-        overFans fans: Set<Int>, heldByAeolus held: Set<Int>
+        overFans fans: Set<Int>, heldByAeolus held: Set<Int>,
+        awaitingConfirmation awaiting: Set<Int>
     ) async -> ManualControlAvailability.Reason? {
         let candidates = fans.subtracting(held)
         if let durable = currentBaseline.durableRefusal(overFans: candidates) { return durable }
 
+        var firstUnconfirmed: Int?
         for fan in candidates.sorted() {
             do {
                 let state = try await plane.readControlState(ofFan: fan)
                 guard state.mode == .manual else { continue }
+                if awaiting.contains(fan) {
+                    firstUnconfirmed = firstUnconfirmed ?? fan
+                    continue
+                }
                 log.foreignManualControlObserved(fanAt: fan)
                 return .foreignManualControl
             } catch {
@@ -501,7 +518,9 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
                 return .supervisorBlind
             }
         }
-        return nil
+        guard let fan = firstUnconfirmed else { return nil }
+        log.restoreUnconfirmedObserved(fanAt: fan)
+        return .restoreToAutomaticUnconfirmed
     }
 
     /// See `ForeignManualControlSensing`. One `.supervisor` turn per fan, sequentially, for

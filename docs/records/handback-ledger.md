@@ -231,6 +231,25 @@ client would be told *"another program holds it"* about:
 `releasing.keys` by its own invariant, so every fan in it is already accounted for by the third
 register. Adding it would change no answer and would suggest the two can disagree.
 
+**Nor is § 3's kept set, for the opposite reason**
+([#303](https://github.com/blamechris/Aeolus/issues/303)). A fan Aeolus issued a restore for
+that no read has confirmed automatic — § 3's `handbackOwed` after a lease handback the firmware
+*accepted*, or `restoredUnconfirmed` after § 3's own restore, whatever the firmware did with it
+([#308](https://github.com/blamechris/Aeolus/issues/308)) — is in none of the three registers:
+its `releasing` count, if it ever had one, returned to `nil` when the write came back. It reads manual, it is Aeolus's
+own doing, and until #303 both paths called it foreign. The tempting fix is to union it in here,
+and that fix grants the lease. The union is an **exemption**: the gate subtracts it before the
+foreign-control read, the snapshot returns a fan in it untouched, and the three registers the
+exemption normally defers to have nothing to say about this fan. So the fan would be shown
+`.available` and granted — over a fan nothing has confirmed is automatic.
+
+It is carried beside the union instead, as `LeaseAccountability.restoresAwaitingConfirmation`,
+and it only **reclassifies** the foreign-control answer: a fan in it that reads manual is
+`.restoreToAutomaticUnconfirmed`, and one that reads automatic is granted. It is § 3's state,
+read from § 3 through `EmergencyRestoreConfirming` rather than mirrored into this actor — a
+mirror would be one fact kept in two actors, where a missed clear leaves a fan unleasable
+until restart. ADR 0011, amendment 2026-09-21 (#303).
+
 **One definition, read by the snapshot as well as by the gate**, through `activeLeaseView()`.
 Two would disagree the moment either moved — and the way they disagreed before was the snapshot
 naming a fan Aeolus could not hand back as another program's, while the gate refused it
@@ -410,6 +429,32 @@ revocation is a claim being taken from a named client, so `log show` has to carr
 client — that is `revokeLeases`' own argument for owning a distinct `FanRestoreCause`, and a
 single line naming a union of fans would undo it. The two loops were one until #188; what was
 shared between them was never the logging.
+
+### What the one call buys § 4
+
+*Moved here from `LeaseAuthority.releaseEveryLease()`'s doc comment by
+[#303](https://github.com/blamechris/Aeolus/issues/303), which needed the lines under
+`file_length`; the declaration keeps a one-line summary and a pointer to this section.*
+
+**In `releaseEveryLease()`, one `restore` call over the union is what makes § 4's record
+complete rather than partial** ([#202](https://github.com/blamechris/Aeolus/issues/202) item 4).
+`restore(_:because:)` increments `releasing` for every fan in the set *before* its suspension
+point, so the whole union is mid-handback the instant the sweep awaits — and
+`recordUnconfirmedHandbacks()`, which reads `releasing.keys`, therefore sees all of it even if
+the first fan's write wedges and nothing after it ever lands. Restoring per-lease or per-fan in
+a loop would put each subsequent fan's increment *after* the previous one's suspension, so a
+wedge on the first would leave the rest neither restored nor recorded: § 4 would acknowledge
+the sleep having registered one fan out of however many crossed it under manual control.
+
+**The set is the sweep's, not the lease table's**, and the difference is #189's second source:
+the union is seeded from `restoreAbandoned`, so a sleep with *no lease held* still restores —
+and still records — any fan the firmware refused earlier. A review caught `LeaseAuthority.swift`
+about to claim the set was lease-scoped, which is wrong in both directions.
+
+`SleepOrderingTests.aWedgeOnOneFanStillRecordsTheWholeLease` is what pins it, on a two-fan
+machine — the smallest that can tell "every fan" from "the first fan".
+`SleepCycleSurvivalTests` was cited here and cannot: its lease covers one fan, so a per-fan
+loop over a one-element set is behaviourally identical and stays green.
 
 ## The panic sweep has two sources
 

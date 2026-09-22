@@ -363,7 +363,8 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     ///
     /// ## Why the order is the design
     ///
-    /// 1. **Bind the safety registries to the restorer.** It is first because every step
+    /// 1. **Bind the safety registries to the restorer, and § 3's kept set to the lease core**
+    ///    (#303). It is first because every step
     ///    after it can cause a restore: a supervisor's cycle can revoke a lease, and an
     ///    advertised service can be handed one to release. `HelperFanRestorer` explains why
     ///    the binding is late at all — the graph is circular, and this is the edge that is
@@ -371,8 +372,8 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// 2. **Startup reconciliation** — `#164`, E5.4b. Between the bind and the supervisors,
     ///    because a fan restored by reconciliation must not be read by § 5's first cycle as
     ///    a reclamation, and because the restore it performs needs the registries bound.
-    /// 3. **Start observing the connection for whole-read failures** — `#168`, E5.4f. The
-    ///    second circular edge, closed for the same reason as the first: the scheduler
+    /// 3. **Start observing the connection for whole-read failures** — `#168`, E5.4f. Another
+    ///    circular edge, closed for the same reason as step 1's: the scheduler
     ///    reports to this observer and this observer reconnects through the plane the
     ///    scheduler is underneath. Before the supervisors, so that a failing read from the
     ///    very first supervisor cycle is already being counted.
@@ -405,7 +406,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         await bindSafetyRegistries()
         await reconcileFans()
 
-        // The second circular edge, closed for `bindSafetyRegistries()`'s reason: the
+        // Another circular edge, closed for `bindSafetyRegistries()`'s reason: the
         // scheduler reports to this observer and this observer reconnects through the plane
         // the scheduler is underneath. Before the supervisors, so that a failing read from
         // the very first cycle is already being counted.
@@ -457,8 +458,14 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         }
     }
 
-    /// Closes the one circular edge in the graph: the restorer learns which registries to
-    /// keep in step with the firmware.
+    /// Closes the graph's safety-registry edges: the restorer learns which registries to
+    /// keep in step with the firmware, and the lease core learns which fans § 3 is keeping
+    /// after a restore no read has confirmed (#303), because `leases` is built before
+    /// `thermalEmergency`.
+    ///
+    /// **Unbound is safe for the second edge, and that is why a late bind is acceptable.** A
+    /// lease core with no § 3 role answers an empty set, so a fan § 3 is keeping is refused
+    /// `.foreignManualControl` — the wrong reason, as before #303, but never a grant.
     ///
     /// Its own method rather than two lines inside `bringUp()` so a test can compose the
     /// graph, bind it exactly as the daemon does, and then drive a lease through it without
@@ -468,6 +475,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     func bindSafetyRegistries() async {
         await restorer.bind(
             thermalEmergency: thermalEmergency, reclamationWatchdog: reclamationWatchdog)
+        await leases.bind(emergencyRestores: thermalEmergency)
     }
 
     /// `docs/SAFETY.md` § 6's one-shot pass, over the fans this machine enumerates.

@@ -50,7 +50,8 @@ struct StartupReconciliationReadBackTests {
 
         #expect(await Self.everyFanRestores(scripted) == 1, "the keystone was never issued")
         #expect(
-            await reconciliation.refusalForGrant(overFans: [1], heldByAeolus: [])
+            await reconciliation.refusalForGrant(
+                overFans: [1], heldByAeolus: [], awaitingConfirmation: [])
                 == .supervisorBlind,
             """
             Fan 1 still reads manual after a machine-wide restore the firmware accepted, and \
@@ -67,7 +68,8 @@ struct StartupReconciliationReadBackTests {
             """)
         #expect(await reconciliation.fansWithRefusedHandback.isEmpty)
         #expect(
-            await reconciliation.refusalForGrant(overFans: [0], heldByAeolus: []) == nil,
+            await reconciliation.refusalForGrant(
+                overFans: [0], heldByAeolus: [], awaitingConfirmation: []) == nil,
             "fan 0 read back automatic, and was refused anyway — the read-back over-refuses")
     }
 
@@ -90,7 +92,8 @@ struct StartupReconciliationReadBackTests {
         #expect(await reconciliation.unreconciledFans.isEmpty)
         #expect(await reconciliation.fansWithRefusedHandback.isEmpty)
         #expect(
-            await reconciliation.refusalForGrant(overFans: [0, 1], heldByAeolus: []) == nil,
+            await reconciliation.refusalForGrant(
+                overFans: [0, 1], heldByAeolus: [], awaitingConfirmation: []) == nil,
             """
             Both fans read back automatic after the keystone, and a grant was still refused. \
             The read-back is what clears a refusal; a read-back that never clears one leaves \
@@ -122,11 +125,13 @@ struct StartupReconciliationReadBackTests {
             machine-wide "nothing established" flag should have given way to per-fan facts.
             """)
         #expect(
-            await reconciliation.refusalForGrant(overFans: [0], heldByAeolus: [])
+            await reconciliation.refusalForGrant(
+                overFans: [0], heldByAeolus: [], awaitingConfirmation: [])
                 == .supervisorBlind,
             "fan 0 read back manual after the keystone and was not refused durably")
         #expect(
-            await reconciliation.refusalForGrant(overFans: [1], heldByAeolus: []) == nil,
+            await reconciliation.refusalForGrant(
+                overFans: [1], heldByAeolus: [], awaitingConfirmation: []) == nil,
             "fan 1 read back automatic and was refused anyway")
     }
 
@@ -186,7 +191,8 @@ struct StartupReconciliationReadBackTests {
         await reconciliation.reconcile()
 
         #expect(
-            await reconciliation.refusalForGrant(overFans: [0], heldByAeolus: [])
+            await reconciliation.refusalForGrant(
+                overFans: [0], heldByAeolus: [], awaitingConfirmation: [])
                 == .supervisorBlind,
             """
             Fan 0 was handed back by name, the write did not throw, and it still reads manual \
@@ -219,7 +225,8 @@ struct StartupReconciliationReadBackTests {
 
         #expect(await Self.everyFanRestores(scripted) == 0, "the keystone ran; not this case")
         #expect(
-            await reconciliation.refusalForGrant(overFans: [0], heldByAeolus: [])
+            await reconciliation.refusalForGrant(
+                overFans: [0], heldByAeolus: [], awaitingConfirmation: [])
                 == .supervisorBlind,
             """
             Fan 0 was handed back by name on a complete pass, the write did not throw, and it \
@@ -253,7 +260,8 @@ struct StartupReconciliationReadBackTests {
 
         #expect(await reconciliation.unreconciledFans == [0, 1])
         #expect(
-            await reconciliation.refusalForGrant(overFans: [0], heldByAeolus: [])
+            await reconciliation.refusalForGrant(
+                overFans: [0], heldByAeolus: [], awaitingConfirmation: [])
                 == .supervisorBlind,
             "fan 0 was handed back by name, never read back, and is not refused durably")
     }
@@ -274,7 +282,9 @@ struct StartupReconciliationReadBackTests {
         await reconciliation.reconcile()
 
         #expect(await reconciliation.unreconciledFans.isEmpty)
-        #expect(await reconciliation.refusalForGrant(overFans: [0, 1], heldByAeolus: []) == nil)
+        #expect(
+            await reconciliation.refusalForGrant(
+                overFans: [0, 1], heldByAeolus: [], awaitingConfirmation: []) == nil)
     }
 
     // MARK: - The deadline bounds the whole pass
