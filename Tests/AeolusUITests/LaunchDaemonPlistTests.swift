@@ -195,7 +195,7 @@ struct LaunchDaemonPlistTests {
         #expect(
             afterCommand.count >= 2,
             """
-            RECOVERY.md documents `launchctl bootout` in both §4 and §5; found \
+            RECOVERY.md documents `launchctl bootout` in both §5 and §6; found \
             \(afterCommand.count). If a section was removed, remove this expectation \
             deliberately rather than weakening it.
             """)
