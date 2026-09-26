@@ -61,10 +61,70 @@ struct StatusCommandTests {
             for: Self.observation(
                 fans: [Self.fan(0, mode: .manualFixed, target: 3000)], lease: lease))
         #expect(text.contains("held by \"fanctl 0.0.0-dev pid 42 (set)\""))
-        #expect(text.contains("(25 s after capture)"))
+        #expect(
+            text.contains(
+                "expiry, as the helper's wall-clock estimate: 2026-09-21T14:13:45Z"))
         #expect(text.contains("self-renewing: no"))
         #expect(text.contains("mode manualFixed · target 3000 RPM"))
         #expect(!text.contains("running at 3000"))
+    }
+
+    /// A `nil` lease establishes only that no Aeolus client holds one. The fan beside it may
+    /// be driven by another program, mid-handback, or unconfirmed — so the output must never
+    /// turn "no lease" into "nothing holds the fans" (rule 6).
+    ///
+    /// **Mutation:** restore "No client holds the fans." to `leaseLines`. Run: red.
+    @Test("No lease beside a manual fan never claims the fans are unheld or free")
+    func noLeaseIsNotFreeFans() throws {
+        let observation = Self.observation(fans: [
+            Self.fan(
+                0, mode: .manualFixed, target: 2500,
+                availability: .unavailable(.foreignManualControl))
+        ])
+        let text = StatusCommand.text(for: observation)
+        #expect(text.contains("No Aeolus client holds a manual-control lease."))
+        #expect(text.contains("mode manualFixed · target 2500 RPM"))
+        #expect(text.contains("reason: foreignManualControl"))
+        for claim in [
+            "No client holds the fans", "fans are free", "not held", "unheld", "fans are automatic",
+        ] {
+            #expect(!text.contains(claim), "status claimed \"\(claim)\"")
+        }
+
+        let document = try Self.json(observation)
+        #expect(document["lease"] is NSNull)
+        let fans = try #require(document["fans"] as? [[String: Any]])
+        #expect(fans.first?["mode"] as? String == "manualFixed")
+        #expect(
+            Set(document.keys).isDisjoint(with: ["fansHeld", "fansFree", "held", "free"]),
+            "the document derives a held/free claim from the lease")
+    }
+
+    /// `expiresAt` is a display-only wall-clock estimate; the helper enforces the lease on
+    /// monotonic time. A wall-clock step can put it before capture while the lease is active,
+    /// and the snapshot listing the lease is what says it is held.
+    ///
+    /// **Mutation:** reintroduce the `expiresAt < capturedAt` comparison that printed
+    /// "expired … at or before capture". Run: red.
+    @Test("A listed lease whose estimate precedes capture is still held, never expired")
+    func anEarlyEstimateIsNotExpiry() throws {
+        let lease = Lease(
+            holderDescription: "Aeolus.app 0.3.0",
+            expiresAt: Self.captured.addingTimeInterval(-90))
+        let observation = Self.observation(fans: [Self.fan(0)], lease: lease)
+        let text = StatusCommand.text(for: observation)
+        #expect(text.contains("Manual-control lease: held by \"Aeolus.app 0.3.0\""))
+        #expect(
+            text.contains(
+                "expiry, as the helper's wall-clock estimate: 2026-09-21T14:11:50Z"))
+        #expect(!text.lowercased().contains("expired"))
+        #expect(!text.contains("after capture"))
+
+        let document = try Self.json(observation)
+        let body = try #require(document["lease"] as? [String: Any])
+        #expect(body["expiresAt"] as? String == "2026-09-21T14:11:50Z")
+        #expect(body["expired"] == nil)
+        #expect(body["isActive"] == nil)
     }
 
     @Test("A reclaimed fan says Aeolus is not driving it")

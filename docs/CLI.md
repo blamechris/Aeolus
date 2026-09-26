@@ -365,20 +365,31 @@ One `hello`, one `snapshot`, one disconnect. Reports, per fan, the actual speed,
 range, the mode, the target, whether the system has reclaimed it and whether manual control is
 available — with the reason and the advice for it when it is not (the same text
 `docs/RECOVERY.md` step 4 lists). Separately from the fans: who holds the manual-control lease,
-when it expires, and whether it is self-renewing; whether a thermal emergency is active; the
-protocol version negotiated with the helper; and the time the helper captured the snapshot.
+the helper's wall-clock estimate of its expiry, and whether it is self-renewing; whether a
+thermal emergency is active; the protocol version negotiated with the helper; and the time the
+helper captured the snapshot.
 
 Everything is what the helper reported at that capture time. A **target** is what a lease
 holder asked for, never a speed — the speed is `actual`. A lease that exists while a fan reads
 `automatic` is two facts printed side by side, which is how a user sees that the holder is not
 driving that fan.
 
+Two things it deliberately does not infer:
+
+- **No lease is not "nothing holds the fans".** It establishes only that no Aeolus client holds
+  a manual-control lease. A fan beside it may be driven by another program, mid-handback, or in
+  a restore nobody has confirmed; those are per-fan facts, on each fan's own lines.
+- **The expiry is an estimate, and lease state is never derived from it.** `expiresAt` is the
+  helper's wall-clock rendering of a deadline it enforces on monotonic time. A wall-clock step
+  can put it before the capture time while the lease is active, so it is printed as an estimate
+  and compared to nothing: a lease the snapshot lists is held.
+
 ```
 $ fanctl status
 Helper 0.0.0-dev, negotiated XPC protocol 1 (helper accepts 1–1; fanctl 0.0.0-dev speaks 1).
 Captured by the helper at 2026-09-21T14:13:20Z.
 
-Manual-control lease: none. No client holds the fans.
+Manual-control lease: none. No Aeolus client holds a manual-control lease.
 Thermal emergency: not active.
 
 Fan 0
@@ -390,8 +401,8 @@ Fan 0
 ### `fanctl status --json`
 
 One pretty-printed document (below, each `RPM` reading object is collapsed onto one line to
-save space; the real output breaks it across lines like every other object). `schema` is the version of every helper command's `--json`
-shape: adding a field does not bump it; renaming, removing or re-typing one does. Every key is
+save space; the real output breaks it across lines like every other object). `schema` is the
+version of every helper command's `--json` shape: adding a field does not bump it; renaming, removing or re-typing one does. Every key is
 always present, with `null` for "not present".
 
 ```json
@@ -434,7 +445,10 @@ always present, with `null` for "not present".
   was replaced before it could be read).
 - **`lease`** — `null`, or `{ "id", "holderDescription", "expiresAt", "timeToLive",
   "isSelfRenewing" }`. There is at most one lease at a time, and the snapshot does not say
-  which fans it covers.
+  which fans it covers. `expiresAt` is the helper's display-only wall-clock estimate; do not
+  compare it to `capturedAt` or a local clock to decide whether the lease is active — a lease
+  in the document is active. `null` means no Aeolus client holds a lease, not that no fan is
+  under manual control; read each fan's `mode`.
 - **`fans[].actualRPM` / `minimumRPM` / `maximumRPM`** — `{ "value": Double?,
   "unavailableReason": String? }`, exactly one non-null. A failed read is never a `0`.
 - **`fans[].mode`** — `automatic`, `manualFixed` or `manualCurve`. **`targetRPM`** is the

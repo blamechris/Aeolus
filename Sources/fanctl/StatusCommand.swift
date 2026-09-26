@@ -39,7 +39,7 @@ enum StatusCommand {
         lines.append(versionLine(for: observation))
         lines.append("Captured by the helper at \(iso8601(snapshot.capturedAt)).")
         lines.append("")
-        lines.append(contentsOf: leaseLines(snapshot.activeLease, capturedAt: snapshot.capturedAt))
+        lines.append(contentsOf: leaseLines(snapshot.activeLease))
         lines.append(
             snapshot.isThermalEmergencyActive
                 ? "Thermal emergency: ACTIVE — the helper's override outranks manual control."
@@ -71,20 +71,27 @@ enum StatusCommand {
             """
     }
 
-    static func leaseLines(_ lease: Lease?, capturedAt: Date) -> [String] {
+    /// The lease, and only what the snapshot says about it.
+    ///
+    /// **No lease is not "nothing holds the fans".** A snapshot with no lease can sit beside a
+    /// fan another program drives, a handback still in flight, or a restore nobody confirmed;
+    /// all of those are per-fan facts, reported on each fan's own lines. This line states the
+    /// one thing a `nil` lease establishes.
+    ///
+    /// **The expiry is an estimate, and no state is inferred from it.** `Lease.expiresAt` is
+    /// the helper's wall-clock rendering of a deadline it enforces on monotonic time, for
+    /// display only. A wall-clock step can put it before the capture time while the lease is
+    /// active, so it is printed as the helper's estimate and never compared to anything: the
+    /// lease is held because the snapshot lists it, whatever the timestamp says.
+    static func leaseLines(_ lease: Lease?) -> [String] {
         guard let lease else {
-            return ["Manual-control lease: none. No client holds the fans."]
+            return ["Manual-control lease: none. No Aeolus client holds a manual-control lease."]
         }
-        let remaining = lease.expiresAt.timeIntervalSince(capturedAt)
-        let expiry =
-            remaining > 0
-            ? "expires \(iso8601(lease.expiresAt)) (\(Formatting.number(remaining.rounded())) s "
-                + "after capture)"
-            : "expired \(iso8601(lease.expiresAt)), at or before capture"
         return [
             "Manual-control lease: held by \"\(DisplayText.sanitised(lease.holderDescription))\"",
-            "  \(expiry); renewed every heartbeat or it ends and the helper restores automatic "
-                + "control",
+            "  expiry, as the helper's wall-clock estimate: \(iso8601(lease.expiresAt)) "
+                + "(the helper enforces it on its own clock; a lease that is not renewed ends "
+                + "and the helper restores automatic control)",
             "  self-renewing: \(lease.isSelfRenewing ? "yes" : "no") · id \(lease.id.uuidString)",
         ]
     }
