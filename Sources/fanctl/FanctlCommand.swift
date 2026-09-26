@@ -41,15 +41,21 @@ struct Fanctl: AsyncParsableCommand {
         commandName: "fanctl",
         abstract: "Monitor and control Mac fan speeds.",
         discussion: """
-            Read commands (list, sensors, watch) need no privileges and no installed \
-            helper. Control commands require Aeolus.app's privileged helper to be \
-            registered and approved in System Settings.
+            Read commands (list, sensors, watch, dump) need no privileges and no \
+            installed helper. status and reset talk to Aeolus.app's privileged helper, \
+            which must be registered and approved in System Settings.
 
             Manual control is always held under a lease: if fanctl exits or is killed, \
             the helper returns the fans to automatic.
+
+            Commands that talk to the helper exit with a stable code a script can branch \
+            on: 0 success, 1 unexpected failure, 2 request does not fit this machine, \
+            3 helper not reachable, 4 manual control refused, 5 held by another client, \
+            6 control lost, 7 protocol version mismatch, 8 safe state not confirmed, \
+            64 usage. See docs/CLI.md.
             """,
         version: versionDescription,
-        subcommands: [List.self, Sensors.self, Watch.self, Reset.self, Dump.self]
+        subcommands: [List.self, Sensors.self, Watch.self, Status.self, Reset.self, Dump.self]
     )
 }
 
@@ -158,10 +164,40 @@ extension Fanctl {
         var all = false
 
         /// Where `run()` looks for the helper. **Not an argument**, and no flag reaches it —
-        /// see `ResetCommand.HelperConnection`, which is also why it decodes to the
+        /// see `HelperConnection`, which is also why it decodes to the
         /// production value whatever swift-argument-parser hands it. The suite sets it
         /// directly, which is what makes `run()` itself the thing under test rather than a
         /// test-only overload of it.
-        var helper = ResetCommand.HelperConnection.production
+        var helper = HelperConnection.production
+    }
+
+    /// See `StatusCommand.swift` for `run()` and what it is and is not allowed to claim.
+    struct Status: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Show what the helper reports about every fan and who holds them.",
+            discussion: """
+                Handshakes with the helper, asks it for one snapshot, and prints it: each \
+                fan's actual speed, firmware range, mode, target and whether the system \
+                has reclaimed it, whether manual control is available (and if not, why), \
+                who holds the manual-control lease, and whether a thermal emergency is \
+                active.
+
+                Everything printed is what the helper reported at the capture time shown. \
+                A target is what was asked for, never a speed; the speed is the actual \
+                reading.
+
+                Needs the helper installed, approved, and willing to accept this binary's \
+                signature. --json prints one document with a top-level "schema" version.
+                """
+        )
+
+        @Flag(name: .long, help: "Emit one JSON document instead of text.")
+        var json = false
+
+        /// Where `run()` looks for the helper — see `HelperConnection`. Not an argument.
+        var helper = HelperConnection.production
+
+        /// Where `run()` writes — see `Terminal`. Not an argument.
+        var terminal = Terminal.process
     }
 }

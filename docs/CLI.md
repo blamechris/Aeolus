@@ -8,6 +8,9 @@ no privileges. This is the durable reference for what they print, in both human 
 specific `--json` invocations directly into an issue body, and this is where that shape
 is defined and kept stable.
 
+`status` talks to the helper instead; it and the exit codes every helper command shares
+are in [Commands that talk to the helper](#commands-that-talk-to-the-helper).
+
 Every example below is real output, captured by actually running the command — not
 hand-written. Where a shape genuinely changed recently (`sensors --json` gained
 `category`, `dump --json` gained `crossCheck` and `--key`, `watch --json` moved to
@@ -38,9 +41,9 @@ version negotiated with an installed helper."** Those are genuinely different cl
 [ADR 0005](ADR/0005-xpc-authorisation.md) makes the helper *enforce* version negotiation
 at a `hello` handshake — a client outside `[minimumSupported, current]` is refused, with
 both sides' ranges in the refusal. `--version` cannot know what any installed helper
-actually accepts; only a real connection attempt can prove that. If a future command
-(`fanctl status`, or any write command) reports a negotiated version, it should say so
-explicitly and distinguish it from this static string.
+actually accepts; only a real connection attempt can prove that. `fanctl status` is that
+connection attempt: it completes a `hello` and prints the version it *negotiated*, labelled
+as such, beside the one this build speaks — see [below](#fanctl-status).
 
 ## Shell completions
 
@@ -298,6 +301,162 @@ shape moved recently (a `crossCheck` envelope, and `--key` to scope one row).
 - **`--key VP3b`** filters `entries` to the matching row(s) — the pasteable form for a
   hardware report; the unfiltered dump is hundreds of kilobytes as `--json`, well past
   what a GitHub issue body accepts.
+
+## Commands that talk to the helper
+
+`status` needs the helper installed, approved in System Settings, and willing to accept this
+binary's signature. A `fanctl` built with `swift build` carries no Team ID and is refused at
+both ends by design (ADR 0005), so it cannot reach an installed helper; the read commands
+above need none of this and keep working.
+
+**The examples in this section are not captured from an installed helper.** None is installed
+on the development machine, and a signed `fanctl` is blocked on
+[#82](https://github.com/blamechris/Aeolus/issues/82). They are the shapes the end-to-end
+suite (`Tests/AeolusHelperTests/FanctlStatusTests.swift`) produces against the real helper
+session with a simulated fan authority. Replace them with captured output once a signed build
+exists.
+
+### Exit codes
+
+Stable, and a public contract: a script branches on the number without parsing text. A
+number is never reused or renumbered; a new outcome gets a new number. Defined once, in
+`FanctlExitCode` (`Sources/fanctl/FanctlExitCode.swift`), and `FanctlExitCodeTests` fails if
+this table stops listing every code.
+
+| Code | Kind | Meaning |
+|---|---|---|
+| 0 | `success` | Done, and what was reported was observed. |
+| 1 | `failure` | Anything not named below: an answer this build cannot read, a request whose outcome is unknown because no answer arrived, an unanticipated error. |
+| 2 | `requestDoesNotFit` | The request does not fit this machine: no such fan, a speed outside the fan's firmware range, a percentage for a fan whose range is unusable. |
+| 3 | `helperNotReachable` | Helper not installed, not approved, refused this binary's signature, or answered with a signature this binary refuses. These cannot be told apart from the client side. |
+| 4 | `manualControlRefused` | The helper refused manual control of a fan it can see — the message carries the reason and its advice. |
+| 5 | `heldByAnotherClient` | Another client holds the manual-control lease. There is one lease at a time. |
+| 6 | `controlLost` | Control was held and then lost: renewal refused or unanswered, the lease ended, the system reclaimed a fan, or a thermal emergency took over. |
+| 7 | `protocolVersionMismatch` | This `fanctl` and the helper share no protocol version. The message names both. |
+| 8 | `safeStateNotConfirmed` | A request for the safe state (releasing a lease, returning fans to automatic) that could not be confirmed. The lease still expires on its own. |
+| 64 | `usage` | A malformed command line (swift-argument-parser's `EX_USAGE`). |
+
+Which errors map where: every `HelperClientError` and `AeolusXPCFault` case is classified
+exhaustively in `HelperCommandFailure`, with no default arm. The same refusal means different
+things either side of holding a lease — `reclaimedBySystem` before one is 4, "you cannot have
+this fan"; once a lease is held, **any** failure to keep it is 6, because the command can no
+longer say it holds the fans.
+
+`fanctl reset --all` predates this table and still exits 0 when the helper accepted the
+request and 1 otherwise.
+
+Under `--json`, a failure prints a machine-readable object on standard output as well as the
+message on standard error, so a caller parsing stdout always gets JSON:
+
+```json
+{
+  "failure" : {
+    "exitCode" : 3,
+    "kind" : "helperNotReachable",
+    "message" : "The Aeolus helper did not answer. Either it is not installed or not yet approved, or it refused this copy of Aeolus because the signature did not match. These possibilities cannot be told apart from here."
+  },
+  "schema" : 1
+}
+```
+
+### `fanctl status`
+
+One `hello`, one `snapshot`, one disconnect. Reports, per fan, the actual speed, the firmware
+range, the mode, the target, whether the system has reclaimed it and whether manual control is
+available — with the reason and the advice for it when it is not (the same text
+`docs/RECOVERY.md` step 4 lists). Separately from the fans: who holds the manual-control lease,
+the helper's wall-clock estimate of its expiry, and whether it is self-renewing; whether a
+thermal emergency is active; the protocol version negotiated with the helper; and the time the
+helper captured the snapshot.
+
+Everything is what the helper reported at that capture time. A **target** is what a lease
+holder asked for, never a speed — the speed is `actual`. A lease that exists while a fan reads
+`automatic` is two facts printed side by side, which is how a user sees that the holder is not
+driving that fan.
+
+Two things it deliberately does not infer:
+
+- **No lease is not "nothing holds the fans".** It establishes only that no Aeolus client holds
+  a manual-control lease. A fan beside it may be driven by another program, mid-handback, or in
+  a restore nobody has confirmed; those are per-fan facts, on each fan's own lines.
+- **The expiry is an estimate, and lease state is never derived from it.** `expiresAt` is the
+  helper's wall-clock rendering of a deadline it enforces on monotonic time. A wall-clock step
+  can put it before the capture time while the lease is active, so it is printed as an estimate
+  and compared to nothing: a lease the snapshot lists is held.
+
+```
+$ fanctl status
+Helper 0.0.0-dev, negotiated XPC protocol 1 (helper accepts 1–1; fanctl 0.0.0-dev speaks 1).
+Captured by the helper at 2026-09-21T14:13:20Z.
+
+Manual-control lease: none. No Aeolus client holds a manual-control lease.
+Thermal emergency: not active.
+
+Fan 0
+  actual 1351 RPM · range 1350 RPM to 5777 RPM
+  mode automatic · target none
+  manual control: unavailable — This build of Aeolus has no path to write to the SMC yet, so manual control is not available for any fan. This is the expected answer for every fan on the current build; there is no user action that changes it yet. (reason: writePathNotBuilt)
+```
+
+### `fanctl status --json`
+
+One pretty-printed document (below, each `RPM` reading object is collapsed onto one line to
+save space; the real output breaks it across lines like every other object). `schema` is the
+version of every helper command's `--json` shape: adding a field does not bump it; renaming, removing or re-typing one does. Every key is
+always present, with `null` for "not present".
+
+```json
+{
+  "capturedAt" : "2026-09-21T14:13:20Z",
+  "clientProtocolVersion" : 1,
+  "fans" : [
+    {
+      "actualRPM" : { "unavailableReason" : null, "value" : 1351 },
+      "firmwareName" : null,
+      "index" : 0,
+      "isReclaimedBySystem" : false,
+      "manualControl" : {
+        "advice" : "This is the expected answer for every fan on the current build; there is no user action that changes it yet.",
+        "reason" : "writePathNotBuilt",
+        "state" : "unavailable",
+        "summary" : "This build of Aeolus has no path to write to the SMC yet, so manual control is not available for any fan."
+      },
+      "maximumRPM" : { "unavailableReason" : null, "value" : 5777 },
+      "minimumRPM" : { "unavailableReason" : null, "value" : 1350 },
+      "mode" : "automatic",
+      "targetRPM" : null
+    }
+  ],
+  "helper" : {
+    "build" : "0.0.0-dev",
+    "capabilities" : [ ],
+    "maximumProtocolVersion" : 1,
+    "minimumProtocolVersion" : 1
+  },
+  "lease" : null,
+  "protocolVersion" : 1,
+  "schema" : 1,
+  "thermalEmergencyActive" : false
+}
+```
+
+- **`protocolVersion`** — the version the snapshot was encoded in; **`clientProtocolVersion`**
+  the one this `fanctl` speaks; **`helper`** the handshake's answer (`null` if the connection
+  was replaced before it could be read).
+- **`lease`** — `null`, or `{ "id", "holderDescription", "expiresAt", "timeToLive",
+  "isSelfRenewing" }`. There is at most one lease at a time, and the snapshot does not say
+  which fans it covers. `expiresAt` is the helper's display-only wall-clock estimate; do not
+  compare it to `capturedAt` or a local clock to decide whether the lease is active — a lease
+  in the document is active. `null` means no Aeolus client holds a lease, not that no fan is
+  under manual control; read each fan's `mode`.
+- **`fans[].actualRPM` / `minimumRPM` / `maximumRPM`** — `{ "value": Double?,
+  "unavailableReason": String? }`, exactly one non-null. A failed read is never a `0`.
+- **`fans[].mode`** — `automatic`, `manualFixed` or `manualCurve`. **`targetRPM`** is the
+  commanded target or `null`.
+- **`fans[].manualControl`** — `state` is `available` or `unavailable`; when unavailable,
+  `reason` is the stable wire value to branch on (`writePathNotBuilt`,
+  `leaseHeldByAnotherClient`, `foreignManualControl`, …) and `summary`/`advice` are the text
+  `docs/RECOVERY.md` step 4 lists.
 
 ---
 
