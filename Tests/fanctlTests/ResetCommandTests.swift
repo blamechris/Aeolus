@@ -288,7 +288,7 @@ struct ResetCommandTests {
     /// what says so.
     @Test("The shipping command connects to the daemon, pinned, on the panic deadline")
     func theShippingConnectionIsTheDaemonPinnedOnThePanicDeadline() {
-        let production = ResetCommand.HelperConnection.production
+        let production = HelperConnection.production
 
         guard case .machService = production.transport else {
             Issue.record("the shipping command does not connect to the mach service")
