@@ -173,13 +173,13 @@ _fanctl() {
     unset 'unparsed_words[0]'
     unparsed_words=("${unparsed_words[@]}")
     case "${subcommand}" in
-    list|sensors|watch|reset|dump|help)
+    list|sensors|watch|status|reset|dump|help)
         # Offer subcommand argument completions
         "_fanctl_${subcommand}"
         ;;
     *)
         # Offer subcommand completions
-        COMPREPLY+=($(compgen -W 'list sensors watch reset dump help' -- "${cur}"))
+        COMPREPLY+=($(compgen -W 'list sensors watch status reset dump help' -- "${cur}"))
         ;;
     esac
 }
@@ -216,6 +216,14 @@ _fanctl_watch() {
         return
         ;;
     esac
+}
+
+_fanctl_status() {
+    repeating_flags=()
+    non_repeating_flags=(--json --version -h --help)
+    repeating_options=()
+    non_repeating_options=()
+    __fanctl_offer_flags_options 0
 }
 
 _fanctl_reset() {

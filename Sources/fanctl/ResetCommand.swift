@@ -3,8 +3,8 @@ import AeolusXPCClient
 import ArgumentParser
 import Foundation
 
-/// `fanctl reset --all` — the panic path, and the only `fanctl` command that speaks to the
-/// helper at all.
+/// `fanctl reset --all` — the panic path, and the one `fanctl` command that speaks to the
+/// helper without a handshake.
 ///
 /// ## What this command is allowed to say
 ///
@@ -54,7 +54,7 @@ enum ResetCommand {
     /// What this client calls itself. Never sent by this command — the panic path carries no
     /// `hello` — but the connection is constructed with it, and a client that named itself
     /// something else here than in a later handshake would be two clients in the helper's log.
-    static let clientDescription = "fanctl \(Fanctl.toolVersion)"
+    static let clientDescription = HelperConnection.clientDescription
 
     /// The one sentence an exit-0 run may lead with.
     ///
@@ -158,59 +158,6 @@ enum ResetCommand {
     }
 }
 
-// MARK: - Where the command looks for the helper
-
-extension ResetCommand {
-
-    /// Where `fanctl reset --all` looks for the helper, who it will accept as one, and how
-    /// long it waits.
-    ///
-    /// **This exists so that `run()` is the thing under test.** It replaced a test-only
-    /// `run(restoring:)` overload that every test called and nothing shipped, which left the
-    /// three decisions the shipping path actually makes — which verb is sent, which deadlines
-    /// it waits with, and the teardown afterwards — covered by nothing. A `run()` rewritten to
-    /// `try emit(accepted)` printed "the helper accepted the reset request" having contacted
-    /// nothing, and the whole suite stayed green. The seam therefore sits **below** all three:
-    /// it carries only where to look, who may answer, and how long to wait, and `run()` keeps
-    /// everything else.
-    ///
-    /// `Decodable` by hand, and that is what makes it injectable at all. swift-argument-parser
-    /// decodes every stored property of a command, this one included, through a decoder that
-    /// knows only about parsed arguments; answering it with `production` regardless is how a
-    /// property that is not an argument, and can never come from a command line, still
-    /// satisfies the conformance. There is no flag that reaches it and there must never be
-    /// one: a `--helper-endpoint` option would let anything on the machine tell `fanctl` which
-    /// process to treat as the root daemon.
-    struct HelperConnection: Decodable, Sendable {
-
-        let transport: HelperClientTransport
-        let pinning: any HelperConnectionPinning
-        let deadlines: HelperClientDeadlines
-
-        /// The installed daemon, pinned to the signature this build requires, waited on for
-        /// `HelperClientDeadlines.panicVerb` — 10 s, against a gated verb's 5, because the
-        /// verb's contract is to restore every fan and drop every lease *before* it answers.
-        static let production = HelperConnection(
-            transport: .machService,
-            pinning: SignedHelperPinning(),
-            deadlines: .default)
-
-        init(
-            transport: HelperClientTransport,
-            pinning: any HelperConnectionPinning,
-            deadlines: HelperClientDeadlines
-        ) {
-            self.transport = transport
-            self.pinning = pinning
-            self.deadlines = deadlines
-        }
-
-        init(from decoder: Decoder) throws {
-            self = .production
-        }
-    }
-}
-
 // MARK: - Command wiring
 
 extension Fanctl.Reset {
@@ -244,11 +191,7 @@ extension Fanctl.Reset {
     /// function itself by setting `helper` — there is no test-only overload of it to cover
     /// instead.
     func run() async throws {
-        let client = HelperClient(
-            transport: helper.transport,
-            pinning: helper.pinning,
-            clientDescription: ResetCommand.clientDescription,
-            deadlines: helper.deadlines)
+        let client = helper.client()
         let report = await ResetCommand.attempt { try await client.restoreAllToAutomatic() }
 
         // Invalidated rather than dropped, even though the process is about to exit and

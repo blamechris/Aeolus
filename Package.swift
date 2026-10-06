@@ -105,10 +105,11 @@ let package = Package(
 
         // Thin XPC client. Also runs standalone in read-only mode with no helper present.
         //
-        // AeolusXPCClient is here for exactly one command: `reset --all`, the panic path.
-        // Every read command (list, sensors, watch, dump) still goes straight to the SMC
-        // and connects to nothing, which is what keeps "works with no helper installed and
-        // no signing" literally true rather than aspirational.
+        // AeolusXPCClient is here for the commands that talk to the helper: `reset --all`,
+        // the panic path, and `status`. Every read command (list, sensors, watch, dump)
+        // still goes straight to the SMC and connects to nothing, which is what keeps
+        // "works with no helper installed and no signing" literally true rather than
+        // aspirational.
         .executableTarget(
             name: "fanctl",
             dependencies: [

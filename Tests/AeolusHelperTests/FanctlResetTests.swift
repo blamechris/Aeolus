@@ -14,7 +14,7 @@ import Testing
 /// makes was covered by nothing: rewriting `run()` to `try emit(accepted)` printed "the helper
 /// accepted the reset request", contacted nothing, and left 1425 tests green. Three decisions
 /// live there and each has an assertion below — the verb that is sent, the deadline it is sent
-/// with, and the `disconnect()` afterwards. `ResetCommand.HelperConnection` exists so they can
+/// with, and the `disconnect()` afterwards. `HelperConnection` exists so they can
 /// be reached without being replaced.
 ///
 /// **Why this suite lives here rather than in `fanctlTests`.** The only peer the real client
@@ -97,7 +97,7 @@ struct FanctlResetTests {
         waiting deadlines: HelperClientDeadlines = unhurried
     ) async throws -> Emitted {
         var command = try resetAll()
-        command.helper = ResetCommand.HelperConnection(
+        command.helper = HelperConnection(
             transport: .endpoint(harness.endpoint),
             pinning: UnenforcedClientPinning(),
             deadlines: deadlines)
