@@ -43,12 +43,13 @@ struct StatusCommandTests {
 
     @Test("No lease, no emergency: both said plainly")
     func quietMachine() {
-        let text = StatusCommand.text(for: Self.observation(fans: [Self.fan(0)]))
+        let observation = Self.observation(fans: [Self.fan(0)])
+        let text = StatusCommand.text(for: observation)
         #expect(text.contains("Manual-control lease: none."))
         #expect(text.contains("Thermal emergency: not active."))
         #expect(text.contains("actual 1351 RPM · range 1350 RPM to 5777 RPM"))
         #expect(text.contains("mode automatic · target none"))
-        #expect(text.contains("negotiated XPC protocol 1"))
+        #expect(text.contains("negotiated XPC protocol \(observation.snapshot.protocolVersion)"))
     }
 
     /// The lease is its own block, and a fan's target is never printed as a speed.
