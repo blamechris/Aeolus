@@ -52,7 +52,8 @@ struct Fanctl: AsyncParsableCommand {
             on: 0 success, 1 unexpected failure, 2 request does not fit this machine, \
             3 helper not reachable, 4 manual control refused, 5 held by another client, \
             6 control lost, 7 protocol version mismatch, 8 safe state not confirmed, \
-            64 usage. See docs/CLI.md.
+            64 usage. The exception is reset --all, which predates this table and still \
+            exits 0 when the helper accepted the request and 1 otherwise. See docs/CLI.md.
             """,
         version: versionDescription,
         subcommands: [List.self, Sensors.self, Watch.self, Status.self, Reset.self, Dump.self]
