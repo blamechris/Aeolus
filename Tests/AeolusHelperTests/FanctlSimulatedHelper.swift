@@ -116,8 +116,9 @@ actor SimulatedFanAuthority: FanAuthority {
     func reacquiring(as holder: String) { releasesToAnotherHolder = holder }
 
     /// Every snapshot from the `count + 1`-th on fails with `fault`.
-    func failingSnapshots(after count: Int, with fault: AeolusXPCFault = .helperFailed(detail: "x"))
-    {
+    func failingSnapshots(
+        after count: Int, with fault: AeolusXPCFault = .helperFailed(detail: "x")
+    ) {
         snapshotFailure = (count, fault)
     }
 
