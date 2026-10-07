@@ -1210,6 +1210,154 @@ suspending clock loses essentially the entire sleep, so anything resting on one 
 second across an 899 s maintenance sleep. Row 12 stays open, and now has a number attached to why
 it matters.
 
+### Per-round-trip SMC latency on Mac16,5 — idle and contended (issue #296)
+
+> **[#296](https://github.com/blamechris/Aeolus/issues/296) asks how long one
+> `IOConnectCallStructMethod` round trip takes, so that
+> [ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s wedge bound D can
+> come from a measurement. Three runs are in: idle (paced), idle back to back, and contended by
+> a continuous `fanctl` walk. The slowest of 512,000 timed reads took 11.45 ms, and no read
+> failed or hung.** The dark-wake and first-read-after-wake conditions are not measured, H2 is
+> not run, and D is not set. #296 stays open for those.
+
+**Date:** 2026-10-07. **Machine:** `Mac16,5`, Apple M4 Max, macOS 26.6.2. One machine, one
+session; none of this generalises to any other Mac, and [HARDWARE-MATRIX.md](HARDWARE-MATRIX.md)
+is unchanged and still says `untested` everywhere it said `untested` before. **Method:**
+`smc-sampler --latency` (`Tools/SMCSampler`), built from `main` at `579d1c2` in the release
+configuration and run from the repository root. Each timed read is one `provider.read(keys:)`
+call on a key whose metadata an untimed warm-up read had already cached, so it is one
+`READ_BYTES` call and one `IOConnectCallStructMethod` (one key per read; the tool's default key is
+`F0Ac`). Durations are on `SuspendingClock`, the clock ADR 0012 I3 ages a call on. Every maximum
+below is `maxAllReadsSuspendingNanoseconds`: the maximum over reads of **every** status, failures
+included. Percentiles are nearest-rank over completed round trips. **No read failed in any run.**
+**No write selector was issued at any point**; the tool has no route to the write path.
+
+The raw NDJSON captures are kept by the maintainer outside the repository — a capture is not
+source — so this section records their summaries, not the captures.
+
+| Run | Reads | p50 | p99 | p99.9 | p99.99 | max | Machine state |
+|---|---|---|---|---|---|---|---|
+| **1** — idle, paced at `--interval=0.05` (the idle row) | 12,000 | 0.451 ms | 1.168 ms | 2.226 ms | 10.025 ms | 11.453 ms | Quiet: no build (one Swift process seen in 1 of 337 two-second samples, at the first second); load average ≤ 3.7 |
+| **1b** — idle, back to back | 100,000 | 0.190 ms | 0.841 ms | 0.940 ms | 1.755 ms | 4.332 ms | Quiet: no build; load average ~3.1 |
+| **2** — contended: back to back while `fanctl sensors` walked the key table continuously (117 walks in 2 min 25 s) | 400,000 | 0.313 ms | 1.173 ms | 2.200 ms | 3.657 ms | 7.278 ms | A light build overlapped only the last 37 s (3 processes, load average ~2.9); the second-slowest read, 7.124 ms at +15 s, had no build running |
+
+"Quiet" means no build was running, not an unloaded machine: the load average was about 3 and at
+most 3.7. A paced run taken earlier, while a build ran for about 75% of it (12,000 reads, max
+5.485 ms), is superseded by run 1 and is mentioned only as context; it is not in the table.
+
+#### The quiet paced run has the worst tail, not the loaded ones
+
+Run 1's p99.99 (10.0 ms) and maximum (11.45 ms) are larger than run 2's (3.66 ms and 7.28 ms),
+although run 2 shared the SMC with a walker that never stopped, and larger than run 1b's
+(1.76 ms and 4.33 ms), which differs from run 1 only in the 50 ms gap between reads. The median
+tells the same story: 0.451 ms paced against 0.190 ms back to back. The reads that follow an idle
+gap are slower, which is consistent with a cold start (a cold CPU and a cold task wake-up) and
+with the one earlier, smaller run the tool's README records (p50 400 µs paced against 201 µs back
+to back). **This does not isolate the cause**: the timed span contains the Swift around the call
+and the task's wake-up, and nothing here separates them from the kernel round trip.
+
+Within run 1, 386 of 12,000 reads exceeded 1 ms and 16 exceeded 2 ms. Only three exceeded 5 ms,
+at +178 s, +338 s and +518 s into the run, taking 11.5, 10.0 and 8.6 ms. They are 160 s and 180 s
+apart, so roughly every three minutes, which looks like periodic system activity. **Three events
+cannot establish a period, and the cause is not established.** With 12,000 reads, run 1's p99.99
+is the second-largest read (nearest rank 11,999), so it is a single event, not a tail estimate.
+
+#### What contention did and did not do
+
+Run 2 is run 1b's loop with a walker beside it, and the walker shows. Its body is heavier: p50
+0.313 ms against 0.190 ms, and p99.9 2.200 ms against 0.940 ms. Its tail is longer too: p99.99
+3.657 ms against 1.755 ms, and a maximum of 7.278 ms against 4.332 ms. It does not reach the paced
+run's tail (11.453 ms). The walker was the tool README's loop, `while true; do
+.build/release/fanctl sensors > /dev/null; done`. A light build overlapped only the last 37 s, and
+the second-slowest read of the run (7.124 ms, at +15 s) fell when no build was running, so the
+run's tail cannot be put down to the build.
+
+#### The worst round trip, and what it bounds
+
+The worst round trip in any condition was **11.453 ms** (run 1). ADR 0012 requires D to be at
+least 100× the observed maximum, which on this evidence alone is **1.15 s**. The ADR's expected D
+of about 5 s is about **437×** that maximum. **No slow or hanging call was observed in runs 1, 1b
+or 2.**
+
+That is a provisional lower bound on D from two of the four conditions #296 asks for (idle, and
+contended by a `fanctl` walk), not a value for D. The two conditions not yet measured include the
+dark wake, in which the helper's 34-key critical read was already seen to fail (see the #209/#210
+section above), so the absence of a slow call here says nothing about it.
+
+Every figure is an **upper bound on the round trip**, never an underestimate: the span includes
+the Swift around the call and the task's wake-up (the tool's README says so). That is the
+direction that cannot make D too tight; it can only make a D derived from it looser than the
+round trip itself requires.
+
+#### Disagreement — #296 says contended walks take 22–24.9 s; a `fanctl sensors` walk took about 1–2 s
+
+[#296](https://github.com/blamechris/Aeolus/issues/296) says contended `fanctl` walks "have
+measured 22–24.9 s here". On 2026-10-07 a `fanctl sensors` walk took about 1–2 s: 117 consecutive
+walks took 2 min 25 s (about 1.2 s each on average). Walks were slower while the latency loop
+contended with them, and ran at roughly 0.5–1 s after it stopped. The figure the issue attaches to
+a `fanctl` walk is about an order of magnitude above anything observed here.
+
+Where the figure comes from, read from the repository's history (no run in this session tried to
+reproduce it):
+
+- **24.9 s** first appears in commit `14e2bf4` (E2.3, #94, 2026-08-02), in the header comment of
+  `Tests/AeolusHelperTests/HelperHardwareTests.swift`: run in parallel, "three concurrent
+  `readAll()` enumerations against the same SMC turned a 5.9 s cold discovery into 24.9 s and a
+  0.35 s warm snapshot into 0.89 s". That is the helper's discovery walk, inside a test process,
+  with two other walks running at once.
+- **22.0 s** first appears in commit `6ddbb46` (#193, 2026-09-05), in the same file: the first
+  snapshot of the composed helper, run in a sibling suite alongside the others, took 22.0 s
+  against 3.3 s when run inside the serialised suite.
+- It then spread as a property of "a contended walk".
+  `SMCReadScheduler.longestContendedDiscoveryWalk` (24.9 s, in `f22086f`, #290, 2026-09-20)
+  keeps the three-concurrent-walks wording in its own comment. #292 restates it as "contended
+  walks at 22–24.9 s", #296 as walks that "have measured 22–24.9 s here" against a contended
+  `fanctl` walk, and `Tools/SMCSampler/README.md` (`83f58e6`, 2026-10-07) as "a walk takes
+  22–24.9 s" for `fanctl sensors`.
+
+**The most likely reading is that the figure was never a measurement of a single `fanctl sensors`
+walk.** Both source figures are the helper's discovery walk with other walks running concurrently
+in a test process, which is a different workload from one walker beside a one-key read loop. That
+is an inference from the history, and the history leaves several other factors open, none of which
+this session isolated:
+
+- **Build:** the figures come from `swift test`, which builds debug unless told otherwise, and
+  today's walks ran from the release `fanctl` the tool's README prescribes. Whether the earlier
+  runs were debug is not recorded.
+- **Host load:** [#227](https://github.com/blamechris/Aeolus/issues/227) recorded the same suite's
+  cold snapshot at 13.6 s and its warm one at 14.9 s under host load from other builds, so load on
+  this machine can stretch whole-table walks by an order of magnitude.
+- **Cache state:** the 5.9 s figure is a discovery walk against a cold SMC key cache and 2.2 s
+  against a warm one ([ADR 0006](ADR/0006-single-smc-reader.md)), both on macOS 26.5.2. Today's
+  walks ran back to back, so presumably all but the first met a warm cache. Even so, 1–2 s is below
+  that 2.2 s warm figure, which the cache state alone does not explain.
+- **macOS build:** the build the 24.9 s figure was taken on is not recorded (the machine ran
+  26.5.2 on 2026-07-25 and 26.6.2 by 2026-08-20), but the 22.0 s figure was committed on
+  2026-09-05, when it was on 26.6.2, the build in use now. The macOS build alone does not account
+  for that one.
+
+Run 2 therefore tested contention from **one** continuous walker plus the latency loop. It did not
+reproduce the original workload (three concurrent whole-table walkers), and the contended row
+above must not be read as having covered it.
+
+#### The claim boundary
+
+- **Established:** on `Mac16,5` / macOS 26.6.2, in one session, 512,000 timed one-key `READ_BYTES`
+  round trips across three runs had a worst case of 11.45 ms, none failed, and none was slow or
+  hanging.
+- **Not established — dark-wake failing reads, and the first read after a wake** (conditions 3 and
+  4). They need one attended lid close and have not been taken.
+- **Not established — H2.** `kill -9` of the helper mid-walk, and the order in which launchd starts
+  the successor, need an installed helper and have not been run.
+- **Not established — anything about a write.** This measures a read selector. ADR 0012's D bounds
+  every stamped round trip, so a write selector's latency still needs measuring when E4 can issue
+  one (H3).
+- **Not established — the cause of the three slow reads in run 1**, or whether the cold-start
+  explanation for the paced run's tail is the right one.
+- **Not established — any other key, any other load, any other machine.** One key, one session,
+  not repeated. A wedge has still never been observed, so this says what normal looks like and
+  nothing about what a wedge looks like.
+
 ---
 
 ## Sources

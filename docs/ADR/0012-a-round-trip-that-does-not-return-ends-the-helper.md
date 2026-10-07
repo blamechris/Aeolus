@@ -25,6 +25,13 @@ Nothing in Swift concurrency can time out a synchronous call. This is harmless w
 plane answers `.notBuilt`. It becomes a safety property once E3/E4 can grant a lease. No
 wedge has been observed: #68 ran 10,570 ticks with no hang.
 
+The maintainer's plan is to build the stuck-call watchdog first only if
+[#296](https://github.com/blamechris/Aeolus/issues/296) shows slow or hanging calls.
+The idle, idle back-to-back and contended runs (conditions 1, 1b and 2 in H1) show none:
+the worst round trip was 11.45 ms. So the decision waits on conditions 3 and 4, the
+dark-wake failing reads and the first read after wake. This changes nothing in the
+Decision below.
+
 ## Decision
 
 **If the helper cannot complete an SMC round trip within D, or a safety cycle within
@@ -150,15 +157,49 @@ flight.
 | launchd starts no successor until the old process is fully reaped | Documented kernel and launchd behaviour, not yet observed here (H2) | The ordering argument fails, and a late write could follow reconciliation. Revisit. |
 | A process with an IOKit call in flight can finish exiting | Unknown. It cannot be measured without a real wedge. | The last-gasp keystone alternative becomes worth its cost. |
 | Manual mode persists after the writer dies | Reported in SAFETY § 6. Verify at E4 (H3). | If firmware reverts on client close, this ADR gets cheaper. No change needed. |
-| Per-round-trip latency stays at least 100× below D, under contention and in dark wake | To be measured on `Mac16,5` (H1) | Raise D, or false positives will cost users their manual control. |
+| Per-round-trip latency stays at least 100× below D, under contention and in dark wake | To be measured on `Mac16,5` (H1). **Partly measured, 2026-10-07:** idle and contended by a `fanctl` walk, reads only. The worst round trip was 11.45 ms, so 100× is 1.15 s and the expected D of about 5 s is about 437× that maximum. **Not yet measured:** dark wake and the first read after wake. D is not set. | Raise D, or false positives will cost users their manual control. |
 
 ## To measure on Mac16,5 before relying on this (hypotheses, not facts)
 
 - **H1 (sets D).** Per-round-trip maximum and p99.99 latency in four conditions: idle,
   during a contended `fanctl` walk, during failing dark-wake reads, and on the first read
   after wake. The expected D is about 5 s.
+
+  **Partly measured, not complete.** One session on `Mac16,5` / macOS 26.6.2 on 2026-10-07,
+  with `smc-sampler --latency` on `SuspendingClock` and a maximum over reads of every
+  status. The full record is in [SMC-RESEARCH.md](../SMC-RESEARCH.md), under "Per-round-trip
+  SMC latency on Mac16,5 — idle and contended (issue #296)".
+
+  | Condition | Reads | p99.99 | Maximum |
+  |---|---|---|---|
+  | 1. Idle, paced at 50 ms | 12,000 | 10.025 ms | 11.453 ms |
+  | 1b. Idle, back to back | 100,000 | 1.755 ms | 4.332 ms |
+  | 2. Contended: back to back beside a continuous `fanctl sensors` walk | 400,000 | 3.657 ms | 7.278 ms |
+
+  No read failed in any run, and no slow or hanging call was observed. The worst round
+  trip was 11.453 ms, so 100× is 1.15 s, and the expected D of about 5 s is about 437× it.
+  **Provisionally, D must be at least 1.15 s on this evidence, and the expected 5 s is not
+  contradicted. That is a lower bound from two of the four conditions, not a value for D,
+  and D is not set here.** Every figure is an upper bound on the round trip: the timed span
+  includes the Swift around the call and the task's wake-up.
+
+  **Still missing.** Conditions 3 and 4 (failing reads in a dark wake, and the first read
+  after wake) need one attended lid close, and have not been taken. Dark wake is the
+  condition in which reads were already seen to fail (the 34-key critical read, #210).
+  The numbers above are reads only, so a write selector's latency is still unmeasured. H2
+  below is not run. #296 stays open for all of these.
+
+  **Disagreement with #296's premise.** #296 says contended walks "have measured
+  22–24.9 s here". A `fanctl sensors` walk took about 1–2 s in this session, including
+  while the latency loop contended with it. By the repository's history, 22–24.9 s is the
+  helper's discovery walk with other walks running concurrently inside the hardware test
+  suite, not a single `fanctl` walk. Which factor accounts for the gap (workload, build,
+  load, cache state) is not established, and run 2 used one walker, not three. This ADR's
+  rule that D bounds a round trip and never a walk does not depend on the figure. The
+  evidence is in SMC-RESEARCH.md.
 - **H2.** `kill -9` the helper during a walk. It should die promptly, and the successor
-  should start only after the old process is reaped.
+  should start only after the old process is reaped. **Not run:** it needs an installed
+  helper.
 - **H3 (E4).** After the writer is killed, `F<n>Md` and `Ftst` stay manual.
 - **H4.** How quickly launchd restarts a non-zero exit after a long uptime.
 - **H5.** Whether launchd's SIGKILL follows `ExitTimeOut` when the teardown is parked.
