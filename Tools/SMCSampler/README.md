@@ -81,48 +81,93 @@ What a latency run does:
    cached. After that, one `read(keys: [key])` is exactly one `READ_BYTES` call — one
    `IOConnectCallStructMethod` — because metadata is cached and values never are. That is
    what makes "time one read" the same measurement as "time one round trip". The warm-up
-   outcome of each key is reported in the summary's `warmup` field, so the claim can be
-   checked against the capture.
+   outcome of each key, with its failure reason if it had one, is reported in the summary's
+   `warmup` field, so the claim can be checked against the capture: a `readFailed` warm-up
+   whose reason is a `READ_KEYINFO` error leaves the metadata uncached, and every timed
+   read of that key is then itself a `READ_KEYINFO` trip.
 2. Takes `--count` timed reads, **one key per call**, cycling through the key set in order
    (`F0Ac` alone by default; `--keys` replaces it). `--count` is the total number of timed
    reads, not the number of passes. They run **back to back**, with no sleep, unless
    `--interval=<seconds>` is given explicitly.
-3. Writes one `read` line per read as it happens, then a `latencySummary` line. `Ctrl-C`
-   (`SIGINT`, and `SIGTERM`/`SIGHUP`) ends the run cleanly and still writes the summary for
-   the reads done so far, with `"interrupted":true`.
+3. Writes one `read` line per read, then a `latencySummary` line. `Ctrl-C` (`SIGINT`, and
+   `SIGTERM`/`SIGHUP`) ends the run cleanly and still writes the summary for the reads done
+   so far, with `"interrupted":true`.
 
 `--latency` without `--count` is refused at parse time: a run with no end would hold the SMC
 in a tight loop until someone remembered it.
 
-The timed region is the `provider.read(keys:)` call, so it includes a few microseconds of
-Swift (two actor hops, a dictionary, the outcome mapping). The figure is an upper bound on
-the round trip, never an underestimate, and the overhead is orders of magnitude below what
-a wedge bound of seconds is set against.
+**What is timed.** The span is the `provider.read(keys:)` call and nothing else: the line is
+written *after* the end stamp, synchronously and under a lock the heartbeat shares, so it
+inflates no figure — but it means "back to back" has a gap of tens of microseconds between
+reads, and the loop is not literally hammering the SMC. The span does contain the Swift
+around the round trip (two actor hops, a dictionary, the outcome mapping) and whatever it
+takes to wake the task when the call returns. That cost is **not measured**, and it need not
+be small: a review run saw the median roughly double between a back-to-back and a paced run
+(below), which looks like wake-up latency. So every figure is an upper bound on the round
+trip and never an underestimate — the direction a wedge bound can safely err in — but it is
+not the round trip itself.
+
+**A read still in flight when the process is killed** (`SIGKILL`) **or wedged leaves no line
+at all**, because a line is written only after the call returns. Under `SIGINT` the in-flight
+read finishes and is recorded. For a kill or a true wedge the evidence is `heartbeat` lines
+that go on with no further `read` lines.
 
 Build in release, **once, before measuring**, and run the binaries directly from the
 repository root. `swift run` would plan (and may relink) before it starts, and a build running
 beside a measurement is the contention the measurement is not about. `swift run -c release
-smc-sampler …` is the same program, for a machine where that does not matter:
+smc-sampler …` is the same program, for a machine where that does not matter. Two commands,
+because `swift build --product` takes one product:
 
 ```sh
-swift build -c release --product smc-sampler --product fanctl
+swift build -c release --product smc-sampler
+swift build -c release --product fanctl
 ```
 
 Each `read` line is about 175 bytes, so 100,000 reads is about 17 MB of NDJSON. On `Mac16,5`
-a read takes a few hundred microseconds (a 20,000-read release run took 4.1 s), so
-`--count=100000` is roughly twenty seconds.
+a back-to-back read takes a few hundred microseconds (a 20,000-read release run took 4.1 s),
+so `--count=100000` is roughly twenty seconds.
 
-### Condition 1 — idle
+### Which clock sets D
 
-A quiet machine: nothing else running, display idle, no build in progress.
+**The suspending one.** ADR 0012 I3 ages a call on `SuspendingClock`, so a read that was in
+flight when the lid closed is not a wedge, and the sleep it spanned must not count against D.
+Every read line carries both durations and the summary carries both sets of figures:
+
+- `…SuspendingNanoseconds` — what D is compared against. Use `maxSuspendingNanoseconds`,
+  `p9999SuspendingNanoseconds`, `maxAllReadsSuspendingNanoseconds` (the max over reads of
+  *every* status, failures included) and `slowestBySuspending`.
+- `…ContinuousNanoseconds` — what a stopwatch would read. Its job here is to find the reads
+  that spanned a sleep: one whose continuous duration is far above its suspending one slept
+  mid-read. Its maximum is *the whole sleep* whenever a lid close caught a read in flight, so
+  it is not a latency figure for that run, and a dozen such reads will own `slowestByContinuous`.
+
+### Condition 1 — idle, paced (this is the idle row)
+
+The helper does not read in a hot loop; it reads at a low cadence, from a cold CPU and a cold
+cooperative-pool thread, and reads after an idle gap are slower. A review run on `Mac16,5`
+(load average about 4, so not a clean idle, and small counts) saw `--interval=0.05 --count=300`
+give p50 400 µs, p99 2.3 ms, max 4.1 ms, against p50 201 µs and max 978 µs back to back. The
+idle row of the #296 table is therefore the paced run. A quiet machine: nothing else running,
+display idle, no build in progress. `--count=12000` at 50 ms is about ten minutes and is
+enough for p99.99 to mean something (it needs 10,000 completed reads).
+
+```sh
+.build/release/smc-sampler --latency --count=12000 --interval=0.05 \
+  > ~/Obsidian/no-it-all/handoffs/Aeolus-296-latency-idle-paced-$(date -u +%Y%m%dT%H%M%SZ).ndjson
+```
+
+### Condition 1b — idle, back to back (a separate row)
+
+The same machine with no gap between reads: the hot-loop case, which is also what the contended
+run below is made of. Keep it as its own row; do not merge it into the paced one.
 
 ```sh
 .build/release/smc-sampler --latency --count=100000 \
-  > ~/Obsidian/no-it-all/handoffs/Aeolus-296-latency-idle-$(date -u +%Y%m%dT%H%M%SZ).ndjson
+  > ~/Obsidian/no-it-all/handoffs/Aeolus-296-latency-idle-b2b-$(date -u +%Y%m%dT%H%M%SZ).ndjson
 ```
 
 Size `--count` for the tail you want to report: p99.99 is only meaningful from 10,000
-successful reads, and the summary says so itself (`p9999Meaningful`). A short run
+completed reads, and the summary says so itself (`p9999Meaningful`). A short run
 (`--count=2000`) is a sanity check, not a measurement.
 
 ### Condition 2 — contended with a `fanctl` walk
@@ -130,8 +175,8 @@ successful reads, and the summary says so itself (`p9999Meaningful`). A short ru
 `fanctl sensors` walks the whole key table, and a walk takes 22–24.9 s on `Mac16,5`. Run the
 latency capture in one terminal while walks repeat back to back in another, and size
 `--count` so the capture outlasts several walks. 400,000 reads is about a minute and a half
-at the idle rate, which is more than three walks; contention will only slow the reads, so the
-capture lasts at least that long.
+at the back-to-back rate, which is more than three walks; contention will only slow the
+reads, so the capture lasts at least that long.
 
 Terminal A:
 
@@ -146,7 +191,7 @@ Terminal B, started a few seconds after A, and stopped (`Ctrl-C`) after A has fi
 while true; do .build/release/fanctl sensors > /dev/null; done
 ```
 
-The `slowest` entries carry `atContinuousNanoseconds`, so a slow read can be placed against
+The slowest entries carry `atContinuousNanoseconds`, so a slow read can be placed against
 the walks. Note the wall-clock time terminal B starts: the `heartbeat` lines carry
 `wallClockUTC` and `continuousNanoseconds` once a second, which converts that time into an
 offset on the same scale as `atContinuousNanoseconds`.
@@ -164,33 +209,55 @@ ordinary mode:
 ```
 
 Close the lid, wait for the machine to wake on its own, then open it and stop the tool with
-`Ctrl-C`. The process is suspended while the machine sleeps, so the evidence is in the stream
-rather than in a long read:
+`Ctrl-C`. The process is suspended while the machine sleeps, and one lid close produces
+several sleeps and wakes (seven were observed in #68), so look for all of them:
 
-- **Failing reads in a dark wake** are the `read` lines whose `status` is not `"ok"`, with the
-  reason in `failureReason`. They are counted in the summary and kept out of its percentiles,
-  but `slowest` and `maxAllReadsContinuousNanoseconds` include them, so a read that
-  took seconds to fail cannot hide.
-- **The first read after wake** is the read that follows the largest gap between consecutive
-  `atContinuousNanoseconds` values. A read that was already in flight when the machine slept
-  shows `continuousNanoseconds` far above `suspendingNanoseconds` — the second is the clock
-  ADR 0012 I3 ages a call on.
+- **Reads that spanned a sleep** — in flight when the machine slept — have a continuous
+  duration far above their suspending one:
+
+  ```sh
+  jq -c 'select(.kind == "read" and (.continuousNanoseconds - .suspendingNanoseconds) > 1000000000)' capture.ndjson
+  ```
+
+- **Each read after a wake** is a read that follows a gap far above the interval, between
+  the end of the previous read and its own start (a sleep that falls between two reads leaves
+  exactly this and no straddler):
+
+  ```sh
+  jq -c 'select(.kind == "read")' capture.ndjson | jq -s -c '
+    [range(1; length) as $i | .[$i - 1] as $p | .[$i] as $r
+     | select(($r.atContinuousNanoseconds - ($p.atContinuousNanoseconds + $p.continuousNanoseconds)) > 1000000000)
+     | $r]'
+  ```
+
+- **Failing reads in a dark wake** are the `read` lines whose `status` is not `"ok"` and not
+  `"notDecodable"`, with the reason in `failureReason` (`jq -c 'select(.kind == "read" and .status != "ok" and .status != "notDecodable")'`).
+  A failing read is counted in the summary and kept out of its percentiles, but it is in
+  `maxAllReadsSuspendingNanoseconds` and, unless ten reads were slower, in
+  `slowestBySuspending`. Every read is on its own line whatever the summary says.
 
 ### Reading a latency capture
 
 ```sh
 jq -c 'select(.kind == "latencySummary")' capture.ndjson          # the summary
-jq -c 'select(.kind == "read" and .status != "ok")' capture.ndjson # every failing read
 ```
 
-**Percentiles are nearest-rank over successful reads only**, and the summary says how many
-(`percentileSampleSize`). **Below 10,000 successful reads, p99.99 is the maximum under another
-name**; `p9999Meaningful` is `false` and `p9999Note` says so. The same holds for p99.9 below
-1,000 reads (`p999Meaningful`). A run that is `"interrupted":true` has fewer reads than it
-asked for; read its `count`, not its `requestedCount`.
+**Percentiles are nearest-rank over completed round trips**, and the summary says how many
+(`percentileSampleSize`). A completed round trip is a read whose status is `ok`, or
+`notDecodable`: the `READ_BYTES` returned and its value is not a number (a string or flag
+key), which is still a latency sample, so a `--keys` set that mixes numeric and non-numeric
+keys measures all of them. `notDecodable` keeps its status on the read line and is counted
+in `failureCount`. `readFailed`, `unknownKey`, `providerError` and `noOutcome` reads are
+counted but not percentiled: the status does not say whether a round trip was made.
+**Below 10,000 completed reads, p99.99 is the maximum under another name**; `p9999Meaningful`
+is `false` and `p9999Note` says so. The same holds for p99.9 below 1,000 reads
+(`p999Meaningful`). A run that is `"interrupted":true` has fewer reads than it asked for;
+read its `count`, not its `requestedCount`.
 
-This mode measures H1 only. H2 (`kill -9` the helper during a walk) needs the helper and is
-not something a read-only tool can answer.
+This mode measures reads only. ADR 0012's D bounds every stamped round trip, so a write
+selector's latency will need measuring when E4 can issue one; that belongs with H3. H2
+(`kill -9` the helper during a walk) needs the helper and is not something a read-only tool
+can answer.
 
 ## What each NDJSON line means
 
@@ -229,19 +296,24 @@ One JSON object per line, no line ever containing a literal newline:
 Under `--latency` the `start` line has `keySource` `"latency-default"` (or `"custom"`) and
 `intervalSeconds` `0` unless `--interval` was given, and `sample` lines are replaced by:
 
-- `"kind":"read"` — one per timed read. `index` (0-indexed), `key`, `status` (`"ok"`, the
-  three failure words above, `"providerError"` if the provider itself threw, or
+- `"kind":"read"` — one per timed read, written after the read returns (so a read still in
+  flight when the process is killed has no line). `index` (0-indexed), `key`, `status`
+  (`"ok"`, the three failure words above, `"providerError"` if the provider itself threw, or
   `"noOutcome"` if it answered for no such key), `failureReason` (JSON `null` when `ok`), and
   — **different from `sample`'s fields of the same names** —
   `continuousNanoseconds`/`suspendingNanoseconds` are the *duration of this read* on each
   clock, while `atContinuousNanoseconds` is when the read was issued, as an offset from the
   `start` line.
 - `"kind":"latencySummary"` — once, at the end, whatever ended the run. `requestedCount`,
-  `count`, `interrupted`, `okCount`, `failureCount`, `percentileSampleSize`, then
-  `min`/`p50`/`p99`/`p999`/`p9999`/`maxContinuousNanoseconds` (JSON `null` when there were no
-  successful reads), `maxAllReadsContinuousNanoseconds`, the two `Meaningful` flags
-  and `p9999Note`, the ten `slowest` reads (index, key, status, both durations, offset) taken
-  from every read including failures, and `warmup`.
+  `count`, `interrupted`, `okCount` (status `ok`), `failureCount` (every other status,
+  `notDecodable` included), `percentileSampleSize` (completed round trips), then
+  `min`/`p50`/`p99`/`p999`/`p9999`/`max` with `Continuous` or `Suspending` before
+  `Nanoseconds` (twelve fields; JSON `null` when there were no completed reads),
+  `maxAllReadsContinuousNanoseconds` and `maxAllReadsSuspendingNanoseconds` (over reads of
+  every status), the two `Meaningful` flags and `p9999Note`, `slowestBySuspending` and
+  `slowestByContinuous` (the ten longest reads on each clock — index, key, status, both
+  durations, offset — taken from every read including failures), and `warmup` (key, status,
+  `failureReason`). See [Which clock sets D](#which-clock-sets-d).
 
 ## Reading the result
 
