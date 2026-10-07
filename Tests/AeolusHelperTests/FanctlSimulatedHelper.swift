@@ -56,6 +56,7 @@ actor SimulatedFanAuthority: FanAuthority {
     private var snapshotsLeftBeforeRestoreShows: Int?
     private var releasesToAnotherHolder: String?
     private var snapshotFailure: SnapshotFailure?
+    private var heldSnapshots: AsyncSignal?
 
     // Records.
     private(set) var calls: [String] = []
@@ -137,6 +138,11 @@ actor SimulatedFanAuthority: FanAuthority {
             after: count, through: times.map { count + $0 }, fault: fault)
     }
 
+    /// Every snapshot is accepted and **not answered** until `signal` fires — the helper that took
+    /// the message and went quiet, which is what a client's deadline exists for. The handshake
+    /// is unaffected: `hello` is answered by the session, never by this authority.
+    func holdingSnapshots(until signal: AsyncSignal) { heldSnapshots = signal }
+
     func setThermalEmergency(_ active: Bool) { isThermalEmergencyActive = active }
 
     /// Another client's lease over `fans`, on a connection no test owns.
@@ -180,6 +186,7 @@ actor SimulatedFanAuthority: FanAuthority {
     func snapshot() async throws -> SystemSnapshot {
         calls.append("snapshot")
         snapshotsServed += 1
+        if let heldSnapshots { try await heldSnapshots.wait() }
         if let snapshotFailure, snapshotFailure.fails(snapshotsServed) {
             throw snapshotFailure.fault
         }

@@ -87,12 +87,15 @@ struct FanctlAutoOutputTests {
         #expect(harness.sessions.isEmpty)
     }
 
-    /// Only a version mismatch sends the exempt restore: it is the one case where the peer is
-    /// known to be the helper and the request is known to be accepted. A reply this client
-    /// cannot read identifies nothing, and a write request is not sent to it.
+    /// A restore is sent without a snapshot only where the peer is known to be the helper: a
+    /// version mismatch (the request is exempt from the gate), and a first snapshot that failed
+    /// while the handshake was still in force. A reply this client cannot read identifies
+    /// nothing, and a write request is not sent to it — and the first sentence of the message
+    /// says so, before the cause, so that nobody waits on a restore that was never sent.
     ///
-    /// **Mutation:** in `AutoCommand.unreadable`, send the restore for every failure (change
-    /// the guard to `failure.code != .success`). Run: red — a restore reaches the authority.
+    /// **Mutation:** in `AutoCommand.afterUnreadableFirstSnapshot`, make the
+    /// `client.negotiated != nil` guard always pass (`... || true`). Run: red — a restore
+    /// reaches the authority.
     @Test("A handshake reply this client cannot read exits 1 and sends nothing")
     func anUnreadableHandshakeSendsNothing() async throws {
         let authority = SimulatedFanAuthority()
@@ -104,8 +107,10 @@ struct FanctlAutoOutputTests {
         #expect(await authority.restoreRequests == 0)
         #expect(await authority.snapshotsServed == 0)
         #expect(run.output.standardOutput.isEmpty)
-        // Nothing was sent, so the way out that needs no handshake is named.
-        #expect(run.output.standardError.contains("`fanctl reset --all`"))
+        // Nothing was sent, so the message opens by saying so and names the way out that needs
+        // no handshake.
+        #expect(run.output.standardError.hasPrefix("No restore request was sent."))
+        #expect(run.output.standardError.contains("Run `fanctl reset --all`"))
     }
 
     @Test("An unreachable helper under --json prints a failure document with no fans in it")

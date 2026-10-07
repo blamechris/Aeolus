@@ -38,14 +38,15 @@ struct FanctlAutoTests {
         _ arguments: [String] = [],
         over harness: ClientListenerHarness,
         time: VirtualSettleTime = VirtualSettleTime(),
-        realClock: Bool = false
+        realClock: Bool = false,
+        deadlines: HelperClientDeadlines = FanctlResetTests.unhurried
     ) async throws -> Run {
         let output = RecordingTerminal()
         var command = try auto(arguments)
         command.helper = HelperConnection(
             transport: .endpoint(harness.endpoint),
             pinning: UnenforcedClientPinning(),
-            deadlines: FanctlResetTests.unhurried)
+            deadlines: deadlines)
         command.terminal = output.terminal
         if !realClock { command.clock = time.clock }
         let code = await exitCode { try await command.run() }
@@ -216,11 +217,12 @@ struct FanctlAutoTests {
     }
 
     /// The helper stopped answering between two polls: that is not the safe state, whatever
-    /// the last snapshot said, and the run says the snapshot it shows may predate the restore.
+    /// the last snapshot said. Two polls had been read after the request, so the snapshot shown
+    /// is one that follows it, and the text says that — not that it "may predate" the restore.
     ///
     /// **Mutation:** in `SafeState.settle`, return `.automatic` from the read's `catch`. Run:
     /// red — exit 0.
-    @Test("A snapshot that fails mid-poll exits 8 and says the last snapshot may predate it")
+    @Test("A snapshot that fails mid-poll exits 8 and says the last snapshot was read after it")
     func aFailedPollExitsEight() async throws {
         let authority = SimulatedFanAuthority()
         await authority.strandManual(0)
@@ -234,7 +236,9 @@ struct FanctlAutoTests {
         #expect(await authority.restoreRequests == 1)
         #expect(run.time.sleeps.count == 2)
         #expect(run.output.standardError.contains("stopped answering"))
-        #expect(run.output.standardError.contains("may predate"))
+        #expect(run.output.standardError.contains("read after the restore request"))
+        #expect(!run.output.standardError.contains("predate"))
+        #expect(!run.output.standardError.contains("before the restore request"))
         #expect(!run.output.standardOutput.contains("now reports"))
     }
 

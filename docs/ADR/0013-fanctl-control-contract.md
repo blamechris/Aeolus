@@ -47,10 +47,13 @@ automatic control and then checks what the helper reports.
    lease and every fan cleared. A fan the helper has not cleared is a reason to send the request
    whatever its mode reads: the request carries the `restoreAbandoned` sweep, which is a
    stranded fan's only route out ([#189](https://github.com/blamechris/Aeolus/issues/189)).
-   **If the handshake succeeded and the first snapshot did not**, it sends the one request
+   **If the first snapshot failed with the handshake still in force**, it sends the one request
    anyway and then reads again: the helper is identified and its state is inconsistent, which is
    what SAFETY.md § 7 says the panic verb must serve. If the snapshots keep failing it exits 8
-   and names `fanctl reset --all`.
+   and names `fanctl reset --all`. A first snapshot that times out, or whose helper restarts
+   under it, drops the connection and the handshake with it: nothing is sent, the exit is 1, and
+   the message opens "No restore request was sent." and names `fanctl reset --all` (see the
+   assumptions below).
 2. **At most one restore per run.** It is never re-sent, whatever the reply was and however the
    wait ends. Another writer on the same fans would otherwise be answered with a second write, and
    then a third: the standing fight [ADR 0011](0011-reconciliation-and-foreign-manual-control.md)
@@ -223,10 +226,10 @@ hardware rows measure the restore's real latency.
 |---|---|---|
 | The helper ends every lease and attempts every fan it is accountable for when it takes `restoreAllToAutomatic` | `LeaseAuthority.releaseEveryLease` and SAFETY.md § 7, as built | `auto` reports what is left, as 5, 8 or 9. No CLI change. |
 | Ten seconds covers the restore's visible latency | Not measured. No restore has been performed on hardware | Raise the window, or `auto` reports 8 for a restore that was working. |
-| `foreignManualControl` and `restoreToAutomaticFailed` are the only durable reasons, and the pending and silent classes above are right | `ManualControlAvailability`'s own documentation, and the maintainer's ruling on review of #321 | A new reason is a compile error in `SafeState.clearance(of:)`, and has to be decided there. |
+| `foreignManualControl` and `restoreToAutomaticFailed` are the only durable reasons, and the pending and silent classes above are right | `ManualControlAvailability`'s own documentation, and the classification decided on review of #321 | A new reason is a compile error in `SafeState.clearance(of:)`, and has to be decided there. |
 | The helper's `mode`, read beside the availability, is the best statement of a fan's state | `mode` alone is not (#178); the availability is the other field | #178 gives the wire a way to say "not known", and exit 0 is strengthened. |
 | A snapshot that fails after a successful handshake is the helper's state being inconsistent, and the request is safe to send | SAFETY.md § 7; the request needs no snapshot | `auto` would send a request the helper cannot act on, and exit 8. |
-| A snapshot that is never answered discards its connection, and with it the evidence that the handshake succeeded | `HelperClient.translate` (`helperNeverAnswered`) | That case sends nothing and exits 1, naming `fanctl reset --all`. Unchanged unless the client keeps the evidence. |
+| A first snapshot that fails with the handshake still in force proves the helper is identified; one that times out, or whose helper restarts under it (XPC 4097), does not | `HelperClient.translate` discards the connection on `helperNeverAnswered`, and `connectionWasInterrupted` clears the negotiated handshake on 4097; either way `negotiated` is `nil` afterwards | Those two cases send nothing and exit 1; the message opens "No restore request was sent." and tells the user to run `fanctl reset --all`. Unchanged unless the client keeps the evidence. |
 | Another client's lease may be ended by a command moving toward automatic | The maintainer's decision, D2.4 | `auto` would refuse with 5 and fail when a hold was orphaned. |
 
 Every observation cited is from `Mac16,5` on macOS 26.6.2, and none of it is a fan write: no

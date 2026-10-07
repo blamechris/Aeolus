@@ -489,10 +489,13 @@ handshake → snapshot
   ([#178](https://github.com/blamechris/Aeolus/issues/178)), and on Intel every fan, so `auto`
   reads each fan's availability beside its mode, whatever the mode says (below). Every sentence it
   prints names the helper as its source and the time it captured the snapshot.
-- **If the first snapshot cannot be read after a successful handshake, the one request is sent
+- **If the first snapshot fails *with the handshake still held*, the one request is sent
   anyway**, then the snapshot is read again; if it still cannot be, the exit is 8 and the message
-  names `fanctl reset --all`, which needs no snapshot. A handshake that failed sends nothing
-  (exit 3, or 1 naming `fanctl reset --all`), except a version mismatch (7).
+  names `fanctl reset --all`, which needs no snapshot. **A first snapshot that times out, or
+  whose helper restarts under it (XPC 4097), drops the connection and the handshake with it, and
+  sends nothing**: the exit is 1, the message opens "No restore request was sent." and tells you
+  to run `fanctl reset --all`. A handshake that failed sends nothing either (exit 3, or 1 with
+  the same message), except a version mismatch (7).
 
 A fan is **cleared** when its mode reads automatic and its availability does not say otherwise:
 

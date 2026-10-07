@@ -134,10 +134,49 @@ extension AutoCommand {
             """
     }
 
-    /// Where to go when this run could not read the helper at all.
+    /// Where to go when this run could not read the helper's snapshot.
     static let resetPointer =
-        "`fanctl reset --all` sends the request that returns every fan to automatic control "
-        + "without a snapshot, and reports what the helper accepted."
+        "Run `fanctl reset --all` if the fans are wrong: it sends the request that returns every "
+        + "fan to automatic control without a snapshot, and reports what the helper accepted."
+
+    /// Exit 1 when the first snapshot failed and no handshake was in force afterwards.
+    ///
+    /// **The first sentence says nothing was sent.** The cause that follows is the client's own
+    /// text for the *snapshot* — "the helper accepted this request and did not answer" — and read
+    /// first it sounds like the return-to-automatic request `auto` exists to send, which a user
+    /// would then wait on instead of running `fanctl reset --all`.
+    static func nothingSentMessage(cause: String) -> String {
+        """
+        No restore request was sent. This run could not read a snapshot, and no handshake was in \
+        force afterwards, so there was no identified helper to send one to: a snapshot that is \
+        never answered, or a helper that restarts under it, drops the connection.
+
+        \(cause)
+
+        \(resetPointer)
+        """
+    }
+
+    /// The first sentence of an exit 8 that ran the whole window.
+    ///
+    /// A fan that **reads automatic but carries a pending reason** is not a fan the helper failed
+    /// to report as automatic — it reports it so — so that case says the helper has not cleared
+    /// it, and names the reason. The generic sentence is for fans that read manual, or a lease.
+    private static func timedOutSentence(_ snapshot: SystemSnapshot) -> String {
+        let withheld = snapshot.fans.filter { $0.mode == .automatic && !SafeState.isCleared($0) }
+        let seconds = "within \(windowSeconds) seconds of the restore request"
+        guard !withheld.isEmpty else {
+            return "The helper did not report every fan automatic and no lease \(seconds)."
+        }
+        let named = withheld.map { fan -> String in
+            guard case .unavailable(let reason) = fan.manualControlAvailability else {
+                return "fan \(fan.index)"
+            }
+            return "fan \(fan.index) (\(StatusCommand.displayable(reason).wireValue))"
+        }
+        return "The helper has not cleared \(named.joined(separator: ", ")) \(seconds), although "
+            + "the mode reads automatic."
+    }
 
     /// Exit 8: not confirmed, with no lease in the way and nothing durable pinned.
     ///
@@ -147,14 +186,18 @@ extension AutoCommand {
     static func notConfirmedMessage(_ observation: Observation) -> String {
         var paragraphs: [String] = []
         if let interruption = observation.interruption {
+            // The sentence beside `snapshotFollowsRestore` says what the flag says: whether the
+            // snapshot shown was read after the request was sent.
+            let when =
+                observation.snapshotFollowsRestore
+                ? "The snapshot shown was read after the restore request, and is the last the "
+                    + "helper returned."
+                : "The snapshot shown was read before the restore request."
             paragraphs.append(
                 "This run could not confirm the result: after the restore request the helper "
-                    + "stopped answering (\(interruption)). The snapshot shown may predate the "
-                    + "restore.")
+                    + "stopped answering (\(interruption)). \(when)")
         } else {
-            paragraphs.append(
-                "The helper did not report every fan automatic and no lease within "
-                    + "\(windowSeconds) seconds of the restore request.")
+            paragraphs.append(timedOutSentence(observation.snapshot))
         }
         var still = unclearedFanLines(observation.snapshot)
         if let failure = observation.restoreFailure {

@@ -195,9 +195,11 @@ enum AutoCommand {
     ///   handle fails the snapshot while the lease core, and the `restoreAbandoned` sweep that
     ///   is a stranded fan's only route out, still work. The wait then runs as usual.
     /// - **Anything else** sends nothing: there is no identified peer to send a write request
-    ///   to. A snapshot that was never answered discards its connection, which also clears
-    ///   `negotiated`, so that case is in this arm too; `fanctl reset --all` is the way out and
-    ///   the message names it.
+    ///   to. Two failures *after* a successful handshake land here too, because each clears
+    ///   `negotiated`: a snapshot that is never answered discards its connection, and a helper
+    ///   that restarts under the snapshot (4097) drops the handshake it had negotiated.
+    ///   `fanctl reset --all` is the way out, and the message opens by saying nothing was sent
+    ///   and names it.
     private static func afterUnreadableFirstSnapshot(
         _ error: any Error, on client: HelperClient, clock: SettleClock
     ) async -> Outcome {
@@ -208,7 +210,7 @@ enum AutoCommand {
         guard await client.negotiated != nil else {
             guard failure.code == .failure else { return .unreadable(failure) }
             return .unreadable(
-                HelperCommandFailure(.failure, failure.message + "\n\n" + resetPointer))
+                HelperCommandFailure(.failure, nothingSentMessage(cause: failure.message)))
         }
 
         let restoreFailure = await requestRestore(on: client)

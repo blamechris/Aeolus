@@ -138,17 +138,37 @@ struct AutoMessageTests {
         #expect(failure.message.contains(reason.userFacingSummary))
         #expect(failure.message.contains(reason.recoveryAdvice))
         #expect(failure.message.contains("launchctl bootout system/"))
+        // Every fan reads automatic, so the helper did not fail to report one as automatic: it
+        // has not cleared it, and the sentence says which fan and why.
+        #expect(failure.message.contains("The helper has not cleared fan 1 (supervisorBlind)"))
+        #expect(!failure.message.contains("did not report every fan automatic"))
     }
 
-    @Test("Exit 8 after the helper stopped answering says so, and that the snapshot may predate it")
+    /// The sentence about the snapshot agrees with `snapshotFollowsRestore`, in both directions.
+    ///
+    /// **Mutation:** make the text ignore the flag (always say "may predate the restore", or
+    /// always say "after"). Run: red on one of the two.
+    @Test("Exit 8 after the helper stopped answering says when the snapshot shown was read")
     func eightAfterInterruption() throws {
-        let message = try #require(
-            Self.observation(Fixtures.leasedManual, interruption: "The helper went away.")
-                .failure?.message)
-        #expect(message.contains("stopped answering"))
-        #expect(message.contains("The helper went away."))
-        #expect(message.contains("may predate"))
-        #expect(!message.contains("within 10 seconds"))
+        let before = try #require(
+            Self.observation(
+                Fixtures.leasedManual, interruption: "The helper went away.",
+                snapshotFollowsRestore: false
+            ).failure?.message)
+        #expect(before.contains("stopped answering"))
+        #expect(before.contains("The helper went away."))
+        #expect(before.contains("The snapshot shown was read before the restore request."))
+        #expect(!before.contains("after the restore request, and is the last"))
+        #expect(!before.contains("within 10 seconds"))
+
+        let after = try #require(
+            Self.observation(
+                Fixtures.leasedManual, interruption: "The helper went away.",
+                snapshotFollowsRestore: true
+            ).failure?.message)
+        #expect(after.contains("The snapshot shown was read after the restore request"))
+        #expect(!after.contains("predate"))
+        #expect(!after.contains("before the restore request"))
     }
 
     @Test("A restore the helper did not confirm is part of the exit 8 message")

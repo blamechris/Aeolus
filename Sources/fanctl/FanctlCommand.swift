@@ -215,8 +215,10 @@ extension Fanctl {
                 with no reason beside any of them, and no lease, it sends nothing and exits \
                 0. Otherwise it sends one restore request, never a second, and reads the \
                 helper's snapshot once a second for up to 10 seconds until it does. If the \
-                first snapshot cannot be read after a successful handshake, it sends the \
-                request anyway.
+                first snapshot fails while the handshake is still in force, it sends the \
+                request anyway; if it times out or the helper restarts under it, the \
+                connection is dropped and nothing is sent: the message says so and names \
+                `fanctl reset --all`.
 
                 Never takes a lease. It may end another Aeolus client's lease, and says whose; \
                 moving toward automatic control may override another client, moving away from \

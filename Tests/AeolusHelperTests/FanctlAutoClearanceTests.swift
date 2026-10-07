@@ -30,7 +30,9 @@ struct FanctlAutoClearanceTests {
     // MARK: - 9, whatever the mode reads
 
     /// **Mutation:** compute the pinned fans in `SafeState.verdict(for:)` over the fans whose mode
-    /// is not automatic only. Run: red — exit 0, and no restore is sent.
+    /// is not automatic only. Run: red — the exit is 8, not 9. The restore is still sent (so the
+    /// restore assertion below stays green), because `isCleared` also refuses a fan that carries
+    /// a reason; the exit-9 assertions are what hold the pinned filter.
     @Test("A durable reason beside a mode of automatic exits 9, and the one restore is sent")
     func aDurableReasonBesideAutomaticExitsNine() async throws {
         for reason: ManualControlAvailability.Reason in [
@@ -98,6 +100,9 @@ struct FanctlAutoClearanceTests {
         #expect(diagnosis.contains("(reason: supervisorBlind)"))
         #expect(diagnosis.contains(reason.recoveryAdvice))
         #expect(diagnosis.contains("launchctl bootout system/"))
+        // Every fan reads automatic, so "did not report every fan automatic" would be untrue.
+        #expect(diagnosis.contains("The helper has not cleared fan 0 (supervisorBlind)"))
+        #expect(!diagnosis.contains("did not report every fan automatic"))
     }
 
     // MARK: - Exit 0, against today's helper
@@ -218,5 +223,76 @@ struct FanctlAutoClearanceTests {
         #expect(document["snapshotFollowsRestore"] as? Bool == false)
         let lease = try #require(document["lease"] as? [String: Any])
         #expect(lease["holderDescription"] as? String == "Aeolus.app 0.3.0")
+        // The prose beside the flag agrees with it.
+        let message = try failureMessage(document)
+        #expect(message.contains("was read before the restore request"))
+        #expect(!message.contains("after the restore request, and is the last"))
+    }
+
+    /// The other mid-wait case: the helper answered two polls after the request and then went
+    /// quiet. The snapshot shown *follows* the request, so the flag is true and the prose says
+    /// so; it must not say the snapshot "may predate" a restore the run knows it read after.
+    ///
+    /// **Mutation:** in `AutoCommand.perform`, compute the flag as
+    /// `settlement.interruption == nil`. Run: red — it is false here.
+    @Test("--json keeps a post-request snapshot as one when the helper stops answering later")
+    func aMidWaitFailureKeepsAPostRequestSnapshot() async throws {
+        let authority = SimulatedFanAuthority()
+        await authority.strandManual(0)
+        await authority.settling(afterSnapshots: 1_000)
+        await authority.failingSnapshots(after: 3)
+        let harness = ClientListenerHarness(authority: authority)
+
+        let run = try await Self.run(["--json"], over: harness)
+
+        #expect(run.code == FanctlExitCode.safeStateNotConfirmed.rawValue)
+        let document = try FanctlAutoTests.json(run)
+        #expect(document["restoreRequested"] as? Bool == true)
+        #expect(document["snapshotFollowsRestore"] as? Bool == true)
+        let message = try failureMessage(document)
+        #expect(message.contains("was read after the restore request, and is the last"))
+        #expect(!message.contains("predate"))
+        #expect(!message.contains("before the restore request"))
+    }
+
+    private func failureMessage(_ document: [String: Any]) throws -> String {
+        let failure = try #require(document["failure"] as? [String: Any])
+        return try #require(failure["message"] as? String)
+    }
+
+    // MARK: - A snapshot that times out after a handshake
+
+    /// **Nothing is sent here, and the message says so first.** A snapshot the helper accepts and
+    /// never answers makes the client give the connection up, and the handshake goes with it, so
+    /// there is no identified helper to send a restore to. The cause the client reports is
+    /// "the helper accepted this request and did not answer" — the *snapshot* — and read first it
+    /// sounds like the return-to-automatic request, which a user would wait on.
+    ///
+    /// **Mutation:** put the cause before the first sentence in `AutoCommand.nothingSentMessage`
+    /// (or drop "No restore request was sent."). Run: red on the prefix.
+    @Test("A first snapshot that times out sends nothing, and the message opens by saying so")
+    func aFirstSnapshotThatTimesOutSendsNothingAndSaysSo() async throws {
+        let signal = AsyncSignal()
+        let authority = SimulatedFanAuthority()
+        await authority.strandManual(0)
+        await authority.holdingSnapshots(until: signal)
+        let harness = ClientListenerHarness(authority: authority)
+        // Two seconds, and no upper bound asserted: a slow runner cannot make this shorter.
+        let deadlines = HelperClientDeadlines(
+            gatedVerb: .seconds(2), panicVerb: .seconds(10),
+            handshakeVerb: HelperClientDeadlines.handshakeVerb)
+
+        let run = try await FanctlAutoTests.run(over: harness, deadlines: deadlines)
+        await signal.signal()
+
+        #expect(run.code == FanctlExitCode.failure.rawValue)
+        #expect(await authority.restoreRequests == 0, "a restore was sent to a dropped connection")
+        let session = try #require(harness.sessions.first)
+        #expect(await session.handshakeState != nil, "the handshake had succeeded")
+        #expect(run.output.standardOutput.isEmpty)
+        let message = run.output.standardError
+        #expect(message.hasPrefix("No restore request was sent."), "\(message)")
+        #expect(message.contains("did not answer"), "the cause is still given")
+        #expect(message.contains("Run `fanctl reset --all`"))
     }
 }
