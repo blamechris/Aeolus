@@ -101,6 +101,43 @@ enum MeasurementKeySet {
         return deduplicated(custom)
     }
 
+    /// The keys `--latency` times: `custom` verbatim (deduplicated, order preserved) when
+    /// `--keys` was given, and fan 0's actual-speed key alone otherwise, together with the
+    /// `keySource` string the `start` line should record for it.
+    ///
+    /// One key by default because the question #296 asks is how long one SMC round trip
+    /// takes, and the cleanest single round trip is the one `fanctl watch` and the helper's
+    /// own safety reads already make constantly. `F0Ac` is spelled through
+    /// `SMCFanEnumeration.actualKey(forFan:)`, the convention's one definition, rather than
+    /// as a second literal. No fan enumeration runs in this mode — it would only add reads
+    /// that are not being timed — so on a machine with no fan 0 the key simply reports
+    /// `unknownKey` and says so on every `read` line and in the summary's `warmup`.
+    static func resolvedLatencyKeys(custom: [String]) -> (keys: [String], keySource: String) {
+        guard !custom.isEmpty else {
+            return ([SMCFanEnumeration.actualKey(forFan: 0)], "latency-default")
+        }
+        return (deduplicated(custom), "custom")
+    }
+
+    /// The keys this run samples for `options`, and the `keySource` its `start` line reports
+    /// when no fan enumeration ran: `--latency` has its own default set and never
+    /// enumerates, and every other run is `resolvedKeys(custom:model:fanIndices:)` under the
+    /// source name `"custom"` (which only matters when `--keys` was given — a default run
+    /// carries a `FanEnumerationOutcome`, whose own `keySource` wins).
+    ///
+    /// Pulled out of `main()` for the reason `FanEnumerationOutcome` and
+    /// `SamplerStartRecord.startRecord(outcome:...)` were: whatever decides these values has
+    /// to live where `SMCSamplerTests` can reach it.
+    static func selection(
+        for options: CommandLineOptions, model: String?, fanIndices: [Int]
+    ) -> (keys: [String], keySourceWhenNoOutcome: String) {
+        if options.latency {
+            let latency = resolvedLatencyKeys(custom: options.keys)
+            return (latency.keys, latency.keySource)
+        }
+        return (resolvedKeys(custom: options.keys, model: model, fanIndices: fanIndices), "custom")
+    }
+
     private static func deduplicated(_ keys: [String]) -> [String] {
         var seen: Set<String> = []
         var result: [String] = []
@@ -188,33 +225,74 @@ enum KeyListParsing {
     }
 }
 
-/// This process's command-line arguments, parsed into the three settings the brief calls
-/// for: the tick interval, an optional tick count (run forever if omitted, the same
-/// convention `fanctl watch --count` uses), and an optional custom key list. No
-/// `ArgumentParser` dependency, matching `Tools/PowerObserver`'s own target, which takes no
-/// arguments at all and depends on nothing beyond Foundation and IOKit; this tool's
-/// dependency list is already wider (`SMCCore`, `FanKit`), and a hand-rolled parser over
-/// three flags keeps it from growing a fourth dependency for a handful of `--flag=value`
-/// pairs.
+/// This process's command-line arguments, parsed into the settings the brief calls for:
+/// the tick interval, an optional tick count (run forever if omitted, the same convention
+/// `fanctl watch --count` uses), an optional custom key list, and `--latency` (see
+/// `runLatencyLoop`). No `ArgumentParser` dependency, matching `Tools/PowerObserver`'s own
+/// target, which takes no arguments at all and depends on nothing beyond Foundation and
+/// IOKit; this tool's dependency list is already wider (`SMCCore`, `FanKit`), and a
+/// hand-rolled parser over four flags keeps it from growing a fourth dependency for a
+/// handful of `--flag=value` pairs.
 struct CommandLineOptions: Sendable, Equatable {
     var intervalSeconds: Double = 1.0
+    /// Whether `--interval` appeared at all. `--latency` reads back to back unless it did,
+    /// and `intervalSeconds` alone cannot say: its default is also a legal explicit value.
+    var intervalWasGiven = false
+    /// In the ordinary mode, the number of ticks; under `--latency`, the number of timed
+    /// reads. Parsing guarantees it is non-nil whenever `latency` is true.
     var tickCount: Int?
     var keys: [String] = []
+    var latency = false
 
-    enum ParseError: Error, Sendable, Equatable {
+    /// The seconds to wait between ticks (or, under `--latency`, between reads): the
+    /// parsed `--interval` when one was given, and otherwise one second for the ordinary
+    /// mode and zero — back to back — for `--latency`.
+    var effectiveIntervalSeconds: Double {
+        latency && !intervalWasGiven ? 0 : intervalSeconds
+    }
+
+    enum ParseError: Error, Sendable, Equatable, LocalizedError {
         case invalidInterval(String)
         case invalidCount(String)
         case malformedKey(String)
         case unrecognizedArgument(String)
+        /// `--latency` without `--count`: a latency run with no end would hold the SMC in a
+        /// tight loop until someone remembered to stop it.
+        case latencyRequiresCount
+
+        /// Only the case that needs more than its name to be understood has one;
+        /// `CommandLineOptions.diagnostic(for:)` renders every other case exactly as it
+        /// always has been.
+        var errorDescription: String? {
+            switch self {
+            case .latencyRequiresCount:
+                return """
+                    --latency requires --count=<n>, the number of timed reads to take; a \
+                    latency run reads the SMC back to back and has no other way to end \
+                    short of a signal.
+                    """
+            case .invalidInterval, .invalidCount, .malformedKey, .unrecognizedArgument:
+                return nil
+            }
+        }
+    }
+
+    /// What `main()` prints after `smc-sampler: ` for a parse failure: the case's own
+    /// description when it has one, and `"\(error)"` — the rendering every case had before
+    /// there was a description to prefer — otherwise.
+    static func diagnostic(for error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? "\(error)"
     }
 
     /// Parses `arguments` (typically `CommandLine.arguments.dropFirst()`) into
     /// `CommandLineOptions`, or throws the first problem found. Recognises
     /// `--interval=<seconds>`, `--count=<n>`, and `--keys=<comma-separated keys>`, each also
     /// accepting a space instead of `=` (`--interval 2`) since that is the more common shape
-    /// a maintainer types by hand. Every `--keys` entry is validated against `SMCKey`'s own
-    /// four-ASCII-character rule at parse time — failing fast on a typo here is strictly
-    /// better than discovering it as a `.unknownKey` on every tick of an unattended capture.
+    /// a maintainer types by hand, and the bare flag `--latency`, which takes no value and
+    /// is refused without `--count`. Every `--keys` entry is validated against `SMCKey`'s
+    /// own four-ASCII-character rule at parse time — failing fast on a typo here is
+    /// strictly better than discovering it as a `.unknownKey` on every tick of an
+    /// unattended capture.
     static func parse(_ arguments: [String]) throws -> CommandLineOptions {
         var options = CommandLineOptions()
         var index = arguments.startIndex
@@ -248,6 +326,7 @@ struct CommandLineOptions: Sendable, Equatable {
                     throw ParseError.invalidInterval(raw)
                 }
                 options.intervalSeconds = seconds
+                options.intervalWasGiven = true
             case "--count":
                 let raw = try value()
                 guard let count = Int(raw), count > 0 else {
@@ -261,11 +340,21 @@ struct CommandLineOptions: Sendable, Equatable {
                     throw ParseError.malformedKey(key)
                 }
                 options.keys = parsed
+            case "--latency":
+                // A bare flag. `--latency=1` is refused rather than read as true, and
+                // `--latency 5` leaves "5" for the next iteration to refuse.
+                guard inlineValue == nil else { throw ParseError.unrecognizedArgument(argument) }
+                options.latency = true
             default:
                 throw ParseError.unrecognizedArgument(argument)
             }
 
             index = arguments.index(after: index)
+        }
+
+        // After the loop, not at the flag: `--count` may come before or after `--latency`.
+        if options.latency, options.tickCount == nil {
+            throw ParseError.latencyRequiresCount
         }
 
         return options
@@ -471,8 +560,14 @@ extension SamplerStartRecord {
     /// by hand: `keySource: "custom"`, `fanEnumerationFailed: false`,
     /// `fanEnumerationFailureReason: nil` — a custom `--keys` list never attempts
     /// enumeration, so there is nothing to have failed.
+    ///
+    /// `keySourceWhenNoOutcome` is what a `nil` outcome reports as `keySource`, `"custom"`
+    /// unless the caller says otherwise: `--latency` also runs no enumeration, but its
+    /// default key is not a custom one, and a `start` line saying so would be a false
+    /// provenance for the capture.
     static func startRecord(
         outcome: FanEnumerationOutcome?,
+        keySourceWhenNoOutcome: String = "custom",
         hostname: String,
         hwModel: String,
         osVersion: String,
@@ -481,7 +576,7 @@ extension SamplerStartRecord {
         intervalSeconds: Double,
         keys: [String]
     ) -> SamplerStartRecord {
-        let keySource = outcome?.keySource ?? "custom"
+        let keySource = outcome?.keySource ?? keySourceWhenNoOutcome
         let fanEnumerationFailed = outcome?.fanEnumerationFailed ?? false
         let fanEnumerationFailureReason = outcome?.fanEnumerationFailureReason
 

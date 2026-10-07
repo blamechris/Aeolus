@@ -117,7 +117,17 @@ struct SMCSamplerMain {
         do {
             options = try CommandLineOptions.parse(Array(CommandLine.arguments.dropFirst()))
         } catch {
-            FileHandle.standardError.write(Data("smc-sampler: \(error)\n".utf8))
+            FileHandle.standardError.write(
+                Data("smc-sampler: \(CommandLineOptions.diagnostic(for: error))\n".utf8))
+            exit(64)  // EX_USAGE
+        }
+
+        // Parsing has already refused `--latency` without `--count`; this is the backstop
+        // that keeps the task below from ever falling back to the ordinary tick loop for a
+        // run that asked for the latency one.
+        guard !options.latency || options.tickCount != nil else {
+            FileHandle.standardError.write(
+                Data("smc-sampler: --latency requires --count=<n>\n".utf8))
             exit(64)  // EX_USAGE
         }
 
@@ -132,7 +142,9 @@ struct SMCSamplerMain {
 
         var fanIndices: [Int] = []
         var enumerationOutcome: FanEnumerationOutcome?
-        if options.keys.isEmpty {
+        // `--latency` never enumerates: it times a fixed, small key set, and enumeration's
+        // reads would be reads nobody is timing.
+        if options.keys.isEmpty, !options.latency {
             // Fan enumeration failing does not make this run pointless — the critical set
             // alone may still be readable — so the outcome is reported and continued past,
             // not thrown. A genuinely unavailable SMC still surfaces: the sample loop's own
@@ -170,8 +182,9 @@ struct SMCSamplerMain {
         // below maps a `nil` outcome to `keySource: "custom"` the same way this branch used
         // to wire it inline.
 
-        let keys = MeasurementKeySet.resolvedKeys(
-            custom: options.keys, model: identity.modelIdentifier, fanIndices: fanIndices)
+        let selection = MeasurementKeySet.selection(
+            for: options, model: identity.modelIdentifier, fanIndices: fanIndices)
+        let keys = selection.keys
 
         guard !keys.isEmpty else {
             FileHandle.standardError.write(
@@ -192,12 +205,13 @@ struct SMCSamplerMain {
         // untested passthrough round-3 delta review of #248 found.
         let startRecord = SamplerStartRecord.startRecord(
             outcome: enumerationOutcome,
+            keySourceWhenNoOutcome: selection.keySourceWhenNoOutcome,
             hostname: ProcessInfo.processInfo.hostName,
             hwModel: hardwareModel(),
             osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
             uid: getuid(),
             pid: getpid(),
-            intervalSeconds: options.intervalSeconds,
+            intervalSeconds: options.effectiveIntervalSeconds,
             keys: keys)
         sink.write(try NDJSON.line(startRecord))
 
@@ -210,10 +224,17 @@ struct SMCSamplerMain {
         heartbeat.resume()
 
         let task = Task {
-            try await runSampleLoop(
-                provider: provider, keys: keys, options: options, sink: sink,
-                continuousStart: continuousStart, suspendingStart: suspendingStart,
-                tickState: tickState)
+            if options.latency, let readCount = options.tickCount {
+                try await runLatencyLoop(
+                    provider: provider, keys: keys, count: readCount,
+                    intervalSeconds: options.effectiveIntervalSeconds, sink: sink,
+                    continuousStart: continuousStart, tickState: tickState)
+            } else {
+                try await runSampleLoop(
+                    provider: provider, keys: keys, options: options, sink: sink,
+                    continuousStart: continuousStart, suspendingStart: suspendingStart,
+                    tickState: tickState)
+            }
         }
 
         let signalSources = installOrderlyExit(cancelling: task)
