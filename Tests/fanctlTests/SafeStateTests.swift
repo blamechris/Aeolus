@@ -223,8 +223,8 @@ struct SafeStateTests {
     /// A read that fails ends the wait with what was last read, and never reports safe: the
     /// helper stopped answering, and that is not an observation of automatic.
     ///
-    /// **Mutation:** `try?` the read in `SafeState.settle`, or return `.automatic` from the
-    /// catch. Run: red on the verdict and the interruption.
+    /// **Mutation:** return `.automatic` from the `catch` around the read in
+    /// `SafeState.settle`. Run: red on the verdict.
     @Test("A read that fails stops the wait, keeps the last snapshot, and is never safe")
     func aFailedReadIsAnInterruption() async {
         let script = Script([
@@ -289,6 +289,7 @@ struct SafeStateTests {
 enum HelperClientTestError: Error, Equatable {
     case gone
     case runaway
+    case exhausted
 }
 
 /// A reader that answers from a list. Not an actor and not async-shared: `settle` calls it
@@ -320,6 +321,10 @@ final class Script: Sendable {
             return value
         }
         if index >= Self.runaway { throw HelperClientTestError.runaway }
+        // Past the end of a script that does not repeat, a loop that should have stopped is
+        // read as a failure the assertions can name, not as an out-of-range trap that takes
+        // the rest of the suite down with it.
+        if !repeatsLast && index >= steps.count { throw HelperClientTestError.exhausted }
         let step = steps[repeatsLast ? min(index, steps.count - 1) : index]
         switch step {
         case .read(let snapshot): return snapshot
