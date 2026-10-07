@@ -272,6 +272,14 @@ struct SafeStateTests {
 
     /// The shipping clock is monotonic and really waits; the virtual one above proves nothing
     /// about either.
+    ///
+    /// **A lower bound only.** A sleep cannot return early, so "at least this long" holds on
+    /// any machine; "no more than" does not. This test once also asserted an upper bound of
+    /// five seconds and failed on CI at 7.4 s, because 60 ms of sleep is queued behind
+    /// everything else the runner is doing — the wall-clock-upper-bound defect of
+    /// [#97](https://github.com/blamechris/Aeolus/issues/97) and
+    /// [#250](https://github.com/blamechris/Aeolus/issues/250). What the upper bound would have
+    /// caught, a `sleep` that waits forever, hangs this test instead of passing it.
     @Test("The production clock waits for the duration it is given, on ContinuousClock")
     func productionClockWaits() async throws {
         let clock = SettleClock.production
@@ -279,7 +287,6 @@ struct SafeStateTests {
         try await clock.sleep(.milliseconds(60))
         let elapsed = clock.now() - before
         #expect(elapsed >= .milliseconds(55), "slept \(elapsed)")
-        #expect(elapsed < .seconds(5), "slept \(elapsed)")
     }
 }
 
