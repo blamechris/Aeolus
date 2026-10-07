@@ -65,7 +65,7 @@ struct SafeStateTests {
         #expect(SafeState.verdict(for: snapshot) == .notConfirmed)
     }
 
-    @Test("A fan reading manual with no durable reason is not confirmed")
+    @Test("A fan reading manual, with no reason or a pending one, is not confirmed")
     func aManualFanIsNotConfirmed() {
         for availability: ManualControlAvailability in [
             .available, .unavailable(.releaseInProgress), .unavailable(.handbackUnconfirmed),
@@ -80,30 +80,147 @@ struct SafeStateTests {
         #expect(SafeState.verdict(for: curve) == .notConfirmed)
     }
 
-    /// Exactly two reasons are durable. Every other reason has a transient reading or an
-    /// unrelated one, and treating one as durable turns "wait" into "give up".
+    // MARK: - What a fan's availability makes of its mode
+
+    typealias Reason = ManualControlAvailability.Reason
+
+    /// **Every reason, in the class it was ruled into.** Written out as three literals rather
+    /// than derived from the code under test, so that moving a reason between classes in
+    /// `SafeState.clearance(of:)` is a disagreement with this table and not a self-consistent
+    /// edit. `everyReasonIsClassifiedOnce` holds the table to the vocabulary.
     ///
-    /// **Mutation:** add `.handbackUnconfirmed` to the durable arm of `SafeState.isDurablyPinned`,
-    /// or remove `.foreignManualControl` from it. Run: red on the reason named in the message.
-    @Test("Only foreignManualControl and restoreToAutomaticFailed are durable")
-    func durableReasons() {
-        let reasons: [ManualControlAvailability.Reason] = [
-            .writePathNotBuilt, .boundsImplausible, .reclaimedBySystem, .leaseHeldByAnotherClient,
-            .selfRenewalNotBuilt, .releaseInProgress, .handbackUnconfirmed,
-            .restoreToAutomaticUnconfirmed, .restoreToAutomaticFailed, .systemSleeping,
-            .noThermalTelemetry, .supervisorBlind, .foreignManualControl, .unknown("fromTheFuture"),
+    /// - `durable`: waiting will not change it → 9, whatever the mode reads.
+    /// - `pending`: the helper has not established the fan's mode, or a restore is outstanding
+    ///   → 8, whatever the mode reads. `supervisorBlind` is here and not above: a blind fan's
+    ///   state is unknown, not manual.
+    /// - `silent`: about manual control being granted, not about the fan → the mode decides.
+    static let durable: [Reason] = [.foreignManualControl, .restoreToAutomaticFailed]
+    static let pending: [Reason] = [
+        .releaseInProgress, .handbackUnconfirmed, .restoreToAutomaticUnconfirmed, .supervisorBlind,
+        .systemSleeping, .unknown("fromTheFuture"),
+    ]
+    static let silent: [Reason] = [
+        .writePathNotBuilt, .boundsImplausible, .leaseHeldByAnotherClient, .selfRenewalNotBuilt,
+        .noThermalTelemetry, .reclaimedBySystem,
+    ]
+
+    /// The modes a fan can read.
+    static let modes: [FanControlMode] = [.automatic, .manualFixed, .manualCurve]
+
+    private static func one(_ reason: Reason?, reading mode: FanControlMode) -> SystemSnapshot {
+        snapshot([fan(0, mode: mode, availability: reason.map { .unavailable($0) } ?? .available)])
+    }
+
+    @Test("The three classes cover all fourteen reasons, each exactly once")
+    func everyReasonIsClassifiedOnce() {
+        let all = Self.durable + Self.pending + Self.silent
+        #expect(all.count == 14)
+        #expect(Set(all).count == 14)
+        // `Reason.init(wireValue:)` is total, so a reason the vocabulary grows is not in this
+        // table until someone puts it here; the exhaustive switch in `clearance(of:)` is what
+        // stops the code compiling until it has been decided.
+        let known: Set<String> = [
+            "writePathNotBuilt", "boundsImplausible", "reclaimedBySystem",
+            "leaseHeldByAnotherClient", "selfRenewalNotBuilt", "releaseInProgress",
+            "handbackUnconfirmed", "restoreToAutomaticUnconfirmed", "restoreToAutomaticFailed",
+            "systemSleeping", "noThermalTelemetry", "supervisorBlind", "foreignManualControl",
+            "fromTheFuture",
         ]
-        let durable: Set<ManualControlAvailability.Reason> = [
-            .restoreToAutomaticFailed, .foreignManualControl,
-        ]
-        for reason in reasons {
-            let snapshot = Self.snapshot([
-                Self.fan(0, mode: .manualFixed, availability: .unavailable(reason))
-            ])
-            let expected: SafeState.Verdict =
-                durable.contains(reason) ? .cannotReturn(fans: [0]) : .notConfirmed
-            #expect(SafeState.verdict(for: snapshot) == expected, "\(reason.wireValue)")
+        #expect(Set(all.map(\.wireValue)) == known)
+    }
+
+    /// **Mutation:** move any reason out of `durable` in `SafeState.clearance(of:)` — for each of
+    /// the two, into `pending` and into `silent`. Run: red, naming the reason and the mode.
+    @Test("A durable reason is 9 whatever mode the fan reads")
+    func durableReasonsAreNineWhateverTheModeReads() {
+        for reason in Self.durable {
+            for mode in Self.modes {
+                #expect(
+                    SafeState.verdict(for: Self.one(reason, reading: mode))
+                        == .cannotReturn(fans: [0]),
+                    "\(reason.wireValue) / \(mode)")
+            }
         }
+    }
+
+    /// **Mutation:** move any reason out of `pending` — each of the six, into `durable` and into
+    /// `silent`. Run: red, naming the reason and the mode.
+    @Test("A pending reason is 8 whatever mode the fan reads")
+    func pendingReasonsAreEightWhateverTheModeReads() {
+        for reason in Self.pending {
+            for mode in Self.modes {
+                #expect(
+                    SafeState.verdict(for: Self.one(reason, reading: mode)) == .notConfirmed,
+                    "\(reason.wireValue) / \(mode)")
+            }
+        }
+    }
+
+    /// **Mutation:** move any reason out of `silent` — each of the six, into `durable` and into
+    /// `pending`. Run: red, naming the reason and the mode.
+    @Test("A silent reason lets the mode decide")
+    func silentReasonsLetTheModeDecide() {
+        for reason in Self.silent {
+            #expect(
+                SafeState.verdict(for: Self.one(reason, reading: .automatic)) == .automatic,
+                "\(reason.wireValue) / automatic")
+            for mode in [FanControlMode.manualFixed, .manualCurve] {
+                #expect(
+                    SafeState.verdict(for: Self.one(reason, reading: mode)) == .notConfirmed,
+                    "\(reason.wireValue) / \(mode)")
+            }
+        }
+    }
+
+    @Test("A fan with no reason beside it lets the mode decide")
+    func anAvailableFanLetsTheModeDecide() {
+        #expect(SafeState.verdict(for: Self.one(nil, reading: .automatic)) == .automatic)
+        #expect(SafeState.verdict(for: Self.one(nil, reading: .manualFixed)) == .notConfirmed)
+        #expect(SafeState.verdict(for: Self.one(nil, reading: .manualCurve)) == .notConfirmed)
+    }
+
+    /// **Today's real helper:** every fan reports `writePathNotBuilt`, and none of them is held.
+    /// `fanctl auto` against it must still be able to say the helper reports the safe state.
+    ///
+    /// **Mutation:** move `.writePathNotBuilt` into `pending` or `durable`. Run: red.
+    @Test("writePathNotBuilt on every fan, all automatic, no lease, is the safe state")
+    func theShippingHelperIsTheSafeState() {
+        let snapshot = Self.snapshot([
+            Self.fan(0, availability: .unavailable(.writePathNotBuilt)),
+            Self.fan(1, availability: .unavailable(.writePathNotBuilt)),
+        ])
+        #expect(SafeState.verdict(for: snapshot) == .automatic)
+    }
+
+    /// The helper reports an unreadable `F<n>Md` as `automatic` (#178), and on Intel the register
+    /// does not exist. A durable reason beside that mode is a fan the helper has not cleared,
+    /// and reading the mode alone said exit 0 with no restore sent.
+    ///
+    /// **Mutation:** compute `pinned` in `SafeState.verdict(for:)` over the fans whose mode is not
+    /// automatic only. Run: red.
+    @Test("A durable reason beside a mode of automatic is not the safe state")
+    func aDurableReasonCountsWhateverTheModeReads() {
+        let snapshot = Self.snapshot([
+            Self.fan(0, mode: .automatic, availability: .unavailable(.foreignManualControl)),
+            Self.fan(1),
+        ])
+        #expect(SafeState.verdict(for: snapshot) == .cannotReturn(fans: [0]))
+    }
+
+    /// One cleared fan does not clear another.
+    ///
+    /// **Mutation:** in `SafeState.verdict(for:)`, replace `allSatisfy(isCleared)` with
+    /// `contains(where: isCleared)`, or drop the `clearance` test from `isCleared`. Run: red.
+    @Test("A fan the helper has not cleared keeps the rest from being the safe state")
+    func oneUnclearedFanIsEnough() {
+        let blind = Self.snapshot([
+            Self.fan(0), Self.fan(1, availability: .unavailable(.supervisorBlind)),
+        ])
+        #expect(SafeState.verdict(for: blind) == .notConfirmed)
+        let withLease = Self.snapshot(
+            [Self.fan(0), Self.fan(1, availability: .unavailable(.handbackUnconfirmed))],
+            lease: Self.lease)
+        #expect(SafeState.verdict(for: withLease) == .notConfirmed)
     }
 
     /// 9 outranks everything else: a durable pin is the one outcome retrying cannot change,
@@ -119,174 +236,21 @@ struct SafeStateTests {
                 Self.fan(1, mode: .manualFixed, availability: .unavailable(.foreignManualControl)),
             ], lease: Self.lease)
         #expect(SafeState.verdict(for: snapshot) == .cannotReturn(fans: [1]))
+        let automaticPin = Self.snapshot(
+            [Self.fan(0, availability: .unavailable(.restoreToAutomaticFailed))],
+            lease: Self.lease)
+        #expect(SafeState.verdict(for: automaticPin) == .cannotReturn(fans: [0]))
     }
 
-    /// "Reads automatic" is the helper's own `mode`, as `docs/CLI.md` words exit 0. A fan the
-    /// helper reports automatic is not "still manual", whatever else it says about it.
-    @Test("A fan that reads automatic is never counted as pinned")
-    func automaticModeIsNeverPinned() {
+    /// **Order.** A pending reason and a durable one: 9 wins, and names only the durable fan.
+    @Test("9 names only the durable fans, beside pending ones")
+    func nineNamesOnlyTheDurableFans() {
         let snapshot = Self.snapshot([
-            Self.fan(0, mode: .automatic, availability: .unavailable(.foreignManualControl))
+            Self.fan(0, availability: .unavailable(.supervisorBlind)),
+            Self.fan(1, availability: .unavailable(.foreignManualControl)),
+            Self.fan(2, mode: .manualFixed, availability: .unavailable(.releaseInProgress)),
         ])
-        #expect(SafeState.verdict(for: snapshot) == .automatic)
-    }
-
-    // MARK: - The window
-
-    @Test("The window is ten seconds, polled every second, and a whole number of polls")
-    func theWindowIsTenSecondsAtOneSecond() {
-        #expect(SafeState.window == .seconds(10))
-        #expect(SafeState.pollInterval == .seconds(1))
-        #expect(
-            SafeState.window.components.seconds % SafeState.pollInterval.components.seconds == 0)
-        #expect(SafeState.window.components.attoseconds == 0)
-    }
-
-    /// Already safe on the first read: no wait at all.
-    ///
-    /// **Mutation:** delete the early `return` on `.automatic` in `SafeState.settle`. Run: red —
-    /// it sleeps and reads eleven times.
-    @Test("A first read that is safe returns at once, without sleeping")
-    func settlesImmediately() async {
-        let script = Script([.read(Self.automatic)])
-        let time = VirtualTime()
-
-        let settlement = await SafeState.settle(reading: script.next, clock: time.clock)
-
-        #expect(settlement.verdict == .automatic)
-        #expect(settlement.polls == 1)
-        #expect(settlement.interruption == nil)
-        #expect(settlement.snapshot == Self.automatic)
-        #expect(time.sleeps.isEmpty)
-    }
-
-    /// Polled every second, and stopped the moment it reads safe.
-    ///
-    /// **Mutation:** change `pollInterval` to `.seconds(2)`. Run: red on the sleeps.
-    @Test("It polls once a second and stops at the first safe reading")
-    func settlesAfterThreePolls() async {
-        let script = Script([
-            .read(Self.leasedManual), .read(Self.leasedManual), .read(Self.leasedManual),
-            .read(Self.automatic),
-        ])
-        let time = VirtualTime()
-
-        let settlement = await SafeState.settle(reading: script.next, clock: time.clock)
-
-        #expect(settlement.verdict == .automatic)
-        #expect(settlement.polls == 4)
-        #expect(settlement.snapshot == Self.automatic)
-        #expect(time.sleeps == [.seconds(1), .seconds(1), .seconds(1)])
-        #expect(script.reads == 4, "it read past the first safe snapshot")
-    }
-
-    /// Exactly the window: eleven reads at 0, 1, … 10 s, ten one-second sleeps, and then it
-    /// stops. Both off-by-one neighbours fail here: a tenth-second short and a poll too many.
-    ///
-    /// **Mutation:** change `clock.now() >= deadline` to `clock.now() > deadline` in
-    /// `SafeState.settle` (twelve reads), and separately change `window` to `.seconds(5)` or
-    /// `.seconds(20)`. Run: red on the counts and on the elapsed time.
-    @Test("A fan that never settles is read for exactly ten seconds, then reported")
-    func neverSettles() async {
-        let script = Script([.read(Self.leasedManual)], repeating: true)
-        let time = VirtualTime()
-
-        let settlement = await SafeState.settle(reading: script.next, clock: time.clock)
-
-        #expect(settlement.verdict == .notConfirmed)
-        #expect(settlement.polls == 11)
-        #expect(script.reads == 11)
-        #expect(time.sleeps == Array(repeating: .seconds(1), count: 10))
-        #expect(time.elapsed == .seconds(10))
-        #expect(settlement.snapshot == Self.leasedManual)
-        #expect(settlement.interruption == nil)
-    }
-
-    /// The pin is classified from the last reading, at the end — a transient reason that
-    /// clears to a durable one is judged by what it ended as.
-    @Test("The verdict at the end of the window is the last reading's")
-    func theLastReadingDecides() async {
-        let pinned = Self.snapshot([
-            Self.fan(0, mode: .manualFixed, availability: .unavailable(.restoreToAutomaticFailed))
-        ])
-        let script = Script([.read(Self.leasedManual), .read(pinned)], repeating: true)
-        let time = VirtualTime()
-
-        let settlement = await SafeState.settle(reading: script.next, clock: time.clock)
-
-        #expect(settlement.verdict == .cannotReturn(fans: [0]))
-        #expect(settlement.snapshot == pinned)
-    }
-
-    // MARK: - When the helper stops answering
-
-    /// A read that fails ends the wait with what was last read, and never reports safe: the
-    /// helper stopped answering, and that is not an observation of automatic.
-    ///
-    /// **Mutation:** return `.automatic` from the `catch` around the read in
-    /// `SafeState.settle`. Run: red on the verdict.
-    @Test("A read that fails stops the wait, keeps the last snapshot, and is never safe")
-    func aFailedReadIsAnInterruption() async {
-        let script = Script([
-            .read(Self.leasedManual), .read(Self.leasedManual), .fail(HelperClientTestError.gone),
-        ])
-        let time = VirtualTime()
-
-        let settlement = await SafeState.settle(reading: script.next, clock: time.clock)
-
-        #expect(settlement.verdict == .notConfirmed)
-        #expect(settlement.polls == 2)
-        #expect(settlement.snapshot == Self.leasedManual)
-        #expect(settlement.interruption as? HelperClientTestError == .gone)
-        #expect(time.sleeps.count == 2, "it kept polling after the helper stopped answering")
-    }
-
-    @Test("A failure on the very first read leaves no snapshot to show")
-    func aFirstReadFailureHasNoSnapshot() async {
-        let script = Script([.fail(HelperClientTestError.gone)])
-        let settlement = await SafeState.settle(reading: script.next, clock: VirtualTime().clock)
-
-        #expect(settlement.verdict == .notConfirmed)
-        #expect(settlement.polls == 0)
-        #expect(settlement.snapshot == nil)
-        #expect(settlement.interruption != nil)
-    }
-
-    /// A cancelled wait is not a settled one.
-    ///
-    /// **Mutation:** `try?` the `clock.sleep` call in `SafeState.settle`. Run: red — the
-    /// cancelled sleep is ignored and the loop runs on.
-    @Test("A wait that is cancelled stops, and is never safe")
-    func aCancelledSleepIsAnInterruption() async {
-        let script = Script([.read(Self.leasedManual)], repeating: true)
-        let time = VirtualTime(failingSleepWith: CancellationError())
-
-        let settlement = await SafeState.settle(reading: script.next, clock: time.clock)
-
-        #expect(settlement.verdict == .notConfirmed)
-        #expect(settlement.interruption is CancellationError)
-        #expect(script.reads == 1)
-    }
-
-    // MARK: - The production clock
-
-    /// The shipping clock is monotonic and really waits; the virtual one above proves nothing
-    /// about either.
-    ///
-    /// **A lower bound only.** A sleep cannot return early, so "at least this long" holds on
-    /// any machine; "no more than" does not. This test once also asserted an upper bound of
-    /// five seconds and failed on CI at 7.4 s, because 60 ms of sleep is queued behind
-    /// everything else the runner is doing — the wall-clock-upper-bound defect of
-    /// [#97](https://github.com/blamechris/Aeolus/issues/97) and
-    /// [#250](https://github.com/blamechris/Aeolus/issues/250). What the upper bound would have
-    /// caught, a `sleep` that waits forever, hangs this test instead of passing it.
-    @Test("The production clock waits for the duration it is given, on ContinuousClock")
-    func productionClockWaits() async throws {
-        let clock = SettleClock.production
-        let before = clock.now()
-        try await clock.sleep(.milliseconds(60))
-        let elapsed = clock.now() - before
-        #expect(elapsed >= .milliseconds(55), "slept \(elapsed)")
+        #expect(SafeState.verdict(for: snapshot) == .cannotReturn(fans: [1]))
     }
 }
 

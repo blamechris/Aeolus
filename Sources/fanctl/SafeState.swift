@@ -2,7 +2,7 @@ import AeolusXPC
 import FanKit
 import Foundation
 
-/// The safe-state check: "is every fan automatic and nothing leased, according to the helper?"
+/// The safe-state check: "does the helper report every fan cleared and nothing leased?"
 ///
 /// **One implementation, for every command that asks for the safe state and then looks.**
 /// `fanctl auto` ends on it, and `fanctl set` will end on it after releasing its lease. Two
@@ -11,18 +11,22 @@ import Foundation
 ///
 /// ## What it may conclude
 ///
-/// Only what a `snapshot()` reply says, and in the helper's words: a fan "reads automatic" when
-/// its reported `mode` is `automatic`. That is **the helper reporting**, not the fans being so.
-/// An unreadable `F<n>Md` is also reported as automatic until
-/// [#178](https://github.com/blamechris/Aeolus/issues/178) gives the wire a way to say "not
-/// known", so a confirmation here is as good as the helper's own read and no better — which is
-/// why every string a command prints for it says "the helper reports".
+/// Only what a `snapshot()` reply says, in the helper's words, and from **both** fields that
+/// speak to a fan: its `mode` and its `manualControlAvailability`. The mode alone is not enough.
+/// The helper reports an unreadable `F<n>Md` as `automatic`
+/// ([#178](https://github.com/blamechris/Aeolus/issues/178)), and on Intel the register does not
+/// exist, so `automatic` is also what a fan reads when nobody has looked. The availability is the
+/// field that says "the helper has not cleared this fan", and it says so whatever the mode
+/// reads. A fan is **cleared** when its mode reads automatic *and* its availability does not say
+/// otherwise. That is still the helper reporting, not the fans being so, which is why every
+/// string a command prints for it says "the helper reports".
 ///
 /// ## The three verdicts, and their order
 ///
-/// 1. `cannotReturn` — a fan still reads manual for a reason that **retrying cannot change**.
-///    Checked first: a pinned fan beside a lease is still pinned, and "wait" would be wrong.
-/// 2. `automatic` — nothing reads manual and nothing is leased.
+/// 1. `cannotReturn` — a fan carries a reason that **retrying cannot change**, whatever its mode
+///    reads. Checked first: a pinned fan beside a lease is still pinned, and "wait" would be
+///    wrong.
+/// 2. `automatic` — every fan is cleared and nothing is leased.
 /// 3. `notConfirmed` — anything else: not yet, or the helper stopped answering.
 ///
 /// A lease present when the wait ends is `notConfirmed` here. `fanctl auto` reports that as exit
@@ -41,9 +45,9 @@ enum SafeState {
     static let pollInterval = Duration.seconds(1)
 
     enum Verdict: Equatable, Sendable {
-        /// No lease, and every fan reads automatic.
+        /// No lease, and every fan cleared: automatic, with no reason beside it.
         case automatic
-        /// These fans read manual for a reason that will not clear by waiting.
+        /// These fans carry a reason that waiting will not change, whatever their mode reads.
         case cannotReturn(fans: [Int])
         /// Not the safe state, and not known to be unreachable either.
         case notConfirmed
@@ -51,35 +55,74 @@ enum SafeState {
 
     /// What one snapshot says.
     static func verdict(for snapshot: SystemSnapshot) -> Verdict {
-        let manual = snapshot.fans.filter { $0.mode != .automatic }
-        let pinned = manual.filter(isDurablyPinned).map(\.index)
-        if !pinned.isEmpty { return .cannotReturn(fans: pinned) }
-        if manual.isEmpty && snapshot.activeLease == nil { return .automatic }
+        let pinned = snapshot.fans.filter {
+            clearance(of: $0.manualControlAvailability) == .durable
+        }
+        if !pinned.isEmpty { return .cannotReturn(fans: pinned.map(\.index)) }
+        if snapshot.fans.allSatisfy(isCleared) && snapshot.activeLease == nil { return .automatic }
         return .notConfirmed
     }
 
-    /// Whether the helper reports this fan manual for a reason waiting will not change.
+    /// Whether the helper reports this fan as back under automatic control: its mode reads
+    /// automatic **and** its availability is not a reason the helper has not cleared it.
     ///
-    /// **Exactly two reasons are durable**, both from `ManualControlAvailability`'s own
-    /// documentation: `foreignManualControl` ("nothing in Aeolus will change it, because nothing
-    /// in Aeolus put the fan there") and `restoreToAutomaticFailed` ("the firmware never took
-    /// the write"). Every other reason is transient, unrelated to a hand-back, or one this build
-    /// cannot read, and each of those is a reason to look again, not to give up.
+    /// `.silent` is the only availability that lets the mode speak for itself. Anything else is
+    /// the helper saying something about the fan that a mode of `automatic` does not contradict,
+    /// because `automatic` is also what an unread mode is reported as.
+    static func isCleared(_ fan: FanState) -> Bool {
+        fan.mode == .automatic && clearance(of: fan.manualControlAvailability) == .silent
+    }
+
+    /// What a fan's availability says about whether the helper has cleared it.
+    enum Clearance: Equatable, Sendable {
+        /// A reason that waiting will not change, whatever the mode reads.
+        case durable
+        /// The helper has not established this fan's mode, or a restore of it is outstanding.
+        /// Worth looking again.
+        case pending
+        /// Says nothing about whether the fan is back under automatic control: the mode decides.
+        case silent
+    }
+
+    /// Classifies one availability.
+    ///
+    /// - **`durable`** — `foreignManualControl` ("nothing in Aeolus will change it, because
+    ///   nothing in Aeolus put the fan there") and `restoreToAutomaticFailed` ("the firmware
+    ///   never took the write").
+    /// - **`pending`** — the reasons that mean the helper has not established the fan's mode, or
+    ///   a restore is outstanding: `releaseInProgress`, `handbackUnconfirmed`,
+    ///   `restoreToAutomaticUnconfirmed`, `systemSleeping`, `unknown` (which the type says is
+    ///   never to be treated as available) and `supervisorBlind`. A blind fan's state is
+    ///   *unknown*, not manual, so it is 8 and not 9 even though reconciliation can leave it so
+    ///   for the life of the process.
+    /// - **`silent`** — the reasons about manual control being *granted*, not about the fan:
+    ///   `writePathNotBuilt` (every fan on today's helper), `boundsImplausible`,
+    ///   `leaseHeldByAnotherClient` (a lease is judged from `activeLease`),
+    ///   `selfRenewalNotBuilt`, `noThermalTelemetry` and `reclaimedBySystem`.
     ///
     /// **Exhaustive, with no `default:` arm,** so a reason added to the vocabulary is a compile
-    /// error here rather than a quiet "transient" — the classification is a decision about
-    /// whether to stop waiting, and a new reason has to be decided.
-    static func isDurablyPinned(_ fan: FanState) -> Bool {
-        guard fan.mode != .automatic else { return false }
-        guard case .unavailable(let reason) = fan.manualControlAvailability else { return false }
+    /// error here rather than a quiet "silent": the classification decides whether to wait at
+    /// all, or to stop waiting, and a new reason has to be decided.
+    static func clearance(of availability: ManualControlAvailability) -> Clearance {
+        guard case .unavailable(let reason) = availability else { return .silent }
         switch reason {
-        case .foreignManualControl, .restoreToAutomaticFailed:
-            return true
-        case .writePathNotBuilt, .boundsImplausible, .reclaimedBySystem,
-            .leaseHeldByAnotherClient, .selfRenewalNotBuilt, .releaseInProgress,
-            .handbackUnconfirmed, .restoreToAutomaticUnconfirmed, .systemSleeping,
-            .noThermalTelemetry, .supervisorBlind, .unknown:
-            return false
+        case .foreignManualControl,
+            .restoreToAutomaticFailed:
+            return .durable
+        case .releaseInProgress,
+            .handbackUnconfirmed,
+            .restoreToAutomaticUnconfirmed,
+            .supervisorBlind,
+            .systemSleeping,
+            .unknown:
+            return .pending
+        case .writePathNotBuilt,
+            .boundsImplausible,
+            .leaseHeldByAnotherClient,
+            .selfRenewalNotBuilt,
+            .noThermalTelemetry,
+            .reclaimedBySystem:
+            return .silent
         }
     }
 
