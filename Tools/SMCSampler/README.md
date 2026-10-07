@@ -133,9 +133,13 @@ so `--count=100000` is roughly twenty seconds.
 flight when the lid closed is not a wedge, and the sleep it spanned must not count against D.
 Every read line carries both durations and the summary carries both sets of figures:
 
-- `…SuspendingNanoseconds` — what D is compared against. Use `maxSuspendingNanoseconds`,
-  `p9999SuspendingNanoseconds`, `maxAllReadsSuspendingNanoseconds` (the max over reads of
-  *every* status, failures included) and `slowestBySuspending`.
+- `…SuspendingNanoseconds` — what D is compared against. **The observed maximum that D must
+  sit 100× above is `maxAllReadsSuspendingNanoseconds`**: the max over reads of *every*
+  status, failures included, because a call that hangs and then fails is exactly what the
+  watchdog exists for. `maxSuspendingNanoseconds` and `p9999SuspendingNanoseconds` cover
+  completed round trips only, so a slow failing read in a dark wake is missing from both;
+  read them for the shape of the distribution, never as the maximum. `slowestBySuspending`
+  names the reads behind the figure.
 - `…ContinuousNanoseconds` — what a stopwatch would read. Its job here is to find the reads
   that spanned a sleep: one whose continuous duration is far above its suspending one slept
   mid-read. Its maximum is *the whole sleep* whenever a lid close caught a read in flight, so
@@ -219,6 +223,9 @@ several sleeps and wakes (seven were observed in #68), so look for all of them:
   jq -c 'select(.kind == "read" and (.continuousNanoseconds - .suspendingNanoseconds) > 1000000000)' capture.ndjson
   ```
 
+  The read this returns was *issued before* the sleep. The first read issued after that wake
+  is the next `index`.
+
 - **Each read after a wake** is a read that follows a gap far above the interval, between
   the end of the previous read and its own start (a sleep that falls between two reads leaves
   exactly this and no straddler):
@@ -245,8 +252,13 @@ jq -c 'select(.kind == "latencySummary")' capture.ndjson          # the summary
 **Percentiles are nearest-rank over completed round trips**, and the summary says how many
 (`percentileSampleSize`). A completed round trip is a read whose status is `ok`, or
 `notDecodable`: the `READ_BYTES` returned and its value is not a number (a string or flag
-key), which is still a latency sample, so a `--keys` set that mixes numeric and non-numeric
-keys measures all of them. `notDecodable` keeps its status on the read line and is counted
+key), which is still a latency sample. One exception: a key that declares a zero-length
+value is answered with empty bytes and no `READ_BYTES` at all, and also reads back
+`notDecodable`, so it adds a sub-microsecond sample that lowers `min` and `p50`. It cannot
+change the maximum, so it cannot undersize D, and no key on `Mac16,5` declares a zero length
+(0 of 3,512 in `fanctl dump`); leave such a key out of `--keys`. Apart from that, a `--keys`
+set that mixes numeric and non-numeric keys measures all of them. `notDecodable` keeps its
+status on the read line and is counted
 in `failureCount`. `readFailed`, `unknownKey`, `providerError` and `noOutcome` reads are
 counted but not percentiled: the status does not say whether a round trip was made.
 **Below 10,000 completed reads, p99.99 is the maximum under another name**; `p9999Meaningful`

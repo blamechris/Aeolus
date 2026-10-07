@@ -33,6 +33,10 @@ struct LatencyReadRecord: Sendable, Equatable {
     /// Whether this read is a completed round trip, and so goes into the percentiles: `ok`,
     /// or `notDecodable`. Any other status is counted but kept out, because the status does
     /// not say whether a round trip was made at all (a key that is not readable makes none).
+    /// One `notDecodable` is not a round trip: a key declaring a zero-length value is answered
+    /// with empty bytes before any `READ_BYTES`. It can only lower `min`/`p50`, never the
+    /// maximum D is set from, and no key on Mac16,5 declares one; the README says to leave
+    /// such a key out of `--keys`.
     var isCompletedRoundTrip: Bool {
         status == Self.okStatus || status == Self.notDecodableStatus
     }

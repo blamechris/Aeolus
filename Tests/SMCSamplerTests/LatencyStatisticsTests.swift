@@ -252,7 +252,7 @@ struct LatencyStatisticsTests {
 
     // MARK: - Sample-size honesty
 
-    @Test("p99.99 is flagged not meaningful below 10,000 successful reads, and meaningful at it")
+    @Test("p99.99 is flagged not meaningful below 10,000 completed round trips, meaningful at it")
     func p9999FlagFlipsAtTenThousand() {
         let below = Self.summary((0..<9_999).map { Self.read($0, nanoseconds: Int64($0 + 1)) })
         #expect(below.p9999Meaningful == false)
@@ -270,7 +270,7 @@ struct LatencyStatisticsTests {
     /// The flag is about how many reads the percentile was *computed over*, which excludes
     /// failures: 10,000 reads of which one failed leave 9,999 samples, and p99.99 over 9,999
     /// is the maximum again.
-    @Test("the meaningful flag counts successful reads, not all reads")
+    @Test("the meaningful flag counts completed round trips, not all reads")
     func flagCountsSuccessfulReadsOnly() {
         var reads = (0..<9_999).map { Self.read($0, nanoseconds: Int64($0 + 1)) }
         reads.append(Self.read(9_999, nanoseconds: 1, status: "readFailed"))
@@ -282,7 +282,7 @@ struct LatencyStatisticsTests {
         #expect(summary.p9999Meaningful == false)
     }
 
-    @Test("p99.9 is flagged not meaningful below 1,000 successful reads")
+    @Test("p99.9 is flagged not meaningful below 1,000 completed round trips")
     func p999FlagFlipsAtOneThousand() {
         let below = Self.summary((0..<999).map { Self.read($0, nanoseconds: Int64($0 + 1)) })
         #expect(below.p999Meaningful == false)
