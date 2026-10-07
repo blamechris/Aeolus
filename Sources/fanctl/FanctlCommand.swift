@@ -42,8 +42,8 @@ struct Fanctl: AsyncParsableCommand {
         abstract: "Monitor and control Mac fan speeds.",
         discussion: """
             Read commands (list, sensors, watch, dump) need no privileges and no \
-            installed helper. status and reset talk to Aeolus.app's privileged helper, \
-            which must be registered and approved in System Settings.
+            installed helper. status, auto and reset talk to Aeolus.app's privileged \
+            helper, which must be registered and approved in System Settings.
 
             Manual control is always held under a lease: if fanctl exits or is killed, \
             the helper returns the fans to automatic.
@@ -52,11 +52,14 @@ struct Fanctl: AsyncParsableCommand {
             on: 0 success, 1 unexpected failure, 2 request does not fit this machine, \
             3 helper not reachable, 4 manual control refused, 5 held by another client, \
             6 control lost, 7 protocol version mismatch, 8 safe state not confirmed, \
-            64 usage. The exception is reset --all, which predates this table and still \
-            exits 0 when the helper accepted the request and 1 otherwise. See docs/CLI.md.
+            9 cannot return to automatic control, 64 usage. The exception is reset --all, \
+            which predates this table and still exits 0 when the helper accepted the \
+            request and 1 otherwise. See docs/CLI.md.
             """,
         version: versionDescription,
-        subcommands: [List.self, Sensors.self, Watch.self, Status.self, Reset.self, Dump.self]
+        subcommands: [
+            List.self, Sensors.self, Watch.self, Status.self, Auto.self, Reset.self, Dump.self,
+        ]
     )
 }
 
@@ -200,5 +203,55 @@ extension Fanctl {
 
         /// Where `run()` writes — see `Terminal`. Not an argument.
         var terminal = Terminal.process
+    }
+
+    /// See `AutoCommand.swift` for `run()` and what it is and is not allowed to claim.
+    struct Auto: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Ask the helper to return every fan to automatic control, then check.",
+            discussion: """
+                Machine-wide: there is no per-fan form, and `auto all` is the same command. \
+                Reads one snapshot first; if the helper already reports every fan automatic, \
+                with no reason beside any of them, and no lease, it sends nothing and exits \
+                0. Otherwise it sends one restore request, never a second, and reads the \
+                helper's snapshot once a second for up to 10 seconds until it does. If the \
+                first snapshot fails while the handshake is still in force, it sends the \
+                request anyway; if it times out or the helper restarts under it, the \
+                connection is dropped and nothing is sent: the message says so and names \
+                `fanctl reset --all`.
+
+                Never takes a lease. It may end another Aeolus client's lease, and says whose; \
+                moving toward automatic control may override another client, moving away from \
+                it may not.
+
+                Exit 0 means the helper reports it, not that the fans are: the helper reports \
+                a fan whose mode it could not read as automatic too, which is why each fan's \
+                reason is read beside its mode. 9 means the helper reports a reason waiting \
+                will not change (another program holds the fan, or the firmware refused every \
+                handback), whatever mode the fan reads; 5 that a lease is present when the \
+                wait ends; 8 that the helper did not confirm within the wait.
+
+                Needs the helper installed, approved, and willing to accept this binary's \
+                signature. --json prints one document with a top-level "schema" version.
+                """
+        )
+
+        @Argument(
+            help: ArgumentHelp(
+                "Optional, and the only accepted value: every fan, the default.",
+                valueName: "all"))
+        var target: String?
+
+        @Flag(name: .long, help: "Emit one JSON document instead of text.")
+        var json = false
+
+        /// Where `run()` looks for the helper — see `HelperConnection`. Not an argument.
+        var helper = HelperConnection.production
+
+        /// Where `run()` writes — see `Terminal`. Not an argument.
+        var terminal = Terminal.process
+
+        /// How the wait tells time and sleeps — see `SettleClock`. Not an argument.
+        var clock = SettleClock.production
     }
 }

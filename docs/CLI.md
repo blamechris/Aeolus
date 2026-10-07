@@ -8,8 +8,8 @@ no privileges. This is the durable reference for what they print, in both human 
 specific `--json` invocations directly into an issue body, and this is where that shape
 is defined and kept stable.
 
-`status` talks to the helper instead; it and the exit codes every helper command shares
-are in [Commands that talk to the helper](#commands-that-talk-to-the-helper).
+`status` and `auto` talk to the helper instead; they and the exit codes every helper command
+shares are in [Commands that talk to the helper](#commands-that-talk-to-the-helper).
 
 Every example below is real output, captured by actually running the command — not
 hand-written. Where a shape genuinely changed recently (`sensors --json` gained
@@ -304,16 +304,16 @@ shape moved recently (a `crossCheck` envelope, and `--key` to scope one row).
 
 ## Commands that talk to the helper
 
-`status` needs the helper installed, approved in System Settings, and willing to accept this
-binary's signature. A `fanctl` built with `swift build` carries no Team ID and is refused at
+`status` and `auto` need the helper installed, approved in System Settings, and willing to
+accept this binary's signature. A `fanctl` built with `swift build` carries no Team ID and is refused at
 both ends by design (ADR 0005), so it cannot reach an installed helper; the read commands
 above need none of this and keep working.
 
 **The examples in this section are not captured from an installed helper.** None is installed
 on the development machine, and a signed `fanctl` is blocked on
 [#82](https://github.com/blamechris/Aeolus/issues/82). They are the shapes the end-to-end
-suite (`Tests/AeolusHelperTests/FanctlStatusTests.swift`) produces against the real helper
-session with a simulated fan authority. Replace them with captured output once a signed build
+suites (`Tests/AeolusHelperTests/FanctlStatusTests.swift`, `FanctlAutoTests.swift`) produce
+against the real helper session with a simulated fan authority. Replace them with captured output once a signed build
 exists.
 
 ### Exit codes
@@ -334,6 +334,7 @@ this table stops listing every code.
 | 6 | `controlLost` | Control was held and then lost: renewal refused or unanswered, the lease ended, the system reclaimed a fan, or a thermal emergency took over. |
 | 7 | `protocolVersionMismatch` | This `fanctl` and the helper share no protocol version. The message names both. |
 | 8 | `safeStateNotConfirmed` | A request for the safe state (releasing a lease, returning fans to automatic) that could not be confirmed. The lease still expires on its own. |
+| 9 | `cannotReturnToAutomatic` | The helper reports `foreignManualControl` or `restoreToAutomaticFailed` for a fan, **whatever mode the fan reads** (an unreadable mode is reported as automatic). Durable: repeating the request will not change it. The message carries the reason and its `docs/RECOVERY.md` advice. |
 | 64 | `usage` | A malformed command line (swift-argument-parser's `EX_USAGE`). |
 
 Which errors map where: every `HelperClientError` and `AeolusXPCFault` case is classified
@@ -457,6 +458,152 @@ always present, with `null` for "not present".
   `reason` is the stable wire value to branch on (`writePathNotBuilt`,
   `leaseHeldByAnotherClient`, `foreignManualControl`, …) and `summary`/`advice` are the text
   `docs/RECOVERY.md` step 4 lists.
+
+### `fanctl auto`
+
+Asks the helper to return every fan to automatic control, then checks what the helper reports.
+`fanctl auto all` is the same command, and **`fanctl auto <index>` exits 64**: no request the
+helper accepts returns one fan on behalf of another process, so an index would either do
+nothing or quietly return other fans too.
+
+```
+handshake → snapshot
+  no lease and every fan reads automatic → exit 0, nothing sent
+  otherwise → one restoreAllToAutomatic, never re-sent in a run,
+              then a snapshot every second for up to 10 seconds
+              until it reports no lease and every fan automatic
+```
+
+- **It never takes a lease.** Not to return a fan, not briefly. A per-fan "acquire, apply
+  automatic, release" reaches only fans that are already automatic, and the release then writes a
+  restore to every fan the lease covered.
+- **It may end another Aeolus client's lease, and says whose.** Commands that move toward the
+  safe state may override another client; commands that move away from it may not (`set` gets 5).
+  The client whose lease the request drops sees its lease lost (`6`), which is accurate. A lease
+  listed before the request that is no longer listed afterwards is named in the text and in
+  `--json`'s `endedLease`, as *no longer listed*: it may also have expired inside the window.
+- **A fan the helper will not return is reported and `auto` exits 9.** It is never touched beyond
+  the single request; what that request reaches is the helper's decision, and `auto` inherits it.
+- **Exit 0 means the helper reports it, not that the fans are.** The helper reports a fan whose
+  mode it could not read as automatic as well
+  ([#178](https://github.com/blamechris/Aeolus/issues/178)), and on Intel every fan, so `auto`
+  reads each fan's availability beside its mode, whatever the mode says (below). Every sentence it
+  prints names the helper as its source and the time it captured the snapshot.
+- **If the first snapshot fails *with the handshake still held*, the one request is sent
+  anyway**, then the snapshot is read again; if it still cannot be, the exit is 8 and the message
+  names `fanctl reset --all`, which needs no snapshot. **A first snapshot that times out, or
+  whose helper restarts under it (XPC 4097), drops the connection and the handshake with it, and
+  sends nothing**: the exit is 1, the message opens "No restore request was sent." and tells you
+  to run `fanctl reset --all`. A handshake that failed sends nothing either (exit 3, or 1 with
+  the same message), except a version mismatch (7).
+
+A fan is **cleared** when its mode reads automatic and its availability does not say otherwise:
+
+| Availability reason | What `auto` makes of it |
+|---|---|
+| `foreignManualControl`, `restoreToAutomaticFailed` | **9**, whatever the mode reads |
+| `releaseInProgress`, `handbackUnconfirmed`, `restoreToAutomaticUnconfirmed`, `supervisorBlind`, `systemSleeping`, an unrecognised reason | **8**, whatever the mode reads: the helper has not established the fan's mode, or a restore is outstanding. `supervisorBlind` is unknown, not manual, so it is not 9 |
+| `writePathNotBuilt`, `boundsImplausible`, `leaseHeldByAnotherClient`, `selfRenewalNotBuilt`, `noThermalTelemetry`, `reclaimedBySystem`, or none | The mode decides. `writePathNotBuilt` is every fan on today's helper, and `auto` against it exits 0 when all modes read automatic and no lease is listed |
+
+A first snapshot with a fan the helper has not cleared is not the safe state, so the one request
+is sent: it carries the `restoreAbandoned` sweep, which is such a fan's only route out.
+
+| Code | When, for `auto` |
+|---|---|
+| 0 | The helper reports every fan automatic and no lease: on the first snapshot (nothing is sent), or within the window after the one request. |
+| 9 | The helper reports `foreignManualControl` or `restoreToAutomaticFailed` for a fan when the window ends, whatever mode the fan reads. |
+| 5 | A lease is listed when the window ends: someone took the fans after the request, or the request did not end it. The request is not repeated. |
+| 8 | Not confirmed in the window (a manual fan, or a pending reason), the helper stopped answering after the request, or no snapshot could be read after a handshake. The message says which. |
+| 3 | Helper unreachable. Nothing is sent. |
+| 7 | Version mismatch. The one request is still sent — the helper exempts it from the version check — and the message says the result cannot be verified across versions. |
+| 64 | `auto <index>`, or any argument but `all`. |
+
+When several apply, **9 outranks 5 outranks 8**. 9 is judged at the end of the window, not on
+the first sight of a reason: a fan mid-handback can be reported with a transient reason that
+clears.
+
+```
+$ fanctl auto
+The manual-control lease held by "Aeolus.app 0.3.0" (id 86663E1A-8A70-43D6-9B58-0DB87446531F) was listed before the restore request and is no longer listed. The request may have dropped it, or it may have expired; either way that client will find its lease gone.
+Asked the helper once to return every fan to automatic control; it accepted the request.
+The helper now reports every fan automatic and no manual-control lease, in a snapshot it captured at 2026-10-07T20:08:09Z.
+
+Fan 0
+  actual 1350 RPM · range 1350 RPM to 5777 RPM
+  mode automatic · target none
+  manual control: available
+```
+
+Already automatic, it says so and sends nothing:
+
+```
+$ fanctl auto
+The helper reports every fan automatic and no manual-control lease, in a snapshot it captured at 2026-10-07T20:08:09Z. No restore request was sent.
+```
+
+A fan another program holds (exit 9; the result is on standard output, the diagnosis on standard
+error):
+
+```
+$ fanctl auto; echo $?
+...
+The helper reports a reason for these fans that repeating the request will not change, and the mode a fan reads does not clear it:
+  Fan 1 (reads manual): Something other than Aeolus has put this fan under manual control. Quit or stop the other program that is driving this fan. (reason: foreignManualControl)
+
+This run sent the request once and will not send it again. What to do about each reason is in docs/RECOVERY.md, under "A specific fan says manual control is not available".
+9
+```
+
+For `restoreToAutomaticFailed` the message adds that the advice naming `fanctl reset --all` is the
+request this run already made, and the step that needs neither this command nor the helper
+(stopping it). For a fan another program holds it does not, because stopping the helper does not
+release it.
+
+### `fanctl auto --json`
+
+One pretty-printed document, whatever the exit code, as long as a snapshot was read. `schema` is
+the same version as `status`'s. Every key is always present, with `null` for "not present". `lease`
+and `fans` are from the last snapshot the helper returned, captured at `capturedAt`; `lease`, `endedLease`, `fans[]` and
+`failure` reuse the shapes `status --json` defines above and the failure object shown under
+[Exit codes](#exit-codes).
+
+```json
+{
+  "endedLease" : {
+    "expiresAt" : "2026-10-07T20:08:39Z",
+    "holderDescription" : "Aeolus.app 0.3.0",
+    "id" : "BE1F82C3-F2C2-4033-8388-9589597802C7",
+    "isSelfRenewing" : false,
+    "timeToLive" : 30
+  },
+  "capturedAt" : "2026-10-07T20:08:09Z",
+  "failure" : null,
+  "fans" : [ ... ],
+  "lease" : null,
+  "restoreRequested" : true,
+  "schema" : 1,
+  "snapshotFollowsRestore" : true
+}
+```
+
+- **`capturedAt`** — when the helper captured the snapshot `lease` and `fans` came from, as in
+  `status --json`.
+- **`restoreRequested`** — whether this run sent the request. `false` only when the first
+  snapshot already reported the safe state.
+- **`snapshotFollowsRestore`** — whether that snapshot was read **after the request was sent**, so
+  `lease` and `fans` describe the helper after it. `false` when no request was sent, and when the
+  wait could not read another snapshot and `lease` and `fans` are the ones from before the
+  request. A script reads this instead of parsing `failure.message`.
+- **`endedLease`** — the lease listed before the restore that is no longer listed after it, or
+  `null`. It does not say the request dropped it: the lease may also have expired. A lease the
+  request left standing appears in `lease` instead.
+- **`failure`** — `null` on exit 0; otherwise `{ "exitCode", "kind", "message" }`, the `message`
+  being the text written to standard error.
+- A non-zero exit after a snapshot still carries `fans`. A run that could read no snapshot
+  (exit 3, or 1, or 7 after the request was sent, or 8 after the request was sent on a
+  handshake alone) prints the plain `{ "schema", "failure" }` document shown above instead,
+  which has no `fans` and no `restoreRequested`; the failure message says whether the request was
+  sent.
 
 ---
 
