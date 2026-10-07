@@ -21,7 +21,8 @@ struct FanctlExitCodeTests {
         let table: [FanctlExitCode: Int32] = [
             .success: 0, .failure: 1, .requestDoesNotFit: 2, .helperNotReachable: 3,
             .manualControlRefused: 4, .heldByAnotherClient: 5, .controlLost: 6,
-            .protocolVersionMismatch: 7, .safeStateNotConfirmed: 8, .usage: 64,
+            .protocolVersionMismatch: 7, .safeStateNotConfirmed: 8, .cannotReturnToAutomatic: 9,
+            .usage: 64,
         ]
         #expect(table.count == FanctlExitCode.allCases.count)
         for code in FanctlExitCode.allCases {

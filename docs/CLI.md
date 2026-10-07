@@ -334,6 +334,7 @@ this table stops listing every code.
 | 6 | `controlLost` | Control was held and then lost: renewal refused or unanswered, the lease ended, the system reclaimed a fan, or a thermal emergency took over. |
 | 7 | `protocolVersionMismatch` | This `fanctl` and the helper share no protocol version. The message names both. |
 | 8 | `safeStateNotConfirmed` | A request for the safe state (releasing a lease, returning fans to automatic) that could not be confirmed. The lease still expires on its own. |
+| 9 | `cannotReturnToAutomatic` | A fan is still manual because the helper reports `foreignManualControl` or `restoreToAutomaticFailed`. Durable: repeating the request will not change it. The message carries the reason and its `docs/RECOVERY.md` advice. |
 | 64 | `usage` | A malformed command line (swift-argument-parser's `EX_USAGE`). |
 
 Which errors map where: every `HelperClientError` and `AeolusXPCFault` case is classified
