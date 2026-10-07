@@ -40,10 +40,7 @@ enum StatusCommand {
         lines.append("Captured by the helper at \(iso8601(snapshot.capturedAt)).")
         lines.append("")
         lines.append(contentsOf: leaseLines(snapshot.activeLease))
-        lines.append(
-            snapshot.isThermalEmergencyActive
-                ? "Thermal emergency: ACTIVE — the helper's override outranks manual control."
-                : "Thermal emergency: not active.")
+        lines.append(thermalEmergencyLine(active: snapshot.isThermalEmergencyActive))
         if snapshot.fans.isEmpty {
             lines.append("")
             lines.append("The helper reported no fans.")
@@ -53,6 +50,13 @@ enum StatusCommand {
             lines.append(contentsOf: fanLines(fan))
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// One sentence, shared with `fanctl auto`, which says it only when it is true.
+    static func thermalEmergencyLine(active: Bool) -> String {
+        active
+            ? "Thermal emergency: ACTIVE — the helper's override outranks manual control."
+            : "Thermal emergency: not active."
     }
 
     static func versionLine(for observation: Observation) -> String {

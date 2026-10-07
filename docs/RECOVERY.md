@@ -96,9 +96,10 @@ If `fanctl` is not installed, it ships inside the app bundle:
 /Applications/Aeolus.app/Contents/MacOS/fanctl reset --all
 ```
 
-There is no per-fan form: `fanctl reset` without `--all` prints usage and exits, because
-taking one fan back means holding it under a lease and this build has no write path to grant
-one.
+There is no per-fan form: `fanctl reset` without `--all` prints usage and exits, because no
+request the helper accepts returns one fan on behalf of another process. `fanctl auto` sends
+the same request and then reads what the helper reports, for up to ten seconds; see
+[CLI.md](CLI.md#fanctl-auto).
 
 ## 4. A specific fan says manual control is not available
 

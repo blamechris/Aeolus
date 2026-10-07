@@ -42,8 +42,7 @@ enum HelperCommandOutput {
         _ failure: HelperCommandFailure, as format: Format, on terminal: Terminal
     ) throws -> Never {
         terminal.warn(failure.message)
-        let document = FailureJSON(
-            exitCode: failure.code.rawValue, kind: failure.code.kind, message: failure.message)
+        let document = FailureJSON(failure)
         switch format {
         case .text:
             break
@@ -64,6 +63,17 @@ enum HelperCommandOutput {
         let exitCode: Int32
         let kind: String
         let message: String
+
+        init(exitCode: Int32, kind: String, message: String) {
+            self.exitCode = exitCode
+            self.kind = kind
+            self.message = message
+        }
+
+        init(_ failure: HelperCommandFailure) {
+            self.init(
+                exitCode: failure.code.rawValue, kind: failure.code.kind, message: failure.message)
+        }
     }
 
     /// `{"schema": 1, "failure": {...}}` — what `status --json` and `auto --json` print
