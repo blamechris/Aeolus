@@ -66,6 +66,19 @@ private final class LatencyCapturingSink: LineSink {
     }
 }
 
+/// Stands in for `Task.sleep` and remembers how long each wait was asked to be, without
+/// waiting at all.
+private final class WaitRecorder: Sendable {
+    private let log = OSAllocatedUnfairLock<[UInt64]>(initialState: [])
+
+    var nanoseconds: [UInt64] { log.withLock { $0 } }
+
+    /// A closure over `self`, so it can be passed where the loop wants a `LatencySleep`.
+    var sleeper: LatencySleep {
+        { [self] nanoseconds in log.withLock { $0.append(nanoseconds) } }
+    }
+}
+
 private struct Boom: Error, CustomStringConvertible {
     var description: String { "Boom" }
 }
@@ -80,11 +93,12 @@ struct RunLatencyLoopTests {
         intervalSeconds: Double = 0,
         sink: LatencyCapturingSink,
         continuousStart: ContinuousClock.Instant = ContinuousClock.now,
-        tickState: TickState = TickState()
+        tickState: TickState = TickState(),
+        sleep: @escaping LatencySleep = taskLatencySleep
     ) async throws {
         try await runLatencyLoop(
             provider: provider, keys: keys, count: count, intervalSeconds: intervalSeconds,
-            sink: sink, continuousStart: continuousStart, tickState: tickState)
+            sink: sink, continuousStart: continuousStart, tickState: tickState, sleep: sleep)
     }
 
     // MARK: - Shape
@@ -309,17 +323,15 @@ struct RunLatencyLoopTests {
         #expect(await tickState.tickCount() == 4)
     }
 
-    @Test("cancellation during an explicit --interval sleep returns cleanly with the summary")
-    func cancellationDuringIntervalSleep() async throws {
-        let provider = ScriptedLatencyProvider()
+    /// `Task.sleep` reports cancellation by throwing `CancellationError`, which is what a
+    /// signal during an explicit `--interval` wait turns into. The fake throws it on the
+    /// first wait, so the run is cut short after exactly one read, with no real time involved.
+    @Test("cancellation during an explicit --interval wait returns cleanly with the summary")
+    func cancellationDuringIntervalWait() async throws {
         let sink = LatencyCapturingSink()
-
-        let task = Task {
-            try await Self.run(provider: provider, count: 5, intervalSeconds: 10, sink: sink)
-        }
-        try await Task.sleep(nanoseconds: 100_000_000)
-        task.cancel()
-        try await task.value
+        try await Self.run(
+            provider: ScriptedLatencyProvider(), count: 5, intervalSeconds: 10, sink: sink,
+            sleep: { _ in throw CancellationError() })
 
         let records = try sink.records()
         #expect(records.count == 2, "the first read and the summary")
@@ -330,25 +342,41 @@ struct RunLatencyLoopTests {
 
     // MARK: - Pacing
 
-    @Test("an interval of zero reads back to back, without sleeping")
-    func zeroIntervalDoesNotSleep() async throws {
+    /// The waits are counted rather than timed. A test that asserted an upper bound on
+    /// elapsed time failed on CI with 17 s elapsed for a 0.5 s wait, because the runner was
+    /// busy; counting the calls to `sleep` cannot be slowed down by anything.
+    @Test("an interval of zero reads back to back, without waiting")
+    func zeroIntervalDoesNotWait() async throws {
         let sink = LatencyCapturingSink()
-        let start = ContinuousClock.now
-        try await Self.run(provider: ScriptedLatencyProvider(), count: 20, sink: sink)
-        #expect(ContinuousClock.now - start < .seconds(5))
+        let waits = WaitRecorder()
+        try await Self.run(
+            provider: ScriptedLatencyProvider(), count: 20, intervalSeconds: 0, sink: sink,
+            sleep: waits.sleeper)
+        #expect(waits.nanoseconds.isEmpty)
         #expect(try sink.records().count == 21)
     }
 
-    /// Between reads, never after the last: `count - 1` sleeps. A trailing sleep would add
-    /// a full interval of dead time to every run for nothing.
-    @Test("an explicit interval sleeps between reads, and not after the last one")
-    func explicitIntervalSleepsBetweenReadsOnly() async throws {
+    /// Between reads, never after the last: `count - 1` waits, each the whole interval. A
+    /// trailing wait would add a full interval of dead time to every run for nothing.
+    @Test("an explicit interval waits between reads, and not after the last one")
+    func explicitIntervalWaitsBetweenReadsOnly() async throws {
+        let sink = LatencyCapturingSink()
+        let waits = WaitRecorder()
+        try await Self.run(
+            provider: ScriptedLatencyProvider(), count: 3, intervalSeconds: 0.5, sink: sink,
+            sleep: waits.sleeper)
+        #expect(waits.nanoseconds == [500_000_000, 500_000_000])
+    }
+
+    /// The one test that uses the real clock, and it asserts only a lower bound: `Task.sleep`
+    /// never returns early, however busy the machine is, so this cannot flake. It proves the
+    /// production wait is wired to the interval at all.
+    @Test("the production wait really waits at least the interval")
+    func productionWaitIsRealAndAtLeastTheInterval() async throws {
         let sink = LatencyCapturingSink()
         let start = ContinuousClock.now
         try await Self.run(
             provider: ScriptedLatencyProvider(), count: 2, intervalSeconds: 0.5, sink: sink)
-        let elapsed = ContinuousClock.now - start
-        #expect(elapsed >= .milliseconds(450), "one 0.5 s sleep expected between two reads")
-        #expect(elapsed < .milliseconds(950), "no sleep expected after the last read")
+        #expect(ContinuousClock.now - start >= .milliseconds(450))
     }
 }

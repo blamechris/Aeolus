@@ -114,6 +114,15 @@ enum LatencyReadClassification {
     }
 }
 
+/// How `runLatencyLoop` waits between reads: nanoseconds in, throws `CancellationError` when
+/// the surrounding task is cancelled.
+typealias LatencySleep = @Sendable (UInt64) async throws -> Void
+
+/// The production wait: `Task.sleep`.
+func taskLatencySleep(nanoseconds: UInt64) async throws {
+    try await Task.sleep(nanoseconds: nanoseconds)
+}
+
 /// The latency loop: warm every key once, untimed; then take `count` timed single-key
 /// reads, back to back unless `intervalSeconds` is positive; then write the summary.
 ///
@@ -149,6 +158,11 @@ enum LatencyReadClassification {
 /// `SIGINT`/`SIGTERM`/`SIGHUP` — is checked between reads, since back-to-back reads have no
 /// `Task.sleep` to notice it, and a cancelled run still writes its summary for the reads done
 /// so far. `main()` remains the one place that writes the `stop` line.
+///
+/// `sleep` is the wait between reads when `intervalSeconds` is positive: `Task.sleep` in
+/// production. It is a parameter so tests can count the waits and make one throw, instead of
+/// asserting on wall-clock time — an upper bound on elapsed time is a test that fails when
+/// the machine running it is busy, and CI is exactly that.
 func runLatencyLoop(
     provider: some SensorProvider,
     keys: [String],
@@ -156,7 +170,8 @@ func runLatencyLoop(
     intervalSeconds: Double,
     sink: some LineSink,
     continuousStart: ContinuousClock.Instant,
-    tickState: TickState
+    tickState: TickState,
+    sleep: LatencySleep = taskLatencySleep
 ) async throws {
     var warmup: [LatencyWarmupOutcome] = []
     for key in keys {
@@ -206,8 +221,7 @@ func runLatencyLoop(
         // Between reads and never after the last; and not at all when back to back.
         if index < count, intervalSeconds > 0 {
             do {
-                try await Task.sleep(
-                    nanoseconds: SamplerInterval.clampedNanoseconds(forSeconds: intervalSeconds))
+                try await sleep(SamplerInterval.clampedNanoseconds(forSeconds: intervalSeconds))
             } catch is CancellationError {
                 break
             }
