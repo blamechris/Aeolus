@@ -143,7 +143,9 @@ struct FanctlAutoTests {
         #expect(await authority.snapshotsServed == 5, "one before the restore, four after it")
         #expect(run.time.sleeps == Array(repeating: .seconds(1), count: 3))
         let text = run.output.standardOutput
-        #expect(text.contains("Ended the manual-control lease held by \"Aeolus.app 0.3.0\""))
+        #expect(text.contains("The manual-control lease held by \"Aeolus.app 0.3.0\""))
+        #expect(text.contains("is no longer listed"))
+        #expect(!text.contains("Ended"))
         #expect(text.contains("Asked the helper once to return every fan to automatic control"))
         #expect(
             text.contains("The helper now reports every fan automatic and no manual-control lease"))
@@ -164,7 +166,7 @@ struct FanctlAutoTests {
         #expect(await authority.restoreRequests == 1)
         #expect(await authority.snapshotsServed == 2)
         #expect(run.time.sleeps.isEmpty)
-        #expect(!run.output.standardOutput.contains("Ended the manual-control lease"))
+        #expect(!run.output.standardOutput.contains("is no longer listed"))
     }
 
     // MARK: - A restore that does not
@@ -315,8 +317,9 @@ struct FanctlAutoTests {
         #expect(run.output.standardError.contains("\"Other 1.0\""))
         #expect(
             run.output.standardOutput.contains(
-                "Ended the manual-control lease held by \"Aeolus.app 0.3.0\""),
-            "the first lease did end; the second is a different one")
+                "The manual-control lease held by \"Aeolus.app 0.3.0\""),
+            "the first lease is no longer listed; the second is a different one")
+        #expect(run.output.standardOutput.contains("is no longer listed"))
     }
 
     /// A restore the helper accepts and does not act on leaves the same lease standing. That
@@ -335,7 +338,7 @@ struct FanctlAutoTests {
 
         #expect(run.code == 5)
         #expect(await authority.restoreRequests == 1)
-        #expect(!run.output.standardOutput.contains("Ended the manual-control lease"))
+        #expect(!run.output.standardOutput.contains("is no longer listed"))
         #expect(run.output.standardError.contains("\"Aeolus.app 0.3.0\""))
     }
 

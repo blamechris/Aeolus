@@ -104,7 +104,8 @@ struct FanctlAutoOutputTests {
         #expect(await authority.restoreRequests == 0)
         #expect(await authority.snapshotsServed == 0)
         #expect(run.output.standardOutput.isEmpty)
-        #expect(!run.output.standardError.isEmpty)
+        // Nothing was sent, so the way out that needs no handshake is named.
+        #expect(run.output.standardError.contains("`fanctl reset --all`"))
     }
 
     @Test("An unreachable helper under --json prints a failure document with no fans in it")
@@ -135,8 +136,13 @@ struct FanctlAutoOutputTests {
         let document = try Self.json(run)
         #expect(
             Set(document.keys)
-                == ["schema", "restoreRequested", "endedLease", "lease", "fans", "failure"])
+                == [
+                    "schema", "capturedAt", "restoreRequested", "snapshotFollowsRestore",
+                    "endedLease", "lease", "fans", "failure",
+                ])
+        #expect(document["capturedAt"] is String)
         #expect(document["restoreRequested"] as? Bool == false)
+        #expect(document["snapshotFollowsRestore"] as? Bool == false)
         #expect(document["endedLease"] is NSNull)
         #expect(document["lease"] is NSNull)
         #expect(document["failure"] is NSNull)
@@ -155,6 +161,7 @@ struct FanctlAutoOutputTests {
         #expect(run.code == nil)
         let document = try Self.json(run)
         #expect(document["restoreRequested"] as? Bool == true)
+        #expect(document["snapshotFollowsRestore"] as? Bool == true)
         let ended = try #require(document["endedLease"] as? [String: Any])
         #expect(ended["holderDescription"] as? String == "Aeolus.app 0.3.0")
         #expect(document["lease"] is NSNull)

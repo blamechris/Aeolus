@@ -19,21 +19,28 @@ struct AutoCommandTests {
         restoreRequested: Bool = true,
         restoreFailure: String? = nil,
         endedLease: Lease? = nil,
-        interruption: String? = nil
+        interruption: String? = nil,
+        snapshotFollowsRestore: Bool? = nil,
+        firstSnapshotFailure: String? = nil
     ) -> AutoCommand.Observation {
         AutoCommand.Observation(
             restoreRequested: restoreRequested, restoreFailure: restoreFailure,
             endedLease: endedLease, snapshot: snapshot,
             verdict: interruption == nil ? SafeState.verdict(for: snapshot) : .notConfirmed,
-            interruption: interruption)
+            interruption: interruption,
+            snapshotFollowsRestore: snapshotFollowsRestore ?? restoreRequested,
+            firstSnapshotFailure: firstSnapshotFailure)
     }
 
+    /// Fan 1 carries `reason`, reading `mode` — manual by default, automatic for the helper's
+    /// report of a mode it could not read.
     static func pinned(
-        _ reason: ManualControlAvailability.Reason, index: Int = 1
+        _ reason: ManualControlAvailability.Reason, index: Int = 1,
+        reading mode: FanControlMode = .manualFixed
     ) -> SystemSnapshot {
         Fixtures.snapshot([
             Fixtures.fan(0),
-            Fixtures.fan(index, mode: .manualFixed, availability: .unavailable(reason)),
+            Fixtures.fan(index, mode: mode, availability: .unavailable(reason)),
         ])
     }
 
@@ -106,6 +113,31 @@ struct AutoCommandTests {
         #expect(pinned.failure?.code == .cannotReturnToAutomatic)
     }
 
+    /// The helper's report of a mode it could not read is `automatic`; the reason beside it is
+    /// what says the fan has not been cleared. 9 for a durable one, 8 for a pending one, and
+    /// nothing for a silent one — which is every fan on today's helper.
+    ///
+    /// **Mutation:** classify by `fan.mode != .automatic` first in `SafeState.verdict(for:)`
+    /// (the old rule). Run: red on each of the first two.
+    @Test("A reason beside a mode of automatic still decides the exit")
+    func aReasonBesideAnAutomaticModeDecidesTheExit() {
+        let foreign = Self.observation(Self.pinned(.foreignManualControl, reading: .automatic))
+        let failed = Self.observation(Self.pinned(.restoreToAutomaticFailed, reading: .automatic))
+        let blind = Self.observation(Self.pinned(.supervisorBlind, reading: .automatic))
+        let handback = Self.observation(Self.pinned(.handbackUnconfirmed, reading: .automatic))
+        let shipping = Self.observation(
+            Fixtures.snapshot([
+                Fixtures.fan(0, availability: .unavailable(.writePathNotBuilt)),
+                Fixtures.fan(1, availability: .unavailable(.writePathNotBuilt)),
+            ]), restoreRequested: false)
+
+        #expect(foreign.failure?.code == .cannotReturnToAutomatic)
+        #expect(failed.failure?.code == .cannotReturnToAutomatic)
+        #expect(blind.failure?.code == .safeStateNotConfirmed, "a blind fan is unknown, not manual")
+        #expect(handback.failure?.code == .safeStateNotConfirmed)
+        #expect(shipping.failure == nil, "writePathNotBuilt on every fan is today's helper")
+    }
+
     /// 9, then 5, then 8. A pinned fan and a lease together are a 9: retrying cannot change it.
     ///
     /// **Mutation:** in `AutoCommand.Observation.failure`, test the lease before the verdict's
@@ -155,19 +187,51 @@ struct AutoCommandTests {
         #expect(!text.contains("every fan automatic"))
     }
 
-    @Test("After a restore that settled: what was asked, who was ended, what the helper reports")
+    @Test("After a restore that settled: what was asked, which lease is gone, what is reported")
     func settledText() {
         let ended = Lease(
             holderDescription: "Aeolus.app 0.3.0",
             expiresAt: Fixtures.captured.addingTimeInterval(9))
         let observation = Self.observation(Fixtures.automatic, endedLease: ended)
         let text = AutoCommand.text(for: observation)
-        #expect(text.contains("Ended the manual-control lease held by \"Aeolus.app 0.3.0\""))
+        #expect(text.contains("The manual-control lease held by \"Aeolus.app 0.3.0\""))
+        #expect(text.contains("is no longer listed"))
         #expect(text.contains("id \(ended.id.uuidString)"))
         #expect(text.contains("Asked the helper once to return every fan to automatic control"))
         #expect(text.contains("it accepted the request"))
         #expect(
             text.contains("The helper now reports every fan automatic and no manual-control lease"))
+    }
+
+    /// A lease that is no longer listed was not necessarily ended by this run: the request may
+    /// have been refused, or its reply lost, while the lease's own TTL ran out. The output says
+    /// what was observed, and never that the run ended anything.
+    ///
+    /// **Mutation:** restore "Ended the manual-control lease held by" in `AutoCommand.text(for:)`.
+    /// Run: red.
+    @Test("A lease that is no longer listed is not claimed as ended by this run")
+    func noLongerListedIsNotEnded() {
+        let gone = Lease(holderDescription: "Aeolus.app 0.3.0", expiresAt: Fixtures.captured)
+        let text = AutoCommand.text(
+            for: Self.observation(
+                Fixtures.automatic, restoreFailure: "no reply", endedLease: gone))
+        #expect(text.contains("is no longer listed"))
+        #expect(text.contains("it may have expired"))
+        #expect(text.contains("it did not confirm the request"))
+        #expect(!text.contains("Ended"))
+        #expect(!text.contains("ended"))
+    }
+
+    /// The run that sent the request on a handshake alone says why it did.
+    @Test("A first snapshot that failed is said, and the request is still reported")
+    func firstSnapshotFailureText() {
+        let observation = Self.observation(
+            Fixtures.automatic, firstSnapshotFailure: "The helper failed: boom.")
+        let text = AutoCommand.text(for: observation)
+        #expect(text.contains("The helper's first snapshot failed (The helper failed: boom.)"))
+        #expect(text.contains("completed its handshake"))
+        #expect(text.contains("Asked the helper once"))
+        #expect(!AutoCommand.text(for: Self.observation(Fixtures.automatic)).contains("first"))
     }
 
     /// The holder's description is another process's words, printed on a terminal.
@@ -217,6 +281,18 @@ struct AutoCommandTests {
             ("foreign", Self.observation(Self.pinned(.foreignManualControl))),
             ("failed", Self.observation(Self.pinned(.restoreToAutomaticFailed))),
             ("interrupted", Self.observation(Fixtures.leasedManual, interruption: "gone")),
+            (
+                "foreign, reads automatic",
+                Self.observation(Self.pinned(.foreignManualControl, reading: .automatic))
+            ),
+            (
+                "blind, reads automatic",
+                Self.observation(Self.pinned(.supervisorBlind, reading: .automatic))
+            ),
+            (
+                "handback, reads automatic",
+                Self.observation(Self.pinned(.handbackUnconfirmed, reading: .automatic))
+            ),
         ]
         for (name, observation) in cases {
             let failure = observation.failure?.message ?? ""

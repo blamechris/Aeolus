@@ -52,10 +52,11 @@ enum FanctlExitCode: Int32, CaseIterable, Sendable {
     /// to do next.
     case safeStateNotConfirmed = 8
 
-    /// A fan is still manual and will stay so: the helper reports it as `foreignManualControl`
-    /// (another program holds it) or `restoreToAutomaticFailed` (the firmware refused every
-    /// handback). Durable — repeating the request will not change it — so it is not 8, which
-    /// says "not yet". The message carries the reason and its `docs/RECOVERY.md` advice.
+    /// The helper reports a fan with `foreignManualControl` (another program holds it) or
+    /// `restoreToAutomaticFailed` (the firmware refused every handback), **whatever mode the fan
+    /// reads** — an unread mode is reported as automatic. Durable — repeating the request will
+    /// not change it — so it is not 8, which says "not yet". The message carries the reason and
+    /// its `docs/RECOVERY.md` advice.
     ///
     /// Only `fanctl auto` and `fanctl set`'s ending can produce it: they are the commands
     /// that ask for the safe state and then look.

@@ -17,17 +17,20 @@ struct AutoMessageTests {
         restoreRequested: Bool = true,
         restoreFailure: String? = nil,
         endedLease: Lease? = nil,
-        interruption: String? = nil
+        interruption: String? = nil,
+        snapshotFollowsRestore: Bool? = nil
     ) -> AutoCommand.Observation {
         AutoCommandTests.observation(
             snapshot, restoreRequested: restoreRequested, restoreFailure: restoreFailure,
-            endedLease: endedLease, interruption: interruption)
+            endedLease: endedLease, interruption: interruption,
+            snapshotFollowsRestore: snapshotFollowsRestore)
     }
 
     private static func pinned(
-        _ reason: ManualControlAvailability.Reason, index: Int = 1
+        _ reason: ManualControlAvailability.Reason, index: Int = 1,
+        reading mode: FanControlMode = .manualFixed
     ) -> SystemSnapshot {
-        AutoCommandTests.pinned(reason, index: index)
+        AutoCommandTests.pinned(reason, index: index, reading: mode)
     }
 
     // MARK: - Text: the reasons
@@ -39,7 +42,7 @@ struct AutoMessageTests {
         let message = try #require(
             Self.observation(Self.pinned(.foreignManualControl)).failure?.message)
         let reason = ManualControlAvailability.Reason.foreignManualControl
-        #expect(message.contains("Fan 1"))
+        #expect(message.contains("Fan 1 (reads manual)"))
         #expect(message.contains(reason.userFacingSummary))
         #expect(message.contains(reason.recoveryAdvice))
         #expect(message.contains("(reason: foreignManualControl)"))
@@ -64,6 +67,24 @@ struct AutoMessageTests {
         #expect(message.contains("this run already made that request"))
     }
 
+    /// An unread mode is reported as `automatic`. The message may not say such a fan "still
+    /// reads manual": it says what the helper said, both halves of it.
+    ///
+    /// **Mutation:** restore the heading "These fans still read manual" in
+    /// `AutoCommand.cannotReturnMessage`. Run: red.
+    @Test("Exit 9 for a fan that reads automatic says so, and does not call it manual")
+    func nineForAnAutomaticModedFan() throws {
+        let message = try #require(
+            Self.observation(Self.pinned(.restoreToAutomaticFailed, reading: .automatic))
+                .failure?.message)
+        let reason = ManualControlAvailability.Reason.restoreToAutomaticFailed
+        #expect(message.contains("Fan 1 (reads automatic)"))
+        #expect(message.contains("the mode a fan reads does not clear it"))
+        #expect(message.contains(reason.recoveryAdvice))
+        #expect(!message.contains("still read manual"))
+        #expect(!message.contains("reads manual"))
+    }
+
     @Test("Exit 9 names every pinned fan and leaves the transient ones out of the advice")
     func nineNamesEveryPinnedFan() throws {
         let snapshot = Fixtures.snapshot([
@@ -75,7 +96,7 @@ struct AutoMessageTests {
         let message = try #require(Self.observation(snapshot).failure?.message)
         #expect(message.contains("Fan 0"))
         #expect(message.contains("Fan 2"))
-        #expect(message.contains("Fan 1 also still reads manual"))
+        #expect(message.contains("Fan 1 (reads manual) is also not cleared"))
     }
 
     @Test("Exit 5 names the holder and says the request is not repeated")
@@ -86,7 +107,7 @@ struct AutoMessageTests {
         #expect(!message.contains("launchctl bootout"))
     }
 
-    @Test("Exit 8 says what is still manual, that nothing is repeated, and the way out")
+    @Test("Exit 8 says what is not cleared, that nothing is repeated, and the way out")
     func eightText() throws {
         let snapshot = Fixtures.snapshot([
             Fixtures.fan(0, mode: .manualFixed, availability: .unavailable(.releaseInProgress)),
@@ -99,6 +120,24 @@ struct AutoMessageTests {
         #expect(!message.contains("Fan 1"))
         #expect(message.contains("sent the request once"))
         #expect(message.contains("launchctl bootout system/"))
+    }
+
+    /// A blind fan's state is unknown, not manual: 8, never 9. The message names the reason,
+    /// carries the reason's own advice, and ends in the restart that advice leads to.
+    ///
+    /// **Mutation:** move `.supervisorBlind` into `durable` in `SafeState.clearance(of:)`, or
+    /// drop the fan from `unclearedFanLines`. Run: red.
+    @Test("Exit 8 for a blind fan names the reason, its advice and the restart")
+    func eightForABlindFan() throws {
+        let observation = Self.observation(Self.pinned(.supervisorBlind, reading: .automatic))
+        let failure = try #require(observation.failure)
+        let reason = ManualControlAvailability.Reason.supervisorBlind
+        #expect(failure.code == .safeStateNotConfirmed)
+        #expect(failure.message.contains("Fan 1 (reads automatic) is not cleared"))
+        #expect(failure.message.contains("(reason: supervisorBlind)"))
+        #expect(failure.message.contains(reason.userFacingSummary))
+        #expect(failure.message.contains(reason.recoveryAdvice))
+        #expect(failure.message.contains("launchctl bootout system/"))
     }
 
     @Test("Exit 8 after the helper stopped answering says so, and that the snapshot may predate it")
@@ -139,13 +178,16 @@ struct AutoMessageTests {
         return try #require(object as? [String: Any])
     }
 
-    @Test("The document has exactly the six keys, every one present")
+    @Test("The document has exactly its eight keys, every one present")
     func documentKeys() throws {
         let document = try Self.document(
             Self.observation(Fixtures.automatic, restoreRequested: false))
         #expect(
             Set(document.keys)
-                == ["schema", "restoreRequested", "endedLease", "lease", "fans", "failure"])
+                == [
+                    "schema", "capturedAt", "restoreRequested", "snapshotFollowsRestore",
+                    "endedLease", "lease", "fans", "failure",
+                ])
         #expect(document["schema"] as? Int == 1)
         #expect(document["restoreRequested"] as? Bool == false)
         #expect(document["endedLease"] is NSNull)
@@ -177,6 +219,40 @@ struct AutoMessageTests {
         #expect(failure["message"] as? String == Self.observation(snapshot).failure?.message)
         #expect(
             document["fans"] is [[String: Any]], "a failure after a snapshot still carries fans")
+    }
+
+    /// `status --json` carries when the helper captured what it reports; so does this, so a
+    /// script reading an exit 0 can tell how old the helper's report is.
+    ///
+    /// **Mutation:** drop the `capturedAt` line from `AutoDocumentJSON.encode`. Run: red.
+    @Test("The document says when the helper captured the snapshot")
+    func documentCarriesCapturedAt() throws {
+        let document = try Self.document(Self.observation(Fixtures.automatic))
+        #expect(document["capturedAt"] as? String == "2026-09-21T14:13:20Z")
+    }
+
+    /// Whether `fans` and `lease` describe the helper after the request or before it, as a
+    /// boolean a script can branch on instead of prose it has to parse.
+    ///
+    /// **Mutation:** encode `true` for `snapshotFollowsRestore` whatever the observation says.
+    /// Run: red on the two `false` cases.
+    @Test("snapshotFollowsRestore is true only for a snapshot read after the request")
+    func documentSaysWhetherTheSnapshotFollowsTheRestore() throws {
+        let noRestore = try Self.document(
+            Self.observation(Fixtures.automatic, restoreRequested: false))
+        let settled = try Self.document(Self.observation(Fixtures.automatic))
+        // The wait could not read a second snapshot: `fans` and `lease` are the ones from before
+        // the request, and the document says so rather than leaving the prose to.
+        let beforeTheRequest = try Self.document(
+            Self.observation(
+                Fixtures.leasedManual, interruption: "gone", snapshotFollowsRestore: false))
+
+        #expect(noRestore["snapshotFollowsRestore"] as? Bool == false)
+        #expect(settled["snapshotFollowsRestore"] as? Bool == true)
+        #expect(beforeTheRequest["snapshotFollowsRestore"] as? Bool == false)
+        #expect(beforeTheRequest["restoreRequested"] as? Bool == true)
+        let failure = try #require(beforeTheRequest["failure"] as? [String: Any])
+        #expect(failure["kind"] as? String == "safeStateNotConfirmed")
     }
 
     @Test("Exit 9 is its own kind in the document")

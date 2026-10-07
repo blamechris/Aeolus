@@ -211,20 +211,23 @@ extension Fanctl {
             abstract: "Ask the helper to return every fan to automatic control, then check.",
             discussion: """
                 Machine-wide: there is no per-fan form, and `auto all` is the same command. \
-                Reads one snapshot first; if the helper already reports every fan automatic \
-                and no lease, it sends nothing and exits 0. Otherwise it sends one restore \
-                request, never a second, and reads the helper's snapshot once a second for \
-                up to 10 seconds until it reports no lease and every fan automatic.
+                Reads one snapshot first; if the helper already reports every fan automatic, \
+                with no reason beside any of them, and no lease, it sends nothing and exits \
+                0. Otherwise it sends one restore request, never a second, and reads the \
+                helper's snapshot once a second for up to 10 seconds until it does. If the \
+                first snapshot cannot be read after a successful handshake, it sends the \
+                request anyway.
 
                 Never takes a lease. It may end another Aeolus client's lease, and says whose; \
                 moving toward automatic control may override another client, moving away from \
                 it may not.
 
-                Exit 0 means the helper reports every fan automatic, not that the fans are: \
-                the helper reports a fan whose mode it could not read as automatic too. \
-                9 means a fan is still manual for a reason waiting will not change, with the \
-                reason and its advice; 5 that a lease is present when the wait ends; 8 that \
-                the helper did not confirm within the wait.
+                Exit 0 means the helper reports it, not that the fans are: the helper reports \
+                a fan whose mode it could not read as automatic too, which is why each fan's \
+                reason is read beside its mode. 9 means the helper reports a reason waiting \
+                will not change (another program holds the fan, or the firmware refused every \
+                handback), whatever mode the fan reads; 5 that a lease is present when the \
+                wait ends; 8 that the helper did not confirm within the wait.
 
                 Needs the helper installed, approved, and willing to accept this binary's \
                 signature. --json prints one document with a top-level "schema" version.

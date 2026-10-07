@@ -166,10 +166,11 @@ extension Fanctl.Reset {
     /// that could only refuse.
     ///
     /// No request the helper accepts returns one fan on behalf of another process, and a fan
-    /// is **not** taken back by holding it: manual control is a lease, and a lease only ever
-    /// moves a fan *away* from automatic. Moving toward it is machine-wide and takes no lease
-    /// at all — `--all` here, and `fanctl auto`, which sends the same request and then checks
-    /// what the helper reports (ADR 0013 D2). `--all` is the whole of this command, so a bare
+    /// is **not** taken back by holding it: a lease is no route to a fan that has to be brought
+    /// back, because one is granted only over a fan that is already automatic and refused over
+    /// one that is not. Returning fans is machine-wide and takes no lease at all — `--all`
+    /// here, and `fanctl auto`, which sends the same request and then checks what the helper
+    /// reports (ADR 0013 D2). `--all` is the whole of this command, so a bare
     /// `fanctl reset` is an incomplete invocation rather than a runtime failure — which is
     /// what makes `ValidationError` the right type: it prints usage, where `--all` is listed.
     ///

@@ -6,6 +6,18 @@ import os
 @testable import AeolusHelper
 @testable import fanctl
 
+/// Snapshots number `after + 1` through `through` (all of them when `nil`) fail with
+/// `fault`.
+private struct SnapshotFailure {
+    let after: Int
+    let through: Int?
+    let fault: AeolusXPCFault
+
+    func fails(_ served: Int) -> Bool {
+        served > after && (through.map { served <= $0 } ?? true)
+    }
+}
+
 /// A `FanAuthority` that behaves like a helper **with** a write path, for driving `fanctl`'s
 /// helper commands end to end.
 ///
@@ -43,7 +55,7 @@ actor SimulatedFanAuthority: FanAuthority {
     private var snapshotsBeforeRestoreShows = 0
     private var snapshotsLeftBeforeRestoreShows: Int?
     private var releasesToAnotherHolder: String?
-    private var snapshotFailure: (after: Int, fault: AeolusXPCFault)?
+    private var snapshotFailure: SnapshotFailure?
 
     // Records.
     private(set) var calls: [String] = []
@@ -115,11 +127,14 @@ actor SimulatedFanAuthority: FanAuthority {
     /// `holder` appears over fan 0 with the snapshot that shows the restore.
     func reacquiring(as holder: String) { releasesToAnotherHolder = holder }
 
-    /// Every snapshot from the `count + 1`-th on fails with `fault`.
+    /// Every snapshot from the `count + 1`-th on fails with `fault` — or, with `times`, only the
+    /// next `times` of them do, after which the helper answers again.
     func failingSnapshots(
-        after count: Int, with fault: AeolusXPCFault = .helperFailed(detail: "x")
+        after count: Int, times: Int? = nil,
+        with fault: AeolusXPCFault = .helperFailed(detail: "x")
     ) {
-        snapshotFailure = (count, fault)
+        snapshotFailure = SnapshotFailure(
+            after: count, through: times.map { count + $0 }, fault: fault)
     }
 
     func setThermalEmergency(_ active: Bool) { isThermalEmergencyActive = active }
@@ -135,12 +150,21 @@ actor SimulatedFanAuthority: FanAuthority {
     /// A fan some other program put in manual, which no Aeolus verb reaches.
     func markForeignManual(_ index: Int) { pin(index, as: .foreignManualControl) }
 
-    /// A fan in manual that no verb returns and that reports `reason`: the foreign program's
-    /// fan above, the firmware that refused every handback (`restoreToAutomaticFailed`), or a
-    /// reason that is only transient and never clears here.
-    func pin(_ index: Int, as reason: ManualControlAvailability.Reason) {
+    /// A fan that no verb returns and that reports `reason`: the foreign program's fan above,
+    /// the firmware that refused every handback (`restoreToAutomaticFailed`), or a reason that
+    /// is only transient and never clears here.
+    ///
+    /// `mode` is what the fan reads. `.manualFixed` is a fan really held. **`.automatic` is the
+    /// helper's report of a mode it could not read** — the unread `F<n>Md` of #178, and what an
+    /// Intel Mac always says — beside a reason that says it has not cleared the fan. That
+    /// combination is an ordinary helper output (the ladder restates the reason with no mode
+    /// guard), and it is the one `fanctl auto` must not read as the safe state.
+    func pin(
+        _ index: Int, as reason: ManualControlAvailability.Reason,
+        reading mode: FanControlMode = .manualFixed
+    ) {
         pinnedFans[index] = reason
-        set(index, mode: .manualFixed, target: 2500)
+        set(index, mode: mode, target: mode == .automatic ? nil : 2500)
     }
 
     /// A fan in manual under no lease that a restore *does* return — what a crashed client
@@ -156,7 +180,7 @@ actor SimulatedFanAuthority: FanAuthority {
     func snapshot() async throws -> SystemSnapshot {
         calls.append("snapshot")
         snapshotsServed += 1
-        if let snapshotFailure, snapshotsServed > snapshotFailure.after {
+        if let snapshotFailure, snapshotFailure.fails(snapshotsServed) {
             throw snapshotFailure.fault
         }
         if let remaining = snapshotsLeftBeforeRestoreShows {
@@ -331,54 +355,5 @@ actor SimulatedFanAuthority: FanAuthority {
                 mode: .automatic, isReclaimedBySystem: true,
                 manualControlAvailability: .unavailable(.reclaimedBySystem))
         }
-    }
-}
-
-/// Every line a command wrote, in order, with the stream it went to.
-final class RecordingTerminal: Sendable {
-
-    struct Line: Sendable, Hashable {
-        let stream: Terminal.Stream
-        let text: String
-    }
-
-    private let recorded = OSAllocatedUnfairLock<[Line]>(initialState: [])
-
-    var terminal: Terminal {
-        Terminal { [recorded] stream, text in
-            recorded.withLock { $0.append(Line(stream: stream, text: text)) }
-        }
-    }
-
-    var lines: [Line] { recorded.withLock { $0 } }
-
-    var standardOutput: String {
-        lines.filter { $0.stream == .standardOutput }.map(\.text).joined(separator: "\n")
-    }
-
-    var standardError: String {
-        lines.filter { $0.stream == .standardError }.map(\.text).joined(separator: "\n")
-    }
-
-    /// Standard output as NDJSON: one decoded object per line.
-    func events() throws -> [[String: Any]] {
-        try lines.filter { $0.stream == .standardOutput }.map { line in
-            let object = try JSONSerialization.jsonObject(with: Data(line.text.utf8))
-            guard let dictionary = object as? [String: Any] else {
-                throw CocoaError(.coderReadCorrupt)
-            }
-            return dictionary
-        }
-    }
-}
-
-/// How one `run()` left: `nil` for a normal return, otherwise the exit code it would exit
-/// with — read through swift-argument-parser's own mapping, not a copy of it.
-func exitCode(of run: () async throws -> Void) async -> Int32? {
-    do {
-        try await run()
-        return nil
-    } catch {
-        return Fanctl.exitCode(for: error).rawValue
     }
 }

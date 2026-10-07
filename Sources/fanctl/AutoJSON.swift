@@ -19,13 +19,20 @@ struct AutoDocumentJSON: Encodable {
     }
 
     private enum Keys: String, CodingKey {
-        case schema, restoreRequested, endedLease, lease, fans, failure
+        case schema, capturedAt, restoreRequested, snapshotFollowsRestore, endedLease, lease
+        case fans, failure
     }
 
+    /// `capturedAt` is when the helper captured the snapshot `lease` and `fans` came from, as in
+    /// `status --json`. `snapshotFollowsRestore` says whether that snapshot was read after the
+    /// restore request was sent: a script reads it instead of the failure prose to know whether
+    /// `lease` and `fans` describe the helper after the request or before it.
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: Keys.self)
         try container.encode(HelperCommandOutput.schemaVersion, forKey: .schema)
+        try container.encode(observation.snapshot.capturedAt, forKey: .capturedAt)
         try container.encode(observation.restoreRequested, forKey: .restoreRequested)
+        try container.encode(observation.snapshotFollowsRestore, forKey: .snapshotFollowsRestore)
         try container.encode(observation.endedLease.map(LeaseJSON.init), forKey: .endedLease)
         try container.encode(observation.snapshot.activeLease.map(LeaseJSON.init), forKey: .lease)
         try container.encode(observation.snapshot.fans.map(ObservedFanJSON.init), forKey: .fans)

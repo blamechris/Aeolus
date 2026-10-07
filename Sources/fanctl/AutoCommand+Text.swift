@@ -16,11 +16,18 @@ extension AutoCommand {
     static func text(for observation: Observation) -> String {
         let snapshot = observation.snapshot
         var lines: [String] = []
+        if let failure = observation.firstSnapshotFailure {
+            lines.append(
+                "The helper's first snapshot failed (\(failure)). It had completed its "
+                    + "handshake, so this run sent the request anyway and read the snapshot "
+                    + "again.")
+        }
         if let ended = observation.endedLease {
             lines.append(
-                "Ended the manual-control lease held by \"\(holder(ended))\" (id "
-                    + "\(ended.id.uuidString)). The helper's snapshot no longer lists it; that "
-                    + "client will find its lease gone.")
+                "The manual-control lease held by \"\(holder(ended))\" (id "
+                    + "\(ended.id.uuidString)) was listed before the restore request and is no "
+                    + "longer listed. The request may have dropped it, or it may have expired; "
+                    + "either way that client will find its lease gone.")
         }
         if observation.restoreRequested {
             lines.append(restoreSentence(observation))
@@ -83,18 +90,60 @@ extension AutoCommand {
     private static let sentOnce =
         "This run sent the request once and will not send it again."
 
-    /// Fans that still read manual, one line each, in the helper's own words.
-    private static func manualFanLines(
-        _ snapshot: SystemSnapshot, excluding excluded: [Int] = [], also: Bool = false
-    ) -> [String] {
-        let verb = also ? "also still reads manual" : "still reads manual"
-        return snapshot.fans.filter { $0.mode != .automatic && !excluded.contains($0.index) }.map {
-            "  Fan \($0.index) \(verb): "
-                + StatusCommand.availability($0.manualControlAvailability)
-        }
+    /// What mode a fan reads, in words that do not claim more than the helper said.
+    private static func reads(_ fan: FanState) -> String {
+        fan.mode == .automatic ? "reads automatic" : "reads manual"
     }
 
+    /// Fans the helper has not cleared, one line each, in the helper's own words: a mode that
+    /// reads manual, or an availability that says the helper has not established the fan's mode
+    /// — which is the one thing a mode of `automatic` cannot rule out.
+    private static func unclearedFanLines(
+        _ snapshot: SystemSnapshot, excluding excluded: [Int] = [], also: Bool = false
+    ) -> [String] {
+        let lead = also ? "is also not cleared" : "is not cleared"
+        return snapshot.fans.filter { !SafeState.isCleared($0) && !excluded.contains($0.index) }
+            .map {
+                "  Fan \($0.index) (\(reads($0))) \(lead); manual control: "
+                    + StatusCommand.availability($0.manualControlAvailability)
+            }
+    }
+
+    /// Why the run could not read any snapshot after sending the request.
+    ///
+    /// Exit 8, with the way out that needs no snapshot: `fanctl reset --all` sends the same
+    /// request, and the helper's lease sweep behind it does not read the fans first.
+    static func snapshotUnavailableMessage(
+        firstFailure: String, laterFailure: String?, restoreFailure: String?
+    ) -> String {
+        let asked =
+            restoreFailure.map { "it did not confirm the request: \($0)" }
+            ?? "it accepted the request."
+        return """
+            The helper completed its handshake but could not give a snapshot, so this run cannot \
+            say what the fans are doing.
+
+              First snapshot: \(firstFailure)
+              Snapshot after the request: \(laterFailure ?? "no reason given")
+
+            This run asked the helper once to return every fan to automatic control; \(asked)
+
+            \(sentOnce) \(resetPointer)
+
+            \(ResetCommand.stopTheHelper)
+            """
+    }
+
+    /// Where to go when this run could not read the helper at all.
+    static let resetPointer =
+        "`fanctl reset --all` sends the request that returns every fan to automatic control "
+        + "without a snapshot, and reports what the helper accepted."
+
     /// Exit 8: not confirmed, with no lease in the way and nothing durable pinned.
+    ///
+    /// A fan that is not cleared is listed with its availability in the helper's words whatever
+    /// its mode reads, so a blind fan (`supervisorBlind`) names its reason and carries the
+    /// reason's own advice; the restart that advice leads to is the paragraph at the end.
     static func notConfirmedMessage(_ observation: Observation) -> String {
         var paragraphs: [String] = []
         if let interruption = observation.interruption {
@@ -107,7 +156,7 @@ extension AutoCommand {
                 "The helper did not report every fan automatic and no lease within "
                     + "\(windowSeconds) seconds of the restore request.")
         }
-        var still = manualFanLines(observation.snapshot)
+        var still = unclearedFanLines(observation.snapshot)
         if let failure = observation.restoreFailure {
             still.append("The helper did not confirm the restore request: \(failure)")
         }
@@ -134,7 +183,8 @@ extension AutoCommand {
         """
     }
 
-    /// Exit 9: a fan reads manual for a reason waiting will not change.
+    /// Exit 9: the helper reports a reason waiting will not change, whatever the fan's mode
+    /// reads.
     ///
     /// Each pinned fan carries its reason's own summary and advice and the wire value a user
     /// finds in `docs/RECOVERY.md`. That advice for `restoreToAutomaticFailed` is `fanctl reset
@@ -144,8 +194,8 @@ extension AutoCommand {
     static func cannotReturnMessage(_ observation: Observation, pinned: [Int]) -> String {
         let snapshot = observation.snapshot
         var lines = [
-            "These fans still read manual, for a reason that repeating the request will not "
-                + "change:"
+            "The helper reports a reason for these fans that repeating the request will not "
+                + "change, and the mode a fan reads does not clear it:"
         ]
         var refusedByFirmware = false
         for fan in snapshot.fans where pinned.contains(fan.index) {
@@ -153,9 +203,10 @@ extension AutoCommand {
             let shown = StatusCommand.displayable(reason)
             if shown == .restoreToAutomaticFailed { refusedByFirmware = true }
             lines.append(
-                "  Fan \(fan.index): \(shown.recoveryDescription) (reason: \(shown.wireValue))")
+                "  Fan \(fan.index) (\(reads(fan))): \(shown.recoveryDescription) "
+                    + "(reason: \(shown.wireValue))")
         }
-        lines.append(contentsOf: manualFanLines(snapshot, excluding: pinned, also: true))
+        lines.append(contentsOf: unclearedFanLines(snapshot, excluding: pinned, also: true))
         var paragraphs = [lines.joined(separator: "\n")]
         paragraphs.append(
             "\(sentOnce) What to do about each reason is in docs/RECOVERY.md, under \"A specific "
