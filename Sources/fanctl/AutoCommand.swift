@@ -1,0 +1,247 @@
+import AeolusXPC
+import AeolusXPCClient
+import ArgumentParser
+import FanKit
+import Foundation
+
+/// `fanctl auto` — ask the helper to return every fan to automatic control, then look.
+///
+/// The contract is [ADR 0013](../../docs/ADR/0013-fanctl-control-contract.md) D2 and D3.
+///
+/// ## What it does
+///
+/// Handshake, then one snapshot. If the helper reports no lease and every fan automatic, that
+/// is the answer: exit 0, and **nothing was written**. Otherwise it sends `restoreAllToAutomatic`
+/// **once** and reads the snapshot until the helper reports the safe state or ten seconds have
+/// passed (`SafeState.settle`). It is never re-sent in a run, so there is no tug-of-war with
+/// whatever else writes to the fans.
+///
+/// ## What it does not do
+///
+/// - **Take a lease.** Not to return a fan, not briefly, not to make a per-fan form possible.
+///   A per-fan "acquire, apply automatic, release" reaches only fans that are already
+///   automatic, and the release then writes a restore to every fan the lease covered.
+/// - **Take one fan.** `auto <index>` is refused at parse time (exit 64): no request the
+///   helper accepts returns a fan on behalf of another process, so an index would either do
+///   nothing or quietly return other fans too.
+/// - **Retry, back off or escalate.** One request, one wait, one verdict.
+///
+/// ## It may end another client's lease, and says whose
+///
+/// A command that moves toward the safe state may override another client; one that moves away
+/// from it may not (`set` gets exit 5). Refusing here would fail exactly when a hold was
+/// orphaned or forgotten. The holder it ended is named in the text and in `--json`'s
+/// `endedLease`; that client sees its lease lost, which is accurate.
+///
+/// ## What it is allowed to say
+///
+/// Exit 0 means **"the helper reports every fan automatic and no lease"** — not "the fans are".
+/// An unreadable `F<n>Md` is also reported as automatic ([#178]), so the strongest honest
+/// sentence is the one that names its source, and no string here says more. A run that did not
+/// end in the safe state never says it did, on either stream.
+///
+/// [#178]: https://github.com/blamechris/Aeolus/issues/178
+enum AutoCommand {
+
+    // MARK: - What a run observed
+
+    /// Everything a run learned from the helper, once at least one snapshot was read.
+    struct Observation: Sendable {
+        /// Whether this run sent `restoreAllToAutomatic`. `false` only when the first snapshot
+        /// already reported the safe state.
+        let restoreRequested: Bool
+        /// Why the helper did not confirm that request, if it did not. The wait still ran: a
+        /// request whose reply was lost may well have landed, and the snapshot decides.
+        let restoreFailure: String?
+        /// The lease the first snapshot listed that the last one no longer does.
+        let endedLease: Lease?
+        /// The last snapshot the helper returned. If `interruption` is set it may predate the
+        /// end of the wait.
+        let snapshot: SystemSnapshot
+        let verdict: SafeState.Verdict
+        /// Why the wait stopped early, in the error's own words.
+        let interruption: String?
+
+        /// The lease present when the wait ended — only if the wait ended by looking. After an
+        /// interruption the last snapshot's lease is the last thing seen, not the thing there.
+        var leaseAtEnd: Lease? { interruption == nil ? snapshot.activeLease : nil }
+
+        /// The exit, in the order 9, 5, 8; `nil` for the safe state.
+        var failure: HelperCommandFailure? {
+            switch verdict {
+            case .automatic:
+                return nil
+            case .cannotReturn(let fans):
+                return HelperCommandFailure(
+                    .cannotReturnToAutomatic, AutoCommand.cannotReturnMessage(self, pinned: fans))
+            case .notConfirmed:
+                if let lease = leaseAtEnd {
+                    return HelperCommandFailure(
+                        .heldByAnotherClient, AutoCommand.leasePresentMessage(self, lease: lease))
+                }
+                return HelperCommandFailure(
+                    .safeStateNotConfirmed, AutoCommand.notConfirmedMessage(self))
+            }
+        }
+    }
+
+    /// How a run ended.
+    enum Outcome: Sendable {
+        /// At least one snapshot was read: the exit follows the observation, and `--json` still
+        /// carries the fans.
+        case observed(Observation)
+        /// No snapshot could be read: 3, 7 or 1, and `--json` is the plain failure document.
+        case unreadable(HelperCommandFailure)
+    }
+
+    // MARK: - The run
+
+    /// One handshake, one snapshot, at most one restore, and the wait for its result.
+    ///
+    /// `Fanctl.Auto.run()` is the only caller; `FanctlAutoTests` reaches this through `run()`.
+    static func perform(on client: HelperClient, clock: SettleClock) async -> Outcome {
+        let first: SystemSnapshot
+        do {
+            first = try await client.snapshot()
+        } catch {
+            return await unreadable(error, on: client)
+        }
+
+        if SafeState.verdict(for: first) == .automatic {
+            return .observed(
+                Observation(
+                    restoreRequested: false, restoreFailure: nil, endedLease: nil, snapshot: first,
+                    verdict: .automatic, interruption: nil))
+        }
+
+        // The one request. Whether it was acknowledged does not change what happens next: a
+        // reply that never arrived does not mean the restore did not land, and the snapshot is
+        // the only thing this command trusts either way.
+        var restoreFailure: String?
+        do {
+            try await client.restoreAllToAutomatic()
+        } catch {
+            restoreFailure = describe(error)
+        }
+
+        let settlement = await SafeState.settle(
+            reading: { try await client.snapshot() }, clock: clock)
+        let last = settlement.snapshot ?? first
+        return .observed(
+            Observation(
+                restoreRequested: true, restoreFailure: restoreFailure,
+                endedLease: endedLease(first: first, last: last), snapshot: last,
+                verdict: settlement.verdict,
+                interruption: settlement.interruption.map(describe)))
+    }
+
+    /// The first snapshot's lease, if the last snapshot no longer lists *that* lease.
+    ///
+    /// By identity, not by presence: a lease that is gone and one that was replaced by another
+    /// client's are both ended; one the restore left standing is not, and saying it was would
+    /// be a claim about an outcome the helper contradicts.
+    static func endedLease(first: SystemSnapshot, last: SystemSnapshot) -> Lease? {
+        guard let before = first.activeLease else { return nil }
+        return last.activeLease?.id == before.id ? nil : before
+    }
+
+    /// No snapshot could be read. A version mismatch is the one case that still sends the
+    /// request: `restoreAllToAutomatic` is exempt from the version gate (ADR 0005), because
+    /// a fence that stopped the way back to automatic control would defeat its own purpose.
+    /// Nothing can then be verified across the versions, and the message says so.
+    private static func unreadable(_ error: any Error, on client: HelperClient) async -> Outcome {
+        let failure = HelperCommandFailure(classifying: error, during: .beforeControl)
+        guard failure.code == .protocolVersionMismatch else { return .unreadable(failure) }
+
+        let sent: String
+        do {
+            try await client.restoreAllToAutomatic()
+            sent = "The helper accepted the request."
+        } catch {
+            sent = "The helper did not confirm the request: \(describe(error))"
+        }
+        return .unreadable(
+            HelperCommandFailure(
+                .protocolVersionMismatch,
+                """
+                \(failure.message)
+
+                fanctl sent the helper one request to return every fan to automatic control \
+                anyway, because the helper exempts that request from the version check. \
+                \(sent) fanctl cannot verify the result across protocol versions, so it reports \
+                nothing about the fans. Use a fanctl built for the helper's protocol version \
+                and run `fanctl status`; if the fans are still wrong, continue with \
+                docs/RECOVERY.md.
+                """))
+    }
+
+    private static func describe(_ error: any Error) -> String {
+        HelperCommandFailure(classifying: error, during: .beforeControl).message
+    }
+
+    // MARK: - Leaving
+
+    /// Writes what the run learned and leaves with its exit code.
+    ///
+    /// The result goes to standard output and the diagnosis to standard error, so a script that
+    /// reads one never has to filter the other. Under `--json` standard output is the one
+    /// document, whatever the exit code, and a run that read no snapshot prints the plain
+    /// failure document instead.
+    static func emit(
+        _ outcome: Outcome, as format: HelperCommandOutput.Format, on terminal: Terminal
+    ) throws {
+        switch outcome {
+        case .unreadable(let failure):
+            try HelperCommandOutput.fail(failure, as: format, on: terminal)
+        case .observed(let observation):
+            switch format {
+            case .text:
+                terminal.say(text(for: observation))
+            case .document, .lines:
+                try HelperCommandOutput.emit(
+                    AutoDocumentJSON(observation), as: format, on: terminal)
+            }
+            guard let failure = observation.failure else { return }
+            terminal.warn(failure.message)
+            throw failure.code.exitCode
+        }
+    }
+}
+
+// MARK: - Command wiring
+
+extension Fanctl.Auto {
+
+    /// Only `all`, or nothing.
+    ///
+    /// An index is refused here, before any connection: no request the helper accepts returns
+    /// one fan on behalf of another process. A per-fan `auto` can be added later without
+    /// breaking anyone; accepting an index now and doing something else would break whoever
+    /// relied on it.
+    func validate() throws {
+        guard let target, target != "all" else { return }
+        if !target.isEmpty, target.allSatisfy(\.isNumber) {
+            throw ValidationError(
+                """
+                fanctl auto takes no fan index. No request the helper accepts returns one fan \
+                on behalf of another process, so an index would either do nothing or quietly \
+                return other fans too. fanctl auto returns every fan: run `fanctl auto`.
+                """)
+        }
+        throw ValidationError(
+            "fanctl auto takes no argument but `all` (the default); got '\(target)'. "
+                + "Run `fanctl auto`.")
+    }
+
+    /// One handshake, at most one restore, the wait for its result, one disconnect.
+    ///
+    /// Everything here is asserted end to end by `FanctlAutoTests`, which reaches this function
+    /// itself by setting `helper`, `terminal` and `clock`.
+    func run() async throws {
+        let format: HelperCommandOutput.Format = json ? .document : .text
+        let client = helper.client()
+        let outcome = await AutoCommand.perform(on: client, clock: clock)
+        await client.disconnect()
+        try AutoCommand.emit(outcome, as: format, on: terminal)
+    }
+}
