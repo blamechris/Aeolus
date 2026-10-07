@@ -262,6 +262,12 @@ struct FanctlAutoClearanceTests {
 
     // MARK: - A snapshot that times out after a handshake
 
+    /// The bound the held snapshot is given. Tighter than the product's 5 s **because its expiry
+    /// is the assertion**, and licensed as such in `HelperClientDeadlineLiteralTests`. No upper
+    /// bound on how long the run takes is asserted: a slow runner cannot make a deadline
+    /// shorter, only later.
+    private static let hangDeadline = Duration.seconds(2)
+
     /// **Nothing is sent here, and the message says so first.** A snapshot the helper accepts and
     /// never answers makes the client give the connection up, and the handshake goes with it, so
     /// there is no identified helper to send a restore to. The cause the client reports is
@@ -277,9 +283,8 @@ struct FanctlAutoClearanceTests {
         await authority.strandManual(0)
         await authority.holdingSnapshots(until: signal)
         let harness = ClientListenerHarness(authority: authority)
-        // Two seconds, and no upper bound asserted: a slow runner cannot make this shorter.
         let deadlines = HelperClientDeadlines(
-            gatedVerb: .seconds(2), panicVerb: .seconds(10),
+            gatedVerb: Self.hangDeadline, panicVerb: .seconds(10),
             handshakeVerb: HelperClientDeadlines.handshakeVerb)
 
         let run = try await FanctlAutoTests.run(over: harness, deadlines: deadlines)

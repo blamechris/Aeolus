@@ -122,6 +122,15 @@ struct HelperClientDeadlineLiteralTests {
                 distinguish the binding from the constant.
                 """),
         Exemption(
+            file: "FanctlAutoClearanceTests.swift", verb: "gatedVerb", text: "Self.hangDeadline",
+            reason: """
+                `aFirstSnapshotThatTimesOutSendsNothingAndSaysSo` needs the first snapshot to \
+                expire: the helper accepts it and never answers it, the client gives the \
+                connection up, and what `fanctl auto` then says and sends is the assertion. The \
+                bound is 2 s, no upper limit on the run's duration is asserted, and a slower \
+                runner can only make it later.
+                """),
+        Exemption(
             file: "FanctlResetTests.swift", verb: "panicVerb", text: "Self.observableDeadline",
             reason: """
                 The same assertion on the verb `fanctl reset --all` actually sends: the panic \
