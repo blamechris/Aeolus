@@ -1,105 +1,14 @@
 import Foundation
 import SMCCore
 import Testing
-import os
 
 @testable import smc_sampler
 
-/// A `SensorProvider` whose answer to every call is scripted by `(call number, key)`, and
-/// which remembers the `keys` argument of every call it received. Call number 0 is the
-/// first call of any kind, so the warm-up reads are the first `keys.count` calls and the
-/// first timed read is call number `keys.count`.
-///
-/// Named for this file so it cannot shadow `RunSampleLoopTests`' own private fake.
-private final class ScriptedLatencyProvider: SensorProvider {
-    typealias Behavior =
-        @Sendable (_ callNumber: Int, _ key: String) async throws -> Result<
-            Double, SensorReadFailure
-        >
-
-    let identifier = "scripted-latency"
-    var isAvailable: Bool { get async { true } }
-
-    private let log = OSAllocatedUnfairLock<[[String]]>(initialState: [])
-    private let behavior: Behavior
-
-    init(behavior: @escaping Behavior = { _, _ in .success(1.0) }) {
-        self.behavior = behavior
-    }
-
-    /// The `keys` argument of every `read(keys:)` call, in the order received.
-    var calls: [[String]] { log.withLock { $0 } }
-
-    func readAll() async throws -> [SensorReading] { [] }
-
-    func read(keys: [String]) async throws -> [SensorReadOutcome] {
-        let callNumber = log.withLock { calls -> Int in
-            calls.append(keys)
-            return calls.count - 1
-        }
-        var outcomes: [SensorReadOutcome] = []
-        for key in keys {
-            let result = try await behavior(callNumber, key)
-            outcomes.append(
-                SensorReadOutcome(
-                    key: key,
-                    result: result.map {
-                        SensorReading(
-                            key: key, value: $0, kind: .unknown, providerIdentifier: identifier)
-                    }))
-        }
-        return outcomes
-    }
-}
-
-private final class LatencyCapturingSink: LineSink {
-    private let lock = OSAllocatedUnfairLock<[String]>(initialState: [])
-    func write(_ line: String) { lock.withLock { $0.append(line) } }
-    var lines: [String] { lock.withLock { $0 } }
-
-    /// Every line decoded as a JSON object.
-    func records() throws -> [[String: Any]] {
-        try lines.map { line in
-            let data = try #require(line.data(using: .utf8))
-            return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        }
-    }
-}
-
-/// Stands in for `Task.sleep` and remembers how long each wait was asked to be, without
-/// waiting at all.
-private final class WaitRecorder: Sendable {
-    private let log = OSAllocatedUnfairLock<[UInt64]>(initialState: [])
-
-    var nanoseconds: [UInt64] { log.withLock { $0 } }
-
-    /// A closure over `self`, so it can be passed where the loop wants a `LatencySleep`.
-    var sleeper: LatencySleep {
-        { [self] nanoseconds in log.withLock { $0.append(nanoseconds) } }
-    }
-}
-
-private struct Boom: Error, CustomStringConvertible {
-    var description: String { "Boom" }
-}
-
+/// `runLatencyLoop`'s behaviour: what is warmed and what is timed, how failures and
+/// cancellation end a run, and when it waits. Where its two clock stamps sit is in
+/// `RunLatencyLoopTimingTests`; the fakes are in `LatencyTestDoubles`.
 @Suite("runLatencyLoop")
 struct RunLatencyLoopTests {
-
-    private static func run(
-        provider: some SensorProvider,
-        keys: [String] = ["F0Ac"],
-        count: Int,
-        intervalSeconds: Double = 0,
-        sink: LatencyCapturingSink,
-        continuousStart: ContinuousClock.Instant = ContinuousClock.now,
-        tickState: TickState = TickState(),
-        sleep: @escaping LatencySleep = taskLatencySleep
-    ) async throws {
-        try await runLatencyLoop(
-            provider: provider, keys: keys, count: count, intervalSeconds: intervalSeconds,
-            sink: sink, continuousStart: continuousStart, tickState: tickState, sleep: sleep)
-    }
 
     // MARK: - Shape
 
@@ -112,7 +21,7 @@ struct RunLatencyLoopTests {
         let sink = LatencyCapturingSink()
         let tickState = TickState()
 
-        try await Self.run(
+        try await runLatencyLoopForTest(
             provider: provider, keys: ["F0Ac", "F1Ac"], count: 5, sink: sink,
             tickState: tickState)
 
@@ -147,62 +56,10 @@ struct RunLatencyLoopTests {
     func countSmallerThanKeySet() async throws {
         let provider = ScriptedLatencyProvider()
         let sink = LatencyCapturingSink()
-        try await Self.run(
+        try await runLatencyLoopForTest(
             provider: provider, keys: ["F0Ac", "F1Ac", "F2Ac"], count: 1, sink: sink)
         #expect(provider.calls == [["F0Ac"], ["F1Ac"], ["F2Ac"], ["F0Ac"]])
         #expect(try sink.records().count == 2)
-    }
-
-    // MARK: - Timing
-
-    /// Mutation this kills: taking the end timestamp before the provider call (or the start
-    /// after it). The fake takes at least two milliseconds to answer a timed read, so a
-    /// recorded duration below that means the clocks were not bracketing the call. Both
-    /// clocks are asserted separately because each is read separately.
-    @Test("each read's durations bracket the provider call on both clocks")
-    func durationsBracketTheCall() async throws {
-        let provider = ScriptedLatencyProvider { callNumber, _ in
-            if callNumber >= 1 { try await Task.sleep(nanoseconds: 2_000_000) }
-            return .success(1.0)
-        }
-        let sink = LatencyCapturingSink()
-        try await Self.run(provider: provider, count: 3, sink: sink)
-
-        let reads = try sink.records().prefix(3)
-        for read in reads {
-            let continuous = try #require(read["continuousNanoseconds"] as? Int)
-            let suspending = try #require(read["suspendingNanoseconds"] as? Int)
-            #expect(continuous >= 1_500_000, "continuous duration \(continuous) ns < 2 ms sleep")
-            #expect(suspending >= 1_500_000, "suspending duration \(suspending) ns < 2 ms sleep")
-        }
-    }
-
-    /// Only the first timed read is slow (call 0 is the warm-up, call 1 the first timed
-    /// read), so the second read is issued about 50 ms after the first one *was* and about
-    /// zero after it *finished*. An offset taken when a read ends instead of when it is
-    /// issued would put the second read's offset almost on top of the first's, and the
-    /// `at >= previousEnd` check below would fail.
-    @Test("offsets are measured from the start instant, at the moment each read is issued")
-    func offsetsAreFromTheStartInstant() async throws {
-        let provider = ScriptedLatencyProvider { callNumber, _ in
-            if callNumber == 1 { try await Task.sleep(nanoseconds: 50_000_000) }
-            return .success(1.0)
-        }
-        let sink = LatencyCapturingSink()
-        // The run "started" five seconds ago, so every offset must be at least five seconds.
-        let start = ContinuousClock.now.advanced(by: .seconds(-5))
-        try await Self.run(provider: provider, count: 4, sink: sink, continuousStart: start)
-
-        let reads = Array(try sink.records().prefix(4))
-        var previousEnd = 0
-        for read in reads {
-            let at = try #require(read["atContinuousNanoseconds"] as? Int)
-            let duration = try #require(read["continuousNanoseconds"] as? Int)
-            #expect(at >= 5_000_000_000)
-            // Reads are issued back to back, so each starts after the previous one ended.
-            #expect(at >= previousEnd, "read starts at \(at) before the previous ended")
-            previousEnd = at + duration
-        }
     }
 
     // MARK: - Failures
@@ -215,7 +72,7 @@ struct RunLatencyLoopTests {
                 ? .failure(.readFailed(reason: "firmware said no")) : .success(1.0)
         }
         let sink = LatencyCapturingSink()
-        try await Self.run(provider: provider, count: 5, sink: sink)
+        try await runLatencyLoopForTest(provider: provider, count: 5, sink: sink)
 
         let records = try sink.records()
         #expect(records.count == 6)
@@ -229,16 +86,17 @@ struct RunLatencyLoopTests {
         #expect(summary["count"] as? Int == 5)
         #expect(summary["okCount"] as? Int == 3)
         #expect(summary["failureCount"] as? Int == 2)
+        #expect(summary["percentileSampleSize"] as? Int == 3, "readFailed is not percentiled")
     }
 
     @Test("a provider that throws mid-run is recorded as providerError, not fatal")
     func thrownErrorMidRunIsRecorded() async throws {
         let provider = ScriptedLatencyProvider { callNumber, _ in
-            if callNumber == 2 { throw Boom() }
+            if callNumber == 2 { throw LatencyTestBoom() }
             return .success(1.0)
         }
         let sink = LatencyCapturingSink()
-        try await Self.run(provider: provider, count: 3, sink: sink)
+        try await runLatencyLoopForTest(provider: provider, count: 3, sink: sink)
 
         let records = try sink.records()
         #expect(records.prefix(3).map { $0["status"] as? String } == ["ok", "providerError", "ok"])
@@ -256,7 +114,7 @@ struct RunLatencyLoopTests {
             return .success(1.0)
         }
         let sink = LatencyCapturingSink()
-        try await Self.run(provider: provider, count: 10, sink: sink)
+        try await runLatencyLoopForTest(provider: provider, count: 10, sink: sink)
 
         let records = try sink.records()
         #expect(records.count == 3, "two reads and the summary")
@@ -269,12 +127,51 @@ struct RunLatencyLoopTests {
 
     @Test("a warm-up that throws ends the run before any read is recorded")
     func warmupThrowEndsTheRun() async {
-        let provider = ScriptedLatencyProvider { _, _ in throw Boom() }
+        let provider = ScriptedLatencyProvider { _, _ in throw LatencyTestBoom() }
         let sink = LatencyCapturingSink()
-        await #expect(throws: Boom.self) {
-            try await Self.run(provider: provider, count: 3, sink: sink)
+        await #expect(throws: LatencyTestBoom.self) {
+            try await runLatencyLoopForTest(provider: provider, count: 3, sink: sink)
         }
         #expect(sink.lines.isEmpty)
+    }
+
+    /// A completed `READ_BYTES` whose value is not a number is still a round trip. The read
+    /// line keeps the status that says what the value was not; the summary counts it as a
+    /// failure, and percentiles it.
+    @Test("a notDecodable read keeps its status on the line and still counts as a round trip")
+    func notDecodableReadsAreLatencySamples() async throws {
+        let provider = ScriptedLatencyProvider { _, _ in
+            .failure(.notDecodable(reason: "RPlt is not numeric"))
+        }
+        let sink = LatencyCapturingSink()
+        try await runLatencyLoopForTest(provider: provider, keys: ["RPlt"], count: 4, sink: sink)
+
+        let records = try sink.records()
+        #expect(
+            records.prefix(4).allSatisfy {
+                $0["status"] as? String == "notDecodable"
+                    && $0["failureReason"] as? String == "RPlt is not numeric"
+            })
+        let summary = try #require(records.last)
+        #expect(summary["okCount"] as? Int == 0)
+        #expect(summary["failureCount"] as? Int == 4)
+        #expect(summary["percentileSampleSize"] as? Int == 4)
+        #expect(summary["p50ContinuousNanoseconds"] is Int)
+        #expect(summary["p50SuspendingNanoseconds"] is Int)
+    }
+
+    @Test("a warm-up failure carries its reason into the summary")
+    func warmupFailureReasonIsCarried() async throws {
+        let provider = ScriptedLatencyProvider { callNumber, _ in
+            callNumber == 0 ? .failure(.readFailed(reason: "firmware(code: 132)")) : .success(1.0)
+        }
+        let sink = LatencyCapturingSink()
+        try await runLatencyLoopForTest(provider: provider, count: 1, sink: sink)
+
+        let summary = try #require(try sink.records().last)
+        let warmup = try #require(summary["warmup"] as? [[String: Any]])
+        #expect(warmup.first?["status"] as? String == "readFailed")
+        #expect(warmup.first?["failureReason"] as? String == "firmware(code: 132)")
     }
 
     @Test("a warm-up that is merely refused is reported in the summary and the run carries on")
@@ -283,7 +180,7 @@ struct RunLatencyLoopTests {
             callNumber == 0 ? .failure(.unknownKey("F0Ac")) : .success(1.0)
         }
         let sink = LatencyCapturingSink()
-        try await Self.run(provider: provider, count: 2, sink: sink)
+        try await runLatencyLoopForTest(provider: provider, count: 2, sink: sink)
 
         let summary = try #require(try sink.records().last)
         let warmup = try #require(summary["warmup"] as? [[String: Any]])
@@ -308,7 +205,7 @@ struct RunLatencyLoopTests {
         let tickState = TickState()
 
         let task = Task {
-            try await Self.run(
+            try await runLatencyLoopForTest(
                 provider: provider, count: 1_000, sink: sink, tickState: tickState)
         }
         try await task.value  // must not throw
@@ -329,7 +226,7 @@ struct RunLatencyLoopTests {
     @Test("cancellation during an explicit --interval wait returns cleanly with the summary")
     func cancellationDuringIntervalWait() async throws {
         let sink = LatencyCapturingSink()
-        try await Self.run(
+        try await runLatencyLoopForTest(
             provider: ScriptedLatencyProvider(), count: 5, intervalSeconds: 10, sink: sink,
             sleep: { _ in throw CancellationError() })
 
@@ -349,7 +246,7 @@ struct RunLatencyLoopTests {
     func zeroIntervalDoesNotWait() async throws {
         let sink = LatencyCapturingSink()
         let waits = WaitRecorder()
-        try await Self.run(
+        try await runLatencyLoopForTest(
             provider: ScriptedLatencyProvider(), count: 20, intervalSeconds: 0, sink: sink,
             sleep: waits.sleeper)
         #expect(waits.nanoseconds.isEmpty)
@@ -362,7 +259,7 @@ struct RunLatencyLoopTests {
     func explicitIntervalWaitsBetweenReadsOnly() async throws {
         let sink = LatencyCapturingSink()
         let waits = WaitRecorder()
-        try await Self.run(
+        try await runLatencyLoopForTest(
             provider: ScriptedLatencyProvider(), count: 3, intervalSeconds: 0.5, sink: sink,
             sleep: waits.sleeper)
         #expect(waits.nanoseconds == [500_000_000, 500_000_000])
@@ -375,7 +272,7 @@ struct RunLatencyLoopTests {
     func productionWaitIsRealAndAtLeastTheInterval() async throws {
         let sink = LatencyCapturingSink()
         let start = ContinuousClock.now
-        try await Self.run(
+        try await runLatencyLoopForTest(
             provider: ScriptedLatencyProvider(), count: 2, intervalSeconds: 0.5, sink: sink)
         #expect(ContinuousClock.now - start >= .milliseconds(450))
     }

@@ -62,6 +62,9 @@ struct LatencyRecordTests {
             "minContinuousNanoseconds", "p50ContinuousNanoseconds", "p99ContinuousNanoseconds",
             "p999ContinuousNanoseconds", "p9999ContinuousNanoseconds",
             "maxContinuousNanoseconds", "maxAllReadsContinuousNanoseconds",
+            "minSuspendingNanoseconds", "p50SuspendingNanoseconds", "p99SuspendingNanoseconds",
+            "p999SuspendingNanoseconds", "p9999SuspendingNanoseconds",
+            "maxSuspendingNanoseconds", "maxAllReadsSuspendingNanoseconds",
         ] {
             let value = try #require(decoded[field], "\(field) must be present, as null")
             #expect(value is NSNull, "\(field) must be an explicit null with no reads")
@@ -73,10 +76,28 @@ struct LatencyRecordTests {
         #expect(decoded["interrupted"] as? Bool == true)
         #expect(decoded["p999Meaningful"] as? Bool == false)
         #expect(decoded["p9999Meaningful"] as? Bool == false)
-        #expect((decoded["slowest"] as? [Any])?.isEmpty == true)
+        #expect((decoded["slowestBySuspending"] as? [Any])?.isEmpty == true)
+        #expect((decoded["slowestByContinuous"] as? [Any])?.isEmpty == true)
+        #expect(decoded["slowest"] == nil, "the ranking is named for its clock now")
         let warmup = try #require(decoded["warmup"] as? [[String: Any]])
         #expect(warmup.first?["key"] as? String == "F0Ac")
         #expect(warmup.first?["status"] as? String == "ok")
+        // Present and null, like every other optional field on these lines.
+        #expect(warmup.first?["failureReason"] is NSNull)
+    }
+
+    @Test("a warm-up that failed carries its reason, so READ_KEYINFO and READ_BYTES differ")
+    func warmupCarriesItsFailureReason() throws {
+        let summary = LatencyAccumulator().summary(
+            requestedCount: 1,
+            warmup: [
+                LatencyWarmupOutcome(
+                    key: "ZZZZ", status: "readFailed", failureReason: "firmware(code: 132)")
+            ])
+        let decoded = try decode(try NDJSON.line(summary))
+        let warmup = try #require(decoded["warmup"] as? [[String: Any]])
+        #expect(Set(warmup[0].keys) == ["key", "status", "failureReason"])
+        #expect(warmup[0]["failureReason"] as? String == "firmware(code: 132)")
     }
 
     @Test("a populated summary line carries the percentile basis and the p99.99 warning text")
@@ -98,12 +119,16 @@ struct LatencyRecordTests {
         #expect(decoded["interrupted"] as? Bool == false)
         #expect(decoded["maxContinuousNanoseconds"] as? Int == 1_029)
         #expect(decoded["minContinuousNanoseconds"] as? Int == 1_000)
+        // Every record above has a suspending duration of 1.
+        #expect(decoded["maxSuspendingNanoseconds"] as? Int == 1)
+        #expect(decoded["p50SuspendingNanoseconds"] as? Int == 1)
+        #expect(decoded["maxAllReadsSuspendingNanoseconds"] as? Int == 1)
         #expect(decoded["p9999Meaningful"] as? Bool == false)
         let note = try #require(decoded["p9999Note"] as? String)
         #expect(note.contains("10000"), "the note must say how many reads p99.99 needs")
         let basis = try #require(decoded["percentileBasis"] as? String)
         #expect(basis.contains("nearest-rank"))
-        let slowest = try #require(decoded["slowest"] as? [[String: Any]])
+        let slowest = try #require(decoded["slowestByContinuous"] as? [[String: Any]])
         #expect(slowest.count == 10)
         #expect(
             Set(slowest[0].keys) == [
@@ -111,6 +136,9 @@ struct LatencyRecordTests {
                 "atContinuousNanoseconds",
             ])
         #expect(slowest[0]["index"] as? Int == 29)
+        // Every suspending duration ties at 1, and ties go to the earlier read.
+        let bySuspending = try #require(decoded["slowestBySuspending"] as? [[String: Any]])
+        #expect(bySuspending.first?["index"] as? Int == 0)
     }
 
     // MARK: - Classification

@@ -69,12 +69,12 @@ struct LatencyStatisticsTests {
         let reads = (1...10_000).map { Self.read($0 - 1, nanoseconds: Int64($0)) }
         let summary = Self.summary(reads)
 
-        #expect(summary.minContinuousNanoseconds == 1)
-        #expect(summary.p50ContinuousNanoseconds == 5_000)
-        #expect(summary.p99ContinuousNanoseconds == 9_900)
-        #expect(summary.p999ContinuousNanoseconds == 9_990)
-        #expect(summary.p9999ContinuousNanoseconds == 9_999)
-        #expect(summary.maxContinuousNanoseconds == 10_000)
+        #expect(summary.continuous.min == 1)
+        #expect(summary.continuous.p50 == 5_000)
+        #expect(summary.continuous.p99 == 9_900)
+        #expect(summary.continuous.p999 == 9_990)
+        #expect(summary.continuous.p9999 == 9_999)
+        #expect(summary.continuous.max == 10_000)
     }
 
     @Test("the arrival order of the reads does not change any percentile")
@@ -89,15 +89,15 @@ struct LatencyStatisticsTests {
         let ascendingSummary = Self.summary(ascending)
         let shuffledSummary = Self.summary(shuffled)
         #expect(
-            ascendingSummary.p50ContinuousNanoseconds == shuffledSummary.p50ContinuousNanoseconds)
+            ascendingSummary.continuous.p50 == shuffledSummary.continuous.p50)
         #expect(
-            ascendingSummary.p99ContinuousNanoseconds == shuffledSummary.p99ContinuousNanoseconds)
+            ascendingSummary.continuous.p99 == shuffledSummary.continuous.p99)
         #expect(
-            ascendingSummary.p999ContinuousNanoseconds == shuffledSummary.p999ContinuousNanoseconds)
+            ascendingSummary.continuous.p999 == shuffledSummary.continuous.p999)
         #expect(
-            ascendingSummary.maxContinuousNanoseconds == shuffledSummary.maxContinuousNanoseconds)
+            ascendingSummary.continuous.max == shuffledSummary.continuous.max)
         #expect(
-            ascendingSummary.minContinuousNanoseconds == shuffledSummary.minContinuousNanoseconds)
+            ascendingSummary.continuous.min == shuffledSummary.continuous.min)
     }
 
     // MARK: - Small samples
@@ -113,12 +113,12 @@ struct LatencyStatisticsTests {
         #expect(summary.failureCount == 0)
         #expect(summary.requestedCount == 50)
         #expect(summary.interrupted == true)
-        #expect(summary.minContinuousNanoseconds == nil)
-        #expect(summary.p50ContinuousNanoseconds == nil)
-        #expect(summary.p9999ContinuousNanoseconds == nil)
-        #expect(summary.maxContinuousNanoseconds == nil)
+        #expect(summary.continuous.min == nil)
+        #expect(summary.continuous.p50 == nil)
+        #expect(summary.continuous.p9999 == nil)
+        #expect(summary.continuous.max == nil)
         #expect(summary.maxAllReadsContinuousNanoseconds == nil)
-        #expect(summary.slowest.isEmpty)
+        #expect(summary.slowestByContinuous.isEmpty)
         #expect(summary.p999Meaningful == false)
         #expect(summary.p9999Meaningful == false)
     }
@@ -129,13 +129,13 @@ struct LatencyStatisticsTests {
 
         #expect(summary.count == 1)
         #expect(summary.okCount == 1)
-        #expect(summary.minContinuousNanoseconds == 4_321)
-        #expect(summary.p50ContinuousNanoseconds == 4_321)
-        #expect(summary.p99ContinuousNanoseconds == 4_321)
-        #expect(summary.p999ContinuousNanoseconds == 4_321)
-        #expect(summary.p9999ContinuousNanoseconds == 4_321)
-        #expect(summary.maxContinuousNanoseconds == 4_321)
-        #expect(summary.slowest.count == 1)
+        #expect(summary.continuous.min == 4_321)
+        #expect(summary.continuous.p50 == 4_321)
+        #expect(summary.continuous.p99 == 4_321)
+        #expect(summary.continuous.p999 == 4_321)
+        #expect(summary.continuous.p9999 == 4_321)
+        #expect(summary.continuous.max == 4_321)
+        #expect(summary.slowestByContinuous.count == 1)
         #expect(summary.interrupted == false)
     }
 
@@ -144,10 +144,10 @@ struct LatencyStatisticsTests {
         let summary = Self.summary([
             Self.read(0, nanoseconds: 900), Self.read(1, nanoseconds: 100),
         ])
-        #expect(summary.p50ContinuousNanoseconds == 100)
-        #expect(summary.p99ContinuousNanoseconds == 900)
-        #expect(summary.minContinuousNanoseconds == 100)
-        #expect(summary.maxContinuousNanoseconds == 900)
+        #expect(summary.continuous.p50 == 100)
+        #expect(summary.continuous.p99 == 900)
+        #expect(summary.continuous.min == 100)
+        #expect(summary.continuous.max == 900)
     }
 
     // MARK: - Failures
@@ -171,12 +171,12 @@ struct LatencyStatisticsTests {
         #expect(summary.count == 5)
         #expect(summary.okCount == 3)
         #expect(summary.failureCount == 2)
-        #expect(summary.minContinuousNanoseconds == 100, "the fast failure (5) must not be the min")
-        #expect(summary.p50ContinuousNanoseconds == 200)
-        #expect(summary.maxContinuousNanoseconds == 300, "the slow failure must not be the max")
+        #expect(summary.continuous.min == 100, "the fast failure (5) must not be the min")
+        #expect(summary.continuous.p50 == 200)
+        #expect(summary.continuous.max == 300, "the slow failure must not be the max")
         #expect(summary.maxAllReadsContinuousNanoseconds == 9_999_999)
 
-        let top = summary.slowest.first
+        let top = summary.slowestByContinuous.first
         #expect(top?.index == 1)
         #expect(top?.status == "readFailed")
     }
@@ -189,8 +189,8 @@ struct LatencyStatisticsTests {
         #expect(summary.count == 4)
         #expect(summary.okCount == 0)
         #expect(summary.failureCount == 4)
-        #expect(summary.p50ContinuousNanoseconds == nil)
-        #expect(summary.maxContinuousNanoseconds == nil)
+        #expect(summary.continuous.p50 == nil)
+        #expect(summary.continuous.max == nil)
         #expect(summary.maxAllReadsContinuousNanoseconds == 50)
     }
 
@@ -205,12 +205,12 @@ struct LatencyStatisticsTests {
         }
         let summary = Self.summary(reads)
 
-        #expect(summary.slowest.count == 10)
+        #expect(summary.slowestByContinuous.count == 10)
         // The ten largest durations are 25...16, slowest first.
         #expect(
-            summary.slowest.map(\.continuousNanoseconds)
+            summary.slowestByContinuous.map(\.continuousNanoseconds)
                 == (16...25).reversed().map { Int64($0) * 10 })
-        for entry in summary.slowest {
+        for entry in summary.slowestByContinuous {
             #expect(entry.atContinuousNanoseconds == Int64(entry.index) * 1_000_000)
             #expect(durations[entry.index] * 10 == entry.continuousNanoseconds)
         }
@@ -220,14 +220,14 @@ struct LatencyStatisticsTests {
     func fewerThanTenReads() {
         let reads = (0..<4).map { Self.read($0, nanoseconds: Int64(($0 + 1) * 100)) }
         let summary = Self.summary(reads)
-        #expect(summary.slowest.map(\.index) == [3, 2, 1, 0])
+        #expect(summary.slowestByContinuous.map(\.index) == [3, 2, 1, 0])
     }
 
     @Test("equal durations are tied by the earlier read, and a later tie never displaces one")
     func tiesPreferTheEarlierRead() {
         let reads = (0..<12).map { Self.read($0, nanoseconds: 777) }
         let summary = Self.summary(reads)
-        #expect(summary.slowest.map(\.index) == Array(0..<10))
+        #expect(summary.slowestByContinuous.map(\.index) == Array(0..<10))
     }
 
     @Test("a slow read that arrives last still displaces the tenth slowest")
@@ -235,8 +235,8 @@ struct LatencyStatisticsTests {
         var reads = (0..<20).map { Self.read($0, nanoseconds: Int64(100 + $0)) }
         reads.append(Self.read(20, nanoseconds: 1_000_000))
         let summary = Self.summary(reads)
-        #expect(summary.slowest.first?.index == 20)
-        #expect(summary.slowest.count == 10)
+        #expect(summary.slowestByContinuous.first?.index == 20)
+        #expect(summary.slowestByContinuous.count == 10)
     }
 
     @Test("the slowest list carries the suspending duration and the status")
@@ -244,7 +244,7 @@ struct LatencyStatisticsTests {
         let summary = Self.summary([
             Self.read(0, nanoseconds: 500, status: "readFailed", suspending: 123)
         ])
-        let entry = summary.slowest.first
+        let entry = summary.slowestByContinuous.first
         #expect(entry?.suspendingNanoseconds == 123)
         #expect(entry?.status == "readFailed")
         #expect(entry?.key == "F0Ac")
@@ -259,12 +259,12 @@ struct LatencyStatisticsTests {
         #expect(below.p9999Note != nil)
         // Below the threshold the "p99.99" is simply the maximum — that is what the flag
         // is warning about, and at the threshold it stops being true.
-        #expect(below.p9999ContinuousNanoseconds == below.maxContinuousNanoseconds)
+        #expect(below.continuous.p9999 == below.continuous.max)
 
         let at = Self.summary((0..<10_000).map { Self.read($0, nanoseconds: Int64($0 + 1)) })
         #expect(at.p9999Meaningful == true)
         #expect(at.p9999Note == nil)
-        #expect(at.p9999ContinuousNanoseconds != at.maxContinuousNanoseconds)
+        #expect(at.continuous.p9999 != at.continuous.max)
     }
 
     /// The flag is about how many reads the percentile was *computed over*, which excludes
