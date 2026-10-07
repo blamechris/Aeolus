@@ -165,8 +165,11 @@ extension Fanctl.Reset {
     /// There is no per-fan reset, and saying so at parse time is cheaper than a connection
     /// that could only refuse.
     ///
-    /// Taking one fan back means holding it, which means a lease, which means a write path;
-    /// this build has none. `--all` is the whole of the command today, so a bare
+    /// No request the helper accepts returns one fan on behalf of another process, and a fan
+    /// is **not** taken back by holding it: manual control is a lease, and a lease only ever
+    /// moves a fan *away* from automatic. Moving toward it is machine-wide and takes no lease
+    /// at all — `--all` here, and `fanctl auto`, which sends the same request and then checks
+    /// what the helper reports (ADR 0013 D2). `--all` is the whole of this command, so a bare
     /// `fanctl reset` is an incomplete invocation rather than a runtime failure — which is
     /// what makes `ValidationError` the right type: it prints usage, where `--all` is listed.
     ///
@@ -179,8 +182,9 @@ extension Fanctl.Reset {
                 """
                 fanctl reset asks the helper to return every fan to automatic control and to \
                 drop every lease, and --all is how you ask for it. There is no per-fan reset: \
-                taking a single fan back means holding it under a lease, and this build has \
-                no write path to grant one. Run: fanctl reset --all
+                no request the helper accepts returns one fan on behalf of another process. \
+                fanctl auto sends the same request and then checks what the helper reports. \
+                Run: fanctl reset --all
                 """)
         }
     }
