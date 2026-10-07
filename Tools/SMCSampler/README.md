@@ -36,11 +36,13 @@ character rule at parse time — a typo is reported immediately, not discovered 
 
 It needs no root, no signing identity, and no installed helper — every read goes straight
 through `SMCSensorProvider`, the same as `fanctl`'s own read commands. Run it across one
-real lid close, capturing to a durable path (not inside this worktree, which a teardown can
-reclaim):
+real lid close, capturing to a durable path. Write every capture outside the repository and
+outside any worktree (a teardown can reclaim a worktree, and a capture is not source). The
+commands in this README use `~/aeolus-captures/`; create it once with `mkdir -p
+~/aeolus-captures`, or substitute any directory of your own:
 
 ```sh
-swift run smc-sampler --interval=1 > ~/Obsidian/no-it-all/handoffs/Aeolus-210-smc-sampler-<UTC date>.ndjson
+swift run smc-sampler --interval=1 > ~/aeolus-captures/Aeolus-210-smc-sampler-<UTC date>.ndjson
 ```
 
 Close the lid, wait for it to wake back up on its own, then bring the lid back up and press
@@ -157,7 +159,7 @@ enough for p99.99 to mean something (it needs 10,000 completed reads).
 
 ```sh
 .build/release/smc-sampler --latency --count=12000 --interval=0.05 \
-  > ~/Obsidian/no-it-all/handoffs/Aeolus-296-latency-idle-paced-$(date -u +%Y%m%dT%H%M%SZ).ndjson
+  > ~/aeolus-captures/Aeolus-296-latency-idle-paced-$(date -u +%Y%m%dT%H%M%SZ).ndjson
 ```
 
 ### Condition 1b — idle, back to back (a separate row)
@@ -167,7 +169,7 @@ run below is made of. Keep it as its own row; do not merge it into the paced one
 
 ```sh
 .build/release/smc-sampler --latency --count=100000 \
-  > ~/Obsidian/no-it-all/handoffs/Aeolus-296-latency-idle-b2b-$(date -u +%Y%m%dT%H%M%SZ).ndjson
+  > ~/aeolus-captures/Aeolus-296-latency-idle-b2b-$(date -u +%Y%m%dT%H%M%SZ).ndjson
 ```
 
 Size `--count` for the tail you want to report: p99.99 is only meaningful from 10,000
@@ -176,17 +178,27 @@ completed reads, and the summary says so itself (`p9999Meaningful`). A short run
 
 ### Condition 2 — contended with a `fanctl` walk
 
-`fanctl sensors` walks the whole key table, and a walk takes 22–24.9 s on `Mac16,5`. Run the
-latency capture in one terminal while walks repeat back to back in another, and size
-`--count` so the capture outlasts several walks. 400,000 reads is about a minute and a half
-at the back-to-back rate, which is more than three walks; contention will only slow the
-reads, so the capture lasts at least that long.
+`fanctl sensors` walks the whole key table. On `Mac16,5` on 2026-10-07 one walk took about
+1–2 s in a release build (112 back to back in 139 s while this capture ran), and with three
+walkers at once each walk took about 2–3 s (339 walks in 262 s). The 22–24.9 s figure quoted
+elsewhere was most likely never a `fanctl sensors` walk: it is recorded only for the helper's
+discovery walk with other walks running at once in the hardware test suite (three, for the
+24.9 s figure; the 22.0 s one does not say how many), which `swift test` builds debug unless told
+otherwise. The build and OS of the old runs are not fully recorded, so this is an inference (see
+`docs/SMC-RESEARCH.md`, issue #296). Run the latency capture in one terminal
+while walks repeat back to back in another, with no build running; 400,000 reads is about
+a minute and a half at the uncontended back-to-back rate and took longer than that beside the
+walkers (the walkers ran 139 s with one, 262 s with three), so it covers dozens of walks.
+Three copies of the terminal B loop at once *approximate* the original three-walk workload
+(four contenders with the sampler, in separate release processes rather than in-process
+discovery walks in a debug test); they do not reproduce it, so record a result from them as
+"three concurrent `fanctl` walkers", not as the original workload.
 
 Terminal A:
 
 ```sh
 .build/release/smc-sampler --latency --count=400000 \
-  > ~/Obsidian/no-it-all/handoffs/Aeolus-296-latency-contended-$(date -u +%Y%m%dT%H%M%SZ).ndjson
+  > ~/aeolus-captures/Aeolus-296-latency-contended-$(date -u +%Y%m%dT%H%M%SZ).ndjson
 ```
 
 Terminal B, started a few seconds after A, and stopped (`Ctrl-C`) after A has finished:
@@ -209,7 +221,7 @@ ordinary mode:
 
 ```sh
 .build/release/smc-sampler --latency --count=12000 --interval=0.05 \
-  > ~/Obsidian/no-it-all/handoffs/Aeolus-296-latency-wake-$(date -u +%Y%m%dT%H%M%SZ).ndjson
+  > ~/aeolus-captures/Aeolus-296-latency-wake-$(date -u +%Y%m%dT%H%M%SZ).ndjson
 ```
 
 Close the lid, wait for the machine to wake on its own, then open it and stop the tool with

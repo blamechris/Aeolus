@@ -28,7 +28,9 @@ The machine available to this project:
 
 The machine ran 26.5.2 (25F84) for the 2026-07-25 session, and 26.6.2 (25G83) for the
 2026-08-20 one and for the 2026-09-05 lid-close capture. Each observation below is scoped to
-the build it was taken on, and says so; this row is the machine as it stands now.
+the build it was taken on, and says so; this row is the machine as it stood for those
+observations. By 2026-10-07 the development machine had moved to macOS 27.0.1 (26A434), and the
+issue #296 latency runs ("Per-round-trip SMC latency on Mac16,5", below) are on it.
 
 That is one Mac, from the M3-and-newer generation. It means:
 
@@ -816,11 +818,8 @@ the shell `while read` loop draining the pipe; `capturedAt` inside the JSON is t
 clock. Sleep/wake ground truth is `pmset -g log` (local time, UTC−7). **No write selector was
 issued at any point**, and the tree has no write path at all (`WritePathAbsenceTests`, green).
 
-The two captures are kept in the maintainer's private vault rather than in the repository — 5.4 MB
-of NDJSON is a capture, not source:
-
-- `~/Obsidian/no-it-all/handoffs/Aeolus-68-lid-close-watch-2026-09-05.ndjson`
-- `~/Obsidian/no-it-all/handoffs/Aeolus-68-pmset-sleepwake-2026-09-05.log`
+The two captures (a lid-close watch NDJSON and the `pmset` sleep/wake log) are kept by the
+maintainer outside the repository — 5.4 MB of NDJSON is a capture, not source.
 
 **Provenance here is a source check, not a binary check.** `.build/debug/fanctl` no longer exists
 and cannot be re-inspected. What can be checked is that
@@ -1098,11 +1097,8 @@ Running the built helper under `sudo` with no install and no Developer ID **work
 asserted and nothing had executed: it logged `listening on com.blamechris.Aeolus.Helper` and ran
 its startup reconciliation before serving.
 
-The three captures are kept in the maintainer's private vault rather than in the repository:
-
-- `~/Obsidian/no-it-all/handoffs/Aeolus-209-power-observer-2026-09-16.ndjson`
-- `~/Obsidian/no-it-all/handoffs/Aeolus-209-helper-oslog-2026-09-16.ndjson`
-- `~/Obsidian/no-it-all/handoffs/Aeolus-209-pmset-sleepwake-2026-09-16.log`
+The three captures (the `power-observer` NDJSON, the helper's unified-log NDJSON, and the `pmset`
+sleep/wake log) are kept by the maintainer outside the repository.
 
 #### Seven sleeps, one delivery
 
@@ -1209,6 +1205,180 @@ nothing in this capture samples it. What this measures is the *stake* rather tha
 suspending clock loses essentially the entire sleep, so anything resting on one would age by one
 second across an 899 s maintenance sleep. Row 12 stays open, and now has a number attached to why
 it matters.
+
+### Per-round-trip SMC latency on Mac16,5 — idle and contended (issue #296)
+
+> **[#296](https://github.com/blamechris/Aeolus/issues/296) asks how long one
+> `IOConnectCallStructMethod` round trip takes, so that
+> [ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s wedge bound D can
+> come from a measurement. Four runs are in: idle (paced), idle back to back, contended by one
+> `fanctl` walker, and contended by three. The slowest of 912,000 timed reads took 11.45 ms, and
+> no read failed or hung.** The dark-wake and first-read-after-wake conditions are not measured,
+> H2 is not run, and D is not set. #296 stays open for those.
+
+**Date:** 2026-10-07 (the two contended runs between 22:29 and 22:37 UTC). **Machine:**
+`Mac16,5`, Apple M4 Max, **macOS 27.0.1 (Build 26A434)**, as every capture's `start` record and
+`sw_vers` report. That is not the 26.6.2 (25G83) of the other observations in this file: these are
+the first observations here on this major version. One machine, one session; none of this
+generalises to any other Mac, and [HARDWARE-MATRIX.md](HARDWARE-MATRIX.md) is unchanged and still
+says `untested` everywhere it said `untested` before. **Method:** `smc-sampler --latency`
+(`Tools/SMCSampler`), built from `main` at `579d1c2` in the release configuration and run from the
+repository root; the contended runs used a release `fanctl` built from the same commit. Each timed
+read is one `provider.read(keys:)` call on a key whose metadata an untimed warm-up read had already
+cached, so it is one `READ_BYTES` call and one `IOConnectCallStructMethod` (one key per read, the
+tool's default `F0Ac`). Durations are on `SuspendingClock`, the clock ADR 0012 I3 ages a call on.
+Every maximum below is `maxAllReadsSuspendingNanoseconds`: the maximum over reads of **every**
+status, failures included. Percentiles are nearest-rank over completed round trips. **No read
+failed in any run.** **No write selector was issued at any point**; the tool has no route to the
+write path.
+
+The raw NDJSON captures are kept by the maintainer outside the repository — a capture is not
+source — so this section records their summaries, not the captures.
+
+| Run | Reads | p50 | p99 | p99.9 | p99.99 | max | Machine state |
+|---|---|---|---|---|---|---|---|
+| **1** — idle, paced at `--interval=0.05` (the idle row) | 12,000 | 0.451 ms | 1.168 ms | 2.226 ms | 10.025 ms | 11.453 ms | Quiet: no build (one Swift process seen in 1 of 337 two-second samples, at the first second); load average ≤ 3.7 |
+| **1b** — idle, back to back | 100,000 | 0.190 ms | 0.841 ms | 0.940 ms | 1.755 ms | 4.332 ms | Quiet: no build; load average ~3.1 |
+| **2** — contended, one walker: back to back while one `fanctl sensors` loop walked the key table (112 walks in 139 s) | 400,000 | 0.327 ms | 1.014 ms | 1.497 ms | 2.359 ms | 11.330 ms | No Swift build process in any 2 s sample; load average ≤ 4.44, decaying from the build of the binaries that preceded it. 8 reads over 5 ms, 60 over 2 ms |
+| **2b** — contended, three walkers at once (four contenders with the sampler): 339 walks in 262 s, each about 2–3 s | 400,000 | 0.619 ms | 1.466 ms | 2.277 ms | 3.662 ms | 10.071 ms | No Swift build process in any 2 s sample; load average ≤ 3.42 |
+
+"Quiet" means no build was running, not an unloaded machine: the load average was about 3 and at
+most 3.7. Two earlier runs are not in the table. A paced run taken while a build ran for about 75%
+of it (12,000 reads, max 5.485 ms) is superseded by run 1 and is mentioned only as context. A
+first contended run with one walker (400,000 reads) is **discarded as a measurement**: a light
+build overlapped its last 37 s, and its maximum and most of the reads above its p99.99 fell inside
+that window, so its tail cannot be attributed to the walker. Run 2 is a clean rerun of it; run 2b
+adds two more walkers.
+
+#### The quiet paced run has the worst p99.99; contention leaves the worst read near 11 ms
+
+Run 1's p99.99 (10.0 ms) is far above any other run's (1.76, 2.36 and 3.66 ms). With 12,000 reads
+it is the second-largest read (nearest rank 11,999), so it is a single event, not a tail estimate.
+Its maximum (11.45 ms) is close to the one-walker run's (11.33 ms), which has 400,000 reads. The
+body of the paced run is slower too: p50 0.451 ms against 0.190 ms back to back. The reads that
+follow an idle gap are slower, which is consistent with a cold start (a cold CPU and a cold task
+wake-up) and with the one earlier, smaller run the tool's README records (p50 400 µs paced against
+201 µs back to back). **This does not isolate the cause**: the timed span contains the Swift around
+the call and the task's wake-up, and nothing here separates them from the kernel round trip.
+
+Within run 1, 386 of 12,000 reads exceeded 1 ms and 16 exceeded 2 ms. Only three exceeded 5 ms, at
++178 s, +338 s and +518 s into the run, taking 11.5, 10.0 and 8.6 ms. They are 160 s and 180 s
+apart, so roughly every three minutes, which looks like periodic system activity. **Three events
+cannot establish a period, and the cause is not established.**
+
+#### What contention did and did not do
+
+Runs 2 and 2b are run 1b's loop with walkers beside it. Run 1b has a quarter of their reads, so its
+maximum and p99.99 are not directly comparable with theirs. The median moves most: 0.190 ms
+uncontended, 0.327 ms (1.7×) with one walker and 0.619 ms (3.3×) with three. The p99.9 moves from
+0.940 ms to 1.497 ms and 2.277 ms. The worst read stays near 11 ms: 11.330 ms with one walker and
+10.071 ms with three, against 11.453 ms for the idle paced run. The walkers slowed too, from about
+1.2 s per walk (one walker: 112 walks in 139 s) to about 2–3 s (three walkers: 339 walks in
+262 s, about 113 each). Contention slowed the walks and the median read, and nothing hung.
+
+The reads that stand out are few, and some come in short bursts. Run 2 had 8 reads over 5 ms and
+60 over 2 ms; its slowest were 11.33 ms at +111.03 s (with a 5.63 ms read 25 ms later) and
+8.87 ms at +51.03 s (with a 5.82 ms read 29 ms later). Run 2b had 12 reads over 5 ms; its slowest
+two, 10.06 and 10.07 ms, sit in a burst of four between +226.571 s and +226.602 s, and the next is
+7.64 ms at +258 s. In run 2b, 8 of the 9 reads over 5 ms that are *not* in that burst fell
+0.20 ± 0.02 s past a whole second of the run's own clock (+53.205, +89.216, +105.198 s, …), which
+points at a once-a-second source in phase with the run. It is not the tool's heartbeat, which
+fires about 0.01 s past the second; the source is not established. No Swift build was running in
+either run.
+
+#### The worst round trip, and what it bounds
+
+The worst round trip in any condition was **11.453 ms** (run 1, idle paced); the worst under
+contention was 11.330 ms (run 2, one walker). ADR 0012 requires D to be at least 100× the observed
+maximum, which on this evidence alone is **1.15 s**. The ADR's expected D of about 5 s is about
+**437×** that maximum. **No slow or hanging call was observed in runs 1, 1b, 2 or 2b.**
+
+That is a provisional lower bound on D from two of the four conditions #296 asks for (idle, and
+contended by `fanctl` walks), not a value for D. The two conditions not yet measured include the
+dark wake, in which the helper's 34-key critical read was already seen to fail (see the #209/#210
+section above), so the absence of a slow call here says nothing about it.
+
+Every figure is an **upper bound on the round trip**, never an underestimate: the span includes
+the Swift around the call and the task's wake-up (the tool's README says so). That is the
+direction that cannot make D too tight; it can only make a D derived from it looser than the
+round trip itself requires.
+
+#### Disagreement — #296 says contended walks take 22–24.9 s; `fanctl sensors` walks took about 1–3 s
+
+[#296](https://github.com/blamechris/Aeolus/issues/296) says contended `fanctl` walks "have
+measured 22–24.9 s here". On 2026-10-07, with release builds of `fanctl`, a `fanctl sensors` walk
+took about 1–2 s: the one-walker rerun made 112 back-to-back walks in 139 s (about 1.2 s each on
+average), and the discarded first run made 117 in 145 s, two of which took 3–4 s (walk times there
+are whole-second timestamps). With three walkers at once each walk took about 2–3 s. The figure the
+issue attaches to a `fanctl` walk is about an order of magnitude above anything observed here,
+**including under three-way contention**, so contention among `fanctl` processes does not by
+itself explain it.
+
+Where the figure comes from, read from the repository's history (no run in this session reproduced
+it; run 2b approximates its workload, below):
+
+- **24.9 s** first appears in commit `14e2bf4` (E2.3, #94, 2026-08-02), in the header comment of
+  `Tests/AeolusHelperTests/HelperHardwareTests.swift`: run in parallel, "three concurrent
+  `readAll()` enumerations against the same SMC turned a 5.9 s cold discovery into 24.9 s and a
+  0.35 s warm snapshot into 0.89 s". That is the helper's discovery walk, inside a test process,
+  with two other walks running at once.
+- **22.0 s** first appears in commit `6ddbb46` (#193, 2026-09-05), in the same file: the first
+  snapshot of the composed helper, run in a sibling suite, took 22.0 s against 3.3 s when run
+  inside the serialised suite. The comment does not say how many walks were running.
+- It then spread as a property of "a contended walk".
+  `SMCReadScheduler.longestContendedDiscoveryWalk` (24.9 s, in `f22086f`, #290, 2026-09-20)
+  keeps the three-concurrent-walks wording in its own comment. #292 restates it as "contended
+  walks at 22–24.9 s", #296 as walks that "have measured 22–24.9 s here" against a contended
+  `fanctl` walk, and `Tools/SMCSampler/README.md` (`83f58e6`, 2026-10-07) as "a walk takes
+  22–24.9 s" for `fanctl sensors`.
+
+**The most likely reading is that the figure was never a measurement of a `fanctl sensors` walk.**
+The history shows where the two numbers were written down, which is test-suite comments about the
+helper's discovery walk with other walks running concurrently. That nobody ever measured a
+`fanctl` walk at that length is an **inference** from those comments, not something the history
+states. Several factors could account for the gap, and none was isolated:
+
+- **Build:** the figures come from `swift test`, which builds debug unless told otherwise, and
+  today's walks ran from a release `fanctl` (confirmed for runs 2 and 2b). Whether the earlier runs
+  were debug is not recorded.
+- **macOS version — a live candidate, not ruled out:** the 22.0 s figure was recorded on 26.6.2,
+  and today's walks ran on 27.0.1 (26A434). The build the 24.9 s figure was taken on is not
+  recorded (the machine ran 26.5.2 on 2026-07-25 and 26.6.2 by 2026-08-20).
+- **The helper's own discovery path:** the old figures come from the helper's read path (its
+  scheduler and read-only authority, which `HelperHardwareTests` exercises), not from `fanctl`.
+  That `fanctl sensors` and the helper's discovery walk cost the same is an inference too, and it
+  was not tested here.
+- **Host load and cache state:** [#227](https://github.com/blamechris/Aeolus/issues/227) recorded
+  the same suite's cold snapshot at 13.6 s and its warm one at 14.9 s under host load from other
+  builds, which runs 2 and 2b did not apply. The 5.9 s figure is a cold SMC key cache and 2.2 s a
+  warm one ([ADR 0006](ADR/0006-single-smc-reader.md), macOS 26.5.2); today's 1–2 s is below even
+  the warm figure, which the cache state alone does not explain.
+
+Runs 2 and 2b **approximate** the original workload and do not reproduce it. Three walkers beside
+the sampler are four contenders, in separate release processes, where the originals were
+concurrent suites of one debug test process. The contended rows above must not be read as having
+covered the original workload.
+
+#### The claim boundary
+
+- **Established:** on `Mac16,5` / macOS 27.0.1 (26A434), in one session on 2026-10-07, 912,000
+  timed one-key `READ_BYTES` round trips across four runs had a worst case of 11.45 ms, none
+  failed, and none was slow or hanging.
+- **Not established — comparability with the 26.6.2 observations.** These are the first
+  observations in this file on macOS 27.0.1. A difference from an earlier observation, in latency
+  or in anything else, is not separated from the OS change.
+- **Not established — dark-wake failing reads, and the first read after a wake** (conditions 3 and
+  4). They need one attended lid close and have not been taken.
+- **Not established — H2.** `kill -9` of the helper mid-walk, and the order in which launchd starts
+  the successor, need an installed helper and have not been run.
+- **Not established — anything about a write.** This measures a read selector. ADR 0012's D bounds
+  every stamped round trip, so a write selector's latency still needs measuring when E4 can issue
+  one (H3).
+- **Not established — the cause of the slow reads** in run 1 (three over 5 ms), run 2 (eight) or
+  run 2b, or whether the cold-start explanation for the paced run's tail is the right one.
+- **Not established — any other key, any other load, any other machine.** One key, one session,
+  not repeated. A wedge has still never been observed, so this says what normal looks like and
+  nothing about what a wedge looks like.
 
 ---
 

@@ -23,11 +23,12 @@ row asks for. [docs/SAFETY.md](../../docs/SAFETY.md) row 14 additionally require
 helper running under `sudo` across that same lid close, and **stays open until both captures
 exist** — this tool run on its own, however carefully, does not execute row 14 by itself; an
 unprivileged process and a root daemon are not proven to see the same delivery count. Run it
-across one real lid close, capturing to a durable path (not inside this worktree, which a
-teardown can reclaim):
+across one real lid close, capturing to a durable path outside the repository and outside any
+worktree (a teardown can reclaim a worktree; create `~/aeolus-captures` with `mkdir -p` or
+substitute a directory of your own):
 
 ```sh
-swift run power-observer > ~/Obsidian/no-it-all/handoffs/Aeolus-209-power-observer-<UTC date>.ndjson
+swift run power-observer > ~/aeolus-captures/Aeolus-209-power-observer-<UTC date>.ndjson
 ```
 
 Close the lid, wait for it to wake back up on its own, then bring the lid back up and
