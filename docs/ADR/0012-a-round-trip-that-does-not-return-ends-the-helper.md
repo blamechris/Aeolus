@@ -25,12 +25,10 @@ Nothing in Swift concurrency can time out a synchronous call. This is harmless w
 plane answers `.notBuilt`. It becomes a safety property once E3/E4 can grant a lease. No
 wedge has been observed: #68 ran 10,570 ticks with no hang.
 
-The maintainer's plan is to build the stuck-call watchdog first only if
-[#296](https://github.com/blamechris/Aeolus/issues/296) shows slow or hanging calls.
-The idle, idle back-to-back and contended runs (conditions 1, 1b and 2 in H1) show none:
-the worst round trip was 11.45 ms. So the decision waits on conditions 3 and 4, the
-dark-wake failing reads and the first read after wake. This changes nothing in the
-Decision below.
+What waits on [#296](https://github.com/blamechris/Aeolus/issues/296) is the value of D.
+The Decision's ordering (the watchdog lands before E3 and is a precondition of any lease
+grant on a build with a write path) does not depend on any H1 result, because latency
+over healthy reads cannot show whether a call can wedge.
 
 ## Decision
 
@@ -157,7 +155,7 @@ flight.
 | launchd starts no successor until the old process is fully reaped | Documented kernel and launchd behaviour, not yet observed here (H2) | The ordering argument fails, and a late write could follow reconciliation. Revisit. |
 | A process with an IOKit call in flight can finish exiting | Unknown. It cannot be measured without a real wedge. | The last-gasp keystone alternative becomes worth its cost. |
 | Manual mode persists after the writer dies | Reported in SAFETY § 6. Verify at E4 (H3). | If firmware reverts on client close, this ADR gets cheaper. No change needed. |
-| Per-round-trip latency stays at least 100× below D, under contention and in dark wake | To be measured on `Mac16,5` (H1). **Partly measured, 2026-10-07:** idle and contended by a `fanctl` walk, reads only. The worst round trip was 11.45 ms, so 100× is 1.15 s and the expected D of about 5 s is about 437× that maximum. **Not yet measured:** dark wake and the first read after wake. D is not set. | Raise D, or false positives will cost users their manual control. |
+| Per-round-trip latency stays at least 100× below D, under contention and in dark wake | To be measured on `Mac16,5` (H1). **Partly measured, 2026-10-07, on macOS 27.0.1:** idle, and contended by one and by three concurrent `fanctl` walkers, reads only. The worst round trip was 11.45 ms, so 100× is 1.15 s and the expected D of about 5 s is about 437× that maximum. **Not yet measured:** dark wake and the first read after wake. D is not set. | Raise D, or false positives will cost users their manual control. |
 
 ## To measure on Mac16,5 before relying on this (hypotheses, not facts)
 
@@ -165,23 +163,26 @@ flight.
   during a contended `fanctl` walk, during failing dark-wake reads, and on the first read
   after wake. The expected D is about 5 s.
 
-  **Partly measured, not complete.** One session on `Mac16,5` / macOS 26.6.2 on 2026-10-07,
-  with `smc-sampler --latency` on `SuspendingClock` and a maximum over reads of every
-  status. The full record is in [SMC-RESEARCH.md](../SMC-RESEARCH.md), under "Per-round-trip
-  SMC latency on Mac16,5 — idle and contended (issue #296)".
+  **Partly measured, not complete.** One session on `Mac16,5` on 2026-10-07, on macOS
+  27.0.1 (26A434), with `smc-sampler --latency` on `SuspendingClock` and a maximum over
+  reads of every status. The full record is in [SMC-RESEARCH.md](../SMC-RESEARCH.md), under
+  "Per-round-trip SMC latency on Mac16,5 — idle and contended (issue #296)".
 
   | Condition | Reads | p99.99 | Maximum |
   |---|---|---|---|
   | 1. Idle, paced at 50 ms | 12,000 | 10.025 ms | 11.453 ms |
   | 1b. Idle, back to back | 100,000 | 1.755 ms | 4.332 ms |
-  | 2. Contended: back to back beside a continuous `fanctl sensors` walk | 400,000 | 3.657 ms | 7.278 ms |
+  | 2. Contended: back to back beside one `fanctl sensors` loop | 400,000 | 2.359 ms | 11.330 ms |
+  | 2b. Contended: back to back beside three `fanctl sensors` loops at once | 400,000 | 3.662 ms | 10.071 ms |
 
   No read failed in any run, and no slow or hanging call was observed. The worst round
-  trip was 11.453 ms, so 100× is 1.15 s, and the expected D of about 5 s is about 437× it.
-  **Provisionally, D must be at least 1.15 s on this evidence, and the expected 5 s is not
-  contradicted. That is a lower bound from two of the four conditions, not a value for D,
-  and D is not set here.** Every figure is an upper bound on the round trip: the timed span
-  includes the Swift around the call and the task's wake-up.
+  trip was 11.453 ms (condition 1; 11.330 ms under contention), so 100× is 1.15 s, and the
+  expected D of about 5 s is about 437× it. **Provisionally, D must be at least 1.15 s on
+  this evidence, and the expected 5 s is not contradicted. That is a lower bound from two
+  of the four conditions, not a value for D, and D is not set here.** Every figure is an
+  upper bound on the round trip: the timed span includes the Swift around the call and the
+  task's wake-up. Condition 1's p99.99 is its second-largest read, one event, not a tail
+  estimate.
 
   **Still missing.** Conditions 3 and 4 (failing reads in a dark wake, and the first read
   after wake) need one attended lid close, and have not been taken. Dark wake is the
@@ -190,13 +191,17 @@ flight.
   below is not run. #296 stays open for all of these.
 
   **Disagreement with #296's premise.** #296 says contended walks "have measured
-  22–24.9 s here". A `fanctl sensors` walk took about 1–2 s in this session, including
-  while the latency loop contended with it. By the repository's history, 22–24.9 s is the
-  helper's discovery walk with other walks running concurrently inside the hardware test
-  suite, not a single `fanctl` walk. Which factor accounts for the gap (workload, build,
-  load, cache state) is not established, and run 2 used one walker, not three. This ADR's
-  rule that D bounds a round trip and never a walk does not depend on the figure. The
-  evidence is in SMC-RESEARCH.md.
+  22–24.9 s here". A `fanctl sensors` walk took about 1–2 s in this session, and each of
+  three concurrent walks took about 2–3 s, so contention among `fanctl` processes does not
+  by itself explain the figure. The repository's history records 22–24.9 s only in
+  test-suite comments about the helper's discovery walk with other walks running
+  concurrently. The most likely reading, which is an inference and not something the
+  history states, is that no `fanctl` walk was ever measured at that length. Which factor
+  accounts for the gap is not established: a debug build, the move from macOS 26.6.2 to
+  27.0.1, the helper's own discovery path and host load all remain candidates. Conditions
+  2 and 2b approximate the original workload and do not reproduce it. This ADR's rule that
+  D bounds a round trip and never a walk does not depend on the figure. The evidence is in
+  SMC-RESEARCH.md.
 - **H2.** `kill -9` the helper during a walk. It should die promptly, and the successor
   should start only after the old process is reaped. **Not run:** it needs an installed
   helper.
@@ -206,4 +211,6 @@ flight.
 - **Not measurable here:** whether a wedge is confined to one handle or covers the whole
   driver, and whether the kernel wait can be interrupted.
 
-Every observation cited is from `Mac16,5` on macOS 26.6.2. Intel and M1/M2 are `untested`.
+Every observation cited is from `Mac16,5`. Those made before 2026-10-07 were on macOS
+26.6.2; #296's measurements (H1) are on macOS 27.0.1 (26A434). Intel and M1/M2 are
+`untested`.
