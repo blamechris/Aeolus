@@ -176,11 +176,14 @@ completed reads, and the summary says so itself (`p9999Meaningful`). A short run
 
 ### Condition 2 — contended with a `fanctl` walk
 
-`fanctl sensors` walks the whole key table, and a walk takes 22–24.9 s on `Mac16,5`. Run the
-latency capture in one terminal while walks repeat back to back in another, and size
-`--count` so the capture outlasts several walks. 400,000 reads is about a minute and a half
-at the back-to-back rate, which is more than three walks; contention will only slow the
-reads, so the capture lasts at least that long.
+`fanctl sensors` walks the whole key table. On `Mac16,5` on 2026-10-07 one walk took about
+1–2 s in a release build (117 back to back in 145 s while this capture ran). The 22–24.9 s
+figure quoted elsewhere is not a single `fanctl sensors` walk: it is the helper's discovery
+walk with three walks running at once in the debug-built hardware suite (see
+`docs/SMC-RESEARCH.md`, issue #296). Run the latency capture in one terminal while walks
+repeat back to back in another; 400,000 reads is about a minute and a half at the
+back-to-back rate, which covers dozens of walks. To reproduce the original three-walk
+workload, run three copies of the terminal B loop at once.
 
 Terminal A:
 
