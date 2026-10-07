@@ -181,10 +181,11 @@ completed reads, and the summary says so itself (`p9999Meaningful`). A short run
 `fanctl sensors` walks the whole key table. On `Mac16,5` on 2026-10-07 one walk took about
 1–2 s in a release build (112 back to back in 139 s while this capture ran), and with three
 walkers at once each walk took about 2–3 s (339 walks in 262 s). The 22–24.9 s figure quoted
-elsewhere was not measured on a `fanctl sensors` walk. Most likely it is the helper's discovery
-walk with three walks running at once in the hardware test suite, which `swift test` builds
-debug unless told otherwise; the build the old runs used is not recorded, so that is an
-inference (see `docs/SMC-RESEARCH.md`, issue #296). Run the latency capture in one terminal
+elsewhere was most likely never a `fanctl sensors` walk: it is recorded only for the helper's
+discovery walk with other walks running at once in the hardware test suite (three, for the
+24.9 s figure; the 22.0 s one does not say how many), which `swift test` builds debug unless told
+otherwise. The build and OS of the old runs are not fully recorded, so this is an inference (see
+`docs/SMC-RESEARCH.md`, issue #296). Run the latency capture in one terminal
 while walks repeat back to back in another, with no build running; 400,000 reads is about
 a minute and a half at the uncontended back-to-back rate and took longer than that beside the
 walkers (the walkers ran 139 s with one, 262 s with three), so it covers dozens of walks.

@@ -193,12 +193,14 @@ flight.
   **Disagreement with #296's premise.** #296 says contended walks "have measured
   22–24.9 s here". A `fanctl sensors` walk took about 1–2 s in this session, and each of
   three concurrent walks took about 2–3 s, so contention among `fanctl` processes does not
-  by itself explain the figure. The repository's history records 22–24.9 s only in
-  test-suite comments about the helper's discovery walk with other walks running
-  concurrently. The most likely reading, which is an inference and not something the
+  by itself explain the figure. The repository's history records 22–24.9 s in test-suite
+  comments about the helper's discovery walk with other walks running concurrently (and,
+  copied from them, in a source constant and the sampler README). The most likely reading,
+  which is an inference and not something the
   history states, is that no `fanctl` walk was ever measured at that length. Which factor
-  accounts for the gap is not established: a debug build, the move from macOS 26.6.2 to
-  27.0.1, the helper's own discovery path and host load all remain candidates. Conditions
+  accounts for the gap is not established: a debug build, an OS change (the 22.0 s figure
+  was recorded on 26.6.2; the OS of the 24.9 s figure, committed 2026-08-02, is not
+  recorded), the helper's own discovery path and host load all remain candidates. Conditions
   2 and 2b approximate the original workload and do not reproduce it. This ADR's rule that
   D bounds a round trip and never a walk does not depend on the figure. The evidence is in
   SMC-RESEARCH.md.
@@ -211,6 +213,7 @@ flight.
 - **Not measurable here:** whether a wedge is confined to one handle or covers the whole
   driver, and whether the kernel wait can be interrupted.
 
-Every observation cited is from `Mac16,5`. Those made before 2026-10-07 were on macOS
-26.6.2; #296's measurements (H1) are on macOS 27.0.1 (26A434). Intel and M1/M2 are
+Every observation cited is from `Mac16,5`. Those made before 2026-10-07 were on macOS 26
+(26.6.2 where the OS is recorded; it is not recorded for every early figure, such as the
+24.9 s walk); #296's measurements (H1) are on macOS 27.0.1 (26A434). Intel and M1/M2 are
 `untested`.

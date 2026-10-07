@@ -1247,7 +1247,8 @@ most 3.7. Two earlier runs are not in the table. A paced run taken while a build
 of it (12,000 reads, max 5.485 ms) is superseded by run 1 and is mentioned only as context. A
 first contended run with one walker (400,000 reads) is **discarded as a measurement**: a light
 build overlapped its last 37 s, and its maximum and most of the reads above its p99.99 fell inside
-that window, so its tail cannot be attributed to the walker. Runs 2 and 2b are clean reruns of it.
+that window, so its tail cannot be attributed to the walker. Run 2 is a clean rerun of it; run 2b
+adds two more walkers.
 
 #### The quiet paced run has the worst p99.99; contention leaves the worst read near 11 ms
 
@@ -1275,10 +1276,15 @@ uncontended, 0.327 ms (1.7×) with one walker and 0.619 ms (3.3×) with three. T
 1.2 s per walk (one walker: 112 walks in 139 s) to about 2–3 s (three walkers: 339 walks in
 262 s, about 113 each). Contention slowed the walks and the median read, and nothing hung.
 
-The reads that stand out are isolated. Run 2 had 8 reads over 5 ms and 60 over 2 ms; its slowest
-two were 11.33 ms at +111 s and 8.87 ms at +51 s. Run 2b's slowest two were 10.07 ms at +226 s and
-7.64 ms at +258 s. No Swift build was running in either, and the cause of these reads is not
-established.
+The reads that stand out are few, and some come in short bursts. Run 2 had 8 reads over 5 ms and
+60 over 2 ms; its slowest were 11.33 ms at +111.03 s (with a 5.63 ms read 25 ms later) and
+8.87 ms at +51.03 s (with a 5.82 ms read 29 ms later). Run 2b had 12 reads over 5 ms; its slowest
+two, 10.06 and 10.07 ms, sit in a burst of four between +226.571 s and +226.602 s, and the next is
+7.64 ms at +258 s. In run 2b, 8 of the 9 reads over 5 ms that are *not* in that burst fell
+0.20 ± 0.02 s past a whole second of the run's own clock (+53.205, +89.216, +105.198 s, …), which
+points at a once-a-second source in phase with the run. It is not the tool's heartbeat, which
+fires about 0.01 s past the second; the source is not established. No Swift build was running in
+either run.
 
 #### The worst round trip, and what it bounds
 
@@ -1308,8 +1314,8 @@ issue attaches to a `fanctl` walk is about an order of magnitude above anything 
 **including under three-way contention**, so contention among `fanctl` processes does not by
 itself explain it.
 
-Where the figure comes from, read from the repository's history (no run in this session tried to
-reproduce it):
+Where the figure comes from, read from the repository's history (no run in this session reproduced
+it; run 2b approximates its workload, below):
 
 - **24.9 s** first appears in commit `14e2bf4` (E2.3, #94, 2026-08-02), in the header comment of
   `Tests/AeolusHelperTests/HelperHardwareTests.swift`: run in parallel, "three concurrent
