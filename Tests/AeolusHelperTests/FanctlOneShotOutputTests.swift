@@ -74,8 +74,12 @@ struct FanctlOneShotOutputTests {
         command.helper = HelperConnection(
             transport: .endpoint(harness.endpoint), pinning: UnenforcedClientPinning(),
             deadlines: FanctlResetTests.unhurried)
+        // A wait that costs no real time and never sees room: a bounded writer would spend its
+        // whole bound in microseconds, long before the reader (50 ms) starts, and give up. One
+        // that writes to the end never asks.
         command.terminal = Terminal.writing(
-            to: out.writer, errors: errors.writer, ignoringSIGPIPE: false)
+            to: out.writer, errors: errors.writer, waiting: { _, _ in .timedOut },
+            ignoringSIGPIPE: false)
         let code = await exitCode { try await command.run() }
         Darwin.close(out.writer)  // The reader's end of the story: nothing more is coming.
         #expect(Self.signalled(reading), "the reader never saw the end of the document")
