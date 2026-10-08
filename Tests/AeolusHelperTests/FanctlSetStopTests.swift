@@ -7,10 +7,11 @@ import Testing
 @testable import AeolusXPCClient
 @testable import fanctl
 
-/// `fanctl set` and the ways a hold ends that are not a failure: the deadline, a signal, a
-/// parent that exited, a standard output that closed. Each releases the lease and runs the
-/// safe-state check (`FanctlSetEndingTests` is what that check says); this suite is how each
-/// ending is *reached*, and that it is reached by the sleep and nothing else.
+/// `fanctl set` and the ways a hold ends that are not a failure: a signal, a parent that
+/// exited, a standard output that closed (the deadline is `FanctlSetDeadlineTests`). Each
+/// releases the lease and runs the safe-state check (`FanctlSetEndingTests` is what that check
+/// says); this suite is how each ending is *reached*, and that it is reached by the sleep and
+/// nothing else.
 ///
 /// The same shape as `FanctlSetTests`: the shipping `run()`, the real `HelperClient`, a real
 /// `NSXPCListener`, a simulated authority and a virtual clock.
@@ -101,7 +102,120 @@ struct FanctlSetStopTests {
         let failed = try #require(events.first)
         #expect(failed["signal"] as? String == "SIGINT")
         #expect(failed["leaseID"] is NSNull)
+        #expect(failed["endedBecause"] as? String == "signal", "ended by the signal, named")
         #expect(run.output.standardError.contains("SIGINT was received before control was taken"))
+        _ = harness.sessions
+    }
+
+    /// A signal that lands while `acquireLease` is in flight. The lease is granted, and the
+    /// speed must not be sent after it: the lease is given back and the run ends with the signal.
+    /// The simulated helper holds the acquire until the signal has landed.
+    ///
+    /// **Mutation:** delete the `interrupt.pending` check between `acquireLease` and `apply` in
+    /// `SetCommand.perform`. Run: red — `apply` is sent, and the speed is held.
+    @Test("A signal that lands during the lease round trip stops the speed being sent")
+    func aSignalDuringTheLeaseRoundTrip() async throws {
+        let authority = SimulatedFanAuthority()
+        let gate = AsyncSignal()
+        await authority.holdingAcquire(until: gate)
+        let harness = ClientListenerHarness(authority: authority)
+        let desk = SignalDesk()
+        let output = RecordingTerminal()
+        let command = try Harness.command(
+            Harness.thirtySeconds + ["--json"], endpoint: harness.endpoint, output: output,
+            time: VirtualHoldTime(), desk: desk)
+
+        let running = Task { await exitCode { try await command.run() } }
+        try await waitUntil("the acquire reached the helper") {
+            await authority.calls.contains("acquireLease")
+        }
+        desk.send(.interrupt)
+        await gate.signal()
+        let code = await running.value
+
+        #expect(code == FanctlExitCode.failure.rawValue)
+        #expect(await Harness.count("apply", in: authority) == 0, "no speed was sent")
+        #expect(await Harness.count("releaseLease", in: authority) == 1)
+        #expect(await authority.currentLease == nil)
+        #expect(await authority.appliedSettings.isEmpty)
+        let events = try output.events()
+        #expect(events.map { $0["event"] as? String } == ["failed"], "no start, one closing event")
+        let failed = try #require(events.first)
+        #expect(failed["endedBecause"] as? String == "signal")
+        #expect(failed["signal"] as? String == "SIGINT")
+        #expect(failed["leaseID"] is String, "the lease was taken")
+        #expect(failed["releaseAccepted"] as? Bool == true)
+        #expect(output.standardError.contains("before any speed was sent"))
+        _ = harness.sessions
+    }
+
+    // MARK: - A stop request outranks a write that gave up
+
+    /// A write that gives up is the reader not making room only if nothing else asked the hold to
+    /// stop. A signal, the parent exiting, or the deadline passing while the line waited is the
+    /// reason the hold ends, and the closing event says so.
+    ///
+    /// **Mutation:** drop the `watch.reason ??` from the `holding` branch in
+    /// `SetCommand.heartbeats`. Run: red on each of the three.
+    @Test(
+        "A stop request that arrives while a write waits is why the hold ends",
+        arguments: [
+            ("signal", "SIGINT"), ("parentExited", nil), ("durationElapsed", nil),
+        ] as [(String, String?)])
+    func aStopRequestOutranksAFailedWrite(because: String, signal: String?) async throws {
+        let authority = SimulatedFanAuthority()
+        let harness = ClientListenerHarness(authority: authority)
+        let desk = SignalDesk()
+        let time = VirtualHoldTime()
+        // Line 1 is `started`, line 2 the first `holding`, which does not arrive; as it waits,
+        // the thing under test happens. The closing event is line 3.
+        let output = RecordingTerminal(
+            acceptingStandardOutputLines: 1,
+            onStandardOutput: { number, _ in
+                guard number == 2 else { return }
+                switch because {
+                case "signal": desk.send(.interrupt)
+                case "parentExited": desk.parentExits()
+                default: time.advance(by: .seconds(60))
+                }
+            })
+
+        let run = try await Harness.run(
+            Harness.thirtySeconds + ["--json"], over: harness, time: time, desk: desk,
+            output: output)
+
+        #expect(run.code == nil)
+        let closing = try #require(try output.attemptedEvents().last)
+        #expect(closing["event"] as? String == "ended")
+        #expect(closing["endedBecause"] as? String == because)
+        #expect(closing["signal"] as? String == signal)
+        #expect(await Harness.count("releaseLease", in: authority) == 1)
+        _ = harness.sessions
+    }
+
+    // MARK: - The schedule
+
+    /// A write that took four seconds shortens the next sleep by four: the renewals stay ten
+    /// seconds apart, so a slow consumer cannot eat the two heartbeats the lease can miss.
+    ///
+    /// **Mutation:** sleep a whole `heartbeat` after the work instead of until the next
+    /// renewal is due (`untilNextRenewal = heartbeat` in `SetCommand.heartbeats`). Run: red —
+    /// the sleeps are 10, 10, 6.
+    @Test("Renewals are scheduled from the last renewal, not from the end of the work after it")
+    func renewalsKeepTheirSchedule() async throws {
+        let authority = SimulatedFanAuthority()
+        let harness = ClientListenerHarness(authority: authority)
+        let time = VirtualHoldTime()
+        let output = RecordingTerminal(onStandardOutput: { number, _ in
+            if number == 2 { time.advance(by: .seconds(4)) }
+        })
+
+        let run = try await Harness.run(
+            Harness.thirtySeconds + ["--json"], over: harness, time: time, output: output)
+
+        #expect(run.code == nil)
+        #expect(time.sleeps == [.seconds(10), .seconds(6), .seconds(10)])
+        #expect(await Harness.count("renewLease", in: authority) == 2)
         _ = harness.sessions
     }
 
@@ -183,7 +297,8 @@ struct FanctlSetStopTests {
         #expect(attempted.map { $0["event"] as? String } == ["started", "holding", "ended"])
         #expect(attempted.last?["endedBecause"] as? String == "outputClosed")
         #expect(
-            output.standardError.contains("The hold ended: standard output was closed."),
+            output.standardError.contains(
+                "The hold ended: standard output was closed or did not make room."),
             "the closing line goes where it can be read")
         _ = harness.sessions
     }
@@ -221,78 +336,6 @@ struct FanctlSetStopTests {
         #expect(run.code == nil)
         let attempted = output.attemptedStandardOutput.filter { $0.hasPrefix("Holding fan") }
         #expect(attempted.count == 2, "\(attempted)")
-        _ = harness.sessions
-    }
-
-    // MARK: - The deadline
-
-    /// A write that takes longer than the hold has left: the next heartbeat would sleep a
-    /// negative time. The loop ends instead.
-    ///
-    /// **Mutation:** delete the `remaining <= .zero` check at the top of the loop in
-    /// `SetCommand.heartbeats`. Run: red — it sleeps again, backwards.
-    @Test("A heartbeat that runs past the deadline ends the hold without sleeping again")
-    func aHeartbeatOverrunsTheDeadline() async throws {
-        let authority = SimulatedFanAuthority()
-        let harness = ClientListenerHarness(authority: authority)
-        let time = VirtualHoldTime()
-        let output = RecordingTerminal(onStandardOutput: { number, _ in
-            if number == 2 { time.advance(by: .seconds(25)) }
-        })
-
-        let run = try await Harness.run(
-            Harness.thirtySeconds + ["--json"], over: harness, time: time, output: output)
-
-        #expect(run.code == nil)
-        #expect(time.sleeps == [.seconds(10)])
-        #expect(await Harness.count("renewLease", in: authority) == 1)
-        #expect(try output.events().last?["endedBecause"] as? String == "durationElapsed")
-        _ = harness.sessions
-    }
-
-    /// A machine that stalled across the deadline wakes past it: the lease is about to be
-    /// released, so it is not renewed first.
-    ///
-    /// **Mutation:** delete the `now() >= deadline` check after the sleep in
-    /// `SetCommand.heartbeats`. Run: red — one more renewal.
-    @Test("A sleep that returns past the deadline ends the hold without a last renewal")
-    func aSleepReturnsPastTheDeadline() async throws {
-        let authority = SimulatedFanAuthority()
-        let harness = ClientListenerHarness(authority: authority)
-        let time = VirtualHoldTime(stalls: [1: .seconds(60)])
-
-        let run = try await Harness.run(Harness.thirtySeconds, over: harness, time: time)
-
-        #expect(run.code == nil)
-        #expect(await Harness.count("renewLease", in: authority) == 0)
-        #expect(await Harness.count("releaseLease", in: authority) == 1)
-        _ = harness.sessions
-    }
-
-    /// The loop's own timer failing is neither a loss the helper reported nor an ending anyone
-    /// asked for: the lease is released, and the exit is 1.
-    ///
-    /// **Mutation:** treat `.failed` as `.elapsed` in `SetCommand.heartbeats`. Run: red — the
-    /// loop renews on every pass until the clock's runaway guard fails it.
-    @Test("A timer that fails releases the lease and exits 1")
-    func theTimerFails() async throws {
-        let authority = SimulatedFanAuthority()
-        let harness = ClientListenerHarness(authority: authority)
-        let time = VirtualHoldTime(script: { number, _ in
-            if number == 2 { throw CancellationError() }
-        })
-
-        let run = try await Harness.run(
-            Harness.thirtySeconds + ["--json"], over: harness, time: time)
-
-        #expect(run.code == FanctlExitCode.failure.rawValue)
-        #expect(await Harness.count("renewLease", in: authority) == 1)
-        #expect(await Harness.count("releaseLease", in: authority) == 1)
-        #expect(await Harness.count("acquireLease", in: authority) == 1)
-        let failed = try #require(try run.output.events().last)
-        #expect(failed["event"] as? String == "failed")
-        #expect(failed["endedBecause"] is NSNull)
-        #expect(run.output.standardError.contains("timer failed"))
         _ = harness.sessions
     }
 }

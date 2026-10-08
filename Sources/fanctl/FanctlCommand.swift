@@ -217,8 +217,8 @@ extension Fanctl {
                 seconds for as long as --for says and this process and its parent are alive. \
                 Then it releases the lease and checks what the helper reports, the way `auto` \
                 does. Ctrl-C (or SIGTERM or SIGHUP) ends it early; so does a closed standard \
-                output. If the process is killed outright, the helper ends the lease within \
-                30 seconds.
+                output, or a reader that stops reading for a couple of seconds. If the process \
+                is killed outright, the helper ends the lease within 30 seconds.
 
                 A speed is N% of the fan's commandable range (0 to 100: 0% is the slowest speed \
                 the fan can be commanded to, never zero) or Nrpm. An rpm outside the range the \

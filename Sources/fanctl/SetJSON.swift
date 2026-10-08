@@ -67,17 +67,19 @@ struct SetClosingFacts: Sendable {
     var leaseID: UUID?
     /// `durationElapsed | signal | parentExited | outputClosed | controlLost | refused`, or
     /// `null` when `fanctl` never tried to take control (the helper could not be reached, or
-    /// answered something this build cannot read).
+    /// answered something this build cannot read). A signal before the lease is `signal`.
     var endedBecause: String?
-    /// `SIGINT`, `SIGTERM` or `SIGHUP`, when `endedBecause` is `signal` (or a signal arrived
-    /// before control was taken).
+    /// `SIGINT`, `SIGTERM` or `SIGHUP`, whenever `endedBecause` is `signal`: the signal that
+    /// ended the hold, before the lease was taken, while it was in flight, or while holding.
     var signal: String?
     /// Whether the helper accepted the request to release the lease. `false` is not "the lease
     /// is still there"; it is that no acceptance was heard.
     var releaseAccepted: Bool?
     /// When the helper captured the last snapshot `fans` and `listedLeaseID` come from.
     var capturedAt: Date?
-    /// Whether that snapshot was read after the release, rather than before it.
+    /// Whether that snapshot was read after the release, rather than before it. `false` means
+    /// `capturedAt`, `listedLeaseID` and `fans[].observed` describe the helper **while the lease
+    /// was still held**, and the closing text says that nothing is known after the release.
     var snapshotFollowsRelease: Bool?
     /// The lease the helper listed in that snapshot, whoever holds it.
     var listedLeaseID: UUID?

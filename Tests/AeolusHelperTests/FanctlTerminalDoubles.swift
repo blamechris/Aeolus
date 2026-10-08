@@ -97,6 +97,61 @@ final class RecordingTerminal: Sendable {
     }
 }
 
+/// A real pipe, for the tests that are about what happens when a reader is slow, stopped or gone.
+///
+/// The writer is left **blocking**, as the one `fanctl` inherits is, and is only made non-blocking
+/// for the length of `fill`, on this test's own pipe. `F_SETNOSIGPIPE` is set so that a write to a
+/// pipe whose reader the test closed fails with EPIPE in a test that is not about SIGPIPE.
+struct RealPipe {
+    let reader: Int32
+    let writer: Int32
+
+    init() throws {
+        var descriptors: [Int32] = [0, 0]
+        guard pipe(&descriptors) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        reader = descriptors[0]
+        writer = descriptors[1]
+        _ = fcntl(writer, F_SETNOSIGPIPE, 1)
+    }
+
+    func close() {
+        Darwin.close(reader)
+        Darwin.close(writer)
+    }
+
+    /// Bytes waiting to be read.
+    var queued: Int {
+        var count: Int32 = 0
+        _ = ioctl(reader, 0x4004_667F, &count)  // FIONREAD, _IOR('f', 127, int)
+        return Int(count)
+    }
+
+    func read(_ count: Int) -> [UInt8] {
+        var buffer = [UInt8](repeating: 0, count: count)
+        let received = Darwin.read(reader, &buffer, count)
+        return Array(buffer.prefix(max(received, 0)))
+    }
+
+    /// Everything queued.
+    func drain() -> [UInt8] { read(queued) }
+
+    /// Fills the pipe, then makes `free` bytes of room by reading them back.
+    func fill(leavingFree free: Int) {
+        let flags = fcntl(writer, F_GETFL)
+        _ = fcntl(writer, F_SETFL, flags | O_NONBLOCK)
+        var filler: UInt8 = 0x61
+        while Darwin.write(writer, &filler, 1) == 1 {}
+        _ = fcntl(writer, F_SETFL, flags)
+        _ = read(free)
+    }
+
+    /// Whether `poll` calls the writer writable: the answer a writer will get.
+    var pollsWritable: Bool {
+        var request = pollfd(fd: writer, events: Int16(POLLOUT), revents: 0)
+        return poll(&request, 1, 0) > 0 && request.revents & Int16(POLLOUT) != 0
+    }
+}
+
 /// How one `run()` left: `nil` for a normal return, otherwise the exit code it would exit
 /// with — read through swift-argument-parser's own mapping, not a copy of it.
 func exitCode(of run: () async throws -> Void) async -> Int32? {

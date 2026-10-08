@@ -82,6 +82,33 @@ struct SetLossTests {
         #expect(listed?.holder == "fanctl")
     }
 
+    /// Another client's holder is hostile input to a terminal. It is sanitised where the loss is
+    /// built, as `status` and `auto` sanitise it where they print it; the message sanitises it
+    /// again where it prints it (`SetMessagesTests.holderIsSanitisedWhenPrinted`).
+    ///
+    /// **Mutation (the review's U1):** store `$0.holderDescription` unsanitised in
+    /// `SetCommand.loss`. Run: red.
+    @Test("Another client's holder has its control and formatting characters removed")
+    func holderIsSanitised() {
+        let hostile = Lease(
+            id: UUID(), holderDescription: "Evil\u{1B}[2J\u{202E}Corp", expiresAt: Fixtures.captured
+        )
+        let snapshot = Self.snapshot(fans: [Fixtures.fan(0)], lease: hostile)
+
+        guard
+            case .leaseNotListed(let listed) = SetCommand.loss(
+                in: snapshot, leaseID: Self.leaseID, covering: [0])
+        else {
+            Issue.record("another client's lease was taken for ours")
+            return
+        }
+
+        let holder = listed?.holder ?? ""
+        #expect(holder.contains("Evil"), "the readable part of the name survives")
+        #expect(!holder.unicodeScalars.contains("\u{1B}"))
+        #expect(!holder.unicodeScalars.contains("\u{202E}"))
+    }
+
     @Test("Order: the lease, then the emergency, then the fans")
     func order() {
         let both = Self.snapshot(fans: [Self.reclaimed(0)], lease: Self.lease(), emergency: true)

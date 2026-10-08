@@ -54,19 +54,35 @@ extension SetCommand {
         }
 
         /// A signal arrived while connecting. Nothing was held, so nothing is released and no
-        /// speed is written for a person who already asked to stop.
+        /// speed is written for a person who already asked to stop. The hold ended *because of
+        /// the signal*, so that is what `endedBecause` says, with the signal named.
         static func interruptedBeforeControl(_ signal: HoldSignal) -> Report {
             Report(
                 failure: HelperCommandFailure(
                     .failure, SetMessages.interruptedBeforeControl(signal)),
-                leaseID: nil, endedBecause: nil, signal: signal, release: nil, snapshot: nil,
-                snapshotFollowsRelease: false, plans: [], closingLine: nil)
+                leaseID: nil, endedBecause: Ending.signal(signal).endedBecause, signal: signal,
+                release: nil, snapshot: nil, snapshotFollowsRelease: false, plans: [],
+                closingLine: nil)
         }
 
         // MARK: A lease, and then no hold
 
-        /// `apply` was refused, or went unanswered. The lease was released; the code is the
-        /// one `apply`'s failure classified to.
+        /// A signal landed while the lease was in flight. The lease was taken and then given
+        /// back, and no speed was sent. Exit 1, as for a signal before the lease.
+        static func interruptedBeforeApply(
+            _ signal: HoldSignal, hold: Hold, release: Release
+        ) -> Report {
+            Report(
+                failure: HelperCommandFailure(
+                    .failure,
+                    SetMessages.interruptedBeforeApply(signal, hold: hold, release: release)),
+                leaseID: hold.leaseID, endedBecause: Ending.signal(signal).endedBecause,
+                signal: signal, release: release, snapshot: nil, snapshotFollowsRelease: false,
+                plans: hold.plans, closingLine: nil)
+        }
+
+        /// `apply` was **refused**: the helper answered with a fault. The lease was released; the
+        /// code is the one the fault classified to.
         static func refused(
             _ failure: HelperCommandFailure, hold: Hold, release: Release
         ) -> Report {
@@ -75,6 +91,24 @@ extension SetCommand {
                     failure.code, SetMessages.refused(failure, hold: hold, release: release)),
                 leaseID: hold.leaseID, endedBecause: "refused", signal: nil, release: release,
                 snapshot: nil, snapshotFollowsRelease: false, plans: hold.plans,
+                closingLine: nil)
+        }
+
+        /// `apply` got **no answer**: the speed may have been applied, which is not a refusal.
+        /// The lease was released and the safe-state check looked; the exit is still the code the
+        /// failure classified to, and the check's verdict is in the message and the facts.
+        static func applyUnanswered(
+            _ failure: HelperCommandFailure, hold: Hold, release: Release,
+            settlement: SafeState.Settlement
+        ) -> Report {
+            Report(
+                failure: HelperCommandFailure(
+                    failure.code,
+                    SetMessages.unansweredApply(
+                        failure, hold: hold, release: release, settlement: settlement)),
+                leaseID: hold.leaseID, endedBecause: "controlLost", signal: nil, release: release,
+                snapshot: settlement.snapshot,
+                snapshotFollowsRelease: settlement.snapshot != nil, plans: hold.plans,
                 closingLine: nil)
         }
 
@@ -130,13 +164,14 @@ extension SetCommand {
                 failure = HelperCommandFailure(
                     .cannotReturnToAutomatic,
                     SetMessages.cannotReturn(
-                        ending, hold: hold, release: release, snapshot: snapshot, pinned: pinned))
+                        lead: SetMessages.lead(ending, hold: hold), hold: hold, release: release,
+                        snapshot: settlement.snapshot, pinned: pinned))
             case .notConfirmed:
                 failure = HelperCommandFailure(
                     .safeStateNotConfirmed,
                     SetMessages.notConfirmed(
-                        ending, hold: hold, release: release, settlement: settlement,
-                        snapshot: snapshot))
+                        lead: SetMessages.lead(ending, hold: hold), hold: hold, release: release,
+                        settlement: settlement))
             }
             return Report(
                 failure: failure, leaseID: hold.leaseID, endedBecause: ending.endedBecause,

@@ -139,8 +139,41 @@ struct FanctlSetEndingTests {
         #expect(run.code == FanctlExitCode.safeStateNotConfirmed.rawValue)
         let failed = try #require(try run.output.events().last)
         #expect(failed["snapshotFollowsRelease"] as? Bool == false)
-        #expect(run.output.standardError.contains("after the release the helper stopped answering"))
-        #expect(run.output.standardError.contains("No snapshot was read after the release."))
+        #expect(
+            run.output.standardError.contains(
+                "The helper accepted the release and then stopped answering"))
+        #expect(run.output.standardError.contains("No snapshot was read after the release"))
+        _ = harness.sessions
+    }
+
+    /// **The review's probe, C2.** The helper accepts the release and then stops answering. The
+    /// run exits 8, and the helper's own state says the lease is gone (`currentLease` is `nil`,
+    /// because the release took) — so a text that went on to list the lease and a fan reading
+    /// manual, from the snapshot taken *before* the release, told the user the opposite of what
+    /// the helper had just accepted. It must say the state is unknown, and nothing of the old.
+    ///
+    /// **Mutation:** in `SetCommand.Report.ended`, hand the notConfirmed text the hold's last
+    /// snapshot when the check read none (`SafeState.Settlement(verdict: settlement.verdict,
+    /// snapshot: settlement.snapshot ?? before, polls: 0, interruption: settlement.interruption)`).
+    /// Run: red on every negative assertion.
+    @Test("After an accepted release and silence, the text does not describe the lease or the fans")
+    func theCheckCannotReadSaysUnknown() async throws {
+        let authority = SimulatedFanAuthority()
+        await authority.failingSnapshots(after: 4)
+        let harness = ClientListenerHarness(authority: authority)
+
+        let run = try await Harness.run(Harness.thirtySeconds, over: harness)
+
+        #expect(run.code == FanctlExitCode.safeStateNotConfirmed.rawValue)
+        #expect(await authority.currentLease == nil, "the release took")
+        let message = run.output.standardError
+        #expect(message.contains("The helper accepted the release and then stopped answering"))
+        #expect(message.contains("is unknown"))
+        // The sentences of the first version, each a claim about the snapshot from before it.
+        #expect(!message.contains("still listed"))
+        #expect(!message.contains("which the release did not end"))
+        #expect(!message.contains("is not cleared"))
+        #expect(!message.contains("reads manual"))
         _ = harness.sessions
     }
 

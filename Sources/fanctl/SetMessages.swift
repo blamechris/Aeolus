@@ -9,13 +9,18 @@ import Foundation
 /// reading is the helper's `actualRPM`. A sentence that could be read as "the fans are
 /// automatic" exists in exactly one place, `closingLine`, behind the one verdict that earns it,
 /// and `FanctlSetEndingTests.noFailureClaimsSuccess` holds every other outcome to never saying
-/// it.
+/// it. The same rule has a second half: **never present what was seen before the release as what
+/// the helper reports after it.** When no snapshot was read after the release, the lease and the
+/// fans are said to be unknown, not described from the snapshot before (`SetMessages+SafeState`).
 enum SetMessages {
 
     typealias Hold = SetCommand.Hold
     typealias Ending = SetCommand.Ending
     typealias Loss = SetCommand.Loss
     typealias Release = SetCommand.Release
+
+    /// How long the helper keeps a lease that is no longer renewed.
+    static let lifetime = Int(Lease.defaultTimeToLive)
 
     // MARK: - Starting
 
@@ -55,8 +60,13 @@ enum SetMessages {
         case .parentExited:
             return "the process that started it exited"
         case .outputClosed:
-            return "standard output was closed"
+            return "standard output was closed or did not make room"
         }
+    }
+
+    /// The first sentence of everything said about an ordinary ending.
+    static func lead(_ ending: Ending, hold: Hold) -> String {
+        "The hold ended: \(why(ending, hold: hold))."
     }
 
     static func releaseSentence(_ release: Release, hold: Hold) -> String {
@@ -66,6 +76,19 @@ enum SetMessages {
         case .failed(let reason):
             return "The helper did not confirm the release of lease \(hold.leaseID.uuidString): "
                 + "\(reason)"
+        }
+    }
+
+    /// What this process still holds once it has asked for the release. A release the helper
+    /// did not confirm leaves a lease it may keep listing for its whole lifetime, so that is
+    /// said instead of "nothing".
+    static func heldSentence(_ release: Release) -> String {
+        switch release {
+        case .accepted:
+            return "Nothing is held by this process now."
+        case .failed:
+            return "This process renews nothing now; the helper may keep listing the lease for "
+                + "up to \(lifetime) seconds."
         }
     }
 
@@ -82,112 +105,8 @@ enum SetMessages {
             snapshot?.fans.isEmpty == true
             ? "no fans and no manual-control lease"
             : "every fan automatic and no manual-control lease"
-        return "The hold ended: \(why(ending, hold: hold)). "
-            + "\(releaseSentence(release, hold: hold)) "
+        return "\(lead(ending, hold: hold)) \(releaseSentence(release, hold: hold)) "
             + "The helper now reports \(state), in a snapshot it captured at \(captured)."
-    }
-
-    // MARK: - Not the safe state: 8 and 9
-
-    private static let window = SafeState.window.components.seconds
-
-    private static let lifetime = Int(Lease.defaultTimeToLive)
-
-    /// Where to go when a hold ended and the helper did not report the fans returned.
-    private static let nextSteps = """
-        This run renews nothing now, and will not release the lease a second time. By design the \
-        helper ends a lease that is not renewed within \(lifetime) seconds. Run `fanctl status` \
-        to see what the helper reports, or `fanctl auto` to ask it to return every fan to \
-        automatic control and check.
-
-        \(ResetCommand.stopTheHelper)
-        """
-
-    /// Exit 8: the hold ended, and within the wait the helper did not report every fan automatic
-    /// and no lease.
-    static func notConfirmed(
-        _ ending: Ending, hold: Hold, release: Release, settlement: SafeState.Settlement,
-        snapshot: SystemSnapshot?
-    ) -> String {
-        var paragraphs = [
-            "The hold ended: \(why(ending, hold: hold)). \(releaseSentence(release, hold: hold))"
-        ]
-        if let interruption = settlement.interruption {
-            let when =
-                settlement.snapshot != nil
-                ? "The snapshot shown was read after the release, and is the last the helper "
-                    + "returned."
-                : "No snapshot was read after the release."
-            paragraphs.append(
-                "This run could not confirm the result: after the release the helper stopped "
-                    + "answering (\(SetCommand.describe(interruption))). \(when)")
-        } else {
-            paragraphs.append(
-                "The helper did not report every fan automatic and no lease within \(window) "
-                    + "seconds of the release.")
-        }
-        var still: [String] = []
-        if let snapshot {
-            still += AutoCommand.unclearedFanLines(snapshot)
-            if let lease = snapshot.activeLease {
-                still.append(listedLease(lease, hold: hold))
-            }
-            if snapshot.isThermalEmergencyActive {
-                still.append(
-                    "The helper reports a thermal emergency, and its override outranks this hold.")
-            }
-        }
-        if !still.isEmpty { paragraphs.append(still.joined(separator: "\n")) }
-        paragraphs.append(nextSteps)
-        return paragraphs.joined(separator: "\n\n")
-    }
-
-    /// The lease the latest snapshot lists, and whether it is the one this run released.
-    private static func listedLease(_ lease: Lease, hold: Hold) -> String {
-        let holder = DisplayText.sanitised(lease.holderDescription)
-        let whose =
-            lease.id == hold.leaseID
-            ? "this run's lease, which the release did not end"
-            : "another client's lease, taken after this run's"
-        return "A manual-control lease is still listed: id \(lease.id.uuidString), held by "
-            + "\"\(holder)\" — \(whose)."
-    }
-
-    /// Exit 9: the helper reports a reason releasing the lease will not change, whatever mode
-    /// the fan reads.
-    static func cannotReturn(
-        _ ending: Ending, hold: Hold, release: Release, snapshot: SystemSnapshot?,
-        pinned: [Int]
-    ) -> String {
-        var lines = [
-            "The helper reports a reason for these fans that releasing the lease will not "
-                + "change, and the mode a fan reads does not clear it:"
-        ]
-        var refusedByFirmware = false
-        for fan in snapshot?.fans ?? [] where pinned.contains(fan.index) {
-            guard case .unavailable(let reason) = fan.manualControlAvailability else { continue }
-            let shown = StatusCommand.displayable(reason)
-            if shown == .restoreToAutomaticFailed { refusedByFirmware = true }
-            lines.append(
-                "  Fan \(fan.index) (\(AutoCommand.reads(fan))): \(shown.recoveryDescription) "
-                    + "(reason: \(shown.wireValue))")
-        }
-        if let snapshot {
-            lines += AutoCommand.unclearedFanLines(snapshot, excluding: pinned, also: true)
-        }
-        var paragraphs = [
-            "The hold ended: \(why(ending, hold: hold)). \(releaseSentence(release, hold: hold))",
-            lines.joined(separator: "\n"),
-            "What to do about each reason is in docs/RECOVERY.md, under \"A specific fan says "
-                + "manual control is not available\".",
-        ]
-        if refusedByFirmware {
-            paragraphs.append(
-                "If the fan stays pinned, the next step needs neither this command nor the "
-                    + "helper:")
-            paragraphs.append(ResetCommand.stopTheHelper)
-        }
-        return paragraphs.joined(separator: "\n\n")
     }
 
     // MARK: - Control held, then lost: 6
@@ -197,9 +116,9 @@ enum SetMessages {
         Control was lost: \(sentence(for: loss, hold: hold))
 
         This run took the lease once and never re-acquires it. \
-        \(releaseSentence(release, hold: hold)) Nothing is held by this process now. Run \
-        `fanctl status` to see what the helper reports, or `fanctl auto` to ask it to return \
-        every fan to automatic control and check.
+        \(releaseSentence(release, hold: hold)) \(heldSentence(release)) Run `fanctl status` to \
+        see what the helper reports, or `fanctl auto` to ask it to return every fan to automatic \
+        control and check.
         """
     }
 
@@ -214,7 +133,8 @@ enum SetMessages {
         case .leaseNotListed(let listed):
             let instead =
                 listed.map {
-                    "It lists a lease held by \"\($0.holder)\" (id \($0.id.uuidString)) instead."
+                    "It lists a lease held by \"\(DisplayText.sanitised($0.holder))\" (id "
+                        + "\($0.id.uuidString)) instead."
                 } ?? "It lists no lease."
             return "the helper's snapshot no longer lists lease \(id). \(instead)"
         case .reclaimed(let fan):
@@ -231,7 +151,7 @@ enum SetMessages {
 
     // MARK: - Other ways a run does not hold
 
-    /// `apply` was refused or unanswered.
+    /// `apply` was **refused**: the helper answered, and said no.
     static func refused(
         _ failure: HelperCommandFailure, hold: Hold, release: Release
     ) -> String {
@@ -239,21 +159,30 @@ enum SetMessages {
         The helper took lease \(hold.leaseID.uuidString) and did not accept the speed: \
         \(failure.message)
 
-        \(releaseSentence(release, hold: hold)) Nothing is held by this process.
+        \(releaseSentence(release, hold: hold)) \(heldSentence(release))
         """
     }
 
     static func timerFailed(hold: Hold, release: Release) -> String {
         """
         fanctl's timer failed, so it can no longer pace the lease's heartbeat. \
-        \(releaseSentence(release, hold: hold)) Nothing is held by this process now. Run \
-        `fanctl status` to see what the helper reports, or `fanctl auto` to ask it to return \
-        every fan to automatic control and check.
+        \(releaseSentence(release, hold: hold)) \(heldSentence(release)) Run `fanctl status` to \
+        see what the helper reports, or `fanctl auto` to ask it to return every fan to automatic \
+        control and check.
         """
     }
 
     static func interruptedBeforeControl(_ signal: HoldSignal) -> String {
         "\(signal.name) was received before control was taken. Nothing was acquired and nothing "
             + "was sent to a fan."
+    }
+
+    /// The lease was taken, and a signal landed before the speed was sent.
+    static func interruptedBeforeApply(
+        _ signal: HoldSignal, hold: Hold, release: Release
+    ) -> String {
+        "\(signal.name) was received after lease \(hold.leaseID.uuidString) was taken and "
+            + "before any speed was sent. \(releaseSentence(release, hold: hold)) Nothing was "
+            + "sent to a fan."
     }
 }

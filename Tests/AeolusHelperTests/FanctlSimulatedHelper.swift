@@ -65,6 +65,8 @@ actor SimulatedFanAuthority: FanAuthority {
     private var snapshotsBeforeReleaseShows = 0
     private var snapshotsLeftBeforeReleaseShows: Int?
     private var takenAfterRelease: String?
+    private var heldAcquire: AsyncSignal?
+    private var heldApply: AsyncSignal?
 
     // Records.
     private(set) var calls: [String] = []
@@ -155,6 +157,15 @@ actor SimulatedFanAuthority: FanAuthority {
 
     /// `apply` is refused with `fault`: the lease was granted and the speed was not.
     func refusingApply(with fault: AeolusXPCFault) { applyRefusal = fault }
+
+    /// `acquireLease` is accepted and **not answered until `signal` fires**: the lease round trip
+    /// that a Ctrl-C can land in the middle of. The grant itself is made after the wait.
+    func holdingAcquire(until signal: AsyncSignal) { heldAcquire = signal }
+
+    /// `apply` is accepted and **not answered until `signal` fires**, and nothing is applied
+    /// before it does. With the helper killed under it, the client's `apply` ends as a restart:
+    /// a request that was sent and never answered.
+    func holdingApply(until signal: AsyncSignal) { heldApply = signal }
 
     /// **A snapshot without the caller's lease ID**, while renewals still succeed. From the
     /// `renewals`-th renewal on, snapshots list `other` (or no lease at all) in place of the
@@ -266,6 +277,7 @@ actor SimulatedFanAuthority: FanAuthority {
     ) async throws -> Lease {
         calls.append("acquireLease")
         acquiredRequests.append(request)
+        if let heldAcquire { try await heldAcquire.wait() }
         if let acquireRefusal { throw acquireRefusal }
         try AeolusXPCValidation.validate(
             request, enumeratedFanIndices: Set(fans.map(\.index)))
@@ -321,6 +333,7 @@ actor SimulatedFanAuthority: FanAuthority {
     ) async throws {
         calls.append("apply")
         _ = try held(leaseID, by: connection)
+        if let heldApply { try await heldApply.wait() }
         if let applyRefusal { throw applyRefusal }
         appliedSettings.append(settings)
         guard !ignoresApply else { return }

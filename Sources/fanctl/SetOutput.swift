@@ -23,9 +23,21 @@ import Foundation
 /// Every write goes through `Terminal.deliver`, which is `write(2)` and says whether the line
 /// arrived. A `false` is returned to the loop, which ends the hold; the process never crashes
 /// on a closed pipe.
+///
+/// **No write may park the hold.** The terminal `set` writes to is a *bounded* one
+/// (`Terminal.bounded(stopping:)`): a line is written in chunks the pipe has promised room for,
+/// the wait between them is short, a stop request (a signal, the parent exiting, the deadline)
+/// ends it, and a reader that has not made room within `Terminal.writeBound` is treated as gone.
+/// A stalled consumer therefore costs the lease one late renewal and the hold an `outputClosed`
+/// ending, never a process that cannot be stopped (`FileDescriptorWriter`).
 struct SetOutput: Sendable {
     let terminal: Terminal
     let format: HelperCommandOutput.Format
+
+    /// The same output, whose writes give up when `stop` says so.
+    func stopping(when stop: @escaping @Sendable () -> Bool) -> SetOutput {
+        SetOutput(terminal: terminal.bounded(stopping: stop), format: format)
+    }
 
     /// The `started` event, or the start lines. `false` if standard output did not take them.
     func started(_ hold: SetCommand.Hold, snapshot: SystemSnapshot) -> Bool {
@@ -122,13 +134,23 @@ extension Fanctl.Set {
         let signals = environment.installSignals { interrupt.post($0) }
         defer { signals.cancel() }
 
+        // Every write `set` makes is bounded, outside the hold as well as in it: the closing line
+        // and the diagnosis come after the lease is released, and a process that cannot be
+        // stopped while it waits on them is still a process that cannot be stopped. What stops a
+        // wait is what stops the hold: a signal, or the parent having gone.
+        let startingParent = environment.parentProcessID()
+        let watch = SetCommand.StopWatch(
+            interrupt: interrupt, environment: environment, clock: clock,
+            startingParent: startingParent, deadline: nil)
+        let patient = terminal.bounded(stopping: { watch.reason != nil })
+
         let client = helper.client()
         let session = SetCommand.Session(
             client: client, clock: clock, environment: environment, interrupt: interrupt,
-            output: SetOutput(terminal: terminal, format: format))
+            output: SetOutput(terminal: patient, format: format), startingParent: startingParent)
         let report = await SetCommand.perform(request, in: session)
         await client.disconnect()
 
-        try SetCommand.emit(report, as: format, on: terminal)
+        try SetCommand.emit(report, as: format, on: patient)
     }
 }

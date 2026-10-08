@@ -256,7 +256,7 @@ struct FanctlSetLossTests {
         let closing = events.filter { ["ended", "failed"].contains($0["event"] as? String) }
         #expect(closing.count == 1)
         #expect(closing.first?["endedBecause"] as? String == "controlLost")
-        #expect(output.standardError.contains("Nothing is held by this process now"))
+        #expect(output.standardError.contains("This process renews nothing now"))
         #expect(harness.sessions.count >= 2, "libxpc reconnected to a new session")
     }
 
@@ -313,5 +313,49 @@ struct FanctlSetLossTests {
             #expect(await Harness.count("acquireLease", in: authority) == 1, "\(fault)")
             _ = harness.sessions
         }
+    }
+
+    /// An `apply` the helper took and never answered. The helper may have written the speed, so
+    /// "did not accept the speed" and `refused` would say something nothing observed. The lease
+    /// is given back, the safe-state check looks, and the exit is the code the failure
+    /// classifies to (a restart: 1), reported as `controlLost`.
+    ///
+    /// **Mutation:** treat every `apply` error as an answer in `SetCommand.helperAnswered`
+    /// (`true`). Run: red — the run says it was refused and does not look.
+    @Test("An apply nobody answers is released and checked, and is not called a refusal")
+    func applyGetsNoAnswer() async throws {
+        let authority = SimulatedFanAuthority()
+        let gate = AsyncSignal()
+        await authority.holdingApply(until: gate)
+        let harness = ClientListenerHarness(authority: authority)
+        let output = RecordingTerminal()
+        let command = try Harness.command(
+            Harness.thirtySeconds + ["--json"], endpoint: harness.endpoint, output: output,
+            time: VirtualHoldTime(), desk: SignalDesk())
+
+        let running = Task { await exitCode { try await command.run() } }
+        try await waitUntil("the apply reached the helper") {
+            await authority.calls.contains("apply")
+        }
+        harness.killHelperSideOfEveryConnection()
+        let code = await running.value
+        await gate.signal()
+
+        #expect(code == FanctlExitCode.failure.rawValue, "the failure's own code, not 0")
+        #expect(await Harness.count("acquireLease", in: authority) == 1)
+        #expect(await Harness.count("releaseLease", in: authority) == 1, "given back, best effort")
+        let events = try output.events()
+        #expect(events.map { $0["event"] as? String } == ["failed"], "nothing says started")
+        let failed = try #require(events.first)
+        #expect(failed["endedBecause"] as? String == "controlLost")
+        #expect(failed["leaseID"] is String)
+        #expect(failed["snapshotFollowsRelease"] as? Bool == true, "the safe-state check looked")
+        let message = output.standardError
+        #expect(message.contains("did not answer the request to apply the speed"))
+        #expect(message.contains("may have applied it"))
+        #expect(!message.contains("did not accept the speed"))
+        #expect(!message.contains("refused"))
+        #expect(!message.contains("Nothing is held"))
+        #expect(harness.sessions.count >= 2, "libxpc reconnected to a new session")
     }
 }

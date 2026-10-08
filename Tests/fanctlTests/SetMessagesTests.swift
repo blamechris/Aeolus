@@ -1,4 +1,5 @@
 import AeolusXPC
+import AeolusXPCClient
 import FanKit
 import Foundation
 import Testing
@@ -12,30 +13,13 @@ import Testing
 struct SetMessagesTests {
 
     typealias Fixtures = SafeStateTests
-
-    private static func plan(
-        _ index: Int, _ speed: SetArguments.Speed, minimum: Double = 1350, maximum: Double = 5777
-    ) throws -> SetFanPlan {
-        let envelope = try FanControlEnvelope.validating(
-            declaredMinimumRPM: minimum, declaredMaximumRPM: maximum
-        ).get()
-        let target: FanTargetRPM
-        switch speed {
-        case .percent(let percent): target = envelope.target(forPercent: Double(percent))
-        case .rpm(let rpm): target = envelope.target(for: Double(rpm))
-        }
-        return SetFanPlan(index: index, requested: speed, envelope: envelope, target: target)
-    }
-
-    private static func hold(_ plans: [SetFanPlan], seconds: Int = 1_800) -> SetCommand.Hold {
-        SetCommand.Hold(leaseID: UUID(), plans: plans, duration: .seconds(seconds))
-    }
+    typealias Shared = SetFixtures
 
     // MARK: - Starting
 
     @Test("One fan reads as one sentence with the way out at its end")
     func oneFan() throws {
-        let hold = Self.hold([try Self.plan(0, .percent(75))])
+        let hold = Shared.hold([try Shared.plan(0, .percent(75))])
         let lines = SetMessages.startLines(hold)
         #expect(
             lines == [
@@ -46,10 +30,10 @@ struct SetMessagesTests {
 
     @Test("An rpm request says target, and several fans share one way out")
     func severalFans() throws {
-        let hold = Self.hold(
+        let hold = Shared.hold(
             [
-                try Self.plan(0, .rpm(3000)),
-                try Self.plan(1, .percent(0), minimum: 0, maximum: 3000),
+                try Shared.plan(0, .rpm(3000)),
+                try Shared.plan(1, .percent(0), minimum: 0, maximum: 3000),
             ],
             seconds: 90)
         let lines = SetMessages.startLines(hold)
@@ -65,7 +49,7 @@ struct SetMessagesTests {
 
     @Test("Every ending has its own clause")
     func whyEachEnding() throws {
-        let hold = Self.hold([try Self.plan(0, .percent(50))])
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
         let clauses = [
             SetCommand.Ending.durationElapsed, .signal(.interrupt), .signal(.terminate),
             .signal(.hangup), .parentExited, .outputClosed,
@@ -76,7 +60,7 @@ struct SetMessagesTests {
         #expect(clauses[2] == "SIGTERM was received")
         #expect(clauses[3] == "SIGHUP was received")
         #expect(clauses[4] == "the process that started it exited")
-        #expect(clauses[5] == "standard output was closed")
+        #expect(clauses[5] == "standard output was closed or did not make room")
     }
 
     @Test("endedBecause values are the documented identifiers")
@@ -91,66 +75,221 @@ struct SetMessagesTests {
 
     // MARK: - Exit 8's wording
 
-    private static func settlement(
-        _ snapshot: SystemSnapshot?, interruption: (any Error)? = nil,
-        verdict: SafeState.Verdict = .notConfirmed
-    ) -> SafeState.Settlement {
-        SafeState.Settlement(
-            verdict: verdict, snapshot: snapshot, polls: 1, interruption: interruption)
-    }
-
-    private struct Gone: Error, LocalizedError {
-        var errorDescription: String? { "the helper went away" }
-    }
-
     /// An emergency that is active when the check ends is why the fans may still be up, and the
     /// message says the helper's override outranks the hold.
     @Test("A thermal emergency still active at the end is named")
     func emergencyNamed() throws {
-        let hold = Self.hold([try Self.plan(0, .percent(50))])
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
         let snapshot = SystemSnapshot(
             fans: [Fixtures.fan(0, mode: .manualFixed)], sensors: [], activeLease: nil,
             isThermalEmergencyActive: true, capturedAt: Fixtures.captured)
 
         let message = SetMessages.notConfirmed(
-            .durationElapsed, hold: hold, release: .accepted,
-            settlement: Self.settlement(snapshot), snapshot: snapshot)
+            lead: SetMessages.lead(.durationElapsed, hold: hold), hold: hold,
+            release: .accepted, settlement: Shared.settlement(snapshot))
 
         #expect(message.contains("The helper reports a thermal emergency"))
         #expect(message.contains("Fan 0 (reads manual) is not cleared"))
         #expect(message.contains("within 10 seconds of the release"))
     }
 
-    @Test("A check that could not read says so, and whether the snapshot shown follows the release")
-    func unreadable() throws {
-        let hold = Self.hold([try Self.plan(0, .percent(50))])
-        let snapshot = Fixtures.automatic
+    @Test(
+        "A check that read some snapshots before it stopped says the one shown follows the release")
+    func unreadableAfterSomeReads() throws {
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
 
-        let followed = SetMessages.notConfirmed(
-            .signal(.interrupt), hold: hold, release: .failed("no reply"),
-            settlement: Self.settlement(snapshot, interruption: Gone()), snapshot: snapshot)
-        let unseen = SetMessages.notConfirmed(
-            .parentExited, hold: hold, release: .accepted,
-            settlement: Self.settlement(nil, interruption: Gone()), snapshot: snapshot)
-        let blind = SetMessages.notConfirmed(
-            .outputClosed, hold: hold, release: .accepted,
-            settlement: Self.settlement(nil, interruption: Gone()), snapshot: nil)
+        let message = SetMessages.notConfirmed(
+            lead: SetMessages.lead(.signal(.interrupt), hold: hold), hold: hold,
+            release: .failed("no reply"),
+            settlement: Shared.settlement(Fixtures.automatic, interruption: Shared.Gone()))
 
-        #expect(followed.contains("The hold ended: SIGINT was received."))
-        #expect(followed.contains("The helper did not confirm the release of lease"))
-        #expect(followed.contains("no reply"))
-        #expect(followed.contains("(the helper went away)"))
-        #expect(followed.contains("was read after the release"))
-        #expect(unseen.contains("No snapshot was read after the release."))
-        #expect(blind.contains("stopped answering"))
-        #expect(!blind.contains("not cleared"))
+        #expect(message.contains("The hold ended: SIGINT was received."))
+        #expect(message.contains("The helper did not confirm the release of lease"))
+        #expect(message.contains("no reply"))
+        #expect(message.contains("(the helper went away)"))
+        #expect(message.contains("The snapshot shown was read after the release"))
+    }
+
+    /// **The review's probe, C2.** The helper accepted the release and then stopped answering, so
+    /// no snapshot was read after it. The snapshot the hold last read was taken while the lease
+    /// was held: it lists this run's lease and a fan reading manual. None of that is said as
+    /// present, and the text says the helper accepted the release, then stopped answering, and
+    /// that what the lease and the fans are doing is unknown.
+    ///
+    /// `notConfirmed` is given the check's own settlement and nothing from the hold, so what it
+    /// can say is what the check read. The end-to-end probe, with the hold's snapshot available
+    /// to be mistaken for it, is `FanctlSetEndingTests.theCheckCannotRead`.
+    ///
+    /// **Mutation:** in `SetMessages.notConfirmed`, describe the fans and the lease from
+    /// `unknownAfterRelease`'s absence (print `still` lines even when the snapshot is `nil`).
+    /// Run: red on the 'is unknown' assertions below.
+    @Test("With no snapshot after the release, nothing is presented as current")
+    func nothingFromBeforeTheReleaseIsCurrent() throws {
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
+
+        let message = SetMessages.notConfirmed(
+            lead: SetMessages.lead(.durationElapsed, hold: hold), hold: hold,
+            release: .accepted, settlement: Shared.settlement(nil, interruption: Shared.Gone()))
+
+        #expect(message.contains("The helper accepted the release and then stopped answering"))
+        #expect(message.contains("(the helper went away)"))
+        #expect(message.contains("is unknown"))
+        #expect(message.contains("No snapshot was read after the release"))
+        // The old sentences, which described the snapshot from before the release.
+        #expect(!message.contains("still listed"))
+        #expect(!message.contains("did not end"))
+        #expect(!message.contains("not cleared"))
+        #expect(!message.contains("reads manual"))
+        #expect(!message.contains("thermal emergency"))
+    }
+
+    @Test("A release that was not confirmed and then silence says the same, without 'accepted'")
+    func unconfirmedReleaseThenSilence() throws {
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
+
+        let message = SetMessages.notConfirmed(
+            lead: SetMessages.lead(.parentExited, hold: hold), hold: hold,
+            release: .failed("no reply"),
+            settlement: Shared.settlement(nil, interruption: Shared.Gone()))
+
+        #expect(!message.contains("accepted the release"))
+        #expect(message.contains("The helper did not confirm the release"))
+        #expect(message.contains("is unknown"))
+    }
+
+    // MARK: - An apply nobody answered
+
+    /// The helper took the lease and the request to apply the speed got no answer: it may have
+    /// applied it, and "refused" would be a statement nothing observed.
+    ///
+    /// **Mutation:** build the unanswered message from `refused`. Run: red.
+    @Test("An unanswered apply says it got no answer and may have been applied")
+    func unansweredApplyWording() throws {
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
+        let failure = HelperCommandFailure(
+            classifying: HelperClientError.helperRestarted, during: .beforeControl)
+
+        for verdict in [SafeState.Verdict.automatic, .notConfirmed] {
+            let message = SetMessages.unansweredApply(
+                failure, hold: hold, release: .accepted,
+                settlement: Shared.settlement(Fixtures.automatic, verdict: verdict))
+            #expect(message.contains("did not answer the request to apply the speed"))
+            #expect(message.contains("may have applied it"))
+            #expect(message.contains("The helper accepted the release"))
+            #expect(!message.contains("did not accept the speed"))
+            #expect(!message.contains("Nothing is held"))
+        }
+    }
+
+    @Test("An unanswered apply followed by a pinned fan reports the pinned fan")
+    func unansweredApplyThenPinned() throws {
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
+        let failure = HelperCommandFailure(
+            classifying: HelperClientError.replyNotDelivered, during: .beforeControl)
+        let pinned = Fixtures.snapshot([
+            Fixtures.fan(0), Fixtures.fan(1, availability: .unavailable(.foreignManualControl)),
+        ])
+
+        let message = SetMessages.unansweredApply(
+            failure, hold: hold, release: .accepted,
+            settlement: Shared.settlement(pinned, verdict: .cannotReturn(fans: [1])))
+
+        #expect(message.contains("(reason: foreignManualControl)"))
+        #expect(message.contains("may have applied it"))
+    }
+
+    /// Only the helper's own fault is an answer. Every transport failure is not, including the
+    /// ones that say nothing was sent: after a lease was taken none of them is a refusal.
+    ///
+    /// **Mutation:** treat `HelperClientError` as an answer in `SetCommand.helperAnswered`. Run:
+    /// red.
+    @Test("A fault is the helper's answer; every client error is silence")
+    func whatCountsAsAnAnswer() {
+        let silences: [any Error] = [
+            HelperClientError.helperRestarted,
+            HelperClientError.helperNeverAnswered(after: .seconds(5)),
+            HelperClientError.replyNotDelivered, HelperClientError.protocolViolation(detail: "x"),
+            HelperClientError.helperUnreachable(code: 4_099),
+            HelperClientError.helperSignatureRejected,
+            HelperClientError.clientCannotVerifyHelper(.runningProcessHasNoTeamIdentifier),
+            CocoaError(.fileReadUnknown),
+        ]
+        for error in silences {
+            #expect(!SetCommand.helperAnswered(error), "\(error)")
+        }
+        let answers: [AeolusXPCFault] = [
+            .helperFailed(detail: "x"), .leaseExpired, .boundsImplausible(fanIndex: 0, detail: "x"),
+            .invalidParameter(name: "x", detail: "y"),
+            .manualControlUnavailable(reason: .writePathNotBuilt),
+        ]
+        for fault in answers {
+            #expect(SetCommand.helperAnswered(fault), "\(fault)")
+        }
+    }
+
+    // MARK: - What a release that did not take leaves
+
+    /// A release the helper did not confirm leaves a lease it may keep listing for up to 30
+    /// seconds: "Nothing is held by this process" is only said when the release was accepted.
+    ///
+    /// **Mutation:** return the accepted sentence for a failed release in
+    /// `SetMessages.heldSentence`. Run: red.
+    @Test("'Nothing is held' is only said when the release was accepted")
+    func heldSentence() throws {
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
+        let accepted = SetMessages.lost(.thermalEmergency, hold: hold, release: .accepted)
+        let unconfirmed = SetMessages.lost(.thermalEmergency, hold: hold, release: .failed("x"))
+        let timer = SetMessages.timerFailed(hold: hold, release: .failed("x"))
+        let refused = SetMessages.refused(
+            HelperCommandFailure(.manualControlRefused, "no"), hold: hold, release: .failed("x"))
+
+        #expect(accepted.contains("Nothing is held by this process now."))
+        for message in [unconfirmed, timer, refused] {
+            #expect(!message.contains("Nothing is held"))
+            #expect(message.contains("may keep listing the lease for up to 30 seconds"))
+        }
+    }
+
+    // MARK: - Another client's words
+
+    /// Another client's holder is hostile input to a terminal: a control or formatting
+    /// character in it could rewrite the line it appears on.
+    ///
+    /// **Mutation:** print `$0.holder` unsanitised in `SetMessages.sentence(for:hold:)`. Run: red.
+    @Test("A holder with control characters is sanitised where the message prints it")
+    func holderIsSanitisedWhenPrinted() throws {
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
+        let hostile = SetCommand.ListedLease(id: UUID(), holder: "Evil\u{1B}[2J\u{202E}Corp")
+
+        let message = SetMessages.lost(
+            .leaseNotListed(listed: hostile), hold: hold, release: .accepted)
+
+        #expect(message.contains("Evil[2J"), "the readable part of the name survives")
+        #expect(!message.unicodeScalars.contains("\u{1B}"))
+        #expect(!message.unicodeScalars.contains("\u{202E}"))
+    }
+
+    /// **Mutation:** print the holder unsanitised in `listedLease`. Run: red.
+    @Test("A listed lease's holder is sanitised in the exit 8 text")
+    func listedHolderIsSanitised() throws {
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
+        let other = Lease(
+            holderDescription: "Evil\u{1B}[31mCorp", expiresAt: Fixtures.captured)
+        let snapshot = Fixtures.snapshot([Fixtures.fan(0, mode: .manualFixed)], lease: other)
+
+        let message = SetMessages.notConfirmed(
+            lead: SetMessages.lead(.durationElapsed, hold: hold), hold: hold,
+            release: .accepted, settlement: Shared.settlement(snapshot))
+
+        #expect(message.contains("another client's lease"))
+        #expect(!message.unicodeScalars.contains("\u{1B}"))
     }
 
     // MARK: - Exit 6's wording
 
     @Test("Every loss has a sentence that names what the helper said")
     func lossSentences() throws {
-        let hold = Self.hold([try Self.plan(0, .percent(50))])
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
         let id = hold.leaseID.uuidString
         let other = SetCommand.ListedLease(id: UUID(), holder: "Other 1.0")
         let cases: [(SetCommand.Loss, String)] = [
@@ -170,97 +309,5 @@ struct SetMessagesTests {
             #expect(message.contains("Nothing is held by this process now."))
             #expect(!message.contains("now reports"), "a loss never says the fans are fine")
         }
-    }
-
-    // MARK: - The closing shapes
-
-    /// 2, 4 and 5 are the three "no" answers a person can act on; the rest are not a refusal of
-    /// this request, and say so with a null.
-    ///
-    /// **Mutation:** add `.helperNotReachable` to the set in `Report.notStarted`. Run: red.
-    @Test("Only the three refusals are reported as refused, whatever else fails before a lease")
-    func refusedIsOnlyTheRefusals() {
-        for code in FanctlExitCode.allCases where code != .success {
-            let report = SetCommand.Report.notStarted(HelperCommandFailure(code, "x"))
-            let refused: Set<FanctlExitCode> = [
-                .requestDoesNotFit, .manualControlRefused, .heldByAnotherClient,
-            ]
-            #expect(
-                report.endedBecause == (refused.contains(code) ? "refused" : nil), "\(code)")
-            #expect(report.leaseID == nil)
-            #expect(report.facts.fans == nil)
-            #expect(report.failure?.code == code)
-        }
-    }
-
-    private static let closingKeys: Set<String> = [
-        "schema", "event", "at", "leaseID", "endedBecause", "signal", "releaseAccepted",
-        "capturedAt", "snapshotFollowsRelease", "listedLeaseID", "fans", "failure",
-    ]
-
-    private static func keys(of event: some Encodable) throws -> [String: Any] {
-        let line = try FanctlJSON.encodeLine(event)
-        let object = try JSONSerialization.jsonObject(with: Data(line.utf8))
-        return try #require(object as? [String: Any])
-    }
-
-    /// A caller reading `failed` from before `set` extended it reads the same four keys; the
-    /// extension adds the rest, always present, `null` where there is nothing to say.
-    ///
-    /// **Mutation:** drop a key from `SetClosingFacts.encode(into:)`. Run: red.
-    @Test("Every closing event carries every closing key, null when there is nothing to say")
-    func closingEventsCarryEveryKey() throws {
-        let failure = HelperCommandOutput.FailureJSON(
-            exitCode: 2, kind: "requestDoesNotFit", message: "no")
-        let failed = try Self.keys(
-            of: HelperCommandOutput.FailureEventJSON(failure: failure, at: Date()))
-        #expect(Set(failed.keys) == Self.closingKeys)
-        #expect(failed["event"] as? String == "failed")
-        #expect(failed["schema"] as? Int == 1)
-        #expect((failed["failure"] as? [String: Any])?["exitCode"] as? Int == 2)
-        for key in Self.closingKeys.subtracting(["schema", "event", "at", "failure"]) {
-            #expect(failed[key] is NSNull, "\(key) should be null")
-        }
-
-        let ended = try Self.keys(of: SetEndedEventJSON(at: Date(), facts: .none))
-        #expect(Set(ended.keys) == Self.closingKeys)
-        #expect(ended["event"] as? String == "ended")
-        #expect(ended["failure"] is NSNull)
-    }
-
-    @Test("A report's facts carry the observed fans beside the plan, or null for one not seen")
-    func factsPairPlansWithObservations() throws {
-        let hold = Self.hold([try Self.plan(0, .percent(50)), try Self.plan(7, .rpm(2000))])
-        let report = SetCommand.Report.lost(
-            .thermalEmergency, hold: hold, release: .failed("x"),
-            snapshot: SystemSnapshot(
-                fans: [Fixtures.fan(0)], sensors: [], activeLease: nil,
-                isThermalEmergencyActive: true, capturedAt: Fixtures.captured))
-        let facts = report.facts
-        #expect(facts.endedBecause == "controlLost")
-        #expect(facts.releaseAccepted == false)
-        #expect(facts.snapshotFollowsRelease == false)
-        let fans = try #require(facts.fans)
-        try #require(fans.count == 2)
-        #expect(fans.map(\.plan.index) == [0, 7])
-        #expect(fans[0].observed?.index == 0)
-        #expect(fans[1].observed == nil, "fan 7 was not in the snapshot")
-    }
-
-    @Test("A signal before control has the signal and no lease")
-    func interruptedBeforeControl() {
-        let report = SetCommand.Report.interruptedBeforeControl(.terminate)
-        #expect(report.failure?.code == .failure)
-        #expect(report.facts.signal == "SIGTERM")
-        #expect(report.facts.leaseID == nil)
-        #expect(report.facts.endedBecause == nil)
-    }
-
-    // MARK: - Terminal
-
-    @Test("A terminal made from a plain sink always delivers")
-    func plainSinkDelivers() {
-        let terminal = Terminal { _, _ in }
-        #expect(terminal.deliver("x"))
     }
 }
