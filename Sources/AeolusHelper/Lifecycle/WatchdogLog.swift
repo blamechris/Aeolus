@@ -79,9 +79,9 @@ struct WatchdogLog: Sendable {
             \(Self.facts(of: verdict)) Ending the helper now with exit code \
             \(TeardownOutcome.blind.exitCode) and no orderly teardown. launchd restarts a job it \
             is keeping alive, and the next process's startup reconciliation then restores \
-            automatic control if its first read returns. A wedge that outlives the restart ends \
-            that process the same way, and nothing is restored until the driver answers. Where \
-            launchd is removing or stopping the job it does not restart it.
+            automatic control if its pass reaches its keystone. A wedge that outlives the restart \
+            ends that process the same way, and nothing is restored until the driver answers. \
+            Where launchd is removing or stopping the job it does not restart it.
             """)
     }
 

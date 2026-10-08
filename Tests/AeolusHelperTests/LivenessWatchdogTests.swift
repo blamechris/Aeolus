@@ -106,7 +106,8 @@ struct LivenessWatchdogTests {
             line.contains("seen on \(WatchdogLimits.ticksPerVerdict) consecutive ticks"),
             "\(line)")
         #expect(line.contains("restarts a job it is keeping alive"), "\(line)")
-        #expect(line.contains("if its first read returns"), "\(line)")
+        #expect(line.contains("if its pass reaches its keystone"), "\(line)")
+        #expect(!line.contains("if its first read returns"), "\(line)")
         #expect(line.contains("nothing is restored until the driver answers"), "\(line)")
         #expect(line.contains("it does not restart it"), "\(line)")
         #expect(

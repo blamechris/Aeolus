@@ -158,7 +158,7 @@ actor DispatchWatchdogTicks: WatchdogTicking {
 /// ## What the ending buys, and what it does not
 ///
 /// launchd restarts a job it is keeping alive, and the next process's startup reconciliation
-/// then restores automatic control **if its first read returns**. A wedge that outlives the
+/// then restores automatic control **if its pass reaches its keystone**. A wedge that outlives the
 /// restart ends that process the same way, launchd throttles the loop, and nothing is
 /// restored until the driver answers. Where launchd is itself stopping the job — a bootout,
 /// `SMAppService.unregister()`, a shutdown — it does not restart it at all. A false positive
