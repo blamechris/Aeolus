@@ -166,14 +166,18 @@ struct SignalTeardownTripwireTests {
     private static let literalExitCodePattern =
         #"(?<![\w.])(?:(?:Darwin|Glibc|Foundation)\.)?(?:_exit|_Exit|quick_exit|exit)\s*\(\s*\d"#
 
+    /// Backticks quote an identifier without changing it (`` `exit`(2) `` compiles and calls
+    /// `exit`), so they are dropped before either pattern is applied.
     static func exitCallCount(in code: String) throws -> Int {
-        try NSRegularExpression(pattern: exitCallPattern).numberOfMatches(
-            in: code, range: NSRange(code.startIndex..<code.endIndex, in: code))
+        let text = code.replacingOccurrences(of: "`", with: "")
+        return try NSRegularExpression(pattern: exitCallPattern).numberOfMatches(
+            in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
     }
 
     static func literalExitCodeCount(in code: String) throws -> Int {
-        try NSRegularExpression(pattern: literalExitCodePattern).numberOfMatches(
-            in: code, range: NSRange(code.startIndex..<code.endIndex, in: code))
+        let text = code.replacingOccurrences(of: "`", with: "")
+        return try NSRegularExpression(pattern: literalExitCodePattern).numberOfMatches(
+            in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
     }
 
     /// The scan above, run over fixtures, because a tripwire that has stopped seeing a
@@ -183,12 +187,13 @@ struct SignalTeardownTripwireTests {
     /// **Mutation:** drop `_exit|_Exit|quick_exit` from the pattern. Run: red.
     /// **Mutation:** drop the module qualifiers. Run: red.
     /// **Mutation:** drop `\s*` between the name and the parenthesis. Run: red.
+    /// **Mutation:** stop dropping backticks in `exitCallCount(in:)`. Run: red.
     @Test("The exit scan sees every spelling of ending the process, and nothing else")
     func theExitScanSeesEverySpelling() throws {
         let called = [
             "exit(0)", "exit (1)", "exit(\n    2)", "_exit(2)", "_exit (2)", "_Exit(2)",
             "quick_exit(2)", "Darwin.exit(2)", "Darwin._exit(2)", "Foundation.exit($0.exitCode)",
-            "exit($0.exitCode)", "let f = { exit(1) }",
+            "exit($0.exitCode)", "let f = { exit(1) }", "`exit`(2)", "Darwin.`exit`(2)",
         ]
         for fixture in called {
             #expect(try Self.exitCallCount(in: fixture) == 1, "not seen: \(fixture)")

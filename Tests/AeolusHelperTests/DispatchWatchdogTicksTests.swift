@@ -3,6 +3,7 @@ import Testing
 import os
 
 @testable import AeolusHelper
+@testable import SMCCore
 
 /// The daemon's tick source (ADR 0012 I2): a `.strict` `DispatchSourceTimer` on a queue of its
 /// own.
@@ -90,6 +91,55 @@ struct DispatchWatchdogTicksTests {
         #expect(WatchdogLimits.timerLeeway == .milliseconds(100))
     }
 
+    // MARK: - A watchdog over the real timer
+
+    /// A `LivenessWatchdog` armed over the real `DispatchWatchdogTicks` — as `production` builds
+    /// it — reaches its verdict **by itself**: nothing in this test calls `tick()`.
+    ///
+    /// Every other test of the watchdog fires its ticks by hand, and the test that asks what
+    /// `production` was given only reads a type. So a later edit that stops the real timer
+    /// after it has started — a `disarm()` that cancels it through a cast, an `arm()` that then
+    /// returns early because `isArmed` is still set — leaves a watchdog that logged "armed" once
+    /// and never looks, with every one of them green. The stalled round trip is a stamp on a
+    /// timeline the test moves; only the timer is real.
+    ///
+    /// The wait is a floor: it polls until the verdict is in, with a failsafe that turns a timer
+    /// that never fires into a failed expectation. It says nothing about how soon.
+    ///
+    /// **Mutation:** `if case let real as DispatchWatchdogTicks = ticks { await real.cancel() }`
+    /// in `LivenessWatchdog.arm()`, after the start. Run: red.
+    /// **Mutation:** never resume the timer. Run: red.
+    @Test("A watchdog armed over the real timer reaches its verdict on its own")
+    func aWatchdogOverTheRealTimerTicksOnItsOwn() async {
+        let timeline = WatchdogTimeline()
+        let journal = TeardownJournal()
+        let log = RecordedWatchdogLog()
+        let monitor = SMCRoundTripMonitor(clock: timeline.monitorClock)
+        let ticks = DispatchWatchdogTicks()
+        let watchdog = LivenessWatchdog(
+            roundTrips: monitor,
+            progress: ThermalCycleProgress(now: { timeline.progressInstant() }),
+            termination: ProcessTermination(terminate: journal.terminate, log: log.log),
+            ticks: ticks, log: log.log)
+        let wedge = WedgedRoundTrip(monitor, tpd0)
+        defer { wedge.finish() }
+        guard await wedge.waitUntilWedged() else {
+            Issue.record("the round trip never began")
+            return
+        }
+        timeline.advance(by: .seconds(6))
+
+        await watchdog.arm()
+        let ended = await pollUntil { !journal.exitsNow.isEmpty }
+        await ticks.cancel()
+
+        #expect(
+            ended,
+            "the real timer never delivered the two ticks a verdict needs: \(log.lines)")
+        #expect(journal.exitsNow == [.blind])
+        #expect(log.faults.count == 1)
+    }
+
     // MARK: - What start asks for
 
     /// The timer is `.strict`, and on the watchdog's own queue.
@@ -114,9 +164,11 @@ struct DispatchWatchdogTicksTests {
     /// that work above it can starve, which is a verdict that does not arrive in the one case it
     /// is for.
     ///
-    /// Asked of the queue itself: a block submitted to it from a thread of the **lowest**
-    /// quality of service runs at the queue's, whatever the submitter's was, so the answer is
-    /// the queue's and not the test's.
+    /// Asked of the queue itself: a block that asks for the **lowest** quality of service and
+    /// is submitted to it runs at the queue's, so the answer is the queue's. A queue with none
+    /// would run it at the block's own, and a lower one at its own. The request is made on the
+    /// block, from the test's own thread: a thread made to run at the lowest class is one a busy
+    /// machine can starve for as long as it likes, and this test is not about the machine.
     ///
     /// **Mutation:** make the queue `.utility`, or give it none. Run: red.
     @Test("The timer's queue is user-initiated")
@@ -130,13 +182,9 @@ struct DispatchWatchdogTicksTests {
         }
 
         let ran = OSAllocatedUnfairLock<UInt32?>(initialState: nil)
-        let submitter = Thread {
-            queue.async {
-                ran.withLock { $0 = qos_class_self().rawValue }
-            }
+        queue.async(qos: .background) {
+            ran.withLock { $0 = qos_class_self().rawValue }
         }
-        submitter.qualityOfService = .background
-        submitter.start()
         let finished = await pollUntil { ran.withLock { $0 } != nil }
 
         #expect(finished, "the queue never ran a block")

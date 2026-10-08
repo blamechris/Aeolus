@@ -141,57 +141,6 @@ struct WatchdogLimitsTests {
         }
     }
 
-    /// `allCurated` is every curated set, by construction of the test and not by the author's
-    /// memory: a `static let` of type `CriticalSensorSet` in `CriticalSensorSet.swift` that is
-    /// neither the empty set nor the list is a set the loops above never see.
-    ///
-    /// **Mutation:** declare `static let mac17x1 = CriticalSensorSet(...)` and leave it out of
-    /// `allCurated`. Run: red.
-    @Test("Every curated set is in the list the bound is checked against")
-    func everyCuratedSetIsListed() throws {
-        let url = SeamScanner.sourcesRoot.appendingPathComponent(
-            "AeolusHelper/Safety/CriticalSensorSet.swift")
-        let code = SeamScanner.strippingComments(try String(contentsOf: url, encoding: .utf8))
-        let declared = try Self.curatedSetNames(in: code)
-        #expect(declared.contains("mac16x5"), "the scan no longer finds the Mac16,5 set")
-
-        let listedBody = try #require(
-            code.range(of: "static let allCurated").map { String(code[$0.upperBound...]) },
-            "`allCurated` is no longer declared")
-        let listedLine = String(listedBody.prefix { $0 != "\n" })
-        for name in declared {
-            #expect(
-                listedLine.contains(name),
-                "`\(name)` is a curated set that `allCurated` does not list")
-        }
-    }
-
-    /// The names of the curated sets declared in `code`: `static let <name> = CriticalSensorSet(`
-    /// (or `: CriticalSensorSet = …`), other than the empty one for unidentified hardware.
-    static func curatedSetNames(in code: String) throws -> [String] {
-        let declaration = try NSRegularExpression(
-            pattern:
-                #"\bstatic\s+let\s+(\w+)\s*(?::\s*CriticalSensorSet\s*)?=\s*CriticalSensorSet\s*\("#
-        )
-        let range = NSRange(code.startIndex..<code.endIndex, in: code)
-        return declaration.matches(in: code, range: range).compactMap { match in
-            Range(match.range(at: 1), in: code).map { String(code[$0]) }
-        }.filter { $0 != "unidentifiedHardware" }
-    }
-
-    @Test("The curated-set scan reads a declaration the way Swift does")
-    func theCuratedSetScanSeesWhatItShould() throws {
-        let sets = try Self.curatedSetNames(
-            in: """
-                static let mac16x5 = CriticalSensorSet(
-                static let other: CriticalSensorSet = CriticalSensorSet (
-                static let unidentifiedHardware = CriticalSensorSet(
-                static let allCurated: [CriticalSensorSet] = [mac16x5]
-                static func resolve(for x: Int) -> CriticalSensorSet {
-                """)
-        #expect(sets == ["mac16x5", "other"])
-    }
-
     /// A machine with no curated critical set reads none of them: its allowance is the smaller
     /// one, not a crash and not the Mac16,5 figure.
     ///

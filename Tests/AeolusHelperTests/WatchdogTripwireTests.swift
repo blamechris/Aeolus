@@ -42,10 +42,13 @@ struct WatchdogTripwireTests {
     /// whatever whitespace Swift allows around the dot.
     static func mentions(of names: [String], in code: String) throws -> [String] {
         let qualifier = "(?:(?:" + moduleQualifiers.joined(separator: "|") + #")\s*\.\s*)?"#
+        // Backticks quote an identifier without changing it: `SMCCore`.SMCConnection is the
+        // same type, and compiles.
+        let text = code.replacingOccurrences(of: "`", with: "")
         return try names.filter { name in
             let pattern = try NSRegularExpression(pattern: #"(?<![\w.])"# + qualifier + name)
             return pattern.firstMatch(
-                in: code, range: NSRange(code.startIndex..<code.endIndex, in: code)) != nil
+                in: text, range: NSRange(text.startIndex..<text.endIndex, in: text)) != nil
         }
     }
 
@@ -91,6 +94,9 @@ struct WatchdogTripwireTests {
     /// member-access fixture is found.
     /// **Mutation:** make `mentions(of:in:)` return an empty array. Run: red — a name written
     /// in code goes unseen.
+    /// **Mutation:** stop dropping backticks in `mentions(of:in:)`. Run: red.
+    /// **Mutation:** write `` `SMCCore`.SMCConnection `` into `LivenessWatchdog.swift`. Run:
+    /// red, in `theWatchdogNamesNoConnection`.
     /// **Mutation:** drop the module qualifier group from `mentions(of:in:)`. Run: red — the
     /// qualified fixtures go unseen. Run against the source instead (write
     /// `SMCCore.SMCConnection` into `LivenessWatchdog.swift`): red, in
@@ -113,6 +119,10 @@ struct WatchdogTripwireTests {
         #expect(try found("typealias C = SMCCore . SMCConnection") == ["SMCConnection"])
         #expect(try found("let c = AeolusHelper.SMCConnection()") == ["SMCConnection"])
         #expect(try found("let c: SMCCore\n    .SMCConnection") == ["SMCConnection"])
+        // Quoted in backticks, which changes nothing about what is named.
+        #expect(try found("typealias H = `SMCCore`.SMCConnection") == ["SMCConnection"])
+        #expect(try found("let c: `SMCConnection`") == ["SMCConnection"])
+        #expect(try found("let c: `SMCCore`.`SMCConnection`") == ["SMCConnection"])
         // A qualifier that is not a module is a member access, as before.
         #expect(try found("let c: connections.SMCConnection").isEmpty)
         #expect(try found("let c = SMCCore.SomethingElse()").isEmpty)
@@ -120,23 +130,79 @@ struct WatchdogTripwireTests {
 
     // MARK: - Nothing in the daemon stops the timer
 
+    /// The three timer types in `LivenessWatchdog.swift`, which are the only place `cancel` and
+    /// the concrete tick source may be named: the protocol a timer is driven through, its
+    /// `DispatchSourceTimer` adapter, and the actor that owns one.
+    static let timerTypeHeaders = [
+        "protocol WatchdogTimer", "struct SystemWatchdogTimer", "actor DispatchWatchdogTicks",
+    ]
+
+    /// `code` with the declaration and the body of each type in `headers` taken out. A header
+    /// that is not there is left alone: the test that calls this asserts the real file has all
+    /// of them.
+    static func removing(typesDeclaredBy headers: [String], from code: String) -> String {
+        var text = code
+        for header in headers {
+            guard let declaration = text.range(of: header),
+                let open = text[declaration.upperBound...].firstIndex(of: "{")
+            else { continue }
+            var depth = 0
+            var index = open
+            while index < text.endIndex {
+                if text[index] == "{" { depth += 1 }
+                if text[index] == "}" {
+                    depth -= 1
+                    if depth == 0 { break }
+                }
+                index = text.index(after: index)
+            }
+            guard index < text.endIndex else { continue }
+            text.removeSubrange(declaration.lowerBound...index)
+        }
+        return text
+    }
+
+    /// What `code` says about stopping the timer or naming the concrete tick source **outside**
+    /// the timer types: the word `cancel` (any receiver, any cast to reach one) and the name
+    /// `DispatchWatchdogTicks`. Read on the normalised text, so `as?  X`, a line break after
+    /// `as?`, `if case let real as X = ticks` and a backtick-quoted name are the same thing as
+    /// the plain spelling.
+    static func timerExposure(in code: String) -> [String] {
+        let text = removing(
+            typesDeclaredBy: timerTypeHeaders,
+            from: WatchdogConfigurationTripwireTests.normalised(code))
+        var found: [String] = []
+        if text.range(of: #"\bcancel\b"#, options: .regularExpression) != nil {
+            found.append("cancel")
+        }
+        if text.contains("DispatchWatchdogTicks") { found.append("DispatchWatchdogTicks") }
+        return found
+    }
+
     /// `DispatchWatchdogTicks.cancel()` exists so that a test which ran the real timer can stop
     /// it. The daemon's watchdog is not stopped by anything: the handler's hold on the watchdog
     /// is what keeps it alive, and a cancelled timer is a watchdog that stopped without saying
-    /// so. `cancel()` is not on the `WatchdogTicking` protocol, so a caller in `Sources` has to
-    /// name the concrete type to reach it — and the concrete type is named in exactly two
-    /// places: where it is declared, and the default argument of `production(…)`.
+    /// so (a `disarm()` that cancelled it, and an `arm()` that then returned early because
+    /// `isArmed` was still set, is the failure). `cancel()` is not on the `WatchdogTicking`
+    /// protocol, so a caller has to name the concrete type to reach it — and that is named in
+    /// exactly two places: where it is declared, and the default argument of `production(…)`.
     ///
+    /// Two halves. `LivenessWatchdog.swift`, outside its three timer types, says neither
+    /// `cancel` nor the concrete type's name, however it is spelled; and no other file names
+    /// the type but `HelperComposition`, once. The behavioural half — a watchdog armed over the
+    /// real timer does end the process on its own — is `DispatchWatchdogTicksTests`.
+    ///
+    /// **Mutation:** `if case let real as DispatchWatchdogTicks = ticks { await real.cancel() }`
+    /// in `LivenessWatchdog.arm()`. Run: red here and in the behavioural test.
+    /// **Mutation:** `(ticks as?  DispatchWatchdogTicks)?.cancel()` (two spaces). Run: red.
     /// **Mutation:** name `DispatchWatchdogTicks` in any other file under `Sources`. Run: red.
-    /// **Mutation:** cast the tick source to it in `LivenessWatchdog.swift`
-    /// (`ticks as? DispatchWatchdogTicks`). Run: red.
     /// **Mutation:** name it a second time in `HelperComposition.swift`. Run: red.
     @Test("Nothing in the daemon can stop the watchdog's timer")
     func nothingInTheDaemonCancelsTheTimer() throws {
         var naming: [String: Int] = [:]
         for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
-            let code = SeamScanner.strippingComments(
-                try String(contentsOf: file, encoding: .utf8))
+            let code = WatchdogConfigurationTripwireTests.normalised(
+                SeamScanner.strippingComments(try String(contentsOf: file, encoding: .utf8)))
             let count = code.components(separatedBy: "DispatchWatchdogTicks").count - 1
             if count > 0 { naming[file.lastPathComponent] = count }
         }
@@ -151,9 +217,52 @@ struct WatchdogTripwireTests {
         #expect(
             naming["HelperComposition.swift"] == 1,
             "HelperComposition names DispatchWatchdogTicks more than once: only the default")
+
         let watchdog = try lifecycleSource("LivenessWatchdog.swift")
-        #expect(!watchdog.contains("as? DispatchWatchdogTicks"))
-        #expect(!watchdog.contains("as! DispatchWatchdogTicks"))
+        for header in Self.timerTypeHeaders {
+            #expect(watchdog.contains(header), "\(header) is no longer declared in the file")
+        }
+        let remaining = Self.removing(
+            typesDeclaredBy: Self.timerTypeHeaders,
+            from: WatchdogConfigurationTripwireTests.normalised(watchdog))
+        #expect(remaining.contains("final class LivenessWatchdog"), "the scan lost the watchdog")
+        #expect(
+            Self.timerExposure(in: watchdog).isEmpty,
+            """
+            LivenessWatchdog.swift says \(Self.timerExposure(in: watchdog)) outside its timer \
+            types. The watchdog never stops its timer and never names the concrete tick source; \
+            a path that cancels it leaves a daemon that logged "armed" and never looks.
+            """)
+    }
+
+    /// The scan above, over fixtures: every spelling of reaching `cancel` through the concrete
+    /// type is found, and the three exempt types are not.
+    ///
+    /// **Mutation:** make `timerExposure(in:)` return an empty array. Run: red.
+    /// **Mutation:** stop removing the timer types in `timerExposure(in:)`. Run: red — the
+    /// clean fixture is flagged.
+    @Test("The timer scan sees every spelling of reaching cancel")
+    func theTimerScanSeesWhatItShould() {
+        let exposed = [
+            "class W { func f() { if case let r as DispatchWatchdogTicks = t { r.cancel() } } }",
+            "class W { func f() async { await (ticks as?  DispatchWatchdogTicks)?.cancel() } }",
+            "class W { func f() async { await (ticks as?\n    DispatchWatchdogTicks)?.cancel() } }",
+            "class W { func f() async { await (ticks as! `DispatchWatchdogTicks`).cancel() } }",
+            "class W { func f() async { await ticks.cancel() } }",
+            "class W { func f() { timer . cancel () } }",
+            "class W { func f() { timer.`cancel`() } }",
+        ]
+        for fixture in exposed {
+            #expect(!Self.timerExposure(in: fixture).isEmpty, "not seen: \(fixture)")
+        }
+        let clean = """
+            protocol WatchdogTimer { func cancel() }
+            struct SystemWatchdogTimer: WatchdogTimer { func cancel() { source.cancel() } }
+            actor DispatchWatchdogTicks { func cancel() { timer?.cancel(); timer = nil } }
+            final class LivenessWatchdog { func arm() async { await ticks.start { } } }
+            """
+        #expect(Self.timerExposure(in: clean).isEmpty)
+        #expect(Self.timerExposure(in: "class W { let isCancelled = false }").isEmpty)
     }
 
     // MARK: - The production wiring
