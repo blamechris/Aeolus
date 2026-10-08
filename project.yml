@@ -112,6 +112,14 @@ configFiles:
 packages:
   AeolusPackage:
     path: .
+  # fanctl is the one Xcode target that needs a product the local package does not
+  # re-export: swift-argument-parser is a dependency of AeolusPackage, not a product of
+  # it, and an Xcode target can only link products of packages the project names itself.
+  # The requirement below must stay satisfiable alongside Package.swift's own
+  # `from: "1.5.0"` — Package.resolved pins the version both builds actually use.
+  ArgumentParser:
+    url: https://github.com/apple/swift-argument-parser.git
+    from: 1.5.0
 
 targets:
   Aeolus:
@@ -139,9 +147,10 @@ targets:
         product: AeolusXPC
       # The client half of the privilege boundary. The app links it here rather than
       # reaching for NSXPCConnection itself: one connection-owning actor, one place that
-      # pins the helper's code-signing requirement. fanctl links it through Package.swift
-      # for `reset --all` (#159); it has no Xcode target here, because nothing about it
-      # needs signing or a bundle.
+      # pins the helper's code-signing requirement. fanctl links it for `reset --all`
+      # (#159), through Package.swift under `swift build` and through the `fanctl` target
+      # below in the app bundle — the second exists because the identifier the helper's
+      # client requirement names (#82) can only be put on a binary by an Xcode target.
       - package: AeolusPackage
         product: AeolusXPCClient
       # Builds the helper before the app, so the embed script below always has a finished
@@ -155,6 +164,13 @@ targets:
       # description, and `HelperBundleLayout` reports that at runtime by asking the bundle
       # rather than by trusting a compile-time flag.
       - target: AeolusHelper
+        link: false
+        embed: false
+      # Builds fanctl before the app for the same reason, and is likewise neither linked
+      # nor embedded by Xcode: the "Embed fanctl" script below copies it, in every
+      # configuration. fanctl is not the helper — it is an unprivileged client, so unlike
+      # the helper it ships in Monitor bundles too.
+      - target: fanctl
         link: false
         embed: false
     info:
@@ -251,6 +267,47 @@ targets:
           /usr/bin/ditto "${HELPER_SOURCE}" "${HELPER_DESTINATION}"
           /usr/bin/ditto "${PLIST_SOURCE}" "${DAEMONS_DESTINATION}/${PLIST_NAME}"
 
+      # Embeds fanctl at Contents/MacOS/fanctl — every configuration.
+      #
+      # This is where docs/RECOVERY.md already tells a user to look
+      # (`/Applications/Aeolus.app/Contents/MacOS/fanctl reset --all`), and it is the only
+      # place a binary carrying the code-signing identifier the helper's client requirement
+      # allow-lists can come from: see the `fanctl` target below.
+      #
+      # Unlike the helper there is no Monitor branch. fanctl is an unprivileged client; a
+      # Monitor bundle shipping it ships a program that talks to a daemon that is not
+      # there, and its read commands (list, sensors, watch, dump) work with no helper and
+      # no signing at all. What a Monitor bundle must never gain is the helper, and the
+      # script above — not this one — is what keeps it out.
+      #
+      # `ditto`, not a re-sign: the binary arrives already signed by its own target, with
+      # the identifier its embedded Info.plist fixes, and is then sealed into the app's
+      # signature as nested code. Copying it through a Copy Files phase with "code sign on
+      # copy" would sign it a second time, and the second signature is the one place that
+      # identifier could be silently replaced.
+      - name: Embed fanctl
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+
+          # Same guard, same reason, as the helper script above: `set -u` does not catch
+          # an empty variable, and the destination below is derived from both.
+          if [ -z "${TARGET_BUILD_DIR:-}" ] || [ -z "${CONTENTS_FOLDER_PATH:-}" ]; then
+              echo "error: TARGET_BUILD_DIR or CONTENTS_FOLDER_PATH is empty; refusing to touch the filesystem"
+              exit 1
+          fi
+
+          FANCTL_SOURCE="${BUILT_PRODUCTS_DIR}/fanctl"
+          FANCTL_DESTINATION="${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/MacOS/fanctl"
+
+          if [ ! -f "${FANCTL_SOURCE}" ]; then
+              echo "error: fanctl executable not found at ${FANCTL_SOURCE}"
+              exit 1
+          fi
+
+          mkdir -p "$(dirname "${FANCTL_DESTINATION}")"
+          /usr/bin/ditto "${FANCTL_SOURCE}" "${FANCTL_DESTINATION}"
+
   # The root launch daemon, as an Xcode target so it can be signed with its own
   # entitlements and embedded in the app bundle. The same sources build under
   # `swift build` as an SPM executable; this target exists for the one thing SPM cannot
@@ -297,6 +354,62 @@ targets:
           CODE_SIGN_ENTITLEMENTS: Configs/AeolusHelper.entitlements
         Full Release:
           CODE_SIGN_ENTITLEMENTS: Configs/AeolusHelper.entitlements
+
+  # The command-line client, as an Xcode target so it can carry a code-signing identifier
+  # of its own and be embedded in the app bundle. The same sources build under
+  # `swift build` as an SPM executable — Sources/fanctl is named here, not copied — so the
+  # binary a contributor tests and the one the app ships cannot drift.
+  #
+  # The helper's client requirement (Sources/AeolusXPC/ClientAuthorisation/
+  # ClientRequirementText.swift) admits exactly two identifiers: the app's and
+  # com.blamechris.fanctl. A `swift build` fanctl is signed with neither, and carries no
+  # Team ID besides — which is why it can read but cannot reach an installed helper.
+  # This target is the only thing in the tree that produces the second identifier.
+  #
+  # PRODUCT_BUNDLE_IDENTIFIER below is the one place that identifier is declared. The
+  # embedded Info.plist takes its CFBundleIdentifier from it by reference, so there is no
+  # second literal to drift, and
+  # Tests/IntegrationTests/CommandLineIdentifierDriftTests.swift holds it equal to
+  # `AeolusClientIdentifier.commandLine`.
+  #
+  # Signing follows the configuration, as for the helper: Monitor is ad-hoc, Full takes
+  # its identity and Team ID from the gitignored Configs/Signing.xcconfig. No Team ID
+  # appears in this file. Whether an installed helper admits the Full-signed binary, and
+  # refuses an ad-hoc one, is E2.5's manual check on real hardware and cannot be made here.
+  fanctl:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Sources/fanctl
+    dependencies:
+      - package: AeolusPackage
+        product: SMCCore
+      - package: AeolusPackage
+        product: FanKit
+      - package: AeolusPackage
+        product: AeolusXPC
+      - package: AeolusPackage
+        product: AeolusXPCClient
+      - package: ArgumentParser
+        product: ArgumentParser
+    # A command-line tool has nowhere to put an Info.plist except inside its own binary.
+    # It is there for one reason: it fixes the code-signing identifier. Left to codesign's
+    # default the identifier would be the file name, `fanctl`, which the helper refuses.
+    info:
+      path: Configs/fanctl-Info.plist
+      properties:
+        CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
+        CFBundleName: fanctl
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+    settings:
+      base:
+        PRODUCT_NAME: fanctl
+        PRODUCT_BUNDLE_IDENTIFIER: com.blamechris.fanctl
+        CREATE_INFOPLIST_SECTION_IN_BINARY: YES
+        # fanctl's only home in this project is inside Aeolus.app. A `brew`-style install
+        # is a separate, unsigned-by-us product and is not built from here.
+        SKIP_INSTALL: YES
 
 schemes:
   Aeolus (Monitor):

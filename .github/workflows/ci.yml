@@ -92,6 +92,14 @@ jobs:
       # docs/ADR/0008-write-authorisation.md — so an access level that stops resolving here
       # fails this step and nowhere else. It was `package` until #160, and `package` did
       # not reach this target at all; the same defect bit ClientAuthorisation once already.
+      #
+      # This step does not pass CODE_SIGNING_ALLOWED=NO, and the fanctl identifier assertion
+      # further down is why. With signing disabled the linker still ad-hoc signs every Mach-O, but it names the
+      # signature after the file — `Identifier=fanctl` — and ignores the Info.plist embedded
+      # in the binary. The identifier the helper's client requirement allow-lists is only
+      # applied when the target is really code signed. The Monitor configurations sign
+      # ad hoc (CODE_SIGN_IDENTITY "-", Manual, no team), which needs no certificate, no
+      # keychain and no secret, so a pull request from a fork builds exactly as before.
       - name: Build Monitor configuration
         run: |
           set -o pipefail
@@ -101,7 +109,6 @@ jobs:
             -configuration "Monitor Debug" \
             -destination "platform=macOS" \
             -derivedDataPath DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
             build
 
       # The step above cannot fail *silently*, but it can stop compiling the probe — a
@@ -174,6 +181,45 @@ jobs:
               ls -R "${APP}/Contents/Library"
               exit 1
           fi
+
+      # fanctl is the other binary in the bundle, and the one the helper's client
+      # requirement names by code-signing identifier. Nothing else in the tree produces a
+      # binary with that identifier: a fanctl signed under its file name is refused by the
+      # helper, and the refusal looks exactly like "the helper is not installed" from the
+      # client's side (docs/RECOVERY.md), which is the worst moment to discover it.
+      #
+      # The expected value is read out of ClientRequirementText.swift, the source the
+      # helper's requirement is built from, rather than typed here a third time.
+      # Tests/IntegrationTests/CommandLineIdentifierDriftTests.swift holds project.yml equal
+      # to that same constant; this step holds the *built binary* equal to it, which is the
+      # only place a signing setting that stopped taking effect would show.
+      #
+      # `codesign -dv` writes to stderr, and its output is read from a file rather than
+      # piped into `grep -q` for the reason the probe step above gives.
+      - name: Assert the embedded fanctl carries the identifier the helper pins
+        run: |
+          set -euo pipefail
+          FANCTL="DerivedData/Build/Products/Monitor Debug/Aeolus.app/Contents/MacOS/fanctl"
+          test -x "${FANCTL}" || { echo "error: no fanctl at ${FANCTL}"; exit 1; }
+
+          SOURCE="Sources/AeolusXPC/ClientAuthorisation/ClientRequirementText.swift"
+          EXPECTED=$(sed -n 's/^    static let commandLine = "\(.*\)"$/\1/p' "${SOURCE}")
+          if [ -z "${EXPECTED}" ] || [ "$(printf '%s\n' "${EXPECTED}" | wc -l)" -ne 1 ]; then
+              echo "error: could not read AeolusClientIdentifier.commandLine from ${SOURCE}"
+              exit 1
+          fi
+
+          REPORT="${RUNNER_TEMP:-/tmp}/fanctl-codesign.txt"
+          codesign -dv "${FANCTL}" 2> "${REPORT}"
+          cat "${REPORT}"
+
+          if ! grep -qxF -- "Identifier=${EXPECTED}" "${REPORT}"; then
+              echo "error: ${FANCTL} is not signed with the identifier ${EXPECTED}."
+              echo "The helper's client requirement would refuse it. See project.yml's fanctl"
+              echo "target and docs/ADR/0005-xpc-authorisation.md."
+              exit 1
+          fi
+          echo "FANCTL IDENTIFIER ASSERTION PASSED: Identifier=${EXPECTED}"
 
   lint:
     name: Lint and format
