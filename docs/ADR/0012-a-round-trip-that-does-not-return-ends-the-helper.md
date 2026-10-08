@@ -1,7 +1,7 @@
 # ADR 0012 — A round trip that does not return ends the helper
 
-- **Status:** Proposed
-- **Date:** 2026-09-20
+- **Status:** Accepted (2026-10-08) — D provisional pending [#296](https://github.com/blamechris/Aeolus/issues/296) conditions 3–4 and E4's write-selector measurement
+- **Date:** 2026-09-20 (amended 2026-10-08, see the last section)
 - **Deciders:** Project maintainer, on architect review
 - **Supersedes:** — (extends [ADR 0007](0007-safety-composition.md)'s helper-death recovery;
   answers [#293](https://github.com/blamechris/Aeolus/issues/293) and
@@ -52,6 +52,8 @@ lock, without an actor hop.
   path.
 
 ### Invariants
+
+*I1, I4 and I5 are amended: read them with the 2026-10-08 amendment at the end of this document.*
 
 1. **I1.** Every helper round trip is stamped. The stamp is taken on the calling thread
    immediately before `IOConnectCallStructMethod` and cleared in a `defer`. It lives in
@@ -217,3 +219,90 @@ Every observation cited is from `Mac16,5`. Those made before 2026-10-07 were on 
 (26.6.2 where the OS is recorded; it is not recorded for every early figure, such as the
 24.9 s walk); #296's measurements (H1) are on macOS 27.0.1 (26A434). Intel and M1/M2 are
 `untested`.
+
+## Amendment (2026-10-08, [#329](https://github.com/blamechris/Aeolus/issues/329)) — accepted, the constants, and four corrections
+
+**Status.** Accepted. Two things were decided on 2026-10-08, and they are different decisions.
+The **ordering** — the watchdog lands before E3 and before any lease grant on a build with a
+write path, the supervised E4 experiment ([#9](https://github.com/blamechris/Aeolus/issues/9))
+included — was the owner's, recorded on
+[#293](https://github.com/blamechris/Aeolus/issues/293). This **amendment**, and the split of the
+work into three pull requests (the stamp, the watchdog, the #135 gate trigger), was decided on
+architect review. D stays provisional: it is confirmed for reads only, and not for write selectors
+or for dark wake. It is revisited when [#296](https://github.com/blamechris/Aeolus/issues/296)'s
+conditions 3 and 4 are measured and when the first supervised E4 write has recorded its own
+per-round-trip latency. A persistent wedge becomes a throttled restart loop in which every pass
+ends in reconciliation; that consequence is accepted above and is unchanged.
+
+### The constants
+
+| Constant | Value | Bounds | Derivation |
+|---|---|---|---|
+| **D** | 5 s (provisional) | One stamped round trip. | About 437× the worst of 912,000 measured reads (11.45 ms; the four conditions in H1, [#296](https://github.com/blamechris/Aeolus/issues/296)). Reads only. |
+| **D_cycle** | 2·D = 10 s | No completed § 3 cycle, while armed. | See below. |
+| **D_bringUp** | `ReconciliationLimits.budget` + D_cycle = 15 s | Arming to `ThermalSupervisor.start()`. | The reconciliation budget (5 s) plus one cycle's allowance. |
+| **G** | D = 5 s | One parked gate waiter, for [#135](https://github.com/blamechris/Aeolus/issues/135)'s `.fault`. | Set equal to D, per parked waiter. |
+| **Tick** | 1 s | The watchdog's timer, a `.strict` `DispatchSourceTimer`. | A verdict needs two over-bound ticks, so it lands at most two ticks after the bound is crossed. |
+
+**A verdict needs two consecutive over-bound ticks on the same sequence** (the same round-trip
+sequence number, or the same cycle-completion count). I3 already required the same in-flight
+sequence on two ticks; the progress trigger is held to the same rule on its cycle-completion
+count. One over-bound observation is not a verdict.
+
+**Why D_cycle is 10 s and not smaller.** The § 3 cycle runs, then sleeps one second
+(`ThermalSupervisor.defaultInterval`) measured from the cycle's end, so the gap between two
+completed cycles is that second, plus timer slop (up to 100 ms of background coalescing has been
+observed), plus the next cycle. D_cycle must exceed the interval, plus D, plus the rest of a cycle's
+round trips at the measured worst: 1 s + 0.1 s + 5 s + (256 × 11.45 ms ≈ 2.93 s) = 9.03 s, so 10 s.
+Set lower, a legal slow round trip would trip the cycle trigger before it tripped its own, and
+D_cycle would silently become the per-round-trip bound.
+
+### Corrections to the Decision
+
+1. **I1 extends to `IOServiceOpen` and `IOServiceClose`.** `SMCConnection.open()` and `close()`
+   are stamped as `.open` and `.close`, because `ConnectionHealth.reconnect()` runs them and either
+   can block in the kernel exactly as a read can. Two IOKit calls remain unstamped, on purpose: the
+   `deinit` (nothing holds a reference to read a stamp from) and the static
+   `SMCConnection.isHardwareAvailable()` (a service lookup, not a round trip on the connection);
+   a hang in the latter is caught by D_cycle, not by D.
+2. **I4's progress trigger is armed from bring-up, not only while the supervisors run.** As
+   written, the trigger was armed only after § 3 started, so a bring-up that stalled anywhere other
+   than inside a stamped round trip, or that returned without ever starting the supervisor, was
+   watched by nothing. It is armed with the watchdog, bounded by D_bringUp until
+   `ThermalSupervisor.start()` and by D_cycle from then until `stop()`: § 3's `start()` and
+   `stop()` switch its phase. A stopped supervisor is not a stall.
+3. **I5's first-terminate-wins guard wraps the seam in `ProcessTermination`, shared with the
+   SIGTERM teardown, and never consults `hasBegun`.** A lock-guarded `ProcessTermination` sits in
+   front of `TeardownExit.process`, and both `SignalTeardown` and the watchdog end the process
+   through it. It must not ask whether the teardown has begun: a teardown that has begun and
+   wedged is the case I6 keeps the watchdog armed for. The exit-count tripwire stays at one site,
+   and its pattern extends to `_exit(`.
+4. **The gate trigger's `.fault` is suppressed while a stamped round trip is older than one tick.**
+   A waiter parked behind a round trip that is itself overdue is explained by that stamp, and the
+   per-round-trip verdict is the alarm; a second `.fault` for the same cause would only duplicate it.
+   The gate trigger still raises `.fault` only and never ends the process.
+
+### Two clock families in the helper
+
+The helper now measures time on two different clocks, deliberately. Leases run on
+`MonotonicClock`, which is backed by `ContinuousClock`: a lease must keep running while the machine
+sleeps, so that it expires. The watchdog runs on `SuspendingClock`, through
+`SMCRoundTripMonitor`: a round trip in flight across a sleep must **not** age (I3). **Unifying them
+is not a tidy-up.** Moving the watchdog onto the continuous clock reintroduces the sleep false
+positive, and moving leases onto the suspending clock stops them expiring across a sleep. The
+monitor's clock is one `typealias` (`SMCRoundTripMonitor.MeasuringClock`), and a test asserts the
+type rather than a clock it built.
+
+### Tests added or sharpened by the stamp (PR A)
+
+| Test | Mutation that must turn it red |
+|---|---|
+| `theStampBracketsTheIOKitCall` (stamped inside the body; cleared on return and on throw; sequence strictly increasing) | Take the stamp after the body. Separately, clear outside the `defer`. |
+| `theLockIsNotHeldAcrossTheCall` (a reader is not blocked while the body is parked) | Run the body inside `withLock`. |
+| The tripwire, tightened: exactly one `IOConnectCallStructMethod` under `Sources/` and `Tools/`, and it is inside `roundTrips.bracket(.call(…))`; `IOServiceOpen` and `IOServiceClose` in `SMCConnection` likewise, `deinit` excepted. Source normalised before matching. | Add a second call site. Separately, hoist the call out of the bracket. |
+| `aRoundTripSpanningSleepIsNotAWedge`, the half CI can run (`Instant == SuspendingClock.Instant`; the age comes from the monitor's own clock, when it is asked) | Swap in `ContinuousClock`. Separately, compute the age when the stamp is taken. |
+
+The watchdog's own tests, and the gate trigger's, are listed on
+[#329](https://github.com/blamechris/Aeolus/issues/329) and carry their mutations in the pull
+requests that add them. The hardware half of `aRoundTripSpanningSleepIsNotAWedge` (a real lid close
+with a round trip in flight) has not been observed; it is H1 conditions 3 and 4.
