@@ -1299,7 +1299,10 @@ it matters.
 > come from a measurement. Four runs are in: idle (paced), idle back to back, contended by one
 > `fanctl` walker, and contended by three. The slowest of 912,000 timed reads took 11.45 ms, and
 > no read failed or hung.** The dark-wake and first-read-after-wake conditions are not measured,
-> H2 is not run, and D is not set. #296 stays open for those.
+> H2 is not run, and D is not set. #296 stays open for those. **"Idle" means no Aeolus build
+> or walker was running, not that nothing else used the SMC:** a Macs Fan Control process was
+> running for every run (process list only, never inspected; started 2026-10-03, still running
+> 2026-10-08), so another SMC client was present throughout.
 
 **Date:** 2026-10-07 (the two contended runs between 22:29 and 22:37 UTC). **Machine:**
 `Mac16,5`, Apple M4 Max, **macOS 27.0.1 (Build 26A434)**, as every capture's `start` record and
@@ -1368,8 +1371,15 @@ two, 10.06 and 10.07 ms, sit in a burst of four between +226.571 s and +226.602 
 7.64 ms at +258 s. In run 2b, 8 of the 9 reads over 5 ms that are *not* in that burst fell
 0.20 ± 0.02 s past a whole second of the run's own clock (+53.205, +89.216, +105.198 s, …), which
 points at a once-a-second source in phase with the run. It is not the tool's heartbeat, which
-fires about 0.01 s past the second; the source is not established. No Swift build was running in
+fires about 0.01 s past the second; the source is not established. One candidate, untested: the
+other fan-control process that was running throughout (see the summary above) is a second SMC
+client, and a periodic reader would contend in exactly this shape. No Swift build was running in
 either run.
+
+A second SMC client can only add contention, so it can only raise the worst observed round trip;
+a D taken from these figures errs in the safe direction. The idle rows are therefore "idle with
+one other SMC client present", which is also the condition on a machine where that tool is still
+installed, and a run with it quit has not been taken.
 
 #### The worst round trip, and what it bounds
 
