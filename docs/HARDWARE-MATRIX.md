@@ -36,10 +36,11 @@ Listed as untested rather than verified: this is the machine development happens
 neither capability exists yet, so there is nothing to have verified. It will move to
 `verified` when E1 and E4 land — and only for this row.
 
-The machine runs macOS 27.0.1 (26A434) as of 2026-10-07. Every observation in
-[SMC-RESEARCH.md](SMC-RESEARCH.md) dated before that was made on macOS 26 — 26.6.2, or 26.5.2 for
-the earliest sessions; each section says which — and is not assumed to hold on 27.0.1 until it has
-been re-checked there.
+The machine runs macOS 27.0.1 (26A434), since at least its boot on 2026-10-03 (the upgrade date is
+not recorded); every capture from 2026-10-07 on is on it. Every observation in
+[SMC-RESEARCH.md](SMC-RESEARCH.md) from 2026-09 and earlier was made on macOS 26 — 26.6.2, or
+26.5.2 for the earliest sessions; each section says which — and is not assumed to hold on 27.0.1
+until it has been re-checked there.
 
 ## Apple Silicon
 
@@ -124,8 +125,8 @@ verify.
 | macOS 13 Ventura | `untested` | Minimum supported. `SMAppService` requires it. |
 | macOS 14 Sonoma | `untested` | |
 | macOS 15 Sequoia | `untested` | |
-| macOS 26 | `untested` | Development platform until 2026-10-07 (26.5.2, then 26.6.2). |
-| macOS 27 | `untested` | Development platform since 2026-10-07 (27.0.1, 26A434). |
+| macOS 26 | `untested` | Development platform until the upgrade to 27 (by 2026-10-03; 26.5.2, then 26.6.2). |
+| macOS 27 | `untested` | Development platform since at least 2026-10-03 (27.0.1, 26A434). |
 
 ## How this file gets updated
 

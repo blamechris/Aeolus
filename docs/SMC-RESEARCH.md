@@ -26,14 +26,15 @@ The machine available to this project:
 |---|---|---|---|
 | `Mac16,5` | Apple M4 Max (12P/4E, 64 GB) | 27.0.1 (26A434) | Sole development machine |
 
-The machine ran 26.5.2 (25F84) for the 2026-07-25 session, and 26.6.2 (25G83) for the
-2026-08-20 one and for the 2026-09-05 lid-close capture. **Observations dated before 2026-10-07
-were made on macOS 26 (26.6.2, or 26.5.2 for the earliest sessions), not on the 27.0.1 shown in
-the row above**, and none of them is assumed to hold on 27.0.1 until it has been re-checked
-there. Each observation below is scoped to the build it was taken on, and says so. The issue #296
-latency runs ("Per-round-trip SMC latency on Mac16,5", below) are on 27.0.1, and so is the
-re-check of the mode keys and `Ftst` ("Mode keys and `Ftst` re-checked on macOS 27.0.1", below,
-issue [#323](https://github.com/blamechris/Aeolus/issues/323)).
+The machine ran 26.5.2 (25F84) for the 2026-07-25 session, and 26.6.2 (25G83) for the 2026-08-20
+one and for the 2026-09-05 lid-close capture. The upgrade date is not recorded: the machine has run
+27.0.1 since at least its boot at 2026-10-03 16:55 UTC, and every capture from 2026-10-07 on is on
+it. **Observations from 2026-09 and earlier were made on macOS 26 (26.6.2, or 26.5.2 for the
+earliest sessions), not on the 27.0.1 shown in the row above**, and none of them is assumed to hold
+on 27.0.1 until it has been re-checked there. Each observation below is scoped to the build it was
+taken on, and says so. The issue #296 latency runs ("Per-round-trip SMC latency on Mac16,5", below)
+are on 27.0.1, and so is the re-check of the mode keys and `Ftst` ("Mode keys and `Ftst` re-checked
+on macOS 27.0.1", below, issue [#323](https://github.com/blamechris/Aeolus/issues/323)).
 
 That is one Mac, from the M3-and-newer generation. It means:
 
@@ -425,7 +426,7 @@ The two sections above were taken on 26.5.2 and 26.6.2. The development machine 
 what 26.x showed.
 
 **Date:** 2026-10-08 06:43–06:44 UTC (2026-10-07 evening local). **Machine:** `Mac16,5`, Apple M4
-Max, **macOS 27.0.1 (26A434)**, on AC at 28 % and not charging, up 4 days. **Method:** read
+Max, **macOS 27.0.1 (26A434)**, up since 2026-10-03 16:55 UTC. **Method:** read
 selectors only, with repo code built at `main` `2c48e28`. `fanctl dump --json` (a full walk of
 the index table, one pass) and `smc-sampler --keys=F0Md,F1Md,Ftst,F0Mn,F0Mx,F0Ac --count=30
 --interval=1` (30 ticks, 06:44:02.563Z to 06:44:32.705Z). No root, no helper, no `set`, `reset` or
@@ -465,22 +466,25 @@ move; the index they sit in did.
 | `#KEY`, and keys walked | 3385 (26.5.2); 3386 (26.6.2) | **3512**; the walk matched it and the past-the-end probe found nothing |
 | Keys whose `READ_KEYINFO` fails | 3: `BDFU`, `CH0J`, `CHLS` (26.5.2) | **37**: those three and 34 more, in the families `YB*`, `YC*`, `YUv0`, `bdj0`, `bfD0` to `bfF0`, `bma0` to `bmn0`. Each failed with kernel result -536870207 (`0xE00002C1`); how the original three failed is not recorded |
 | Keys declaring more than 32 bytes | 30 | **49** (same sizes, 33 to 120) |
-| Function-key rejection cluster | 52 keys: `0x82` x21, `0x89` x20, `0xc7` x10, `0xcb` x1 | 51: `0x82` x21, `0x89` x20, `0xc7` x10. `BMFL`, the one `0xcb` key, is not in the index |
+| Keys that set bit `0x80` and still reject `READ_BYTES` | 52: `0x82` x21, `0x89` x20, `0xc7` x10, `0xcb` x1 | **52**: `0x82` x21, `0x89` x20, `0xc7` x10, and **`0xd8` x1** (`BFLV`, index 178, `ui8`, attributes `0x94`) — a **fifth** rejection code not seen on 26.x. `BMFL`, the one `0xcb` key, is not in the index |
+| Keys with bit `0x80` clear (declaring themselves unreadable) | 52 | **51** |
 | `flt` keys | 2073 | 2073 |
 | Other declared types (26.5.2 figures; `si8`, `si64` and `{jst` are unchanged) | `hex_` 318, `ui8` 245, `ui16` 236, `ui32` 223, `si32` 84, `si16` 49, `ch8*` 53, `flag` 50, `ui64` 23, `ioft` 11 | `hex_` 329, `ui8` 259, `ui16` 270, `ui32` 231, `si32` 86, `si16` 68, `ch8*` 55, `flag` 49, `ui64` 26, `ioft` 12 |
 
-The growth is in configuration and integer keys; the count of `flt` keys, which is where the
-temperature and fan readings live, is identical. This section did not enumerate what the 126 new
-keys are and does not say that any of them matters to fan control. It does mean three things.
+The growth is in integer-typed keys (`hex_`, `ui8`, `ui16`, `ui32`, `si16` and others); the count of
+`flt` keys, which is where the temperature and fan readings live, is identical. The index grew by a
+net 126 keys against 26.6.2 (127 against 26.5.2); since `BMFL` is gone, that is not a count of new
+keys. This section did not enumerate which keys changed and does not say that any of them matters
+to fan control. It does mean three things.
 **First**, a key count or a readable-sensor count quoted elsewhere (3385 in `docs/CLI.md`'s
 examples, 2929 in
 [ADR 0006](ADR/0006-single-smc-reader.md) and in the helper's comments) is a figure for the build
-it was measured on, and is not a 27.0.1 figure. **Second**, 34 keys that return a kernel error
-from `READ_KEYINFO` are new on this build, and the dump records them as failures instead of
+it was measured on, and is not a 27.0.1 figure. **Second**, 34 more keys fail `READ_KEYINFO` on this
+build than failed on 26.5.2, and the dump records them as failures instead of
 dropping them, which is the behaviour the dump was written for. **Third**, a test that pinned the
 26.x count would fail on this build for a reason that has nothing to do with fan control. None
-does today: 3385 and 2929 appear in comments and in synthetic fixtures, and the one test that
-reads the real count asserts only a broad sanity range.
+does today: 3385 and 2929 appear in comments and in synthetic fixtures, and the three tests that
+read the real count each assert only a broad sanity range.
 
 **Not re-checked here, and why.**
 
@@ -506,16 +510,16 @@ Perfect correlation across all 3385 rows: every key that read successfully has b
 and no key with bit 7 clear ever read successfully. 52 keys correctly declare themselves
 unreadable this way.
 
-But the bit is **necessary, not sufficient**. A further 52 keys set bit 7 and still return
-an SMC error on `READ_BYTES`, spanning **four distinct rejection codes** — `rBK0`–`rBK9`
-and `rBKa`, `rLD0`–`rLD5`, `bVUP`, `bVDN`, `aP70`–`aP80` among them. (`rBKa` belongs to this
-52-key population but not to the narrower `0x82` group in the table below — it rejects with
-`0x89`; see that table for which key belongs to which code.) An earlier draft of this
-section called these "action/trigger keys," a characterisation made by feel rather than by
-inspecting anything structural. Issue #52 found what actually identifies the population:
-all 52 carry attribute bit `0x10` set. See "Bit `0x10` structurally identifies the 52-key
-rejection cluster" below for the full breakdown — the bit, not a guess about a key's role,
-is what distinguishes this cluster.
+But the bit is **necessary, not sufficient**. A further 52 keys set bit 7 and still return an SMC
+error on `READ_BYTES`, spanning **four distinct rejection codes** (on 26.x; 27.0.1 shows a fifth,
+`0xd8` on `BFLV` — see "Mode keys and `Ftst` re-checked on macOS 27.0.1") — `rBK0`–`rBK9` and
+`rBKa`, `rLD0`–`rLD5`, `bVUP`, `bVDN`, `aP70`–`aP80` among them. (`rBKa` belongs to this 52-key
+population but not to the narrower `0x82` group in the table below — it rejects with `0x89`; see
+that table for which key belongs to which code.) An earlier draft of this section called these
+"action/trigger keys," a characterisation made by feel rather than by inspecting anything
+structural. Issue #52 found what actually identifies the population: all 52 carry attribute bit
+`0x10` set. See "Bit `0x10` structurally identifies the 52-key rejection cluster" below for the
+full breakdown — the bit, not a guess about a key's role, is what distinguishes this cluster.
 
 Implication for enumeration: filter on the attribute bit as a cheap first pass, then let
 the read fail gracefully anyway. A failed read of one key must never abort enumeration of
@@ -542,7 +546,8 @@ range above it — is not a `0x82` key at all. It rejects with `0x89`, alongside
 `ioft` key referenced a few paragraphs below. Each key belongs to exactly one code; the
 four lists above partition the 52, they do not overlap.
 
-All four codes land on documented Intel result names, which supports the result-code
+All four codes (26.x) land on documented Intel result names — 27.0.1's fifth, `0xd8`, has not been
+matched to one — which supports the result-code
 namespace carrying over to Apple Silicon — **that carry-over is an assumption, not an
 observation**; none of the four has been independently verified against Apple Silicon
 firmware source, only against the community `AppleSmc.h` reference.
@@ -1300,9 +1305,11 @@ it matters.
 > `fanctl` walker, and contended by three. The slowest of 912,000 timed reads took 11.45 ms, and
 > no read failed or hung.** The dark-wake and first-read-after-wake conditions are not measured,
 > H2 is not run, and D is not set. #296 stays open for those. **"Idle" means no Aeolus build
-> or walker was running, not that nothing else used the SMC:** a Macs Fan Control process was
-> running for every run (process list only, never inspected; started 2026-10-03, still running
-> 2026-10-08), so another SMC client was present throughout.
+> or walker was running, not that nothing else used the SMC:** two processes of the Macs Fan
+> Control tool were running for every run (process list only, never inspected): the app, since
+> 2026-10-04 04:17 UTC, and its privileged helper, since 2026-10-03 16:57 UTC, two minutes after
+> boot. A fan-control tool reads fan speeds, so another SMC client was very likely present
+> throughout; that is an inference, not an observation.
 
 **Date:** 2026-10-07 (the two contended runs between 22:29 and 22:37 UTC). **Machine:**
 `Mac16,5`, Apple M4 Max, **macOS 27.0.1 (Build 26A434)**, as every capture's `start` record and
@@ -1372,14 +1379,15 @@ two, 10.06 and 10.07 ms, sit in a burst of four between +226.571 s and +226.602 
 0.20 ± 0.02 s past a whole second of the run's own clock (+53.205, +89.216, +105.198 s, …), which
 points at a once-a-second source in phase with the run. It is not the tool's heartbeat, which
 fires about 0.01 s past the second; the source is not established. One candidate, untested: the
-other fan-control process that was running throughout (see the summary above) is a second SMC
-client, and a periodic reader would contend in exactly this shape. No Swift build was running in
+other fan-control tool running throughout (see the summary above) very likely reads the SMC, and
+a periodic reader would contend in exactly this shape. No Swift build was running in
 either run.
 
-A second SMC client can only add contention, so it can only raise the worst observed round trip;
-a D taken from these figures errs in the safe direction. The idle rows are therefore "idle with
-one other SMC client present", which is also the condition on a machine where that tool is still
-installed, and a run with it quit has not been taken.
+The idle rows are therefore "idle of Aeolus, with another fan-control tool very likely reading
+the SMC". Whether the worst round trip is larger or smaller without it **is not measured**, and it
+cannot be assumed: the worst read here did not follow contention (11.453 ms idle paced against
+11.330 and 10.071 ms contended). A run with both of that tool's processes stopped is the clean
+idle row, and it has not been taken; quitting the app alone may leave its helper running.
 
 #### The worst round trip, and what it bounds
 
