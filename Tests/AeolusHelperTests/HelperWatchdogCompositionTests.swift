@@ -107,7 +107,7 @@ struct HelperWatchdogCompositionTests {
         helper.watchdog.tick()
         helper.watchdog.tick()
 
-        let ended = await yieldUntil("the process to be ended") {
+        let ended = await pollUntil {
             await exits(of: journal).isEmpty == false
         }
         #expect(ended)
@@ -168,7 +168,7 @@ struct HelperWatchdogCompositionTests {
             timeline.advance(by: .seconds(6))
             helper.watchdog.tick()
             helper.watchdog.tick()
-            for _ in 0..<500 { await Task.yield() }
+            await settle()
 
             #expect(
                 await exits(of: journal) == afterTeardown,
@@ -192,7 +192,7 @@ struct HelperWatchdogCompositionTests {
             timeline.advance(by: .seconds(6))
             helper.watchdog.tick()
             helper.watchdog.tick()
-            let ended = await yieldUntil("the watchdog to end the process") {
+            let ended = await pollUntil {
                 await exits(of: journal).isEmpty == false
             }
             #expect(ended)
@@ -246,7 +246,7 @@ struct HelperWatchdogCompositionTests {
         timeline.advance(by: .seconds(6))
         helper.watchdog.tick()
         helper.watchdog.tick()
-        let ended = await yieldUntil("the wedged process to be ended") {
+        let ended = await pollUntil {
             await exits(of: journal).isEmpty == false
         }
         #expect(ended)

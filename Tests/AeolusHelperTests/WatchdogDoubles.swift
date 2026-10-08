@@ -165,9 +165,11 @@ final class WatchdogRig: Sendable {
         watchdog.tick()
     }
 
-    /// Waits for the process to be ended, bounded by yields and not by a clock.
+    /// Waits for the process to be ended. A failsafe on readiness, not a bound on speed: the
+    /// request to end it is a task on the cooperative pool, and how soon the pool runs it is
+    /// the machine's business, so this sleeps between looks rather than spinning on yields.
     func waitForExit() async -> Bool {
-        await yieldUntil("the process to be ended") { await exits(of: journal).isEmpty == false }
+        await pollUntil { await exits(of: journal).isEmpty == false }
     }
 
     /// Lets everything already runnable run, then reports whether the process was ended. For
@@ -175,7 +177,7 @@ final class WatchdogRig: Sendable {
     /// decision to end it is made synchronously inside `tick()` and logged there, so a test
     /// that also checks the log has the exact answer, and this is the belt.
     func endedAfterSettling() async -> Bool {
-        for _ in 0..<500 { await Task.yield() }
+        await settle()
         return await exits(of: journal).isEmpty == false
     }
 }
@@ -226,10 +228,18 @@ let tpd0 = SMCRoundTripOperation.call(key: 0x5450_4430, selector: 5)
 /// Polls `condition` every few milliseconds with `Task.sleep`, which suspends rather than
 /// parking a cooperative-pool thread, for at most ten seconds. For readiness that another
 /// thread or task has to reach — never an assertion about how fast it did.
-func pollUntil(_ condition: @Sendable () -> Bool) async -> Bool {
+func pollUntil(_ condition: @Sendable () async -> Bool) async -> Bool {
     for _ in 0..<2_000 {
-        if condition() { return true }
+        if await condition() { return true }
         try? await Task.sleep(for: .milliseconds(5))
     }
-    return condition()
+    return await condition()
+}
+
+/// Gives every task already runnable a real chance to run: a quarter of a second of sleeping,
+/// which suspends instead of spinning. For asserting that something did **not** happen, where
+/// there is nothing to wait for — a floor on how long the absence was observed, never a bound
+/// on how long anything takes.
+func settle() async {
+    for _ in 0..<25 { try? await Task.sleep(for: .milliseconds(10)) }
 }
