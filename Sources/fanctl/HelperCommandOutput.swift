@@ -38,8 +38,13 @@ enum HelperCommandOutput {
     /// The human text always goes to standard error. Under `--json` a machine-readable
     /// failure also goes to standard output, so a caller parsing stdout always gets a JSON
     /// value it can read rather than an empty stream and an exit code to guess from.
+    ///
+    /// `closing` is what `set`'s closing event adds to the existing `failed` shape: the lease, why
+    /// the hold ended and what the helper reported. It is `null` throughout for a command that
+    /// has nothing to add.
     static func fail(
-        _ failure: HelperCommandFailure, as format: Format, on terminal: Terminal
+        _ failure: HelperCommandFailure, as format: Format, on terminal: Terminal,
+        closing: SetClosingFacts = .none
     ) throws -> Never {
         terminal.warn(failure.message)
         let document = FailureJSON(failure)
@@ -49,7 +54,9 @@ enum HelperCommandOutput {
         case .document:
             try? emit(FailureDocumentJSON(failure: document), as: format, on: terminal)
         case .lines:
-            try? emit(FailureEventJSON(failure: document, at: Date()), as: format, on: terminal)
+            try? emit(
+                FailureEventJSON(failure: document, at: Date(), closing: closing), as: format,
+                on: terminal)
         }
         throw failure.code.exitCode
     }
@@ -83,11 +90,28 @@ enum HelperCommandOutput {
         let failure: FailureJSON
     }
 
-    /// `set --json`'s terminal event when the command cannot go on.
+    /// `set --json`'s closing event when the hold did not end in the safe state, or never
+    /// began: `{"schema": 1, "event": "failed", "at": ..., "failure": {...}}`, extended
+    /// additively with `SetClosingFacts` (`leaseID`, `endedBecause`, `fans`, ...). A caller that
+    /// reads only the original four keys reads it unchanged.
     struct FailureEventJSON: Encodable {
-        let schema = HelperCommandOutput.schemaVersion
-        let event = "failed"
         let failure: FailureJSON
         let at: Date
+        let closing: SetClosingFacts
+
+        init(failure: FailureJSON, at: Date, closing: SetClosingFacts = .none) {
+            self.failure = failure
+            self.at = at
+            self.closing = closing
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: SetEventKey.self)
+            try container.encode(HelperCommandOutput.schemaVersion, forKey: .schema)
+            try container.encode("failed", forKey: .event)
+            try container.encode(at, forKey: .at)
+            try closing.encode(into: &container)
+            try container.encode(failure, forKey: .failure)
+        }
     }
 }

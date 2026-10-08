@@ -42,11 +42,12 @@ struct Fanctl: AsyncParsableCommand {
         abstract: "Monitor and control Mac fan speeds.",
         discussion: """
             Read commands (list, sensors, watch, dump) need no privileges and no \
-            installed helper. status, auto and reset talk to Aeolus.app's privileged \
+            installed helper. status, set, auto and reset talk to Aeolus.app's privileged \
             helper, which must be registered and approved in System Settings.
 
             Manual control is always held under a lease: if fanctl exits or is killed, \
-            the helper returns the fans to automatic.
+            the helper returns the fans to automatic. set holds one for a bounded time, \
+            for the life of the process.
 
             Commands that talk to the helper exit with a stable code a script can branch \
             on: 0 success, 1 unexpected failure, 2 request does not fit this machine, \
@@ -58,7 +59,8 @@ struct Fanctl: AsyncParsableCommand {
             """,
         version: versionDescription,
         subcommands: [
-            List.self, Sensors.self, Watch.self, Status.self, Auto.self, Reset.self, Dump.self,
+            List.self, Sensors.self, Watch.self, Status.self, Set.self, Auto.self, Reset.self,
+            Dump.self,
         ]
     )
 }
@@ -203,6 +205,71 @@ extension Fanctl {
 
         /// Where `run()` writes — see `Terminal`. Not an argument.
         var terminal = Terminal.process
+    }
+
+    /// See `SetCommand.swift` for the sequence, `SetArguments.swift` for the grammar, and
+    /// `SetOutput.swift` for `run()`.
+    struct Set: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Hold one fan, or every fan, at a speed for a bounded time.",
+            discussion: """
+                Takes the manual-control lease, sets the speed, and renews the lease every 10 \
+                seconds for as long as --for says and this process and its parent are alive. \
+                Then it releases the lease and checks what the helper reports, the way `auto` \
+                does. Ctrl-C (or SIGTERM or SIGHUP) ends it early; so does a closed standard \
+                output. If the process is killed outright, the helper ends the lease within \
+                30 seconds.
+
+                A speed is N% of the fan's commandable range (0 to 100: 0% is the slowest speed \
+                the fan can be commanded to, never zero) or Nrpm. An rpm outside the range the \
+                firmware declares for the fan is refused, never clamped, and so is any speed \
+                for a fan whose declared range is unusable. `all` holds every fan, each against \
+                its own range, and refuses the whole command if any one cannot be held.
+
+                It never retries and never takes the lease back: if the helper reports that \
+                control is lost (a renewal refused, the lease no longer listed, a fan reclaimed \
+                by the system, a thermal emergency) it releases and exits 6. The speed is a \
+                target; the fan's actual speed is what the helper reports.
+
+                --for is required, from 10s to 8h (whole seconds, minutes or hours: 30s, 10m, \
+                2h). There is no way to hold longer or without an end.
+
+                Needs the helper installed, approved, and willing to accept this binary's \
+                signature. --json prints newline-delimited JSON events (started, holding, then \
+                ended or failed), each with a top-level "schema" version.
+                """
+        )
+
+        @Argument(help: ArgumentHelp("A fan index, or `all`.", valueName: "fan|all"))
+        var fan: String
+
+        @Argument(
+            help: ArgumentHelp(
+                "N% of the fan's commandable range (0 to 100), or Nrpm.", valueName: "N%|Nrpm"))
+        var speed: String
+
+        @Option(
+            name: .customLong("for"),
+            help: ArgumentHelp(
+                "How long to hold: whole seconds, minutes or hours (30s, 10m, 2h), from 10s to 8h. "
+                    + "Required.",
+                valueName: "duration"))
+        var holdFor: String
+
+        @Flag(name: .long, help: "Emit newline-delimited JSON events instead of text.")
+        var json = false
+
+        /// Where `run()` looks for the helper — see `HelperConnection`. Not an argument.
+        var helper = HelperConnection.production
+
+        /// Where `run()` writes — see `Terminal`. Not an argument.
+        var terminal = Terminal.process
+
+        /// How the hold tells time and sleeps — see `SettleClock`. Not an argument.
+        var clock = SettleClock.production
+
+        /// The parent process and the signals — see `HoldEnvironment`. Not an argument.
+        var environment = HoldEnvironment.production
     }
 
     /// See `AutoCommand.swift` for `run()` and what it is and is not allowed to claim.

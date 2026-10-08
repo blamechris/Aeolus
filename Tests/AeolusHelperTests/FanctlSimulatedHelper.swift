@@ -57,6 +57,14 @@ actor SimulatedFanAuthority: FanAuthority {
     private var releasesToAnotherHolder: String?
     private var snapshotFailure: SnapshotFailure?
     private var heldSnapshots: AsyncSignal?
+    // What `fanctl set` needs: a hold that goes wrong in each of the ways the helper reports.
+    private var applyRefusal: AeolusXPCFault?
+    private var leaseHiddenAfterRenewals: Int?
+    private var leaseShownInstead: Lease?
+    private var emergencyAfterRenewals: Int?
+    private var snapshotsBeforeReleaseShows = 0
+    private var snapshotsLeftBeforeReleaseShows: Int?
+    private var takenAfterRelease: String?
 
     // Records.
     private(set) var calls: [String] = []
@@ -145,6 +153,32 @@ actor SimulatedFanAuthority: FanAuthority {
 
     func setThermalEmergency(_ active: Bool) { isThermalEmergencyActive = active }
 
+    /// `apply` is refused with `fault`: the lease was granted and the speed was not.
+    func refusingApply(with fault: AeolusXPCFault) { applyRefusal = fault }
+
+    /// **A snapshot without the caller's lease ID**, while renewals still succeed. From the
+    /// `renewals`-th renewal on, snapshots list `other` (or no lease at all) in place of the
+    /// lease the authority holds: what a client sees when the helper has ended its lease and
+    /// said nothing else.
+    func listingNoLease(afterRenewals renewals: Int, showing other: Lease? = nil) {
+        leaseHiddenAfterRenewals = renewals
+        leaseShownInstead = other
+    }
+
+    /// A thermal emergency becomes active with the `renewals`-th renewal: the helper's override
+    /// outranks the hold, and says so only in its snapshots.
+    func emergency(afterRenewals renewals: Int) { emergencyAfterRenewals = renewals }
+
+    /// **A release that lands after N snapshots.** `releaseLease` is accepted, and the next
+    /// `snapshots` snapshots still list the lease and the fans as they were; the one after them
+    /// shows the release. It is what makes `fanctl set`'s ending poll more than once: the
+    /// shipped helper's handback is asynchronous.
+    func settling(afterReleaseSnapshots snapshots: Int) { snapshotsBeforeReleaseShows = snapshots }
+
+    /// Another client takes the fans the moment our release lands: a lease held by `holder`
+    /// appears over fan 0 with the snapshot that shows the release.
+    func reacquiringAfterRelease(as holder: String) { takenAfterRelease = holder }
+
     /// Another client's lease over `fans`, on a connection no test owns.
     func grantForeignLease(over fans: Set<Int>, holder: String = "Aeolus.app 0.3.0") {
         lease = Lease(holderDescription: holder, expiresAt: Date().addingTimeInterval(30))
@@ -198,9 +232,33 @@ actor SimulatedFanAuthority: FanAuthority {
                 snapshotsLeftBeforeRestoreShows = remaining - 1
             }
         }
+        if let remaining = snapshotsLeftBeforeReleaseShows {
+            if remaining == 0 {
+                snapshotsLeftBeforeReleaseShows = nil
+                endLease()
+                grantAfterRelease()
+            } else {
+                snapshotsLeftBeforeReleaseShows = remaining - 1
+            }
+        }
         return SystemSnapshot(
-            fans: fans.map(reportedState), sensors: [], activeLease: lease,
-            isThermalEmergencyActive: isThermalEmergencyActive, capturedAt: Date())
+            fans: fans.map(reportedState), sensors: [], activeLease: reportedLease(),
+            isThermalEmergencyActive: isThermalEmergencyActive || emergencyHasBegun,
+            capturedAt: Date())
+    }
+
+    /// The lease a snapshot lists: the authority's, unless a hold is scripted to have lost it.
+    private func reportedLease() -> Lease? {
+        if let after = leaseHiddenAfterRenewals, renewals >= after { return leaseShownInstead }
+        return lease
+    }
+
+    private var emergencyHasBegun: Bool {
+        emergencyAfterRenewals.map { renewals >= $0 } ?? false
+    }
+
+    private func grantAfterRelease() {
+        if let holder = takenAfterRelease { grantForeignLease(over: [0], holder: holder) }
     }
 
     func acquireLease(
@@ -250,7 +308,12 @@ actor SimulatedFanAuthority: FanAuthority {
         calls.append("releaseLease")
         if let releaseRefusal { throw releaseRefusal }
         _ = try held(id, by: connection)
-        endLease()
+        if snapshotsBeforeReleaseShows > 0 {
+            snapshotsLeftBeforeReleaseShows = snapshotsBeforeReleaseShows
+        } else {
+            endLease()
+            grantAfterRelease()
+        }
     }
 
     func apply(
@@ -258,6 +321,7 @@ actor SimulatedFanAuthority: FanAuthority {
     ) async throws {
         calls.append("apply")
         _ = try held(leaseID, by: connection)
+        if let applyRefusal { throw applyRefusal }
         appliedSettings.append(settings)
         guard !ignoresApply else { return }
         for setting in settings where leasedFans.contains(setting.fanIndex) {
