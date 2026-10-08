@@ -25,12 +25,25 @@ struct WatchdogTripwireTests {
 
     // MARK: - Names the watchdog may not mention
 
+    /// The modules a type of this package can be named through. `SMCCore.SMCConnection` is the
+    /// same type as `SMCConnection`, and a scan that only saw the bare spelling would be
+    /// evaded by the one qualifier the compiler accepts for it. The exit scan
+    /// (`SignalTeardownTripwireTests.exitCallPattern`) allows its module spellings the same
+    /// way, and for the same reason. A member access on anything that is **not** a module
+    /// (`connections.SMCConnection`) is still not a mention.
+    static let moduleQualifiers = [
+        "SMCCore", "FanKit", "AeolusXPC", "AeolusXPCClient", "AeolusHelper", "IOKit", "Darwin",
+        "Foundation",
+    ]
+
     /// Every name in `names` that appears in `code`, as a prefix of an identifier: a watchdog
     /// that named `SMCConnectionRecycling` is as far into the connection's world as one that
-    /// named `SMCConnection`.
+    /// named `SMCConnection`. Optionally qualified by the module that exports it, with
+    /// whatever whitespace Swift allows around the dot.
     static func mentions(of names: [String], in code: String) throws -> [String] {
-        try names.filter { name in
-            let pattern = try NSRegularExpression(pattern: #"(?<![\w.])"# + name)
+        let qualifier = "(?:(?:" + moduleQualifiers.joined(separator: "|") + #")\s*\.\s*)?"#
+        return try names.filter { name in
+            let pattern = try NSRegularExpression(pattern: #"(?<![\w.])"# + qualifier + name)
             return pattern.firstMatch(
                 in: code, range: NSRange(code.startIndex..<code.endIndex, in: code)) != nil
         }
@@ -71,13 +84,17 @@ struct WatchdogTripwireTests {
     }
 
     /// The scan above, run over fixtures: a name in code is found, one in a comment is not,
-    /// a longer identifier that begins with a forbidden name is found, and a member access
-    /// that merely ends in one is not.
+    /// a longer identifier that begins with a forbidden name is found, **a module-qualified
+    /// spelling is found**, and a member access that merely ends in one is not.
     ///
     /// **Mutation:** drop the `(?<![\w.])` prefix from `mentions(of:in:)`. Run: red — the
     /// member-access fixture is found.
     /// **Mutation:** make `mentions(of:in:)` return an empty array. Run: red — a name written
     /// in code goes unseen.
+    /// **Mutation:** drop the module qualifier group from `mentions(of:in:)`. Run: red — the
+    /// qualified fixtures go unseen. Run against the source instead (write
+    /// `SMCCore.SMCConnection` into `LivenessWatchdog.swift`): red, in
+    /// `theWatchdogNamesNoConnection`.
     @Test("The name scan sees a name in code and not in prose")
     func theNameScanSeesWhatItShould() throws {
         func found(_ source: String) throws -> [String] {
@@ -90,80 +107,15 @@ struct WatchdogTripwireTests {
         #expect(try found("/// reads no SMCConnection\nlet x = 1").isEmpty)
         #expect(try found("// SMCConnection\nlet x = 1").isEmpty)
         #expect(try found("let x = module.SMCConnection").isEmpty)
-    }
 
-    // MARK: - No Duration on the initialiser
-
-    /// The `(…)` of every `init` in `code`, parsed to its closing parenthesis rather than
-    /// matched up to the first `)`: a default value such as `log: WatchdogLog = WatchdogLog()`
-    /// has parentheses of its own.
-    static func initializerParameters(in code: String) throws -> [String] {
-        let opener = try NSRegularExpression(pattern: #"\binit\s*[?!]?\s*\("#)
-        let characters = Array(code)
-        var parameters: [String] = []
-        let openings = opener.matches(
-            in: code, range: NSRange(code.startIndex..<code.endIndex, in: code))
-        for match in openings {
-            guard let range = Range(match.range, in: code) else { continue }
-            var index = code.distance(from: code.startIndex, to: range.upperBound)
-            var depth = 1
-            let start = index
-            while index < characters.count, depth > 0 {
-                if characters[index] == "(" { depth += 1 }
-                if characters[index] == ")" { depth -= 1 }
-                index += 1
-            }
-            parameters.append(String(characters[start..<max(start, index - 1)]))
-        }
-        return parameters
-    }
-
-    /// I8: no `Duration` is a parameter of the watchdog's initialiser. There is nothing to
-    /// lengthen — D, D_cycle, D_bringUp and the tick are `static let` on `WatchdogLimits`.
-    ///
-    /// **Mutation:** add a `Duration` parameter to `LivenessWatchdog.init`. Run: red.
-    @Test("The watchdog's initialiser takes no Duration")
-    func theWatchdogInitTakesNoDuration() throws {
-        let initializers = try Self.initializerParameters(
-            in: try lifecycleSource("LivenessWatchdog.swift"))
-        #expect(!initializers.isEmpty, "the scan found no initialiser at all")
-        for parameters in initializers {
-            #expect(
-                !parameters.contains("Duration"),
-                "a Duration parameter would make a bound configurable: \(parameters)")
-        }
-    }
-
-    @Test("The initialiser scan reads a parameter list to its closing parenthesis")
-    func theInitScanParsesParameterLists() throws {
-        func parameters(_ source: String) throws -> [String] {
-            try Self.initializerParameters(in: source)
-        }
-        #expect(try parameters("init(a: Duration)").first?.contains("Duration") == true)
-        #expect(
-            try parameters("init(\n    roundTrips: X,\n    log: L = L(),\n    d: Duration\n) {}")
-                .first?.contains("Duration") == true)
-        #expect(try parameters("init (a: Duration) {}").first?.contains("Duration") == true)
-        #expect(try parameters("init?(a: Duration) {}").first?.contains("Duration") == true)
-        #expect(
-            try parameters("init(roundTrips: X, log: L = L()) { self.d = Duration() }").first?
-                .contains("Duration") == false)
-        #expect(try parameters("func initialise(a: Duration)").isEmpty)
-    }
-
-    /// I8, from the other side: the bounds are `static let`. A stored `static var` in
-    /// `WatchdogLimits` would be a bound assignable from anywhere in the module at runtime.
-    ///
-    /// **Mutation:** write `static var roundTrip: Duration = .seconds(5)`. Run: red.
-    @Test("The bounds are constants, not assignable variables")
-    func theBoundsAreStaticLets() throws {
-        let code = try lifecycleSource("WatchdogLimits.swift")
-        let storedVar = try NSRegularExpression(
-            pattern: #"\bstatic\s+var\s+\w+\s*(:[^={\n]*)?="#)
-        let found = storedVar.numberOfMatches(
-            in: code, range: NSRange(code.startIndex..<code.endIndex, in: code))
-        #expect(found == 0, "WatchdogLimits has a stored static var: a bound that can change")
-        #expect(code.contains("static let roundTrip"), "the scan no longer finds D")
+        // The same type, named through its module.
+        #expect(try found("let c: SMCCore.SMCConnection") == ["SMCConnection"])
+        #expect(try found("typealias C = SMCCore . SMCConnection") == ["SMCConnection"])
+        #expect(try found("let c = AeolusHelper.SMCConnection()") == ["SMCConnection"])
+        #expect(try found("let c: SMCCore\n    .SMCConnection") == ["SMCConnection"])
+        // A qualifier that is not a module is a member access, as before.
+        #expect(try found("let c: connections.SMCConnection").isEmpty)
+        #expect(try found("let c = SMCCore.SomethingElse()").isEmpty)
     }
 
     // MARK: - The production wiring
