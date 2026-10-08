@@ -1114,13 +1114,17 @@ handler plus `atexit`" — and that one is undefined behaviour on the path it wa
 
   **This bullet promises less than the others, and the difference is the point.** Ending the
   helper does not by itself restore anything:
-  - **A restart restores automatic control only if its first read returns.** launchd
+  - **A restart restores automatic control only if its pass reaches its keystone** — every
+    read the pass makes before the restore returns, and then the restore does. launchd
     restarts a job it is keeping alive (`KeepAlive = { SuccessfulExit = false }`), and the
     next process's reconciliation, above, reads before it restores. A wedge that outlives the
-    restart hangs that first read: the bring-up trigger ends the new process the same way, 15 s
-    after it armed; launchd throttles the loop; and **nothing puts a fan back until the driver
-    answers.** A persistent wedge is a throttled restart loop whose every pass ends *before*
-    reconciliation completes, not one in which every pass ends in it.
+    restart hangs one of those reads (the first, or a later one such as a fan's `F<n>Md`),
+    and the **round-trip trigger** ends the new process the same way, about D + 1–2 s after
+    the read began. The bring-up trigger (D_bringUp, 15 s) is not what ends it: it covers only
+    a stall that is not a stamped round trip, such as a hang in `open()`'s unstamped matching
+    or registry calls. launchd throttles the loop; and **nothing puts a fan back until the
+    driver answers.** A persistent wedge is a throttled restart loop whose every pass ends
+    *before* reconciliation completes, not one in which every pass ends in it.
   - **Where launchd is itself removing or stopping the job** — `launchctl bootout`,
     `SMAppService.unregister()`, a shutdown — exit code `2` is not followed by a restart, and
     nothing restores the fans.
@@ -1131,8 +1135,8 @@ handler plus `atexit`" — and that one is undefined behaviour on the path it wa
     the writes a restore makes; ADR 0012 lists that measurement among the things to do before
     relying on it, and the E4 write-latency measurement must include a teardown restore.
   - **A false positive** on a healthy machine ends the helper, and the successor's
-    reconciliation puts the fans back to automatic once its first read returns, which is the
-    safe direction.
+    reconciliation puts the fans back to automatic once its pass reaches its keystone, which
+    is the safe direction.
 
   **What it is not:** it abandons nothing, times nothing out and reopens nothing. D is
   provisional: it is confirmed for reads only, on `Mac16,5`, and not for write selectors, dark

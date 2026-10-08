@@ -36,8 +36,8 @@ over healthy reads cannot show whether a call can wedge.
 D_cycle, it logs one `.fault` and exits non-zero through the single exit seam
 (`TeardownExit.process`), as a new `TeardownOutcome.blind`.** launchd then restarts it,
 and startup reconciliation ([ADR 0011](0011-reconciliation-and-foreign-manual-control.md))
-restores automatic control **if its first read returns**; the amendment's "What the ending buys,
-and what it does not" says where that stops being true. The restart relies on
+restores automatic control **if its pass reaches its keystone**; the amendment's "What the
+ending buys, and what it does not" says where that stops being true. The restart relies on
 `KeepAlive = { SuccessfulExit = false }`, which lands in the order ADR 0007 sets. Nothing in the
 process abandons a round trip, times one out, or reopens the connection.
 
@@ -106,7 +106,7 @@ fully reaped only after its in-flight kernel calls have unwound. Second, launchd
 successor until that reaping is complete (H2). If both hold, whatever the wedged call does
 happens before the next reconciliation reads the mode keys. If either fails, the ordering
 argument fails with it, and the table says what to revisit. A false positive ends the helper, and the successor's reconciliation puts the fans back to
-automatic once its first read returns, which is the safe direction. The recovery it triggers
+automatic once its pass reaches its keystone, which is the safe direction. The recovery it triggers
 already exists and is tested; a wedge that outlives the restart is the case it does not cover
 (see Consequences).
 
@@ -146,11 +146,13 @@ flight.
 
 - **A wedge drops every lease.** The user sees the helper restart and manual control end.
 - **A recurring wedge produces a throttled restart loop of a root daemon, and a loop is not
-  a recovery.** Each new process's first reconciliation read hangs in the same driver, so the
-  bring-up trigger ends it after D_bringUp, launchd throttles the next start, and **nothing
-  restores a fan until the driver answers.** This ADR does not claim that every iteration ends
-  in the safe state. What it accepts is that no pass of the loop writes anything: each ends at
-  its first read, and a fan the driver will not answer for is left as it is.
+  a recovery.** Each new process's reconciliation hangs on a read in the same driver, so the
+  **round-trip trigger** ends it about D + 1–2 s after that read began (the bring-up trigger
+  covers only a stall that is not a stamped round trip), launchd throttles the next start, and
+  **nothing restores a fan until the driver answers.** This ADR does not claim that every
+  iteration ends in the safe state. What it accepts is that no pass of the loop writes
+  anything: each is ended at a read, before the restore, and a fan the driver will not answer
+  for is left as it is.
 - **A restart is not guaranteed.** Where launchd is itself removing or stopping the job — a
   bootout, `SMAppService.unregister()`, a shutdown — exit code 2 is not followed by a start,
   and nothing restores the fans.
@@ -267,8 +269,8 @@ wake. It is revisited when [#296](https://github.com/blamechris/Aeolus/issues/29
 3 and 4 are measured and when the first supervised E4 write has recorded its own
 per-round-trip latency. A persistent wedge becomes a throttled restart loop, not a recovery:
 see Consequences, and "What the ending buys, and what it does not" below. (The first draft of
-this paragraph said every pass ended in reconciliation. It does not: each pass is ended at its
-first read.)
+this paragraph said every pass ended in reconciliation. It does not: each pass is ended by the
+round-trip trigger at one of its reads, before the restore.)
 
 ### The constants
 
@@ -473,10 +475,14 @@ Ending the helper is not restoring a fan. The log line, `docs/SAFETY.md` § 6 an
 say the same thing:
 
 - launchd restarts a job it is keeping alive, and the next process's reconciliation restores
-  automatic control **if its first read returns**.
-- A wedge that outlives the restart hangs that first read. The bring-up trigger ends the new
-  process at D_bringUp, launchd throttles the loop, and nothing restores a fan until the driver
-  answers.
+  automatic control **if its pass reaches its keystone**: every read before the restore
+  returns, and then the restore does. A first read that returns and a later one (a fan's
+  `F<n>Md`) that hangs restores nothing either.
+- A wedge that outlives the restart hangs one of those reads. The **round-trip trigger** ends
+  the new process about D + 1–2 s after that read began, not the bring-up trigger at D_bringUp
+  (which covers a stall that is not a stamped round trip, such as a hang in `open()`'s unstamped
+  matching or registry calls). launchd throttles the loop, and nothing restores a fan until the
+  driver answers.
 - Where launchd is removing or stopping the job (`launchctl bootout`,
   `SMAppService.unregister()`, a shutdown), exit code 2 is not followed by a start.
 - The orderly teardown is bounded by D, through the round-trip trigger alone (H6).

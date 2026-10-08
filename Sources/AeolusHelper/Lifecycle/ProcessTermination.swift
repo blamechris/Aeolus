@@ -77,6 +77,14 @@ final class ProcessTermination: Sendable {
     }
 
     /// Takes the claim, or says who holds it. Never ends the process by itself.
+    ///
+    /// **A granted claim must be ended.** Every later request is refused as "already ending as
+    /// …" for the life of the process, so a caller that is granted the claim and does not call
+    /// `Ending.end()` leaves a helper that logs every verdict as refused and never exits. That
+    /// is why there are exactly two callers — `LivenessWatchdog.tick()`, which ends the process
+    /// on the grant, and `end(_:)` below, which the orderly teardown uses — and why
+    /// `WatchdogSeamTripwireTests` counts them: a caller that only wanted to *ask* whether the
+    /// process is ending would take the claim by asking.
     func claim(_ outcome: TeardownOutcome) -> Claim {
         let holder = held.withLock { held -> TeardownOutcome? in
             if let held { return held }
