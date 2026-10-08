@@ -260,71 +260,98 @@ struct HelperWatchdogCompositionTests {
 
     // MARK: - Never through the connection
 
+    /// What the thread that drives the held window saw.
+    private struct HeldWindow: Sendable {
+        var occupied = false
+        var faultsAtOnce = -1
+        var probeRanWhileHeld = false
+        var finished = false
+    }
+
     /// A real `SMCConnection`, really held — a thread parked on a semaphore inside the actor,
-    /// not a double that merely suspends — and a verdict reached and acted on while it is.
+    /// not a double that merely suspends — and a verdict reached while it is.
     ///
     /// **The decision is synchronous.** The `.fault` is in the log the moment the second
     /// `tick()` returns, with no `await` between: a watchdog that obtained the stamp through an
     /// actor hop, or hopped anywhere before deciding, would not have decided yet. That is what
-    /// makes this fail for a hop even when the hop is not to the connection. The process then
-    /// ends, still with the connection held, and a call queued behind the held connection is
-    /// still queued — the proof the actor was really occupied the whole time.
+    /// makes this fail for a hop even when the hop is not to the connection. A call queued
+    /// behind the held connection is still queued a quarter of a second later — the proof the
+    /// actor was really occupied the whole time — and the process ends once it is freed.
+    ///
+    /// ## Why the window is driven from a thread of its own
+    ///
+    /// Holding an actor means parking a cooperative-pool thread, and this repository already has
+    /// two tests that do (`SMCRoundTripMonitorTests`' and `ThreadBlockingRestorePlane`'s). On a
+    /// three-core runner the pool is three threads wide, a third parked test leaves none to
+    /// resume any of them, and the whole suite stops — which is exactly what happened on this
+    /// pull request's first CI run. So the held window asks nothing of the pool: the thread that
+    /// drives it, and the failsafe that ends it, are `Thread`s, and it lasts a quarter of a
+    /// second. What the window therefore does **not** show is the process ending *while* the
+    /// connection is held: that needs a free pool thread, which a loaded runner cannot promise.
+    /// Nothing in the termination path names the connection (`WatchdogTripwireTests`), and the
+    /// ending is asserted as soon as the connection is freed.
     ///
     /// **Mutation:** read the stamp through an actor hop in `tick()` (a `Task` that awaits an
     /// actor, deciding when it returns). Run: red.
-    @Test("A verdict is reached and acted on while the connection is held")
+    @Test("A verdict is reached while the real connection is held")
     func theWatchdogNeverEntersTheConnectionActor() async {
         let rig = WatchdogRig()
         let connection = SMCConnection(roundTrips: rig.monitor)
+        let entered = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
         let probeFinished = OSAllocatedUnfairLock(initialState: false)
+        let window = OSAllocatedUnfairLock(initialState: HeldWindow())
 
-        // A failsafe that frees the held actor if an assertion below stops the test short, so
-        // a failure is a failure and not a hung process. On a thread of its own: the global
-        // queue shares workers with the cooperative pool this very test is holding a thread of,
-        // and a failsafe that has to wait for the thing it is a failsafe for is not one (#324).
+        // The held window. Whatever happens inside it, the `defer` frees the actor, so a failure
+        // here is a failure and not a hung process.
         Thread {
-            Thread.sleep(forTimeInterval: 30)
-            release.signal()
+            defer {
+                release.signal()
+                window.withLock { $0.finished = true }
+            }
+            guard entered.wait(timeout: .now() + .seconds(20)) == .success else { return }
+            window.withLock { $0.occupied = true }
+
+            // Queued behind the held connection; it cannot run until the release.
+            Task {
+                await connection.close()
+                probeFinished.withLock { $0 = true }
+            }
+
+            rig.timeline.advance(by: .seconds(6))
+            rig.watchdog.tick()
+            rig.watchdog.tick()
+            // No suspension since the second tick: the verdict is already in the log.
+            let faultsAtOnce = rig.log.faults.count
+
+            Thread.sleep(forTimeInterval: 0.25)
+            let probeRan = probeFinished.withLock { $0 }
+            window.withLock {
+                $0.faultsAtOnce = faultsAtOnce
+                $0.probeRanWhileHeld = probeRan
+            }
         }.start()
 
         let occupation = Task {
             await connection.occupyForTesting {
-                // Timed as well, so even a failsafe that never ran frees the thread.
-                rig.monitor.bracket(.open) { _ = release.wait(timeout: .now() + .seconds(60)) }
+                // Timed as well, so even a driver that never ran frees the thread.
+                rig.monitor.bracket(.open) {
+                    entered.signal()
+                    _ = release.wait(timeout: .now() + .seconds(30))
+                }
             }
         }
-        guard await pollUntil({ rig.monitor.inFlight() != nil }) else {
-            Issue.record("the connection was never occupied")
-            release.signal()
-            await occupation.value
-            return
-        }
 
-        // Queued behind the held connection; it cannot run until the release below.
-        let probe = Task {
-            await connection.close()
-            probeFinished.withLock { $0 = true }
-        }
-
-        rig.timeline.advance(by: .seconds(6))
-        rig.watchdog.tick()
-        rig.watchdog.tick()
-        // No `await` since the second tick: the verdict is already in the log.
-        let faultsAtOnce = rig.log.faults.count
-
-        let ended = await rig.waitForExit()
-        for _ in 0..<25 { try? await Task.sleep(for: .milliseconds(10)) }
-        let probeRanWhileHeld = probeFinished.withLock { $0 }
-
-        release.signal()
+        let finished = await pollUntil { window.withLock { $0.finished } }
         await occupation.value
-        await probe.value
+        let seen = window.withLock { $0 }
 
-        #expect(faultsAtOnce == 1, "the verdict was not reached inside tick()")
-        #expect(ended, "the process was not ended while the connection was held")
+        #expect(finished, "the held window never ended")
+        #expect(seen.occupied, "the connection was never occupied")
+        #expect(seen.faultsAtOnce == 1, "the verdict was not reached inside tick()")
+        #expect(!seen.probeRanWhileHeld, "the connection was not actually held")
+        #expect(await pollUntil { probeFinished.withLock { $0 } }, "the queued call never ran")
+        #expect(await rig.waitForExit(), "the process was not ended")
         #expect(await exits(of: rig.journal) == [.blind])
-        #expect(!probeRanWhileHeld, "the connection was not actually held")
-        #expect(probeFinished.withLock { $0 }, "the queued call never ran once it was freed")
     }
 }

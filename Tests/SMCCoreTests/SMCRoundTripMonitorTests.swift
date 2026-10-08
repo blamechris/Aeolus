@@ -209,7 +209,15 @@ struct SMCRoundTripMonitorTests {
         let release = DispatchSemaphore(value: 0)
         let probeFinished = OSAllocatedUnfairLock(initialState: false)
 
-        DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(30)) { release.signal() }
+        // On a thread of its own, not the global queue: the global queue shares its workers with
+        // the cooperative pool this test is holding a thread of, so on a runner whose pool is
+        // exhausted by tests like this one the failsafe waits for the very thing it exists to
+        // free. A CI run of the liveness watchdog's pull request stopped for twenty minutes on
+        // exactly that, with this failsafe still queued (#324 is the same hazard).
+        Thread {
+            Thread.sleep(forTimeInterval: 30)
+            release.signal()
+        }.start()
 
         let occupation = Task {
             await connection.occupyForTesting {
