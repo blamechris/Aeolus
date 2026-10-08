@@ -149,50 +149,6 @@ struct FanctlSetStopTests {
         _ = harness.sessions
     }
 
-    // MARK: - A stop request outranks a write that gave up
-
-    /// A write that gives up is the reader not making room only if nothing else asked the hold to
-    /// stop. A signal, the parent exiting, or the deadline passing while the line waited is the
-    /// reason the hold ends, and the closing event says so.
-    ///
-    /// **Mutation:** drop the `watch.reason ??` from the `holding` branch in
-    /// `SetCommand.heartbeats`. Run: red on each of the three.
-    @Test(
-        "A stop request that arrives while a write waits is why the hold ends",
-        arguments: [
-            ("signal", "SIGINT"), ("parentExited", nil), ("durationElapsed", nil),
-        ] as [(String, String?)])
-    func aStopRequestOutranksAFailedWrite(because: String, signal: String?) async throws {
-        let authority = SimulatedFanAuthority()
-        let harness = ClientListenerHarness(authority: authority)
-        let desk = SignalDesk()
-        let time = VirtualHoldTime()
-        // Line 1 is `started`, line 2 the first `holding`, which does not arrive; as it waits,
-        // the thing under test happens. The closing event is line 3.
-        let output = RecordingTerminal(
-            acceptingStandardOutputLines: 1,
-            onStandardOutput: { number, _ in
-                guard number == 2 else { return }
-                switch because {
-                case "signal": desk.send(.interrupt)
-                case "parentExited": desk.parentExits()
-                default: time.advance(by: .seconds(60))
-                }
-            })
-
-        let run = try await Harness.run(
-            Harness.thirtySeconds + ["--json"], over: harness, time: time, desk: desk,
-            output: output)
-
-        #expect(run.code == nil)
-        let closing = try #require(try output.attemptedEvents().last)
-        #expect(closing["event"] as? String == "ended")
-        #expect(closing["endedBecause"] as? String == because)
-        #expect(closing["signal"] as? String == signal)
-        #expect(await Harness.count("releaseLease", in: authority) == 1)
-        _ = harness.sessions
-    }
-
     // MARK: - The schedule
 
     /// A write that took four seconds shortens the next sleep by four: the renewals stay ten

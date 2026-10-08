@@ -30,7 +30,7 @@ struct FanctlSetOutputBoundTests {
 
     /// A `set --json` run whose standard output is a pipe with `free` bytes of room and no
     /// reader, and whose waits for room are virtual.
-    private struct Stalled {
+    struct Stalled {
         let code: Int32?
         let out: RealPipe
         let errors: RealPipe
@@ -41,7 +41,7 @@ struct FanctlSetOutputBoundTests {
     /// The lengths, in bytes, of the `started` and `holding` lines a run of this shape writes.
     /// Measured from a real run rather than assumed, so a change to the JSON moves the test's
     /// numbers with it and cannot quietly move the stall out of the state under test.
-    private static func lineLengths() async throws -> (started: Int, holding: Int) {
+    static func lineLengths() async throws -> (started: Int, holding: Int) {
         let harness = ClientListenerHarness(authority: SimulatedFanAuthority())
         let run = try await Harness.run(Harness.thirtySeconds + ["--json"], over: harness)
         let lines = run.output.lines.filter { $0.stream == .standardOutput }.map(\.text)
@@ -49,7 +49,7 @@ struct FanctlSetOutputBoundTests {
         return (lines[0].utf8.count + 1, lines[1].utf8.count + 1)
     }
 
-    private static func run(
+    static func run(
         freeBytes free: Int, arguments: [String] = Harness.thirtySeconds + ["--json"],
         onWait: @escaping @Sendable (Int, VirtualHoldTime, SignalDesk) -> Void = { _, _, _ in },
         authority: SimulatedFanAuthority = SimulatedFanAuthority()
@@ -95,7 +95,7 @@ struct FanctlSetOutputBoundTests {
     /// The command's exit code, or `nil` if it did not come back within twenty seconds, in which
     /// case the pipe is drained so that a write parked in it finishes. The twenty seconds are
     /// only ever spent when the guard under test is broken.
-    private static func finishing(
+    static func finishing(
         _ running: Task<Int32?, Never>, unblocking out: RealPipe
     ) async -> Int32? {
         await withTaskGroup(of: Int32??.self) { group in
@@ -147,6 +147,8 @@ struct FanctlSetOutputBoundTests {
         #expect(await authority.currentLease == nil)
         #expect(stalled.waits == 3, "ended by the signal on the third wait, not by the bound")
         #expect(stalled.time.elapsed == .milliseconds(300))
+        let said = String(decoding: stalled.errors.drain(), as: UTF8.self)
+        #expect(!said.contains("did not make room"), "the signal, not the reader: \(said)")
         let queued = String(decoding: stalled.out.drain(), as: UTF8.self)
         #expect(
             queued.contains("\"event\":\"started\""), "the first chunk of the line went out")

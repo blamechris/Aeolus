@@ -151,7 +151,7 @@ struct FileDescriptorKindsTests {
 
         terminal.say("the document")
 
-        let note = errors.text(200)
+        let note = String(decoding: errors.drain(), as: UTF8.self)
         #expect(note.contains("could not write to standard output"))
         #expect(note.contains(String(cString: strerror(EBADF))))
     }
