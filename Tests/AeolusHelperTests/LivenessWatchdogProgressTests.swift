@@ -288,6 +288,27 @@ struct LivenessWatchdogProgressTests {
         await stalled.finish()
     }
 
+    /// A `start()` that finds the loop already running changes nothing, and in particular does
+    /// not give a stalled cycle a fresh fifteen seconds: only a call that actually starts a loop
+    /// begins the phase.
+    ///
+    /// **Mutation:** move `progress.beginCycling()` above the `guard task == nil` in
+    /// `ThermalSupervisor.start()`. Run: red.
+    @Test("A start() that finds the loop running does not reset the stall's clock")
+    func aRedundantStartDoesNotResetTheClock() async throws {
+        let rig = WatchdogRig()
+        let stalled = await StalledSupervisor(progress: rig.progress)
+        try await stalled.startAndWaitUntilParked()
+
+        rig.timeline.advance(by: .seconds(14))
+        #expect(await stalled.supervisor.start() == false, "the loop was already running")
+        rig.timeline.advance(by: .seconds(2))
+        rig.tickTwice()
+
+        #expect(rig.log.faults.first?.contains("safety-cycle trigger") == true)
+        await stalled.finish()
+    }
+
     // MARK: - The clock
 
     /// The progress triggers age on the suspending clock — a property of one `typealias`,
