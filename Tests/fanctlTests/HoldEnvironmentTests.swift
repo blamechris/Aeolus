@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import os
 
 @testable import fanctl
 
@@ -23,11 +24,11 @@ struct HoldEnvironmentTests {
     /// handler runs on whichever thread has the signal unblocked — usually not the writer's — a
     /// moment after `write` returns. So "none arrived" can only be known after a wait, and "one
     /// arrived" as soon as it does.
-    private static func sigpipes(waiting seconds: Double, untilSeen: Bool) -> Int32 {
+    private static func sigpipes(waiting seconds: Double, untilSeen: Bool) async -> Int32 {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
             if untilSeen, sigpipesSeen > 0 { break }
-            Thread.sleep(forTimeInterval: 0.01)
+            try? await Task.sleep(for: .milliseconds(10))
         }
         return sigpipesSeen
     }
@@ -42,7 +43,7 @@ struct HoldEnvironmentTests {
     /// **Mutation:** call the body directly in `FileDescriptorWriter.writeLine`, without
     /// `ignoringSIGPIPE`. Run: red — the handler sees the signal.
     @Test("A write to a closed pipe raises no SIGPIPE: the command keeps its own exit code")
-    func writeIgnoresSIGPIPE() throws {
+    func writeIgnoresSIGPIPE() async throws {
         let previous = signal(SIGPIPE) { _ in sigpipesSeen += 1 }
         defer { _ = signal(SIGPIPE, previous) }
 
@@ -57,9 +58,8 @@ struct HoldEnvironmentTests {
         sigpipesSeen = 0
         _ = write(control, "x", 1)
         close(control)
-        try #require(
-            Self.sigpipes(waiting: 2, untilSeen: true) == 1,
-            "control: a bare write to a closed pipe must raise it")
+        let controlSeen = await Self.sigpipes(waiting: 2, untilSeen: true)
+        try #require(controlSeen == 1, "control: a bare write to a closed pipe must raise it")
 
         let written = try closedPipe()
         defer { close(written) }
@@ -68,7 +68,7 @@ struct HoldEnvironmentTests {
         let outcome = FileDescriptorWriter.writeLine("anyone there?", to: written)
 
         #expect(outcome == .readerGone)
-        #expect(Self.sigpipes(waiting: 0.3, untilSeen: true) == 0, "the write raised SIGPIPE")
+        #expect(await Self.sigpipes(waiting: 0.3, untilSeen: true) == 0, "the write raised SIGPIPE")
         #expect(Self.disposition(of: SIGPIPE) > 1, "the handler was put back after the write")
     }
 
@@ -80,7 +80,7 @@ struct HoldEnvironmentTests {
     /// `defer` of `ignoringSIGPIPE`). Run: red — the handler is back while the first write is
     /// still in progress.
     @Test("An overlapping write leaves SIGPIPE ignored until the last write is done")
-    func overlappingWrites() throws {
+    func overlappingWrites() async throws {
         let previous = signal(SIGPIPE) { _ in sigpipesSeen += 1 }
         defer { _ = signal(SIGPIPE, previous) }
 
@@ -103,17 +103,13 @@ struct HoldEnvironmentTests {
         }
 
         let parkedWriter = full[1]
-        let finished = DispatchSemaphore(value: 0)
+        let finished = OSAllocatedUnfairLock(initialState: false)
         BackgroundThread.run {
             _ = FileDescriptorWriter.writeLine(
                 "parked until the reader reads", to: parkedWriter)
-            finished.signal()
+            finished.withLock { $0 = true }
         }
-        var waited = 0
-        while Self.disposition(of: SIGPIPE) != 1, waited < 200 {
-            Thread.sleep(forTimeInterval: 0.01)
-            waited += 1
-        }
+        _ = await WriterRig.eventually(seconds: 2) { Self.disposition(of: SIGPIPE) == 1 }
         try #require(Self.disposition(of: SIGPIPE) == 1, "the first write is inside the region")
 
         #expect(FileDescriptorWriter.writeLine("quick", to: roomy[1]) == .delivered)
@@ -121,13 +117,10 @@ struct HoldEnvironmentTests {
 
         var drained = [UInt8](repeating: 0, count: 70_000)
         _ = read(full[0], &drained, drained.count)
-        #expect(Self.finished(finished), "the parked write should finish once the reader reads")
+        #expect(
+            await WriterRig.eventually { finished.withLock { $0 } },
+            "the parked write should finish once the reader reads")
         #expect(Self.disposition(of: SIGPIPE) > 1, "restored once the last write is done")
-    }
-
-    /// Synchronous, because a semaphore may not be waited on from an `async` function directly.
-    private static func finished(_ semaphore: DispatchSemaphore) -> Bool {
-        semaphore.wait(timeout: .now() + 5) == .success
     }
 
     /// 0 for `SIG_DFL`, 1 for `SIG_IGN`, anything else is a handler.

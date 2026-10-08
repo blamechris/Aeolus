@@ -93,25 +93,36 @@ enum WriterRig {
     ///
     /// A write that parks cannot be cancelled, and a test that waited for it would hang the suite
     /// instead of failing. `unblock` frees it afterwards so the thread is not left behind. The five
-    /// seconds are only ever spent when the guard under test is broken.
+    /// seconds are only ever spent when the guard under test is broken. **Nothing here blocks a
+    /// worker thread**: the work is on a thread of its own and the wait is a poll with
+    /// `Task.sleep`, because a runner with few cores that has every worker parked in a test's
+    /// wait runs nothing.
     static func promptly<Value: Sendable>(
-        unblocking unblock: () -> Void, running work: @escaping @Sendable () -> Value,
-        whileRunning during: () -> Void = {}
-    ) -> Value? {
+        unblocking unblock: @Sendable () -> Void, running work: @escaping @Sendable () -> Value,
+        whileRunning during: @Sendable () -> Void = {}
+    ) async -> Value? {
         let result = OSAllocatedUnfairLock<Value?>(initialState: nil)
-        let done = DispatchSemaphore(value: 0)
+        let done = OSAllocatedUnfairLock(initialState: false)
         BackgroundThread.run {
             let value = work()
             result.withLock { $0 = value }
-            done.signal()
+            done.withLock { $0 = true }
         }
         during()
-        if done.wait(timeout: .now() + 5) == .timedOut {
-            unblock()
-            _ = done.wait(timeout: .now() + 5)
-            return nil
+        if await eventually({ done.withLock { $0 } }) { return result.withLock { $0 } }
+        unblock()
+        _ = await eventually({ done.withLock { $0 } })
+        return nil
+    }
+
+    /// Whether `condition` holds within `seconds`, polled every millisecond without blocking a
+    /// worker thread. A pass reaches it at once.
+    static func eventually(seconds: Int = 5, _ condition: @Sendable () -> Bool) async -> Bool {
+        for _ in 0..<(seconds * 1_000) {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(1))
         }
-        return result.withLock { $0 }
+        return condition()
     }
 
     /// A line of exactly `length` bytes, newline included.

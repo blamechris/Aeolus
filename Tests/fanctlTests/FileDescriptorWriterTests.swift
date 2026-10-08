@@ -22,7 +22,7 @@ struct FileDescriptorWriterTests {
     typealias Rig = WriterRig
 
     @Test("A line is written whole, with its newline")
-    func writesTheLine() throws {
+    func writesTheLine() async throws {
         let pipe = try TestPipe()
         defer { pipe.close() }
         #expect(Rig.write("{\"event\":\"holding\"}", to: pipe.writer) == .delivered)
@@ -30,7 +30,7 @@ struct FileDescriptorWriterTests {
     }
 
     @Test("Several lines arrive in order")
-    func writesLinesInOrder() throws {
+    func writesLinesInOrder() async throws {
         let pipe = try TestPipe()
         defer { pipe.close() }
         #expect(Rig.write("one", to: pipe.writer) == .delivered)
@@ -42,7 +42,7 @@ struct FileDescriptorWriterTests {
     ///
     /// **Mutation:** return `.delivered` for EPIPE in `FileDescriptorWriter.write`. Run: red.
     @Test("A pipe whose reader has gone reports it")
-    func closedReader() throws {
+    func closedReader() async throws {
         let pipe = try TestPipe()
         Darwin.close(pipe.reader)
         defer { Darwin.close(pipe.writer) }
@@ -58,7 +58,7 @@ struct FileDescriptorWriterTests {
     /// for a refusal, or write only what `poll` promised). Run: red — the reader gets a cut-off
     /// line.
     @Test("A line larger than the room is delivered whole once the reader reads")
-    func toTheEndWaitsForTheReader() throws {
+    func toTheEndWaitsForTheReader() async throws {
         let pipe = try TestPipe()
         defer { pipe.close() }
         pipe.fill(leavingFree: 300)
@@ -72,7 +72,7 @@ struct FileDescriptorWriterTests {
         }
         let writer = pipe.writer
 
-        let outcome = Rig.promptly(
+        let outcome = await Rig.promptly(
             unblocking: { _ = pipe.read(65_536) }, running: { Rig.write(text, to: writer) })
 
         #expect(outcome == .delivered)
@@ -88,7 +88,7 @@ struct FileDescriptorWriterTests {
     /// **Mutation:** report `EAGAIN` as a failure (drop the `case EAGAIN` branch of
     /// `FileDescriptorWriter.write`). Run: red — `failed(35)`, with 300 bytes of the line written.
     @Test("An inherited non-blocking descriptor is written to the end, waiting for room")
-    func nonBlockingToTheEnd() throws {
+    func nonBlockingToTheEnd() async throws {
         let pipe = try TestPipe()
         defer { pipe.close() }
         pipe.fill(leavingFree: 300)
@@ -104,7 +104,7 @@ struct FileDescriptorWriterTests {
         }
         let writer = pipe.writer
 
-        let outcome = Rig.promptly(
+        let outcome = await Rig.promptly(
             unblocking: { _ = pipe.read(65_536) }, running: { Rig.write(text, to: writer) })
 
         #expect(outcome == .delivered)
@@ -115,7 +115,7 @@ struct FileDescriptorWriterTests {
     /// The same descriptor, and the reader leaves while the write waits for room: the retried
     /// write is the answer, and it says the reader has gone.
     @Test("A non-blocking write that waits for room learns that the reader has gone")
-    func nonBlockingReaderLeaves() throws {
+    func nonBlockingReaderLeaves() async throws {
         let pipe = try TestPipe()
         defer { Darwin.close(pipe.writer) }
         pipe.fill(leavingFree: 0)
@@ -124,7 +124,7 @@ struct FileDescriptorWriterTests {
         let writer = pipe.writer
         let reader = pipe.reader
 
-        let outcome = Rig.promptly(
+        let outcome = await Rig.promptly(
             unblocking: {},
             running: { Rig.write("anyone?", to: writer) },
             whileRunning: {

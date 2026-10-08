@@ -152,11 +152,11 @@ struct RealPipe {
         return waiting > 0 ? read(waiting) : []
     }
 
-    /// Fills the pipe with `filler`, then makes `free` bytes of room by reading them back.
-    func fill(leavingFree free: Int, with filler: UInt8 = 0x61) {
+    /// Fills the pipe, then makes `free` bytes of room by reading them back.
+    func fill(leavingFree free: Int) {
         let flags = fcntl(writer, F_GETFL)
         _ = fcntl(writer, F_SETFL, flags | O_NONBLOCK)
-        var byte = filler
+        var byte: UInt8 = 0x61
         while Darwin.write(writer, &byte, 1) == 1 {}
         _ = fcntl(writer, F_SETFL, flags)
         _ = read(free)

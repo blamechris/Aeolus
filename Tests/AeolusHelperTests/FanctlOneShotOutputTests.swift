@@ -25,10 +25,14 @@ nonisolated(unsafe) private var sigpipesSeenByOneShotTests: Int32 = 0
 @Suite("fanctl's one-shot commands write to the end", .serialized, .timeLimit(.minutes(1)))
 struct FanctlOneShotOutputTests {
 
-    /// Whether `semaphore` fires within ten seconds, which a pass reaches at once. Synchronous,
-    /// because a semaphore may not be waited on from an `async` function directly.
-    private static func signalled(_ semaphore: DispatchSemaphore) -> Bool {
-        semaphore.wait(timeout: .now() + 10) == .success
+    /// Whether `condition` holds within ten seconds, which a pass reaches at once. Polled with
+    /// `Task.sleep`, so no worker thread is parked while it waits.
+    private static func eventually(_ condition: @Sendable () -> Bool) async -> Bool {
+        for _ in 0..<10_000 {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return condition()
     }
 
     // MARK: - A reader that is slow
@@ -53,7 +57,7 @@ struct FanctlOneShotOutputTests {
         let prefill = out.queued
 
         let received = OSAllocatedUnfairLock<[UInt8]>(initialState: [])
-        let reading = DispatchSemaphore(value: 0)
+        let finished = OSAllocatedUnfairLock(initialState: false)
         let reader = out.reader
         BackgroundThread.run {
             Thread.sleep(forTimeInterval: 0.05)
@@ -68,7 +72,7 @@ struct FanctlOneShotOutputTests {
                 let bytes = Array(chunk.prefix(count))
                 received.withLock { $0 += bytes }
             }
-            reading.signal()
+            finished.withLock { $0 = true }
         }
 
         var command = try #require(Fanctl.parseAsRoot(["status", "--json"]) as? Fanctl.Status)
@@ -79,7 +83,9 @@ struct FanctlOneShotOutputTests {
             to: out.writer, errors: errors.writer, ignoringSIGPIPE: false)
         let code = await exitCode { try await command.run() }
         Darwin.close(out.writer)  // The reader's end of the story: nothing more is coming.
-        #expect(Self.signalled(reading), "the reader never saw the end of the document")
+        #expect(
+            await Self.eventually { finished.withLock { $0 } },
+            "the reader never saw the end of the document")
 
         #expect(code == nil)
         let document = received.withLock { Array($0.dropFirst(prefill)) }

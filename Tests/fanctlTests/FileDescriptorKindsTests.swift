@@ -55,20 +55,21 @@ struct FileDescriptorKindsTests {
     }
 
     @Test("A socket whose peer has gone reports it")
-    func closedSocket() throws {
+    func closedSocket() async throws {
         let sockets = try Sockets()
         Darwin.close(sockets.reader)
         defer { Darwin.close(sockets.writer) }
         let writer = sockets.writer
 
-        let outcome = Rig.promptly(unblocking: {}, running: { Rig.write("hello?", to: writer) })
+        let outcome = await Rig.promptly(
+            unblocking: {}, running: { Rig.write("hello?", to: writer) })
 
         #expect(outcome == .readerGone)
     }
 
     /// A socket whose peer is slow to read is written to the end, as a pipe is.
     @Test("A socket is written to the end, waiting for a peer that reads late")
-    func socketToTheEndWaits() throws {
+    func socketToTheEndWaits() async throws {
         let sockets = try Sockets()
         defer { sockets.close() }
         sockets.fill()
@@ -80,7 +81,7 @@ struct FileDescriptorKindsTests {
         }
         let writer = sockets.writer
 
-        let outcome = Rig.promptly(
+        let outcome = await Rig.promptly(
             unblocking: { sockets.drain() }, running: { Rig.write(text, to: writer) })
 
         #expect(outcome == .delivered)
@@ -88,7 +89,7 @@ struct FileDescriptorKindsTests {
     }
 
     @Test("To the end: a socket receives the line whole")
-    func socketToTheEnd() throws {
+    func socketToTheEnd() async throws {
         let sockets = try Sockets()
         defer { sockets.close() }
         #expect(Rig.write("over a socket", to: sockets.writer) == .delivered)
@@ -110,7 +111,7 @@ struct FileDescriptorKindsTests {
     }
 
     @Test("A regular file receives the line")
-    func regularFile() throws {
+    func regularFile() async throws {
         let path = NSTemporaryDirectory() + "fanctl-writer-\(UUID().uuidString)"
         defer { unlink(path) }
         let descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
@@ -130,7 +131,7 @@ struct FileDescriptorKindsTests {
     ///
     /// **Mutation:** delete the note in `Terminal.writing`. Run: red.
     @Test("A terminal says a failed standard output on standard error")
-    func terminalSaysAFailedWrite() throws {
+    func terminalSaysAFailedWrite() async throws {
         let errors = try TestPipe()
         defer { errors.close() }
         let terminal = Terminal.writing(to: -1, errors: errors.writer, ignoringSIGPIPE: false)
