@@ -36,6 +36,21 @@ import os
 public actor SMCConnection {
     private var connection: io_connect_t = 0
 
+    /// The stamp of the IOKit round trip in flight, if any — readable by anything, at any
+    /// time, **without entering this actor** (ADR 0012 I1, I2).
+    ///
+    /// `nonisolated` is the point. This type calls IOKit synchronously inside itself, so a
+    /// call that never returns holds the actor for good, and an observer that had to `await`
+    /// the actor to ask whether one was stuck would be stuck behind it. Every round trip this
+    /// type makes (`IOConnectCallStructMethod`, `IOServiceOpen`, `IOServiceClose`) runs inside
+    /// `roundTrips.bracket(…)`; `deinit` is the one exception, for the reason given there. The
+    /// service lookup and registry reads in `open()` are not round trips on the connection and
+    /// are not stamped. `RoundTripStampTripwireTests` holds all of this against the source.
+    ///
+    /// Read-only: it describes a call that is already out and starts nothing. One monitor
+    /// belongs to one connection — see `SMCRoundTripMonitor`.
+    nonisolated public let roundTrips: SMCRoundTripMonitor
+
     /// The SMC interface generation, resolved once by `open()` from the `AppleSMC`
     /// service's own IORegistry provenance. `nil` before `open()`, or if undetermined —
     /// see `smcGeneration(for:)`.
@@ -135,8 +150,28 @@ public actor SMCConnection {
     private static let selectorReadKeyInfo: UInt8 = 9
     private static let kernelIndexSMC: UInt32 = 2
 
-    public init() {}
+    public init() {
+        self.roundTrips = SMCRoundTripMonitor()
+    }
 
+    /// Test seam: a connection stamping on a monitor the test holds, so it can read the stamp
+    /// and the issued count from outside. Internal, so no client can hand two connections one
+    /// monitor.
+    init(roundTrips: SMCRoundTripMonitor) {
+        self.roundTrips = roundTrips
+    }
+
+    /// Not stamped, and the reason is narrower than it looks. The monitor is a separate object
+    /// that a watchdog holding `roundTrips` can outlive this connection with, so a stamp *could*
+    /// be read after this runs. What makes the exemption safe is that the helper builds one
+    /// connection and never releases it before the process exits, so this `deinit` runs only
+    /// in `fanctl` and in tests, never while a watchdog is armed.
+    ///
+    /// **A reconnect that replaces the connection object breaks that.** The old connection's
+    /// `deinit` would then run an unstamped `IOServiceClose` on whatever thread dropped the
+    /// last reference, out of sight of a watchdog still holding the old monitor. Whoever writes
+    /// that reconnect must stamp this call, or keep the old connection alive until it is
+    /// closed through `close()`.
     deinit {
         guard connection != 0 else { return }
         IOServiceClose(connection)
@@ -165,8 +200,13 @@ public actor SMCConnection {
 
         let resolvedGeneration = Self.smcGeneration(for: service)
 
+        // `IOServiceOpen` asks the driver for a user client, so it is a round trip like any
+        // other and is stamped like one (ADR 0012 I1). The service lookup and the registry
+        // reads around it are not.
         var newConnection: io_connect_t = 0
-        let openResult = IOServiceOpen(service, mach_task_self_, 0, &newConnection)
+        let openResult = roundTrips.bracket(.open) {
+            IOServiceOpen(service, mach_task_self_, 0, &newConnection)
+        }
         guard openResult == kIOReturnSuccess else {
             throw SMCError.connectionFailed(kernReturn: openResult)
         }
@@ -268,7 +308,10 @@ public actor SMCConnection {
     ///   `AeolusHelper`'s reconnect-and-health path, which that capture did not exercise.
     public func close() {
         guard connection != 0 else { return }
-        IOServiceClose(connection)
+        let handle = connection
+        roundTrips.bracket(.close) {
+            IOServiceClose(handle)
+        }
         connection = 0
         generation = nil
     }
@@ -641,8 +684,17 @@ public actor SMCConnection {
         output.initializeMemory(as: UInt8.self, repeating: 0, count: Self.structSize)
         var outputSize = Self.structSize
 
-        let kernResult = IOConnectCallStructMethod(
-            connection, Self.kernelIndexSMC, input, Self.structSize, output, &outputSize)
+        // The one `IOConnectCallStructMethod` in the tree: every SMC read the project makes
+        // goes through it, and a write, if one is ever built, must too. The stamp is taken on
+        // this thread immediately before the call and cleared in a `defer` when it returns or
+        // throws, so a call that never returns is visible to `roundTrips.inFlight()` from
+        // outside this actor (ADR 0012 I1). Keep it the only one, and keep it inside the
+        // bracket: `RoundTripStampTripwireTests` reads this file and fails on a second site.
+        let handle = connection
+        let kernResult = roundTrips.bracket(.call(key: key, selector: selector)) {
+            IOConnectCallStructMethod(
+                handle, Self.kernelIndexSMC, input, Self.structSize, output, &outputSize)
+        }
         guard kernResult == kIOReturnSuccess else {
             throw SMCError.connectionFailed(kernReturn: kernResult)
         }
@@ -782,6 +834,29 @@ extension SMCConnection {
     /// Seeds `keyTableCache` directly, as if `key(at:)` had already resolved `index`.
     func seedKeyTableCacheForTesting(index: Int, key: SMCKey) {
         keyTableCache[index] = key
+    }
+
+    /// Makes this connection believe it is open, on a handle that can never reach a driver:
+    /// `MACH_PORT_DEAD`, which is not a send right to anything, so `IOConnectCallStructMethod`
+    /// fails at once with an invalid-destination error instead of sending a message.
+    ///
+    /// It exists so a test with no SMC (CI's virtual machines) can get a call past the
+    /// not-open guard and into the bracket, and read what that call stamped through
+    /// `roundTrips.lastBegunOperation`. It grants nothing: it cannot read, and it cannot write.
+    /// `close()` returns the connection to unopened, and releasing a dead name is a no-op.
+    func adoptUnusableHandleForTesting() {
+        connection = io_connect_t.max
+    }
+
+    /// Runs `body` on this actor, so a test can hold the connection exactly as a round trip
+    /// that never returns would — a thread parked inside the actor — and assert what can still
+    /// be read from outside it (`roundTrips`) while it is held. Issues no round trip of its
+    /// own and touches no IOKit state; a body that wants a stamp open brackets one itself.
+    ///
+    /// The same shape as the seeding seams above: not `private` so `@testable import` reaches
+    /// it, not `public` because no real caller has a reason to park the connection.
+    func occupyForTesting(_ body: @Sendable () -> Void) {
+        body()
     }
 }
 
