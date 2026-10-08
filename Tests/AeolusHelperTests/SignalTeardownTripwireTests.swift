@@ -108,24 +108,31 @@ struct SignalTeardownTripwireTests {
     /// in `SignalTeardown.swift`. The earlier form here asserted the set of files, which a
     /// second `exit` inside the teardown's own file would have passed.
     ///
+    /// **ADR 0012 (PR B) widened the spelling this looks for.** The liveness watchdog ends the
+    /// process too, and it does so *through* this one site — `ProcessTermination` wraps
+    /// `TeardownExit.process`, which is the call counted here — so the count is still one and
+    /// the watchdog is not a second site. What changed is that a watchdog is exactly the kind
+    /// of code that reaches for the abrupt call: `_exit(2)` skips `atexit` handlers and
+    /// stdio flushing, which a person writing "end it now" may well prefer, and it would have
+    /// passed a pattern that only knew `exit`. `_exit`, `_Exit` and `quick_exit` are the same
+    /// defect spelled differently, and a `Darwin.`-qualified call is the same call.
+    ///
     /// **Mutation:** add `exit(1)` to any other file under `Sources/AeolusHelper`. Run: red.
     /// **Mutation:** add a second `exit($0.exitCode)` to `SignalTeardown.swift`. Run: red.
     /// **Mutation:** write `exit(0)`, `exit( 0 )` or `exit(0 as Int32)` anywhere in the
     /// target, `SignalTeardown.swift` included. Run: red.
+    /// **Mutation:** have `LivenessWatchdog` call `exit(2)`, or `_exit(2)`, itself. Run: red.
     @Test("The helper ends the process in one place, and writes no exit code as a literal")
     func theOrderlyPathIsTheOnlyExit() throws {
-        let call = try NSRegularExpression(pattern: #"(?<![\w.])exit\s*\("#)
-        let literalCode = try NSRegularExpression(pattern: #"(?<![\w.])exit\s*\(\s*\d"#)
         var sites: [String: Int] = [:]
         var literals: [String] = []
 
         for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
             let code = SeamScanner.strippingComments(
                 try String(contentsOf: file, encoding: .utf8))
-            let range = NSRange(code.startIndex..<code.endIndex, in: code)
-            let calls = call.numberOfMatches(in: code, range: range)
+            let calls = try Self.exitCallCount(in: code)
             if calls > 0 { sites[file.lastPathComponent] = calls }
-            if literalCode.numberOfMatches(in: code, range: range) > 0 {
+            if try Self.literalExitCodeCount(in: code) > 0 {
                 literals.append(file.lastPathComponent)
             }
         }
@@ -146,6 +153,62 @@ struct SignalTeardownTripwireTests {
             literal beside it is a second mapping that nothing checks, and decision A3 pairs \
             a zero exit with `KeepAlive = { SuccessfulExit = false }`.
             """)
+    }
+
+    /// Every way of ending the process abruptly that this target must name exactly once: the
+    /// libc `exit`, `_exit` and `_Exit`, and `quick_exit`, optionally qualified by the module
+    /// that exports them. A member (`task.exit(…)`) is not one, and neither is a longer
+    /// identifier that ends in the word.
+    private static let exitCallPattern =
+        #"(?<![\w.])(?:(?:Darwin|Glibc|Foundation)\.)?(?:_exit|_Exit|quick_exit|exit)\s*\("#
+
+    /// The same, followed by an integer literal: a second mapping from outcome to code.
+    private static let literalExitCodePattern =
+        #"(?<![\w.])(?:(?:Darwin|Glibc|Foundation)\.)?(?:_exit|_Exit|quick_exit|exit)\s*\(\s*\d"#
+
+    static func exitCallCount(in code: String) throws -> Int {
+        try NSRegularExpression(pattern: exitCallPattern).numberOfMatches(
+            in: code, range: NSRange(code.startIndex..<code.endIndex, in: code))
+    }
+
+    static func literalExitCodeCount(in code: String) throws -> Int {
+        try NSRegularExpression(pattern: literalExitCodePattern).numberOfMatches(
+            in: code, range: NSRange(code.startIndex..<code.endIndex, in: code))
+    }
+
+    /// The scan above, run over fixtures, because a tripwire that has stopped seeing a
+    /// spelling passes on a tree that contains it — and the tree contains exactly one call
+    /// today, so nothing else can show the pattern still matches anything.
+    ///
+    /// **Mutation:** drop `_exit|_Exit|quick_exit` from the pattern. Run: red.
+    /// **Mutation:** drop the module qualifiers. Run: red.
+    /// **Mutation:** drop `\s*` between the name and the parenthesis. Run: red.
+    @Test("The exit scan sees every spelling of ending the process, and nothing else")
+    func theExitScanSeesEverySpelling() throws {
+        let called = [
+            "exit(0)", "exit (1)", "exit(\n    2)", "_exit(2)", "_exit (2)", "_Exit(2)",
+            "quick_exit(2)", "Darwin.exit(2)", "Darwin._exit(2)", "Foundation.exit($0.exitCode)",
+            "exit($0.exitCode)", "let f = { exit(1) }",
+        ]
+        for fixture in called {
+            #expect(try Self.exitCallCount(in: fixture) == 1, "not seen: \(fixture)")
+        }
+        let notCalled = [
+            "task.exit(2)", "process.exit(code)", "didExit(2)", "let exit = 3", "exitCode",
+            "self._exit(2)", "// exit(0)", "func exiting(_ x: Int)",
+        ]
+        for fixture in notCalled {
+            let code = SeamScanner.strippingComments(fixture)
+            #expect(try Self.exitCallCount(in: code) == 0, "wrongly seen: \(fixture)")
+        }
+
+        let literal = ["exit(0)", "exit( 0 )", "_exit(1)", "Darwin.exit(0 as Int32)", "exit(\n0)"]
+        for fixture in literal {
+            #expect(try Self.literalExitCodeCount(in: fixture) == 1, "not seen: \(fixture)")
+        }
+        for fixture in ["exit($0.exitCode)", "_exit(outcome.exitCode)"] {
+            #expect(try Self.literalExitCodeCount(in: fixture) == 0, "wrongly seen: \(fixture)")
+        }
     }
 
     // MARK: - The signal sources

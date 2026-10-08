@@ -166,6 +166,7 @@ struct ThermalEmergencyReportingTests {
             emergency: machine.emergency,
             clock: TestClock(sleepBudget: 1),
             interval: .seconds(1),
+            progress: ThermalCycleProgress(),
             log: SafetyLog(recording: { [safetyLog = machine.safetyLog] in safetyLog.append($0, $1)
             })
         )
@@ -183,6 +184,7 @@ struct ThermalEmergencyReportingTests {
             emergency: machine.emergency,
             clock: TestClock(sleepBudget: 1),
             interval: .seconds(1),
+            progress: ThermalCycleProgress(),
             log: SafetyLog(recording: { [safetyLog = machine.safetyLog] in safetyLog.append($0, $1)
             })
         )

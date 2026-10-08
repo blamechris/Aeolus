@@ -70,6 +70,7 @@ struct HelperRestorerTests {
                 ]),
             snapshotProvider: snapshotProvider,
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             clock: clock,
             log: helperLog,
             leaseLog: LeaseFixture.log,
@@ -310,6 +311,7 @@ struct HelperRestorerTests {
             plane: plane,
             snapshotProvider: fanProvider(fanCount: 1),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: Self.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)

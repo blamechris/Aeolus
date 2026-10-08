@@ -368,6 +368,7 @@ struct StartupReconciliationReadBackTests {
             snapshotProvider: fanProvider(
                 fanCount: 3, extraKeys: ["F2Md": .reading("F2Md", 1)]),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)
@@ -427,6 +428,7 @@ struct StartupReconciliationReadBackTests {
             snapshotProvider: fanProvider(
                 fanCount: 3, extraKeys: ["F1Md": .reading("F1Md", 1)]),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)

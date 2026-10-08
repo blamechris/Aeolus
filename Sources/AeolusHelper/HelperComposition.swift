@@ -118,6 +118,19 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     let thermalSupervisor: ThermalSupervisor<Plane>
     let reclamationSupervisor: ReclamationSupervisor<Plane>
 
+    /// How recently § 3 completed a cycle — **one instance, handed to both** the supervisor
+    /// that reports into it and the watchdog that reads it.
+    ///
+    /// Two instances would be a watchdog reading progress that no cycle ever stamps: the
+    /// stall would then be permanent, the bound would fire a second after bring-up ended, and
+    /// every healthy helper would restart in a loop. `HelperCompositionTests` holds the
+    /// sharing at runtime, by driving a cycle and watching the count move.
+    let cycleProgress: ThermalCycleProgress
+
+    /// ADR 0012's liveness watchdog: a round trip that does not return, or a safety cycle
+    /// that does not complete, ends the helper. Armed by `bringUp()`'s first statement.
+    let watchdog: LivenessWatchdog
+
     /// § 1's TTL loop — ADR 0005's *independent* path back to automatic control.
     ///
     /// **Started here even though #163's brief named only the two safety supervisors**, and
@@ -193,10 +206,26 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// `teardown` is E5.4d's pair of seams — where signals come from, and what ends the
     /// process — defaulted to the shipping ones. See `TeardownSeams` for why both have to be
     /// overridable at all.
+    ///
+    /// ## `roundTrips` and `watchdogTicks` have no default
+    ///
+    /// `roundTrips` is the monitor **the connection under `plane` stamps**, and it must be that
+    /// one: a watchdog handed a monitor no connection writes to sees "nothing in flight" for
+    /// ever, and watches nothing while looking exactly like one that does. Only
+    /// `SMCConnection.roundTrips` reaches a monitor from outside `SMCCore`, which is what makes
+    /// passing it here, from `production(log:teardown:)`, the one honest way to get it right.
+    /// A default would be the way to get it wrong without noticing.
+    ///
+    /// `watchdogTicks` has no default for a different reason. Its shipping default is a real
+    /// timer, and a test that composed a graph with the shipping default and a shipping
+    /// terminate would end `swift test` from a timer thread some seconds after it finished.
+    /// Every composition says which it wants.
     init(
         plane: Plane,
         snapshotProvider: some SensorProvider,
         criticalSensors: CriticalSensorSet,
+        roundTrips: SMCRoundTripMonitor,
+        watchdogTicks: any WatchdogTicking,
         clock: some MonotonicClock = SystemMonotonicClock(),
         connectionHealth: ConnectionHealth = ConnectionHealth(),
         reconciliationBudget: Duration = ReconciliationLimits.budget,
@@ -309,7 +338,13 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         self.thermalEmergency = thermalEmergency
         self.reclamationWatchdog = reclamationWatchdog
 
-        thermalSupervisor = ThermalSupervisor(emergency: thermalEmergency, log: safetyLog)
+        // The one progress object. The supervisor stamps it and the watchdog reads it; a
+        // second instance for either would make the watchdog's cycle trigger watch a counter
+        // nothing moves.
+        let cycleProgress = ThermalCycleProgress()
+        self.cycleProgress = cycleProgress
+        thermalSupervisor = ThermalSupervisor(
+            emergency: thermalEmergency, progress: cycleProgress, log: safetyLog)
         reclamationSupervisor = ReclamationSupervisor(
             watchdog: reclamationWatchdog, log: safetyLog)
         leaseExpirySupervisor = LeaseExpirySupervisor(authority: leases, log: leaseLog)
@@ -328,6 +363,13 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
 
         signalTeardown = Self.orderlyTeardown(
             for: authority, leases: leases, plane: plane, seams: teardown, log: log)
+
+        // Ends the process through the teardown's own claim, so the first of the two to end
+        // it wins and neither can end it twice. `teardown.termination` is built once, in
+        // `TeardownSeams.init`, and is the same object `signalTeardown` holds.
+        watchdog = LivenessWatchdog(
+            roundTrips: roundTrips, progress: cycleProgress,
+            termination: teardown.termination, ticks: watchdogTicks)
     }
 
     /// § 6's orderly exit path, built from the graph above rather than beside it.
@@ -363,9 +405,14 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     ///
     /// ## Why the order is the design
     ///
+    /// 0. **Arm the liveness watchdog** (ADR 0012 I6). Before anything that can read, and
+    ///    therefore before reconciliation's first read: a round trip can fail to return, and a
+    ///    watchdog armed after the first read is armed too late to see the first wedge. It
+    ///    costs nothing and touches no hardware — a timer and two locks — which is what lets
+    ///    it come ahead of the step that binds the registries.
     /// 1. **Bind the safety registries to the restorer, and § 3's kept set to the lease core**
-    ///    (#303). It is first because every step
-    ///    after it can cause a restore: a supervisor's cycle can revoke a lease, and an
+    ///    (#303). It is first among the steps that can cause a restore because every step
+    ///    after it can cause one: a supervisor's cycle can revoke a lease, and an
     ///    advertised service can be handed one to release. `HelperFanRestorer` explains why
     ///    the binding is late at all — the graph is circular, and this is the edge that is
     ///    safest to close last.
@@ -395,14 +442,23 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// A1 states the property this buys: *"an advertised Mach service is a client that can
     /// acquire a lease over a fan whose reconciliation restore is still in flight."*
     ///
-    /// ## If this never returns, nothing is served
+    /// ## If this never returns, nothing is served — and the helper does not stay that way
     ///
     /// The listener is resumed by the caller, after this. A bring-up that hung would leave a
     /// daemon that answers no connections — which is the fail-safe direction and is
-    /// deliberately not guarded here: refusing to serve is safe, serving over unreconciled
-    /// fans is not. Making the daemon recover from it is the restart policy's job
-    /// ([#165](https://github.com/blamechris/Aeolus/issues/165)).
+    /// deliberately not guarded **here**: refusing to serve is safe, serving over unreconciled
+    /// fans is not. What ends a hung bring-up is not this method but the liveness watchdog it
+    /// arms first: a round trip that does not return is ended at D, and a bring-up that
+    /// stalls anywhere else at D_bringUp (`WatchdogLimits`), each with a non-zero exit that
+    /// the restart policy ([#165](https://github.com/blamechris/Aeolus/issues/165)) turns
+    /// into a fresh attempt. Until ADR 0012 this paragraph said that recovery was the restart
+    /// policy's alone, and the restart policy only runs when the process exits.
     func bringUp() async {
+        // Before anything that can read. Reconciliation's first read is a round trip, a
+        // round trip can fail to return, and a watchdog armed after it would be armed too
+        // late to see the one wedge that matters most: the first. ADR 0012 I6.
+        await watchdog.arm()
+
         await bindSafetyRegistries()
         await reconcileFans()
 
@@ -543,9 +599,17 @@ extension HelperComposition where Plane == SMCFanControlPlane {
     /// reads and report that it worked. `SensorProvider` is public and discloses no
     /// connection, so nothing in the type system says these are the same one —
     /// `HelperCompositionTests.theProviderAndThePlaneShareOneConnection` is what does.
+    ///
+    /// `watchdogTicks` is the shipping timer and is overridden by one caller:
+    /// `WatchdogHardwareTests`, which wraps the real timer in a counter so that "the watchdog
+    /// stayed silent" is told apart from "the watchdog never ticked". Nothing else has a
+    /// reason to pass it, and a caller that passed a source that never fires would have
+    /// disarmed ADR 0012 without touching the watchdog, which is why the parameter is on this
+    /// factory and not on a public surface.
     static func production(
         log: HelperLog = HelperLog(),
-        teardown: TeardownSeams = TeardownSeams()
+        teardown: TeardownSeams = TeardownSeams(),
+        watchdogTicks: any WatchdogTicking = DispatchWatchdogTicks()
     ) -> HelperComposition<SMCFanControlPlane> {
         let connection = SMCConnection()
         let connectionHealth = ConnectionHealth()
@@ -556,6 +620,9 @@ extension HelperComposition where Plane == SMCFanControlPlane {
             plane: plane,
             snapshotProvider: scheduler.snapshotReader,
             criticalSensors: CriticalSensorSet.resolve(for: .current()),
+            // The monitor of the one connection every read and write goes through.
+            roundTrips: connection.roundTrips,
+            watchdogTicks: watchdogTicks,
             connectionHealth: connectionHealth,
             powerObserver: IOKitSystemPowerObserver(),
             log: log,

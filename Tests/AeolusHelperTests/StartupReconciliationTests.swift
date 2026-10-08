@@ -39,6 +39,7 @@ struct StartupReconciliationTests {
             snapshotProvider: fanProvider(
                 fanCount: fanCount ?? fans.count, extraKeys: extraKeys),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             clock: clock,
             reconciliationBudget: budget,
             log: HelperRestorerTests.helperLog,
@@ -428,11 +429,11 @@ struct StartupReconciliationTests {
                     temperatures: LeaseFixture.nominalDieTemperatures,
                     writes: .refused(reason: "the firmware refused the mode write"))
             ])
-        let plane = ClockAdvancingPlane(wrapping: scripted, advancing: clock)
         let bounded = HelperComposition(
-            plane: plane,
+            plane: ClockAdvancingPlane(wrapping: scripted, advancing: clock),
             snapshotProvider: fanProvider(fanCount: 3),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             clock: clock,
             reconciliationBudget: .seconds(1),
             log: HelperRestorerTests.helperLog,
@@ -504,6 +505,7 @@ struct ForeignManualControlReportingTests {
             snapshotProvider: fanProvider(
                 fanCount: 1, extraKeys: ["F0Md": .reading("F0Md", 1)]),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)
@@ -548,6 +550,7 @@ struct ForeignManualControlReportingTests {
             snapshotProvider: fanProvider(
                 fanCount: 1, extraKeys: ["F0Md": .reading("F0Md", 1)]),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)
@@ -642,6 +645,7 @@ struct ForeignManualControlReportingTests {
             snapshotProvider: fanProvider(
                 fanCount: 1, extraKeys: ["F0Md": .reading("F0Md", 1)]),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)
@@ -670,6 +674,7 @@ struct ForeignManualControlReportingTests {
             snapshotProvider: fanProvider(
                 fanCount: 1, extraKeys: ["F0Md": .reading("F0Md", 1)]),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)

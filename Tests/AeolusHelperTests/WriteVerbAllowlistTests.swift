@@ -441,6 +441,16 @@ struct WriteVerbAllowlistTests {
         "LeaseClock.swift: sleep(until: ContinuousClock.Instant)",
         "LeaseExpirySupervisor.swift: run(authority: LeaseAuthority, "
             + "clock: some MonotonicClock, idleInterval: Duration, log: LeaseLog)",
+        // ADR 0012's liveness watchdog (#329). None of the three writes to a fan or can: the
+        // watchdog holds a lock-guarded stamp, a lock-guarded progress object and a
+        // `ProcessTermination`, and the plane is named by none of them (the tripwire in
+        // `WatchdogTripwireTests` holds that). `arm()` starts a timer; `start(_:)` is the tick
+        // source's requirement and its one conformer, with one signature; and
+        // `ProcessTermination.end(_:)` ends the *process*. It is not the keystone — a verdict
+        // issues no restore, which is why the restart and the reconciliation behind it exist.
+        "LivenessWatchdog.swift: arm()",
+        "LivenessWatchdog.swift: start(_: @escaping @Sendable () -> Void)",
+        "ProcessTermination.swift: end(_: TeardownOutcome)",
         "ReadOnlyFanAuthority.swift: acquireLease(_: LeaseRequest, from: ConnectionID)",
         "ReadOnlyFanAuthority.swift: apply(_: [FanSetting], leaseID: UUID, from: ConnectionID)",
         "ReadOnlyFanAuthority.swift: connectionDidInvalidate(_: ConnectionID)",
@@ -495,7 +505,8 @@ struct WriteVerbAllowlistTests {
         "ThermalEmergency.swift: fire(_: CriticalTemperature, from: CriticalTemperatureReport)",
         "ThermalEmergency.swift: takeBackAnythingEngagedSinceFiring()",
         "ThermalSupervisor.swift: run(emergency: ThermalEmergency<Plane>, "
-            + "clock: some MonotonicClock, interval: Duration, log: SafetyLog)",
+            + "clock: some MonotonicClock, interval: Duration, progress: ThermalCycleProgress, "
+            + "log: SafetyLog)",
     ]
 
     /// Every function in the helper that could reach a firmware write: the `async` ones,
@@ -710,7 +721,14 @@ struct WriteVerbAllowlistTests {
     /// a walk that may never return. Its body sleeps on the injected clock and then awaits
     /// `discoveryWalkOverran()`, which increments a counter and logs. It writes nothing.
     ///
-    /// The count is asserted per file so it cannot drift silently. An eighteenth spawn site
+    /// **Re-pinned by [#329](https://github.com/blamechris/Aeolus/issues/329)** (ADR 0012):
+    /// seventeen to eighteen, `LivenessWatchdog.tick()`'s. It is the one bridge from a
+    /// synchronous tick on a dispatch queue to the `async` terminate seam, and its body is
+    /// one `await` of `ProcessTermination.end(_:)`, which `permitFreeFunctions` acknowledges.
+    /// It writes nothing and reaches no fan: ending the process is the point of it, and the
+    /// restore that follows is the next process's reconciliation.
+    ///
+    /// The count is asserted per file so it cannot drift silently. A nineteenth spawn site
     /// fails this with the file it was added to, and the maintainer either shows it hands off
     /// the same way and updates the number, or has found the hole.
     ///
@@ -734,6 +752,7 @@ struct WriteVerbAllowlistTests {
             "HelperListenerDelegate.swift": 1,
             "HelperXPCService.swift": 3,
             "LeaseExpirySupervisor.swift": 1,
+            "LivenessWatchdog.swift": 1,
             "MessageSequencer.swift": 1,
             "ReadOnlyFanAuthority.swift": 2,
             "ReclamationSupervisor.swift": 1,
