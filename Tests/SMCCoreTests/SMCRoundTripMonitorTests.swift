@@ -152,8 +152,11 @@ struct SMCRoundTripMonitorTests {
     /// stamp's start; read before the copy, a stamp begun in between has a start later than
     /// "now".
     ///
-    /// It terminates on a count of observations, not on a clock: the writer runs until the
-    /// reader has seen enough, and nothing asserts how long that took.
+    /// It terminates on counts, not on a clock: the writer runs until the reader has seen enough
+    /// stamps, or has read ten million times, whichever comes first. The second bound is what
+    /// ends it when no stamp is ever visible (a lock held across the body hides every one), and
+    /// the test asserts nothing about how many it saw: on a loaded machine that would be a
+    /// flake, and the lock test is the one that holds that line. Nothing asserts how long it took.
     @Test("An age is never negative while a writer stamps and a reader reads")
     func anAgeIsNeverNegativeUnderContention() {
         let monitor = SMCRoundTripMonitor()
@@ -170,7 +173,9 @@ struct SMCRoundTripMonitorTests {
 
         var observed = 0
         var negative = 0
-        while observed < 50_000 {
+        var reads = 0
+        while observed < 50_000 && reads < 10_000_000 {
+            reads += 1
             if let reading = monitor.inFlight() {
                 observed += 1
                 if reading.age < .zero { negative += 1 }
