@@ -249,17 +249,35 @@ enum StampSiteScanner {
         site.isCall && site.bracketOperation?.hasPrefix(normalise(operation)) == true
     }
 
-    /// Any `IOConnectCall…` or `IOConnectTrap…` identifier other than `IOConnectCallStructMethod`
-    /// itself: a sibling entry point to the same user client that the stamp would not see.
+    /// Any other way into an IOKit user client: `IOConnectCall…`, `IOConnectTrap…`,
+    /// `IOConnectSetCFPropert…`, `IOConnectMapMemory…`, `IOConnectAddClient` and
+    /// `IOConnectSetNotificationPort`, other than `IOConnectCallStructMethod` itself. Each is a
+    /// sibling entry point to the same user client that the stamp would not see.
     static func siblingEntryPoints(in source: String) -> [String] {
         let text = normalise(source)
-        guard let pattern = try? NSRegularExpression(pattern: #"IOConnect(?:Call|Trap)\w*"#)
+        let family = "Call|Trap|SetCFPropert|MapMemory|AddClient|SetNotificationPort"
+        guard let pattern = try? NSRegularExpression(pattern: "IOConnect(?:\(family))\\w*")
         else { return [] }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return pattern.matches(in: text, range: range).compactMap { match in
             Range(match.range, in: text).map { String(text[$0]) }
         }
         .filter { $0 != "IOConnectCallStructMethod" }
+    }
+
+    /// Every initialiser declared `public`, `package` or `open`, in `source` with comments
+    /// removed. The monitor's initialisers must be internal: a public one lets a caller build a
+    /// monitor that no connection stamps.
+    static func exposedInitializers(in source: String) -> [String] {
+        let text = normalise(source)
+        guard
+            let pattern = try? NSRegularExpression(
+                pattern: #"\b(?:public|package|open)\s+(?:convenience\s+|required\s+)*init\b"#)
+        else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return pattern.matches(in: text, range: range).compactMap { match in
+            Range(match.range, in: text).map { String(text[$0]) }
+        }
     }
 
     // MARK: - The tree
