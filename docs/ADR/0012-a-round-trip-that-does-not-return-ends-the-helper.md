@@ -162,7 +162,8 @@ flight.
   confirmed for reads only; see H6.
 - **Exit codes:** `TeardownOutcome` gains a non-zero case. The exit-count tripwire stays at
   one.
-- **#135:** its observer is the `.fault` from the gate-level trigger.
+- **#135:** its observer is the `.fault` from the gate-level trigger, built as PR C of #329
+  (see "The gate trigger, as built").
 - **[#292](https://github.com/blamechris/Aeolus/issues/292):** keeps handling "returned
   with an error" through `ConnectionHealth`, and never tries to detect "did not return".
   D applies per round trip, never per walk: a 25 s contended walk is not a wedge.
@@ -513,5 +514,61 @@ a trap, which no test can assert on. It was run once by hand and is described on
 
 The watchdog's own tests, and the gate trigger's, are listed on
 [#329](https://github.com/blamechris/Aeolus/issues/329) and carry their mutations in the pull
-requests that add them. The hardware half of `aRoundTripSpanningSleepIsNotAWedge` (a real lid close
-with a round trip in flight) has not been observed; it is H1 conditions 3 and 4.
+requests that add them (the gate trigger's are in the pull request that closes #135). The
+hardware half of `aRoundTripSpanningSleepIsNotAWedge` (a real lid close with a round trip in
+flight) has not been observed; it is H1 conditions 3 and 4.
+
+### The gate trigger, as built (PR C, [#135](https://github.com/blamechris/Aeolus/issues/135))
+
+This closes #135's three open questions, and each answer is the smallest that satisfies the
+acceptance criteria.
+
+- **A deadline observer, not a deadline.** `GateWaitMonitor` is a `SchedulerObserving` conformer
+  that mirrors the scheduler's per-priority FIFO from `waiterParked` and `turnGranted`, and the
+  watchdog's tick asks it for the oldest waiter at each priority. The gate stays non-cancellable:
+  the monitor holds no continuation (`WatchdogTripwireTests` holds that) and nothing in this
+  change resumes or drops one.
+- **Nothing beyond reporting.** A waiter parked longer than G logs one `.fault` naming the
+  priority, the age and the queue depth, and **the helper does nothing more**. A gate that never
+  turns starves § 3 behind it, which is the case D_cycle already ends, so the fault is the
+  diagnosis and the cycle trigger is the action. G = 2·D = 10 s sits above the longest legal wait
+  at the design point (5.86 s) and below D_cycle − interval − 2 ticks (12 s); it holds for up to 22
+  outstanding supervisor reads on `Mac16,5` (a wait of 9.87 s), and fails at 23 (10.64 s). The
+  first draft's G = D was under the first side.
+- **Where it lives.** Not in the scheduler, which reports and decides nothing (`SchedulerObserving`
+  says why), and not in a lifecycle owner of its own: the watchdog already owns the tick, the
+  lock-guarded reads and the `.fault` vocabulary, and the monitor is a fourth thing it reads.
+  `SchedulerObservers` is how the scheduler's single observer slot feeds both `ConnectionHealth`
+  and the monitor, in that order, synchronously, with nothing changed for the first.
+
+What the monitor does, and does not, rely on:
+
+- **A grant takes out the waiter it names.** `turnGranted` carries the `queuedAt` the waiter was
+  parked with, and a fast-path grant carries its own grant instant with no waiter behind it, so a
+  grant that matches no parked waiter is the fast path and pops nothing. Popping the head on every
+  grant is right only while the mirror is in step, and when it is not it hides the waiter this
+  exists to see.
+- **It ages on the suspending clock, from its own park, and the comparer mints the instant.** The
+  scheduler's `ContinuousClock` instant names a waiter and is never a start of waiting; a waiter
+  parked across a sleep does not age by the sleep. `MonotonicClock` is not involved.
+- **One fault per waiter.** The rate-collapse is the ticket of the last waiter logged at each
+  priority, so a waiter that stays parked is logged once and the next one is logged in its own
+  right. The verdict's `fired` is not reused: a gate fault must not stand in the cycle trigger's
+  way.
+- **Suppressed while a stamp explains it.** A stamped round trip older than **one tick** (not D)
+  suppresses the fault, as correction 4 above says; a suppressed waiter is not recorded, so once
+  the stamp clears a waiter still parked is logged.
+
+| Test | Mutation that must turn it red |
+|---|---|
+| `aParkedWaiterPastTheBoundFaultsOnce` | Remove the emission. Separately, remove the rate-collapse. |
+| `aProviderThatNeverReturnsFaultsTheReadParkedBehindIt` (the real scheduler, a provider that never returns the turn) | Remove the emission. Separately, ignore `turnGranted`. |
+| `aSecondWaiterFaultsInItsOwnRight` | Collapse on the priority alone. |
+| `theGateFaultIsSilentWhileAStampedRoundTripExplainsIt` | Drop the suppression. Separately, record a suppressed waiter as logged. |
+| `aStampExplainsTheWaitOnlyWhenOlderThanATick` | Suppress only past D. `>=` for `>` against the tick. Suppress on any stamp. |
+| `aWaiterAtExactlyGIsNotPastIt`, `aWaiterGrantedJustUnderGNeverFaults` | `>=` for `>` against G. Ignore `turnGranted`. |
+| `aFastPathGrantPopsNothing` | Pop the head on every grant. |
+| `theGateFaultNeverEndsTheProcess`, `aGateThatNeverTurnsIsEndedByTheCycleTrigger` | The gate path takes the claim and ends the process. Separately, set `fired` in the gate path. |
+| `theGateBoundIsDerivedAndConstant`, `theGateBoundHoldsForEveryCuratedSet` | G = D. G = D_cycle. Drop the two terms from the wait. |
+| `SchedulerObserversTests` | Drop the first observer. Reverse the order. Deliver through a `Task`. |
+| `theGateMonitorHoldsNoContinuationAndNamesNoConnection` | A `CheckedContinuation` in the monitor, however it is spelled. A connection named in it. |
