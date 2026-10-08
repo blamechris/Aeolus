@@ -162,7 +162,7 @@ struct Terminal: Decodable, Sendable {
     /// The command's exit code is not changed by it.
     ///
     /// - Parameters:
-    ///   - output: The descriptor `say` and `deliver` write to.
+    ///   - output: The descriptor `say` writes to.
     ///   - errors: The descriptor `warn` writes to.
     ///   - shouldIgnore: Whether each write ignores SIGPIPE while it is made. Always, outside
     ///     the suites that are not about it (`FileDescriptorWriter.writeLine`).
