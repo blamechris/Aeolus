@@ -4,6 +4,14 @@ import Foundation
 ///
 /// Two, and only two. A client that is not one of these is refused however it is signed,
 /// so a same-team binary that is not Aeolus cannot command the daemon either.
+///
+/// Each value is a copy of one declared in `project.yml`, and nothing links the two at
+/// compile time. `commandLine` must equal the `fanctl` target's `PRODUCT_BUNDLE_IDENTIFIER`:
+/// that target is the only thing in the tree that produces a binary signed with it, and a
+/// `swift build` `fanctl` is signed with its file name instead and refused.
+/// `CommandLineIdentifierDriftTests` fails if the two differ, and CI's "Assert the embedded
+/// fanctl carries the identifier the helper pins" step reads this constant to check the
+/// built binary against it — so keep the declaration on a single line, in this form.
 enum AeolusClientIdentifier {
     static let app = "com.blamechris.Aeolus"
     static let commandLine = "com.blamechris.fanctl"
