@@ -20,7 +20,7 @@
 ## Build / Test Commands
 - Build (the gate): `swift build`
 - Test: `swift test`
-- App build: `xcodegen generate && xcodebuild -project Aeolus.xcodeproj -scheme "Aeolus (Monitor)" -configuration "Monitor Debug" -destination "platform=macOS" CODE_SIGNING_ALLOWED=NO build`
+- App build: `xcodegen generate && xcodebuild -project Aeolus.xcodeproj -scheme "Aeolus (Monitor)" -configuration "Monitor Debug" -destination "platform=macOS" build`
 - Lint/typecheck: `swift format lint --recursive --strict Sources Tests` and `swiftlint lint`
 - Format: `swift format format --in-place --recursive Sources Tests`
 
