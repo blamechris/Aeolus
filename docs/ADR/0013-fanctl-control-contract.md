@@ -147,16 +147,16 @@ direction that ends a hold earlier or reports less, never the one that claims mo
 - **Exit 6, and a refused `apply`, skip the safe-state check.** There is nothing to confirm a
   return to after a loss, the check can take its whole ten-second window against a thermal
   emergency that will not clear, and `fanctl auto` is the way to ask. Only the ordinary endings
-  (`--for`, a signal, a parent that exited, a closed standard output) run it.
+  (`--for`, a signal, a parent that exited, a standard output that stopped draining) run it.
 - **A lease still listed when the check ends is 8, not 5.** `auto` maps it to 5 to name the
   holder; for `set` the lease may be its own (the release did not take), and the message says
   whose it is.
 - **A signal that arrives before the lease is taken is exit 1**, with nothing written to a fan.
 - **`endedBecause` is `refused` for 2, 4 and 5 before a hold and for any refused `apply`**, and
   `null` for 3, 7 and 1 before a lease: those are not a "no" to this request.
-- **Standard output is written with `write(2)`, and polled for room only if it is a pipe or a
-  socket.** macOS answers `POLLNVAL` for `/dev/null`, so polling every descriptor would end
-  `set … > /dev/null` at once. A hold's failure to write is an ending, not a crash.
+- **Standard output is written with `write(2)`, and never polled before a write.** A hold's
+  failure to write is an ending, not a crash. (A first version polled pipes and sockets for room
+  and wrote in chunks; "A write may park", below, is why that was withdrawn.)
 - **No stderr output while holding in text mode.** There is no change during a hold that does not
   end it, so there is nothing for the contract's "changes to stderr" to carry.
 - **An `apply` that got no answer is not a refusal** (review of #324). Only an `AeolusXPCFault` is
@@ -168,20 +168,37 @@ direction that ends a hold earlier or reports less, never the one that claims mo
 - **A signal ends the hold, whenever it lands.** Before the lease it is exit 1 with
   `endedBecause: signal`; while `acquireLease` is in flight it releases the lease and sends no
   speed (exit 1, `signal`); while holding it is the ordinary signal ending.
-- **No write may park the hold** (review of #324). On macOS `poll` calls a pipe writable at
-  `PIPE_BUF` (512) bytes free and a `set --json` line is 560 to 1,127 bytes, so a whole-line
-  `write(2)` parked on a pipe with room for a chunk and not the line, with every signal ignored.
-  `set` writes in chunks of at most `PIPE_BUF`, each after `poll` says there is room, waits 100 ms
-  at a time between chunks, lets a stop request (signal, parent exit, deadline) end the wait and
-  win over the rest of the line, and treats a reader that has not made room within 2 s per line as
-  gone (`outputClosed`). `O_NONBLOCK` is never set: the flag belongs to the open file description,
-  which other processes share. A consumer that stops reading may be left a truncated last line.
+- **A write may park; the hold never waits on it** (review of #324, which closed the case it
+  found three times and found the next each time). On macOS `poll` calls a pipe writable at
+  `PIPE_BUF` (512) bytes free and a `set --json` line is 560 to 1,127 bytes; a pipe at the
+  system's pipe-memory ceiling is called writable while full and cannot grow; a terminal under
+  XOFF parks a write; a pipe shared with another writer can lose the room it was promised. No
+  check before a write holds, so `set` does not write: each line is handed to a `LinePump`, a
+  writer thread of its own per stream, which may park in `write(2)` for as long as the kernel
+  makes it. The hold never waits on it.
+  - *A consumer that is not draining* is judged by the writer's **progress**: the oldest line
+    handed over not completely written within 2 s, or a failed write, ends the hold as
+    `outputClosed`. A stop request (signal, parent exit, deadline) is the reason whenever there is
+    one and never waits on the writer.
+  - *On every ending the lease is released and the safe state checked first.* Only then is the
+    closing event handed over, and the run waits for each stream at most 1 s.
+  - *The closing event goes to exactly one stream, whole:* standard output if it is idle (so at a
+    line boundary), otherwise standard error as the same line. Standard output is never given an
+    event to glue onto a fragment; both streams unable to take it within the bound means it is
+    dropped and the exit code stands alone.
+  - *Process exit abandons a parked writer thread.* That is deliberate. Bytes already written
+    stay in the pipe, so standard output can end with an incomplete final line.
+  - This replaces the first as-built description (chunks of `PIPE_BUF`, a `poll` between them, a
+    2 s bound on the wait), which was right for the state the first review found and wrong for
+    each state after it.
 - **SIGPIPE is ignored for the length of each write**, not blocked on the writing thread: measured
   on macOS, the signal is raised at the process and delivered to another thread that has it
   unblocked, so a thread mask does not stop a multi-threaded command being killed by it.
-- **`status` and `auto` write to the end.** The bounded semantics belong to `set`; applying them
-  to every command dropped a line whenever a pipe had under 512 bytes free while its reader was
-  still there. EPIPE leaves their exit codes alone. `reset --all` does not use `Terminal`.
+- **`status` and `auto` write to the end.** A write that gave up on a slow reader, applied to
+  every command, dropped a line whenever a pipe had under 512 bytes free while its reader was
+  still there. EPIPE leaves their exit codes alone, and an inherited non-blocking descriptor
+  (`EAGAIN`) is waited on with `poll` and retried, so "delivered whole" holds there too.
+  `reset --all` does not use `Terminal`.
 - **Each renewal is scheduled from the last one**, not from the end of the work after it, so a
   slow write shortens the next sleep instead of eating the two heartbeats the lease can miss.
 - **After the release, only what was read after the release is described.** When the check read

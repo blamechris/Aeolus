@@ -668,7 +668,7 @@ before anything is acquired:
 handshake → snapshot → validate (2) → acquireLease (30 s, not self-renewing,
   held by "fanctl <version> (pid N)") → apply → a snapshot that lists this lease → started
   every 10 s: renewLease, then snapshot → holding
-  ends: --for elapsed │ SIGINT/SIGTERM/SIGHUP │ the parent exited │ a stdout write failed
+  ends: --for elapsed │ SIGINT/SIGTERM/SIGHUP │ the parent exited │ stdout not draining
   then: releaseLease → the safe-state check (the one `auto` ends on) → ended
   or, on any loss the helper reports: releaseLease (best effort) → failed, exit 6
 ```
@@ -691,8 +691,8 @@ handshake → snapshot → validate (2) → acquireLease (30 s, not self-renewin
 - **Ending.** A signal ends the sleep and nothing else: the release that follows is not
   cancelled, and a signal during the release or the check is ignored. `getppid()` is compared with
   its starting value at every heartbeat. Then the lease is released and the safe-state check
-  runs: 0, 8 or 9, exactly as for `auto`. A failed write to standard output ends the hold too (see
-  **Writes to a reader that stopped reading**, below).
+  runs: 0, 8 or 9, exactly as for `auto`. A standard output that is not draining ends the hold
+  too (see **A write may park; the hold never waits on it**, below).
 - **Exit 6 on any loss the helper reports**, after a best-effort release: a renewal that errored
   (whatever the error), a snapshot that does not list this run's lease, `isReclaimedBySystem` on
   a fan the lease covers, or `thermalEmergencyActive`. It never retries and **never
@@ -711,7 +711,7 @@ handshake → snapshot → validate (2) → acquireLease (30 s, not self-renewin
 |---|---|
 | 0 | The hold ended in an ordinary way and the helper reports every fan automatic and no lease after the release. |
 | 2 | The request does not fit this machine (above), decided from the first snapshot: nothing was acquired. (An `apply` refused with `invalidParameter` is also 2, after the lease was taken and released.) |
-| 3 | The helper cannot be reached. Nothing was acquired. |
+| 3 | The helper cannot be reached. Nothing was acquired, except when an `apply` got no answer and its failure classifies to 3 (a connection error that is neither a restart nor a lost reply): the lease was taken, and is released and checked as for 1. |
 | 7 | Version mismatch. Nothing was acquired. |
 | 4, 5 | The helper refused the lease: manual control unavailable (today's helper: `writePathNotBuilt`), or another client holds it. Nothing was applied. (An `apply` refused with `boundsImplausible` is also 4, after the lease was taken and released.) |
 | 6 | Control was lost, or `apply` was refused with a lease-lost fault. Released. |
@@ -750,9 +750,9 @@ key a shape defines is always present, `null` for "not present".
 | Event | When |
 |---|---|
 | `started` | Once, after `apply` was accepted and a snapshot listed the lease. Never implies a fan reached its speed. |
-| `holding` | After every successful heartbeat: the liveness signal, and the write that finds out a consumer has gone. |
-| `ended` | Exactly one closing event, last, for exit 0. |
-| `failed` | Exactly one closing event, last, for every other exit — including one that never held anything. |
+| `holding` | After every successful heartbeat: the liveness signal, and the line a consumer that is not draining is found out by. |
+| `ended` | Exactly one closing event for exit 0, on standard output or, when that cannot take it whole, standard error. |
+| `failed` | Exactly one closing event for every other exit — including one that never held anything — on the same terms. |
 
 ```json
 {"at":"2026-10-07T23:24:57Z","durationSeconds":20,"event":"started","fans":[{"commandedRPM":4670,"index":0,"observed":{"actualRPM":{"unavailableReason":null,"value":1350},"firmwareName":null,"index":0,"isReclaimedBySystem":false,"manualControl":{"advice":null,"reason":null,"state":"available","summary":null},"maximumRPM":{"unavailableReason":null,"value":5777},"minimumRPM":{"unavailableReason":null,"value":1350},"mode":"manualFixed","targetRPM":4670},"requested":{"unit":"percent","value":75}}],"leaseID":"FEDA5A4F-912F-49CB-84B7-51288910401A","schema":1}
@@ -788,32 +788,45 @@ key a shape defines is always present, `null` for "not present".
     and does not describe the lease or the fans at all.
   - `failure` — `null` for `ended`.
 
-If standard output closes, the closing event is still attempted (and fails), and the closing line
-goes to standard error, the one stream left to read.
+**A write may park; the hold never waits on it.** A process that holds a lease must keep
+renewing it and must be able to stop, and a `write(2)` to a pipe can park for as long as the
+kernel makes it: a reader that stopped reading, a terminal under flow control (Ctrl-S), another
+process racing for the room on a shared pipe, a system at its pipe-memory ceiling. Nothing that
+can be checked before a write promises it will not park (`poll` calls a pipe writable at
+`PIPE_BUF` bytes free, which a `--json` line of 560 to 1,127 bytes is longer than; calls a full
+pipe writable at the memory ceiling; and says nothing of a terminal under XOFF), so `set` does
+not write. It hands each line to a **writer thread of its own**, one per stream, which may park in
+`write(2)` for as long as the kernel makes it. Handing a line over never blocks, and nothing the
+hold does waits on a write. Four consequences:
 
-**Writes to a reader that stopped reading.** A process that holds a lease must keep renewing it,
-so no write may park it past a signal, a renewal or its deadline. `set` therefore writes a line
-in chunks of at most `PIPE_BUF` (512 bytes) — the room macOS promises a pipe it calls writable,
-which is less than a `--json` line (560 to 1,127 bytes) — each after the pipe has said it has
-room, waiting 100 ms at a time between chunks. It never sets `O_NONBLOCK`, which would change the
-descriptor for every process that shares it. A stop request (a signal, the parent exiting, the
-deadline) ends the wait at once and wins over the rest of the line: the hold releases and ends for
-*that* reason. A reader that has not made room within **2 seconds** per line is treated as gone:
-the hold releases and ends with `endedBecause: outputClosed`, well inside the 10-second
-heartbeat. Two consequences to design for: **a consumer that stops reading may be left a
-truncated last line** (the first chunk of an event that could not be finished), and a pipe with
-512 to a line's length free and no reader draining it is given up on even where the rest of the
-line would have fitted, because `poll` does not say so. Sockets are handled the same way as pipes
-(a Node `child_process` stdio is one); `/dev/null`, files and terminals are written to directly (a
-terminal under flow control, Ctrl-S, can still park a write, and the lease's lifetime covers
-that). A write that other processes on the same pipe race for the promised room can still park
-for as long as they hold it.
+- **A consumer that is not draining is judged by the writer's progress, not by `poll`.** If the
+  oldest line handed to standard output is not completely written 2 seconds after it was handed
+  over, or the write failed (the reader is gone), the hold releases and ends with
+  `endedBecause: outputClosed`, well inside the 10-second heartbeat. A stop request (a signal, the
+  parent exiting, `--for` elapsing) never waits on the writer, and is the reason the hold ends
+  whenever there is one.
+- **Output cannot delay the release or the check.** The lease is released and the safe state
+  checked first; only then is the closing event handed over.
+- **The closing event reaches exactly one stream, whole.** If standard output is idle within one
+  second of the ending (every line handed to it has been written, so it is at a line boundary),
+  the event is its last line. Otherwise (a line is parked on it, perhaps half-written; or it has
+  failed) the **same line** is written to standard error, and a diagnosis in words for a failed
+  ending is always on standard error. If standard error does not take it within one second
+  either, it is dropped and the process exits; the exit code still tells. A script should take
+  the closing event from standard output or, failing that, standard error.
+- **Process exit abandons a parked writer thread.** The bytes it had already written stay in the
+  pipe, so standard output can end with the front of a line it was parked on and no newline: an
+  incomplete final line, never a complete one that does not parse, and never one with the closing
+  event glued to it. In text, the closing sentence follows the same rule.
 
 **`status` and `auto` write to the end.** Their output is delivered whole to a reader that is
 merely slow, however little room the pipe has; a reader that has *gone* (EPIPE) neither crashes
 the command nor changes its exit code. Any other write failure (a closed descriptor, a full disk)
-is said on standard error and also leaves the exit code alone. `reset --all` does not use this
-writer.
+is said on standard error and also leaves the exit code alone. On an inherited **non-blocking**
+descriptor (a child of a Node process, whose pipes are), a full pipe is `EAGAIN` and not a wait:
+the write waits for room with `poll` and retries, and never changes the flag, which belongs to
+the open file description every process sharing the descriptor shares. `reset --all` does not use
+this writer.
 
 ---
 
