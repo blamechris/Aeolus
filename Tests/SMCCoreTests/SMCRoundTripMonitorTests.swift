@@ -191,9 +191,9 @@ struct SMCRoundTripMonitorTests {
 
     /// The actor's executor is the cooperative pool, so holding the actor parks one of its
     /// threads. This test therefore needs a second pool thread to run on, and it waits on none:
-    /// it polls with `Task.sleep`, reads from a dedicated thread, and a failsafe on a GCD queue
-    /// releases the held actor even if the pool is too narrow to schedule the rest. On a pool of
-    /// one, the test fails after the failsafe instead of hanging the process.
+    /// it polls with `Task.sleep`, reads from a dedicated thread, and a failsafe on a thread of
+    /// its own releases the held actor even if the pool is too narrow to schedule the rest. On a
+    /// pool of one, the test fails after the failsafe instead of hanging the process.
     ///
     /// It asserts two things that must hold together. The actor really is held — a call that has
     /// to enter it stays queued — and the stamp is readable regardless. Without the first, the

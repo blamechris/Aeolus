@@ -36,9 +36,10 @@ over healthy reads cannot show whether a call can wedge.
 D_cycle, it logs one `.fault` and exits non-zero through the single exit seam
 (`TeardownExit.process`), as a new `TeardownOutcome.blind`.** launchd then restarts it,
 and startup reconciliation ([ADR 0011](0011-reconciliation-and-foreign-manual-control.md))
-restores automatic control. The restart relies on `KeepAlive = { SuccessfulExit = false }`,
-which lands in the order ADR 0007 sets. Nothing in the process abandons a round trip,
-times one out, or reopens the connection.
+restores automatic control **if its first read returns**; the amendment's "What the ending buys,
+and what it does not" says where that stops being true. The restart relies on
+`KeepAlive = { SuccessfulExit = false }`, which lands in the order ADR 0007 sets. Nothing in the
+process abandons a round trip, times one out, or reopens the connection.
 
 Detection runs on a timer on a dispatch queue the watchdog owns. It reads round-trip stamps
 (sequence, key, selector, and an age on the suspending clock), published under a lock,
@@ -47,13 +48,13 @@ without an actor hop.
 - D is a constant, set from a measured per-round-trip maximum.
 - No message or configuration can disarm D or lengthen it.
 - The watchdog is armed before reconciliation's first read and stays armed through
-  teardown.
+  teardown (the round-trip trigger alone; see I6).
 - It lands before E3, and is a precondition of any lease grant on a build that has a write
   path.
 
 ### Invariants
 
-*I1, I3, I4, I5, I7 and I8 are amended, and some rows of the table below are superseded: read
+*I1, I3, I4, I5, I6, I7 and I8 are amended, and some rows of the table below are superseded: read
 them with the 2026-10-08 amendment at the end of this document.*
 
 1. **I1.** Every helper round trip is stamped. The stamp is taken on the calling thread
@@ -72,7 +73,9 @@ them with the 2026-10-08 amendment at the end of this document.*
    terminates through `TeardownExit.process` with a non-zero `.blind`. This path runs no
    orderly teardown and makes no IOKit call. The first terminate wins.
 6. **I6.** The watchdog is armed before reconciliation's first read, and stays armed
-   through the orderly teardown.
+   through the orderly teardown. (Amended: through the teardown only the round-trip trigger
+   is armed, because stopping § 3 ends the cycle trigger, and a teardown restore with a
+   single round trip longer than D is therefore cut off; see H6.)
 7. **I7.** Nothing is abandoned in-process. Nothing resumes the caller of a round trip that
    has not returned. Nothing closes or opens the connection while another round trip is
    stamped in flight. (The amendment stamps `IOServiceOpen` and `IOServiceClose` themselves,
@@ -102,8 +105,10 @@ assumptions from the table below, neither yet observed on this machine. First, a
 fully reaped only after its in-flight kernel calls have unwound. Second, launchd starts no
 successor until that reaping is complete (H2). If both hold, whatever the wedged call does
 happens before the next reconciliation reads the mode keys. If either fails, the ordering
-argument fails with it, and the table says what to revisit. A false positive puts the fans back to automatic, which is the safe direction.
-The recovery it triggers already exists and is tested.
+argument fails with it, and the table says what to revisit. A false positive ends the helper, and the successor's reconciliation puts the fans back to
+automatic once its first read returns, which is the safe direction. The recovery it triggers
+already exists and is tested; a wedge that outlives the restart is the case it does not cover
+(see Consequences).
 
 ## Alternatives considered
 
@@ -140,8 +145,19 @@ flight.
 ## Consequences
 
 - **A wedge drops every lease.** The user sees the helper restart and manual control end.
-- **A recurring wedge produces a restart loop of a root daemon.** Each pass restores
-  automatic control. This is accepted because every iteration ends in the safe state.
+- **A recurring wedge produces a throttled restart loop of a root daemon, and a loop is not
+  a recovery.** Each new process's first reconciliation read hangs in the same driver, so the
+  bring-up trigger ends it after D_bringUp, launchd throttles the next start, and **nothing
+  restores a fan until the driver answers.** This ADR does not claim that every iteration ends
+  in the safe state. What it accepts is that no pass of the loop writes anything: each ends at
+  its first read, and a fan the driver will not answer for is left as it is.
+- **A restart is not guaranteed.** Where launchd is itself removing or stopping the job — a
+  bootout, `SMAppService.unregister()`, a shutdown — exit code 2 is not followed by a start,
+  and nothing restores the fans.
+- **The orderly teardown is bounded by D.** Only the round-trip trigger stays armed through
+  it (stopping § 3 ends the cycle trigger: a stopped supervisor is not a stall), so a teardown
+  restore in which any single round trip takes longer than D is cut off mid-restore. D is
+  confirmed for reads only; see H6.
 - **Exit codes:** `TeardownOutcome` gains a non-zero case. The exit-count tripwire stays at
   one.
 - **#135:** its observer is the `.fault` from the gate-level trigger.
@@ -216,6 +232,11 @@ flight.
 - **H3 (E4).** After the writer is killed, `F<n>Md` and `Ftst` stay manual.
 - **H4.** How quickly launchd restarts a non-zero exit after a long uptime.
 - **H5.** Whether launchd's SIGKILL follows `ExitTimeOut` when the teardown is parked.
+- **H6 (E4).** The latency of each round trip in a **teardown restore**, as well as in a
+  supervised write. The orderly teardown stays armed for the round-trip trigger alone, so a
+  restore in which any single round trip exceeds D is cut off by the watchdog before it
+  finishes. The first supervised E4 write must record its per-round-trip latency *including a
+  teardown restore*, and D is raised, or the restore split, if it does not clear D with margin.
 - **Not measurable here:** whether a wedge is confined to one handle or covers the whole
   driver, and whether the kernel wait can be interrupted.
 
@@ -244,8 +265,10 @@ moves D_cycle to 15 s, G to 10 s, and leaves D_bringUp at 15 s by a different su
 D stays provisional: it is confirmed for reads only, and not for write selectors or for dark
 wake. It is revisited when [#296](https://github.com/blamechris/Aeolus/issues/296)'s conditions
 3 and 4 are measured and when the first supervised E4 write has recorded its own
-per-round-trip latency. A persistent wedge becomes a throttled restart loop in which every pass
-ends in reconciliation; that consequence is accepted above and is unchanged.
+per-round-trip latency. A persistent wedge becomes a throttled restart loop, not a recovery:
+see Consequences, and "What the ending buys, and what it does not" below. (The first draft of
+this paragraph said every pass ended in reconciliation. It does not: each pass is ended at its
+first read.)
 
 ### The constants
 
@@ -353,11 +376,16 @@ returns `false` and is not progress.
      the old connection alive until it is closed through `close()`.
    - **`IOServiceGetMatchingService`, the registry read (`IORegistryEntryCreateCFProperty`) and
      `IOObjectRelease` in `open()`.** These run on the connection actor, so a hang in one holds
-     the actor and starves § 3, which D_cycle catches; D does not.
+     the actor. On a machine **with a curated critical set** that starves § 3, which D_cycle
+     catches; D does not. On unidentified hardware (every Mac but `Mac16,5` today) the set is
+     empty, § 3's read takes no scheduler turn, and a blind cycle completes every second, so
+     **nothing here catches it**: the cost is a daemon that hangs until launchd's SIGKILL, with
+     no lease reachable and so no fan under manual control.
    - **`SMCConnection.isHardwareAvailable()`.** It is static and runs off every actor, so a hang in
-     it blocks only its caller. D_cycle catches it only if that caller is on § 3's path. "Caught by
-     D_cycle" therefore does not hold in general, and a reader reasoning about a reconnect must not
-     conclude that it can only hang inside the stamped `IOServiceOpen`.
+     it blocks only its caller. D_cycle catches it only if that caller is on § 3's path, and only
+     where a curated critical set exists. "Caught by D_cycle" therefore does not hold in general,
+     and a reader reasoning about a reconnect must not conclude that it can only hang inside the
+     stamped `IOServiceOpen`.
 2. **I4's progress trigger is armed from bring-up, not only while the supervisors run.** As
    written, the trigger was armed only after § 3 started, so a bring-up that stalled anywhere other
    than inside a stamped round trip, or that returned without ever starting the supervisor, was
@@ -404,6 +432,60 @@ across a sleep must **not** age (I3). **Unifying them is not a tidy-up.** Moving
 the continuous clock reintroduces the sleep false positive, and moving leases onto the suspending
 clock stops them expiring across a sleep. The monitor's clock is one `typealias`
 (`SMCRoundTripMonitor.MeasuringClock`), and a test asserts the type rather than a clock it built.
+
+### The ending is synchronous (PR B, reviewed on #333)
+
+**The "synchronous terminate seam" alternative, rejected when PR B was designed, is reversed.**
+PR B first handed a verdict from the watchdog's queue to the process ending through a `Task`,
+because the seam (`TeardownExit.process`) was typed `async` so that test recorders could await an
+actor journal. That was a convenience of the tests, and it cost the one property the ending exists
+for. The concurrency review of #333 established three things:
+
+- **A parked pool prevents the hand-off.** The decision does not use the cooperative pool (the
+  `.strict` timer runs on a queue of its own and fires with every pool thread parked), but a
+  `Task` created on that queue needs a pool thread in its QoS bucket. With the pool's
+  `.userInitiated`-and-above threads parked, the verdict was reached and `Task { exit(2) }` did
+  not run in 5 s; with `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` (a pool of one), the process ended
+  only after the held connection was released. One wedged thread on a one-thread bucket was enough.
+- **No `ExitTimeOut` bounds it.** The launch daemon plist sets none, and `ExitTimeOut` only times
+  the gap between SIGTERM and SIGKILL when launchd *stops* a job; nothing stops a helper that is
+  merely wedged. SIGTERM is no fallback either: the teardown also hands off through a `Task` and
+  then queues behind the same wedge.
+- **`fired` blocks a retry.** It is set in the locked step that decides the verdict, so no later
+  tick tries again, and the log line had already said "Ending the helper".
+
+**Decision.** `tick()` takes the claim (`ProcessTermination.claim(_:)`) first. If it is granted,
+it logs the one `.fault` and calls the terminate seam, **synchronously, on the watchdog's own
+queue**. `TeardownExit.process` is `exit` underneath and needs no executor, so the seam is a
+synchronous closure and the recorders in the tests are lock-guarded. There is no `Task` on the
+verdict path, and `WriteVerbAllowlistTests`' count of unstructured `Task` spawns stays where it
+was. There is still exactly one `exit(` site. If the claim is refused because the teardown holds
+it, the watchdog still logs the verdict (it is as real as it was) but says that the process is
+already ending as the holder and **promises no restart**; it does not claim an ending that is not
+its own. The ADR's wording that the process ends *while* the connection is held is restored as a
+test: `theWatchdogNeverEntersTheConnectionActor` drives `tick()` from a dedicated thread with the
+real connection held, and asserts the seam was called once before the connection is freed, on a
+pool of any width.
+
+### What the ending buys, and what it does not
+
+Ending the helper is not restoring a fan. The log line, `docs/SAFETY.md` § 6 and this ADR now
+say the same thing:
+
+- launchd restarts a job it is keeping alive, and the next process's reconciliation restores
+  automatic control **if its first read returns**.
+- A wedge that outlives the restart hangs that first read. The bring-up trigger ends the new
+  process at D_bringUp, launchd throttles the loop, and nothing restores a fan until the driver
+  answers.
+- Where launchd is removing or stopping the job (`launchctl bootout`,
+  `SMAppService.unregister()`, a shutdown), exit code 2 is not followed by a start.
+- The orderly teardown is bounded by D, through the round-trip trigger alone (H6).
+- D_bringUp is bounded at `ThermalSupervisor.start()`. A stall later in `bringUp()` —
+  `observeSystemPower()` (a synchronous, unstamped `IORegisterForSystemPower`), the signal
+  teardown's install, anything before `listener.resume()` — leaves a daemon that serves nothing
+  and is never ended, because § 3 keeps completing cycles. That is fail-safe for the fans, since
+  reconciliation has run and no lease is reachable, and it is not recovered; extending D_bringUp
+  to the end of `bringUp()` is a further amendment.
 
 ### Tests added or sharpened by the stamp (PR A)
 

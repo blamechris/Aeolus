@@ -1100,22 +1100,44 @@ handler plus `atexit`" — and that one is undefined behaviour on the path it wa
   a lock-guarded stamp — the round trip in flight, its raw key and selector, and an age on
   the suspending clock, so a call in flight across a sleep does not age — and, on **two
   consecutive 1 s ticks** over the same round trip, **logs one `.fault` and ends the process
-  with exit code `2`** (`TeardownOutcome.blind`) through the one exit seam. launchd restarts
-  it (`KeepAlive = { SuccessfulExit = false }`), and the reconciliation above restores
-  automatic control. The bounds are constants no message and no configuration reaches
-  (`WatchdogLimits`): **D = 5 s** for one round trip; **D_cycle = 15 s** with no completed
-  § 3 cycle while the supervisor runs, sized for up to sixteen supervisor-priority reads
-  outstanding at once and *firing* above that, which is the correct outcome; **D_bringUp =
-  15 s** from arming until § 3 starts. It is armed as the first statement of `bringUp()`,
-  before reconciliation's first read, and stays armed through this section's orderly path. It
-  runs **no teardown and makes no IOKit call**, because the teardown awaits the connection the
-  wedge holds; whichever of the two reaches the exit first wins, through one shared claim
-  (`ProcessTermination`), and the other is refused. **What it is not:** it abandons nothing,
-  times nothing out and reopens nothing; a false positive puts the fans back to automatic,
-  which is the safe direction, and a persistent wedge becomes a throttled restart loop in
-  which every pass ends in reconciliation. D is provisional: it is confirmed for reads only,
-  on `Mac16,5`, and not for write selectors, dark wake or the first read after a wake (#296).
-  It is a precondition of any lease grant on a build with a write path.
+  with exit code `2`** (`TeardownOutcome.blind`) through the one exit seam — **synchronously,
+  on the watchdog's own queue**, with no hand-off to the cooperative pool, because the pool is
+  the thing that may not be making progress. The bounds are constants no message and no
+  configuration reaches (`WatchdogLimits`): **D = 5 s** for one round trip; **D_cycle = 15 s**
+  with no completed § 3 cycle while the supervisor runs, sized for up to sixteen
+  supervisor-priority reads outstanding at once and *firing* above that, which is the correct
+  outcome; **D_bringUp = 15 s** from arming until § 3 starts. It is armed as the first
+  statement of `bringUp()`, before reconciliation's first read. It runs **no teardown and
+  makes no IOKit call**, because the teardown awaits the connection the wedge holds; whichever
+  of the two reaches the exit first wins, through one shared claim (`ProcessTermination`),
+  and the other is refused, and says so.
+
+  **This bullet promises less than the others, and the difference is the point.** Ending the
+  helper does not by itself restore anything:
+  - **A restart restores automatic control only if its first read returns.** launchd
+    restarts a job it is keeping alive (`KeepAlive = { SuccessfulExit = false }`), and the
+    next process's reconciliation, above, reads before it restores. A wedge that outlives the
+    restart hangs that first read: the bring-up trigger ends the new process the same way, 15 s
+    after it armed; launchd throttles the loop; and **nothing puts a fan back until the driver
+    answers.** A persistent wedge is a throttled restart loop whose every pass ends *before*
+    reconciliation completes, not one in which every pass ends in it.
+  - **Where launchd is itself removing or stopping the job** — `launchctl bootout`,
+    `SMAppService.unregister()`, a shutdown — exit code `2` is not followed by a restart, and
+    nothing restores the fans.
+  - **The orderly path above is bounded by D.** Only the round-trip trigger stays armed
+    through it: stopping § 3 ends the cycle trigger, because a stopped supervisor is not a
+    stall. A teardown restore in which any single SMC round trip takes longer than D is cut
+    off by the watchdog mid-restore. D is confirmed for reads only, so this is unmeasured for
+    the writes a restore makes; ADR 0012 lists that measurement among the things to do before
+    relying on it, and the E4 write-latency measurement must include a teardown restore.
+  - **A false positive** on a healthy machine ends the helper, and the successor's
+    reconciliation puts the fans back to automatic once its first read returns, which is the
+    safe direction.
+
+  **What it is not:** it abandons nothing, times nothing out and reopens nothing. D is
+  provisional: it is confirmed for reads only, on `Mac16,5`, and not for write selectors, dark
+  wake or the first read after a wake (#296). It is a precondition of any lease grant on a
+  build with a write path.
 
 **Crash coverage is restart plus reconciliation**, uniformly, for every way the helper can
 die — including the ones no handler could ever reach: `SIGKILL`, a kernel panic, a power

@@ -145,7 +145,10 @@ struct PendingReplyTests {
             the cancelled caller waited \(waited). Cancellation arrived before anything was \
             attached, so the give-up had nobody to hand the fallback to — and a latch that \
             drops it there leaves the caller parked on a continuation nothing will revisit \
-            until the deadline it was cancelled out of.
+            until the deadline it was cancelled out of. (The bound is half the ten-second \
+            deadline and not one second, because a bound that failed a correct latch for the \
+            load of the machine would be the wall-clock upper bound #319 rules out: it must \
+            fail for the defect and for nothing else.)
             """)
     }
 
