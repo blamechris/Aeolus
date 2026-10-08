@@ -280,12 +280,15 @@ cycle has to survive, in round trips, is
 
 > 64 + 34 + 3·(N − 2) + 64·(⌊(N − 1)/2⌋ + 1) + 34 + 30
 
-(the 64s are scheduler turns, the 34s are the curated critical read; the formula and its
-term-by-term derivation are the architect's, from the review of the constants on 2026-10-08).
+term by term: **64**, the turn already in flight; **34**, the grant path's curated critical read
+(single-flight); **3·(N − 2)**, the other outstanding readers' mode reads (`readControlState`,
+three keys each); **64·(⌊(N − 1)/2⌋ + 1)**, the snapshot turns the overtake quota forces; **34**,
+§ 3's own read; **30**, a firing cycle's writes and read-backs on two fans. Every round trip is taken at the
+measured worst, as everywhere in this ADR.
 At N = 12 that is 576 round trips, and at the measured worst of 11.453 ms each, 6.60 s. Adding the
 interval, the slop and D gives **12.70 s**, which 15 s clears. At N = 16 the allowance is 716
-round trips (8.20 s) and the requirement 14.30 s; at N = 17 it is 783 (8.97 s) and 15.07 s, so the
-margin on 15 s runs out between 16 and 17.
+round trips (8.20 s) and the requirement 14.30 s; at N = 17 it is 783 (8.97 s) and 15.07 s. **15 s
+holds for N ≤ 16.**
 
 **Above the design point, the cycle trigger firing is the correct outcome**: the helper ends and
 the fans return to automatic, which is the safe direction. It is not a safety precondition to
@@ -312,7 +315,11 @@ its sleep, not the clock the watchdog reads.
 
 **There is no wake allowance.** On the suspending clock, time spent asleep is not counted, so
 after a wake the trigger sees only awake time and the first cycle after a wake is held to the
-same D_cycle as any other. An allowance would be a number with nothing measured behind it. What
+same D_cycle as any other. A wake grace window would hide a genuine § 3 stall on exactly the
+transition where the SMC is least observed, and it would be a number with nothing measured
+behind it. A false positive there costs a restart, not a lease: § 4 drops every lease on the
+delivered `.willSleep`, and the sleep seal refuses grants until `.didWake`, so dark wakes add no
+client load either; the two-consecutive-ticks rule allows one extra tick. What
 is exposed is that the first read after a wake is slower than any read measured so far, which
 is H1 condition 4 and has not been taken. **If the first read after a wake exceeds 50 ms** (D/100,
 the margin I3 and the assumptions table require of D), **raise D.**
