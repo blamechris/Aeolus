@@ -309,6 +309,14 @@ accept this binary's signature. A `fanctl` built with `swift build` carries no T
 both ends by design (ADR 0005), so it cannot reach an installed helper; the read commands
 above need none of this and keep working.
 
+The binary the helper is built to admit is the copy inside the app, `Aeolus.app/Contents/MacOS/fanctl`.
+It is built from the same `Sources/fanctl` by the `fanctl` target in `project.yml`, which signs it with
+the code-signing identifier `com.blamechris.fanctl` — the one name the helper's client requirement
+allow-lists besides the app's. That identifier is declared once, in the target's
+`PRODUCT_BUNDLE_IDENTIFIER`, and `CommandLineIdentifierDriftTests` holds it equal to the constant the
+requirement is built from. Whether an installed helper admits the Developer ID–signed copy and refuses
+an ad-hoc one has not been run on hardware.
+
 **The examples in this section are not captured from an installed helper.** None is installed
 on the development machine, and a signed `fanctl` is blocked on
 [#82](https://github.com/blamechris/Aeolus/issues/82). They are the shapes the end-to-end
