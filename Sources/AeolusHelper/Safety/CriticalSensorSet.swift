@@ -133,6 +133,16 @@ struct CriticalSensorSet: Sendable, Hashable {
         provenance: "no measured critical-sensor set for this machine"
     )
 
+    /// Every curated set, and not the empty one: the sets a property has to be checked against
+    /// as a whole.
+    ///
+    /// ADR 0012's D_cycle is sized from a set's key count (§ 3's own read and the grant path's
+    /// read each cost one round trip per key), so a set that adds keys can move the bound under
+    /// the watchdog without touching it. `WatchdogLimitsTests` loops this list, and a source
+    /// scan there refuses a curated `static let` that is missing from it. **A new family's set
+    /// is added here in the same change that declares it.**
+    static let allCurated: [CriticalSensorSet] = [mac16x5]
+
     private static func dieClusterKeys(prefixes: [String]) -> [SMCKey] {
         let suffixes = [
             "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",

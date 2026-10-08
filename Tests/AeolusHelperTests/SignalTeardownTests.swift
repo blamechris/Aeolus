@@ -70,12 +70,13 @@ struct SignalTeardownTests {
             plane: plane,
             snapshotProvider: fanProvider(fanCount: 1),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: safetyLog,
             teardown: TeardownSeams(
                 sources: signals,
-                terminate: { outcome in await journal.record(.exited(outcome)) }))
+                terminate: journal.terminate))
         await plane.observe(gate: helper.authority.controlGate)
         await helper.bindSafetyRegistries()
         return helper
@@ -296,11 +297,16 @@ struct SignalTeardownTests {
     /// pure function, so this executes it; what is left in the closure is `exit($0.exitCode)`
     /// with no branch to invert.
     ///
-    /// Written over `allCases` rather than as three literals so that a fourth outcome fails
-    /// here until somebody decides which side of the contract it is on.
+    /// Written over `allCases` rather than as literals so that a further outcome fails here
+    /// until somebody decides which side of the contract it is on. `.blind` is the liveness
+    /// watchdog's (ADR 0012): it exits `2`, which is non-zero for the same reason
+    /// `.restoreFailed` is — launchd must bring the helper back so that reconciliation can
+    /// restore whatever a wedge left behind.
     ///
     /// **Mutation:** make `.restoreFailed` return `0` from `exitCode`. Run: red.
     /// **Mutation:** make `.restored` return `1`. Run: red.
+    /// **Mutation:** make `.blind` return `0`. Run: red — here, and in
+    /// `aWedgedRoundTripEndsTheProcessNonZero`.
     @Test("Each outcome carries the exit code the restart policy reads")
     func theOutcomesCarryTheExitCodesTheRestartPolicyReads() {
         #expect(
@@ -312,10 +318,11 @@ struct SignalTeardownTests {
             `KeepAlive = { SuccessfulExit = false }`.
             """)
         #expect(
-            TeardownOutcome.allCases.filter { $0.exitCode != 0 } == [.restoreFailed],
+            TeardownOutcome.allCases.filter { $0.exitCode != 0 } == [.restoreFailed, .blind],
             "an outcome that could not hand the fans back exits zero and is never restarted")
+        #expect(TeardownOutcome.blind.exitCode == 2)
         #expect(
-            TeardownOutcome.allCases.count == 3, "a fourth outcome needs a code and a rule")
+            TeardownOutcome.allCases.count == 4, "a fifth outcome needs a code and a rule")
     }
 
     // MARK: - The gate
@@ -451,7 +458,7 @@ struct SignalTeardownTests {
         await helper.signalTeardown.install(stoppingSupervisorsWith: Self.stopRecorder(journal))
 
         await signals.fire()
-        try await journal.finished.wait()
+        #expect(await journal.waitForExit(), "the teardown never reached its exit")
 
         #expect(await journal.restoreScopes == [.everyFan, .everyFan])
         #expect(await journal.events.last == .exited(.restored))
@@ -479,7 +486,7 @@ struct SignalTeardownTests {
 
         await helper.bringUp()
         await signals.fire()
-        try await journal.finished.wait()
+        #expect(await journal.waitForExit(), "the teardown never reached its exit")
 
         #expect(await helper.thermalSupervisor.isRunning == false, "§ 3 outlived the teardown")
         #expect(await helper.reclamationSupervisor.isRunning == false, "§ 5 outlived it")

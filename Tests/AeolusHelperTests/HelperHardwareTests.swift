@@ -389,14 +389,19 @@ struct HelperHardwareTests {
         // Both teardown seams are the test's, and neither is fastidiousness. The shipping
         // source would `SIG_IGN` this process's `SIGTERM`, `SIGINT` and `SIGHUP` and then
         // `exit(0)` the test runner on the next one; the shipping terminator would end this
-        // process outright when the teardown is run at the end of the test. Everything else
-        // here is production's.
+        // process outright when the teardown is run at the end of the test. The watchdog's
+        // tick source is the test's too: `production` defaults it to the real 1 s timer, which
+        // would tick for the rest of the test process, and on a loaded machine a stalled first
+        // snapshot would end in a recorded `.blind` that this test would report as a wrong exit
+        // code. The real timer on the real SMC is `WatchdogHardwareTests`, opt-in and named for
+        // what it does. Everything else here is production's.
         let teardown = TeardownJournal()
         let helper = HelperComposition.production(
             log: Self.log,
             teardown: TeardownSeams(
                 sources: RecordingSignalSources(),
-                terminate: { outcome in await teardown.record(.exited(outcome)) }))
+                terminate: teardown.terminate),
+            watchdogTicks: ManualWatchdogTicks())
         let composed = ContinuousClock.now - composingStarted
 
         // The three supervisors this bring-up starts are 1 Hz loops on the real SMC, so

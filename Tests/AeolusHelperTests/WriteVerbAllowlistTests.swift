@@ -441,6 +441,16 @@ struct WriteVerbAllowlistTests {
         "LeaseClock.swift: sleep(until: ContinuousClock.Instant)",
         "LeaseExpirySupervisor.swift: run(authority: LeaseAuthority, "
             + "clock: some MonotonicClock, idleInterval: Duration, log: LeaseLog)",
+        // ADR 0012's liveness watchdog (#329). Neither writes to a fan or can: the watchdog
+        // holds a lock-guarded stamp, a lock-guarded progress object and a
+        // `ProcessTermination`, and the plane is named by none of them (the tripwire in
+        // `WatchdogTripwireTests` holds that). `arm()` starts a timer, and `start(_:)` is the
+        // tick source's requirement and its one conformer, with one signature. The verdict
+        // itself — `tick()` and `ProcessTermination.claim(_:)` / `end(_:)` — is synchronous and
+        // so is outside this population; it issues no restore, which is why the restart and the
+        // reconciliation behind it exist.
+        "LivenessWatchdog.swift: arm()",
+        "LivenessWatchdog.swift: start(_: @escaping @Sendable () -> Void)",
         "ReadOnlyFanAuthority.swift: acquireLease(_: LeaseRequest, from: ConnectionID)",
         "ReadOnlyFanAuthority.swift: apply(_: [FanSetting], leaseID: UUID, from: ConnectionID)",
         "ReadOnlyFanAuthority.swift: connectionDidInvalidate(_: ConnectionID)",
@@ -495,7 +505,8 @@ struct WriteVerbAllowlistTests {
         "ThermalEmergency.swift: fire(_: CriticalTemperature, from: CriticalTemperatureReport)",
         "ThermalEmergency.swift: takeBackAnythingEngagedSinceFiring()",
         "ThermalSupervisor.swift: run(emergency: ThermalEmergency<Plane>, "
-            + "clock: some MonotonicClock, interval: Duration, log: SafetyLog)",
+            + "clock: some MonotonicClock, interval: Duration, progress: ThermalCycleProgress, "
+            + "log: SafetyLog)",
     ]
 
     /// Every function in the helper that could reach a firmware write: the `async` ones,
@@ -709,6 +720,13 @@ struct WriteVerbAllowlistTests {
     /// a bridge from synchronous code either, and exists because the alarm must run *beside*
     /// a walk that may never return. Its body sleeps on the injected clock and then awaits
     /// `discoveryWalkOverran()`, which increments a counter and logs. It writes nothing.
+    ///
+    /// **[#329](https://github.com/blamechris/Aeolus/issues/329)** (ADR 0012) leaves it at
+    /// seventeen, deliberately. `LivenessWatchdog.tick()` ends the process on its own dispatch
+    /// queue, synchronously, and has no `Task`: a hand-off to the cooperative pool would never
+    /// run in the one case the watchdog exists for, the pool not making progress. A spawn site
+    /// added to `LivenessWatchdog.swift` is therefore not a number to update here but the
+    /// hand-off that ADR 0012's amendment rejects.
     ///
     /// The count is asserted per file so it cannot drift silently. An eighteenth spawn site
     /// fails this with the file it was added to, and the maintainer either shows it hands off

@@ -40,7 +40,8 @@ struct SupervisorRestartTests {
         let supervisor = ThermalSupervisor(
             emergency: machine.emergency,
             clock: TestClock(sleepBudget: 0),
-            interval: .seconds(1))
+            interval: .seconds(1),
+            progress: ThermalCycleProgress())
 
         #expect(await supervisor.start())
         let ended = await yieldUntil("the loop to end on its own") {
@@ -117,6 +118,7 @@ struct SupervisorRestartTests {
             emergency: machine.emergency,
             clock: clock,
             interval: .seconds(1),
+            progress: ThermalCycleProgress(),
             log: SafetyLog(recording: { record.append($0, $1) }))
 
         #expect(await supervisor.start())

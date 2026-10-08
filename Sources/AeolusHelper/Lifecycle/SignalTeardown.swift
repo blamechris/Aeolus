@@ -42,6 +42,14 @@ enum TeardownOutcome: Sendable, Hashable, CaseIterable {
     /// The machine-wide restore threw something else. Non-zero, deliberately.
     case restoreFailed
 
+    /// The liveness watchdog ended the process: an SMC round trip did not return within D, or
+    /// a safety cycle within D_cycle (ADR 0012). No orderly teardown ran and no restore was
+    /// issued, so nothing is known about the fans except that they must be given back —
+    /// non-zero is exactly what makes launchd restart the helper so that startup
+    /// reconciliation can do it. Not produced by `SignalTeardown`: it is the watchdog's
+    /// outcome, and it lives here because the exit code is one mapping in one place.
+    case blind
+
     /// The code the process ends with, and the whole of A3's launchd contract.
     ///
     /// A pure function of the outcome rather than a `switch` inside the terminating closure,
@@ -52,6 +60,7 @@ enum TeardownOutcome: Sendable, Hashable, CaseIterable {
         switch self {
         case .restored, .nothingToRestore: 0
         case .restoreFailed: 1
+        case .blind: 2
         }
     }
 }
@@ -81,10 +90,18 @@ enum TeardownOutcome: Sendable, Hashable, CaseIterable {
 /// daemon nothing after the terminate call in `SignalTeardown.run(stoppingSupervisorsWith:)`
 /// runs at all; under a recorder it returns, which is what lets a test observe the exit as an
 /// ordered event beside the restores rather than by inspecting a return value.
+///
+/// ## Synchronous, since ADR 0012's watchdog
+///
+/// This was `async` for as long as the only caller was an `async` teardown whose test recorder
+/// wanted to `await` an actor. The liveness watchdog ends the process from its own dispatch
+/// queue, where there is no pool thread to spend (a verdict is only worth reaching when the
+/// pool is not making progress), so the seam is synchronous: `exit` needs no executor, and
+/// there is still exactly one `exit` site in this target.
 enum TeardownExit {
 
     /// Ends the process with the code `outcome` names.
-    static let process: @Sendable (TeardownOutcome) async -> Void = { exit($0.exitCode) }
+    static let process: @Sendable (TeardownOutcome) -> Void = { exit($0.exitCode) }
 }
 
 /// Where the signals come from, so the handler body can be run without raising one.
@@ -110,20 +127,31 @@ protocol SignalSourcing: Sendable {
 /// the production pair would replace the disposition of `SIGTERM` in the `swift test`
 /// process and then end it with the successful-exit call when anything fired. A seam that
 /// only production can supply is a mechanism only production can run.
+///
+/// ## The terminate seam is wrapped once, here
+///
+/// What ends the process is not handed out as a closure. It is wrapped in a
+/// `ProcessTermination` **built once, in this initialiser**, and every reader of this struct
+/// shares that one object: `SignalTeardown` ends the process through it, and so does
+/// `LivenessWatchdog`. A struct is copied freely and a closure is called as often as anyone
+/// likes, so a seam that handed out the closure would give each ender a claim of its own, and
+/// two enders would then both run `exit`. Building the claim here is what makes "the first
+/// one wins" a property of the seam and not of each caller remembering to ask.
 struct TeardownSeams: Sendable {
 
     /// Where the three orderly signals come from.
     let sources: any SignalSourcing
 
-    /// What ends the process. `TeardownExit.process` in every shipping build.
-    let terminate: @Sendable (TeardownOutcome) async -> Void
+    /// The one way the process is ended, wrapping `TeardownExit.process` in every shipping
+    /// build. See `ProcessTermination`.
+    let termination: ProcessTermination
 
     init(
         sources: any SignalSourcing = DispatchSignalSources(),
-        terminate: @escaping @Sendable (TeardownOutcome) async -> Void = TeardownExit.process
+        terminate: @escaping @Sendable (TeardownOutcome) -> Void = TeardownExit.process
     ) {
         self.sources = sources
-        self.terminate = terminate
+        self.termination = ProcessTermination(terminate: terminate)
     }
 }
 
@@ -314,7 +342,10 @@ actor SignalTeardown<Plane: FanControlPlane> {
         // Step 5, ruling D19. The one whose answer launchd reads.
         let outcome = await keystone()
         log.teardownFinished(outcome: outcome)
-        await seams.terminate(outcome)
+        // Through the shared claim, not the bare seam: if the liveness watchdog already ended
+        // the process, this is refused and logged. It does not ask whether it has begun, and
+        // `hasBegun` above says nothing about who may end the process.
+        seams.termination.end(outcome)
     }
 
     /// `restoreToAutomatic(.everyFan)`, and what its answer means for the exit code.

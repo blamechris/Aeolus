@@ -1062,7 +1062,7 @@ nothing observable, no longer. The rows this section owes hardware are in the
 ## 6. Restore on everything
 
 Automatic control is restored on every exit path: app quit, helper `SIGTERM`, logout,
-shutdown, uninstall, and crash. **Three mechanisms cover them, and which one covers which is
+shutdown, uninstall, and crash. **Four mechanisms cover them, and which one covers which is
 the whole content of this section.** It named a single mechanism until #119 — "a signal
 handler plus `atexit`" — and that one is undefined behaviour on the path it was written for.
 
@@ -1090,6 +1090,58 @@ handler plus `atexit`" — and that one is undefined behaviour on the path it wa
 - **Crash signals** — **no in-process restore at all.** `IOConnectCallStructMethod` is not
   async-signal-safe, and a crash is exactly when heap and lock state are unknown. A signal
   handler that calls into IOKit is undefined behaviour on the one path it exists to serve.
+- **A wedge — an SMC round trip, or a safety cycle, that does not return.** The liveness
+  watchdog ([ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md), built
+  in #329: `Sources/AeolusHelper/Lifecycle/LivenessWatchdog.swift`). `SMCConnection` is an
+  actor that calls IOKit synchronously inside itself, so a call that never returns holds it
+  for good: § 3 cannot read a temperature, § 5 cannot read a mode, and the teardown above
+  queues behind the same connection and never reaches its exit. Nothing in Swift can time out
+  a synchronous call, so the helper does not try. A timer on a dispatch queue of its own reads
+  a lock-guarded stamp — the round trip in flight, its raw key and selector, and an age on
+  the suspending clock, so a call in flight across a sleep does not age — and, on **two
+  consecutive 1 s ticks** over the same round trip, **logs one `.fault` and ends the process
+  with exit code `2`** (`TeardownOutcome.blind`) through the one exit seam — **synchronously,
+  on the watchdog's own queue**, with no hand-off to the cooperative pool, because the pool is
+  the thing that may not be making progress. The bounds are constants no message and no
+  configuration reaches (`WatchdogLimits`): **D = 5 s** for one round trip; **D_cycle = 15 s**
+  with no completed § 3 cycle while the supervisor runs, sized for up to sixteen
+  supervisor-priority reads outstanding at once and *firing* above that, which is the correct
+  outcome; **D_bringUp = 15 s** from arming until § 3 starts. It is armed as the first
+  statement of `bringUp()`, before reconciliation's first read. It runs **no teardown and
+  makes no IOKit call**, because the teardown awaits the connection the wedge holds; whichever
+  of the two reaches the exit first wins, through one shared claim (`ProcessTermination`),
+  and the other is refused, and says so.
+
+  **This bullet promises less than the others, and the difference is the point.** Ending the
+  helper does not by itself restore anything:
+  - **A restart restores automatic control only if its pass reaches its keystone** — every
+    read the pass makes before the restore returns, and then the restore does. launchd
+    restarts a job it is keeping alive (`KeepAlive = { SuccessfulExit = false }`), and the
+    next process's reconciliation, above, reads before it restores. A wedge that outlives the
+    restart hangs one of those reads (the first, or a later one such as a fan's `F<n>Md`),
+    and the **round-trip trigger** ends the new process the same way, about D + 1–2 s after
+    the read began. The bring-up trigger (D_bringUp, 15 s) is not what ends it: it covers only
+    a stall that is not a stamped round trip, such as a hang in `open()`'s unstamped matching
+    or registry calls. launchd throttles the loop; and **nothing puts a fan back until the
+    driver answers.** A persistent wedge is a throttled restart loop whose every pass ends
+    *before* reconciliation completes, not one in which every pass ends in it.
+  - **Where launchd is itself removing or stopping the job** — `launchctl bootout`,
+    `SMAppService.unregister()`, a shutdown — exit code `2` is not followed by a restart, and
+    nothing restores the fans.
+  - **The orderly path above is bounded by D.** Only the round-trip trigger stays armed
+    through it: stopping § 3 ends the cycle trigger, because a stopped supervisor is not a
+    stall. A teardown restore in which any single SMC round trip takes longer than D is cut
+    off by the watchdog mid-restore. D is confirmed for reads only, so this is unmeasured for
+    the writes a restore makes; ADR 0012 lists that measurement among the things to do before
+    relying on it, and the E4 write-latency measurement must include a teardown restore.
+  - **A false positive** on a healthy machine ends the helper, and the successor's
+    reconciliation puts the fans back to automatic once its pass reaches its keystone, which
+    is the safe direction.
+
+  **What it is not:** it abandons nothing, times nothing out and reopens nothing. D is
+  provisional: it is confirmed for reads only, on `Mac16,5`, and not for write selectors, dark
+  wake or the first read after a wake (#296). It is a precondition of any lease grant on a
+  build with a write path.
 
 **Crash coverage is restart plus reconciliation**, uniformly, for every way the helper can
 die — including the ones no handler could ever reach: `SIGKILL`, a kernel panic, a power

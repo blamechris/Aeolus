@@ -76,6 +76,7 @@ struct SystemPowerTests {
             plane: plane,
             snapshotProvider: fanProvider(fanCount: fanCount),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             powerObserver: observer,
             acknowledgementBudget: budget,
             log: helperLog,
@@ -547,6 +548,7 @@ struct SystemPowerTests {
             plane: Self.machine(),
             snapshotProvider: fanProvider(fanCount: 1),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: Self.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: SafetyLog(recording: { [log] in log.append($0, $1) }))

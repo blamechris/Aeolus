@@ -47,6 +47,11 @@ actor ThermalSupervisor<Plane: FanControlPlane> {
     private let emergency: ThermalEmergency<Plane>
     private let clock: any MonotonicClock
     private let interval: Duration
+
+    /// Where this loop reports that a cycle completed, and what `start()` and `stop()` tell
+    /// the liveness watchdog about whether anyone should expect one. See
+    /// `ThermalCycleProgress`.
+    private let progress: ThermalCycleProgress
     private let log: SafetyLog
 
     private var task: Task<Void, Never>?
@@ -58,11 +63,13 @@ actor ThermalSupervisor<Plane: FanControlPlane> {
         emergency: ThermalEmergency<Plane>,
         clock: some MonotonicClock = SystemMonotonicClock(),
         interval: Duration = ThermalSupervisor.defaultInterval,
+        progress: ThermalCycleProgress,
         log: SafetyLog = SafetyLog()
     ) {
         self.emergency = emergency
         self.clock = clock
         self.interval = interval
+        self.progress = progress
         self.log = log
     }
 
@@ -83,9 +90,16 @@ actor ThermalSupervisor<Plane: FanControlPlane> {
         let emergency = self.emergency
         let clock = self.clock
         let interval = self.interval
+        let progress = self.progress
         let log = self.log
+        // The watchdog's D_cycle runs from here: the first cycle is held to the same bound as
+        // every later one, from the moment it could begin. Only a call that actually starts a
+        // loop gets this far, so a redundant `start()` cannot reset a stall's clock.
+        progress.beginCycling()
         task = Task.detached { [weak self] in
-            await Self.run(emergency: emergency, clock: clock, interval: interval, log: log)
+            await Self.run(
+                emergency: emergency, clock: clock, interval: interval, progress: progress,
+                log: log)
             await self?.loopEnded(generation: generation)
         }
         return true
@@ -148,9 +162,17 @@ actor ThermalSupervisor<Plane: FanControlPlane> {
     ///    that stopped could never be started again, so no restart policy #103 wrote could
     ///    have worked. Mandatory is #103's — a helper that stops § 3 for sleep must start it
     ///    on wake, and the `.fault` line below is what makes a failure to do so visible.
+    ///
+    /// **A stopped supervisor is not a stall.** Stopping tells the liveness watchdog so, and
+    /// its cycle trigger stands down until the next `start()`: teardown stops § 3 on purpose,
+    /// and the watchdog stays armed through it for the round-trip trigger alone. A loop that
+    /// *ends on its own* is the opposite case and is deliberately not covered by this — nothing
+    /// told the watchdog to stand down, § 3 has stopped looking, and its cycle trigger firing
+    /// is the right outcome.
     func stop() {
         task?.cancel()
         task = nil
+        progress.endCycling()
     }
 
     /// One supervisor, running to cancellation.
@@ -162,14 +184,24 @@ actor ThermalSupervisor<Plane: FanControlPlane> {
     /// `cycle()` cannot throw, so the only error to reason about is cancellation from the
     /// sleep — handled explicitly rather than with `try?`, which this repository's
     /// `no_silent_write_failure` rule refuses outright in the helper.
+    ///
+    /// **Progress is stamped only for a cycle that ran.** `ThermalEmergency.cycle()` returns
+    /// `false` when its reentrancy guard dropped the entry and `true` on every other exit,
+    /// the blind path included, and only `true` is a completed cycle: after a stop-then-start
+    /// the replacement loop's entries are dropped for as long as the outgoing cycle is parked,
+    /// and counting those would let a § 3 that is not looking advance the watchdog's progress
+    /// every second.
     static func run(
         emergency: ThermalEmergency<Plane>,
         clock: some MonotonicClock,
         interval: Duration,
+        progress: ThermalCycleProgress,
         log: SafetyLog = SafetyLog()
     ) async {
         while !Task.isCancelled {
-            await emergency.cycle()
+            if await emergency.cycle() {
+                progress.recordCompletion()
+            }
 
             let wake = max(
                 clock.now.advanced(by: interval), clock.now.advanced(by: minimumWake))
