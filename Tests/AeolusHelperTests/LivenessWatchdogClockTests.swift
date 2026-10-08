@@ -91,27 +91,8 @@ struct LivenessWatchdogClockTests {
     /// the age is two seconds, not one.
     @Test("A late completion cannot move the anchor behind a phase change")
     func aLateCompletionCannotPassAPhaseChange() async {
-        let base = ThermalCycleProgress.MeasuringClock.now
-        let calls = OSAllocatedUnfairLock(initialState: 0)
-        let parked = OSAllocatedUnfairLock(initialState: false)
-        let proceed = DispatchSemaphore(value: 0)
-        let progress = ThermalCycleProgress(now: {
-            switch calls.withLock({
-                $0 += 1
-                return $0
-            }) {
-            case 1:  // the initialiser
-                return base
-            case 2:  // the late completion, reading the clock
-                parked.withLock { $0 = true }
-                _ = proceed.wait(timeout: .now() + .seconds(30))
-                return base.advanced(by: .seconds(1))
-            case 3:  // the phase change that started behind it
-                return base.advanced(by: .seconds(2))
-            default:  // the reading
-                return base.advanced(by: .seconds(3))
-            }
-        })
+        let clock = ScriptedProgressClock()
+        let progress = clock.makeProgress()
         let finished = OSAllocatedUnfairLock(initialState: 0)
         let phaseChangeStarted = OSAllocatedUnfairLock(initialState: false)
 
@@ -119,8 +100,8 @@ struct LivenessWatchdogClockTests {
             progress.recordCompletion()
             finished.withLock { $0 += 1 }
         }.start()
-        guard await pollUntil({ parked.withLock { $0 } }) else {
-            proceed.signal()
+        guard await pollUntil({ clock.isParked }) else {
+            clock.release()
             Issue.record("the completion never reached the clock")
             return
         }
@@ -131,7 +112,7 @@ struct LivenessWatchdogClockTests {
         }.start()
         _ = await pollUntil { phaseChangeStarted.withLock { $0 } }
         await settle()
-        proceed.signal()
+        clock.release()
         let both = await pollUntil { finished.withLock { $0 } == 2 }
 
         let reading = progress.reading()
@@ -144,5 +125,49 @@ struct LivenessWatchdogClockTests {
             two seconds and a reading at three leave one. A completion that read its instant \
             before taking the lock stored an earlier one over the phase change's.
             """)
+    }
+}
+
+/// A clock for a `ThermalCycleProgress` whose instants are scripted by the order of the calls:
+/// the initialiser reads t+0, the second call (a late completion) parks inside the clock until
+/// released and then reads t+1, the third (the phase change behind it) reads t+2, and every
+/// later one (the reading) t+3.
+private final class ScriptedProgressClock: Sendable {
+    private let base = ThermalCycleProgress.MeasuringClock.now
+    private let calls = OSAllocatedUnfairLock(initialState: 0)
+    private let parked = OSAllocatedUnfairLock(initialState: false)
+    private let proceed = DispatchSemaphore(value: 0)
+
+    /// Whether a caller is parked inside the clock read.
+    var isParked: Bool { parked.withLock { $0 } }
+
+    /// Lets the parked caller's read return. The wait is bounded, so a test that never gets here
+    /// frees the thread anyway.
+    func release() { proceed.signal() }
+
+    func makeProgress() -> ThermalCycleProgress {
+        ThermalCycleProgress(now: { [self] in instant(forCall: nextCall()) })
+    }
+
+    private func nextCall() -> Int {
+        calls.withLock {
+            $0 += 1
+            return $0
+        }
+    }
+
+    private func instant(forCall call: Int) -> ThermalCycleProgress.Instant {
+        switch call {
+        case 1:
+            return base
+        case 2:
+            parked.withLock { $0 = true }
+            _ = proceed.wait(timeout: .now() + .seconds(30))
+            return base.advanced(by: .seconds(1))
+        case 3:
+            return base.advanced(by: .seconds(2))
+        default:
+            return base.advanced(by: .seconds(3))
+        }
     }
 }
