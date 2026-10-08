@@ -96,55 +96,43 @@ struct WatchdogEndingTests {
 
     // MARK: - Under contention
 
-    /// Both enders at once, thousands of times: the seam is called once every time, and which
-    /// of the two it was is whichever got the claim.
+    /// Both enders at the claim at once, a hundred thousand times: the seam is called once
+    /// every time, and which of the two it was is whichever got the claim.
     ///
-    /// **What it can and cannot show.** A claim taken in two locked steps (check, then set) has
-    /// a window of a few instructions. The two threads are held on a spin barrier and released
+    /// The watchdog's side asks for the claim exactly as `tick()` does (`claim(.blind)`, then
+    /// `end()` on the grant) and the teardown's side exactly as `SignalTeardown` does
+    /// (`end(.restored)`). Neither goes through a tick: the property is about the claim, and a
+    /// tick puts a microsecond of work in front of one of the two, which is longer than the
+    /// window being looked for.
+    ///
+    /// **What it can and cannot show.** A claim taken in two locked steps (check, then set) has a
+    /// window of a few instructions. The two threads are held on a spin barrier and released
     /// within nanoseconds of each other, round after round, because a thread started per round
-    /// reaches the lock microseconds apart and never inside the window. Whether a given run
-    /// lands one inside is still chance, so a run that kills the two-step mutant proves the
-    /// mutant is catchable and a run that does not proves nothing about the real claim; the
-    /// deterministic tests above carry the first-wins mutations, and this one carries the
-    /// claim's atomicity on the best evidence a test can have without a hook in the lock.
+    /// reaches the lock microseconds apart and never inside the window. Whether a given run lands
+    /// one inside is still chance, so this test carries the claim's atomicity on the best
+    /// evidence a test can have without a hook in the lock; the deterministic tests above carry
+    /// the first-wins mutations. The pull request says how often the two-step mutant is caught.
     ///
     /// Threads, not tasks: the race is between two threads reaching one lock, and nothing here
     /// asks anything of the cooperative pool.
     ///
     /// **Mutation:** take the claim in two locked steps (read `held`, then set it in a second
-    /// `withLock`). Run: see the pull request for how often.
-    @Test("The watchdog and the teardown racing end the process once")
+    /// `withLock`). Run: red, in most runs.
+    @Test("Two enders racing for the claim end the process once")
     func theClaimHoldsUnderContention() async {
-        let rig = WatchdogRig()
-        let wedge = WedgedRoundTrip(rig.monitor, tpd0)
-        defer { wedge.finish() }
-        guard await wedge.waitUntilWedged() else {
-            Issue.record("the round trip never began")
-            return
-        }
-        rig.timeline.advance(by: .seconds(6))
-
-        let rounds = 2_000
+        let rounds = 100_000
         let calls = OSAllocatedUnfairLock(initialState: [Int](repeating: 0, count: rounds))
         let quiet = WatchdogLog(recording: { _, _ in })
-        // Everything is built before either thread starts, and each watchdog has already seen
-        // the wedge once: its next tick is the one that reaches the claim.
         let terminations = (0..<rounds).map { round in
             ProcessTermination(terminate: { _ in calls.withLock { $0[round] += 1 } }, log: quiet)
         }
-        let watchdogs = terminations.map {
-            LivenessWatchdog(
-                roundTrips: rig.monitor, progress: rig.progress, termination: $0,
-                ticks: rig.ticks, log: quiet)
-        }
-        for watchdog in watchdogs { watchdog.tick() }
-
         let barrier = RoundBarrier()
         let finished = OSAllocatedUnfairLock(initialState: 0)
+
         Thread {
             for round in 0..<rounds {
                 barrier.arrive(round: round)
-                watchdogs[round].tick()
+                if case .granted(let ending) = terminations[round].claim(.blind) { ending.end() }
             }
             finished.withLock { $0 += 1 }
         }.start()
@@ -156,8 +144,10 @@ struct WatchdogEndingTests {
             finished.withLock { $0 += 1 }
         }.start()
 
-        #expect(
-            await pollUntil({ finished.withLock { $0 } == 2 }), "the racing threads never ended")
+        // No cap on this wait: how long two threads take to be scheduled together is not what is
+        // under test, and a bound on it would fail a correct claim on a loaded runner. The
+        // suite's time limit is the failsafe, and the barrier gives up on a dead partner.
+        while finished.withLock({ $0 }) < 2 { try? await Task.sleep(for: .milliseconds(5)) }
         let wrong = calls.withLock { counts in
             counts.enumerated().filter { $0.element != 1 }.map {
                 "round \($0.offset): \($0.element)"
@@ -165,8 +155,10 @@ struct WatchdogEndingTests {
         }
         #expect(
             wrong.isEmpty,
-            "the terminate seam was not called exactly once in \(wrong.count) rounds: \(wrong.prefix(5))"
-        )
+            """
+            the terminate seam was not called exactly once in \(wrong.count) of \(rounds) \
+            rounds: \(wrong.prefix(5))
+            """)
     }
 }
 
