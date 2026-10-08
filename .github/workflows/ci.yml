@@ -83,6 +83,73 @@ jobs:
       - name: Generate project
         run: xcodegen generate
 
+      # The binary assertion further down sees one configuration, Monitor Debug. The
+      # `fanctl` that docs/RECOVERY.md sends a user to for `reset --all` is the Full
+      # Release one, which no job here builds: it needs the maintainer's Developer ID.
+      # A configuration-specific override in project.yml — a `.debug` suffix on the
+      # identifier, `CREATE_INFOPLIST_SECTION_IN_BINARY: NO`, a `--identifier` signing
+      # flag — would leave every test and the Monitor Debug binary correct while that
+      # configuration signs with an identifier the helper refuses, and the refusal reads
+      # as "no helper installed".
+      #
+      # So this asks Xcode what each configuration *resolves* for the fanctl target.
+      # `-showBuildSettings` needs no signing and no Signing.xcconfig, and it is the same
+      # answer the build would act on. It cannot see Configs/Signing.xcconfig, which is
+      # gitignored and absent here; only `codesign -dv` on the maintainer's signed Full
+      # build can, and that stays the owner's check on #82.
+      #
+      # The configuration list is written out, not discovered. A configuration added to
+      # project.yml has to be added here, which is a deliberate edit in the same PR rather
+      # than a check that quietly widens or narrows.
+      #
+      # An absent OTHER_CODE_SIGN_FLAGS is how Xcode reports "unset", so it is not an
+      # error; an absent PRODUCT_BUNDLE_IDENTIFIER or CREATE_INFOPLIST_SECTION_IN_BINARY
+      # is, because it would mean the output was not what this step parses.
+      - name: Assert every configuration signs fanctl with the identifier the helper pins
+        run: |
+          set -euo pipefail
+          EXPECTED=$(scripts/pinned-fanctl-identifier.sh)
+          SETTINGS="${RUNNER_TEMP:-/tmp}/fanctl-build-settings.txt"
+
+          # The value of one build setting from ${SETTINGS}, or nothing if it is unset.
+          # Anchored on the four-space indent and the whole key, so a key that merely
+          # contains this name cannot match. More than one match is returned as is, and
+          # the caller's comparison then fails.
+          setting() {
+              sed -n "s/^    $1 = *\(.*\)\$/\1/p" "${SETTINGS}"
+          }
+
+          for CONFIG in "Monitor Debug" "Monitor Release" "Full Debug" "Full Release"; do
+              xcodebuild \
+                -project Aeolus.xcodeproj \
+                -target fanctl \
+                -configuration "${CONFIG}" \
+                -showBuildSettings > "${SETTINGS}"
+
+              IDENTIFIER=$(setting PRODUCT_BUNDLE_IDENTIFIER)
+              if [ "${IDENTIFIER}" != "${EXPECTED}" ]; then
+                  echo "error: fanctl resolves PRODUCT_BUNDLE_IDENTIFIER to '${IDENTIFIER}' in ${CONFIG}; the helper pins '${EXPECTED}'."
+                  exit 1
+              fi
+
+              EMBEDDED=$(setting CREATE_INFOPLIST_SECTION_IN_BINARY)
+              if [ "${EMBEDDED}" != "YES" ]; then
+                  echo "error: fanctl resolves CREATE_INFOPLIST_SECTION_IN_BINARY to '${EMBEDDED}' in ${CONFIG}; without the embedded Info.plist codesign names the binary after its file."
+                  exit 1
+              fi
+
+              # `-i` and `--identifier` are codesign's own override of whatever the
+              # Info.plist says, `-i` also in its attached form (`-ifoo`).
+              FLAGS=$(setting OTHER_CODE_SIGN_FLAGS)
+              if printf '%s\n' "${FLAGS}" | grep -Eq -- '(^|[[:space:]])(--identifier|-i)'; then
+                  echo "error: fanctl resolves OTHER_CODE_SIGN_FLAGS to '${FLAGS}' in ${CONFIG}; a signing flag that sets the identifier overrides the one the helper pins."
+                  exit 1
+              fi
+
+              echo "${CONFIG}: PRODUCT_BUNDLE_IDENTIFIER=${IDENTIFIER}, Info.plist embedded, no signing-flag identifier"
+          done
+          echo "RESOLVED IDENTIFIER ASSERTION PASSED: all four configurations resolve ${EXPECTED}"
+
       # This scheme compiles the AeolusHelper target, and that is the point of the job as
       # much as the app is. `swift build` compiles the helper *inside* the SwiftPM package;
       # xcodebuild compiles it as a native target that merely depends on the SMCCore
@@ -94,12 +161,13 @@ jobs:
       # not reach this target at all; the same defect bit ClientAuthorisation once already.
       #
       # This step does not pass CODE_SIGNING_ALLOWED=NO, and the fanctl identifier assertion
-      # further down is why. With signing disabled the linker still ad-hoc signs every Mach-O, but it names the
-      # signature after the file — `Identifier=fanctl` — and ignores the Info.plist embedded
-      # in the binary. The identifier the helper's client requirement allow-lists is only
-      # applied when the target is really code signed. The Monitor configurations sign
-      # ad hoc (CODE_SIGN_IDENTITY "-", Manual, no team), which needs no certificate, no
-      # keychain and no secret, so a pull request from a fork builds exactly as before.
+      # further down is why. With signing disabled the linker still ad-hoc signs every
+      # Mach-O, but it names the signature after the file — `Identifier=fanctl` — and
+      # ignores the Info.plist embedded in the binary. The identifier the helper's client
+      # requirement allow-lists is only applied when the target is really code signed. The
+      # Monitor configurations sign ad hoc (CODE_SIGN_IDENTITY "-", Manual, no team), which
+      # needs no certificate, no keychain and no secret, so a pull request from a fork
+      # builds exactly as before.
       - name: Build Monitor configuration
         run: |
           set -o pipefail
@@ -189,10 +257,13 @@ jobs:
       # client's side (docs/RECOVERY.md), which is the worst moment to discover it.
       #
       # The expected value is read out of ClientRequirementText.swift, the source the
-      # helper's requirement is built from, rather than typed here a third time.
+      # helper's requirement is built from, rather than typed here a third time. The read
+      # lives in scripts/pinned-fanctl-identifier.sh and fails closed, so a declaration
+      # that no longer parses fails this step instead of asserting against nothing.
       # Tests/IntegrationTests/CommandLineIdentifierDriftTests.swift holds project.yml equal
-      # to that same constant; this step holds the *built binary* equal to it, which is the
-      # only place a signing setting that stopped taking effect would show.
+      # to that same constant, and the step before the build holds every configuration's
+      # *resolved* settings equal to it; this step holds the *built binary* equal to it,
+      # which is the only place a signing setting that stopped taking effect would show.
       #
       # `codesign -dv` writes to stderr, and its output is read from a file rather than
       # piped into `grep -q` for the reason the probe step above gives.
@@ -202,12 +273,7 @@ jobs:
           FANCTL="DerivedData/Build/Products/Monitor Debug/Aeolus.app/Contents/MacOS/fanctl"
           test -x "${FANCTL}" || { echo "error: no fanctl at ${FANCTL}"; exit 1; }
 
-          SOURCE="Sources/AeolusXPC/ClientAuthorisation/ClientRequirementText.swift"
-          EXPECTED=$(sed -n 's/^    static let commandLine = "\(.*\)"$/\1/p' "${SOURCE}")
-          if [ -z "${EXPECTED}" ] || [ "$(printf '%s\n' "${EXPECTED}" | wc -l)" -ne 1 ]; then
-              echo "error: could not read AeolusClientIdentifier.commandLine from ${SOURCE}"
-              exit 1
-          fi
+          EXPECTED=$(scripts/pinned-fanctl-identifier.sh)
 
           REPORT="${RUNNER_TEMP:-/tmp}/fanctl-codesign.txt"
           codesign -dv "${FANCTL}" 2> "${REPORT}"

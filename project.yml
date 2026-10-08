@@ -372,6 +372,13 @@ targets:
   # Tests/IntegrationTests/CommandLineIdentifierDriftTests.swift holds it equal to
   # `AeolusClientIdentifier.commandLine`.
   #
+  # Do not restate it, or CREATE_INFOPLIST_SECTION_IN_BINARY, or set a `--identifier` in
+  # OTHER_CODE_SIGN_FLAGS, for any one configuration: the Full Release fanctl is the one a
+  # user is sent to for `reset --all`, and no job here builds it. The tests refuse a second
+  # declaration of either key in this target, and CI's "Assert every configuration signs
+  # fanctl with the identifier the helper pins" step checks what Xcode resolves in all four
+  # configurations.
+  #
   # Signing follows the configuration, as for the helper: Monitor is ad-hoc, Full takes
   # its identity and Team ID from the gitignored Configs/Signing.xcconfig. No Team ID
   # appears in this file. Whether an installed helper admits the Full-signed binary, and
