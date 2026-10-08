@@ -102,7 +102,7 @@ struct HoldEnvironmentTests {
 
         let parkedWriter = full[1]
         let finished = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
+        BackgroundThread.run {
             _ = FileDescriptorWriter.writeLine(
                 "parked until the reader reads", to: parkedWriter)
             finished.signal()

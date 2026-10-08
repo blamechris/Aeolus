@@ -6,7 +6,7 @@ import os
 
 /// `FileDescriptorWriter` on everything that is not a pipe: sockets, which are asked for room the
 /// way pipes are, and files, devices and bad descriptors, which are not.
-@Suite("Writing a line to a socket, a file or a device")
+@Suite("Writing a line to a socket, a file or a device", .serialized)
 struct FileDescriptorKindsTests {
 
     typealias Rig = WriterRig

@@ -16,7 +16,7 @@ import os
 /// Real pipes throughout; nothing here touches the process's own standard output. A bounded wait
 /// is a scripted one that costs no real time, except in the tests that exist to prove `poll(2)`
 /// itself. Sockets, files and devices are `FileDescriptorKindsTests`.
-@Suite("Writing a line to a pipe")
+@Suite("Writing a line to a pipe", .serialized)
 struct FileDescriptorWriterTests {
 
     typealias Rig = WriterRig
@@ -72,7 +72,7 @@ struct FileDescriptorWriterTests {
         let finished = DispatchSemaphore(value: 0)
         let reader = pipe.reader
         let expected = pipe.queued + 1_200
-        DispatchQueue.global().async {
+        BackgroundThread.run {
             Thread.sleep(forTimeInterval: 0.05)
             var chunk = [UInt8](repeating: 0, count: 4_096)
             var total = 0
@@ -231,7 +231,7 @@ struct FileDescriptorWriterTests {
         defer { pipe.close() }
         pipe.fill(leavingFree: 600)
         let reader = pipe.reader
-        DispatchQueue.global().async {
+        BackgroundThread.run {
             Thread.sleep(forTimeInterval: 0.05)
             var chunk = [UInt8](repeating: 0, count: 65_536)
             _ = Darwin.read(reader, &chunk, chunk.count)

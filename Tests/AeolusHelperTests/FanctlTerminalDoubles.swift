@@ -162,3 +162,18 @@ func exitCode(of run: () async throws -> Void) async -> Int32? {
         return Fanctl.exitCode(for: error).rawValue
     }
 }
+
+/// Runs `work` on a thread of its own, and returns at once.
+///
+/// Not `DispatchQueue.global().async`. A test that waits on a pipe or a semaphore holds a worker
+/// thread for as long as it waits, the pool those workers come from is only as wide as the
+/// machine's cores, and on a three-core CI runner enough of them at once leave work queued behind
+/// them that never starts: the review of this suite on CI saw readers that never began, and
+/// unrelated tests timing out waiting for a pool with no free thread. A thread of its own always
+/// starts.
+enum BackgroundThread {
+    static func run(_ work: @escaping @Sendable () -> Void) {
+        let thread = Thread(block: work)
+        thread.start()
+    }
+}

@@ -58,7 +58,7 @@ struct FanctlOneShotOutputTests {
         let received = OSAllocatedUnfairLock<[UInt8]>(initialState: [])
         let reading = DispatchSemaphore(value: 0)
         let reader = out.reader
-        DispatchQueue.global().async {
+        BackgroundThread.run {
             Thread.sleep(forTimeInterval: 0.05)
             var chunk = [UInt8](repeating: 0, count: 8_192)
             while true {
