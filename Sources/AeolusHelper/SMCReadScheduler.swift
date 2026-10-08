@@ -219,7 +219,11 @@ actor SMCReadScheduler {
     /// **An alarm, not a bound.** Nothing is cancelled, abandoned, or allowed to stop waiting
     /// when it fires; see `readAll()` and #205 for why a timeout on either side of D22's wait
     /// would re-open the hazard D22 closed. It makes a wedged walk *visible* in `log show` —
-    /// the one shape #205 recommends — and a wedged walk is worse than #205 thought (#293).
+    /// the one shape #205 recommends — and a wedged walk is worse than #205 thought (#293):
+    /// since ADR 0012 the liveness watchdog ends the helper on the *round trip* that wedged,
+    /// at `WatchdogLimits.roundTrip`, long before this alarm. This one is for the walk that is
+    /// not wedged and merely very slow, or that is parked behind a rebuild: the cases where no
+    /// single round trip is old.
     ///
     /// **Derived from the contended figure, not the cold one**, and #290's first draft got
     /// this wrong: three cold walks is 17.7 s, below walks this repository had already
@@ -510,8 +514,13 @@ actor SMCReadScheduler {
     /// connection between this scheduler's provider and the plane. A round trip that never
     /// returns occupies that actor for good, so every read queues behind it — the thermal
     /// supervisor's included. A wedged walk makes the helper **blind**, not merely unable to
-    /// rebuild its connection; that is [#293](https://github.com/blamechris/Aeolus/issues/293),
-    /// for the architect, before E3. What follows still holds of the wait this method
+    /// rebuild its connection; that was [#293](https://github.com/blamechris/Aeolus/issues/293),
+    /// and [ADR 0012](../../docs/ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)
+    /// answers it: the liveness watchdog sees the round trip that has not returned, without
+    /// entering the connection, and ends the helper once it has been out for
+    /// `WatchdogLimits.roundTrip` on two consecutive ticks. **That bound is per round trip and
+    /// never per walk** — a 25 s contended walk is thousands of short round trips, none of
+    /// them old, and is not a wedge. What follows still holds of the wait this method
     /// imposes. This is a documented limitation of D22 and **not** a bug a timeout
     /// would fix: a recycle that stopped waiting and took its turn would close the handle
     /// underneath the walk still reading through it, which is the exact hazard D22 exists to

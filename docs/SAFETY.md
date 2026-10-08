@@ -1062,7 +1062,7 @@ nothing observable, no longer. The rows this section owes hardware are in the
 ## 6. Restore on everything
 
 Automatic control is restored on every exit path: app quit, helper `SIGTERM`, logout,
-shutdown, uninstall, and crash. **Three mechanisms cover them, and which one covers which is
+shutdown, uninstall, and crash. **Four mechanisms cover them, and which one covers which is
 the whole content of this section.** It named a single mechanism until #119 — "a signal
 handler plus `atexit`" — and that one is undefined behaviour on the path it was written for.
 
@@ -1090,6 +1090,32 @@ handler plus `atexit`" — and that one is undefined behaviour on the path it wa
 - **Crash signals** — **no in-process restore at all.** `IOConnectCallStructMethod` is not
   async-signal-safe, and a crash is exactly when heap and lock state are unknown. A signal
   handler that calls into IOKit is undefined behaviour on the one path it exists to serve.
+- **A wedge — an SMC round trip, or a safety cycle, that does not return.** The liveness
+  watchdog ([ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md), built
+  in #329: `Sources/AeolusHelper/Lifecycle/LivenessWatchdog.swift`). `SMCConnection` is an
+  actor that calls IOKit synchronously inside itself, so a call that never returns holds it
+  for good: § 3 cannot read a temperature, § 5 cannot read a mode, and the teardown above
+  queues behind the same connection and never reaches its exit. Nothing in Swift can time out
+  a synchronous call, so the helper does not try. A timer on a dispatch queue of its own reads
+  a lock-guarded stamp — the round trip in flight, its raw key and selector, and an age on
+  the suspending clock, so a call in flight across a sleep does not age — and, on **two
+  consecutive 1 s ticks** over the same round trip, **logs one `.fault` and ends the process
+  with exit code `2`** (`TeardownOutcome.blind`) through the one exit seam. launchd restarts
+  it (`KeepAlive = { SuccessfulExit = false }`), and the reconciliation above restores
+  automatic control. The bounds are constants no message and no configuration reaches
+  (`WatchdogLimits`): **D = 5 s** for one round trip; **D_cycle = 15 s** with no completed
+  § 3 cycle while the supervisor runs, sized for up to sixteen supervisor-priority reads
+  outstanding at once and *firing* above that, which is the correct outcome; **D_bringUp =
+  15 s** from arming until § 3 starts. It is armed as the first statement of `bringUp()`,
+  before reconciliation's first read, and stays armed through this section's orderly path. It
+  runs **no teardown and makes no IOKit call**, because the teardown awaits the connection the
+  wedge holds; whichever of the two reaches the exit first wins, through one shared claim
+  (`ProcessTermination`), and the other is refused. **What it is not:** it abandons nothing,
+  times nothing out and reopens nothing; a false positive puts the fans back to automatic,
+  which is the safe direction, and a persistent wedge becomes a throttled restart loop in
+  which every pass ends in reconciliation. D is provisional: it is confirmed for reads only,
+  on `Mac16,5`, and not for write selectors, dark wake or the first read after a wake (#296).
+  It is a precondition of any lease grant on a build with a write path.
 
 **Crash coverage is restart plus reconciliation**, uniformly, for every way the helper can
 die — including the ones no handler could ever reach: `SIGKILL`, a kernel panic, a power

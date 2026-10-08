@@ -234,9 +234,11 @@ actor ConnectionHealth: SchedulerObserving {
     /// still reading through it, which is the hazard D22 closed. **Reads do not keep flowing
     /// meanwhile**, as this said until #290's review: `SMCConnection` is an actor that makes
     /// the IOKit call synchronously, so a wedged call queues every read behind it — see
-    /// [#293](https://github.com/blamechris/Aeolus/issues/293). What makes the wedge visible
-    /// at all is `SMCReadScheduler.discoveryWalkOverrunAlarm`, whose `.fault` fires from the
-    /// authority rather than from this type, whose pump is exactly what is parked.
+    /// [#293](https://github.com/blamechris/Aeolus/issues/293). What ends the wedge is
+    /// `LivenessWatchdog` (ADR 0012), which reads a lock-guarded stamp and so does not need
+    /// this type's pump or the connection; what makes a *slow* walk visible is
+    /// `SMCReadScheduler.discoveryWalkOverrunAlarm`, whose `.fault` fires from the authority
+    /// rather than from this type, whose pump is exactly what is parked.
     static let eventBuffer = 64
 
     /// The most whole-read outcomes a second this observer is expected to be sent, on a
