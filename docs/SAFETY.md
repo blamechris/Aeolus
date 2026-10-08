@@ -952,6 +952,25 @@ Persistent read failure is therefore treated as divergence: attempt a reconnect,
 restore automatic and report. § 3 having working telemetry is a precondition of § 1 granting
 a lease at all.
 
+**A read that never gets its turn is the quietest form of it**
+([#135](https://github.com/blamechris/Aeolus/issues/135)). The scheduler's gate is not
+cancellable — a queued turn is resumed by the scheduler and by nothing else — so a turn taken and not given back parks every later read in the process for
+good. Nothing throws, nothing is logged, and nothing completes to be counted, so the reconnect
+above never fires. The liveness watchdog ([§ 6](#6-restore-on-everything), ADR 0012) watches for
+it: a read parked at the gate for longer than **G = 2·D = 10 s**, with no stamped round trip
+older than one tick to explain the wait, logs one `.fault` naming the priority, the age and the
+queue depth, once per waiter. **After that fault the helper does nothing more**: it resumes and
+drops nothing and ends nothing, because the gate stays non-cancellable and there is no wait to
+abandon. What ends a helper whose gate never turns is § 6's cycle trigger — § 3 reads through the
+same gate and starves behind a leaked turn, and 15 s without a completed cycle ends the process.
+The fault is how the log says why, **when there is a waiter to say it**: if § 3's own read holds
+the leaked turn and nothing else is waiting (an idle helper, no client polling or asking for a
+lease), nothing parks, there is no fault, and D_cycle alone acts. Once the supervisors are
+stopped (the orderly teardown) the cycle trigger is not armed, and the fault says that nothing
+will end the helper for it. G is derived for the supervisor priority; a snapshot waiter behind
+enough concurrent snapshot clients can outlast it with nothing leaked. *Tested by:* `GateFaultTests.swift`,
+`GateWaitMonitorTests.swift` and `SchedulerObserversTests.swift`.
+
 When divergence is confirmed the helper either re-asserts control or falls back to automatic
 — and either way **tells the user**. It never continues reporting a target speed the
 hardware is ignoring.
@@ -1106,7 +1125,9 @@ handler plus `atexit`" — and that one is undefined behaviour on the path it wa
   configuration reaches (`WatchdogLimits`): **D = 5 s** for one round trip; **D_cycle = 15 s**
   with no completed § 3 cycle while the supervisor runs, sized for up to sixteen
   supervisor-priority reads outstanding at once and *firing* above that, which is the correct
-  outcome; **D_bringUp = 15 s** from arming until § 3 starts. It is armed as the first
+  outcome; **D_bringUp = 15 s** from arming until § 3 starts; and a **third trigger that ends
+  nothing**: a read parked at the scheduler's gate for longer than **G = 10 s** logs one
+  `.fault` and the helper does nothing more (§ 5). It is armed as the first
   statement of `bringUp()`, before reconciliation's first read. It runs **no teardown and
   makes no IOKit call**, because the teardown awaits the connection the wedge holds; whichever
   of the two reaches the exit first wins, through one shared claim (`ProcessTermination`),

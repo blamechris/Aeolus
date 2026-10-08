@@ -44,8 +44,10 @@
 ///
 /// The cost of that ordering is a rule on the conformer, and it is not negotiable: **return
 /// promptly and do not block.** An implementation that took a lock another task holds would
-/// stall the helper's only SMC reader. `ConnectionHealth` — the one conformer in
-/// `Sources/` — yields into an `AsyncStream` and returns, which is the shape to copy.
+/// stall the helper's only SMC reader. `ConnectionHealth` yields into an `AsyncStream` and
+/// returns, which is the shape to copy; `GateWaitMonitor` (#135) takes a lock for an append, a
+/// removal or a copy and returns, which is the other. The scheduler takes one observer, and
+/// `SchedulerObservers` is how it has two.
 protocol SchedulerObserving: Sendable {
 
     /// One thing the scheduler just did.
@@ -54,6 +56,34 @@ protocol SchedulerObserving: Sendable {
     ///   documentation: return promptly, take no lock that anything else holds across an
     ///   `await`, and do no work here that a consumer's own task could do instead.
     func schedulerDidObserve(_ event: SchedulerEvent)
+}
+
+// MARK: - More than one listener
+
+/// Tells several observers about every event, in the order they were given.
+///
+/// `SMCReadScheduler` takes one observer, and `ConnectionHealth` was it until the gate monitor
+/// ([#135](https://github.com/blamechris/Aeolus/issues/135)) needed the same events. The rule
+/// of this type is that **it changes nothing for the first listener**: each event is delivered to
+/// every observer, in the order given, before the call returns, on the calling thread. That is
+/// the property `ConnectionHealth`'s "three failures in a row" depends on, and the reason a
+/// fan-out is a loop and not a `Task` per event or a stream: the scheduler reports from inside
+/// its own isolation so that a report is ordered with the state change it describes, and every
+/// observer's obligation (return promptly, do not block) is the sum of them all.
+///
+/// A struct over an array of existentials, `Sendable` because `SchedulerObserving` is; an empty
+/// fan-out hears nothing and is a legal observer.
+struct SchedulerObservers: SchedulerObserving {
+
+    private let observers: [any SchedulerObserving]
+
+    init(_ observers: [any SchedulerObserving]) {
+        self.observers = observers
+    }
+
+    func schedulerDidObserve(_ event: SchedulerEvent) {
+        for observer in observers { observer.schedulerDidObserve(event) }
+    }
 }
 
 // MARK: - The events
@@ -71,7 +101,8 @@ enum SchedulerEvent: Sendable, Hashable {
     ///
     /// [#135](https://github.com/blamechris/Aeolus/issues/135)'s deadline observer starts
     /// here: a waiter still unmatched by a `turnGranted` carrying the same `queuedAt` is a
-    /// waiter that has been parked since then.
+    /// waiter that has been parked since then. `GateWaitMonitor` is that observer; it matches on
+    /// that instant, and it ages the waiter on a clock of its own, not from this one.
     case waiterParked(priority: SMCReadPriority, queuedAt: ContinuousClock.Instant)
 
     /// The connection was handed to a turn at `priority`.

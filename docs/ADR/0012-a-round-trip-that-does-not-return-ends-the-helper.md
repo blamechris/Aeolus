@@ -162,7 +162,8 @@ flight.
   confirmed for reads only; see H6.
 - **Exit codes:** `TeardownOutcome` gains a non-zero case. The exit-count tripwire stays at
   one.
-- **#135:** its observer is the `.fault` from the gate-level trigger.
+- **#135:** its observer is the `.fault` from the gate-level trigger, built as PR C of #329
+  (see "The gate trigger, as built").
 - **[#292](https://github.com/blamechris/Aeolus/issues/292):** keeps handling "returned
   with an error" through `ConnectionHealth`, and never tries to detect "did not return".
   D applies per round trip, never per walk: a 25 s contended walk is not a wedge.
@@ -279,7 +280,7 @@ round-trip trigger at one of its reads, before the restore.)
 | **D** | 5 s (provisional, reads only) | One stamped round trip. | About 437× the worst of 912,000 measured reads (11.45 ms; the four conditions in H1, [#296](https://github.com/blamechris/Aeolus/issues/296)). |
 | **D_cycle** | 3·D = 15 s | No completed § 3 cycle, while armed. | At least the interval (1 s), plus timer slop (0.1 s), plus D, plus the allowance at the design point of 12 outstanding supervisor reads (576 round trips × 11.453 ms = 6.60 s): 12.70 s. See below. |
 | **D_bringUp** | `ReconciliationLimits.budget` + 2·D = 15 s | Arming to `ThermalSupervisor.start()`. | The reconciliation budget (5 s) plus 2·D. Independent of the outstanding-read count: no client can reach the helper before `listener.resume()`. |
-| **G** | 2·D = 10 s, per parked waiter | [#135](https://github.com/blamechris/Aeolus/issues/135)'s gate-waiter `.fault`. | Must exceed the wait at the design point (the allowance without § 3's own read and the cycle's writes: 512 round trips × 11.453 ms = 5.86 s) and stay below D_cycle − interval − 2 ticks (12 s). Suppressed while a stamp is older than one tick. |
+| **G** | 2·D = 10 s, per parked waiter | [#135](https://github.com/blamechris/Aeolus/issues/135)'s gate-waiter `.fault`. | Must exceed the longest supervisor wait at the design point (a 3-key mode read behind both critical reads: the allowance less the cycle's writes and its own keys, 543 round trips × 11.453 ms = 6.22 s; corrected in PR C from 512 and 5.86 s, which counted § 3's own read as the worst waiter) and stay below D_cycle − interval − 2 ticks (12 s). Suppressed while a stamp is older than one tick. |
 | **Tick** | 1 s | The watchdog's timer, a `.strict` `DispatchSourceTimer`. | A verdict needs two over-bound ticks, so it lands at most two ticks after the bound is crossed. |
 
 **A verdict needs two consecutive over-bound ticks on the same sequence** (the same round-trip
@@ -513,5 +514,75 @@ a trap, which no test can assert on. It was run once by hand and is described on
 
 The watchdog's own tests, and the gate trigger's, are listed on
 [#329](https://github.com/blamechris/Aeolus/issues/329) and carry their mutations in the pull
-requests that add them. The hardware half of `aRoundTripSpanningSleepIsNotAWedge` (a real lid close
-with a round trip in flight) has not been observed; it is H1 conditions 3 and 4.
+requests that add them (the gate trigger's are in the pull request that closes #135). The
+hardware half of `aRoundTripSpanningSleepIsNotAWedge` (a real lid close with a round trip in
+flight) has not been observed; it is H1 conditions 3 and 4.
+
+### The gate trigger, as built (PR C, [#135](https://github.com/blamechris/Aeolus/issues/135))
+
+This closes #135's three open questions, and each answer is the smallest that satisfies the
+acceptance criteria.
+
+- **A deadline observer, not a deadline.** `GateWaitMonitor` is a `SchedulerObserving` conformer
+  that mirrors the scheduler's per-priority FIFO from `waiterParked` and `turnGranted`, and the
+  watchdog's tick asks it for the oldest waiter at each priority. The gate stays non-cancellable:
+  the monitor holds no continuation (`WatchdogTripwireTests` holds that) and nothing in this
+  change resumes or drops one.
+- **Nothing beyond reporting.** A waiter parked longer than G logs one `.fault` naming the
+  priority, the age and the queue depth, and **the helper does nothing more**. A gate that never
+  turns starves § 3 behind it, which is the case D_cycle already ends, so the fault is the
+  diagnosis and the cycle trigger is the action. G = 2·D = 10 s sits above the longest legal
+  supervisor wait at the design point (6.22 s: a 3-key mode read that arrived last, behind both
+  34-key critical reads, 543 round trips) and below D_cycle − interval − 2 ticks (12 s); it holds
+  for up to 20 outstanding supervisor reads on `Mac16,5` (a wait of 9.43 s), and fails at 21
+  (10.19 s). Past that the line is logged for a queue that is long and moving, and it says so.
+  The first draft's G = D was under the first side. **The snapshot priority's waiter is not
+  derived:** it waits behind the other snapshot clients' turns as well, 64 round trips each, so
+  on the order of a dozen concurrent snapshot clients outlast G with nothing wrong. The wait is computed
+  from the named scheduler constants (`WatchdogLimits.gateWaitRoundTrips`), as D_cycle's is.
+- **What the line promises, by phase.** While § 3 runs, a gate that never turns starves it and
+  the cycle trigger ends the helper; before § 3 has started, the bring-up trigger does; once the
+  supervisors are stopped (the orderly teardown) neither is armed, and the line says that nothing
+  will end the helper for this. There is also no fault at all when § 3's own read holds the leaked
+  turn and nothing else is waiting: § 3's next cycle cannot begin until the stuck one finishes, so
+  nothing parks, and D_cycle acts alone (with the round-trip trigger, if the stuck call is a
+  stamped one).
+- **Where it lives.** Not in the scheduler, which reports and decides nothing (`SchedulerObserving`
+  says why), and not in a lifecycle owner of its own: the watchdog already owns the tick, the
+  lock-guarded reads and the `.fault` vocabulary, and the monitor is a fourth thing it reads.
+  `SchedulerObservers` is how the scheduler's single observer slot feeds both `ConnectionHealth`
+  and the monitor, in that order, synchronously, with nothing changed for the first.
+
+What the monitor does, and does not, rely on:
+
+- **A grant takes out the waiter it names.** `turnGranted` carries the `queuedAt` the waiter was
+  parked with, and a fast-path grant carries its own grant instant with no waiter behind it, so a
+  grant that matches no parked waiter is the fast path and pops nothing. Popping the head on every
+  grant is right only while the mirror is in step, and when it is not it hides the waiter this
+  exists to see.
+- **It ages on the suspending clock, from its own park, and the comparer mints the instant.** The
+  scheduler's `ContinuousClock` instant names a waiter and is never a start of waiting; a waiter
+  parked across a sleep does not age by the sleep. `MonotonicClock` is not involved.
+- **One fault per waiter.** The rate-collapse is the ticket of the last waiter logged at each
+  priority, so a waiter that stays parked is logged once and the next one is logged in its own
+  right. The verdict's `fired` is not reused: a gate fault must not stand in the cycle trigger's
+  way.
+- **Suppressed while a stamp explains it.** A stamped round trip older than **one tick** (not D)
+  suppresses the fault, as correction 4 above says; a suppressed waiter is not recorded, so once
+  the stamp clears a waiter still parked is logged.
+
+| Test | Mutation that must turn it red |
+|---|---|
+| `aParkedWaiterPastTheBoundFaultsOnce` | Remove the emission. Separately, remove the rate-collapse. |
+| `aProviderThatNeverReturnsFaultsTheReadParkedBehindIt` (the real scheduler, a provider that never returns the turn) | Remove the emission. Separately, ignore `turnGranted`. |
+| `aSecondWaiterFaultsInItsOwnRight` | Collapse on the priority alone. |
+| `theGateFaultIsSilentWhileAStampedRoundTripExplainsIt` | Drop the suppression. Separately, record a suppressed waiter as logged. |
+| `aVerdictOutranksAGateFaultDueOnTheSameTick` | Return the gate faults ahead of `if let confirmed` in `tick()`. |
+| `theGateFaultPromisesOnlyWhatThePhaseMakesTrue` | Promise the cycle trigger in every phase. Swap the cycling and bring-up wording. |
+| `aStampExplainsTheWaitOnlyWhenOlderThanATick` | Suppress only past D. `>=` for `>` against the tick. Suppress on any stamp. |
+| `aWaiterAtExactlyGIsNotPastIt`, `aWaiterGrantedJustUnderGNeverFaults` | `>=` for `>` against G. Ignore `turnGranted`. |
+| `aFastPathGrantPopsNothing` | Pop the head on every grant. |
+| `theGateFaultNeverEndsTheProcess`, `aGateThatNeverTurnsIsEndedByTheCycleTrigger` | The gate path takes the claim and ends the process. Separately, set `fired` in the gate path. |
+| `theGateBoundIsDerivedAndConstant`, `theGateWaitIsTheLongerOfTheTwoWaiters`, `theGateBoundHoldsForEveryCuratedSet` | G = D. G = D_cycle. Count § 3's read as the worst waiter. Take only the mode read off the allowance. `max` for `min`. G + 1 s. |
+| `SchedulerObserversTests` | Drop the first observer. Reverse the order. Deliver through a `Task`. |
+| `theGateMonitorHoldsNoContinuationAndNamesNoConnection` | A `CheckedContinuation` in the monitor, however it is spelled. A connection named in it. |

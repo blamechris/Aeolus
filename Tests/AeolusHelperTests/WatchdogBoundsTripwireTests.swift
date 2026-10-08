@@ -97,13 +97,14 @@ struct WatchdogBoundsTripwireTests {
 
     // MARK: - No other way to move a bound
 
-    /// The only parameters `LivenessWatchdog.init` may take, with their types: the five
+    /// The only parameters `LivenessWatchdog.init` may take, with their types: the six
     /// collaborators, each a *named dependency*. A `Duration` is one way to make a bound
     /// configurable and not the only one — `extraTicks: Int = 0` added to the streak
     /// threshold, a `Double` scale on D — so the rule is the allowlist and not the type.
     static let watchdogInitializerAllowlist: [String: String] = [
         "roundTrips": "SMCRoundTripMonitor",
         "progress": "ThermalCycleProgress",
+        "gateMonitor": "GateWaitMonitor",
         "termination": "ProcessTermination",
         "ticks": "any WatchdogTicking",
         "log": "WatchdogLog",
@@ -163,7 +164,7 @@ struct WatchdogBoundsTripwireTests {
         return problems.sorted()
     }
 
-    /// I8, the general form: the watchdog's initialiser takes the five collaborators and
+    /// I8, the general form: the watchdog's initialiser takes the six collaborators and
     /// **nothing else** — no `Int`, `Double` or `Duration` that a caller could use to move a
     /// bound or a streak, and no new dependency without this list being edited in the same
     /// change, where a reviewer sees it.
@@ -171,6 +172,8 @@ struct WatchdogBoundsTripwireTests {
     /// **Mutation:** add `extraTicks: Int = 0` to `LivenessWatchdog.init` and add it to the
     /// streak threshold. Run: red.
     /// **Mutation:** add `scale: Double = 1.0` to `LivenessWatchdog.init`. Run: red.
+    /// **Mutation:** delete the `"gateMonitor": "GateWaitMonitor"` entry from the allowlist (the
+    /// initialiser's sixth collaborator then reads as something that is not named). Run: red.
     @Test("The watchdog's initialiser takes the named collaborators and nothing else")
     func theWatchdogInitTakesOnlyNamedDependencies() throws {
         let initializers = try Self.initializerParameters(in: try watchdogClassBody())
@@ -198,6 +201,7 @@ struct WatchdogBoundsTripwireTests {
         let clean = """
             roundTrips: SMCRoundTripMonitor,
             progress: ThermalCycleProgress,
+            gateMonitor: GateWaitMonitor,
             termination: ProcessTermination,
             ticks: any WatchdogTicking,
             log: WatchdogLog = WatchdogLog()
@@ -217,6 +221,10 @@ struct WatchdogBoundsTripwireTests {
             Self.disallowedParameters(
                 in: clean.replacingOccurrences(of: "ProcessTermination", with: "Int"),
                 allowing: allowed) == ["termination: Int"])
+        #expect(
+            Self.disallowedParameters(
+                in: clean.replacingOccurrences(of: "GateWaitMonitor", with: "Int"),
+                allowing: allowed) == ["gateMonitor: Int"])
         #expect(
             Self.disallowedParameters(
                 in: "roundTrips: SMCRoundTripMonitor", allowing: allowed
@@ -251,6 +259,7 @@ struct WatchdogBoundsTripwireTests {
     /// `WatchdogLimits` would be a bound assignable from anywhere in the module at runtime.
     ///
     /// **Mutation:** write `static var roundTrip: Duration = .seconds(5)`. Run: red.
+    /// **Mutation:** write `static var gateWaiterAlarm: Duration = roundTrip * 2`. Run: red.
     @Test("The bounds are constants, not assignable variables")
     func theBoundsAreStaticLets() throws {
         let code = try lifecycleSource("WatchdogLimits.swift")
@@ -260,5 +269,6 @@ struct WatchdogBoundsTripwireTests {
             in: code, range: NSRange(code.startIndex..<code.endIndex, in: code))
         #expect(found == 0, "WatchdogLimits has a stored static var: a bound that can change")
         #expect(code.contains("static let roundTrip"), "the scan no longer finds D")
+        #expect(code.contains("static let gateWaiterAlarm"), "the scan no longer finds G")
     }
 }

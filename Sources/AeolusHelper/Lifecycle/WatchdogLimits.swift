@@ -33,6 +33,30 @@ enum WatchdogLimits {
     /// helper before `listener.resume()`.
     static let bringUpBound: Duration = ReconciliationLimits.budget + roundTrip * 2
 
+    /// **G**, 2·D: a scheduler waiter parked at the gate for longer than this, with no stamped
+    /// round trip older than one tick to explain it, is logged at `.fault` and **nothing more**
+    /// ([#135](https://github.com/blamechris/Aeolus/issues/135)). It ends nothing: the gate is
+    /// not cancellable, so there is no wait to abandon, and the action on a gate that never turns
+    /// is D_cycle's, because § 3 reads through the same gate and starves behind a leaked turn.
+    ///
+    /// **Derived, with two sides** (`requiredGateBound(outstandingReads:criticalReadKeys:)` and
+    /// `WatchdogLimitsTests`):
+    ///
+    /// - *Above* the longest legal **supervisor** wait at the design point of 12 supervisor reads
+    ///   outstanding, 6.22 s at the measured worst round trip: a 3-key mode read that arrived
+    ///   last, behind both 34-key critical reads, 543 round trips (see `gateWaitRoundTrips`). A
+    ///   gate fault below that would be logged for a queue that is full and moving. (The first
+    ///   draft set G = D = 5 s, under it.) It holds for up to 20 outstanding reads and fails at 21
+    ///   (10.19 s). **The snapshot priority's waiter is not derived:** it waits behind the other
+    ///   snapshot clients' turns as well (64 round trips each), so enough concurrent snapshot
+    ///   clients can outlast G with a queue that is full and moving.
+    /// - *Below* D_cycle less the supervisor's interval and two ticks, 12 s: the fault has to be
+    ///   in the log before the cycle trigger ends the helper, or it explains nothing.
+    ///
+    /// Where D_cycle fires first, as it does for a gate that never turns, the fault is the
+    /// diagnosis and the cycle trigger is the action.
+    static let gateWaiterAlarm: Duration = roundTrip * 2
+
     /// The watchdog's timer period.
     static let tick: Duration = .seconds(1)
 
@@ -89,6 +113,34 @@ enum WatchdogLimits {
         let ownRead = criticalReadKeys
         return turnInFlight + grantPathRead + otherModeReads + forcedSnapshotTurns + ownRead
             + firingCycleRoundTrips
+    }
+
+    /// The round trips the **worst supervisor waiter** at the gate may legally have to wait
+    /// behind, with `outstandingReads` readers outstanding: D_cycle's allowance, less the terms
+    /// that are not ahead of that waiter. A firing cycle's writes follow § 3's read, so they are
+    /// ahead of nobody. The waiter's own read is not ahead of itself, and which waiter is worst
+    /// depends on the machine:
+    ///
+    /// - a **mode read** that arrived last (`modeReadKeys` round trips) is behind *both* critical
+    ///   reads, the grant path's and § 3's, so only its own keys come off the allowance;
+    /// - **§ 3's own read** (`criticalReadKeys` round trips) is behind the grant path's but not
+    ///   its own, so its own keys come off.
+    ///
+    /// On `Mac16,5` (34 keys) the mode read is 31 round trips longer; on a machine with a
+    /// shorter set than a mode read, § 3's read is. The longer of the two is the bound.
+    static func gateWaitRoundTrips(outstandingReads: Int, criticalReadKeys: Int) -> Int {
+        let allowance = allowanceRoundTrips(
+            outstandingReads: outstandingReads, criticalReadKeys: criticalReadKeys)
+        return allowance - firingCycleRoundTrips - min(modeReadKeys, criticalReadKeys)
+    }
+
+    /// What G must be more than: the longest legal wait at the gate, at the measured worst round
+    /// trip. `gateWaiterAlarm` must exceed this at the design point, or a gate fault would be
+    /// logged for a queue that is full and moving.
+    static func requiredGateBound(outstandingReads: Int, criticalReadKeys: Int) -> Duration {
+        measuredWorstRoundTrip
+            * gateWaitRoundTrips(
+                outstandingReads: outstandingReads, criticalReadKeys: criticalReadKeys)
     }
 
     /// What D_cycle must be at least: the supervisor's interval, plus timer slop, plus D, plus

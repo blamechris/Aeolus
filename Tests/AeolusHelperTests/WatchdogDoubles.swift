@@ -70,14 +70,16 @@ struct TimelineMonitorClock: Clock {
     }
 }
 
-/// One timeline for the monitor and the progress, moved by hand.
+/// One timeline for the monitor, the progress and the gate mirror, moved by hand.
 ///
 /// Each reads its own clock family's instant off the one elapsed counter, so advancing the
-/// timeline ages a stamp and a stalled cycle together, which is how a wedged helper looks.
+/// timeline ages a stamp, a stalled cycle and a parked waiter together, which is how a wedged
+/// helper looks.
 final class WatchdogTimeline: Sendable {
     private let elapsed = OSAllocatedUnfairLock(initialState: Duration.zero)
     private let monitorBase = SMCRoundTripMonitor.MeasuringClock().now
     private let progressBase = ThermalCycleProgress.MeasuringClock().now
+    private let gateBase = GateWaitMonitor.MeasuringClock().now
 
     func advance(by amount: Duration) {
         elapsed.withLock { $0 += amount }
@@ -89,6 +91,10 @@ final class WatchdogTimeline: Sendable {
 
     func progressInstant() -> ThermalCycleProgress.Instant {
         progressBase.advanced(by: elapsed.withLock { $0 })
+    }
+
+    func gateInstant() -> GateWaitMonitor.Instant {
+        gateBase.advanced(by: elapsed.withLock { $0 })
     }
 
     var monitorClock: TimelineMonitorClock { TimelineMonitorClock(timeline: self) }
@@ -197,6 +203,7 @@ final class WatchdogRig: Sendable {
     let timeline = WatchdogTimeline()
     let monitor: SMCRoundTripMonitor
     let progress: ThermalCycleProgress
+    let gate: GateWaitMonitor
     let ticks = ManualWatchdogTicks()
     let journal = TeardownJournal()
     let log = RecordedWatchdogLog()
@@ -208,12 +215,13 @@ final class WatchdogRig: Sendable {
         let journal = self.journal
         monitor = SMCRoundTripMonitor(clock: timeline.monitorClock)
         progress = ThermalCycleProgress(now: { timeline.progressInstant() })
+        gate = GateWaitMonitor(now: { timeline.gateInstant() })
         termination = ProcessTermination(
             terminate: journal.terminate,
             log: log.log)
         watchdog = LivenessWatchdog(
-            roundTrips: monitor, progress: progress, termination: termination,
-            ticks: ticks, log: log.log)
+            roundTrips: monitor, progress: progress, gateMonitor: gate,
+            termination: termination, ticks: ticks, log: log.log)
     }
 
     /// Two ticks, back to back: the least that can produce a verdict.
