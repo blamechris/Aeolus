@@ -31,7 +31,7 @@ struct LivenessWatchdogTests {
         let rig = WatchdogRig()
         let wedge = WedgedRoundTrip(rig.monitor, tpd0)
         defer { wedge.finish() }
-        guard wedge.waitUntilWedged() else {
+        guard await wedge.waitUntilWedged() else {
             Issue.record("the round trip never began")
             return
         }

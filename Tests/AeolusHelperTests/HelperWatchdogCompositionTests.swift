@@ -99,7 +99,7 @@ struct HelperWatchdogCompositionTests {
 
         let wedge = WedgedRoundTrip(monitor, tpd0)
         defer { wedge.finish() }
-        guard wedge.waitUntilWedged() else {
+        guard await wedge.waitUntilWedged() else {
             Issue.record("the round trip never began")
             return
         }
@@ -161,7 +161,7 @@ struct HelperWatchdogCompositionTests {
 
             let wedge = WedgedRoundTrip(monitor, tpd0)
             defer { wedge.finish() }
-            guard wedge.waitUntilWedged() else {
+            guard await wedge.waitUntilWedged() else {
                 Issue.record("the round trip never began")
                 return
             }
@@ -185,7 +185,7 @@ struct HelperWatchdogCompositionTests {
                 journal: journal)
             let wedge = WedgedRoundTrip(monitor, tpd0)
             defer { wedge.finish() }
-            guard wedge.waitUntilWedged() else {
+            guard await wedge.waitUntilWedged() else {
                 Issue.record("the round trip never began")
                 return
             }
@@ -238,7 +238,7 @@ struct HelperWatchdogCompositionTests {
 
         let wedge = WedgedRoundTrip(monitor, tpd0)
         defer { wedge.finish() }
-        guard wedge.waitUntilWedged() else {
+        guard await wedge.waitUntilWedged() else {
             Issue.record("the round trip never began")
             await parked.signal()
             return
@@ -280,12 +280,18 @@ struct HelperWatchdogCompositionTests {
         let probeFinished = OSAllocatedUnfairLock(initialState: false)
 
         // A failsafe that frees the held actor if an assertion below stops the test short, so
-        // a failure is a failure and not a hung process. A timer, not a blocked thread.
-        DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(30)) { release.signal() }
+        // a failure is a failure and not a hung process. On a thread of its own: the global
+        // queue shares workers with the cooperative pool this very test is holding a thread of,
+        // and a failsafe that has to wait for the thing it is a failsafe for is not one (#324).
+        Thread {
+            Thread.sleep(forTimeInterval: 30)
+            release.signal()
+        }.start()
 
         let occupation = Task {
             await connection.occupyForTesting {
-                rig.monitor.bracket(.open) { release.wait() }
+                // Timed as well, so even a failsafe that never ran frees the thread.
+                rig.monitor.bracket(.open) { _ = release.wait(timeout: .now() + .seconds(60)) }
             }
         }
         guard await pollUntil({ rig.monitor.inFlight() != nil }) else {

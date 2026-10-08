@@ -187,38 +187,36 @@ final class WatchdogRig: Sendable {
 /// A real parked thread, not a suspended task: that is what a wedged `IOConnectCallStructMethod`
 /// is. Dedicated rather than on the global queue, because a thread that blocks on a
 /// semaphore on a pool shared with the rest of the suite starved a three-core CI runner (#324).
+///
+/// **Nothing here blocks a cooperative-pool thread.** Waiting for the thread to be wedged polls
+/// with `Task.sleep`, and `finish()` only lets the round trip go: the wedged thread returns on
+/// its own and nothing joins it. The wedge is itself bounded (two minutes), so a test that
+/// leaked one cannot park an OS thread for the life of the process.
 final class WedgedRoundTrip: Sendable {
-    private let entered = DispatchSemaphore(value: 0)
+    private let entered = OSAllocatedUnfairLock(initialState: false)
     private let release = DispatchSemaphore(value: 0)
-    private let returned = DispatchSemaphore(value: 0)
-    private let joined = OSAllocatedUnfairLock(initialState: false)
 
     init(_ monitor: SMCRoundTripMonitor, _ operation: SMCRoundTripOperation) {
-        Thread { [entered, release, returned] in
+        Thread { [entered, release] in
             monitor.bracket(operation) {
-                entered.signal()
-                release.wait()
+                entered.withLock { $0 = true }
+                _ = release.wait(timeout: .now() + .seconds(120))
             }
-            returned.signal()
         }.start()
     }
 
-    func waitUntilWedged(within seconds: Int = 10) -> Bool {
-        entered.wait(timeout: .now() + .seconds(seconds)) == .success
+    /// Whether the round trip began, waiting for it by polling.
+    func waitUntilWedged() async -> Bool {
+        await pollUntil { entered.withLock { $0 } }
     }
 
     func letReturn() {
         release.signal()
     }
 
-    /// Lets the round trip go and waits for its thread, so a failing test leaves nothing
-    /// parked for the rest of the process.
+    /// Lets the round trip go. Safe in a `defer`: it neither waits nor suspends.
     func finish() {
         letReturn()
-        if !joined.withLock({ $0 }) {
-            _ = returned.wait(timeout: .now() + .seconds(10))
-            joined.withLock { $0 = true }
-        }
     }
 }
 
