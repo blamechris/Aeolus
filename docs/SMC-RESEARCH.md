@@ -24,13 +24,16 @@ The machine available to this project:
 
 | Model identifier | Chip | macOS | Notes |
 |---|---|---|---|
-| `Mac16,5` | Apple M4 Max (12P/4E, 64 GB) | 26.6.2 (25G83) | Sole development machine |
+| `Mac16,5` | Apple M4 Max (12P/4E, 64 GB) | 27.0.1 (26A434) | Sole development machine |
 
 The machine ran 26.5.2 (25F84) for the 2026-07-25 session, and 26.6.2 (25G83) for the
-2026-08-20 one and for the 2026-09-05 lid-close capture. Each observation below is scoped to
-the build it was taken on, and says so; this row is the machine as it stood for those
-observations. By 2026-10-07 the development machine had moved to macOS 27.0.1 (26A434), and the
-issue #296 latency runs ("Per-round-trip SMC latency on Mac16,5", below) are on it.
+2026-08-20 one and for the 2026-09-05 lid-close capture. **Observations dated before 2026-10-07
+were made on macOS 26 (26.6.2, or 26.5.2 for the earliest sessions), not on the 27.0.1 shown in
+the row above**, and none of them is assumed to hold on 27.0.1 until it has been re-checked
+there. Each observation below is scoped to the build it was taken on, and says so. The issue #296
+latency runs ("Per-round-trip SMC latency on Mac16,5", below) are on 27.0.1, and so is the
+re-check of the mode keys and `Ftst` ("Mode keys and `Ftst` re-checked on macOS 27.0.1", below,
+issue [#323](https://github.com/blamechris/Aeolus/issues/323)).
 
 That is one Mac, from the M3-and-newer generation. It means:
 
@@ -414,6 +417,88 @@ hardware assertions that had failed while it held the fans.
 Still not verified: that writing `1` to `F<n>Md` engages manual control, or that writing `0`
 returns a held fan to Apple's management. Both are writes and belong to E4. What is settled
 is only the read.
+
+### Mode keys and `Ftst` re-checked on macOS 27.0.1 — agrees on the fan keys, disagrees on the table around them (issue #323)
+
+The two sections above were taken on 26.5.2 and 26.6.2. The development machine now runs
+27.0.1, so this re-reads the same keys there. It changes nothing above; those sections stay as
+what 26.x showed.
+
+**Date:** 2026-10-08 06:43–06:44 UTC (2026-10-07 evening local). **Machine:** `Mac16,5`, Apple M4
+Max, **macOS 27.0.1 (26A434)**, on AC at 28 % and not charging, up 4 days. **Method:** read
+selectors only, with repo code built at `main` `2c48e28`. `fanctl dump --json` (a full walk of
+the index table, one pass) and `smc-sampler --keys=F0Md,F1Md,Ftst,F0Mn,F0Mx,F0Ac --count=30
+--interval=1` (30 ticks, 06:44:02.563Z to 06:44:32.705Z). No root, no helper, no `set`, `reset` or
+`auto`; neither tool has a write path in this tree. The raw captures are kept outside the
+repository, as `Tools/SMCSampler/README.md` asks. A Macs Fan Control process was present before,
+during and after the capture (seen in the process list only; it was not inspected), and
+`F0Md`/`F1Md` read `0` throughout, so this was the "present, not holding" state of the
+2026-09-05 16:40 reading.
+
+| Key | Recorded on macOS 26 | Observed on 27.0.1 |
+|---|---|---|
+| `F0Md` | `ui8`, raw `00`, 0 (26.5.2, 2026-07-25). 0 or 1 by whether a competing tool held the fan (26.6.2, 2026-09-05). Attribute byte and `dataSize`: **not recorded** | `ui8`, `dataSize` 1, attributes `0xD0`, raw `00`. Read succeeded on the dump and on 30 of 30 ticks, value 0 on every tick |
+| `F1Md` | as `F0Md` | `ui8`, `dataSize` 1, attributes `0xD0`, raw `00`. 30 of 30 ticks, value 0 |
+| `Ftst` | `ui8`, raw `00`, present (26.5.2). Read `0` before and after the lid close and at the fourth reading (26.6.2, 2026-09-05). Attribute byte and `dataSize`: **not recorded** | `ui8`, `dataSize` 1, attributes `0xD0`, raw `00`. 30 of 30 ticks, value 0 |
+| `F0Mn` | `flt`, raw `00c0a844`, 1350 RPM (26.5.2). Unchanged in all 10,570 rows of the 26.6.2 lid-close capture | `flt`, attributes `0x84`, raw `00c0a844`, 1350 RPM. 30 of 30 ticks |
+| `F0Mx` | `flt`, raw `0088b445`, 5777 RPM (26.5.2). Unchanged in the 26.6.2 capture | `flt`, attributes `0x85`, raw `0088b445`, 5777 RPM. 30 of 30 ticks |
+| `F0Ac` | 1343.07 RPM idle, below `F0Mn` (26.5.2). 0.0 on 2,904 of 10,570 ticks, asleep (26.6.2) | `flt`, attributes `0x84`. 1529.37 to 1577.51 RPM over the 30 ticks, never below `F0Mn` |
+
+`F1Mn` and `F1Mx` carry the same raw bytes and attributes as `F0Mn` and `F0Mx`. `F0Tg` and `F1Tg`
+carry `0xD4` (`flt`).
+
+**The mode keys and `Ftst` agree with every 26.x observation that was recorded.** Same declared
+type, same size, readable, same value. The attribute byte is the one column with nothing to
+compare against: no earlier section, test or ADR records it for these three keys, so `0xD0` is the
+first reading of it rather than a confirmation. Decoded with the bits this file already names, it
+is readable (`0x80`) and function-served (`0x10`) with `0x04` clear, and `0x40`, which this file
+has not interpreted, is also set. `F0Md`, `F1Md` and `Ftst` are three of the 20 `ui8` keys at
+`0xD0`, so the byte is not specific to them. That the function bit is set and a plain read still
+succeeds is the same shape as the 308 bit-`0x10` keys that read fine on 26.x (354 on 27.0.1; see
+the section on issue #52). `F0Mx` differs from `F0Mn` and `F0Ac` by bit `0x01`; no earlier record of either.
+
+**Disagreement — the key table around them is not the one 26.x recorded.** The fan keys did not
+move; the index they sit in did.
+
+| | 26.5.2 / 26.6.2 | 27.0.1 |
+|---|---|---|
+| `#KEY`, and keys walked | 3385 (26.5.2); 3386 (26.6.2) | **3512**; the walk matched it and the past-the-end probe found nothing |
+| Keys whose `READ_KEYINFO` fails | 3: `BDFU`, `CH0J`, `CHLS` (26.5.2) | **37**: those three and 34 more, in the families `YB*`, `YC*`, `YUv0`, `bdj0`, `bfD0` to `bfF0`, `bma0` to `bmn0`. Each failed with kernel result -536870207 (`0xE00002C1`); how the original three failed is not recorded |
+| Keys declaring more than 32 bytes | 30 | **49** (same sizes, 33 to 120) |
+| Function-key rejection cluster | 52 keys: `0x82` x21, `0x89` x20, `0xc7` x10, `0xcb` x1 | 51: `0x82` x21, `0x89` x20, `0xc7` x10. `BMFL`, the one `0xcb` key, is not in the index |
+| `flt` keys | 2073 | 2073 |
+| Other declared types (26.5.2 figures; `si8`, `si64` and `{jst` are unchanged) | `hex_` 318, `ui8` 245, `ui16` 236, `ui32` 223, `si32` 84, `si16` 49, `ch8*` 53, `flag` 50, `ui64` 23, `ioft` 11 | `hex_` 329, `ui8` 259, `ui16` 270, `ui32` 231, `si32` 86, `si16` 68, `ch8*` 55, `flag` 49, `ui64` 26, `ioft` 12 |
+
+The growth is in configuration and integer keys; the count of `flt` keys, which is where the
+temperature and fan readings live, is identical. This section did not enumerate what the 126 new
+keys are and does not say that any of them matters to fan control. It does mean three things.
+**First**, a key count or a readable-sensor count quoted elsewhere (3385 in `docs/CLI.md`'s
+examples, 2929 in
+[ADR 0006](ADR/0006-single-smc-reader.md) and in the helper's comments) is a figure for the build
+it was measured on, and is not a 27.0.1 figure. **Second**, 34 keys that return a kernel error
+from `READ_KEYINFO` are new on this build, and the dump records them as failures instead of
+dropping them, which is the behaviour the dump was written for. **Third**, a test that pinned the
+26.x count would fail on this build for a reason that has nothing to do with fan control. None
+does today: 3385 and 2929 appear in comments and in synthetic fixtures, and the one test that
+reads the real count asserts only a broad sanity range.
+
+**Not re-checked here, and why.**
+
+- **The value `1`.** Nothing was holding a fan during this capture, so `F<n>Md` reading `1` is
+  still an observation made on 26.6.2 only.
+- **Every write.** Nothing was written. The questions that belong to E4 are exactly as open as
+  they were: that writing `F<n>Md` engages manual control, that `Ftst` plus a retry loop yields
+  the fans, the ~3 s yield, and the `0x82` write rejection.
+- **`F0Ac` below `F0Mn`** ("Disagreement 3"). One 30-second window with the fan at 1529 to 1578
+  RPM neither confirms nor refutes it on 27.0.1.
+- **The sleep and wake observations** ([#68](https://github.com/blamechris/Aeolus/issues/68),
+  [#209](https://github.com/blamechris/Aeolus/issues/209),
+  [#210](https://github.com/blamechris/Aeolus/issues/210)): the read connection surviving sleep,
+  IOKit wake delivery, the dark-wake sensor behaviour, and the `Ftst` reset, along with the 0 RPM
+  period after wake. These need a lid close and are **not** re-checked. They wait for the next
+  attended lid close, alongside the wake conditions of
+  [#296](https://github.com/blamechris/Aeolus/issues/296). Until then each stands as a 26.6.2
+  observation.
 
 ### The attribute byte — bit `0x80` is "readable", necessary but not sufficient
 
