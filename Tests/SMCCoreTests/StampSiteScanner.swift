@@ -214,8 +214,10 @@ enum StampSiteScanner {
         return regions
     }
 
-    /// Removes `deinit { … }`. A destructor runs when nothing else holds the object, so no
-    /// stamp could be read from it; the issue exempts it by name, and so does this.
+    /// Removes `deinit { … }`, which the issue exempts by name. Not because no stamp could be
+    /// read from a destructor — the monitor can outlive its connection — but because the helper's
+    /// one connection lives for the whole process; a reconnect that replaces the connection object
+    /// must stamp its close or keep the old object alive.
     static func removingDeinit(from text: String) -> String {
         guard let start = text.range(of: "deinit{") else { return text }
         guard let end = matching("}", opening: "{", after: start.upperBound, in: text) else {

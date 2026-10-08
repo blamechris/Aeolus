@@ -160,7 +160,7 @@ flight.
 | launchd starts no successor until the old process is fully reaped | Documented kernel and launchd behaviour, not yet observed here (H2) | The ordering argument fails, and a late write could follow reconciliation. Revisit. |
 | A process with an IOKit call in flight can finish exiting | Unknown. It cannot be measured without a real wedge. | The last-gasp keystone alternative becomes worth its cost. |
 | Manual mode persists after the writer dies | Reported in SAFETY § 6. Verify at E4 (H3). | If firmware reverts on client close, this ADR gets cheaper. No change needed. |
-| Per-round-trip latency stays at least 100× below D, under contention and in dark wake | To be measured on `Mac16,5` (H1). **Partly measured, 2026-10-07, on macOS 27.0.1:** idle, and contended by one and by three concurrent `fanctl` walkers, reads only. The worst round trip was 11.45 ms, so 100× is 1.15 s and the expected D of about 5 s is about 437× that maximum. **Not yet measured:** dark wake and the first read after wake. D is not set. | Raise D, or false positives will cost users their manual control. |
+| Per-round-trip latency stays at least 100× below D, under contention and in dark wake | To be measured on `Mac16,5` (H1). **Partly measured, 2026-10-07, on macOS 27.0.1:** idle, and contended by one and by three concurrent `fanctl` walkers, reads only. The worst round trip was 11.45 ms, so 100× is 1.15 s and the expected D of about 5 s is about 437× that maximum. **Not yet measured:** dark wake and the first read after wake. D is set provisionally at 5 s (see the amendment). | Raise D, or false positives will cost users their manual control. |
 
 ## To measure on Mac16,5 before relying on this (hypotheses, not facts)
 
@@ -254,7 +254,7 @@ ends in reconciliation; that consequence is accepted above and is unchanged.
 | **D** | 5 s (provisional, reads only) | One stamped round trip. | About 437× the worst of 912,000 measured reads (11.45 ms; the four conditions in H1, [#296](https://github.com/blamechris/Aeolus/issues/296)). |
 | **D_cycle** | 3·D = 15 s | No completed § 3 cycle, while armed. | At least the interval (1 s), plus timer slop (0.1 s), plus D, plus the allowance at the design point of 12 outstanding supervisor reads (576 round trips × 11.453 ms = 6.60 s): 12.70 s. See below. |
 | **D_bringUp** | `ReconciliationLimits.budget` + 2·D = 15 s | Arming to `ThermalSupervisor.start()`. | The reconciliation budget (5 s) plus 2·D. Independent of the outstanding-read count: no client can reach the helper before `listener.resume()`. |
-| **G** | 2·D = 10 s, per parked waiter | [#135](https://github.com/blamechris/Aeolus/issues/135)'s gate-waiter `.fault`. | Must exceed the wait at the design point (5.86 s) and stay below D_cycle − interval − 2 ticks (12 s). Suppressed while a stamp is older than one tick. |
+| **G** | 2·D = 10 s, per parked waiter | [#135](https://github.com/blamechris/Aeolus/issues/135)'s gate-waiter `.fault`. | Must exceed the wait at the design point (the allowance without § 3's own read and the cycle's writes: 512 round trips × 11.453 ms = 5.86 s) and stay below D_cycle − interval − 2 ticks (12 s). Suppressed while a stamp is older than one tick. |
 | **Tick** | 1 s | The watchdog's timer, a `.strict` `DispatchSourceTimer`. | A verdict needs two over-bound ticks, so it lands at most two ticks after the bound is crossed. |
 
 **A verdict needs two consecutive over-bound ticks on the same sequence** (the same round-trip
@@ -322,7 +322,7 @@ delivered `.willSleep`, and the sleep seal refuses grants until `.didWake`, so d
 client load either; the two-consecutive-ticks rule allows one extra tick. What
 is exposed is that the first read after a wake is slower than any read measured so far, which
 is H1 condition 4 and has not been taken. **If the first read after a wake exceeds 50 ms** (D/100,
-the margin I3 and the assumptions table require of D), **raise D.**
+the margin the assumptions table requires of D), **raise D.**
 
 ### What a completed § 3 cycle is
 
@@ -385,8 +385,11 @@ returns `false` and is not progress.
    two-tick rule are constants; no XPC message and no configuration can disarm or lengthen any of
    them. Lengthening the tick lengthens every verdict (at a 60 s tick, "two ticks" is two
    minutes), and the bounds are derived and constant (PR B's `theBoundsAreDerivedAndConstant`).
-6. **A monitor is reached only through a connection.** `SMCRoundTripMonitor.init()` is internal,
-   and the only public way to a monitor is `SMCConnection.roundTrips`. `HelperComposition` takes the
+6. **A monitor is reached through its connection.** `SMCRoundTripMonitor.init()` is internal (a
+   source test refuses `public` or `package` on it), and today the only public way to a monitor is
+   `SMCConnection.roundTrips`. That second half is held by review, not by a test: a public factory,
+   or a public `SMCConnection.init(roundTrips:)`, would reopen the hole this closes and needs the
+   same review as widening the initialiser. `HelperComposition` takes the
    monitor with no default (PR B), so a watchdog cannot be handed a monitor that no connection
    stamps and then watch nothing for ever. `inFlight()` is callable from any thread but not from a
    signal handler: its lock is an `os_unfair_lock`, which is not async-signal-safe.
