@@ -161,7 +161,12 @@ struct RoundTripStampTripwireTests {
 
     @Test("A call passed as the bracket's argument rather than run in its closure is not stamped")
     func aCallInTheArgumentListIsNotStamped() {
-        let source = "roundTrips.bracket(IOConnectCallStructMethod(a, 2, i, 80, o, &n)) { }"
+        // The operation still starts with `.call(`, so the *only* thing wrong is where the use
+        // sits. A source that also had the wrong operation would be refused for that reason and
+        // never exercise the argument-versus-body rule at all.
+        let source = """
+            roundTrips.bracket(.call(key: IOConnectCallStructMethod(a), selector: 5)) { }
+            """
         let sites = StampSiteScanner.sites(of: "IOConnectCallStructMethod", in: source)
         #expect(sites.count == 1)
         #expect(!StampSiteScanner.isStamped(sites[0], as: ".call("))
@@ -177,7 +182,14 @@ struct RoundTripStampTripwireTests {
 
     @Test("A bare reference to the symbol is a site that is not a call")
     func anAliasIsNotACall() {
-        let source = "let route = IOConnectCallStructMethod\nroute(a, 2, i, 80, o, &n)"
+        // Inside a correct bracket, so the only thing wrong is that nothing is called here: the
+        // alias is invoked somewhere the scan cannot follow it.
+        let source = """
+            roundTrips.bracket(.call(key: key, selector: selector)) {
+                let route = IOConnectCallStructMethod
+                return route(a, 2, i, 80, o, &n)
+            }
+            """
         let sites = StampSiteScanner.sites(of: "IOConnectCallStructMethod", in: source)
         #expect(sites.count == 1)
         #expect(!sites[0].isCall)
