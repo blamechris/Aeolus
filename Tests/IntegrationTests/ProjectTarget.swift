@@ -15,6 +15,16 @@ import Testing
 /// **Scoped, not searched whole.** Several targets declare a `PRODUCT_BUNDLE_IDENTIFIER`, and
 /// matching the first one in the file would assert something about whichever target happens
 /// to come first.
+///
+/// **A value is read only if it is declared once.** XcodeGen lets any build setting be
+/// restated per configuration (`settings: configs: Full Release: KEY: value`), and the
+/// restatement wins in that configuration. A reader that returned the first declaration would
+/// stay green while one configuration — the one that ships — built with a different value.
+/// So `value(of:)` refuses a key that appears more than once in the region, wherever it
+/// appears. It reads text, not the resolved build settings, so it cannot see a value set
+/// somewhere else (a flag in `OTHER_CODE_SIGN_FLAGS`, the gitignored `Signing.xcconfig`); CI's
+/// "Assert every configuration signs fanctl with the identifier the helper pins" step asks
+/// Xcode for the resolved answer and covers what text cannot.
 struct ProjectTarget {
 
     let name: String
@@ -28,11 +38,17 @@ struct ProjectTarget {
     /// that name: a tripwire that scans nothing passes.
     static func load(_ name: String, sourceFile: String = #filePath) throws -> ProjectTarget {
         let yaml = try String(contentsOf: projectFile(from: sourceFile), encoding: .utf8)
-        let lines = yaml.split(separator: "\n", omittingEmptySubsequences: false)
-        let start = try #require(
-            lines.firstIndex(where: { $0 == "  \(name):" }),
+        return try #require(
+            slice(name, from: yaml),
             "project.yml declares no \(name) target"
         )
+    }
+
+    /// The pure half of `load`: the region of `yaml` that belongs to the target named `name`,
+    /// or `nil` if there is none.
+    static func slice(_ name: String, from yaml: String) -> ProjectTarget? {
+        let lines = yaml.split(separator: "\n", omittingEmptySubsequences: false)
+        guard let start = lines.firstIndex(where: { $0 == "  \(name):" }) else { return nil }
         let rest = lines[lines.index(after: start)...]
         let end =
             rest.firstIndex { line in
@@ -42,12 +58,38 @@ struct ProjectTarget {
         return ProjectTarget(name: name, lines: Array(lines[start..<end]))
     }
 
-    /// The value of the first `key:` line in the region, outer quotes and spaces removed.
-    /// Comment lines never match: a line has to *start* with the key.
+    /// Every line in the region that declares `key`, in file order.
+    ///
+    /// A declaration is a line that *starts* with the key, so a comment never counts. Three
+    /// spellings are the same declaration: `KEY:`, a quoted `"KEY":`, and the conditional
+    /// `"KEY[config=Full Release]":` that XcodeGen passes through to Xcode. The conditional
+    /// form is a way to give one configuration or SDK a different value without writing
+    /// `configs:`, so it has to count.
+    func declarations(of key: String) -> [Substring] {
+        lines.filter { line in
+            let text = line.trimmingCharacters(in: .whitespaces)
+                .drop { $0 == "\"" || $0 == "'" }
+            guard text.hasPrefix(key) else { return false }
+            let next = text.dropFirst(key.count).first
+            return next == ":" || next == "[" || next == "\"" || next == "'"
+        }
+    }
+
+    /// The value of `key`, outer quotes and spaces removed. Fails if the key is not declared
+    /// in this target, and fails if it is declared more than once.
     func value(of key: String) throws -> String {
+        let found = declarations(of: key)
         let line = try #require(
-            lines.first { $0.trimmingCharacters(in: .whitespaces).hasPrefix("\(key):") },
+            found.first,
             "project.yml's \(name) target declares no \(key)"
+        )
+        try #require(
+            found.count == 1,
+            """
+            project.yml's \(name) target declares \(key) \(found.count) times. A second \
+            declaration (under `configs:`, or as `\(key)[…]`) gives one configuration a value \
+            this test did not read.
+            """
         )
         let value = line.drop { $0 != ":" }.dropFirst()
         return value.trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))

@@ -15,8 +15,13 @@ import Testing
 /// indistinguishable from "no helper installed" (docs/RECOVERY.md), so the user reads it as
 /// "Aeolus is not running" and reaches for step 5.
 ///
-/// These tests hold the source side. They cannot establish what the *built* binary is
-/// signed with — `codesign` has to see that, and CI's "Assert the embedded fanctl carries the
+/// These tests hold the source side, and they read it as text: `ProjectTarget` refuses a key
+/// declared twice, so a per-configuration restatement turns them red rather than being read
+/// past. What text cannot show is what Xcode resolves — a `--identifier` in
+/// `OTHER_CODE_SIGN_FLAGS`, a value from the gitignored `Signing.xcconfig` — and CI's "Assert
+/// every configuration signs fanctl with the identifier the helper pins" step asks Xcode for
+/// that in all four configurations. Nor can they establish what the *built* binary is signed
+/// with — `codesign` has to see that, and CI's "Assert the embedded fanctl carries the
 /// identifier the helper pins" step does. They also cannot establish that an installed helper
 /// admits a Developer ID `fanctl` and refuses an ad-hoc one; that is E2.5's manual check on
 /// the signed Full build, on `Mac16,5`.
