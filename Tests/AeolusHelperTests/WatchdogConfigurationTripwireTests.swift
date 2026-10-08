@@ -85,7 +85,7 @@ struct WatchdogConfigurationTripwireTests {
             .firstMatch(in: code, range: NSRange(code.startIndex..<code.endIndex, in: code)) != nil
     }
 
-    /// Every file a bound of the watchdog derives from: the four files that hold or apply one,
+    /// Every file a bound of the watchdog derives from: the five files that hold or apply one,
     /// and every file under `Sources` that declares a type `WatchdogLimits.swift` reads a
     /// member of. A new constant a bound is built from falls inside this set by being
     /// *referenced*, not by someone remembering to add its file to a list.
@@ -96,6 +96,7 @@ struct WatchdogConfigurationTripwireTests {
             "AeolusHelper/Lifecycle/WatchdogLimits.swift",
             "AeolusHelper/Lifecycle/LivenessWatchdog.swift",
             "AeolusHelper/Lifecycle/ProcessTermination.swift",
+            "AeolusHelper/Lifecycle/GateWaitMonitor.swift",
             "AeolusHelper/Safety/ThermalCycleProgress.swift",
         ]
         var files: [String: String] = [:]
@@ -120,6 +121,11 @@ struct WatchdogConfigurationTripwireTests {
     /// **Mutation:** initialise `ReconciliationLimits.budget` from the environment — a file the
     /// four named ones do not include. Run: red.
     /// **Mutation:** read `UserDefaults.standard` anywhere in `LivenessWatchdog.swift`. Run: red.
+    /// **Mutation:** initialise `WatchdogLimits.gateWaiterAlarm` from
+    /// `ProcessInfo.processInfo.environment` (default 10 s, `static let` kept). Run: red.
+    /// **Mutation:** read `UserDefaults.standard` anywhere in `GateWaitMonitor.swift` — the
+    /// file that applies no bound itself and is scanned because the gate trigger reads it. Run:
+    /// red.
     @Test("No bound of the watchdog is read from outside the binary")
     func noBoundIsReadFromTheEnvironment() throws {
         let files = try scannedFiles()
@@ -129,6 +135,8 @@ struct WatchdogConfigurationTripwireTests {
         for expected in [
             "AeolusHelper/Safety/ReconciliationBaseline.swift",
             "AeolusHelper/SMCReadScheduler.swift", "AeolusHelper/Safety/ThermalSupervisor.swift",
+            "AeolusHelper/Lifecycle/GateWaitMonitor.swift",
+            "AeolusHelper/Lifecycle/WatchdogLimits.swift",
         ] {
             #expect(names.contains(expected), "\(expected) is no longer among \(names)")
         }

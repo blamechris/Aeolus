@@ -131,6 +131,20 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// that does not complete, ends the helper. Armed by `bringUp()`'s first statement.
     let watchdog: LivenessWatchdog
 
+    /// The mirror of the scheduler's parked queues that the watchdog's gate trigger reads
+    /// ([#135](https://github.com/blamechris/Aeolus/issues/135)), and that the scheduler reports
+    /// to beside `connectionHealth` — **one instance, handed to both**.
+    ///
+    /// Passed in for `connectionHealth`'s reason: it has to exist before the scheduler does,
+    /// because the scheduler reports to it, and the watchdog reads it. `production(log:)` is
+    /// where the knot is tied. Every other composition gets a fresh one that no scheduler
+    /// reports to, which reads an empty queue and is exactly right for a graph composed over
+    /// `ScriptedControlPlane`. A watchdog over a monitor the scheduler does not report to would
+    /// watch nothing while looking exactly like one that does, so `HelperCompositionTests` holds
+    /// that `production` names one local in both places and
+    /// `HelperWatchdogCompositionTests` that the watchdog reads the one it was given.
+    let gateMonitor: GateWaitMonitor
+
     /// § 1's TTL loop — ADR 0005's *independent* path back to automatic control.
     ///
     /// **Started here even though #163's brief named only the two safety supervisors**, and
@@ -216,6 +230,13 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// passing it here, from `production(log:teardown:)`, the one honest way to get it right.
     /// A default would be the way to get it wrong without noticing.
     ///
+    /// `gateMonitor` has a default, unlike `roundTrips`, and the difference is who can mint
+    /// one: only a connection can make a monitor that is stamped, so a default `roundTrips`
+    /// could never be right, whereas a `GateWaitMonitor` is told what a scheduler did and any
+    /// graph with no scheduler to tell it is correctly given an empty one. The gate trigger is
+    /// a report and not a precondition (ADR 0012), so the cost of a graph that forgot to wire
+    /// it is a missing diagnostic and not a missing ending.
+    ///
     /// `watchdogTicks` has no default for a different reason. Its shipping default is a real
     /// timer, and a test that composed a graph with the shipping default and a shipping
     /// terminate would end `swift test` from a timer thread some seconds after it finished.
@@ -228,6 +249,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         watchdogTicks: any WatchdogTicking,
         clock: some MonotonicClock = SystemMonotonicClock(),
         connectionHealth: ConnectionHealth = ConnectionHealth(),
+        gateMonitor: GateWaitMonitor = GateWaitMonitor(),
         reconciliationBudget: Duration = ReconciliationLimits.budget,
         powerObserver: (any SystemPowerObserving)? = nil,
         acknowledgementBudget: Duration = SystemPowerLimits.acknowledgementBudget,
@@ -238,6 +260,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     ) {
         self.plane = plane
         self.connectionHealth = connectionHealth
+        self.gateMonitor = gateMonitor
         self.powerObserver = powerObserver
 
         // Built as locals and then handed round, because each is read by several mechanisms
@@ -368,7 +391,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         // it wins and neither can end it twice. `teardown.termination` is built once, in
         // `TeardownSeams.init`, and is the same object `signalTeardown` holds.
         watchdog = LivenessWatchdog(
-            roundTrips: roundTrips, progress: cycleProgress,
+            roundTrips: roundTrips, progress: cycleProgress, gateMonitor: gateMonitor,
             termination: teardown.termination, ticks: watchdogTicks)
     }
 
@@ -625,8 +648,10 @@ extension HelperComposition where Plane == SMCFanControlPlane {
     ) -> HelperComposition<SMCFanControlPlane> {
         let connection = SMCConnection()
         let connectionHealth = ConnectionHealth()
+        let gateMonitor = GateWaitMonitor()
         let scheduler = SMCReadScheduler(
-            provider: SMCSensorProvider(connection: connection), observer: connectionHealth)
+            provider: SMCSensorProvider(connection: connection),
+            observer: SchedulerObservers([connectionHealth, gateMonitor]))
         let plane = SMCFanControlPlane(scheduler: scheduler, connection: connection)
         return HelperComposition(
             plane: plane,
@@ -636,6 +661,7 @@ extension HelperComposition where Plane == SMCFanControlPlane {
             roundTrips: connection.roundTrips,
             watchdogTicks: watchdogTicks,
             connectionHealth: connectionHealth,
+            gateMonitor: gateMonitor,
             powerObserver: IOKitSystemPowerObserver(),
             log: log,
             teardown: teardown)

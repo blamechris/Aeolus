@@ -40,8 +40,10 @@ struct WatchdogTripwireTests {
     /// that named `SMCConnectionRecycling` is as far into the connection's world as one that
     /// named `SMCConnection`. Optionally qualified by the module that exports it, with
     /// whatever whitespace Swift allows around the dot.
-    static func mentions(of names: [String], in code: String) throws -> [String] {
-        let qualifier = "(?:(?:" + moduleQualifiers.joined(separator: "|") + #")\s*\.\s*)?"#
+    static func mentions(
+        of names: [String], in code: String, qualifiers: [String] = moduleQualifiers
+    ) throws -> [String] {
+        let qualifier = "(?:(?:" + qualifiers.joined(separator: "|") + #")\s*\.\s*)?"#
         // Backticks quote an identifier without changing it: `SMCCore`.SMCConnection is the
         // same type, and compiles.
         let text = code.replacingOccurrences(of: "`", with: "")
@@ -126,6 +128,91 @@ struct WatchdogTripwireTests {
         // A qualifier that is not a module is a member access, as before.
         #expect(try found("let c: connections.SMCConnection").isEmpty)
         #expect(try found("let c = SMCCore.SomethingElse()").isEmpty)
+    }
+
+    // MARK: - The gate monitor
+
+    /// Everything that parks, holds, resumes or drops a continuation. The scheduler's gate is
+    /// **not cancellable** — a queued turn is resumed by the scheduler and by nothing else — and
+    /// the gate monitor is called from inside the scheduler's own isolation. A monitor that held
+    /// a continuation could be the second owner of a turn, or make a waiter vanish between being
+    /// chosen and being resumed, which is the hole the gate's non-cancellability exists to keep
+    /// shut. It needs no continuation: it records, and it answers from a copy.
+    static let continuationNames = [
+        "CheckedContinuation", "UnsafeContinuation", "withCheckedContinuation",
+        "withCheckedThrowingContinuation", "withUnsafeContinuation",
+        "withUnsafeThrowingContinuation",
+    ]
+
+    /// The modules the concurrency types are named through, which `moduleQualifiers` (the
+    /// package's own and IOKit's) does not list: `Swift.CheckedContinuation` is the same type.
+    static let concurrencyQualifiers = ["Swift", "_Concurrency"]
+
+    /// **Mutation:** write `private var parked: [CheckedContinuation<Void, Never>] = []` into
+    /// `GateWaitMonitor.swift`. Run: red. The same for `withCheckedContinuation`, and for
+    /// `Swift.CheckedContinuation` (the qualified spelling).
+    /// **Mutation:** write `SMCConnection` into `GateWaitMonitor.swift`, however it is spelled
+    /// (`SMCCore.SMCConnection`, `` `SMCCore`.`SMCConnection` ``). Run: red.
+    @Test("The gate monitor holds no continuation and names nothing that can queue behind a wedge")
+    func theGateMonitorHoldsNoContinuationAndNamesNoConnection() throws {
+        let code = try lifecycleSource("GateWaitMonitor.swift")
+        #expect(code.contains("final class GateWaitMonitor"), "the scan lost the monitor")
+
+        let continuations = try Self.mentions(
+            of: Self.continuationNames, in: code,
+            qualifiers: Self.moduleQualifiers + Self.concurrencyQualifiers)
+        #expect(
+            continuations.isEmpty,
+            """
+            GateWaitMonitor.swift names \(continuations). The gate is not cancellable and the \
+            monitor is called from inside the scheduler's isolation: it records parked waiters \
+            and never holds, resumes or drops one.
+            """)
+
+        let queuing = try Self.mentions(of: Self.forbiddenInTheWatchdog, in: code)
+        #expect(
+            queuing.isEmpty,
+            """
+            GateWaitMonitor.swift names \(queuing). It reads nothing through the connection, the \
+            plane or the scheduler: it is told what the scheduler did and answers from a copy.
+            """)
+    }
+
+    /// The continuation scan, over fixtures: every spelling of a continuation is found, the
+    /// module-qualified ones included, and prose and longer identifiers are not.
+    ///
+    /// **Mutation:** make the continuation scan return an empty array. Run: red.
+    /// **Mutation:** drop `concurrencyQualifiers` from the scan's qualifiers. Run: red — the
+    /// `Swift.` and `_Concurrency.` fixtures go unseen.
+    @Test("The continuation scan sees every spelling of one")
+    func theContinuationScanSeesWhatItShould() throws {
+        func found(_ source: String) throws -> [String] {
+            try Self.mentions(
+                of: Self.continuationNames, in: SeamScanner.strippingComments(source),
+                qualifiers: Self.moduleQualifiers + Self.concurrencyQualifiers)
+        }
+        #expect(try found("var c: CheckedContinuation<Void, Never>?") == ["CheckedContinuation"])
+        #expect(try found("var c: UnsafeContinuation<Void, Never>?") == ["UnsafeContinuation"])
+        #expect(
+            try found("await withCheckedContinuation { c in c.resume() }")
+                == ["withCheckedContinuation"])
+        #expect(
+            try found("try await withCheckedThrowingContinuation { c in }")
+                == ["withCheckedThrowingContinuation"])
+        #expect(
+            try found("await withUnsafeContinuation { c in }") == ["withUnsafeContinuation"])
+        #expect(
+            try found("var c: Swift.CheckedContinuation<Void, Never>?") == ["CheckedContinuation"])
+        #expect(
+            try found("var c: _Concurrency.CheckedContinuation<Void, Never>?")
+                == ["CheckedContinuation"])
+        #expect(try found("var c: `CheckedContinuation`<Void, Never>?") == ["CheckedContinuation"])
+        #expect(try found("var c: Swift . CheckedContinuation<Void, Never>?").count == 1)
+
+        #expect(try found("/// holds no CheckedContinuation\nlet x = 1").isEmpty)
+        #expect(try found("let continuations = 0").isEmpty)
+        #expect(try found("let myCheckedContinuation = 1").isEmpty)
+        #expect(try found("let c = box.CheckedContinuation").isEmpty)
     }
 
     // MARK: - Nothing in the daemon stops the timer

@@ -80,6 +80,33 @@ struct HelperWatchdogCompositionTests {
             """)
     }
 
+    // MARK: - The gate monitor
+
+    /// The watchdog in the composed helper reads the **gate monitor the composition holds** — the
+    /// one `production` hands the scheduler's observers — and not a private one. A watchdog over
+    /// a copy compiles, passes every test of the watchdog alone, and reads an empty queue.
+    ///
+    /// **Mutation:** build the watchdog over `GateWaitMonitor()` instead of the `gateMonitor`
+    /// parameter. Run: red, on both.
+    @Test("The composed watchdog reads the gate monitor the composition holds")
+    func theWatchdogReadsTheMonitorTheCompositionHolds() {
+        let monitor = GateWaitMonitor()
+        let given = HelperComposition(
+            plane: Self.scriptedPlane(), snapshotProvider: fanProvider(fanCount: 1),
+            criticalSensors: .mac16x5, roundTrips: idleRoundTrips(),
+            watchdogTicks: ManualWatchdogTicks(), gateMonitor: monitor, log: Self.helperLog,
+            leaseLog: LeaseFixture.log, safetyLog: Self.safetyLog,
+            teardown: TeardownSeams(
+                sources: RecordingSignalSources(), terminate: TeardownJournal().terminate))
+        #expect(given.watchdog.gateMonitor === monitor)
+        #expect(given.gateMonitor === monitor)
+
+        // The shipped graph, built and thrown away on a machine with no SMC, like the tick-source
+        // test above: nothing is armed and no timer is made.
+        let production = HelperComposition.production(log: Self.helperLog)
+        #expect(production.watchdog.gateMonitor === production.gateMonitor)
+    }
+
     // MARK: - Armed first
 
     /// The watchdog is armed before reconciliation's first read — and "first read" is read at

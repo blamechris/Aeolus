@@ -33,6 +33,27 @@ enum WatchdogLimits {
     /// helper before `listener.resume()`.
     static let bringUpBound: Duration = ReconciliationLimits.budget + roundTrip * 2
 
+    /// **G**, 2·D: a scheduler waiter parked at the gate for longer than this, with no stamped
+    /// round trip older than one tick to explain it, is logged at `.fault` and **nothing more**
+    /// ([#135](https://github.com/blamechris/Aeolus/issues/135)). It ends nothing: the gate is
+    /// not cancellable, so there is no wait to abandon, and the action on a gate that never turns
+    /// is D_cycle's, because § 3 reads through the same gate and starves behind a leaked turn.
+    ///
+    /// **Derived, with two sides** (`requiredGateBound(outstandingReads:criticalReadKeys:)` and
+    /// `WatchdogLimitsTests`):
+    ///
+    /// - *Above* the longest legal wait at the design point of 12 supervisor-priority reads
+    ///   outstanding: the allowance without § 3's own read and a firing cycle's writes, 512 round
+    ///   trips at the measured worst, 5.86 s. A gate fault below that would be logged for a queue
+    ///   that is full and moving. (The first draft set G = D = 5 s, under it.) It holds for up to
+    ///   22 outstanding reads.
+    /// - *Below* D_cycle less the supervisor's interval and two ticks, 12 s: the fault has to be
+    ///   in the log before the cycle trigger ends the helper, or it explains nothing.
+    ///
+    /// Where D_cycle fires first, as it does for a gate that never turns, the fault is the
+    /// diagnosis and the cycle trigger is the action.
+    static let gateWaiterAlarm: Duration = roundTrip * 2
+
     /// The watchdog's timer period.
     static let tick: Duration = .seconds(1)
 
@@ -89,6 +110,24 @@ enum WatchdogLimits {
         let ownRead = criticalReadKeys
         return turnInFlight + grantPathRead + otherModeReads + forcedSnapshotTurns + ownRead
             + firingCycleRoundTrips
+    }
+
+    /// The round trips a waiter at the gate may legally have to wait behind, with
+    /// `outstandingReads` readers outstanding: the same allowance as D_cycle's, less the two terms
+    /// that are not ahead of an arbitrary waiter. § 3's own read is the waiter, not something it
+    /// waits behind, and a firing cycle's writes follow the read.
+    static func gateWaitRoundTrips(outstandingReads: Int, criticalReadKeys: Int) -> Int {
+        allowanceRoundTrips(outstandingReads: outstandingReads, criticalReadKeys: criticalReadKeys)
+            - criticalReadKeys - firingCycleRoundTrips
+    }
+
+    /// What G must be more than: the longest legal wait at the gate, at the measured worst round
+    /// trip. `gateWaiterAlarm` must exceed this at the design point, or a gate fault would be
+    /// logged for a queue that is full and moving.
+    static func requiredGateBound(outstandingReads: Int, criticalReadKeys: Int) -> Duration {
+        measuredWorstRoundTrip
+            * gateWaitRoundTrips(
+                outstandingReads: outstandingReads, criticalReadKeys: criticalReadKeys)
     }
 
     /// What D_cycle must be at least: the supervisor's interval, plus timer slop, plus D, plus

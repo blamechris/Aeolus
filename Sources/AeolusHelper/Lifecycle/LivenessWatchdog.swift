@@ -145,7 +145,8 @@ actor DispatchWatchdogTicks: WatchdogTicking {
 
 /// The helper's liveness watchdog (ADR 0012): if the helper cannot complete an SMC round trip
 /// within D, or a safety cycle within D_cycle, it logs one `.fault` and ends the process
-/// non-zero, as `TeardownOutcome.blind`.
+/// non-zero, as `TeardownOutcome.blind`. A third trigger, a read parked at the scheduler's gate
+/// for longer than G, logs a `.fault` and **ends nothing**.
 ///
 /// ## What it does not do
 ///
@@ -171,14 +172,28 @@ actor DispatchWatchdogTicks: WatchdogTicking {
 /// cooperative pool would never run in the one case this exists for, the pool not making
 /// progress (see `ProcessTermination`).
 ///
-/// ## Three things it reads, none of them through an actor
+/// ## Four things it reads, none of them through an actor
 ///
 /// - **The stamp** (`SMCRoundTripMonitor.inFlight()`): the round trip that has begun and not
 ///   returned, with its sequence number and an age on the suspending clock. A lock-guarded
 ///   copy. It never takes the connection, and this file names no `SMCConnection`
 ///   (`LivenessWatchdogTests` holds that).
 /// - **Progress** (`ThermalCycleProgress`): how long since § 3 last completed a cycle.
+/// - **The gate** (`GateWaitMonitor.oldestParked()`): the oldest read parked at each priority of
+///   the scheduler's gate, its age on the suspending clock and its queue's depth. A lock-guarded
+///   copy; it never takes the scheduler.
 /// - **Itself**: the previous tick's findings.
+///
+/// ## The gate trigger reports and ends nothing
+///
+/// A waiter parked at the gate for longer than `WatchdogLimits.gateWaiterAlarm` (G) logs one
+/// `.fault` naming the priority, the age and the queue depth
+/// ([#135](https://github.com/blamechris/Aeolus/issues/135)). **After the fault the helper does
+/// nothing more:** the gate is not cancellable, so there is no wait to abandon, and the trigger
+/// has no streak, no claim on ending the process and no `fired`. A gate that never turns starves
+/// § 3 behind it, and the cycle trigger is the action; the fault is how the log says why. It is
+/// logged once per waiter, and it is suppressed while a stamped round trip older than one tick
+/// is in flight, which explains the wait and has alarms of its own.
 ///
 /// ## A verdict is two consecutive ticks on the same thing
 ///
@@ -217,6 +232,18 @@ final class LivenessWatchdog: Sendable {
         var fired = false
         /// For each suspect on the last tick, on how many consecutive ticks it has been one.
         var streaks: [Suspect: Int] = [:]
+        /// The ticket of the last waiter a gate `.fault` was logged for, at each priority: the
+        /// rate-collapse. A waiter that stays parked keeps its ticket, so it is logged once.
+        /// Never the verdict's `fired`: a gate fault must not stand in the verdict's way.
+        var gateFaulted: [SMCReadPriority: UInt64] = [:]
+    }
+
+    /// What one tick decided, taken inside the lock and acted on outside it. Gate faults are
+    /// waiters past G not yet logged: log each, and end nothing.
+    private enum Decision: Sendable {
+        case nothing
+        case verdict(WatchdogVerdict)
+        case gateFaults([GateWait])
     }
 
     /// The monitor this watches, and the progress it reads. Internal rather than private so
@@ -225,6 +252,7 @@ final class LivenessWatchdog: Sendable {
     /// either watches nothing, and looks exactly like one that does.
     let roundTrips: SMCRoundTripMonitor
     let progress: ThermalCycleProgress
+    let gateMonitor: GateWaitMonitor
     private let termination: ProcessTermination
     /// Internal for the same reason, and for one more: a composition whose default tick source
     /// quietly never fires arms, logs "armed", and never looks.
@@ -237,12 +265,14 @@ final class LivenessWatchdog: Sendable {
     init(
         roundTrips: SMCRoundTripMonitor,
         progress: ThermalCycleProgress,
+        gateMonitor: GateWaitMonitor,
         termination: ProcessTermination,
         ticks: any WatchdogTicking,
         log: WatchdogLog = WatchdogLog()
     ) {
         self.roundTrips = roundTrips
         self.progress = progress
+        self.gateMonitor = gateMonitor
         self.termination = termination
         self.ticks = ticks
         self.log = log
@@ -267,9 +297,10 @@ final class LivenessWatchdog: Sendable {
     func tick() {
         let flight = roundTrips.inFlight()
         let reading = progress.reading()
+        let parked = gateMonitor.oldestParked()
 
-        let verdict: WatchdogVerdict? = state.withLock { state in
-            guard !state.fired else { return nil }
+        let decision: Decision = state.withLock { state in
+            guard !state.fired else { return .nothing }
             // Only what is past its bound on **this** tick keeps a streak: a suspect absent
             // from `found` is dropped, so "consecutive" means what it says.
             let found = Self.suspects(flight: flight, reading: reading)
@@ -281,22 +312,32 @@ final class LivenessWatchdog: Sendable {
             let confirmed = found.first {
                 (streaks[$0] ?? 0) >= WatchdogLimits.ticksPerVerdict
             }
-            guard let confirmed else { return nil }
-            state.fired = true
-            return Self.verdict(for: confirmed, flight: flight, reading: reading)
+            if let confirmed {
+                state.fired = true
+                return .verdict(Self.verdict(for: confirmed, flight: flight, reading: reading))
+            }
+            // Nothing to end the process for, so the third trigger: report, and only report.
+            return .gateFaults(
+                Self.newGateFaults(in: parked, flight: flight, logged: &state.gateFaulted))
         }
-        guard let verdict else { return }
 
-        // The claim first, then the line, so that the line says what is true: that this
-        // watchdog is ending the process, or that something else already is. Taken and ended
-        // on this queue with no hand-off: a `Task` here needs a cooperative-pool thread, and a
-        // verdict is only worth reaching when the pool may have none.
-        switch termination.claim(.blind) {
-        case .granted(let ending):
-            log.verdict(verdict)
-            ending.end()
-        case .refused(let holder):
-            log.verdictNotEnding(verdict, alreadyEndingAs: holder)
+        switch decision {
+        case .nothing:
+            return
+        case .gateFaults(let waits):
+            for wait in waits { log.gateWaiter(wait, stamp: flight) }
+        case .verdict(let verdict):
+            // The claim first, then the line, so that the line says what is true: that this
+            // watchdog is ending the process, or that something else already is. Taken and
+            // ended on this queue with no hand-off: a `Task` here needs a cooperative-pool
+            // thread, and a verdict is only worth reaching when the pool may have none.
+            switch termination.claim(.blind) {
+            case .granted(let ending):
+                log.verdict(verdict)
+                ending.end()
+            case .refused(let holder):
+                log.verdictNotEnding(verdict, alreadyEndingAs: holder)
+            }
         }
     }
 
@@ -324,6 +365,26 @@ final class LivenessWatchdog: Sendable {
             }
         }
         return found
+    }
+
+    /// The waiters to log a gate `.fault` for on this tick, recording them as logged: those that
+    /// have waited **longer than** G and are not the last one logged at their priority, unless a
+    /// **stamped round trip older than one tick** is in flight. That is the suppression: the
+    /// stamp explains the wait and has alarms of its own. One tick and not D, deliberately: a
+    /// stamp between the two is no verdict yet, and suppressing only past D would log a
+    /// duplicate for one wedge. A suppressed waiter is **not** recorded: owed, not forgiven.
+    private static func newGateFaults(
+        in parked: [GateWait], flight: SMCRoundTripInFlight?,
+        logged: inout [SMCReadPriority: UInt64]
+    ) -> [GateWait] {
+        if let flight, flight.age > WatchdogLimits.tick { return [] }
+        var due: [GateWait] = []
+        for wait in parked
+        where wait.age > WatchdogLimits.gateWaiterAlarm && logged[wait.priority] != wait.ticket {
+            logged[wait.priority] = wait.ticket
+            due.append(wait)
+        }
+        return due
     }
 
     private static func verdict(

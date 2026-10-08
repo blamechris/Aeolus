@@ -54,7 +54,9 @@ struct WatchdogLog: Sendable {
             \(Self.seconds(WatchdogLimits.roundTrip)), or no completed safety cycle for longer \
             than \(Self.seconds(WatchdogLimits.cycleBound)) (\
             \(Self.seconds(WatchdogLimits.bringUpBound)) until the supervisors start), on \
-            \(Self.consecutiveTicks), ends the helper.
+            \(Self.consecutiveTicks), ends the helper. A read parked at the scheduler's gate \
+            for longer than \(Self.seconds(WatchdogLimits.gateWaiterAlarm)) is logged as a \
+            fault and nothing more.
             """)
     }
 
@@ -82,6 +84,39 @@ struct WatchdogLog: Sendable {
             automatic control if its pass reaches its keystone. A wedge that outlives the restart \
             ends that process the same way, and nothing is restored until the driver answers. \
             Where launchd is removing or stopping the job it does not restart it.
+            """)
+    }
+
+    /// A read has been parked at the scheduler's gate for longer than G (ADR 0012's third
+    /// trigger, [#135](https://github.com/blamechris/Aeolus/issues/135)). One line, one
+    /// `.fault`, for one waiter: the priority it queued at, how long the oldest waiter there has
+    /// waited, and how many are parked behind that gate.
+    ///
+    /// **A report and nothing more, and it says so.** The gate is not cancellable and nothing
+    /// here resumes or drops a waiter. This line does not end the helper and does not promise
+    /// that anything will: if the gate never turns, § 3 starves behind it and the cycle trigger
+    /// ends the helper, which is a different line and a different decision.
+    ///
+    /// `stamp` is the round trip in flight at the tick, if any, as evidence: it was not older
+    /// than one tick (an older one suppresses this line), so it does not explain the wait, and
+    /// the raw key it names is shown beside it.
+    func gateWaiter(_ wait: GateWait, stamp: SMCRoundTripInFlight?) {
+        let waited = Self.seconds(wait.age)
+        let bound = Self.seconds(WatchdogLimits.gateWaiterAlarm)
+        let cycleBound = Self.seconds(WatchdogLimits.cycleBound)
+        let inFlight =
+            stamp.map {
+                "A round trip is in flight but is not older than one tick: \(Self.describe($0))."
+            } ?? "No round trip is in flight."
+        emit(
+            .fault,
+            """
+            Liveness watchdog: a read has been parked at the scheduler's gate for \(waited) \
+            against a bound of \(bound): priority \(wait.priority), \(wait.depth) waiting at \
+            that priority. \(inFlight) A turn that was taken and not given back looks exactly \
+            like this. This is a report: the watchdog does not end the helper for it, and \
+            nothing in the helper resumes or drops the waiting read. If no safety cycle \
+            completes for \(cycleBound), the cycle trigger ends the helper.
             """)
     }
 

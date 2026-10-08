@@ -203,6 +203,7 @@ final class WatchdogRig: Sendable {
     let timeline = WatchdogTimeline()
     let monitor: SMCRoundTripMonitor
     let progress: ThermalCycleProgress
+    let gate: GateWaitMonitor
     let ticks = ManualWatchdogTicks()
     let journal = TeardownJournal()
     let log = RecordedWatchdogLog()
@@ -214,12 +215,13 @@ final class WatchdogRig: Sendable {
         let journal = self.journal
         monitor = SMCRoundTripMonitor(clock: timeline.monitorClock)
         progress = ThermalCycleProgress(now: { timeline.progressInstant() })
+        gate = GateWaitMonitor(now: { timeline.gateInstant() })
         termination = ProcessTermination(
             terminate: journal.terminate,
             log: log.log)
         watchdog = LivenessWatchdog(
-            roundTrips: monitor, progress: progress, termination: termination,
-            ticks: ticks, log: log.log)
+            roundTrips: monitor, progress: progress, gateMonitor: gate,
+            termination: termination, ticks: ticks, log: log.log)
     }
 
     /// Two ticks, back to back: the least that can produce a verdict.

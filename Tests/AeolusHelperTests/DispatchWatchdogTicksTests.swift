@@ -119,6 +119,7 @@ struct DispatchWatchdogTicksTests {
         let watchdog = LivenessWatchdog(
             roundTrips: monitor,
             progress: ThermalCycleProgress(now: { timeline.progressInstant() }),
+            gateMonitor: GateWaitMonitor(now: { timeline.gateInstant() }),
             termination: ProcessTermination(terminate: journal.terminate, log: log.log),
             ticks: ticks, log: log.log)
         let wedge = WedgedRoundTrip(monitor, tpd0)
