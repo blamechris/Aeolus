@@ -71,8 +71,9 @@ public struct SMCRoundTripInFlight: Sendable, Equatable {
 ///
 /// ## Cost
 ///
-/// Two uncontended unfair-lock operations, one clock read for the stamp, and a second clock
-/// read when the age is asked for. `fanctl` pays the first set on every round trip.
+/// A round trip pays two uncontended unfair-lock operations and one clock read, and so does
+/// `fanctl`, on every one. The second clock read, for the age, is paid only by an observer
+/// that asks.
 public final class SMCRoundTripMonitor: Sendable {
 
     /// The clock the monitor ages a round trip on. **This one line is the clock family.**

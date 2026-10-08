@@ -41,10 +41,12 @@ public actor SMCConnection {
     ///
     /// `nonisolated` is the point. This type calls IOKit synchronously inside itself, so a
     /// call that never returns holds the actor for good, and an observer that had to `await`
-    /// the actor to ask whether one was stuck would be stuck behind it. Every IOKit call this
+    /// the actor to ask whether one was stuck would be stuck behind it. Every round trip this
     /// type makes (`IOConnectCallStructMethod`, `IOServiceOpen`, `IOServiceClose`) runs inside
     /// `roundTrips.bracket(…)`; `deinit` is the one exception, and nothing could read a stamp
-    /// from it. `RoundTripStampTripwireTests` holds that against the source.
+    /// from it. The service lookup and registry reads in `open()` are not round trips on the
+    /// connection and are not stamped. `RoundTripStampTripwireTests` holds all of this against
+    /// the source.
     ///
     /// Read-only: it describes a call that is already out and starts nothing. One monitor
     /// belongs to one connection — see `SMCRoundTripMonitor`.
@@ -191,8 +193,9 @@ public actor SMCConnection {
 
         let resolvedGeneration = Self.smcGeneration(for: service)
 
-        // The slow path, and the only part of `open()` that can block in the kernel on a busy
-        // or wedged driver, so it is stamped like any other round trip (ADR 0012 I1).
+        // `IOServiceOpen` asks the driver for a user client, so it is a round trip like any
+        // other and is stamped like one (ADR 0012 I1). The service lookup and the registry
+        // reads around it are not.
         var newConnection: io_connect_t = 0
         let openResult = roundTrips.bracket(.open) {
             IOServiceOpen(service, mach_task_self_, 0, &newConnection)
@@ -675,12 +678,11 @@ public actor SMCConnection {
         var outputSize = Self.structSize
 
         // The one `IOConnectCallStructMethod` in the tree: every SMC read the project makes
-        // goes through it, and so will any write that is ever built. The stamp is taken on this
-        // thread immediately before
-        // the call and cleared in a `defer` when it returns or throws, so a call that never
-        // returns is visible to `roundTrips.inFlight()` from outside this actor (ADR 0012
-        // I1). Keep it the only one, and keep it inside the bracket: both are held by
-        // `RoundTripStampTripwireTests`, which reads this file.
+        // goes through it, and a write, if one is ever built, must too. The stamp is taken on
+        // this thread immediately before the call and cleared in a `defer` when it returns or
+        // throws, so a call that never returns is visible to `roundTrips.inFlight()` from
+        // outside this actor (ADR 0012 I1). Keep it the only one, and keep it inside the
+        // bracket: `RoundTripStampTripwireTests` reads this file and fails on a second site.
         let handle = connection
         let kernResult = roundTrips.bracket(.call(key: key, selector: selector)) {
             IOConnectCallStructMethod(
