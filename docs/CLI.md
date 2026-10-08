@@ -673,18 +673,26 @@ handshake → snapshot → validate (2) → acquireLease (30 s, not self-renewin
   or, on any loss the helper reports: releaseLease (best effort) → failed, exit 6
 ```
 
-- **Control starts when `apply` is accepted.** If `apply` is refused, the lease is released at
-  once and the exit is the code `apply`'s failure classifies to (4 for a bounds refusal, 2 for an
-  invalid parameter, …).
+- **Control starts when `apply` is accepted.** If `apply` is **refused** (the helper answered
+  with a fault), the lease is released at once and the exit is the code the fault classifies to
+  (4 for a bounds refusal, 2 for an invalid parameter, …), `endedBecause: refused`.
+- **An `apply` that got no answer is not a refusal.** The helper may have applied the speed, so
+  the message says it got no answer and may have been applied, never "did not accept". The lease
+  is released (best effort), the safe-state check **looks**, and the exit is still the code the
+  failure classifies to (a restart or a lost reply is 1; non-zero always), reported as
+  `endedBecause: controlLost`, with the check's verdict in the message and
+  `snapshotFollowsRelease` in the closing event.
+- **A signal that lands while `acquireLease` is in flight** stops the speed being sent: after the
+  lease comes back and before `apply`, a pending signal releases the lease, sends nothing to a
+  fan, and ends with exit 1, `endedBecause: signal`.
 - **The deadline is on the monotonic clock**, never compared with `Lease.expiresAt`, which is
   the helper's display estimate. A step in the wall clock cannot lengthen or shorten a hold, and
   no event carries a wall-clock end time.
 - **Ending.** A signal ends the sleep and nothing else: the release that follows is not
   cancelled, and a signal during the release or the check is ignored. `getppid()` is compared with
-  its starting value at every heartbeat. SIGPIPE is ignored, and a failed write to standard output
-  (written with `write(2)`, because `FileHandle.write` raises an uncatchable exception on EPIPE)
-  ends the hold; a pipe with no room is a failed write rather than a blocked process. Then the
-  lease is released and the safe-state check runs: 0, 8 or 9, exactly as for `auto`.
+  its starting value at every heartbeat. Then the lease is released and the safe-state check
+  runs: 0, 8 or 9, exactly as for `auto`. A failed write to standard output ends the hold too (see
+  **Writes to a reader that stopped reading**, below).
 - **Exit 6 on any loss the helper reports**, after a best-effort release: a renewal that errored
   (whatever the error), a snapshot that does not list this run's lease, `isReclaimedBySystem` on
   a fan the lease covers, or `thermalEmergencyActive`. It never retries and **never
@@ -702,14 +710,14 @@ handshake → snapshot → validate (2) → acquireLease (30 s, not self-renewin
 | Code | When, for `set` |
 |---|---|
 | 0 | The hold ended in an ordinary way and the helper reports every fan automatic and no lease after the release. |
-| 2 | The request does not fit this machine (above). Nothing was acquired. |
+| 2 | The request does not fit this machine (above), decided from the first snapshot: nothing was acquired. (An `apply` refused with `invalidParameter` is also 2, after the lease was taken and released.) |
 | 3 | The helper cannot be reached. Nothing was acquired. |
 | 7 | Version mismatch. Nothing was acquired. |
-| 4, 5 | The helper refused the lease: manual control unavailable (today's helper: `writePathNotBuilt`), or another client holds it. Nothing was applied. |
+| 4, 5 | The helper refused the lease: manual control unavailable (today's helper: `writePathNotBuilt`), or another client holds it. Nothing was applied. (An `apply` refused with `boundsImplausible` is also 4, after the lease was taken and released.) |
 | 6 | Control was lost, or `apply` was refused with a lease-lost fault. Released. |
 | 8 | After the release the helper did not report the safe state within 10 seconds (a fan still manual, a lease still listed — this run's, or another client's, which the message says — or the helper stopped answering). |
 | 9 | The helper reports `foreignManualControl` or `restoreToAutomaticFailed` for a fan, whatever mode it reads. |
-| 1 | The first snapshot could not be read (nothing acquired); a signal arrived before control was taken (nothing was written to a fan); or the hold's own timer failed (released). |
+| 1 | The first snapshot could not be read, or `acquireLease` failed in a way no other code names (nothing acquired); a signal arrived before control was taken, or while the lease was in flight (nothing was written to a fan); an `apply` got no answer (released and checked; the exit is the failure's own code, 1 for a restart or a lost reply); or the hold's own timer failed (released). |
 | 64 | Malformed command line (above). |
 
 **Text.** At the start, one line per fan and the lease; then nothing on standard output while
@@ -764,19 +772,48 @@ key a shape defines is always present, `null` for "not present".
   shared keys are `null` wherever there is nothing to say.
   - `leaseID` — the lease this run took, or `null` if it never took one.
   - `endedBecause` — `durationElapsed`, `signal`, `parentExited`, `outputClosed`, `controlLost` or
-    `refused`; `null` when fanctl never tried to take control (3, 7, 1 before any lease). `refused`
-    is a "no" to the request: exit 2, 4 or 5 before a hold, or `apply` refused.
-  - `signal` — `SIGINT`, `SIGTERM` or `SIGHUP`, when one ended the hold.
+    `refused`; `null` when fanctl never tried to take control (3, 7, 1 before any lease).
+    `refused` is a "no" to the request: exit 2, 4 or 5 before a hold, or `apply` refused (the
+    helper answered). An `apply` that got no answer is `controlLost`. A signal that arrived
+    before the lease, or while it was in flight, is `signal`.
+  - `signal` — `SIGINT`, `SIGTERM` or `SIGHUP`, whenever `endedBecause` is `signal`.
   - `releaseAccepted` — whether the helper accepted the request to release the lease; `null` if
     none was made. `false` is not "the lease is still there", only that no acceptance was heard.
   - `capturedAt`, `snapshotFollowsRelease`, `listedLeaseID`, `fans` — the last snapshot the helper
     returned: when it was captured, whether it was read after the release, the lease it listed
     (whoever holds it), and the covered fans as in `started`. After an ordinary ending these are
     the safe-state check's, so `fans[].observed.mode` is what the helper reports after the release.
+    **`snapshotFollowsRelease: false` means they describe the helper while the lease was still
+    held**, because the check read nothing afterwards; the text then says the state is unknown
+    and does not describe the lease or the fans at all.
   - `failure` — `null` for `ended`.
 
 If standard output closes, the closing event is still attempted (and fails), and the closing line
 goes to standard error, the one stream left to read.
+
+**Writes to a reader that stopped reading.** A process that holds a lease must keep renewing it,
+so no write may park it past a signal, a renewal or its deadline. `set` therefore writes a line
+in chunks of at most `PIPE_BUF` (512 bytes) — the room macOS promises a pipe it calls writable,
+which is less than a `--json` line (560 to 1,127 bytes) — each after the pipe has said it has
+room, waiting 100 ms at a time between chunks. It never sets `O_NONBLOCK`, which would change the
+descriptor for every process that shares it. A stop request (a signal, the parent exiting, the
+deadline) ends the wait at once and wins over the rest of the line: the hold releases and ends for
+*that* reason. A reader that has not made room within **2 seconds** per line is treated as gone:
+the hold releases and ends with `endedBecause: outputClosed`, well inside the 10-second
+heartbeat. Two consequences to design for: **a consumer that stops reading may be left a
+truncated last line** (the first chunk of an event that could not be finished), and a pipe with
+512 to a line's length free and no reader draining it is given up on even where the rest of the
+line would have fitted, because `poll` does not say so. Sockets are handled the same way as pipes
+(a Node `child_process` stdio is one); `/dev/null`, files and terminals are written to directly (a
+terminal under flow control, Ctrl-S, can still park a write, and the lease's lifetime covers
+that). A write that other processes on the same pipe race for the promised room can still park
+for as long as they hold it.
+
+**`status` and `auto` write to the end.** Their output is delivered whole to a reader that is
+merely slow, however little room the pipe has; a reader that has *gone* (EPIPE) neither crashes
+the command nor changes its exit code. Any other write failure (a closed descriptor, a full disk)
+is said on standard error and also leaves the exit code alone. `reset --all` does not use this
+writer.
 
 ---
 

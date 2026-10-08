@@ -159,6 +159,35 @@ direction that ends a hold earlier or reports less, never the one that claims mo
   `set … > /dev/null` at once. A hold's failure to write is an ending, not a crash.
 - **No stderr output while holding in text mode.** There is no change during a hold that does not
   end it, so there is nothing for the contract's "changes to stderr" to carry.
+- **An `apply` that got no answer is not a refusal** (review of #324). Only an `AeolusXPCFault` is
+  the helper answering. A transport failure after the request was sent (`helperNeverAnswered`,
+  `replyNotDelivered`, `helperRestarted`) means the speed may have been applied: the lease is
+  released best-effort, the safe-state check **looks**, and the exit is the failure's own
+  classified code (non-zero), reported as `endedBecause: controlLost`. This revises the "refused
+  `apply` skips the check" point above for the unanswered case only.
+- **A signal ends the hold, whenever it lands.** Before the lease it is exit 1 with
+  `endedBecause: signal`; while `acquireLease` is in flight it releases the lease and sends no
+  speed (exit 1, `signal`); while holding it is the ordinary signal ending.
+- **No write may park the hold** (review of #324). On macOS `poll` calls a pipe writable at
+  `PIPE_BUF` (512) bytes free and a `set --json` line is 560 to 1,127 bytes, so a whole-line
+  `write(2)` parked on a pipe with room for a chunk and not the line, with every signal ignored.
+  `set` writes in chunks of at most `PIPE_BUF`, each after `poll` says there is room, waits 100 ms
+  at a time between chunks, lets a stop request (signal, parent exit, deadline) end the wait and
+  win over the rest of the line, and treats a reader that has not made room within 2 s per line as
+  gone (`outputClosed`). `O_NONBLOCK` is never set: the flag belongs to the open file description,
+  which other processes share. A consumer that stops reading may be left a truncated last line.
+- **SIGPIPE is ignored for the length of each write**, not blocked on the writing thread: measured
+  on macOS, the signal is raised at the process and delivered to another thread that has it
+  unblocked, so a thread mask does not stop a multi-threaded command being killed by it.
+- **`status` and `auto` write to the end.** The bounded semantics belong to `set`; applying them
+  to every command dropped a line whenever a pipe had under 512 bytes free while its reader was
+  still there. EPIPE leaves their exit codes alone. `reset --all` does not use `Terminal`.
+- **Each renewal is scheduled from the last one**, not from the end of the work after it, so a
+  slow write shortens the next sleep instead of eating the two heartbeats the lease can miss.
+- **After the release, only what was read after the release is described.** When the check read
+  nothing, the text says the helper accepted the release and then stopped answering and that the
+  state of the lease and the fans is unknown; `snapshotFollowsRelease: false` in `--json` says the
+  same of the data.
 
 ## Rationale
 
