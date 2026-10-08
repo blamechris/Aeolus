@@ -3,6 +3,10 @@ import Testing
 
 @testable import fanctl
 
+/// How many SIGPIPEs the handlers these tests install has seen. A plain integer a
+/// signal handler writes, as `sig_atomic_t` is: the handler cannot capture, so it is global.
+nonisolated(unsafe) private var sigpipesSeen: Int32 = 0
+
 /// The production signal handlers and parent reader, which every other test substitutes.
 ///
 /// Serialised, because a signal disposition belongs to the whole process. SIGHUP is the one sent
@@ -11,6 +15,118 @@ import Testing
 /// and never a silent pass.
 @Suite("The production hold environment", .serialized)
 struct HoldEnvironmentTests {
+
+    /// How many SIGPIPEs the handler has seen once it has had `seconds` to see one, or as soon as
+    /// it has seen one when `untilSeen`. macOS raises this SIGPIPE at the *process*, and the
+    /// handler runs on whichever thread has the signal unblocked — usually not the writer's — a
+    /// moment after `write` returns. So "none arrived" can only be known after a wait, and "one
+    /// arrived" as soon as it does.
+    private static func sigpipes(waiting seconds: Double, untilSeen: Bool) -> Int32 {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if untilSeen, sigpipesSeen > 0 { break }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return sigpipesSeen
+    }
+
+    /// A command that writes to a reader that has gone must leave with its own exit code. The
+    /// default action of SIGPIPE is to end the process with 141, and a thread mask does not
+    /// prevent it: the kernel delivers the signal to another thread that has it unblocked. So the
+    /// writer ignores SIGPIPE for the length of the write. A handler is installed in place of the
+    /// default so that a signal which gets through is a counted failure and not a dead test run;
+    /// a bare `write` to the same kind of pipe first proves the handler is live.
+    ///
+    /// **Mutation:** call the body directly in `FileDescriptorWriter.writeLine`, without
+    /// `ignoringSIGPIPE`. Run: red — the handler sees the signal.
+    @Test("A write to a closed pipe raises no SIGPIPE: the command keeps its own exit code")
+    func writeIgnoresSIGPIPE() throws {
+        let previous = signal(SIGPIPE) { _ in sigpipesSeen += 1 }
+        defer { _ = signal(SIGPIPE, previous) }
+
+        func closedPipe() throws -> Int32 {
+            var descriptors: [Int32] = [0, 0]
+            try #require(pipe(&descriptors) == 0)
+            close(descriptors[0])
+            return descriptors[1]
+        }
+
+        let control = try closedPipe()
+        sigpipesSeen = 0
+        _ = write(control, "x", 1)
+        close(control)
+        try #require(
+            Self.sigpipes(waiting: 2, untilSeen: true) == 1,
+            "control: a bare write to a closed pipe must raise it")
+
+        let written = try closedPipe()
+        defer { close(written) }
+        sigpipesSeen = 0
+
+        let outcome = FileDescriptorWriter.writeLine("anyone there?", to: written)
+
+        #expect(outcome == .readerGone)
+        #expect(Self.sigpipes(waiting: 0.3, untilSeen: true) == 0, "the write raised SIGPIPE")
+        #expect(Self.disposition(of: SIGPIPE) > 1, "the handler was put back after the write")
+    }
+
+    /// Two writes that overlap restore SIGPIPE once, when the last is done. The first parks on a
+    /// pipe whose reader is not reading, and is inside `ignoringSIGPIPE` for as long as it does;
+    /// a second write that comes and goes meanwhile must leave SIGPIPE ignored.
+    ///
+    /// **Mutation:** restore on every exit, not the last (drop the `depth == 0` test in the
+    /// `defer` of `ignoringSIGPIPE`). Run: red — the handler is back while the first write is
+    /// still in progress.
+    @Test("An overlapping write leaves SIGPIPE ignored until the last write is done")
+    func overlappingWrites() throws {
+        let previous = signal(SIGPIPE) { _ in sigpipesSeen += 1 }
+        defer { _ = signal(SIGPIPE, previous) }
+
+        var full: [Int32] = [0, 0]
+        try #require(pipe(&full) == 0)
+        defer {
+            close(full[0])
+            close(full[1])
+        }
+        let flags = fcntl(full[1], F_GETFL)
+        _ = fcntl(full[1], F_SETFL, flags | O_NONBLOCK)
+        var filler: UInt8 = 0x61
+        while write(full[1], &filler, 1) == 1 {}
+        _ = fcntl(full[1], F_SETFL, flags)
+        var roomy: [Int32] = [0, 0]
+        try #require(pipe(&roomy) == 0)
+        defer {
+            close(roomy[0])
+            close(roomy[1])
+        }
+
+        let parkedWriter = full[1]
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            _ = FileDescriptorWriter.writeLine(
+                "parked until the reader reads", to: parkedWriter)
+            finished.signal()
+        }
+        var waited = 0
+        while Self.disposition(of: SIGPIPE) != 1, waited < 200 {
+            Thread.sleep(forTimeInterval: 0.01)
+            waited += 1
+        }
+        try #require(Self.disposition(of: SIGPIPE) == 1, "the first write is inside the region")
+
+        #expect(FileDescriptorWriter.writeLine("quick", to: roomy[1]) == .delivered)
+        #expect(Self.disposition(of: SIGPIPE) == 1, "the first write is still in progress")
+
+        var drained = [UInt8](repeating: 0, count: 70_000)
+        _ = read(full[0], &drained, drained.count)
+        #expect(Self.finished(finished), "the parked write should finish once the reader reads")
+        #expect(Self.disposition(of: SIGPIPE) > 1, "restored once the last write is done")
+    }
+
+    /// Synchronous, because a semaphore may not be waited on from an `async` function directly.
+    private static func finished(_ semaphore: DispatchSemaphore) -> Bool {
+        semaphore.wait(timeout: .now() + 5) == .success
+    }
 
     /// 0 for `SIG_DFL`, 1 for `SIG_IGN`, anything else is a handler.
     private static func disposition(of signal: Int32) -> Int {
@@ -57,7 +173,8 @@ struct HoldEnvironmentTests {
         let (stream, continuation) = AsyncStream.makeStream(of: HoldSignal.self)
         let subscription = HoldEnvironment.production.installSignals { continuation.yield($0) }
         defer { subscription.cancel() }
-        try #require(Self.disposition(of: SIGHUP) == 1, "ignored while the handler is installed")
+        try #require(
+            Self.disposition(of: SIGHUP) == 1, "ignored while the handler is installed")
 
         kill(getpid(), SIGHUP)
 
