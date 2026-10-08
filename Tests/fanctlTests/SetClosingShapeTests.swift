@@ -53,7 +53,7 @@ struct SetClosingShapeTests {
         let failure = HelperCommandOutput.FailureJSON(
             exitCode: 2, kind: "requestDoesNotFit", message: "no")
         let failed = try Self.keys(
-            of: HelperCommandOutput.FailureEventJSON(failure: failure, at: Date()))
+            of: HelperCommandOutput.FailureEventJSON(failure: failure, at: Date(), closing: .none))
         #expect(Set(failed.keys) == Self.closingKeys)
         #expect(failed["event"] as? String == "failed")
         #expect(failed["schema"] as? Int == 1)

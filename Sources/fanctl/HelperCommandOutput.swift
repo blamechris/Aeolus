@@ -39,24 +39,18 @@ enum HelperCommandOutput {
     /// failure also goes to standard output, so a caller parsing stdout always gets a JSON
     /// value it can read rather than an empty stream and an exit code to guess from.
     ///
-    /// `closing` is what `set`'s closing event adds to the existing `failed` shape: the lease, why
-    /// the hold ended and what the helper reported. It is `null` throughout for a command that
-    /// has nothing to add.
+    /// `set`'s failure is not reported here: its `failed` event is routed to whichever stream can
+    /// take it whole (`SetCommand.emit`), so `.lines` has nothing to write on this path.
     static func fail(
-        _ failure: HelperCommandFailure, as format: Format, on terminal: Terminal,
-        closing: SetClosingFacts = .none
+        _ failure: HelperCommandFailure, as format: Format, on terminal: Terminal
     ) throws -> Never {
         terminal.warn(failure.message)
-        let document = FailureJSON(failure)
         switch format {
-        case .text:
+        case .text, .lines:
             break
         case .document:
-            try? emit(FailureDocumentJSON(failure: document), as: format, on: terminal)
-        case .lines:
             try? emit(
-                FailureEventJSON(failure: document, at: Date(), closing: closing), as: format,
-                on: terminal)
+                FailureDocumentJSON(failure: FailureJSON(failure)), as: format, on: terminal)
         }
         throw failure.code.exitCode
     }
@@ -99,7 +93,7 @@ enum HelperCommandOutput {
         let at: Date
         let closing: SetClosingFacts
 
-        init(failure: FailureJSON, at: Date, closing: SetClosingFacts = .none) {
+        init(failure: FailureJSON, at: Date, closing: SetClosingFacts) {
             self.failure = failure
             self.at = at
             self.closing = closing
