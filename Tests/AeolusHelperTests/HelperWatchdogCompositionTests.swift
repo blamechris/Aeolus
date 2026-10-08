@@ -263,6 +263,7 @@ struct HelperWatchdogCompositionTests {
     /// What the thread that drives the held window saw.
     private struct HeldWindow: Sendable {
         var occupied = false
+        var stampWhileHeld: SMCRoundTripInFlight?
         var faultsAtOnce = -1
         var probeRanWhileHeld = false
         var finished = false
@@ -274,22 +275,26 @@ struct HelperWatchdogCompositionTests {
     /// **The decision is synchronous.** The `.fault` is in the log the moment the second
     /// `tick()` returns, with no `await` between: a watchdog that obtained the stamp through an
     /// actor hop, or hopped anywhere before deciding, would not have decided yet. That is what
-    /// makes this fail for a hop even when the hop is not to the connection. A call queued
-    /// behind the held connection is still queued a quarter of a second later — the proof the
-    /// actor was really occupied the whole time — and the process ends once it is freed.
+    /// makes this fail for a hop even when the hop is not to the connection. The stamp is read
+    /// while the actor is held, from a thread that is not the actor's, and a call queued behind
+    /// the held connection has not run when the verdict is in.
     ///
-    /// ## Why the window is driven from a thread of its own
+    /// ## Why the window is short, and driven from a thread of its own
     ///
     /// Holding an actor means parking a cooperative-pool thread, and this repository already has
-    /// two tests that do (`SMCRoundTripMonitorTests`' and `ThreadBlockingRestorePlane`'s). On a
-    /// three-core runner the pool is three threads wide, a third parked test leaves none to
-    /// resume any of them, and the whole suite stops — which is exactly what happened on this
-    /// pull request's first CI run. So the held window asks nothing of the pool: the thread that
-    /// drives it, and the failsafe that ends it, are `Thread`s, and it lasts a quarter of a
-    /// second. What the window therefore does **not** show is the process ending *while* the
-    /// connection is held: that needs a free pool thread, which a loaded runner cannot promise.
-    /// Nothing in the termination path names the connection (`WatchdogTripwireTests`), and the
-    /// ending is asserted as soon as the connection is freed.
+    /// two tests that do (`SMCRoundTripMonitorTests`' and `ThreadBlockingRestorePlane`'s), each
+    /// released by its own test task, which needs a pool thread to run. On a three-core runner
+    /// the pool is three threads wide, a third parked test leaves none to resume any of them,
+    /// and the suite stops: that is what happened to this pull request's first CI run, for
+    /// twenty minutes. A quarter of a second of parking was still enough to push a wall-clock
+    /// test in `PendingReplyTests` over its bound. So the held window asks nothing of the pool
+    /// and lasts as long as two synchronous ticks: the thread that drives it and the failsafe
+    /// that ends it are `Thread`s.
+    ///
+    /// What the window therefore does **not** show is the process ending *while* the connection
+    /// is held, which needs a free pool thread that a loaded runner cannot promise. Nothing in
+    /// the termination path names the connection (`WatchdogTripwireTests`), and the ending is
+    /// asserted as soon as the connection is freed.
     ///
     /// **Mutation:** read the stamp through an actor hop in `tick()` (a `Task` that awaits an
     /// actor, deciding when it returns). Run: red.
@@ -318,15 +323,16 @@ struct HelperWatchdogCompositionTests {
                 probeFinished.withLock { $0 = true }
             }
 
+            // Read from this thread, while the actor is held by another.
+            let stamp = rig.monitor.inFlight()
             rig.timeline.advance(by: .seconds(6))
             rig.watchdog.tick()
             rig.watchdog.tick()
             // No suspension since the second tick: the verdict is already in the log.
             let faultsAtOnce = rig.log.faults.count
-
-            Thread.sleep(forTimeInterval: 0.25)
             let probeRan = probeFinished.withLock { $0 }
             window.withLock {
+                $0.stampWhileHeld = stamp
                 $0.faultsAtOnce = faultsAtOnce
                 $0.probeRanWhileHeld = probeRan
             }
@@ -348,6 +354,7 @@ struct HelperWatchdogCompositionTests {
 
         #expect(finished, "the held window never ended")
         #expect(seen.occupied, "the connection was never occupied")
+        #expect(seen.stampWhileHeld?.operation == .open, "no stamp was visible while it was held")
         #expect(seen.faultsAtOnce == 1, "the verdict was not reached inside tick()")
         #expect(!seen.probeRanWhileHeld, "the connection was not actually held")
         #expect(await pollUntil { probeFinished.withLock { $0 } }, "the queued call never ran")
