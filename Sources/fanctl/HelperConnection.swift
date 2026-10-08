@@ -80,8 +80,11 @@ struct HelperConnection: Decodable, Sendable {
 /// when the process ends. So these commands write their own lines here and leave through
 /// `ExitCode`.
 ///
-/// Unbuffered `FileHandle` writes rather than `print`, so an NDJSON event piped into another
-/// process arrives when it happens instead of when a stdio buffer fills.
+/// Unbuffered `write(2)` rather than `print`, so an NDJSON event piped into another process
+/// arrives when it happens instead of when a stdio buffer fills, and rather than
+/// `FileHandle.write`, which raises an Objective-C exception on EPIPE. **A line can fail to
+/// arrive,** and `deliver(_:)` is how a command that has to know — `set`, whose hold ends when
+/// its consumer goes away — finds out. `say` and `warn` are for the commands that do not care.
 ///
 /// `Decodable` by hand for the same reason as `HelperConnection`: it is not an argument, the
 /// suite substitutes a recorder, and nothing on a command line may reach it.
@@ -92,10 +95,19 @@ struct Terminal: Decodable, Sendable {
         case standardError
     }
 
-    private let sink: @Sendable (Stream, String) -> Void
+    private let delivery: @Sendable (Stream, String) -> Bool
 
+    /// A terminal whose writes cannot fail.
     init(_ sink: @escaping @Sendable (Stream, String) -> Void) {
-        self.sink = sink
+        self.delivery = { stream, text in
+            sink(stream, text)
+            return true
+        }
+    }
+
+    /// A terminal that says whether each line arrived.
+    init(delivering delivery: @escaping @Sendable (Stream, String) -> Bool) {
+        self.delivery = delivery
     }
 
     init(from decoder: Decoder) throws {
@@ -103,17 +115,21 @@ struct Terminal: Decodable, Sendable {
     }
 
     /// This process's own standard output and standard error.
-    static let process = Terminal { stream, text in
-        let data = Data((text + "\n").utf8)
+    static let process = Terminal(delivering: { stream, text in
         switch stream {
-        case .standardOutput: FileHandle.standardOutput.write(data)
-        case .standardError: FileHandle.standardError.write(data)
+        case .standardOutput:
+            return FileDescriptorWriter.writeLine(text, to: STDOUT_FILENO)
+        case .standardError:
+            return FileDescriptorWriter.writeLine(text, to: STDERR_FILENO)
         }
-    }
+    })
 
     /// A result: what the command was asked for.
-    func say(_ text: String) { sink(.standardOutput, text) }
+    func say(_ text: String) { _ = delivery(.standardOutput, text) }
+
+    /// A result, and whether it arrived. `false` is a consumer that has gone away.
+    func deliver(_ text: String) -> Bool { delivery(.standardOutput, text) }
 
     /// A diagnosis: why the command could not give it, or what the user should know about it.
-    func warn(_ text: String) { sink(.standardError, text) }
+    func warn(_ text: String) { _ = delivery(.standardError, text) }
 }
