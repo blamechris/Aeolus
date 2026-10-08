@@ -90,10 +90,18 @@ enum TeardownOutcome: Sendable, Hashable, CaseIterable {
 /// daemon nothing after the terminate call in `SignalTeardown.run(stoppingSupervisorsWith:)`
 /// runs at all; under a recorder it returns, which is what lets a test observe the exit as an
 /// ordered event beside the restores rather than by inspecting a return value.
+///
+/// ## Synchronous, since ADR 0012's watchdog
+///
+/// This was `async` for as long as the only caller was an `async` teardown whose test recorder
+/// wanted to `await` an actor. The liveness watchdog ends the process from its own dispatch
+/// queue, where there is no pool thread to spend (a verdict is only worth reaching when the
+/// pool is not making progress), so the seam is synchronous: `exit` needs no executor, and
+/// there is still exactly one `exit` site in this target.
 enum TeardownExit {
 
     /// Ends the process with the code `outcome` names.
-    static let process: @Sendable (TeardownOutcome) async -> Void = { exit($0.exitCode) }
+    static let process: @Sendable (TeardownOutcome) -> Void = { exit($0.exitCode) }
 }
 
 /// Where the signals come from, so the handler body can be run without raising one.
@@ -140,7 +148,7 @@ struct TeardownSeams: Sendable {
 
     init(
         sources: any SignalSourcing = DispatchSignalSources(),
-        terminate: @escaping @Sendable (TeardownOutcome) async -> Void = TeardownExit.process
+        terminate: @escaping @Sendable (TeardownOutcome) -> Void = TeardownExit.process
     ) {
         self.sources = sources
         self.termination = ProcessTermination(terminate: terminate)
@@ -337,7 +345,7 @@ actor SignalTeardown<Plane: FanControlPlane> {
         // Through the shared claim, not the bare seam: if the liveness watchdog already ended
         // the process, this is refused and logged. It does not ask whether it has begun, and
         // `hasBegun` above says nothing about who may end the process.
-        await seams.termination.end(outcome)
+        seams.termination.end(outcome)
     }
 
     /// `restoreToAutomatic(.everyFan)`, and what its answer means for the exit code.

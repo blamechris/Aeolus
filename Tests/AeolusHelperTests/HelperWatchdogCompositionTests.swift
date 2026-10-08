@@ -9,10 +9,11 @@ import os
 /// The watchdog as `HelperComposition` wires it (ADR 0012 I2, I5, I6).
 ///
 /// What the unit suites cannot say is whether the watchdog in the **composed** helper holds the
-/// monitor the connection stamps, the progress the supervisor reports into, and the same
-/// termination claim the signal teardown ends the process through. A watchdog over a private
-/// copy of any of the three compiles, passes every test of the watchdog alone, and watches
-/// nothing — the failure shape `HelperComposition` documents for a defaulted latch.
+/// monitor the connection stamps, the progress the supervisor reports into, the tick source the
+/// daemon ships, and the same termination claim the signal teardown ends the process through. A
+/// watchdog over a private copy of any of the four compiles, passes every test of the watchdog
+/// alone, and watches nothing — the failure shape `HelperComposition` documents for a defaulted
+/// latch.
 @Suite("The liveness watchdog, composed", .timeLimit(.minutes(1)))
 struct HelperWatchdogCompositionTests {
 
@@ -39,14 +40,44 @@ struct HelperWatchdogCompositionTests {
             leaseLog: LeaseFixture.log,
             safetyLog: safetyLog,
             teardown: TeardownSeams(
-                sources: RecordingSignalSources(),
-                terminate: { outcome in await journal.record(.exited(outcome)) }))
+                sources: RecordingSignalSources(), terminate: journal.terminate))
     }
 
     private static func scriptedPlane() -> ScriptedControlPlane {
         ScriptedControlPlane(
             fans: [0: .automatic(at: 2_400)],
             stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+    }
+
+    // MARK: - The shipped tick source
+
+    /// The shipped daemon's watchdog is given a tick source that **ticks**.
+    ///
+    /// Everything else about the watchdog is exercised with a source the test fires by hand, so
+    /// a later edit that gave `production()` a source which never fires — a test double
+    /// promoted to the default, a refactor that dropped the argument, a conformer whose
+    /// `start` returns early — would still arm, still log "armed", never look, and pass every
+    /// test here. `DispatchWatchdogTicksTests` covers the timer type; this covers that it is
+    /// the one the daemon is built with.
+    ///
+    /// Behavioural in the way `HelperCompositionTests`' power-observer test is:
+    /// `production(log:)` only constructs, so a test may build it on a machine with no SMC, look
+    /// at what it holds, and throw it away. Nothing is armed and no timer is made.
+    ///
+    /// **Mutation:** replace `production`'s default `watchdogTicks` with a source that never
+    /// fires. Run: red.
+    @Test("The shipped daemon's watchdog is given the real timer")
+    func theProductionGraphIsGivenARealTickSource() {
+        let ticks = HelperComposition.production(log: Self.helperLog).watchdog.ticks
+        let held = String(describing: type(of: ticks))
+
+        #expect(
+            ticks is DispatchWatchdogTicks,
+            """
+            the shipped watchdog's tick source is \(held). Nothing calls tick(), so a wedged \
+            round trip or a stalled safety cycle is never noticed, and the log says the \
+            watchdog is armed. docs/SAFETY.md § 6, ADR 0012.
+            """)
     }
 
     // MARK: - Armed first
@@ -107,11 +138,7 @@ struct HelperWatchdogCompositionTests {
         helper.watchdog.tick()
         helper.watchdog.tick()
 
-        let ended = await pollUntil {
-            await exits(of: journal).isEmpty == false
-        }
-        #expect(ended)
-        #expect(await exits(of: journal) == [.blind])
+        #expect(journal.exitsNow == [.blind])
     }
 
     /// The progress the supervisor stamps is the progress the watchdog reads. Started for
@@ -156,7 +183,7 @@ struct HelperWatchdogCompositionTests {
                 over: Self.scriptedPlane(), roundTrips: monitor, ticks: ManualWatchdogTicks(),
                 journal: journal)
             await helper.signalTeardown.run(stoppingSupervisorsWith: {})
-            let afterTeardown = await exits(of: journal)
+            let afterTeardown = journal.exitsNow
             #expect(afterTeardown.count == 1, "the teardown did not end the process once")
 
             let wedge = WedgedRoundTrip(monitor, tpd0)
@@ -168,10 +195,9 @@ struct HelperWatchdogCompositionTests {
             timeline.advance(by: .seconds(6))
             helper.watchdog.tick()
             helper.watchdog.tick()
-            await settle()
 
             #expect(
-                await exits(of: journal) == afterTeardown,
+                journal.exitsNow == afterTeardown,
                 "the watchdog ended a process the teardown was already ending")
         }
 
@@ -192,14 +218,11 @@ struct HelperWatchdogCompositionTests {
             timeline.advance(by: .seconds(6))
             helper.watchdog.tick()
             helper.watchdog.tick()
-            let ended = await pollUntil {
-                await exits(of: journal).isEmpty == false
-            }
-            #expect(ended)
+            #expect(journal.exitsNow == [.blind])
 
             await helper.signalTeardown.run(stoppingSupervisorsWith: {})
             #expect(
-                await exits(of: journal) == [.blind],
+                journal.exitsNow == [.blind],
                 "the teardown ended a process the watchdog was already ending")
         }
     }
@@ -246,16 +269,13 @@ struct HelperWatchdogCompositionTests {
         timeline.advance(by: .seconds(6))
         helper.watchdog.tick()
         helper.watchdog.tick()
-        let ended = await pollUntil {
-            await exits(of: journal).isEmpty == false
-        }
-        #expect(ended)
+        #expect(journal.exitsNow == [.blind], "nothing ended the wedged process")
 
         // The teardown comes unstuck, finishes, and asks to end the process too.
         await parked.signal()
         await teardown.value
 
-        #expect(await exits(of: journal) == [.blind])
+        #expect(journal.exitsNow == [.blind])
     }
 
     // MARK: - Never through the connection
@@ -265,40 +285,41 @@ struct HelperWatchdogCompositionTests {
         var occupied = false
         var stampWhileHeld: SMCRoundTripInFlight?
         var faultsAtOnce = -1
+        var endedWhileHeld: [TeardownOutcome] = []
         var probeRanWhileHeld = false
         var finished = false
     }
 
     /// A real `SMCConnection`, really held — a thread parked on a semaphore inside the actor,
-    /// not a double that merely suspends — and a verdict reached while it is.
+    /// not a double that merely suspends — and a verdict reached **and the process ended**
+    /// while it is.
     ///
-    /// **The decision is synchronous.** The `.fault` is in the log the moment the second
-    /// `tick()` returns, with no `await` between: a watchdog that obtained the stamp through an
-    /// actor hop, or hopped anywhere before deciding, would not have decided yet. That is what
-    /// makes this fail for a hop even when the hop is not to the connection. The stamp is read
-    /// while the actor is held, from a thread that is not the actor's, and a call queued behind
-    /// the held connection has not run when the verdict is in.
+    /// **The decision is synchronous, and so is the ending.** The `.fault` is in the log and
+    /// the terminate seam has been called the moment the second `tick()` returns, with no
+    /// `await` between: a watchdog that obtained the stamp through an actor hop, or hopped
+    /// anywhere before deciding or ending, would not have done either yet. The stamp is read
+    /// while the actor is held, from a thread that is not the actor's, and a call queued
+    /// behind the held connection has not run when the process has ended.
     ///
-    /// ## Why the window is short, and driven from a thread of its own
+    /// ## No dependence on the width of the cooperative pool
     ///
-    /// Holding an actor means parking a cooperative-pool thread, and this repository already has
-    /// two tests that do (`SMCRoundTripMonitorTests`' and `ThreadBlockingRestorePlane`'s), each
-    /// released by its own test task, which needs a pool thread to run. On a three-core runner
-    /// the pool is three threads wide, a third parked test leaves none to resume any of them,
-    /// and the suite stops: that is what happened to this pull request's first CI run, for
-    /// twenty minutes. A quarter of a second of parking was still enough to push a wall-clock
-    /// test in `PendingReplyTests` over its bound. So the held window asks nothing of the pool
-    /// and lasts as long as two synchronous ticks: the thread that drives it and the failsafe
-    /// that ends it are `Thread`s.
+    /// Holding an actor parks a pool thread, and this repository already has two tests that do
+    /// (`SMCRoundTripMonitorTests`' and `ThreadBlockingRestorePlane`'s). On a three-core runner
+    /// a third left none to resume any of them, and this pull request's first CI run stopped
+    /// for twenty minutes. So the held window asks nothing of the pool: the thread that drives
+    /// it and the failsafe that ends it are `Thread`s, and it lasts as long as two synchronous
+    /// ticks.
     ///
-    /// What the window therefore does **not** show is the process ending *while* the connection
-    /// is held, which needs a free pool thread that a loaded runner cannot promise. Nothing in
-    /// the termination path names the connection (`WatchdogTripwireTests`), and the ending is
-    /// asserted as soon as the connection is freed.
+    /// It used to give up the assertion that the process *ends* while the connection is held,
+    /// because the ending was a `Task` and a `Task` needs a pool thread this window may be
+    /// holding. The ending is synchronous now (ADR 0012's amendment records the reversal), so
+    /// the assertion is back, and it holds on a pool of any width: the driver thread calls
+    /// `tick()`, and `tick()` calls the terminate seam.
     ///
     /// **Mutation:** read the stamp through an actor hop in `tick()` (a `Task` that awaits an
     /// actor, deciding when it returns). Run: red.
-    @Test("A verdict is reached while the real connection is held")
+    /// **Mutation:** end the process from a `Task` instead of inline. Run: red.
+    @Test("A verdict ends the process while the real connection is held")
     func theWatchdogNeverEntersTheConnectionActor() async {
         let rig = WatchdogRig()
         let connection = SMCConnection(roundTrips: rig.monitor)
@@ -328,13 +349,13 @@ struct HelperWatchdogCompositionTests {
             rig.timeline.advance(by: .seconds(6))
             rig.watchdog.tick()
             rig.watchdog.tick()
-            // No suspension since the second tick: the verdict is already in the log.
-            let faultsAtOnce = rig.log.faults.count
-            let probeRan = probeFinished.withLock { $0 }
+            // No suspension since the second tick: the verdict is in the log and the process
+            // has been ended, on this thread.
             window.withLock {
                 $0.stampWhileHeld = stamp
-                $0.faultsAtOnce = faultsAtOnce
-                $0.probeRanWhileHeld = probeRan
+                $0.faultsAtOnce = rig.log.faults.count
+                $0.endedWhileHeld = rig.exitsNow
+                $0.probeRanWhileHeld = probeFinished.withLock { $0 }
             }
         }.start()
 
@@ -356,9 +377,12 @@ struct HelperWatchdogCompositionTests {
         #expect(seen.occupied, "the connection was never occupied")
         #expect(seen.stampWhileHeld?.operation == .open, "no stamp was visible while it was held")
         #expect(seen.faultsAtOnce == 1, "the verdict was not reached inside tick()")
+        #expect(
+            seen.endedWhileHeld == [.blind],
+            "the process was not ended, once, while the connection was held: \(seen.endedWhileHeld)"
+        )
         #expect(!seen.probeRanWhileHeld, "the connection was not actually held")
         #expect(await pollUntil { probeFinished.withLock { $0 } }, "the queued call never ran")
-        #expect(await rig.waitForExit(), "the process was not ended")
-        #expect(await exits(of: rig.journal) == [.blind])
+        #expect(rig.exitsNow == [.blind], "freeing the connection ended the process again")
     }
 }

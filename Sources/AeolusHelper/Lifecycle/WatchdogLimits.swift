@@ -21,8 +21,11 @@ enum WatchdogLimits {
     static let roundTrip: Duration = .seconds(5)
 
     /// **D_cycle**, 3·D: no completed § 3 cycle for this long, while the supervisor runs.
-    /// `requiredCycleBound(outstandingReads:criticalReadKeys:)` is the derivation; 15 s holds
-    /// for up to 16 supervisor-priority reads outstanding at once and not for 17.
+    /// `requiredCycleBound(outstandingReads:criticalReadKeys:)` is the derivation, at a design
+    /// point of 12 supervisor-priority reads outstanding at once (today's build is 3; nothing
+    /// bounds the count, [#332](https://github.com/blamechris/Aeolus/issues/332)). 15 s holds for
+    /// up to 16 of them and not for 17, **for a critical set of at most `maxKeysPerTurn` keys**
+    /// (`WatchdogLimitsTests` checks every curated set).
     static let cycleBound: Duration = roundTrip * 3
 
     /// **D_bringUp**: from arming to `ThermalSupervisor.start()`. The reconciliation budget
@@ -64,11 +67,6 @@ enum WatchdogLimits {
     /// A firing cycle's writes and read-backs on two fans (ADR 0012, "Outstanding reads, and
     /// why D_cycle is 15 s"): the last term of the allowance, taken at the same worst case.
     static let firingCycleRoundTrips = 30
-
-    /// The design point: supervisor-priority reads outstanding at once. Today's build is 3;
-    /// the client-driven terms arrive with E3, and nothing bounds the count
-    /// ([#332](https://github.com/blamechris/Aeolus/issues/332)).
-    static let designPointOutstandingReads = 12
 
     /// The round trips a § 3 cycle may have to wait behind, with `outstandingReads` readers
     /// outstanding (ADR 0012, "Outstanding reads, and why D_cycle is 15 s"):

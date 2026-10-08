@@ -441,16 +441,16 @@ struct WriteVerbAllowlistTests {
         "LeaseClock.swift: sleep(until: ContinuousClock.Instant)",
         "LeaseExpirySupervisor.swift: run(authority: LeaseAuthority, "
             + "clock: some MonotonicClock, idleInterval: Duration, log: LeaseLog)",
-        // ADR 0012's liveness watchdog (#329). None of the three writes to a fan or can: the
-        // watchdog holds a lock-guarded stamp, a lock-guarded progress object and a
+        // ADR 0012's liveness watchdog (#329). Neither writes to a fan or can: the watchdog
+        // holds a lock-guarded stamp, a lock-guarded progress object and a
         // `ProcessTermination`, and the plane is named by none of them (the tripwire in
-        // `WatchdogTripwireTests` holds that). `arm()` starts a timer; `start(_:)` is the tick
-        // source's requirement and its one conformer, with one signature; and
-        // `ProcessTermination.end(_:)` ends the *process*. It is not the keystone — a verdict
-        // issues no restore, which is why the restart and the reconciliation behind it exist.
+        // `WatchdogTripwireTests` holds that). `arm()` starts a timer, and `start(_:)` is the
+        // tick source's requirement and its one conformer, with one signature. The verdict
+        // itself — `tick()` and `ProcessTermination.claim(_:)` / `end(_:)` — is synchronous and
+        // so is outside this population; it issues no restore, which is why the restart and the
+        // reconciliation behind it exist.
         "LivenessWatchdog.swift: arm()",
         "LivenessWatchdog.swift: start(_: @escaping @Sendable () -> Void)",
-        "ProcessTermination.swift: end(_: TeardownOutcome)",
         "ReadOnlyFanAuthority.swift: acquireLease(_: LeaseRequest, from: ConnectionID)",
         "ReadOnlyFanAuthority.swift: apply(_: [FanSetting], leaseID: UUID, from: ConnectionID)",
         "ReadOnlyFanAuthority.swift: connectionDidInvalidate(_: ConnectionID)",
@@ -721,14 +721,14 @@ struct WriteVerbAllowlistTests {
     /// a walk that may never return. Its body sleeps on the injected clock and then awaits
     /// `discoveryWalkOverran()`, which increments a counter and logs. It writes nothing.
     ///
-    /// **Re-pinned by [#329](https://github.com/blamechris/Aeolus/issues/329)** (ADR 0012):
-    /// seventeen to eighteen, `LivenessWatchdog.tick()`'s. It is the one bridge from a
-    /// synchronous tick on a dispatch queue to the `async` terminate seam, and its body is
-    /// one `await` of `ProcessTermination.end(_:)`, which `permitFreeFunctions` acknowledges.
-    /// It writes nothing and reaches no fan: ending the process is the point of it, and the
-    /// restore that follows is the next process's reconciliation.
+    /// **[#329](https://github.com/blamechris/Aeolus/issues/329)** (ADR 0012) leaves it at
+    /// seventeen, deliberately. `LivenessWatchdog.tick()` ends the process on its own dispatch
+    /// queue, synchronously, and has no `Task`: a hand-off to the cooperative pool would never
+    /// run in the one case the watchdog exists for, the pool not making progress. A spawn site
+    /// added to `LivenessWatchdog.swift` is therefore not a number to update here but the
+    /// hand-off that ADR 0012's amendment rejects.
     ///
-    /// The count is asserted per file so it cannot drift silently. A nineteenth spawn site
+    /// The count is asserted per file so it cannot drift silently. An eighteenth spawn site
     /// fails this with the file it was added to, and the maintainer either shows it hands off
     /// the same way and updates the number, or has found the hole.
     ///
@@ -752,7 +752,6 @@ struct WriteVerbAllowlistTests {
             "HelperListenerDelegate.swift": 1,
             "HelperXPCService.swift": 3,
             "LeaseExpirySupervisor.swift": 1,
-            "LivenessWatchdog.swift": 1,
             "MessageSequencer.swift": 1,
             "ReadOnlyFanAuthority.swift": 2,
             "ReclamationSupervisor.swift": 1,

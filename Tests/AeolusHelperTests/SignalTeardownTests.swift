@@ -76,7 +76,7 @@ struct SignalTeardownTests {
             safetyLog: safetyLog,
             teardown: TeardownSeams(
                 sources: signals,
-                terminate: { outcome in await journal.record(.exited(outcome)) }))
+                terminate: journal.terminate))
         await plane.observe(gate: helper.authority.controlGate)
         await helper.bindSafetyRegistries()
         return helper
@@ -458,7 +458,7 @@ struct SignalTeardownTests {
         await helper.signalTeardown.install(stoppingSupervisorsWith: Self.stopRecorder(journal))
 
         await signals.fire()
-        try await journal.finished.wait()
+        #expect(await journal.waitForExit(), "the teardown never reached its exit")
 
         #expect(await journal.restoreScopes == [.everyFan, .everyFan])
         #expect(await journal.events.last == .exited(.restored))
@@ -486,7 +486,7 @@ struct SignalTeardownTests {
 
         await helper.bringUp()
         await signals.fire()
-        try await journal.finished.wait()
+        #expect(await journal.waitForExit(), "the teardown never reached its exit")
 
         #expect(await helper.thermalSupervisor.isRunning == false, "§ 3 outlived the teardown")
         #expect(await helper.reclamationSupervisor.isRunning == false, "§ 5 outlived it")

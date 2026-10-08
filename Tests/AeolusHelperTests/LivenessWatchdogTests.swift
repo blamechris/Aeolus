@@ -22,8 +22,12 @@ struct LivenessWatchdogTests {
     /// A round trip that is out for longer than D, seen on two consecutive ticks, logs one
     /// `.fault` and ends the process with the exit code launchd reads as "restart me".
     ///
-    /// **Mutation:** delete the `Task { await termination.end(.blind) }` in
-    /// `LivenessWatchdog.tick()`. Run: red — the fault is logged and the process never ends.
+    /// The ending is **synchronous**: it has happened by the time the second `tick()` returns,
+    /// on the thread that called it, with no hand-off to the cooperative pool that could be
+    /// parked.
+    ///
+    /// **Mutation:** delete the `ending.end()` in `LivenessWatchdog.tick()`. Run: red — the
+    /// fault is logged and the process never ends.
     /// **Mutation:** map `.blind` to `0` in `TeardownOutcome.exitCode`. Run: red — the
     /// process ends, and with the code that tells launchd not to restart it.
     @Test("A round trip that does not return ends the process, non-zero")
@@ -39,8 +43,7 @@ struct LivenessWatchdogTests {
         rig.timeline.advance(by: .seconds(6))
         rig.tickTwice()
 
-        #expect(await rig.waitForExit())
-        #expect(await exits(of: rig.journal) == [.blind])
+        #expect(rig.exitsNow == [.blind], "the terminate seam is called once, with .blind")
         #expect(TeardownOutcome.blind.exitCode == 2, "the exit code the restart policy reads")
         #expect(
             TeardownOutcome.blind.exitCode != 0,
@@ -79,6 +82,38 @@ struct LivenessWatchdogTests {
         #expect(rig.log.lines.last?.level == .fault, "a verdict is a fault, not a notice")
     }
 
+    /// The line states the rule the code applies, derived from the constant that decides it,
+    /// and promises a restart and a restoration no further than they are true: a wedge that
+    /// outlives the restart ends the next process too, and a job launchd is stopping is not
+    /// restarted at all.
+    ///
+    /// The tick count is read from `WatchdogLimits.ticksPerVerdict` in the log, and compared
+    /// with it here; that it is *derived* and not merely equal today is a property of one line
+    /// of `WatchdogLog`, not something a test can distinguish while the constant is 2.
+    ///
+    /// **Mutation:** restore the sentence "launchd restarts it, and startup reconciliation
+    /// restores automatic control". Run: red.
+    @Test("The fault promises no more restart than there is")
+    func theFaultDoesNotOverpromise() {
+        let rig = WatchdogRig()
+        rig.monitor.bracket(tpd0) {
+            rig.timeline.advance(by: .seconds(6))
+            rig.tickTwice()
+        }
+
+        let line = rig.log.faults.first ?? ""
+        #expect(
+            line.contains("seen on \(WatchdogLimits.ticksPerVerdict) consecutive ticks"),
+            "\(line)")
+        #expect(line.contains("restarts a job it is keeping alive"), "\(line)")
+        #expect(line.contains("if its first read returns"), "\(line)")
+        #expect(line.contains("nothing is restored until the driver answers"), "\(line)")
+        #expect(line.contains("it does not restart it"), "\(line)")
+        #expect(
+            !line.contains("restores automatic control."),
+            "the line promises a restoration unconditionally: \(line)")
+    }
+
     /// `IOServiceOpen` and `IOServiceClose` are stamped as well (a reconnect runs them), and a
     /// `READ_INDEX` call carries key zero, which is not a key: the line says so rather than
     /// printing four NULs.
@@ -107,9 +142,9 @@ struct LivenessWatchdogTests {
     /// the locked step that decides it, so a tick after the verdict does nothing.
     ///
     /// **Mutation:** never set `fired`. Run: red — every further tick logs another fault and
-    /// asks to end the process again.
+    /// calls the terminate seam again.
     @Test("A verdict is one fault and one request, however many ticks follow")
-    func aVerdictIsReachedOnce() async {
+    func aVerdictIsReachedOnce() {
         let rig = WatchdogRig()
         rig.monitor.bracket(tpd0) {
             rig.timeline.advance(by: .seconds(6))
@@ -117,10 +152,9 @@ struct LivenessWatchdogTests {
         }
 
         #expect(rig.log.faults.count == 1)
-        #expect(await rig.waitForExit())
-        #expect(await exits(of: rig.journal) == [.blind])
-        // The termination's own claim would hide a second request from the journal, so the
-        // fault count is the evidence that the watchdog asked once.
+        // The terminate seam was called once, and nothing was refused: with no hand-off there
+        // is no second request in flight that a later tick could have raced.
+        #expect(rig.exitsNow == [.blind])
         #expect(rig.log.lines(containing: "already ending").isEmpty)
     }
 
@@ -134,7 +168,7 @@ struct LivenessWatchdogTests {
     /// reading) instead of from the stamp's own start. Run: red — the sixth tick of an
     /// unbroken run of short calls ends the process.
     @Test("Continuous short round trips never trip the watchdog")
-    func continuousShortRoundTripsNeverTrip() async {
+    func continuousShortRoundTripsNeverTrip() {
         let rig = WatchdogRig()
 
         // 120 ticks, 0.5 s apart — a minute of back-to-back calls, with a stamp in flight on
@@ -147,7 +181,7 @@ struct LivenessWatchdogTests {
         }
 
         #expect(rig.log.faults.isEmpty)
-        #expect(await rig.endedAfterSettling() == false)
+        #expect(rig.exitsNow.isEmpty)
     }
 
     /// One observation past the bound is not a verdict. A round trip that was slow and then
@@ -156,7 +190,7 @@ struct LivenessWatchdogTests {
     /// **Mutation:** act on the first over-bound tick (`>= 1` where the streak is compared
     /// with `ticksPerVerdict`). Run: red.
     @Test("A stamp seen past the bound once is not a verdict")
-    func anOverBoundStampSeenOnceIsNotAVerdict() async {
+    func anOverBoundStampSeenOnceIsNotAVerdict() {
         let rig = WatchdogRig()
 
         rig.monitor.bracket(tpd0) {
@@ -168,7 +202,7 @@ struct LivenessWatchdogTests {
         rig.watchdog.tick()
 
         #expect(rig.log.faults.isEmpty)
-        #expect(await rig.endedAfterSettling() == false)
+        #expect(rig.exitsNow.isEmpty)
     }
 
     /// Two different round trips, each past the bound on one tick, are not one wedge. The
@@ -177,7 +211,7 @@ struct LivenessWatchdogTests {
     /// **Mutation:** key the streak on "some round trip is over the bound" rather than on the
     /// sequence number. Run: red.
     @Test("Two different slow round trips on consecutive ticks are not a verdict")
-    func twoDifferentSlowRoundTripsAreNotOneWedge() async {
+    func twoDifferentSlowRoundTripsAreNotOneWedge() {
         let rig = WatchdogRig()
 
         rig.monitor.bracket(tpd0) {
@@ -191,7 +225,7 @@ struct LivenessWatchdogTests {
 
         #expect(rig.monitor.issuedCount == 2, "the scenario did not issue two round trips")
         #expect(rig.log.faults.isEmpty)
-        #expect(await rig.endedAfterSettling() == false)
+        #expect(rig.exitsNow.isEmpty)
     }
 
     // MARK: - Arming
@@ -220,26 +254,6 @@ struct LivenessWatchdogTests {
         #expect(rig.log.faults.count == 1, "the second arm() gave the bring-up a fresh bound")
     }
 
-    /// A second request to end the process is refused and says so, and the first outcome
-    /// stands. The refusal is a notice and not a fault: the process is already on its way out.
-    ///
-    /// **Mutation:** remove the first-wins return in `ProcessTermination.end`. Run: red — the
-    /// journal holds two endings. **Mutation:** delete the `log.terminationAlreadyClaimed(…)`
-    /// call. Run: red — the refusal is silent.
-    @Test("A second request to end the process is refused, and logged")
-    func aSecondRequestToEndTheProcessIsRefused() async {
-        let rig = WatchdogRig()
-
-        await rig.termination.end(.restored)
-        await rig.termination.end(.blind)
-
-        #expect(await exits(of: rig.journal) == [.restored])
-        let refusals = rig.log.lines(containing: "already ending as restored")
-        #expect(refusals.count == 1)
-        #expect(refusals.first?.level == .notice)
-        #expect(refusals.first?.message.contains("blind") == true)
-    }
-
     /// The handler the timer is given is the watchdog's own tick: firing the source is what
     /// produces a verdict, with no other path from the timer to the decision.
     ///
@@ -255,6 +269,6 @@ struct LivenessWatchdogTests {
         rig.ticks.fire()
 
         #expect(rig.log.faults.count == 1)
-        #expect(await rig.waitForExit())
+        #expect(rig.exitsNow == [.blind])
     }
 }

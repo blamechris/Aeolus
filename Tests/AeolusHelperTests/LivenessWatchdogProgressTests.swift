@@ -84,8 +84,7 @@ struct LivenessWatchdogProgressTests {
         #expect(line.contains("bound of 15.000 s"), "\(line)")
         #expect(line.contains("0 completion(s)"), "\(line)")
         #expect(line.contains("No stamp is in flight."), "\(line)")
-        #expect(await rig.waitForExit())
-        #expect(await exits(of: rig.journal) == [.blind])
+        #expect(rig.exitsNow == [.blind])
         await stalled.finish()
     }
 
@@ -139,7 +138,7 @@ struct LivenessWatchdogProgressTests {
         }
 
         #expect(rig.log.faults.isEmpty)
-        #expect(await rig.endedAfterSettling() == false)
+        #expect(rig.exitsNow.isEmpty)
     }
 
     /// A stopped supervisor is not a stall. Teardown stops § 3 on purpose, and the watchdog
@@ -161,8 +160,59 @@ struct LivenessWatchdogProgressTests {
         for _ in 0..<5 { rig.watchdog.tick() }
 
         #expect(rig.log.faults.isEmpty)
-        #expect(await rig.endedAfterSettling() == false)
+        #expect(rig.exitsNow.isEmpty)
         await stalled.finish()
+    }
+
+    /// The ordinary shape of a stop: `stop()` cancels without awaiting, the cycle in flight
+    /// finishes and returns `true`, and `run` records it. That late completion counts — and it
+    /// must not re-arm the cycle trigger over a loop that is dead, or an hour after teardown
+    /// stopped § 3 the helper ends `.blind`.
+    ///
+    /// **Mutation:** set the phase to `.cycling` in `ThermalCycleProgress.recordCompletion()`.
+    /// Run: red.
+    @Test("A completion that arrives after stop() does not re-arm the cycle trigger")
+    func aLateCompletionAfterStopDoesNotReArm() async throws {
+        let rig = WatchdogRig()
+        let stalled = await StalledSupervisor(progress: rig.progress)
+        try await stalled.startAndWaitUntilParked()
+
+        await stalled.supervisor.stop()
+        await stalled.release.signal()
+        #expect(
+            await pollUntil { rig.progress.reading().completions > 0 },
+            "the outgoing cycle never completed")
+        rig.timeline.advance(by: .seconds(3_600))
+        for _ in 0..<5 { rig.watchdog.tick() }
+
+        #expect(rig.log.faults.isEmpty, "\(rig.log.faults)")
+        #expect(rig.exitsNow.isEmpty)
+        #expect(rig.progress.reading().phase == .disarmed)
+    }
+
+    /// A loop that ends **on its own** — not because anyone called `stop()` — is a § 3 that
+    /// stopped looking, and the cycle trigger firing over it is deliberate (the
+    /// `ThermalSupervisor.stop()` doc says so). Nothing told the watchdog to stand down.
+    ///
+    /// **Mutation:** also call `progress.endCycling()` in `ThermalSupervisor.loopEnded`. Run:
+    /// red.
+    @Test("A loop that ends on its own is a stall")
+    func aLoopThatEndsOnItsOwnIsAStall() async {
+        let rig = WatchdogRig()
+        let machine = ThermalMachine(stages: [.at(44)])
+        let supervisor = ThermalSupervisor(
+            emergency: machine.emergency, clock: TestClock(sleepBudget: 0),
+            interval: .seconds(1), progress: rig.progress)
+
+        await supervisor.start()
+        let ended = await pollUntil { await supervisor.isRunning == false }
+        #expect(ended, "the loop never ended on its own")
+
+        rig.timeline.advance(by: .seconds(16))
+        rig.tickTwice()
+
+        #expect(rig.log.faults.first?.contains("safety-cycle trigger") == true)
+        #expect(rig.exitsNow == [.blind])
     }
 
     /// Stopping a supervisor that was **never started** does not silence the bring-up bound:
@@ -237,8 +287,7 @@ struct LivenessWatchdogProgressTests {
         #expect(line.contains("16.000 s"), "\(line)")
         #expect(line.contains("bound of 15.000 s"), "\(line)")
         #expect(line.contains("No stamp is in flight."), "\(line)")
-        #expect(await rig.waitForExit())
-        #expect(await exits(of: rig.journal) == [.blind])
+        #expect(rig.exitsNow == [.blind])
     }
 
     /// A stalled bring-up names a round trip in flight when there is one, as a stalled cycle
@@ -307,45 +356,5 @@ struct LivenessWatchdogProgressTests {
 
         #expect(rig.log.faults.first?.contains("safety-cycle trigger") == true)
         await stalled.finish()
-    }
-
-    // MARK: - The clock
-
-    /// The progress triggers age on the suspending clock — a property of one `typealias`,
-    /// asserted as a property of the type. The composition's `MonotonicClock` is
-    /// `ContinuousClock`, which keeps counting through a sleep, and on it the first two ticks
-    /// after an hour-long lid close would both see an hour since the last cycle.
-    ///
-    /// **Mutation:** `typealias MeasuringClock = ContinuousClock` in `ThermalCycleProgress`.
-    /// Run: red.
-    @Test("The progress triggers read the suspending clock")
-    func theProgressTriggerReadsTheSuspendingClock() {
-        #expect(
-            ThermalCycleProgress.Instant.self == SuspendingClock.Instant.self,
-            "ADR 0012: a cycle in flight across a sleep must not age")
-        #expect(ThermalCycleProgress.MeasuringClock.self == SuspendingClock.self)
-    }
-
-    /// The age is read from the progress object's own clock when it is asked for, from the
-    /// moment of the last completion: the comparer mints the instant, so a caller cannot hand
-    /// it one that makes the comparison a no-op.
-    ///
-    /// **Mutation:** take the age against the anchor's own instant (a stored "now").
-    /// Run: red.
-    @Test("The age is minted when it is read, from the last completion")
-    func theAgeIsMintedWhenRead() {
-        let rig = WatchdogRig()
-        rig.progress.beginCycling()
-        rig.timeline.advance(by: .seconds(4))
-        rig.progress.recordCompletion()
-        rig.timeline.advance(by: .seconds(3))
-
-        let reading = rig.progress.reading()
-        #expect(reading.sinceLastCompletion == .seconds(3))
-        #expect(reading.completions == 1)
-        #expect(reading.phase == .cycling)
-
-        rig.timeline.advance(by: .seconds(2))
-        #expect(rig.progress.reading().sinceLastCompletion == .seconds(5))
     }
 }

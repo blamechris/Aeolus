@@ -1,5 +1,6 @@
 import FanKit
 import SMCCore
+import os
 
 @testable import AeolusHelper
 
@@ -27,26 +28,62 @@ enum TeardownEvent: Sendable, Hashable {
     case exited(TeardownOutcome)
 }
 
-/// The ordered log of everything the teardown did, plus a latch for the end of it.
-actor TeardownJournal {
+/// The ordered log of everything the teardown did.
+///
+/// A lock-guarded array and not an actor, for one reason: the process ending is **synchronous**
+/// now (ADR 0012 — the watchdog ends it from its own queue, where there is no pool thread to
+/// spend), so the recorder the terminate seam is given must be callable without `await`, and
+/// it must still sit in the same order as the restores. `record(_:)` stays `async` so that
+/// every existing `await journal.record(...)` keeps meaning what it meant; `recordNow(_:)` is
+/// the same append without the suspension point.
+final class TeardownJournal: Sendable {
 
-    private(set) var events: [TeardownEvent] = []
-
-    /// Fires when `.exited` is recorded, so a test driving the teardown through a fired
-    /// signal has something deterministic to await instead of polling.
-    let finished = AsyncSignal()
+    private let recorded = OSAllocatedUnfairLock(initialState: [TeardownEvent]())
 
     func record(_ event: TeardownEvent) async {
-        events.append(event)
-        if case .exited = event { await finished.signal() }
+        recordNow(event)
+    }
+
+    func recordNow(_ event: TeardownEvent) {
+        recorded.withLock { $0.append(event) }
+    }
+
+    /// The terminate seam for a test: records the exit, in order, and returns.
+    var terminate: @Sendable (TeardownOutcome) -> Void {
+        { [self] outcome in recordNow(.exited(outcome)) }
+    }
+
+    var events: [TeardownEvent] {
+        get async { recorded.withLock { $0 } }
+    }
+
+    /// Every exit recorded, read without suspending.
+    var exitsNow: [TeardownOutcome] {
+        recorded.withLock { events in
+            events.compactMap {
+                if case .exited(let outcome) = $0 { return outcome }
+                return nil
+            }
+        }
     }
 
     /// Just the scopes, for the assertions that are only about which restores happened.
     var restoreScopes: [FanRestoreScope] {
-        events.compactMap {
-            if case .restored(let scope, _) = $0 { return scope }
-            return nil
+        get async {
+            recorded.withLock { events in
+                events.compactMap {
+                    if case .restored(let scope, _) = $0 { return scope }
+                    return nil
+                }
+            }
         }
+    }
+
+    /// Waits for an exit to be recorded: for a test that drives the teardown through a fired
+    /// signal, whose handler runs it on a task of its own. A failsafe on readiness, not a
+    /// bound on speed.
+    func waitForExit() async -> Bool {
+        await pollUntil { !exitsNow.isEmpty }
     }
 }
 

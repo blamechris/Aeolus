@@ -12,6 +12,12 @@ import os
 /// any of those, and a § 3 that has stopped looking is the mechanism the lease's whole
 /// premise rests on.
 ///
+/// **Only where § 3 reads through the connection.** On a Mac with no curated critical set
+/// (every one but `Mac16,5` today) § 3's read takes no scheduler turn and completes a blind
+/// cycle every second, so an unstamped hang that holds the connection actor does not stop the
+/// count, and this trigger never sees it. That machine grants no lease, so no fan can be under
+/// manual control there; the cost is a daemon that hangs, not one that holds a fan.
+///
 /// ## The clock is the suspending clock, and it is this type's own
 ///
 /// `MeasuringClock` is one line, and it is the decision. A `ContinuousClock` keeps counting
@@ -100,22 +106,27 @@ final class ThermalCycleProgress: Sendable {
 
     // MARK: - Transitions
 
+    // Every transition and every reading takes "now" **inside** the lock. Taken outside, an
+    // outgoing loop's late completion could read t1, lose the lock to `beginCycling()` (t2 > t1)
+    // and then store t1 last, leaving an anchor earlier than the phase change it claims to be
+    // later than. Inside, the anchors are written in lock order from a clock that does not go
+    // backwards, so "the later of" is true, and an age can never be negative. The cost is one
+    // clock read under an uncontended lock; the clock never takes this lock.
+
     /// Bring-up begins. Called when the watchdog is armed.
     func beginBringUp() {
-        let instant = now()
         state.withLock {
             $0.phase = .bringUp
-            $0.anchor = instant
+            $0.anchor = now()
         }
     }
 
     /// The supervisor started. The last completion is now: the first cycle is held to the same
     /// bound as every later one, measured from the moment it could begin.
     func beginCycling() {
-        let instant = now()
         state.withLock {
             $0.phase = .cycling
-            $0.anchor = instant
+            $0.anchor = now()
         }
     }
 
@@ -133,22 +144,23 @@ final class ThermalCycleProgress: Sendable {
     /// Counts in any phase and moves no phase: a late completion from a loop that was stopped
     /// must not re-arm anything, and it must not be lost either.
     func recordCompletion() {
-        let instant = now()
         state.withLock {
             $0.completions += 1
-            $0.anchor = instant
+            $0.anchor = now()
         }
     }
 
     // MARK: - Reading
 
-    /// The state of progress as of now. "Now" is read **after** the state is copied out, so it
-    /// can never precede the anchor and the age is never negative.
+    /// The state of progress as of now. "Now" is read inside the same locked step that copies
+    /// the anchor, and after it, so it can never precede the anchor and the age is never
+    /// negative.
     func reading() -> Reading {
-        let copy = state.withLock { $0 }
-        return Reading(
-            phase: copy.phase,
-            completions: copy.completions,
-            sinceLastCompletion: copy.anchor.duration(to: now()))
+        state.withLock {
+            Reading(
+                phase: $0.phase,
+                completions: $0.completions,
+                sinceLastCompletion: $0.anchor.duration(to: now()))
+        }
     }
 }

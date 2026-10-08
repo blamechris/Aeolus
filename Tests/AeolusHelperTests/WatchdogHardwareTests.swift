@@ -29,6 +29,13 @@ import os
 /// ```
 ///
 /// The process is never ended by this test: the terminate seam is a journal.
+///
+/// ## Its length, and its ceiling
+///
+/// `AEOLUS_WATCHDOG_SOAK_SECONDS` sets how long it soaks, up to `maximumSoakSeconds`; a longer
+/// request is run for that and says so. The suite's own time limit is ten minutes and covers
+/// the bring-up and the shutdown as well, so a request for fifteen would not soak for fifteen,
+/// it would be killed at ten and report nothing.
 @Suite(
     "The liveness watchdog, real hardware",
     .serialized,
@@ -39,6 +46,9 @@ import os
     .timeLimit(.minutes(10))
 )
 struct WatchdogHardwareTests {
+
+    /// Nine minutes: the suite's ten-minute limit less the bring-up, the shutdown and a margin.
+    static let maximumSoakSeconds = 540
 
     /// The shipping timer, with every delivered tick counted.
     final class CountingTicks: WatchdogTicking, Sendable {
@@ -53,19 +63,30 @@ struct WatchdogHardwareTests {
         }
 
         var count: Int { delivered.withLock { $0 } }
+
+        /// Stops the real timer, so that none outlives the test.
+        func cancel() async {
+            await real.cancel()
+        }
     }
 
     @Test("Zero verdicts over a real bring-up and a soak beside a contending reader")
     func theWatchdogStaysSilentOnAHealthyMachine() async throws {
         let requested = ProcessInfo.processInfo.environment["AEOLUS_WATCHDOG_SOAK_SECONDS"]
-        let seconds = requested.flatMap { Int($0) } ?? 60
+        let asked = requested.flatMap { Int($0) } ?? 60
+        let seconds = min(max(asked, 1), Self.maximumSoakSeconds)
+        if seconds != asked {
+            print(
+                "watchdog soak: \(asked) s is outside 1...\(Self.maximumSoakSeconds); "
+                    + "running \(seconds) s")
+        }
         let journal = TeardownJournal()
         let ticks = CountingTicks()
         let helper = HelperComposition.production(
             log: HelperLog(subsystem: "dev.aeolus.AeolusHelperTests", category: "Watchdog"),
             teardown: TeardownSeams(
                 sources: RecordingSignalSources(),
-                terminate: { outcome in await journal.record(.exited(outcome)) }),
+                terminate: journal.terminate),
             watchdogTicks: ticks)
 
         await helper.bringUp()
@@ -74,20 +95,28 @@ struct WatchdogHardwareTests {
         // the way a client attached to the daemon shares it.
         let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
         var snapshots = 0
-        while ContinuousClock.now < deadline {
-            _ = try await helper.authority.snapshot()
-            snapshots += 1
-            try await Task.sleep(for: .seconds(1))
+        do {
+            while ContinuousClock.now < deadline {
+                _ = try await helper.authority.snapshot()
+                snapshots += 1
+                try await Task.sleep(for: .seconds(1))
+            }
+        } catch {
+            await helper.shutDown()
+            await ticks.cancel()
+            throw error
         }
 
         await helper.shutDown()
+        // The real timer would otherwise tick for as long as the test process lives.
+        await ticks.cancel()
 
         print(
             """
             watchdog soak on Mac16,5: \(seconds) s, \(ticks.count) ticks delivered, \
             \(snapshots) snapshots, \
             \(helper.cycleProgress.reading().completions) § 3 cycles completed, \
-            \(await exits(of: journal).count) process endings
+            \(journal.exitsNow.count) process endings
             """)
         // A floor of half the ticks the period promises: a loaded host may be late, but a
         // timer that delivered almost nothing was not watching.
@@ -95,6 +124,6 @@ struct WatchdogHardwareTests {
             ticks.count >= seconds / 2, "the timer ticked \(ticks.count) times in \(seconds) s")
         #expect(
             helper.cycleProgress.reading().completions > 0, "§ 3 never completed a cycle")
-        #expect(await exits(of: journal).isEmpty, "the watchdog ended a healthy helper")
+        #expect(journal.exitsNow.isEmpty, "the watchdog ended a healthy helper")
     }
 }

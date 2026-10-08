@@ -449,10 +449,19 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// deliberately not guarded **here**: refusing to serve is safe, serving over unreconciled
     /// fans is not. What ends a hung bring-up is not this method but the liveness watchdog it
     /// arms first: a round trip that does not return is ended at D, and a bring-up that
-    /// stalls anywhere else at D_bringUp (`WatchdogLimits`), each with a non-zero exit that
-    /// the restart policy ([#165](https://github.com/blamechris/Aeolus/issues/165)) turns
+    /// stalls *before § 3 starts* at D_bringUp (`WatchdogLimits`), each with a non-zero exit
+    /// that the restart policy ([#165](https://github.com/blamechris/Aeolus/issues/165)) turns
     /// into a fresh attempt. Until ADR 0012 this paragraph said that recovery was the restart
     /// policy's alone, and the restart policy only runs when the process exits.
+    ///
+    /// **What it does not cover.** D_bringUp stops at `thermalSupervisor.start()`, because from
+    /// then on § 3's completions are the progress it watches. A stall after that point
+    /// — `observeSystemPower()` (a synchronous `IORegisterForSystemPower`, an unstamped
+    /// `IOServiceOpen`), `signalTeardown.install`, or anything between them and
+    /// `listener.resume()` — leaves a daemon that serves nothing and is never ended: § 3 keeps
+    /// cycling, so neither trigger sees it. That is fail-safe for the fans (reconciliation has
+    /// already run and no lease is reachable), and it is not recovered; extending the bound to
+    /// the end of `bringUp()` would be an amendment to ADR 0012.
     func bringUp() async {
         // Before anything that can read. Reconciliation's first read is a round trip, a
         // round trip can fail to return, and a watchdog armed after it would be armed too

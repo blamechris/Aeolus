@@ -53,60 +53,92 @@ struct WatchdogLog: Sendable {
             Liveness watchdog armed: a round trip in flight for longer than \
             \(Self.seconds(WatchdogLimits.roundTrip)), or no completed safety cycle for longer \
             than \(Self.seconds(WatchdogLimits.cycleBound)) (\
-            \(Self.seconds(WatchdogLimits.bringUpBound)) until the supervisors start), on two \
-            consecutive \(Self.seconds(WatchdogLimits.tick)) ticks, ends the helper.
+            \(Self.seconds(WatchdogLimits.bringUpBound)) until the supervisors start), on \
+            \(Self.consecutiveTicks), ends the helper.
             """)
     }
 
-    /// The verdict. One line, one `.fault`, and then the process ends.
+    /// The verdict, when this watchdog holds the claim on ending the process and is about to
+    /// end it. One line, one `.fault`.
     ///
     /// A round trip names its operation, raw key, selector and age. A stalled cycle or
     /// bring-up names the trigger, the phase, the age since the last completion, the
     /// completion count, and whether a stamp is in flight and what it is — the stamp is
     /// evidence either way: a stalled cycle with a round trip in flight is a different
     /// diagnosis from one with none.
+    ///
+    /// **It promises a restart no further than the truth.** launchd restarts a job it is
+    /// keeping alive, and only then does a reconciliation pass run; its first read goes to the
+    /// same driver, so a wedge that outlives the restart ends the next process the same way and
+    /// nothing is restored until the driver answers. Where launchd is itself stopping the job —
+    /// `launchctl bootout`, `SMAppService.unregister()`, shutdown — it does not restart it.
     func verdict(_ verdict: WatchdogVerdict) {
-        let consequence = """
-            Ending the helper with exit code \(TeardownOutcome.blind.exitCode) and no orderly \
-            teardown: launchd restarts it, and startup reconciliation restores automatic \
-            control.
+        emit(
+            .fault,
             """
+            \(Self.facts(of: verdict)) Ending the helper now with exit code \
+            \(TeardownOutcome.blind.exitCode) and no orderly teardown. launchd restarts a job it \
+            is keeping alive, and the next process's startup reconciliation then restores \
+            automatic control if its first read returns. A wedge that outlives the restart ends \
+            that process the same way, and nothing is restored until the driver answers. Where \
+            launchd is removing or stopping the job it does not restart it.
+            """)
+    }
+
+    /// The verdict, when something else already holds the claim on ending the process: the
+    /// orderly teardown reached its last step first. The wedge is as real as it was, so this is
+    /// still a `.fault`; what it must not do is say the helper is ending because of it, or that
+    /// anything will restart it.
+    func verdictNotEnding(_ verdict: WatchdogVerdict, alreadyEndingAs holder: TeardownOutcome) {
+        emit(
+            .fault,
+            """
+            \(Self.facts(of: verdict)) The process is already ending as \(holder), so this \
+            verdict does not end it and promises no restart: if that ending is itself held up by \
+            the wedge, nothing in the helper will end the process.
+            """)
+    }
+
+    /// A second request to end the process, refused because the first already holds the
+    /// claim, and who holds it. Not a fault: the process is already on its way out.
+    func terminationAlreadyClaimed(by holder: TeardownOutcome, refused second: TeardownOutcome) {
+        emit(
+            .notice,
+            """
+            The process is already ending as \(holder); a second request to end it as \(second) \
+            was ignored. The first request to end the process wins.
+            """)
+    }
+
+    /// What was found, for either verdict line.
+    private static func facts(of verdict: WatchdogVerdict) -> String {
         switch verdict.trigger {
         case .roundTrip:
-            let stamp = verdict.stamp.map(Self.describe) ?? "a round trip that has since ended"
-            emit(
-                .fault,
-                """
+            let stamp = verdict.stamp.map(describe) ?? "a round trip that has since ended"
+            return """
                 Liveness watchdog: an SMC round trip has not returned. \(stamp), in flight for \
-                \(Self.seconds(verdict.age)) against a bound of \(Self.seconds(verdict.bound)), \
-                seen on two consecutive ticks. \(consequence)
-                """)
+                \(seconds(verdict.age)) against a bound of \(seconds(verdict.bound)), seen on \
+                \(consecutiveTicks).
+                """
         case .bringUp, .cycle:
             let name = verdict.trigger == .bringUp ? "bring-up" : "safety-cycle"
             let phase = verdict.progress.phase == .bringUp ? "bring-up" : "cycling"
             let stamp =
-                verdict.stamp.map { "A stamp is in flight: \(Self.describe($0))." }
+                verdict.stamp.map { "A stamp is in flight: \(describe($0))." }
                 ?? "No stamp is in flight."
-            emit(
-                .fault,
-                """
+            return """
                 Liveness watchdog: the \(name) trigger fired in the \(phase) phase. No safety \
-                cycle has completed for \(Self.seconds(verdict.age)) against a bound of \
-                \(Self.seconds(verdict.bound)), with \(verdict.progress.completions) \
-                completion(s) so far, seen on two consecutive ticks. \(stamp) \(consequence)
-                """)
+                cycle has completed for \(seconds(verdict.age)) against a bound of \
+                \(seconds(verdict.bound)), with \(verdict.progress.completions) completion(s) \
+                so far, seen on \(consecutiveTicks). \(stamp)
+                """
         }
     }
 
-    /// A second request to end the process, refused because the first already holds the
-    /// claim. Not a fault: the process is already on its way out, and this says so.
-    func terminationAlreadyClaimed(by first: TeardownOutcome, refused second: TeardownOutcome) {
-        emit(
-            .notice,
-            """
-            The process is already ending as \(first); a second request to end it as \(second) \
-            was ignored. The first request to end the process wins.
-            """)
+    /// "2 consecutive ticks", from the constant that decides it: the line states the rule the
+    /// code applies, and cannot go on saying "two" after the constant moves.
+    private static var consecutiveTicks: String {
+        "\(WatchdogLimits.ticksPerVerdict) consecutive ticks"
     }
 
     // MARK: - Rendering

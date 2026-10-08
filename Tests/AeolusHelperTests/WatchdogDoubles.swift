@@ -94,6 +94,71 @@ final class WatchdogTimeline: Sendable {
     var monitorClock: TimelineMonitorClock { TimelineMonitorClock(timeline: self) }
 }
 
+/// A timer that does nothing and remembers what it was asked, in order.
+final class RecordingWatchdogTimer: WatchdogTimer, Sendable {
+
+    struct Schedule: Sendable {
+        let deadline: DispatchTime
+        let repeating: DispatchTimeInterval
+        let leeway: DispatchTimeInterval
+    }
+
+    private struct State: Sendable {
+        var calls: [String] = []
+        var schedules: [Schedule] = []
+        var handler: (@Sendable () -> Void)?
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    func schedule(
+        deadline: DispatchTime, repeating: DispatchTimeInterval, leeway: DispatchTimeInterval
+    ) {
+        state.withLock {
+            $0.calls.append("schedule")
+            $0.schedules.append(
+                Schedule(deadline: deadline, repeating: repeating, leeway: leeway))
+        }
+    }
+
+    func setEventHandler(_ handler: @escaping @Sendable () -> Void) {
+        state.withLock {
+            $0.calls.append("setEventHandler")
+            $0.handler = handler
+        }
+    }
+
+    func resume() { state.withLock { $0.calls.append("resume") } }
+    func cancel() { state.withLock { $0.calls.append("cancel") } }
+
+    var calls: [String] { state.withLock { $0.calls } }
+    var schedules: [Schedule] { state.withLock { $0.schedules } }
+    var handler: (@Sendable () -> Void)? { state.withLock { $0.handler } }
+}
+
+/// What the tick source asked its factory for.
+final class RecordingTimerFactory: Sendable {
+
+    struct Request: Sendable {
+        /// `DispatchSource.TimerFlags.rawValue`: the flag set itself is not `Sendable`.
+        let flags: UInt
+        let queue: DispatchQueue
+    }
+
+    private let requests = OSAllocatedUnfairLock(initialState: [Request]())
+    let timer = RecordingWatchdogTimer()
+
+    var made: [Request] { requests.withLock { $0 } }
+
+    var makeTimer: DispatchWatchdogTicks.MakeTimer {
+        { [self] flags, queue in
+            let raw = flags.rawValue
+            requests.withLock { $0.append(Request(flags: raw, queue: queue)) }
+            return timer
+        }
+    }
+}
+
 /// Everything the watchdog logged, with its level.
 final class RecordedWatchdogLog: Sendable {
 
@@ -121,14 +186,6 @@ final class RecordedWatchdogLog: Sendable {
     }
 }
 
-/// The processes a journal says were ended, in order.
-func exits(of journal: TeardownJournal) async -> [TeardownOutcome] {
-    await journal.events.compactMap {
-        if case .exited(let outcome) = $0 { return outcome }
-        return nil
-    }
-}
-
 /// A watchdog over a monitor and a progress the test controls, ending the process into a
 /// journal.
 ///
@@ -152,7 +209,7 @@ final class WatchdogRig: Sendable {
         monitor = SMCRoundTripMonitor(clock: timeline.monitorClock)
         progress = ThermalCycleProgress(now: { timeline.progressInstant() })
         termination = ProcessTermination(
-            terminate: { outcome in await journal.record(.exited(outcome)) },
+            terminate: journal.terminate,
             log: log.log)
         watchdog = LivenessWatchdog(
             roundTrips: monitor, progress: progress, termination: termination,
@@ -165,21 +222,11 @@ final class WatchdogRig: Sendable {
         watchdog.tick()
     }
 
-    /// Waits for the process to be ended. A failsafe on readiness, not a bound on speed: the
-    /// request to end it is a task on the cooperative pool, and how soon the pool runs it is
-    /// the machine's business, so this sleeps between looks rather than spinning on yields.
-    func waitForExit() async -> Bool {
-        await pollUntil { await exits(of: journal).isEmpty == false }
-    }
-
-    /// Lets everything already runnable run, then reports whether the process was ended. For
-    /// the *negative* assertion, which cannot wait for something that must not happen: the
-    /// decision to end it is made synchronously inside `tick()` and logged there, so a test
-    /// that also checks the log has the exact answer, and this is the belt.
-    func endedAfterSettling() async -> Bool {
-        await settle()
-        return await exits(of: journal).isEmpty == false
-    }
+    /// Every time the terminate seam was called, in order. The ending is synchronous (it happens
+    /// inside `tick()`, on the caller's thread), so this is the exact answer the instant a tick
+    /// returns: nothing is waited for, and nothing can arrive later. `== [.blind]` is "ended
+    /// once, as `.blind`"; `isEmpty` is "never ended".
+    var exitsNow: [TeardownOutcome] { journal.exitsNow }
 }
 
 /// A round trip that has begun and will not return until told to, on a dedicated thread.
