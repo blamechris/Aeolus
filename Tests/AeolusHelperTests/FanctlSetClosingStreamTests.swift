@@ -71,6 +71,34 @@ struct FanctlSetClosingStreamTests {
         _ = harness.sessions
     }
 
+    /// Standard output is idle when the ending is reached, and parks on the closing event itself.
+    /// The bound passes, and the same line is on standard error whole: the one stream that took
+    /// it. (Standard output has the front of it, as it has the front of any parked line.)
+    ///
+    /// **Mutation:** return after handing the event to standard output without waiting for it
+    /// (`deliverClosing`'s second wait). Run: red — nothing reaches standard error.
+    @Test("A closing event that parks on standard output is on standard error whole")
+    func closingLineParks() async throws {
+        let authority = SimulatedFanAuthority()
+        let harness = ClientListenerHarness(authority: authority)
+        let rig = PumpRig(parkingFromLine: 4)
+        defer { rig.release() }
+        let time = VirtualHoldTime(script: rig.script())
+
+        let run = try await Harness.run(
+            Harness.thirtySeconds + ["--json"], over: harness, time: time, terminal: rig.terminal)
+
+        #expect(run.code == nil)
+        #expect(rig.standardOutput.isParked)
+        let events = rig.standardOutput.events().map { $0["event"] as? String }
+        #expect(events == ["started", "holding", "holding"])
+        #expect(!rig.standardOutput.fragment.isEmpty, "the front of the closing event is out")
+        let closing = rig.standardError.events()
+        #expect(closing.map { $0["event"] as? String } == ["ended"])
+        #expect(closing.first?["endedBecause"] as? String == "durationElapsed")
+        _ = harness.sessions
+    }
+
     /// A `failed` ending, with standard output parked: the diagnosis in words and the `failed`
     /// event both reach standard error, and the event parses and carries the exit code.
     ///

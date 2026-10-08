@@ -149,6 +149,48 @@ struct LinePumpTests {
         #expect(pump.status.isBroken)
     }
 
+    // MARK: - The terminal fanctl ships
+
+    /// `Terminal.writing` is what `fanctl` runs with. Its pumps must be threaded: over a pipe that
+    /// is full, handing a line over returns, and the line is written when the reader reads.
+    ///
+    /// **Mutation:** build either pump `inline` in `Terminal.writing`. Run: red — the hand-over
+    /// parks its thread, and the bounded wait for it to return fails.
+    @Test("The shipped terminal hands lines to threads of their own")
+    func shippedTerminalIsThreaded() async throws {
+        let out = try RealPipe()
+        let errors = try RealPipe()
+        out.fill(leavingFree: 0)
+        let sinks = Terminal.writing(
+            to: out.writer, errors: errors.writer, ignoringSIGPIPE: false
+        ).lineSinks()
+        defer {
+            sinks.standardOutput.close()
+            sinks.standardError.close()
+        }
+        let returned = OSAllocatedUnfairLock(initialState: false)
+        BackgroundThread.run {
+            sinks.standardOutput.enqueue("hello", at: ContinuousClock.now)
+            returned.withLock { $0 = true }
+        }
+
+        #expect(await Self.eventually { returned.withLock { $0 } }, "the hand-over returned")
+        #expect(sinks.standardOutput.status.isIdle == false, "the line waits for the reader")
+
+        #expect(
+            await Self.eventually {
+                _ = out.drain()
+                return sinks.standardOutput.status.isIdle
+            })
+        Self.release(out, errors)
+    }
+
+    /// Closes the descriptors once nothing is writing to them.
+    private static func release(_ out: RealPipe, _ errors: RealPipe) {
+        out.close()
+        errors.close()
+    }
+
     // MARK: - Closing
 
     /// `close` lets the thread end once what it was handed is written, and the pump refuses
@@ -180,6 +222,7 @@ struct LinePumpTests {
         pump?.close()
         pump?.enqueue("too late", at: Self.instant(1))
         #expect(await Self.eventually { writer.completeLines == ["last"] })
+        #expect(pump?.status.isIdle == true, "a line handed over after the close was refused")
         pump = nil
 
         #expect(await Self.eventually { letGo.withLock { $0 } }, "the thread has ended and let go")

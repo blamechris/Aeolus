@@ -67,7 +67,9 @@ struct FanctlSetBlockedWriterTests {
         let authority = SimulatedFanAuthority()
         let harness = ClientListenerHarness(authority: authority)
         let desk = SignalDesk()
-        let rig = PumpRig(parkingFromLine: 2)
+        // Standard error is slow, not stopped: the run must wait for what it was handed.
+        let rig = PumpRig(
+            parkingFromLine: 2, standardError: BlockedWriter(parkingFromLine: nil, delay: 0.05))
         defer { rig.release() }
         var action: (@Sendable () -> Void)?
         if let act = ending.act { action = { act(desk) } }
@@ -96,6 +98,11 @@ struct FanctlSetBlockedWriterTests {
         #expect(closing.map { $0["event"] as? String } == ["ended"])
         #expect(closing.first?["endedBecause"] as? String == ending.because)
         #expect(closing.first?["signal"] as? String == ending.signal)
+
+        // Let the reader catch up: the closing event was handed to one stream only.
+        await rig.drain()
+        let eventually = rig.standardOutput.events().map { $0["event"] as? String }
+        #expect(eventually == ["started", "holding"], "nothing was queued behind the parked line")
         _ = harness.sessions
     }
 

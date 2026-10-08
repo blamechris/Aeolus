@@ -140,9 +140,17 @@ struct SetClosingShapeTests {
 
     // MARK: - Terminal
 
-    @Test("A terminal made from a plain sink always delivers")
+    @Test("A terminal made from a plain sink always delivers, to either stream")
     func plainSinkDelivers() {
         let terminal = Terminal { _, _ in }
-        #expect(terminal.deliver("x"))
+        let sinks = terminal.lineSinks()
+
+        sinks.standardOutput.enqueue("x", at: ContinuousClock.now)
+        sinks.standardError.enqueue("y", at: ContinuousClock.now)
+
+        #expect(
+            sinks.standardOutput.status == LinePump.Status(oldestUnfinished: nil, isBroken: false))
+        #expect(
+            sinks.standardError.status == LinePump.Status(oldestUnfinished: nil, isBroken: false))
     }
 }

@@ -202,9 +202,6 @@ struct Terminal: Decodable, Sendable {
     /// A result: what the command was asked for.
     func say(_ text: String) { _ = delivery(.standardOutput, text) }
 
-    /// A result, and whether it arrived. `false` is a consumer that has gone.
-    func deliver(_ text: String) -> Bool { delivery(.standardOutput, text) }
-
     /// A diagnosis: why the command could not give it, or what the user should know about it.
     func warn(_ text: String) { _ = delivery(.standardError, text) }
 }

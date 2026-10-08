@@ -291,8 +291,7 @@ enum SetCommand {
             // Not renewed at the deadline: the lease is about to be released.
             now = session.clock.now()
             if let reason = watch.reason { return (.ended(reason), latest) }
-            if output.hasTrouble(at: now) { return (.ended(.outputClosed), latest) }
-            // Woken to look at standard output, not to renew.
+            // Woken to look at standard output, not to renew: the top of the loop judges it.
             if now < renewedAt + heartbeat { continue }
 
             renewedAt = now

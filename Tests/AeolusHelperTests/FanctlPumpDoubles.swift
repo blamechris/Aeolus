@@ -31,6 +31,7 @@ final class BlockedWriter: Sendable {
     private let parkingFromLine: Int?
     private let failingFromLine: Int?
     private let outcomeWhenReleased: FileDescriptorWriter.Outcome
+    private let delay: TimeInterval
 
     /// - Parameters:
     ///   - parkingFromLine: The one-based number of the first line that parks, and every line
@@ -39,13 +40,16 @@ final class BlockedWriter: Sendable {
     ///     parking: a consumer that is gone.
     ///   - outcomeWhenReleased: What a parked write reports once released: `.readerGone` is a
     ///     consumer that left while the line was waiting.
+    ///   - delay: Seconds a line takes to write when it does not park: a reader that is slow
+    ///     rather than stopped. Real time, and small.
     init(
         parkingFromLine: Int? = 1, failingFromLine: Int? = nil,
-        outcomeWhenReleased: FileDescriptorWriter.Outcome = .delivered
+        outcomeWhenReleased: FileDescriptorWriter.Outcome = .delivered, delay: TimeInterval = 0
     ) {
         self.parkingFromLine = parkingFromLine
         self.failingFromLine = failingFromLine
         self.outcomeWhenReleased = outcomeWhenReleased
+        self.delay = delay
     }
 
     var write: LinePump.Write {
@@ -59,6 +63,7 @@ final class BlockedWriter: Sendable {
             }
             if fails { return .readerGone }
             guard parks else {
+                if delay > 0 { Thread.sleep(forTimeInterval: delay) }
                 state.withLock { $0.consumed += line + "\n" }
                 return .delivered
             }
@@ -166,6 +171,17 @@ final class PumpRig: Sendable {
             let output = sinks.standardOutput.status.isIdle || standardOutput.isParked
             let errors = sinks.standardError.status.isIdle || standardError.isParked
             if output && errors { return }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+    }
+
+    /// Releases whatever is parked and waits, in real time and for at most two seconds, until
+    /// both pumps have written everything they were handed: the reader catching up.
+    func drain() async {
+        release()
+        for _ in 0..<2_000 {
+            guard let sinks else { return }
+            if sinks.standardOutput.status.isIdle && sinks.standardError.status.isIdle { return }
             try? await Task.sleep(for: .milliseconds(1))
         }
     }
