@@ -191,9 +191,10 @@ actor DispatchWatchdogTicks: WatchdogTicking {
 /// ([#135](https://github.com/blamechris/Aeolus/issues/135)). **After the fault the helper does
 /// nothing more:** the gate is not cancellable, so there is no wait to abandon, and the trigger
 /// has no streak, no claim on ending the process and no `fired`. A gate that never turns starves
-/// § 3 behind it, and the cycle trigger is the action; the fault is how the log says why. It is
-/// logged once per waiter, and it is suppressed while a stamped round trip older than one tick
-/// is in flight, which explains the wait and has alarms of its own.
+/// § 3 behind it, and the cycle trigger is the action; the fault is how the log says why, when
+/// there is a waiter to say it. It is logged once per waiter, and it is suppressed while a
+/// stamped round trip older than one tick is in flight, which explains the wait and has alarms
+/// of its own.
 ///
 /// ## A verdict is two consecutive ticks on the same thing
 ///
@@ -325,7 +326,7 @@ final class LivenessWatchdog: Sendable {
         case .nothing:
             return
         case .gateFaults(let waits):
-            for wait in waits { log.gateWaiter(wait, stamp: flight) }
+            for wait in waits { log.gateWaiter(wait, stamp: flight, phase: reading.phase) }
         case .verdict(let verdict):
             // The claim first, then the line, so that the line says what is true: that this
             // watchdog is ending the process, or that something else already is. Taken and

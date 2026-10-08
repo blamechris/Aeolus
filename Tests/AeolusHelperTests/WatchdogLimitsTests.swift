@@ -104,19 +104,38 @@ struct WatchdogLimitsTests {
 
     // MARK: - G, the gate bound
 
-    /// G is 2·D, and it has two sides. It must exceed the longest legal wait at the gate at the
-    /// design point — the allowance less § 3's own read and a firing cycle's writes, 512 round
-    /// trips at the measured worst, 5.86 s — or a full, moving queue would be logged as a fault;
-    /// and it must stay under D_cycle less the supervisor's interval and two ticks, 12 s, or the
-    /// cycle trigger would end the helper before the fault explained it. The first draft set
-    /// G = D, under the first side.
+    /// The longest legal **supervisor** wait at the gate with `reads` readers outstanding, written
+    /// out here from the named scheduler constants and not read from the source: the longer of
+    ///
+    /// - a 3-key mode read that arrived last, behind the turn in flight, **both** critical reads
+    ///   (the grant path's and § 3's), the other `reads - 3` mode reads and the snapshot turns the
+    ///   overtake quota forces; and
+    /// - § 3's own read, behind everything but its own keys: the turn in flight, the grant
+    ///   path's read, `reads - 2` mode reads and the forced snapshot turns.
+    ///
+    /// A firing cycle's writes follow § 3's read and are ahead of nobody.
+    private static func expectedWorstGateWait(_ reads: Int, keys: Int) -> Int {
+        let turn = SMCReadScheduler.maxKeysPerTurn
+        let forced = turn * ((reads - 1) / SMCReadScheduler.maxConsecutiveOvertakes + 1)
+        let modeRead = turn + keys + keys + 3 * (reads - 3) + forced
+        let sectionThree = turn + keys + 3 * (reads - 2) + forced
+        return max(modeRead, sectionThree)
+    }
+
+    /// G is 2·D, and it has two sides. It must exceed the longest legal supervisor wait at the
+    /// gate at the design point — a 3-key mode read behind both critical reads, 543 round trips at
+    /// the measured worst, 6.22 s — or a full, moving queue would be logged as a fault; and it
+    /// must stay under D_cycle less the supervisor's interval and two ticks, 12 s, or the cycle
+    /// trigger would end the helper before the fault explained it. The first draft set G = D,
+    /// under the first side; the second counted § 3's own read as the worst waiter, 512 round
+    /// trips and 5.86 s, which is 31 short on `Mac16,5`.
     ///
     /// **Mutation:** set `gateWaiterAlarm` to `roundTrip` (G = D). Run: red — 5 s is under the
-    /// 5.86 s the design point needs.
+    /// 6.22 s the design point needs.
     /// **Mutation:** set `gateWaiterAlarm` to `cycleBound`. Run: red — the cycle trigger would
     /// land before the fault.
-    /// **Mutation:** drop `- criticalReadKeys - firingCycleRoundTrips` from
-    /// `gateWaitRoundTrips`. Run: red — 576 where the ADR says 512.
+    /// **Mutation:** write `gateWaitRoundTrips` as the allowance less `criticalReadKeys` and
+    /// `firingCycleRoundTrips` (§ 3's read as the worst waiter). Run: red — 512 where it is 543.
     @Test("G clears the design point's wait and stays inside D_cycle's margin")
     func theGateBoundIsDerivedAndConstant() {
         let gate = WatchdogLimits.gateWaiterAlarm
@@ -127,12 +146,11 @@ struct WatchdogLimitsTests {
 
         #expect(gate == WatchdogLimits.roundTrip * 2)
         #expect(gate == .seconds(10), "ADR 0012 states G as 10 s")
-        // The wait term, written out here and not read from the source.
-        #expect(Self.expectedAllowance(design) - keys - 30 == 512)
+        #expect(Self.expectedWorstGateWait(design, keys: keys) == 543)
         #expect(
             WatchdogLimits.gateWaitRoundTrips(outstandingReads: design, criticalReadKeys: keys)
-                == 512)
-        #expect(required > .milliseconds(5_863) && required < .milliseconds(5_865))
+                == 543)
+        #expect(required > .milliseconds(6_218) && required < .milliseconds(6_220))
         #expect(gate > required, "a full, moving queue at the design point would fault")
 
         let interval = ThermalSupervisor<SMCFanControlPlane>.defaultInterval
@@ -141,12 +159,37 @@ struct WatchdogLimitsTests {
             "the cycle trigger could land before the fault that explains it")
     }
 
-    /// G holds for every curated set at the design point, and for up to 22 outstanding reads on
-    /// `Mac16,5` (at 23 the wait is 10.64 s). Past that the gate fault firing is the correct
-    /// outcome, the same as D_cycle past sixteen.
+    /// The wait is the longer of the two waiters, per machine: with a critical set shorter than a
+    /// mode read it is § 3's read, which on a machine with no curated set is the allowance less the
+    /// writes alone. It agrees with the independent derivation across outstanding reads and set
+    /// sizes, so neither waiter is quietly the only one counted.
+    ///
+    /// **Mutation:** take only the mode read off the allowance (`- modeReadKeys`, no `min`). Run:
+    /// red — 475 where a machine with no curated set waits 478.
+    /// **Mutation:** write `max` for `min` in `gateWaitRoundTrips`. Run: red.
+    @Test("The gate wait is the longer of the two waiters, for every set size")
+    func theGateWaitIsTheLongerOfTheTwoWaiters() {
+        #expect(Self.expectedWorstGateWait(Self.design, keys: 0) == 478)
+        for reads in 3...25 {
+            for keys in [0, 1, 2, 3, 10, Self.criticalReadKeys, SMCReadScheduler.maxKeysPerTurn] {
+                #expect(
+                    WatchdogLimits.gateWaitRoundTrips(
+                        outstandingReads: reads, criticalReadKeys: keys)
+                        == Self.expectedWorstGateWait(reads, keys: keys),
+                    "N = \(reads), \(keys) critical keys")
+            }
+        }
+    }
+
+    /// G holds for every curated set at the design point, and for up to 20 outstanding reads on
+    /// `Mac16,5` (at 21 the worst supervisor wait is 10.19 s). Past that the gate fault firing is
+    /// the correct outcome, the same as D_cycle past sixteen. **The snapshot priority's waiter is
+    /// not derived** (see `WatchdogLimits.gateWaiterAlarm`).
     ///
     /// **Mutation:** set `gateWaiterAlarm` to `roundTrip` (G = D). Run: red.
-    @Test("G holds the design point for every curated set, and to 22 outstanding reads")
+    /// **Mutation:** set `gateWaiterAlarm` to `roundTrip * 2 + .seconds(1)`. Run: red — G holds at
+    /// 21 and the documented reach is stale.
+    @Test("G holds the design point for every curated set, and to 20 outstanding reads")
     func theGateBoundHoldsForEveryCuratedSet() {
         for set in CriticalSensorSet.allCurated {
             let required = WatchdogLimits.requiredGateBound(
@@ -155,18 +198,19 @@ struct WatchdogLimitsTests {
                 required < WatchdogLimits.gateWaiterAlarm,
                 "\(set.provenance): the design point's wait is \(required)")
         }
-        for reads in 0...22 {
+        for reads in 0...20 {
             #expect(
                 WatchdogLimits.requiredGateBound(
                     outstandingReads: reads, criticalReadKeys: Self.criticalReadKeys)
                     < WatchdogLimits.gateWaiterAlarm,
                 "G should hold for N = \(reads)")
         }
+        let atTwentyOne = WatchdogLimits.requiredGateBound(
+            outstandingReads: 21, criticalReadKeys: Self.criticalReadKeys)
         #expect(
-            WatchdogLimits.requiredGateBound(
-                outstandingReads: 23, criticalReadKeys: Self.criticalReadKeys)
-                >= WatchdogLimits.gateWaiterAlarm,
-            "G holds at N = 23: the \"to 22\" in the docs is stale")
+            atTwentyOne >= WatchdogLimits.gateWaiterAlarm,
+            "G holds at N = 21: the \"to 20\" in the docs is stale")
+        #expect(atTwentyOne > .milliseconds(10_190) && atTwentyOne < .milliseconds(10_195))
     }
 
     // MARK: - Every curated set

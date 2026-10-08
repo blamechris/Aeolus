@@ -291,6 +291,93 @@ struct GateFaultTests {
         #expect(rig.log.faults.last?.contains("safety-cycle trigger") == true)
     }
 
+    /// A verdict outranks a gate fault that is due on the same tick. § 3 has stalled past D_cycle
+    /// while a deep supervisor queue drains a turn a second, so every tick has a new overdue head
+    /// and a gate fault due. The cycle trigger must still end the helper on the tick that
+    /// confirms it (the second), not when the queue has run dry: a gate fault returned ahead of
+    /// the verdict would put the ending off for as long as the queue keeps producing heads.
+    ///
+    /// The queue is twenty deep and loses one waiter a tick, so the old head is granted and a new,
+    /// already overdue head takes its place on each. The verdict tick is read from the journal,
+    /// not timed.
+    ///
+    /// **Mutation:** compute the gate faults first in the locked step of `tick()` and return
+    /// `.gateFaults` whenever there are any, ahead of `if let confirmed`. Run: red — the ending
+    /// comes on tick 21, once the queue is empty.
+    @Test("A verdict outranks a gate fault due on the same tick")
+    func aVerdictOutranksAGateFaultDueOnTheSameTick() {
+        let rig = WatchdogRig()
+        let script = GateScript(rig.gate)
+        rig.progress.beginCycling()
+        var queue = (0..<20).map { _ in script.park(.supervisor) }
+
+        rig.timeline.advance(by: WatchdogLimits.cycleBound + .nanoseconds(1))
+        rig.watchdog.tick()
+        #expect(rig.log.faults.count == 1, "the first tick is the gate fault, not the verdict")
+        #expect(rig.exitsNow.isEmpty)
+
+        var endedOnTick: Int?
+        for tick in 2...22 {
+            if !queue.isEmpty { script.grant(queue.removeFirst()) }
+            rig.timeline.advance(by: WatchdogLimits.tick)
+            rig.watchdog.tick()
+            if endedOnTick == nil, !rig.exitsNow.isEmpty { endedOnTick = tick }
+        }
+
+        #expect(endedOnTick == 2, "the verdict was put off to tick \(endedOnTick ?? -1)")
+        #expect(rig.exitsNow == [.blind])
+        #expect(rig.log.faults.last?.contains("safety-cycle trigger") == true)
+    }
+
+    // MARK: - What the line promises
+
+    /// The line promises no more than the phase makes true. While § 3 runs, a gate that never turns
+    /// starves it and the cycle trigger ends the helper. Before § 3 has started, the bring-up
+    /// trigger does. Once the supervisors are stopped — the orderly teardown — neither is armed,
+    /// nothing in the helper will end it for this, and the line says so; the process, in fact, is
+    /// not ended however long it goes on.
+    ///
+    /// **Mutation:** say "If no safety cycle completes for …, the cycle trigger ends the helper"
+    /// in every phase (the unconditional wording). Run: red — the stopped and bring-up lines.
+    /// **Mutation:** swap the `.cycling` and `.bringUp` wording. Run: red.
+    @Test("The gate fault promises no more than the phase makes true")
+    func theGateFaultPromisesOnlyWhatThePhaseMakesTrue() {
+        func line(in phase: ThermalCycleProgress.Phase) -> (line: String, rig: WatchdogRig) {
+            let rig = WatchdogRig()
+            switch phase {
+            case .cycling: rig.progress.beginCycling()
+            case .bringUp: rig.progress.beginBringUp()
+            case .disarmed:
+                rig.progress.beginCycling()
+                rig.progress.endCycling()
+            }
+            GateScript(rig.gate).park(.supervisor)
+            rig.timeline.advance(by: WatchdogLimits.gateWaiterAlarm + .seconds(1))
+            rig.watchdog.tick()
+            return (rig.log.faults.first ?? "", rig)
+        }
+
+        let cycling = line(in: .cycling).line
+        #expect(cycling.contains("the cycle trigger ends the helper"), "\(cycling)")
+        #expect(cycling.contains("for 15.000 s"), "\(cycling)")
+        #expect(!cycling.contains("bring-up trigger"), "\(cycling)")
+
+        let bringUp = line(in: .bringUp).line
+        #expect(bringUp.contains("the bring-up trigger ends the helper"), "\(bringUp)")
+        #expect(!bringUp.contains("cycle trigger ends the helper"), "\(bringUp)")
+
+        let (stopped, rig) = line(in: .disarmed)
+        #expect(stopped.contains("the cycle trigger is not armed"), "\(stopped)")
+        #expect(stopped.contains("nothing will end the helper for this"), "\(stopped)")
+        #expect(!stopped.contains("trigger ends the helper"), "\(stopped)")
+        // And it is true: a stopped supervisor is not a stall, and no tick ends the process.
+        for _ in 0..<120 {
+            rig.timeline.advance(by: WatchdogLimits.tick)
+            rig.watchdog.tick()
+        }
+        #expect(rig.exitsNow.isEmpty, "the line says nothing ends the helper, and something did")
+    }
+
     // MARK: - Against the real scheduler
 
     /// #135's own scenario, against the real scheduler: a provider that never returns the turn

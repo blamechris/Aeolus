@@ -42,11 +42,14 @@ enum WatchdogLimits {
     /// **Derived, with two sides** (`requiredGateBound(outstandingReads:criticalReadKeys:)` and
     /// `WatchdogLimitsTests`):
     ///
-    /// - *Above* the longest legal wait at the design point of 12 supervisor-priority reads
-    ///   outstanding: the allowance without § 3's own read and a firing cycle's writes, 512 round
-    ///   trips at the measured worst, 5.86 s. A gate fault below that would be logged for a queue
-    ///   that is full and moving. (The first draft set G = D = 5 s, under it.) It holds for up to
-    ///   22 outstanding reads.
+    /// - *Above* the longest legal **supervisor** wait at the design point of 12 supervisor reads
+    ///   outstanding, 6.22 s at the measured worst round trip: a 3-key mode read that arrived
+    ///   last, behind both 34-key critical reads, 543 round trips (see `gateWaitRoundTrips`). A
+    ///   gate fault below that would be logged for a queue that is full and moving. (The first
+    ///   draft set G = D = 5 s, under it.) It holds for up to 20 outstanding reads and fails at 21
+    ///   (10.19 s). **The snapshot priority's waiter is not derived:** it waits behind the other
+    ///   snapshot clients' turns as well (64 round trips each), so enough concurrent snapshot
+    ///   clients can outlast G with a queue that is full and moving.
     /// - *Below* D_cycle less the supervisor's interval and two ticks, 12 s: the fault has to be
     ///   in the log before the cycle trigger ends the helper, or it explains nothing.
     ///
@@ -112,13 +115,23 @@ enum WatchdogLimits {
             + firingCycleRoundTrips
     }
 
-    /// The round trips a waiter at the gate may legally have to wait behind, with
-    /// `outstandingReads` readers outstanding: the same allowance as D_cycle's, less the two terms
-    /// that are not ahead of an arbitrary waiter. § 3's own read is the waiter, not something it
-    /// waits behind, and a firing cycle's writes follow the read.
+    /// The round trips the **worst supervisor waiter** at the gate may legally have to wait
+    /// behind, with `outstandingReads` readers outstanding: D_cycle's allowance, less the terms
+    /// that are not ahead of that waiter. A firing cycle's writes follow § 3's read, so they are
+    /// ahead of nobody. The waiter's own read is not ahead of itself, and which waiter is worst
+    /// depends on the machine:
+    ///
+    /// - a **mode read** that arrived last (`modeReadKeys` round trips) is behind *both* critical
+    ///   reads, the grant path's and § 3's, so only its own keys come off the allowance;
+    /// - **§ 3's own read** (`criticalReadKeys` round trips) is behind the grant path's but not
+    ///   its own, so its own keys come off.
+    ///
+    /// On `Mac16,5` (34 keys) the mode read is 31 round trips longer; on a machine with a
+    /// shorter set than a mode read, § 3's read is. The longer of the two is the bound.
     static func gateWaitRoundTrips(outstandingReads: Int, criticalReadKeys: Int) -> Int {
-        allowanceRoundTrips(outstandingReads: outstandingReads, criticalReadKeys: criticalReadKeys)
-            - criticalReadKeys - firingCycleRoundTrips
+        let allowance = allowanceRoundTrips(
+            outstandingReads: outstandingReads, criticalReadKeys: criticalReadKeys)
+        return allowance - firingCycleRoundTrips - min(modeReadKeys, criticalReadKeys)
     }
 
     /// What G must be more than: the longest legal wait at the gate, at the measured worst round

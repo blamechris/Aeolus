@@ -44,14 +44,14 @@ import Testing
 @Suite("The helper's composition root")
 struct HelperCompositionTests {
 
-    private static func source(of file: String) throws -> String {
+    static func source(of file: String) throws -> String {
         let url = try #require(
             SeamScanner.swiftFiles().first { $0.lastPathComponent == file },
             "\(file) was not found in Sources")
         return try String(contentsOf: url, encoding: .utf8)
     }
 
-    private static func compositionSource() throws -> String {
+    static func compositionSource() throws -> String {
         strippingComments(try source(of: "HelperComposition.swift"))
     }
 
@@ -770,7 +770,7 @@ struct HelperCompositionTests {
     /// So a match can name one composed expression exactly without depending on where
     /// `swift format` chose to wrap it. `contains("A(b: c)")` is precise and brittle;
     /// `contains("A(") && contains("c")` is wrap-proof and imprecise; this is both.
-    private static func strippingWhitespace(_ source: String) -> String {
+    static func strippingWhitespace(_ source: String) -> String {
         source.filter { !$0.isWhitespace }
     }
 
@@ -790,7 +790,7 @@ struct HelperCompositionTests {
     /// only *whole* `//` lines — a deliberate choice documented there — and this file's
     /// `contains` assertions run against source with a trailing comment on the same line as
     /// the code they match.
-    private static func strippingComments(_ source: String) -> String {
+    static func strippingComments(_ source: String) -> String {
         SeamScanner.strippingComments(source)
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map { line -> Substring in
@@ -923,67 +923,5 @@ extension HelperCompositionTests {
                 never runs and the object it was holding is held by nothing (#92).
                 """)
         }
-    }
-}
-
-/// The gate monitor's wiring, kept out of `HelperCompositionTests`'s body for the reason
-/// `main()`'s process-lifetime retention is: the suite is at its `type_body_length` ceiling, and a
-/// second file would need a second copy of `compositionSource()`, `strippingWhitespace(_:)` and
-/// `occurrences(of:in:)`. Same file, same helpers, same suite.
-extension HelperCompositionTests {
-
-    /// The gate monitor the scheduler reports to is the one the watchdog reads.
-    ///
-    /// The same hazard as the connection health observer's, one level over, and it has the same
-    /// shape: a monitor that is constructed, held, handed to the watchdog and **told nothing**
-    /// reads an empty queue for ever, and the third trigger watches nothing while looking
-    /// exactly like one that does. `main()` never returns and the scheduler holds its observer
-    /// privately, so the scheduler's half is a source tripwire; the watchdog's half is
-    /// behavioural, in `HelperWatchdogCompositionTests`.
-    ///
-    /// One local, named once, in both places: the fan-out the scheduler is built with and the
-    /// `gateMonitor:` argument the composition is built with.
-    ///
-    /// **Mutation A:** drop `gateMonitor` from the scheduler's observers. Run: red on the first.
-    /// **Mutation B:** hand the composition `gateMonitor: GateWaitMonitor()` instead of the
-    /// local. Run: red on the second.
-    /// **Mutation C:** build a second monitor anywhere in `Sources/AeolusHelper` but the
-    /// composition's default and `production`. Run: red on the third.
-    @Test("The scheduler reports to the gate monitor the watchdog reads")
-    func theGateMonitorIsWiredToTheSchedulerAndTheWatchdog() throws {
-        let source = Self.strippingWhitespace(try Self.compositionSource())
-
-        let schedulerReportsToIt = source.contains(
-            "observer:SchedulerObservers([connectionHealth,gateMonitor])")
-        #expect(
-            schedulerReportsToIt,
-            """
-            the scheduler no longer reports to the gate monitor, so the watchdog's gate \
-            trigger reads an empty queue for ever.
-            """)
-
-        // Inside `production`, not anywhere in the file: the initialiser also says
-        // `gateMonitor: gateMonitor` when it hands the monitor to the watchdog, and that is the
-        // other half of the wiring, not this one.
-        let production = try #require(
-            source.range(of: "staticfuncproduction("), "production(…) is no longer declared")
-        let watchdogReadsIt = source[production.lowerBound...].contains("gateMonitor:gateMonitor,")
-        #expect(
-            watchdogReadsIt,
-            "production no longer hands the composition the monitor the scheduler reports to")
-
-        var constructions: [String] = []
-        for file in try SeamScanner.swiftFiles()
-        where file.pathComponents.contains("AeolusHelper") {
-            let code = Self.strippingComments(try String(contentsOf: file, encoding: .utf8))
-            let count = Self.occurrences(of: "GateWaitMonitor(", in: code)
-            if count > 0 { constructions.append("\(file.lastPathComponent) x\(count)") }
-        }
-        #expect(
-            constructions == ["HelperComposition.swift x2"],
-            """
-            the helper builds gate monitors at \(constructions). The composition's default and \
-            `production` are the two: a third is a monitor nothing is told anything.
-            """)
     }
 }

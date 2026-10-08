@@ -271,4 +271,80 @@ struct GateWaitMonitorTests {
         #expect(await scheduler.queuedTurns(at: .supervisor) == 0)
         #expect(await scheduler.queuedTurns(at: .snapshot) == 0)
     }
+
+    /// A multi-turn read goes through `yieldTurn`, which enqueues the read's next turn **before**
+    /// admitting anything, so a park and a grant are reported in one step at the turn boundary.
+    /// The mirror stays in step with the scheduler through every boundary: a 130-key snapshot
+    /// (three turns, the first on the fast path and the next two through `yieldTurn`), three
+    /// supervisor reads that overtake it, and another snapshot, released one turn at a time and
+    /// compared at both priorities after each.
+    ///
+    /// **Mutation:** ignore `turnGranted` in `GateWaitMonitor.schedulerDidObserve(_:)`. Run: red
+    /// on the first step.
+    /// **Mutation:** ignore grants at the snapshot priority (the ones `yieldTurn`'s re-queued turn
+    /// is admitted by). Run: red on the third step, when the quota hands the connection back to a
+    /// snapshot.
+    @Test("The mirror stays in step through a multi-turn read")
+    func theMirrorStaysInStepThroughAMultiTurnRead() async throws {
+        let monitor = GateWaitMonitor()
+        let provider = GatedSensorProvider(holdingSubsetReads: true)
+        let scheduler = SMCReadScheduler(provider: provider, observer: monitor)
+        let perTurn = SMCReadScheduler.maxKeysPerTurn
+        let keys = (0..<(perTurn * 2 + 2)).map { "M\($0)" }
+
+        let multiTurn = observing { try await scheduler.read(keys: keys, at: .snapshot) }
+        await yieldUntil("the first turn to reach the provider") {
+            await provider.turns.count == 1
+        }
+        let supervisors = (0..<3).map { index in
+            observing { try await scheduler.read(keys: ["T\(index)"], at: .supervisor) }
+        }
+        let snapshot = observing { try await scheduler.read(keys: ["S0"], at: .snapshot) }
+        await yieldUntil("three supervisor reads and a snapshot to be queued") {
+            let queuedSupervisors = await scheduler.queuedTurns(at: .supervisor)
+            let queuedSnapshots = await scheduler.queuedTurns(at: .snapshot)
+            return queuedSupervisors == 3 && queuedSnapshots == 1
+        }
+
+        func everythingFinished() async -> Bool {
+            var all = await multiTurn.isFinished.isSet
+            all = await snapshot.isFinished.isSet && all
+            for read in supervisors { all = await read.isFinished.isSet && all }
+            return all
+        }
+
+        var steps = 0
+        var turnsSeen = await provider.turns.count
+        while !(await everythingFinished()), steps < 20 {
+            await provider.releaseOneTurn()
+            steps += 1
+            let seen = turnsSeen
+            await yieldUntil("the next turn to reach the provider, or every read to finish") {
+                let reached = await provider.turns.count
+                let finishedAll = await everythingFinished()
+                return reached > seen || finishedAll
+            }
+            turnsSeen = await provider.turns.count
+
+            let queuedSupervisors = await scheduler.queuedTurns(at: .supervisor)
+            let queuedSnapshots = await scheduler.queuedTurns(at: .snapshot)
+            let mirroredSupervisors = monitor.depth(at: .supervisor)
+            let mirroredSnapshots = monitor.depth(at: .snapshot)
+            #expect(
+                mirroredSupervisors == queuedSupervisors,
+                "step \(steps): supervisor mirror \(mirroredSupervisors) vs \(queuedSupervisors)")
+            #expect(
+                mirroredSnapshots == queuedSnapshots,
+                "step \(steps): snapshot mirror \(mirroredSnapshots) vs \(queuedSnapshots)")
+        }
+
+        // Three turns of the long read, three supervisor reads and a snapshot: seven turns.
+        #expect(steps == 7, "\(steps) turns reached the provider")
+        _ = try await finished("the multi-turn read", multiTurn)
+        _ = try await finished("the snapshot", snapshot)
+        for (index, read) in supervisors.enumerated() {
+            _ = try await finished("supervisor read \(index)", read)
+        }
+        #expect(monitor.oldestParked().isEmpty)
+    }
 }
