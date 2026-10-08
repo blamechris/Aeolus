@@ -115,8 +115,14 @@ struct LivenessWatchdogProgressTests {
         await stalled.finish()
     }
 
-    /// A cycle that completes every second never trips it, however long the helper has run:
-    /// the age is from the **last completion**, not from the start of the phase.
+    /// A cycle that completes every second and a half never trips it, however long the helper
+    /// has run: the age is from the **last completion**, not from the start of the phase.
+    ///
+    /// Completions are *slower than the tick*, on purpose. With one completion per tick the
+    /// completion count differs on every look, so the "same count on two ticks" rule alone
+    /// would hide a progress object that never moved its anchor; with a gap longer than a
+    /// tick, two consecutive ticks see the same count, and only the anchor stands between a
+    /// healthy helper and a verdict.
     ///
     /// **Mutation:** do not move the anchor in `ThermalCycleProgress.recordCompletion()`. Run:
     /// red — the sixteenth second of a perfectly healthy run ends the process.
@@ -125,9 +131,10 @@ struct LivenessWatchdogProgressTests {
         let rig = WatchdogRig()
         rig.progress.beginCycling()
 
-        for _ in 0..<120 {
-            rig.timeline.advance(by: .seconds(1))
-            rig.progress.recordCompletion()
+        // A tick every half second and a completion every third: 1.5 s between completions.
+        for step in 0..<400 {
+            rig.timeline.advance(by: .milliseconds(500))
+            if step % 3 == 2 { rig.progress.recordCompletion() }
             rig.watchdog.tick()
         }
 
