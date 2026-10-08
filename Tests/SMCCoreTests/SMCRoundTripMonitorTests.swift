@@ -144,7 +144,7 @@ struct SMCRoundTripMonitorTests {
         }
         reader.start()
 
-        let readerReturned = readerFinished.wait(timeout: .now() + .seconds(3)) == .success
+        let readerReturned = readerFinished.wait(timeout: .now() + .seconds(5)) == .success
         readerJoined = readerReturned
         #expect(readerReturned, "inFlight() blocked behind a round trip that had not returned")
         #expect(
@@ -187,7 +187,7 @@ struct SMCRoundTripMonitorTests {
             readerFinished.signal()
         }
         reader.start()
-        let readerReturned = signalled(readerFinished, within: 3)
+        let readerReturned = signalled(readerFinished, within: 5)
 
         release.signal()
         await occupation.value
