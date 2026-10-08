@@ -154,21 +154,40 @@ struct HoldEnvironment: Decodable, Sendable {
     static let production = HoldEnvironment(
         parentProcessID: { getppid() },
         installSignals: { deliver in
-            var restores: [() -> Void] = []
-            // A write to a closed pipe must come back as EPIPE, which ends the hold in an orderly
-            // way, rather than kill a process that is holding a lease.
-            let previousPipe = signal(SIGPIPE, SIG_IGN)
-            restores.append { _ = signal(SIGPIPE, previousPipe) }
-
-            let sources = HoldSignal.all.map { held -> any DispatchSourceSignal in
-                let previous = signal(held.number, SIG_IGN)
-                restores.append { _ = signal(held.number, previous) }
-                let source = DispatchSource.makeSignalSource(
-                    signal: held.number, queue: DispatchQueue.global())
-                source.setEventHandler { deliver(held) }
-                source.resume()
-                return source
-            }
-            return SignalSubscription(sources: sources, restores: restores)
+            install(HoldSignal.all.map { ($0, $0.number) }, deliver: deliver)
         })
+
+    /// Ignores each signal's default action and delivers it to `deliver` instead, and ignores
+    /// SIGPIPE; the subscription puts every disposition back.
+    ///
+    /// The pairs say which signal number stands for which `HoldSignal`. Production passes the
+    /// three real ones. A suite passes a number that nothing else in its process listens to:
+    /// **a test that sent itself a real SIGHUP, SIGINT or SIGTERM was sending it to a test
+    /// runner**, and a runner that exits on one ended a CI run without a word.
+    ///
+    /// - Parameters:
+    ///   - signals: The signals to deliver, each with the number it arrives as.
+    ///   - deliver: Called with the `HoldSignal` for each one that arrives.
+    /// - Returns: The subscription, to be cancelled when the hold is over.
+    static func install(
+        _ signals: [(signal: HoldSignal, number: Int32)],
+        deliver: @escaping @Sendable (HoldSignal) -> Void
+    ) -> SignalSubscription {
+        var restores: [() -> Void] = []
+        // A write to a closed pipe must come back as EPIPE, which ends the hold in an orderly
+        // way, rather than kill a process that is holding a lease.
+        let previousPipe = signal(SIGPIPE, SIG_IGN)
+        restores.append { _ = signal(SIGPIPE, previousPipe) }
+
+        let sources = signals.map { held -> any DispatchSourceSignal in
+            let previous = signal(held.number, SIG_IGN)
+            restores.append { _ = signal(held.number, previous) }
+            let source = DispatchSource.makeSignalSource(
+                signal: held.number, queue: DispatchQueue.global())
+            source.setEventHandler { deliver(held.signal) }
+            source.resume()
+            return source
+        }
+        return SignalSubscription(sources: sources, restores: restores)
+    }
 }

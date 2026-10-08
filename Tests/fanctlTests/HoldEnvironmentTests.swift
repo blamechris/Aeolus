@@ -9,10 +9,12 @@ nonisolated(unsafe) private var sigpipesSeen: Int32 = 0
 
 /// The production signal handlers and parent reader, which every other test substitutes.
 ///
-/// Serialised, because a signal disposition belongs to the whole process. SIGHUP is the one sent
-/// here: while handlers are installed it is ignored by the process and delivered to the handler,
-/// so a missing handler is a loud failure (the default action is to terminate the test process)
-/// and never a silent pass.
+/// Serialised, because a signal disposition belongs to the whole process. SIGUSR2 is the one sent
+/// here, standing in for SIGHUP through the installer production uses: while handlers are
+/// installed it is ignored by the process and delivered to the handler. It is **not a real
+/// SIGHUP, SIGINT or SIGTERM**, which a test runner may exit on: a CI run ended without a word
+/// when one was sent. A missing handler is still loud, since the disposition is asserted before
+/// anything is sent.
 @Suite("The production hold environment", .serialized, .timeLimit(.minutes(1)))
 struct HoldEnvironmentTests {
 
@@ -169,18 +171,33 @@ struct HoldEnvironmentTests {
         "A signal sent to the process reaches the handler, and cancelling restores the process",
         .timeLimit(.minutes(1)))
     func signalIsDelivered() async throws {
-        let before = Self.disposition(of: SIGHUP)
+        // SIGUSR2 stands in for SIGHUP, through the same installer production uses: the three
+        // real signals are not sent to a test runner, which may well exit on one of them.
+        let before = Self.disposition(of: SIGUSR2)
         let (stream, continuation) = AsyncStream.makeStream(of: HoldSignal.self)
-        let subscription = HoldEnvironment.production.installSignals { continuation.yield($0) }
+        let subscription = HoldEnvironment.install([(.hangup, SIGUSR2)]) { continuation.yield($0) }
         defer { subscription.cancel() }
         try #require(
-            Self.disposition(of: SIGHUP) == 1, "ignored while the handler is installed")
+            Self.disposition(of: SIGUSR2) == 1, "ignored while the handler is installed")
 
-        kill(getpid(), SIGHUP)
+        kill(getpid(), SIGUSR2)
 
         #expect(await Self.first(of: stream, within: .seconds(10)) == .hangup)
         subscription.cancel()
-        #expect(Self.disposition(of: SIGHUP) == before, "the previous disposition is back")
+        #expect(Self.disposition(of: SIGUSR2) == before, "the previous disposition is back")
+    }
+
+    /// The three real signals are claimed while a hold is installed and put back after, but never
+    /// sent here.
+    ///
+    /// **Mutation:** drop `signal(held.number, SIG_IGN)` from `HoldEnvironment.install`. Run: red.
+    @Test("The real signals are ignored while installed, and restored after")
+    func realSignalsAreClaimed() {
+        let before = HoldSignal.all.map { Self.disposition(of: $0.number) }
+        let subscription = HoldEnvironment.production.installSignals { _ in }
+        #expect(HoldSignal.all.map { Self.disposition(of: $0.number) } == [1, 1, 1])
+        subscription.cancel()
+        #expect(HoldSignal.all.map { Self.disposition(of: $0.number) } == before)
     }
 
     /// A write to a closed pipe must come back as an error, not kill a process holding a lease.
