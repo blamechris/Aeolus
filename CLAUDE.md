@@ -109,7 +109,7 @@ xcodebuild -project Aeolus.xcodeproj -scheme "Aeolus (Monitor)" \
 
 ## Development hardware
 
-One machine: `Mac16,5`, Apple M4 Max, macOS 26.6.2.
+One machine: `Mac16,5`, Apple M4 Max, macOS 27.0.1 (26A434).
 
 That is an M3-or-newer part, so the hardest write path can be tested here. **The Intel
 path and the M1/M2 path cannot be tested at all.** Never mark them as working. Code for
