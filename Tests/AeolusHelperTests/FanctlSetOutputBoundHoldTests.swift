@@ -32,6 +32,15 @@ struct FanctlSetOutputBoundHoldTests {
         return free
     }
 
+    /// A wait hook that does `act` at the `target`-th wait for room, and nothing at the others.
+    private static func atWait(
+        _ target: Int, _ act: @escaping @Sendable (SignalDesk) -> Void
+    ) -> @Sendable (Int, VirtualHoldTime, SignalDesk) -> Void {
+        { number, _, desk in
+            if number == target { act(desk) }
+        }
+    }
+
     private static let elevenSeconds = ["0", "75%", "--for", "11s", "--json"]
 
     /// **Mutation:** give the heartbeat's writes a stop that never fires (`session.output
@@ -39,10 +48,8 @@ struct FanctlSetOutputBoundHoldTests {
     /// its whole bound, twenty slices, where the signal ends it at the third.
     @Test("A SIGINT while a heartbeat's line waits ends the hold at once, as a signal")
     func aSignalWhileAHeartbeatWaits() async throws {
-        let (stalled, authority) = try await Bound.run(freeBytes: Self.midHoldRoom()) {
-            number, _, desk in
-            if number == 3 { desk.send(.interrupt) }
-        }
+        let (stalled, authority) = try await Bound.run(
+            freeBytes: Self.midHoldRoom(), onWait: Self.atWait(3, { $0.send(.interrupt) }))
         defer {
             stalled.out.close()
             stalled.errors.close()
@@ -58,10 +65,8 @@ struct FanctlSetOutputBoundHoldTests {
 
     @Test("A parent that exits while a heartbeat's line waits ends the hold at once")
     func theParentExitsWhileAHeartbeatWaits() async throws {
-        let (stalled, authority) = try await Bound.run(freeBytes: Self.midHoldRoom()) {
-            number, _, desk in
-            if number == 3 { desk.parentExits() }
-        }
+        let (stalled, authority) = try await Bound.run(
+            freeBytes: Self.midHoldRoom(), onWait: Self.atWait(3, { $0.parentExits() }))
         defer {
             stalled.out.close()
             stalled.errors.close()
