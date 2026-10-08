@@ -15,7 +15,7 @@ import os
 /// parked, the **first half of the line it is parked on**, which is what a blocking `write(2)` of
 /// a long line leaves in a pipe. Releasing it completes the line.
 ///
-/// Every wait is bounded (thirty seconds), so a test that forgets to release it leaves a thread
+/// Every wait is bounded (ten seconds), so a test that forgets to release it leaves a thread
 /// that ends rather than one that lives as long as the process.
 final class BlockedWriter: Sendable {
 
@@ -72,7 +72,7 @@ final class BlockedWriter: Sendable {
                 $0.consumed += String(line[..<half])
                 $0.isParked = true
             }
-            _ = gate.wait(timeout: .now() + 30)
+            _ = gate.wait(timeout: .now() + 10)
             state.withLock {
                 $0.isParked = false
                 if self.outcomeWhenReleased.isDelivered {
