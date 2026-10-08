@@ -136,7 +136,10 @@ struct SMCRoundTripMonitorTests {
         // A watchdog reads from its own thread while the call is out. If the stamp's lock were
         // held across the call, this read would block until the call returned.
         let reader = Thread {
-            observation.withLock { $0 = monitor.inFlight() }
+            // Read first, store second: the read is the thing that may block, and it must not
+            // do so holding the lock the test thread needs to look at the result.
+            let seen = monitor.inFlight()
+            observation.withLock { $0 = seen }
             readerFinished.signal()
         }
         reader.start()
@@ -179,7 +182,8 @@ struct SMCRoundTripMonitorTests {
         // actor is held. It runs on its own thread so that a read which did block fails by
         // timing out, rather than hanging the test behind the call it was meant to observe.
         let reader = Thread {
-            observation.withLock { $0 = connection.roundTrips.inFlight() }
+            let seen = connection.roundTrips.inFlight()
+            observation.withLock { $0 = seen }
             readerFinished.signal()
         }
         reader.start()
