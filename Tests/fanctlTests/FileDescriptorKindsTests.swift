@@ -4,9 +4,9 @@ import os
 
 @testable import fanctl
 
-/// `FileDescriptorWriter` on everything that is not a pipe: sockets, which are asked for room the
-/// way pipes are, and files, devices and bad descriptors, which are not.
-@Suite("Writing a line to a socket, a file or a device", .serialized)
+/// `FileDescriptorWriter` on everything that is not a pipe: sockets, files, devices and bad
+/// descriptors.
+@Suite("Writing a line to a socket, a file or a device", .serialized, .timeLimit(.minutes(1)))
 struct FileDescriptorKindsTests {
 
     typealias Rig = WriterRig
@@ -54,43 +54,37 @@ struct FileDescriptorKindsTests {
         }
     }
 
-    /// **Mutation:** ask only pipes (`canStall = kind == S_IFIFO`). Run: red — a socket whose
-    /// peer has stopped reading parks the write, and the assertion that it came back fails.
-    @Test("A socket whose peer has stopped reading gives up instead of parking")
-    func fullSocket() throws {
-        let sockets = try Sockets()
-        defer { sockets.close() }
-        sockets.fill()
-        let wait = ScriptedWait()
-        let patience = Rig.patience(wait)
-        let writer = sockets.writer
-
-        let outcome = Rig.promptly(
-            unblocking: { sockets.drain() },
-            running: {
-                Rig.write(Rig.line(2_000), to: writer, patience: patience)
-            })
-
-        #expect(outcome == .gaveUp)
-        #expect(wait.slices == 20)
-    }
-
     @Test("A socket whose peer has gone reports it")
     func closedSocket() throws {
         let sockets = try Sockets()
         Darwin.close(sockets.reader)
         defer { Darwin.close(sockets.writer) }
-        let wait = ScriptedWait()
         let writer = sockets.writer
-        let patience = Rig.patience(wait)
 
-        let outcome = Rig.promptly(
-            unblocking: {},
-            running: {
-                Rig.write("hello?", to: writer, patience: patience)
-            })
+        let outcome = Rig.promptly(unblocking: {}, running: { Rig.write("hello?", to: writer) })
 
         #expect(outcome == .readerGone)
+    }
+
+    /// A socket whose peer is slow to read is written to the end, as a pipe is.
+    @Test("A socket is written to the end, waiting for a peer that reads late")
+    func socketToTheEndWaits() throws {
+        let sockets = try Sockets()
+        defer { sockets.close() }
+        sockets.fill()
+        let reader = sockets.reader
+        let text = Rig.line(2_000)
+        BackgroundThread.run {
+            Thread.sleep(forTimeInterval: 0.05)
+            sockets.drain()
+        }
+        let writer = sockets.writer
+
+        let outcome = Rig.promptly(
+            unblocking: { sockets.drain() }, running: { Rig.write(text, to: writer) })
+
+        #expect(outcome == .delivered)
+        _ = reader
     }
 
     @Test("To the end: a socket receives the line whole")
@@ -105,20 +99,14 @@ struct FileDescriptorKindsTests {
 
     // MARK: - Everything that is not a pipe or a socket
 
-    /// macOS answers `POLLNVAL` for `/dev/null`, so a writer that polled every descriptor would
-    /// read `fanctl set … > /dev/null` as a consumer that had gone and end the hold at once.
-    ///
-    /// **Mutation:** poll every descriptor, not only pipes and sockets (`canStall = true` in
-    /// `writeLine`). Run: red here.
+    /// macOS answers `POLLNVAL` for `/dev/null`, which is why nothing here polls before a write:
+    /// `fanctl set … > /dev/null` is a consumer that takes everything.
     @Test("/dev/null takes the line: a device is not a consumer that has gone")
     func devNull() {
         let descriptor = open("/dev/null", O_WRONLY)
         defer { Darwin.close(descriptor) }
         #expect(descriptor >= 0)
-        let wait = ScriptedWait()
-        #expect(
-            Rig.write("into the void", to: descriptor, patience: Rig.patience(wait))
-                == .delivered)
+        #expect(Rig.write("into the void", to: descriptor) == .delivered)
     }
 
     @Test("A regular file receives the line")
@@ -132,11 +120,9 @@ struct FileDescriptorKindsTests {
         #expect(try String(contentsOfFile: path, encoding: .utf8) == "kept\n")
     }
 
-    @Test("A descriptor that is not open fails with EBADF, to the end or within a bound")
+    @Test("A descriptor that is not open fails with EBADF")
     func badDescriptor() {
         #expect(Rig.write("x", to: -1) == .failed(EBADF))
-        let wait = ScriptedWait()
-        #expect(Rig.write("x", to: -1, patience: Rig.patience(wait)) == .failed(EBADF))
     }
 
     /// A failure that is not a reader leaving is said on standard error by a one-shot command's

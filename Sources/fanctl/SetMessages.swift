@@ -60,7 +60,7 @@ enum SetMessages {
         case .parentExited:
             return "the process that started it exited"
         case .outputClosed:
-            return "standard output was closed or did not make room"
+            return "standard output was closed or stopped taking lines"
         }
     }
 

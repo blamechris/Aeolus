@@ -177,20 +177,9 @@ enum SetCommand {
             return await finish(.lost(loss), hold: hold, snapshot: confirmation, in: session)
         }
 
-        // The start lines wait on a reader for a bounded time and give up on a stop request; if
-        // they gave up, the hold ends for the reason it was asked to, else because the reader
-        // would not take them.
-        let beforeDeadline = StopWatch(
-            interrupt: session.interrupt, environment: session.environment, clock: session.clock,
-            startingParent: session.startingParent, deadline: nil)
-        guard
-            session.output.stopping(when: { beforeDeadline.reason != nil })
-                .started(hold, snapshot: confirmation)
-        else {
-            return await finish(
-                .ended(beforeDeadline.reason ?? .outputClosed), hold: hold,
-                snapshot: confirmation, in: session)
-        }
+        // Handed over, not written: nothing the hold does waits on a reader. If standard output
+        // has failed or is not taking them, the first look in `heartbeats` finds out.
+        session.output.started(hold, snapshot: confirmation)
 
         let (end, latest) = await heartbeats(
             hold, from: confirmation, startingParent: session.startingParent, in: session)
@@ -257,8 +246,15 @@ enum SetCommand {
     ///
     /// **Each renewal is scheduled from the last one, not from the end of the work after it.** A
     /// loop that slept a whole heartbeat after every renewal, snapshot and write would renew
-    /// every ten seconds *plus* whatever those took, and a slow write would eat the two missed
-    /// heartbeats the lease can spare. Here a late write shortens the next sleep.
+    /// every ten seconds *plus* whatever those took, and a slow hand-over would eat the two
+    /// missed heartbeats the lease can spare. Here a late one shortens the next sleep.
+    ///
+    /// **Nothing in the loop waits on standard output.** Lines are handed to a pump; the loop
+    /// looks at the pump, which never blocks. A sleep is cut short at the moment the oldest
+    /// unfinished line would count as stalled, so a consumer that stops draining ends the hold
+    /// two seconds after the line it stopped on, whatever the heartbeat is doing. When a stop
+    /// request (a signal, the parent exiting, the deadline) and a stalled consumer are both
+    /// true, the stop request is the reason.
     ///
     /// Returns the snapshot the loop last read, for the closing report.
     static func heartbeats(
@@ -269,30 +265,37 @@ enum SetCommand {
         let watch = StopWatch(
             interrupt: session.interrupt, environment: session.environment, clock: session.clock,
             startingParent: startingParent, deadline: deadline)
-        let output = session.output.stopping(when: { watch.reason != nil })
+        let output = session.output
         var renewedAt = session.clock.now()
         while true {
-            let now = session.clock.now()
+            var now = session.clock.now()
             let remaining = deadline - now
-            if remaining <= .zero { return (.ended(.durationElapsed), latest) }
+            // Why to stop, in the order a stop request is judged (a signal, the parent, the
+            // deadline), and only then that standard output is not taking lines.
+            if let reason = watch.reason { return (.ended(reason), latest) }
+            if output.hasTrouble(at: now) { return (.ended(.outputClosed), latest) }
 
             // A signal that arrived while the loop was busy with the helper is not looked for
             // separately: the sleep ends at once for a signal already pending.
             let untilNextRenewal = max(renewedAt + heartbeat - now, .zero)
-            let woke = await session.interrupt.sleep(
-                for: min(untilNextRenewal, remaining), on: session.clock)
+            var sleeping = min(untilNextRenewal, remaining)
+            if let untilTrouble = output.untilTrouble(from: now) {
+                sleeping = min(sleeping, untilTrouble)
+            }
+            let woke = await session.interrupt.sleep(for: sleeping, on: session.clock)
             switch woke {
             case .signal(let signal): return (.ended(.signal(signal)), latest)
             case .failed: return (.timerFailed, latest)
             case .elapsed: break
             }
             // Not renewed at the deadline: the lease is about to be released.
-            if session.clock.now() >= deadline { return (.ended(.durationElapsed), latest) }
-            if session.environment.parentProcessID() != startingParent {
-                return (.ended(.parentExited), latest)
-            }
+            now = session.clock.now()
+            if let reason = watch.reason { return (.ended(reason), latest) }
+            if output.hasTrouble(at: now) { return (.ended(.outputClosed), latest) }
+            // Woken to look at standard output, not to renew.
+            if now < renewedAt + heartbeat { continue }
 
-            renewedAt = session.clock.now()
+            renewedAt = now
             do {
                 _ = try await session.client.renewLease(id: hold.leaseID)
             } catch {
@@ -308,11 +311,7 @@ enum SetCommand {
                 return (.lost(loss), latest)
             }
             let left = max(deadline - session.clock.now(), .zero)
-            if !output.holding(hold, snapshot: latest, remaining: left) {
-                // The write gave up. If the hold was asked to stop meanwhile, that is why it
-                // ends; the reader not making room is the reason only when nothing else is.
-                return (.ended(watch.reason ?? .outputClosed), latest)
-            }
+            output.holding(hold, snapshot: latest, remaining: left)
         }
     }
 

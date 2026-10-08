@@ -132,13 +132,13 @@ enum SetHarness {
 
     static func command(
         _ arguments: [String], endpoint: NSXPCListenerEndpoint, output: RecordingTerminal,
-        time: VirtualHoldTime, desk: SignalDesk
+        time: VirtualHoldTime, desk: SignalDesk, terminal: Terminal? = nil
     ) throws -> Fanctl.Set {
         var command = try #require(Fanctl.parseAsRoot(["set"] + arguments) as? Fanctl.Set)
         command.helper = HelperConnection(
             transport: .endpoint(endpoint), pinning: UnenforcedClientPinning(),
             deadlines: FanctlResetTests.unhurried)
-        command.terminal = output.terminal
+        command.terminal = terminal ?? output.terminal
         command.clock = time.clock
         command.environment = desk.environment
         return command
@@ -147,10 +147,11 @@ enum SetHarness {
     static func run(
         _ arguments: [String], over harness: ClientListenerHarness,
         time: VirtualHoldTime = VirtualHoldTime(), desk: SignalDesk = SignalDesk(),
-        output: RecordingTerminal = RecordingTerminal()
+        output: RecordingTerminal = RecordingTerminal(), terminal: Terminal? = nil
     ) async throws -> Run {
         let command = try command(
-            arguments, endpoint: harness.endpoint, output: output, time: time, desk: desk)
+            arguments, endpoint: harness.endpoint, output: output, time: time, desk: desk,
+            terminal: terminal)
         let code = await exitCode { try await command.run() }
         return Run(code: code, output: output, time: time, desk: desk)
     }

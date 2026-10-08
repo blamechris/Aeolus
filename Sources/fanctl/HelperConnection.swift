@@ -70,7 +70,7 @@ struct HelperConnection: Decodable, Sendable {
     }
 }
 
-/// Where a helper-talking command writes, one line at a time.
+/// Where a helper-talking command writes.
 ///
 /// **Why these commands do not print through swift-argument-parser's error path, as `reset`
 /// does.** Two reasons, both about the contract a remote caller depends on. The exit code
@@ -84,18 +84,18 @@ struct HelperConnection: Decodable, Sendable {
 /// arrives when it happens instead of when a stdio buffer fills, and rather than
 /// `FileHandle.write`, which raises an Objective-C exception on EPIPE.
 ///
-/// ## Two kinds of terminal
+/// ## Two ways to write
 ///
-/// - **`status`, `auto` and the other one-shot commands write to the end.** Every byte is
-///   delivered, and the write waits as long as the reader needs: a reader that is slow is not a
-///   reader that is gone, and a document that arrives in part is worse than one that arrives
-///   late. A reader that *has* gone is EPIPE, which neither crashes the command nor changes its
-///   exit code — nobody is left to be misled by it.
-/// - **`set` writes within a bound** (`bounded(stopping:)`). A process holding a lease must keep
-///   renewing it, so no write may park it past a signal, a renewal or its deadline. A line is
-///   written in chunks no larger than the room a pipe promises, each after the pipe has said it
-///   has room, with a short wait between; a stop request ends the wait, and a reader that has not
-///   made room within the bound is treated as gone. See `FileDescriptorWriter`.
+/// - **`status`, `auto` and the other one-shot commands write here, to the end** (`say`,
+///   `warn`, `deliver`). Every byte is delivered, and the write waits as long as the reader
+///   needs: a reader that is slow is not a reader that is gone, and a document that arrives in
+///   part is worse than one that arrives late. A reader that *has* gone is EPIPE, which neither
+///   crashes the command nor changes its exit code — nobody is left to be misled by it. These
+///   commands hold nothing, so a write that parks costs the caller its own time and no more.
+/// - **`set` does not write here at all** (`lineSinks()`). A process holding a lease must keep
+///   renewing it and must be able to stop, and a write to a pipe can park for as long as the
+///   kernel makes it. `set` hands its lines to a `LinePump` per stream and never waits on one
+///   except to close.
 ///
 /// `reset --all` does not use this type, and must not.
 ///
@@ -108,39 +108,44 @@ struct Terminal: Decodable, Sendable {
         case standardError
     }
 
-    /// How long a bounded write may wait for room, in all, for one line. Well under the
-    /// heartbeat (10 s), so a stalled consumer costs the lease one late renewal at most, never
-    /// the two the lease can miss.
-    static let writeBound = Duration.seconds(2)
-
-    /// The longest single wait before a bounded write asks whether it should stop.
-    static let writeSlice = Duration.milliseconds(100)
-
-    /// A stream, a line, and whether to give up when asked (`nil` writes to the end); `true` if
-    /// the line arrived.
-    typealias Delivery = @Sendable (Stream, String, (@Sendable () -> Bool)?) -> Bool
+    /// A stream, a line; `true` if the line arrived.
+    typealias Delivery = @Sendable (Stream, String) -> Bool
 
     private let delivery: Delivery
-    private let stopping: (@Sendable () -> Bool)?
+    private let makeSinks: @Sendable () -> OutputSinks
 
     /// A terminal whose writes cannot fail.
     init(_ sink: @escaping @Sendable (Stream, String) -> Void) {
+        self.init(delivering: { stream, text in
+            sink(stream, text)
+            return true
+        })
+    }
+
+    /// A terminal that says whether each line arrived. A suite's recorder either takes a line or
+    /// does not, and never makes anyone wait, so `set`'s lines to it are written inline.
+    init(delivering delivery: @escaping Delivery) {
         self.init(
-            delivery: { stream, text, _ in
-                sink(stream, text)
-                return true
+            delivery: delivery,
+            sinks: {
+                OutputSinks(
+                    standardOutput: LinePump(inline: { line in
+                        delivery(.standardOutput, line) ? .delivered : .readerGone
+                    }),
+                    standardError: LinePump(inline: { line in
+                        delivery(.standardError, line) ? .delivered : .readerGone
+                    }))
             })
     }
 
-    /// A terminal that says whether each line arrived. It has no patience to apply: a suite's
-    /// recorder either takes a line or does not.
-    init(delivering delivery: @escaping @Sendable (Stream, String) -> Bool) {
-        self.init(delivery: { stream, text, _ in delivery(stream, text) })
-    }
-
-    private init(delivery: @escaping Delivery, stopping: (@Sendable () -> Bool)? = nil) {
+    /// A terminal whose `set` lines go to the pumps `sinks` builds: the seam a suite uses to put
+    /// a writer that blocks, or one that is slow, under a run.
+    init(
+        delivery: @escaping Delivery = { _, _ in true },
+        sinks: @escaping @Sendable () -> OutputSinks
+    ) {
         self.delivery = delivery
-        self.stopping = stopping
+        self.makeSinks = sinks
     }
 
     init(from decoder: Decoder) throws {
@@ -159,49 +164,47 @@ struct Terminal: Decodable, Sendable {
     /// - Parameters:
     ///   - output: The descriptor `say` and `deliver` write to.
     ///   - errors: The descriptor `warn` writes to.
-    ///   - wait: Waits up to a slice for room to write. `FileDescriptorWriter.pollForRoom` in
-    ///     production; a suite substitutes one that costs no real time.
     ///   - shouldIgnore: Whether each write ignores SIGPIPE while it is made. Always, outside
     ///     the suites that are not about it (`FileDescriptorWriter.writeLine`).
     /// - Returns: The terminal.
     static func writing(
-        to output: Int32, errors: Int32,
-        waiting wait: @escaping @Sendable (Int32, Duration) -> FileDescriptorWriter.Wait =
-            FileDescriptorWriter.pollForRoom,
-        ignoringSIGPIPE shouldIgnore: Bool = true
+        to output: Int32, errors: Int32, ignoringSIGPIPE shouldIgnore: Bool = true
     ) -> Terminal {
         Terminal(
-            delivery: { stream, text, stop in
+            delivery: { stream, text in
                 let descriptor = stream == .standardOutput ? output : errors
-                let patience = stop.map {
-                    FileDescriptorWriter.Patience(
-                        limit: writeBound, slice: writeSlice, stop: $0, wait: wait)
-                }
                 let outcome = FileDescriptorWriter.writeLine(
-                    text, to: descriptor, patience: patience, ignoringSIGPIPE: shouldIgnore)
-                if case .failed(let code) = outcome, stream == .standardOutput, stop == nil {
+                    text, to: descriptor, ignoringSIGPIPE: shouldIgnore)
+                if case .failed(let code) = outcome, stream == .standardOutput {
                     let reason = String(cString: strerror(code))
                     _ = FileDescriptorWriter.writeLine(
                         "fanctl: could not write to standard output: \(reason)", to: errors,
                         ignoringSIGPIPE: shouldIgnore)
                 }
                 return outcome.isDelivered
+            },
+            sinks: {
+                OutputSinks(
+                    standardOutput: LinePump(threaded: "fanctl.standard-output") { line in
+                        FileDescriptorWriter.writeLine(
+                            line, to: output, ignoringSIGPIPE: shouldIgnore)
+                    },
+                    standardError: LinePump(threaded: "fanctl.standard-error") { line in
+                        FileDescriptorWriter.writeLine(
+                            line, to: errors, ignoringSIGPIPE: shouldIgnore)
+                    })
             })
     }
 
-    /// The same terminal, every write of which gives up when `stop` says so or when the reader
-    /// has not made room within `writeBound`. For `set`, whose lease must not wait on a reader.
-    func bounded(stopping stop: @escaping @Sendable () -> Bool) -> Terminal {
-        Terminal(delivery: delivery, stopping: stop)
-    }
+    /// The pumps one `set` run writes through: one per stream, each with a thread of its own.
+    func lineSinks() -> OutputSinks { makeSinks() }
 
     /// A result: what the command was asked for.
-    func say(_ text: String) { _ = delivery(.standardOutput, text, stopping) }
+    func say(_ text: String) { _ = delivery(.standardOutput, text) }
 
-    /// A result, and whether it arrived. `false` is a consumer that has gone, or one that did not
-    /// make room in time when this terminal is bounded.
-    func deliver(_ text: String) -> Bool { delivery(.standardOutput, text, stopping) }
+    /// A result, and whether it arrived. `false` is a consumer that has gone.
+    func deliver(_ text: String) -> Bool { delivery(.standardOutput, text) }
 
     /// A diagnosis: why the command could not give it, or what the user should know about it.
-    func warn(_ text: String) { _ = delivery(.standardError, text, stopping) }
+    func warn(_ text: String) { _ = delivery(.standardError, text) }
 }

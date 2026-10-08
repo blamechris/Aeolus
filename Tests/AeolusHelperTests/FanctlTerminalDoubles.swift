@@ -86,6 +86,15 @@ final class RecordingTerminal: Sendable {
         try Self.decode(lines.filter { $0.stream == .standardOutput })
     }
 
+    /// The lines on standard error that are JSON objects: the closing event, when standard
+    /// output could not take it. The diagnosis beside it is prose and is skipped.
+    func standardErrorEvents() -> [[String: Any]] {
+        lines.filter { $0.stream == .standardError }.compactMap { line in
+            let object = try? JSONSerialization.jsonObject(with: Data(line.text.utf8))
+            return object as? [String: Any]
+        }
+    }
+
     private static func decode(_ lines: [Line]) throws -> [[String: Any]] {
         try lines.map { line in
             let object = try JSONSerialization.jsonObject(with: Data(line.text.utf8))
@@ -126,29 +135,31 @@ struct RealPipe {
         return Int(count)
     }
 
+    /// Up to `count` bytes, or none if nothing arrives within two seconds: **never a blocking
+    /// read**, so a test whose writer wrote nothing fails on what it read and cannot park the
+    /// test process on a pipe whose writer is still open.
     func read(_ count: Int) -> [UInt8] {
+        var request = pollfd(fd: reader, events: Int16(POLLIN), revents: 0)
+        guard poll(&request, 1, 2_000) > 0 else { return [] }
         var buffer = [UInt8](repeating: 0, count: count)
         let received = Darwin.read(reader, &buffer, count)
         return Array(buffer.prefix(max(received, 0)))
     }
 
-    /// Everything queued.
-    func drain() -> [UInt8] { read(queued) }
-
-    /// Fills the pipe, then makes `free` bytes of room by reading them back.
-    func fill(leavingFree free: Int) {
-        let flags = fcntl(writer, F_GETFL)
-        _ = fcntl(writer, F_SETFL, flags | O_NONBLOCK)
-        var filler: UInt8 = 0x61
-        while Darwin.write(writer, &filler, 1) == 1 {}
-        _ = fcntl(writer, F_SETFL, flags)
-        _ = read(free)
+    /// Everything queued, without waiting for more.
+    func drain() -> [UInt8] {
+        let waiting = queued
+        return waiting > 0 ? read(waiting) : []
     }
 
-    /// Whether `poll` calls the writer writable: the answer a writer will get.
-    var pollsWritable: Bool {
-        var request = pollfd(fd: writer, events: Int16(POLLOUT), revents: 0)
-        return poll(&request, 1, 0) > 0 && request.revents & Int16(POLLOUT) != 0
+    /// Fills the pipe with `filler`, then makes `free` bytes of room by reading them back.
+    func fill(leavingFree free: Int, with filler: UInt8 = 0x61) {
+        let flags = fcntl(writer, F_GETFL)
+        _ = fcntl(writer, F_SETFL, flags | O_NONBLOCK)
+        var byte = filler
+        while Darwin.write(writer, &byte, 1) == 1 {}
+        _ = fcntl(writer, F_SETFL, flags)
+        _ = read(free)
     }
 }
 

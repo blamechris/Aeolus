@@ -33,7 +33,12 @@ struct TestPipe {
         return Int(count)
     }
 
+    /// Up to `count` bytes, or none if nothing arrives within two seconds. **Never a blocking
+    /// read**: a test whose writer wrote nothing must fail on what it read and not park the test
+    /// process on a pipe whose writer is still open.
     func read(_ count: Int) -> [UInt8] {
+        var request = pollfd(fd: reader, events: Int16(POLLIN), revents: 0)
+        guard poll(&request, 1, 2_000) > 0 else { return [] }
         var buffer = [UInt8](repeating: 0, count: count)
         let received = Darwin.read(reader, &buffer, count)
         return Array(buffer.prefix(max(received, 0)))
@@ -41,8 +46,11 @@ struct TestPipe {
 
     func text(_ count: Int) -> String { String(decoding: read(count), as: UTF8.self) }
 
-    /// Reads everything queued.
-    func drain() -> [UInt8] { read(queued) }
+    /// Reads everything queued, without waiting for more.
+    func drain() -> [UInt8] {
+        let waiting = queued
+        return waiting > 0 ? read(waiting) : []
+    }
 
     /// Fills the pipe, then makes `free` bytes of room by reading them back.
     ///
@@ -56,54 +64,29 @@ struct TestPipe {
         _ = fcntl(writer, F_SETFL, flags)
         _ = read(free)
     }
-
-    /// Whether `poll` calls the writer writable: the answer the writer itself will get.
-    var pollsWritable: Bool {
-        var request = pollfd(fd: writer, events: Int16(POLLOUT), revents: 0)
-        return poll(&request, 1, 0) > 0 && request.revents & Int16(POLLOUT) != 0
-    }
-}
-
-/// A wait that costs no real time: counts itself, says the slice passed with nothing changing,
-/// and lets a test act at the n-th one.
-final class ScriptedWait: Sendable {
-    private let counted = OSAllocatedUnfairLock(initialState: 0)
-    private let act: @Sendable (Int) -> Void
-
-    init(_ act: @escaping @Sendable (Int) -> Void = { _ in }) { self.act = act }
-
-    /// How many slices have been waited.
-    var slices: Int { counted.withLock { $0 } }
-
-    var wait: @Sendable (Int32, Duration) -> FileDescriptorWriter.Wait {
-        { [counted, act] _, _ in
-            let number = counted.withLock { value -> Int in
-                value += 1
-                return value
-            }
-            act(number)
-            return .timedOut
-        }
-    }
 }
 
 /// What the suites that test `FileDescriptorWriter` share.
 enum WriterRig {
 
-    static func patience(
-        _ wait: ScriptedWait, stop: @escaping @Sendable () -> Bool = { false },
-        limit: Duration = .seconds(2)
-    ) -> FileDescriptorWriter.Patience {
-        FileDescriptorWriter.Patience(
-            limit: limit, slice: .milliseconds(100), stop: stop, wait: wait.wait)
+    /// `FileDescriptorWriter.writeLine`, with SIGPIPE left alone.
+    static func write(_ text: String, to descriptor: Int32) -> FileDescriptorWriter.Outcome {
+        FileDescriptorWriter.writeLine(text, to: descriptor, ignoringSIGPIPE: false)
     }
 
-    /// `FileDescriptorWriter.writeLine`, with SIGPIPE left alone.
-    static func write(
-        _ text: String, to descriptor: Int32, patience: FileDescriptorWriter.Patience? = nil
-    ) -> FileDescriptorWriter.Outcome {
-        FileDescriptorWriter.writeLine(
-            text, to: descriptor, patience: patience, ignoringSIGPIPE: false)
+    /// Everything that arrives on `descriptor` until `total` bytes are in or nothing arrives for
+    /// two seconds. For a reader thread: **never a blocking read**.
+    static func readUntil(total: Int, from descriptor: Int32) -> [UInt8] {
+        var received: [UInt8] = []
+        var chunk = [UInt8](repeating: 0, count: 4_096)
+        while received.count < total {
+            var request = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+            guard poll(&request, 1, 2_000) > 0 else { break }
+            let count = Darwin.read(descriptor, &chunk, chunk.count)
+            if count <= 0 { break }
+            received += chunk.prefix(count)
+        }
+        return received
     }
 
     /// The result of `work`, or `nil` if it did not come back within five seconds.
@@ -112,7 +95,8 @@ enum WriterRig {
     /// instead of failing. `unblock` frees it afterwards so the thread is not left behind. The five
     /// seconds are only ever spent when the guard under test is broken.
     static func promptly<Value: Sendable>(
-        unblocking unblock: () -> Void, running work: @escaping @Sendable () -> Value
+        unblocking unblock: () -> Void, running work: @escaping @Sendable () -> Value,
+        whileRunning during: () -> Void = {}
     ) -> Value? {
         let result = OSAllocatedUnfairLock<Value?>(initialState: nil)
         let done = DispatchSemaphore(value: 0)
@@ -121,6 +105,7 @@ enum WriterRig {
             result.withLock { $0 = value }
             done.signal()
         }
+        during()
         if done.wait(timeout: .now() + 5) == .timedOut {
             unblock()
             _ = done.wait(timeout: .now() + 5)

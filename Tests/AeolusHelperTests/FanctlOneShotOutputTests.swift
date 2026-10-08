@@ -15,12 +15,11 @@ nonisolated(unsafe) private var sigpipesSeenByOneShotTests: Int32 = 0
 /// `status` and `auto` write their output **to the end**, and leave with their own exit code
 /// whether or not anyone is left to read it.
 ///
-/// The writer `set` needed (chunked, bounded, and silent about a reader that is slow) was first
-/// applied to every command, and dropped a line whenever a pipe had fewer than 512 bytes free
-/// while its reader was still there: `{ cat big.log; fanctl status --json; } | slow-reader` lost
-/// the document, where it used to wait. That was worse than before, and these tests hold the
-/// one-shot commands to the other behaviour. The bounded wait belongs to `set` alone
-/// (`FanctlSetOutputBoundTests`); `reset --all` does not use `Terminal` at all.
+/// A writer that gave up on a reader that was slow was once applied to every command, and dropped
+/// a line whenever a pipe had fewer than 512 bytes free while its reader was still there:
+/// `{ cat big.log; fanctl status --json; } | slow-reader` lost the document, where it used to
+/// wait. These tests hold the one-shot commands to waiting. `set` does not write directly at all
+/// (`FanctlSetBlockedWriterTests`); `reset --all` does not use `Terminal` either.
 ///
 /// Serialised, because the second half installs a SIGPIPE handler, a process-wide thing.
 @Suite("fanctl's one-shot commands write to the end", .serialized, .timeLimit(.minutes(1)))
@@ -34,12 +33,12 @@ struct FanctlOneShotOutputTests {
 
     // MARK: - A reader that is slow
 
-    /// `status --json` into a pipe that has room for less than one chunk, with a reader that
+    /// `status --json` into a pipe that has room for less than the document, with a reader that
     /// starts reading a moment later. The whole document must arrive.
     ///
-    /// **Mutation:** give the one-shot terminal a bound (build `Terminal.writing`'s `patience`
-    /// from `writeBound` whether or not a `stop` was given). Run: red — the document is cut off
-    /// and the prefill is all the reader gets.
+    /// **Mutation:** write only what a refusal-free write takes and report the rest as a failure
+    /// (`FileDescriptorWriterTests.toTheEndWaitsForTheReader` is the same guard at the writer).
+    /// Run: red — the document is cut off and the prefill is all the reader gets.
     @Test("status --json delivers the whole document to a reader that is slow to start")
     func statusToASlowReader() async throws {
         let authority = SimulatedFanAuthority()
@@ -51,8 +50,6 @@ struct FanctlOneShotOutputTests {
             errors.close()
         }
         out.fill(leavingFree: 300)
-        try #require(
-            300 < FileDescriptorWriter.chunk, "precondition: less than one chunk of room")
         let prefill = out.queued
 
         let received = OSAllocatedUnfairLock<[UInt8]>(initialState: [])
@@ -60,8 +57,12 @@ struct FanctlOneShotOutputTests {
         let reader = out.reader
         BackgroundThread.run {
             Thread.sleep(forTimeInterval: 0.05)
+            // Until the writer is closed, or nothing arrives for two seconds: never a read that
+            // can park the test process.
             var chunk = [UInt8](repeating: 0, count: 8_192)
             while true {
+                var request = pollfd(fd: reader, events: Int16(POLLIN), revents: 0)
+                guard poll(&request, 1, 2_000) > 0 else { break }
                 let count = Darwin.read(reader, &chunk, chunk.count)
                 if count <= 0 { break }
                 let bytes = Array(chunk.prefix(count))
@@ -74,12 +75,8 @@ struct FanctlOneShotOutputTests {
         command.helper = HelperConnection(
             transport: .endpoint(harness.endpoint), pinning: UnenforcedClientPinning(),
             deadlines: FanctlResetTests.unhurried)
-        // A wait that costs no real time and never sees room: a bounded writer would spend its
-        // whole bound in microseconds, long before the reader (50 ms) starts, and give up. One
-        // that writes to the end never asks.
         command.terminal = Terminal.writing(
-            to: out.writer, errors: errors.writer, waiting: { _, _ in .timedOut },
-            ignoringSIGPIPE: false)
+            to: out.writer, errors: errors.writer, ignoringSIGPIPE: false)
         let code = await exitCode { try await command.run() }
         Darwin.close(out.writer)  // The reader's end of the story: nothing more is coming.
         #expect(Self.signalled(reading), "the reader never saw the end of the document")

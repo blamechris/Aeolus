@@ -7,12 +7,12 @@ import Testing
 @testable import AeolusXPCClient
 @testable import fanctl
 
-/// What `fanctl set` says ended the hold when a write gave up on a reader, and a stop request
-/// (a signal, the parent exiting, the deadline) arrived while it waited.
+/// What `fanctl set` says ended the hold when standard output failed, and a stop request
+/// (a signal, the parent exiting, the deadline) arrived with it.
 ///
 /// A write that gives up is the reader not making room only if nothing else asked the hold to
 /// stop. The recorder here fails a line and makes the thing happen while it does, which is all
-/// the ordering needs; the real writer waiting on a real pipe is `FanctlSetOutputBoundTests`.
+/// the ordering needs; a writer that really parks is `FanctlSetBlockedWriterTests`.
 @Suite("fanctl set's stop requests outrank a write that gave up", .timeLimit(.minutes(1)))
 struct FanctlSetStopOrderTests {
 
@@ -72,8 +72,9 @@ struct FanctlSetStopOrderTests {
         let harness = ClientListenerHarness(authority: authority)
         let desk = SignalDesk()
         let time = VirtualHoldTime()
-        // Line 1 is `started`, line 2 the first `holding`, which does not arrive; as it waits,
-        // the thing under test happens. The closing event is line 3.
+        // Line 1 is `started`, line 2 the first `holding`, which does not arrive; the thing under
+        // test happens as it is handed over. Standard output has failed by then, so the closing
+        // event goes to standard error.
         let output = RecordingTerminal(
             acceptingStandardOutputLines: 1,
             onStandardOutput: { number, _ in
@@ -85,7 +86,7 @@ struct FanctlSetStopOrderTests {
             output: output)
 
         #expect(run.code == nil)
-        let closing = try #require(try output.attemptedEvents().last)
+        let closing = try #require(output.standardErrorEvents().last)
         #expect(closing["event"] as? String == "ended")
         #expect(closing["endedBecause"] as? String == stop.because)
         #expect(closing["signal"] as? String == stop.signalName)
@@ -93,11 +94,10 @@ struct FanctlSetStopOrderTests {
         _ = harness.sessions
     }
 
-    /// The same for the start line: it is written before the deadline is counted, so a signal or
-    /// the parent are the reasons that can outrank it.
+    /// The same for the start line, which fails before the first look at the clock.
     ///
-    /// **Mutation:** drop the `beforeDeadline.reason ??` from `SetCommand.holding`. Run: red on
-    /// each.
+    /// **Mutation:** as above: the one `watch.reason ??` at the top of the loop decides both.
+    /// Run: red on each.
     @Test(
         "A stop request that arrives while the start line waits is why the hold ends",
         arguments: [
@@ -127,7 +127,7 @@ struct FanctlSetStopOrderTests {
             output: output)
 
         #expect(run.code == nil)
-        let closing = try #require(try output.attemptedEvents().last)
+        let closing = try #require(output.standardErrorEvents().last)
         #expect(closing["event"] as? String == "ended")
         #expect(closing["endedBecause"] as? String == stop.because)
         #expect(closing["signal"] as? String == stop.signalName)

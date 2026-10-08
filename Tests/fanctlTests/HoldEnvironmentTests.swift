@@ -13,7 +13,7 @@ nonisolated(unsafe) private var sigpipesSeen: Int32 = 0
 /// here: while handlers are installed it is ignored by the process and delivered to the handler,
 /// so a missing handler is a loud failure (the default action is to terminate the test process)
 /// and never a silent pass.
-@Suite("The production hold environment", .serialized)
+@Suite("The production hold environment", .serialized, .timeLimit(.minutes(1)))
 struct HoldEnvironmentTests {
 
     /// How many SIGPIPEs the handler has seen once it has had `seconds` to see one, or as soon as

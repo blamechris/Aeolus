@@ -5,9 +5,10 @@ import Foundation
 // `fanctl set --json`: newline-delimited JSON, one event per line, in this order and no other.
 //
 //     started          once, after `apply` was accepted and a snapshot listed the lease
-//     holding          after every successful heartbeat (the liveness signal, and the write that
-//                      discovers a consumer has gone)
-//     ended | failed   exactly one, last
+//     holding          after every successful heartbeat (the liveness signal, and the line a
+//                      consumer that is not draining is found out by)
+//     ended | failed   exactly one, on standard output if that is idle, otherwise on standard
+//                      error as the same line (`SetOutput.deliverClosing`)
 //
 // Every line carries `schema`, `event` and `at`, and every key a shape defines is always
 // present, `null` standing for "not present", as in `status --json`. See `docs/CLI.md` for the

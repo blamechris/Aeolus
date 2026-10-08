@@ -60,7 +60,7 @@ struct SetMessagesTests {
         #expect(clauses[2] == "SIGTERM was received")
         #expect(clauses[3] == "SIGHUP was received")
         #expect(clauses[4] == "the process that started it exited")
-        #expect(clauses[5] == "standard output was closed or did not make room")
+        #expect(clauses[5] == "standard output was closed or stopped taking lines")
     }
 
     @Test("endedBecause values are the documented identifiers")

@@ -231,12 +231,13 @@ struct FanctlSetStopTests {
 
     // MARK: - Standard output
 
-    /// A consumer that went away: the `holding` write is the one that finds out. The hold ends,
-    /// the lease is released, and the process does not crash.
+    /// A consumer that went away: the `holding` line is the one that finds out. The hold ends,
+    /// the lease is released, the process does not crash, and the closing event goes to standard
+    /// error, the stream left to read, whole and parseable.
     ///
-    /// **Mutation:** ignore the result of `SetOutput.holding` in `SetCommand.heartbeats`. Run:
-    /// red — the hold runs to the end.
-    @Test("A stdout write that fails ends the hold, and the closing event is still attempted")
+    /// **Mutation:** drop the `hasTrouble` look in `SetCommand.heartbeats`. Run: red — the hold
+    /// runs to the end.
+    @Test("A stdout write that fails ends the hold, and the closing event goes to standard error")
     func standardOutputCloses() async throws {
         let authority = SimulatedFanAuthority()
         let harness = ClientListenerHarness(authority: authority)
@@ -250,12 +251,12 @@ struct FanctlSetStopTests {
         #expect(await Harness.count("releaseLease", in: authority) == 1)
         #expect(try output.events().map { $0["event"] as? String } == ["started"])
         let attempted = try output.attemptedEvents()
-        #expect(attempted.map { $0["event"] as? String } == ["started", "holding", "ended"])
-        #expect(attempted.last?["endedBecause"] as? String == "outputClosed")
         #expect(
-            output.standardError.contains(
-                "The hold ended: standard output was closed or did not make room."),
-            "the closing line goes where it can be read")
+            attempted.map { $0["event"] as? String } == ["started", "holding"],
+            "a stream that has failed is not written to again")
+        let closing = output.standardErrorEvents()
+        #expect(closing.map { $0["event"] as? String } == ["ended"])
+        #expect(closing.last?["endedBecause"] as? String == "outputClosed")
         _ = harness.sessions
     }
 
@@ -275,13 +276,14 @@ struct FanctlSetStopTests {
         _ = harness.sessions
     }
 
-    /// Every start line is tried: the first to fail does not excuse the rest, so a consumer that
-    /// can still read one of them is not denied it.
+    /// A start line that fails breaks the stream: nothing more is written to it, and the hold
+    /// ends. The consumer is gone, or it is not taking lines; either way there is no point in
+    /// handing it the rest.
     ///
-    /// **Mutation:** make `SetOutput.started` stop at the first line that fails
-    /// (`allSatisfy { terminal.deliver($0) }`). Run: red — one line attempted.
-    @Test("A start line that fails does not stop the others being tried")
-    func everyStartLineIsTried() async throws {
+    /// **Mutation:** keep writing to a pump that has failed (drop the `isBroken` guard in
+    /// `LinePump.enqueue`). Run: red — both lines attempted.
+    @Test("A start line that fails ends the stream: the rest are not attempted")
+    func aFailedStartLineEndsTheStream() async throws {
         let authority = SimulatedFanAuthority()
         let harness = ClientListenerHarness(authority: authority)
         let output = RecordingTerminal(acceptingStandardOutputLines: 0)
@@ -291,7 +293,7 @@ struct FanctlSetStopTests {
 
         #expect(run.code == nil)
         let attempted = output.attemptedStandardOutput.filter { $0.hasPrefix("Holding fan") }
-        #expect(attempted.count == 2, "\(attempted)")
+        #expect(attempted.count == 1, "\(attempted)")
         _ = harness.sessions
     }
 }
