@@ -96,16 +96,23 @@ struct WatchdogEndingTests {
 
     // MARK: - Under contention
 
-    /// Both enders at once, from threads of their own, a few hundred times: the seam is called
-    /// once every time, and which of the two it was is whichever got the claim. A claim taken
-    /// in two locked steps (check, then set) would let both through some of the time.
+    /// Both enders at once, thousands of times: the seam is called once every time, and which
+    /// of the two it was is whichever got the claim.
+    ///
+    /// **What it can and cannot show.** A claim taken in two locked steps (check, then set) has
+    /// a window of a few instructions. The two threads are held on a spin barrier and released
+    /// within nanoseconds of each other, round after round, because a thread started per round
+    /// reaches the lock microseconds apart and never inside the window. Whether a given run
+    /// lands one inside is still chance, so a run that kills the two-step mutant proves the
+    /// mutant is catchable and a run that does not proves nothing about the real claim; the
+    /// deterministic tests above carry the first-wins mutations, and this one carries the
+    /// claim's atomicity on the best evidence a test can have without a hook in the lock.
     ///
     /// Threads, not tasks: the race is between two threads reaching one lock, and nothing here
     /// asks anything of the cooperative pool.
     ///
-    /// **Mutation:** take the claim in two locked steps. Run: see the pull request — a race
-    /// window of a few instructions is killed only some of the time, which is why the
-    /// deterministic tests above, and not this one, carry the first-wins mutation.
+    /// **Mutation:** take the claim in two locked steps (read `held`, then set it in a second
+    /// `withLock`). Run: see the pull request for how often.
     @Test("The watchdog and the teardown racing end the process once")
     func theClaimHoldsUnderContention() async {
         let rig = WatchdogRig()
@@ -117,46 +124,65 @@ struct WatchdogEndingTests {
         }
         rig.timeline.advance(by: .seconds(6))
 
-        let rounds = 300
+        let rounds = 2_000
         let calls = OSAllocatedUnfairLock(initialState: [Int](repeating: 0, count: rounds))
-        let finished = OSAllocatedUnfairLock(initialState: 0)
         let quiet = WatchdogLog(recording: { _, _ in })
-
-        for round in 0..<rounds {
-            let termination = ProcessTermination(
-                terminate: { _ in calls.withLock { $0[round] += 1 } }, log: quiet)
-            let watchdog = LivenessWatchdog(
-                roundTrips: rig.monitor, progress: rig.progress, termination: termination,
-                ticks: rig.ticks, log: quiet)
-            let gate = DispatchSemaphore(value: 0)
-            Thread {
-                gate.wait()
-                watchdog.tick()
-                watchdog.tick()
-                finished.withLock { $0 += 1 }
-            }.start()
-            Thread {
-                gate.wait()
-                termination.end(.restored)
-                finished.withLock { $0 += 1 }
-            }.start()
-            gate.signal()
-            gate.signal()
-            // Join this round before the next, by polling; the two threads are never more
-            // than microseconds from done.
-            let target = 2 * (round + 1)
-            guard await pollUntil({ finished.withLock { $0 } >= target }) else {
-                Issue.record("round \(round) never finished")
-                return
-            }
+        // Everything is built before either thread starts, and each watchdog has already seen
+        // the wedge once: its next tick is the one that reaches the claim.
+        let terminations = (0..<rounds).map { round in
+            ProcessTermination(terminate: { _ in calls.withLock { $0[round] += 1 } }, log: quiet)
         }
+        let watchdogs = terminations.map {
+            LivenessWatchdog(
+                roundTrips: rig.monitor, progress: rig.progress, termination: $0,
+                ticks: rig.ticks, log: quiet)
+        }
+        for watchdog in watchdogs { watchdog.tick() }
 
+        let barrier = RoundBarrier()
+        let finished = OSAllocatedUnfairLock(initialState: 0)
+        Thread {
+            for round in 0..<rounds {
+                barrier.arrive(round: round)
+                watchdogs[round].tick()
+            }
+            finished.withLock { $0 += 1 }
+        }.start()
+        Thread {
+            for round in 0..<rounds {
+                barrier.arrive(round: round)
+                terminations[round].end(.restored)
+            }
+            finished.withLock { $0 += 1 }
+        }.start()
+
+        #expect(
+            await pollUntil({ finished.withLock { $0 } == 2 }), "the racing threads never ended")
         let wrong = calls.withLock { counts in
             counts.enumerated().filter { $0.element != 1 }.map {
                 "round \($0.offset): \($0.element)"
             }
         }
         #expect(
-            wrong.isEmpty, "the terminate seam was not called exactly once in: \(wrong.prefix(5))")
+            wrong.isEmpty,
+            "the terminate seam was not called exactly once in \(wrong.count) rounds: \(wrong.prefix(5))"
+        )
+    }
+}
+
+/// Holds two threads at the same point of a round until both have arrived, spinning rather than
+/// blocking: a semaphore wake-up is microseconds, and the window it is used to reach is
+/// nanoseconds. Gives up after twenty seconds of spinning, so a thread that died cannot leave
+/// its partner spinning for the life of the process.
+final class RoundBarrier: Sendable {
+    private let arrivals = OSAllocatedUnfairLock(initialState: 0)
+
+    func arrive(round: Int) {
+        arrivals.withLock { $0 += 1 }
+        let target = 2 * (round + 1)
+        let giveUp = DispatchTime.now() + .seconds(20)
+        while arrivals.withLock({ $0 }) < target, DispatchTime.now() < giveUp {
+            sched_yield()
+        }
     }
 }

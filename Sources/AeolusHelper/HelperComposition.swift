@@ -609,12 +609,15 @@ extension HelperComposition where Plane == SMCFanControlPlane {
     /// connection, so nothing in the type system says these are the same one —
     /// `HelperCompositionTests.theProviderAndThePlaneShareOneConnection` is what does.
     ///
-    /// `watchdogTicks` is the shipping timer and is overridden by one caller:
-    /// `WatchdogHardwareTests`, which wraps the real timer in a counter so that "the watchdog
-    /// stayed silent" is told apart from "the watchdog never ticked". Nothing else has a
-    /// reason to pass it, and a caller that passed a source that never fires would have
-    /// disarmed ADR 0012 without touching the watchdog, which is why the parameter is on this
-    /// factory and not on a public surface.
+    /// `watchdogTicks` is the shipping timer and is overridden by tests only, for two reasons.
+    /// `WatchdogHardwareTests` wraps the real timer in a counter so that "the watchdog stayed
+    /// silent" is told apart from "the watchdog never ticked" (and cancels it when it is done);
+    /// `HelperHardwareTests` passes a source it fires by hand, because the real timer would tick
+    /// for the rest of the test process, and a stalled first snapshot on a loaded machine would
+    /// end in a recorded `.blind` that test would report as a wrong exit code. A caller that
+    /// passed a source that never fires would have disarmed ADR 0012 without touching the
+    /// watchdog, which is why the parameter is on this factory and not on a public surface, and
+    /// why `HelperWatchdogCompositionTests` asks the *default* what it is.
     static func production(
         log: HelperLog = HelperLog(),
         teardown: TeardownSeams = TeardownSeams(),

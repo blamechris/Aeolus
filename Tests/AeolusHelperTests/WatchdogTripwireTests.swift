@@ -118,6 +118,44 @@ struct WatchdogTripwireTests {
         #expect(try found("let c = SMCCore.SomethingElse()").isEmpty)
     }
 
+    // MARK: - Nothing in the daemon stops the timer
+
+    /// `DispatchWatchdogTicks.cancel()` exists so that a test which ran the real timer can stop
+    /// it. The daemon's watchdog is not stopped by anything: the handler's hold on the watchdog
+    /// is what keeps it alive, and a cancelled timer is a watchdog that stopped without saying
+    /// so. `cancel()` is not on the `WatchdogTicking` protocol, so a caller in `Sources` has to
+    /// name the concrete type to reach it — and the concrete type is named in exactly two
+    /// places: where it is declared, and the default argument of `production(…)`.
+    ///
+    /// **Mutation:** name `DispatchWatchdogTicks` in any other file under `Sources`. Run: red.
+    /// **Mutation:** cast the tick source to it in `LivenessWatchdog.swift`
+    /// (`ticks as? DispatchWatchdogTicks`). Run: red.
+    /// **Mutation:** name it a second time in `HelperComposition.swift`. Run: red.
+    @Test("Nothing in the daemon can stop the watchdog's timer")
+    func nothingInTheDaemonCancelsTheTimer() throws {
+        var naming: [String: Int] = [:]
+        for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
+            let code = SeamScanner.strippingComments(
+                try String(contentsOf: file, encoding: .utf8))
+            let count = code.components(separatedBy: "DispatchWatchdogTicks").count - 1
+            if count > 0 { naming[file.lastPathComponent] = count }
+        }
+
+        #expect(
+            naming.keys.sorted() == ["HelperComposition.swift", "LivenessWatchdog.swift"],
+            """
+            DispatchWatchdogTicks is named in \(naming.keys.sorted()). The tick source's \
+            cancel() is for tests; the files that may name the concrete type are the one that \
+            declares it and the one that gives `production` its default.
+            """)
+        #expect(
+            naming["HelperComposition.swift"] == 1,
+            "HelperComposition names DispatchWatchdogTicks more than once: only the default")
+        let watchdog = try lifecycleSource("LivenessWatchdog.swift")
+        #expect(!watchdog.contains("as? DispatchWatchdogTicks"))
+        #expect(!watchdog.contains("as! DispatchWatchdogTicks"))
+    }
+
     // MARK: - The production wiring
 
     /// `production(…)` hands the watchdog **the monitor of the connection every read goes

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import os
 
 @testable import AeolusHelper
 
@@ -69,5 +70,79 @@ struct LivenessWatchdogClockTests {
 
         rig.timeline.advance(by: .seconds(2))
         #expect(rig.progress.reading().sinceLastCompletion == .seconds(5))
+    }
+
+    /// "Now" is read **inside** the lock that stores it, so a late completion cannot leave the
+    /// anchor earlier than a phase change that happened after it began.
+    ///
+    /// The ordinary shape of a stop is that the outgoing loop's last completion arrives while
+    /// the replacement is starting. If that completion read the clock *before* it took the lock,
+    /// it could read t1, lose the lock to `beginCycling()` (t2 > t1), and then store t1 last:
+    /// an anchor from before the phase it claims to belong to, and an age that includes time the
+    /// phase never had. Here the completion is parked inside the clock read with the phase
+    /// change starting behind it, and the order of the instants is scripted, so the answer does
+    /// not depend on a race going one way.
+    ///
+    /// The wait for the phase change to have had its chance is a floor on how long the absence
+    /// of a result was observed. It is never a bound on how long anything takes: a correct
+    /// object cannot fail on a slow machine, only a mutant can survive one.
+    ///
+    /// **Mutation:** read `now()` before `state.withLock` in `recordCompletion()`. Run: red —
+    /// the age is two seconds, not one.
+    @Test("A late completion cannot move the anchor behind a phase change")
+    func aLateCompletionCannotPassAPhaseChange() async {
+        let base = ThermalCycleProgress.MeasuringClock.now
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let parked = OSAllocatedUnfairLock(initialState: false)
+        let proceed = DispatchSemaphore(value: 0)
+        let progress = ThermalCycleProgress(now: {
+            switch calls.withLock({
+                $0 += 1
+                return $0
+            }) {
+            case 1:  // the initialiser
+                return base
+            case 2:  // the late completion, reading the clock
+                parked.withLock { $0 = true }
+                _ = proceed.wait(timeout: .now() + .seconds(30))
+                return base.advanced(by: .seconds(1))
+            case 3:  // the phase change that started behind it
+                return base.advanced(by: .seconds(2))
+            default:  // the reading
+                return base.advanced(by: .seconds(3))
+            }
+        })
+        let finished = OSAllocatedUnfairLock(initialState: 0)
+        let phaseChangeStarted = OSAllocatedUnfairLock(initialState: false)
+
+        Thread {
+            progress.recordCompletion()
+            finished.withLock { $0 += 1 }
+        }.start()
+        guard await pollUntil({ parked.withLock { $0 } }) else {
+            proceed.signal()
+            Issue.record("the completion never reached the clock")
+            return
+        }
+        Thread {
+            phaseChangeStarted.withLock { $0 = true }
+            progress.beginCycling()
+            finished.withLock { $0 += 1 }
+        }.start()
+        _ = await pollUntil { phaseChangeStarted.withLock { $0 } }
+        await settle()
+        proceed.signal()
+        let both = await pollUntil { finished.withLock { $0 } == 2 }
+
+        let reading = progress.reading()
+        #expect(both, "the completion and the phase change did not both finish")
+        #expect(reading.phase == .cycling)
+        #expect(
+            reading.sinceLastCompletion == .seconds(1),
+            """
+            the anchor is \(reading.sinceLastCompletion) behind the reading; a phase change at \
+            two seconds and a reading at three leave one. A completion that read its instant \
+            before taking the lock stored an earlier one over the phase change's.
+            """)
     }
 }
