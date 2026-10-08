@@ -110,6 +110,15 @@ struct PendingReplyTests {
     /// *value* proves nothing — and sixty would trip this suite's time limit before the
     /// expectation could record, which is the weaker kill this repository keeps rejecting.
     ///
+    /// **The bound is five seconds, half the deadline.** It only has to tell a caller that
+    /// gave up at once, which returns in milliseconds, from one that waited out the deadline,
+    /// which takes ten. It was one second until CI showed what that was worth: on a three-core
+    /// runner the whole suite starts at once, the cooperative pool is three threads wide, and a
+    /// task that does nothing took 1.3 to 1.5 seconds to run, in about one run in six once
+    /// the liveness watchdog's suites were added. A bound that fails a correct latch for the
+    /// load of the machine is the wall-clock upper bound #319 rules out; this one fails only
+    /// for the defect.
+    ///
     /// **Mutation:** in `PendingReply.giveUp()`, restore the early `return` that recorded
     /// nothing when `continuation` was `nil`. Run: red on the elapsed-time expectation after
     /// ten seconds, naming the wait.
@@ -131,7 +140,7 @@ struct PendingReplyTests {
 
         #expect(answer == "nothing arrived")
         #expect(
-            waited < .seconds(1),
+            waited < .seconds(5),
             """
             the cancelled caller waited \(waited). Cancellation arrived before anything was \
             attached, so the give-up had nobody to hand the fallback to — and a latch that \
