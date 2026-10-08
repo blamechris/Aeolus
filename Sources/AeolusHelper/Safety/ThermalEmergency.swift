@@ -408,8 +408,21 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// between calls, so the next scheduled cycle asks "is it cool enough to release?"
     /// against a reading taken after this one finished rather than against anything this
     /// entrant would have brought.
-    func cycle() async {
-        guard !isCycling else { return }
+    ///
+    /// ## What the result says: a cycle ran to its end
+    ///
+    /// **`true` on every exit after the reentrancy guard, the blind path and the firing path
+    /// included; `false` only from the guard.** The liveness watchdog's cycle trigger
+    /// (ADR 0012) counts a cycle as progress only when this returns `true`. A dropped entrant
+    /// returns exactly as a finished one does, and if the two were told apart by nothing, a
+    /// replacement loop whose entries the guard keeps dropping would advance the count every
+    /// second while the outgoing cycle sat parked in an await that is not a round trip, and
+    /// neither bound would fire. A cycle that could read nothing still ran to its end — § 3
+    /// handles a blind cycle on its own path (`cycleSawNothing`), and the trigger watches for
+    /// a cycle that does not finish, not for one that finishes blind.
+    @discardableResult
+    func cycle() async -> Bool {
+        guard !isCycling else { return false }
         isCycling = true
         defer { isCycling = false }
 
@@ -446,7 +459,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
             // longer a second entry point this `catch` has to know to choose.
             await sightings.record(.blind(error), since: readingStart)
             await cycleSawNothing(String(describing: error))
-            return
+            return true
         }
 
         // `CriticalTemperatureReport` cannot be constructed empty, so this is unreachable —
@@ -455,7 +468,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         // would be a released latch on a machine nobody read.
         guard let hottest = report.readings.max(by: { $0.celsius < $1.celsius }) else {
             await cycleSawNothing("a critical temperature report arrived with no readings")
-            return
+            return true
         }
 
         if lastCycleWasUnreadable {
@@ -474,7 +487,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
                 // `readBackAcceptedHandbacks()` for why every other path skips it.
                 await readBackAcceptedHandbacks()
             }
-            return
+            return true
         }
 
         // Latched — but is it the episode this cycle read the temperature of? The report was
@@ -496,7 +509,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         guard episode.sequence == episodeBeforeRead?.sequence else {
             log.thermalEmergencyHeldAcrossEpisodeBoundary()
             await takeBackAnythingEngagedSinceFiring()
-            return
+            return true
         }
 
         // Before asking whether it is cool enough to let go, ask whether this cycle can
@@ -510,7 +523,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
                 missing: keysAnsweringAtEngage.subtracting(answeringNow).count,
                 atEngage: keysAnsweringAtEngage.count)
             await takeBackAnythingEngagedSinceFiring()
-            return
+            return true
         }
 
         // Asked against a *fresh* reading — a latch tested against the reading that engaged
@@ -537,7 +550,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         // shape reappears unnoticed. One statement, then, and deleting it goes red.
         if hottest.celsius <= releaseThresholdCelsius, await latch.release(ifStill: episode) {
             log.thermalEmergencyReleased(hottest: hottest, threshold: releaseThresholdCelsius)
-            return
+            return true
         }
 
         // Still holding — above the release threshold, or judged against an episode that has
@@ -550,6 +563,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         // machine above its ceiling the whole time. Idempotent, and silent on an empty
         // table.
         await takeBackAnythingEngagedSinceFiring()
+        return true
     }
 
     /// Bridges and hands back fans that came under manual control while § 3 was already
