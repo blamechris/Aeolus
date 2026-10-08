@@ -123,10 +123,9 @@ than on first sight, because a fan mid-handback can carry a transient reason tha
 `fans` and `lease` were read after the request was sent, so a script need not parse prose to know
 whether the document describes the helper before the request or after it.
 
-### D1 — `set` is a bounded hold for the life of the process (decided; lands with #317)
+### D1 — `set` is a bounded hold for the life of the process (decided; built in #317, held)
 
-Recorded here so the three decisions read as one contract. Nothing in this ADR's change
-implements it.
+Recorded here so the three decisions read as one contract.
 
 `fanctl set` requires `--for`, from 10 seconds to 8 hours, and holds its lease for that long,
 renewing it for the life of the process **and its parent**. It exits 6 on any loss the helper
@@ -134,6 +133,32 @@ reports: a renewal error, a snapshot without its lease ID, a covered fan reclaim
 or a thermal emergency. It never retries and never re-acquires. When it ends it releases and runs
 D2's safe-state check. The reasoning and the output contract are
 [#317](https://github.com/blamechris/Aeolus/issues/317)'s.
+
+**As built.** `set` is implemented against the simulated helper and **does not merge before E5
+(#7) and the owner-supervised E4 acceptance (#9), per #15**; nothing here has driven a fan. The
+points below are where building it had to decide something the contract left open. Each is the
+direction that ends a hold earlier or reports less, never the one that claims more.
+
+- **The percentage mapping is `FanControlEnvelope.target(forPercent:)`**, once, in `FanKit`. The
+  gate is `FanState.controlEnvelope == .success` for a percentage and an rpm alike; an rpm outside
+  `[lowest, highest]` (`0rpm` included) is exit 2 and never clamped on the client.
+- **A covered fan the snapshot no longer reports** ends the hold as a loss (6). The contract's
+  list names `isReclaimedBySystem`; a fan that is simply absent cannot be called held.
+- **Exit 6, and a refused `apply`, skip the safe-state check.** There is nothing to confirm a
+  return to after a loss, the check can take its whole ten-second window against a thermal
+  emergency that will not clear, and `fanctl auto` is the way to ask. Only the ordinary endings
+  (`--for`, a signal, a parent that exited, a closed standard output) run it.
+- **A lease still listed when the check ends is 8, not 5.** `auto` maps it to 5 to name the
+  holder; for `set` the lease may be its own (the release did not take), and the message says
+  whose it is.
+- **A signal that arrives before the lease is taken is exit 1**, with nothing written to a fan.
+- **`endedBecause` is `refused` for 2, 4 and 5 before a hold and for any refused `apply`**, and
+  `null` for 3, 7 and 1 before a lease: those are not a "no" to this request.
+- **Standard output is written with `write(2)`, and polled for room only if it is a pipe or a
+  socket.** macOS answers `POLLNVAL` for `/dev/null`, so polling every descriptor would end
+  `set … > /dev/null` at once. A hold's failure to write is an ending, not a crash.
+- **No stderr output while holding in text mode.** There is no change during a hold that does not
+  end it, so there is nothing for the contract's "changes to stderr" to carry.
 
 ## Rationale
 
