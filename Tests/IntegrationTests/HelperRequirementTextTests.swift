@@ -163,46 +163,10 @@ struct HelperRequirementTextTests {
 @Suite("Helper pinning — the identifier matches the build definition")
 struct HelperIdentifierDriftTests {
 
-    private static var projectDefinition: String {
-        get throws {
-            let root = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()  // Tests/IntegrationTests
-                .deletingLastPathComponent()  // Tests
-                .deletingLastPathComponent()  // repository root
-            let yaml = root.appendingPathComponent("project.yml")
-            return try String(contentsOf: yaml, encoding: .utf8)
-        }
-    }
-
-    /// The lines of the `AeolusHelper:` target, from its own key to the next one at the
-    /// same indentation. Scoped rather than searched whole, because the app target also
-    /// declares a `PRODUCT_BUNDLE_IDENTIFIER` and matching that one would assert nothing.
-    private static func helperTargetLines(in yaml: String) -> [Substring] {
-        let lines = yaml.split(separator: "\n", omittingEmptySubsequences: false)
-        guard let start = lines.firstIndex(where: { $0 == "  AeolusHelper:" }) else { return [] }
-        let rest = lines[lines.index(after: start)...]
-        let end =
-            rest.firstIndex { line in
-                guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
-                return line.prefix(3).filter { $0 == " " }.count < 3
-            } ?? lines.endIndex
-        return Array(lines[start..<end])
-    }
-
-    private static func value(of key: String, in lines: [Substring]) throws -> String {
-        let line = try #require(
-            lines.first { $0.trimmingCharacters(in: .whitespaces).hasPrefix("\(key):") },
-            "project.yml's AeolusHelper target declares no \(key)"
-        )
-        let value = line.drop { $0 != ":" }.dropFirst()
-        return value.trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
-    }
-
     @Test("The pinned identifier is the helper's PRODUCT_BUNDLE_IDENTIFIER")
     func productBundleIdentifierMatches() throws {
-        let lines = Self.helperTargetLines(in: try Self.projectDefinition)
-        #expect(!lines.isEmpty, "project.yml declares no AeolusHelper target")
-        let declared = try Self.value(of: "PRODUCT_BUNDLE_IDENTIFIER", in: lines)
+        let target = try ProjectTarget.load("AeolusHelper")
+        let declared = try target.value(of: "PRODUCT_BUNDLE_IDENTIFIER")
         #expect(declared == HelperRequirementText.helperIdentifier)
     }
 
@@ -212,8 +176,8 @@ struct HelperIdentifierDriftTests {
     /// to answer at a refused connection.
     @Test("The pinned identifier is the helper's embedded CFBundleIdentifier")
     func bundleIdentifierMatches() throws {
-        let lines = Self.helperTargetLines(in: try Self.projectDefinition)
-        let declared = try Self.value(of: "CFBundleIdentifier", in: lines)
+        let target = try ProjectTarget.load("AeolusHelper")
+        let declared = try target.value(of: "CFBundleIdentifier")
         #expect(declared == HelperRequirementText.helperIdentifier)
     }
 }
