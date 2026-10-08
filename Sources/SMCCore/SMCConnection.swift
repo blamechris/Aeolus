@@ -43,10 +43,9 @@ public actor SMCConnection {
     /// call that never returns holds the actor for good, and an observer that had to `await`
     /// the actor to ask whether one was stuck would be stuck behind it. Every round trip this
     /// type makes (`IOConnectCallStructMethod`, `IOServiceOpen`, `IOServiceClose`) runs inside
-    /// `roundTrips.bracket(…)`; `deinit` is the one exception, and nothing could read a stamp
-    /// from it. The service lookup and registry reads in `open()` are not round trips on the
-    /// connection and are not stamped. `RoundTripStampTripwireTests` holds all of this against
-    /// the source.
+    /// `roundTrips.bracket(…)`; `deinit` is the one exception, for the reason given there. The
+    /// service lookup and registry reads in `open()` are not round trips on the connection and
+    /// are not stamped. `RoundTripStampTripwireTests` holds all of this against the source.
     ///
     /// Read-only: it describes a call that is already out and starts nothing. One monitor
     /// belongs to one connection — see `SMCRoundTripMonitor`.
@@ -162,9 +161,17 @@ public actor SMCConnection {
         self.roundTrips = roundTrips
     }
 
-    /// Not stamped, deliberately: by the time this runs nothing holds a reference to the
-    /// connection, so nothing could read a stamp from it, and it cannot be waiting behind a
-    /// round trip of its own.
+    /// Not stamped, and the reason is narrower than it looks. The monitor is a separate object
+    /// that a watchdog holding `roundTrips` can outlive this connection with, so a stamp *could*
+    /// be read after this runs. What makes the exemption safe is that the helper builds one
+    /// connection and never releases it before the process exits, so this `deinit` runs only
+    /// in `fanctl` and in tests, never while a watchdog is armed.
+    ///
+    /// **A reconnect that replaces the connection object breaks that.** The old connection's
+    /// `deinit` would then run an unstamped `IOServiceClose` on whatever thread dropped the
+    /// last reference, out of sight of a watchdog still holding the old monitor. Whoever writes
+    /// that reconnect must stamp this call, or keep the old connection alive until it is
+    /// closed through `close()`.
     deinit {
         guard connection != 0 else { return }
         IOServiceClose(connection)
@@ -827,6 +834,18 @@ extension SMCConnection {
     /// Seeds `keyTableCache` directly, as if `key(at:)` had already resolved `index`.
     func seedKeyTableCacheForTesting(index: Int, key: SMCKey) {
         keyTableCache[index] = key
+    }
+
+    /// Makes this connection believe it is open, on a handle that can never reach a driver:
+    /// `MACH_PORT_DEAD`, which is not a send right to anything, so `IOConnectCallStructMethod`
+    /// fails at once with an invalid-destination error instead of sending a message.
+    ///
+    /// It exists so a test with no SMC (CI's virtual machines) can get a call past the
+    /// not-open guard and into the bracket, and read what that call stamped through
+    /// `roundTrips.lastBegunOperation`. It grants nothing: it cannot read, and it cannot write.
+    /// `close()` returns the connection to unopened, and releasing a dead name is a no-op.
+    func adoptUnusableHandleForTesting() {
+        connection = io_connect_t.max
     }
 
     /// Runs `body` on this actor, so a test can hold the connection exactly as a round trip

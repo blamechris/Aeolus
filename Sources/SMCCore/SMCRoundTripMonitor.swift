@@ -63,6 +63,20 @@ public struct SMCRoundTripInFlight: Sendable, Equatable {
 /// Two connections sharing a monitor would overwrite each other's stamp, and the first to
 /// return would erase the other's — hiding exactly the wedge this exists to show.
 ///
+/// Nothing in the type prevents an overlap by construction, so two things stand guard. In a
+/// debug build a bracket that begins while another is in flight **traps** with a message
+/// naming the cause. In every build a bracket clears the slot only if the slot still holds
+/// *its own* stamp, so when A begins, B begins and A returns first, B's stamp is not erased
+/// by A's return. That is defence in depth and not a licence: A's own stamp was already
+/// replaced when B began, so an overlap still hides A, and the assertion is how it is found.
+///
+/// ## How a monitor is reached
+///
+/// The initialiser is internal. **The only public way to a monitor is
+/// `SMCConnection.roundTrips`**, so the monitor a watchdog reads is by construction the one a
+/// connection stamps. A public initialiser would let a caller build a monitor that nothing
+/// writes to, and a watchdog reading it would see no round trip in flight for ever.
+///
 /// ## Sendable by construction
 ///
 /// All state is behind an `OSAllocatedUnfairLock<State>`, so the compiler checks `Sendable`
@@ -92,9 +106,11 @@ public final class SMCRoundTripMonitor: Sendable {
     }
 
     private struct State: Sendable {
-        /// Round trips begun, ever. A stamp's sequence is this value after the increment.
+        /// Round trips begun, ever. A stamp's sequence is this value after the increment, so
+        /// the first round trip of a monitor is sequence 1 and 0 is never a stamp.
         var issued: UInt64 = 0
         var current: Stamp?
+        var lastBegun: SMCRoundTripOperation?
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -103,7 +119,7 @@ public final class SMCRoundTripMonitor: Sendable {
     /// a caller, so no caller can mint one on a different clock and compare it against ours.
     private let now: @Sendable () -> Instant
 
-    public convenience init() {
+    convenience init() {
         self.init(clock: MeasuringClock())
     }
 
@@ -115,8 +131,10 @@ public final class SMCRoundTripMonitor: Sendable {
 
     /// The round trip in flight, or `nil` if none is.
     ///
-    /// Safe to call from any thread at any time, including while the connection is wedged:
-    /// it takes the stamp lock for the length of a copy, and never touches the connection.
+    /// Safe to call from any thread, including while the connection is wedged: it takes the
+    /// stamp lock for the length of a copy, and never touches the connection. **Not from a
+    /// signal handler** — the lock is an `os_unfair_lock`, which is not async-signal-safe, and
+    /// a handler that interrupted a bracket on this thread would try to take a lock it holds.
     ///
     /// The age is computed here, from this monitor's clock, at the moment of the call — not
     /// when the stamp was taken. "Now" is read **after** the stamp is copied out, so it can
@@ -136,21 +154,56 @@ public final class SMCRoundTripMonitor: Sendable {
         state.withLock { $0.issued }
     }
 
+    /// The operation of the most recent round trip to **begin**, whether or not it has since
+    /// returned. Test seam, beside `issuedCount`: the stamp's value is what a verdict will
+    /// name, so a test has to be able to read what a real call stamped after it is gone.
+    var lastBegunOperation: SMCRoundTripOperation? {
+        state.withLock { $0.lastBegun }
+    }
+
     /// Runs `body` — the IOKit call — with `operation` stamped as in flight.
     ///
     /// Set, release, run, clear: the lock is held only for the two bookkeeping steps. The
     /// clear is in a `defer`, so a body that throws leaves nothing behind; a stamp left by a
-    /// call that failed would read as a wedge that never ended.
+    /// call that failed would read as a wedge that never ended. It clears only its own stamp.
+    ///
+    /// In a debug build this traps if another round trip is in flight (see "One slot").
     @discardableResult
     func bracket<Value>(
         _ operation: SMCRoundTripOperation, _ body: () throws -> Value
     ) rethrows -> Value {
+        try run(operation, enforcingOneSlot: true, body)
+    }
+
+    /// Test seam: `bracket` without the debug trap, so a test can drive the overlap the trap
+    /// exists to forbid and assert what every build does when it happens. Nothing but a test
+    /// has a reason to call this.
+    @discardableResult
+    func bracketAllowingOverlapForTesting<Value>(
+        _ operation: SMCRoundTripOperation, _ body: () throws -> Value
+    ) rethrows -> Value {
+        try run(operation, enforcingOneSlot: false, body)
+    }
+
+    private func run<Value>(
+        _ operation: SMCRoundTripOperation, enforcingOneSlot: Bool, _ body: () throws -> Value
+    ) rethrows -> Value {
         let began = now()
-        state.withLock { state in
+        let sequence = state.withLock { state -> UInt64 in
+            assert(
+                !enforcingOneSlot || state.current == nil,
+                "overlapping round-trip brackets: one monitor belongs to one connection, and a "
+                    + "connection makes one call at a time (ADR 0012 I1)")
             state.issued += 1
             state.current = Stamp(sequence: state.issued, operation: operation, began: began)
+            state.lastBegun = operation
+            return state.issued
         }
-        defer { state.withLock { $0.current = nil } }
+        defer {
+            state.withLock { state in
+                if state.current?.sequence == sequence { state.current = nil }
+            }
+        }
         return try body()
     }
 }

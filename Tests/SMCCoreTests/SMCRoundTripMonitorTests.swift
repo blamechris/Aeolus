@@ -5,44 +5,21 @@ import os
 @testable import SMCCore
 
 // The round-trip stamp (ADR 0012 I1, I2, I3): what `SMCRoundTripMonitor` publishes, and the
-// two properties the watchdog built on it depends on. The monitor is exercised on its own
-// here; that `SMCConnection` really routes every IOKit call through it is the tripwire's
-// job — see `RoundTripStampTripwireTests`.
-
-/// A clock the test moves by hand, on the monitor's own `Instant`.
-///
-/// It is typed `SMCRoundTripMonitor.Instant` and takes its starting point from the monitor's
-/// own `MeasuringClock`, rather than being declared over `SuspendingClock.Instant` directly.
-/// That is deliberate: the clock family is one line in the monitor, and a helper that named
-/// it a second time would stop compiling the moment that line changed — turning the
-/// assertion that pins the family into a build error instead of a failure.
-final class SteppedClock: Clock, Sendable {
-    typealias Instant = SMCRoundTripMonitor.Instant
-
-    private let base = SMCRoundTripMonitor.MeasuringClock().now
-    private let elapsed = OSAllocatedUnfairLock(initialState: Duration.zero)
-
-    var now: Instant { base.advanced(by: elapsed.withLock { $0 }) }
-    var minimumResolution: Duration { .nanoseconds(1) }
-
-    func advance(by amount: Duration) {
-        elapsed.withLock { $0 += amount }
-    }
-
-    func sleep(until deadline: Instant, tolerance: Duration?) async throws {
-        throw CancellationError()
-    }
-}
+// properties the watchdog built on it depends on. The monitor is exercised on its own here;
+// that `SMCConnection` really routes every IOKit call through it is the tripwire's job — see
+// `RoundTripStampTripwireTests`.
+//
+// ## Nothing here reads the stamp from inside the body on the body's own thread
+//
+// `bracket` runs its body with no lock held, so a body *may* call `inFlight()` on its own
+// thread. A test that did would, under the one mutation that matters most (the lock held
+// across the body), re-enter a non-recursive lock and trap the whole test process with no
+// message about the cause. Every read made while a bracket is open therefore goes through
+// `observeInFlight`, on a dedicated thread with a bound: under that mutation it fails an
+// assertion that names the cause.
 
 /// A thrown error for the throwing-body cases; the monitor must not care what it is.
 private struct BodyFailure: Error, Equatable {}
-
-/// A bounded wait, in a synchronous function so an `async` test may call it: the compiler
-/// refuses `DispatchSemaphore.wait` directly in an async context, and the bound is what keeps
-/// a failing test from hanging instead of failing.
-private func signalled(_ semaphore: DispatchSemaphore, within seconds: Int) -> Bool {
-    semaphore.wait(timeout: .now() + .seconds(seconds)) == .success
-}
 
 @Suite("SMC round-trip stamp", .timeLimit(.minutes(1)))
 struct SMCRoundTripMonitorTests {
@@ -58,7 +35,7 @@ struct SMCRoundTripMonitorTests {
         // body produced comes back untouched.
         var insideReturn: SMCRoundTripInFlight?
         let produced = monitor.bracket(Self.readBytes) { () -> Int in
-            insideReturn = monitor.inFlight()
+            insideReturn = observeInFlight(monitor)
             return 42
         }
         #expect(produced == 42)
@@ -70,7 +47,7 @@ struct SMCRoundTripMonitorTests {
         var insideThrow: SMCRoundTripInFlight?
         #expect(throws: BodyFailure.self) {
             try monitor.bracket(.open) {
-                insideThrow = monitor.inFlight()
+                insideThrow = observeInFlight(monitor)
                 throw BodyFailure()
             }
         }
@@ -78,122 +55,193 @@ struct SMCRoundTripMonitorTests {
         #expect(monitor.inFlight() == nil, "a round trip that threw leaves nothing in flight")
     }
 
-    @Test("Sequence numbers strictly increase across returns and throws, and are never reused")
+    @Test("Sequence numbers start at 1, strictly increase across returns and throws, never repeat")
     func sequenceNumbersStrictlyIncrease() {
         let monitor = SMCRoundTripMonitor()
         var seen: [UInt64] = []
 
-        for step in 0..<6 {
+        for step in 0..<4 {
             // A throw in the middle must not reset or repeat the counter: the watchdog's
             // "same sequence on two ticks" test is only sound if a new round trip is always a
             // new number.
             _ = try? monitor.bracket(.close) {
-                if let stamp = monitor.inFlight() { seen.append(stamp.sequence) }
-                if step == 2 { throw BodyFailure() }
+                if let stamp = observeInFlight(monitor) { seen.append(stamp.sequence) }
+                if step == 1 { throw BodyFailure() }
             }
         }
 
-        #expect(seen.count == 6)
+        #expect(seen.count == 4)
+        // The first stamp is 1, not 0: a watchdog that starts its "last sequence seen" at 0
+        // would otherwise take the first round trip of a process for one it had already seen.
+        #expect(seen.first == 1, "\(seen) does not start at 1")
         #expect(zip(seen, seen.dropFirst()).allSatisfy { $0 < $1 }, "\(seen) is not increasing")
-        #expect(monitor.issuedCount == 6)
+        #expect(monitor.issuedCount == 4)
     }
 
     @Test("A reader is never blocked by a round trip that has not returned")
     func theLockIsNotHeldAcrossTheCall() {
         let monitor = SMCRoundTripMonitor()
-        let bodyEntered = DispatchSemaphore(value: 0)
-        let releaseBody = DispatchSemaphore(value: 0)
-        let bodyFinished = DispatchSemaphore(value: 0)
-        let readerFinished = DispatchSemaphore(value: 0)
-        let observation = OSAllocatedUnfairLock<SMCRoundTripInFlight?>(initialState: nil)
+        let parked = ParkedRoundTrip(monitor, .call(key: 0x4630_4163, selector: 5))
+        defer { parked.finish() }
 
-        // The "IOKit call": it parks until the test lets it go. This is a real blocked
-        // thread, not a suspended task, which is what a wedged `IOConnectCallStructMethod` is.
-        let caller = Thread {
-            monitor.bracket(.call(key: 0x4630_4163, selector: 5)) {
-                bodyEntered.signal()
-                releaseBody.wait()
-            }
-            bodyFinished.signal()
-        }
-        caller.start()
-
-        // Whatever happens below, the parked body is released and the threads are joined, so a
-        // failing run cannot leave a thread parked for the rest of the test process. The reader
-        // is only joined here if the test body did not already consume its signal.
-        var readerJoined = false
-        defer {
-            releaseBody.signal()
-            _ = bodyFinished.wait(timeout: .now() + .seconds(10))
-            if !readerJoined { _ = readerFinished.wait(timeout: .now() + .seconds(10)) }
-        }
-
-        guard bodyEntered.wait(timeout: .now() + .seconds(10)) == .success else {
+        guard parked.waitUntilParked() else {
             Issue.record("the round trip never started")
             return
         }
 
         // A watchdog reads from its own thread while the call is out. If the stamp's lock were
         // held across the call, this read would block until the call returned.
-        let reader = Thread {
-            // Read first, store second: the read is the thing that may block, and it must not
-            // do so holding the lock the test thread needs to look at the result.
-            let seen = monitor.inFlight()
-            observation.withLock { $0 = seen }
-            readerFinished.signal()
-        }
-        reader.start()
-
-        let readerReturned = readerFinished.wait(timeout: .now() + .seconds(5)) == .success
-        readerJoined = readerReturned
-        #expect(readerReturned, "inFlight() blocked behind a round trip that had not returned")
+        let seen = observeInFlight(monitor, within: 5)
         #expect(
-            observation.withLock { $0 }?.operation == .call(key: 0x4630_4163, selector: 5),
+            seen?.operation == .call(key: 0x4630_4163, selector: 5),
             "the reader did not see the parked round trip's stamp")
     }
 
+    // MARK: - One slot
+
+    /// A and B overlap, which the debug assertion forbids and so goes through the test seam. A
+    /// returns first. B's stamp must still be in the slot: A's return clears A's stamp or
+    /// nothing, never whatever is there.
+    ///
+    /// This is what every build does on an overlap, and the debug trap is how the overlap is
+    /// found; the stamp A set was already replaced when B began, so this limits the damage and
+    /// does not undo it.
+    @Test("A round trip that returns clears only its own stamp")
+    func aRoundTripClearsOnlyItsOwnStamp() {
+        let monitor = SMCRoundTripMonitor()
+        let first = ParkedRoundTrip(monitor, .open, allowingOverlap: true)
+        var second: ParkedRoundTrip?
+        defer {
+            first.letReturn()
+            second?.letReturn()
+            first.finish()
+            second?.finish()
+        }
+        guard first.waitUntilParked() else {
+            Issue.record("the first round trip never started")
+            return
+        }
+
+        second = ParkedRoundTrip(monitor, .close, allowingOverlap: true)
+        guard second?.waitUntilParked(within: 5) == true else {
+            Issue.record("the second round trip never began while the first was in flight")
+            return
+        }
+
+        first.letReturn()
+        guard first.waitUntilReturned() else {
+            Issue.record("the first round trip never returned")
+            return
+        }
+        let afterFirst = observeInFlight(monitor)
+        #expect(afterFirst?.operation == .close, "the first return erased the second's stamp")
+        #expect(afterFirst?.sequence == 2)
+
+        second?.letReturn()
+        guard second?.waitUntilReturned() == true else {
+            Issue.record("the second round trip never returned")
+            return
+        }
+        #expect(monitor.inFlight() == nil, "the last round trip to return clears the slot")
+    }
+
+    // MARK: - The age
+
+    /// A reader asking for the age while a writer stamps as fast as it can must never see a
+    /// negative one. "Now" is read after the stamp is copied out, so it cannot precede that
+    /// stamp's start; read before the copy, a stamp begun in between has a start later than
+    /// "now".
+    ///
+    /// It terminates on a count of observations, not on a clock: the writer runs until the
+    /// reader has seen enough, and nothing asserts how long that took.
+    @Test("An age is never negative while a writer stamps and a reader reads")
+    func anAgeIsNeverNegativeUnderContention() {
+        let monitor = SMCRoundTripMonitor()
+        let stop = OSAllocatedUnfairLock(initialState: false)
+        let writerFinished = DispatchSemaphore(value: 0)
+
+        let writer = Thread {
+            while !stop.withLock({ $0 }) {
+                monitor.bracket(.call(key: 0x4630_4163, selector: 5)) {}
+            }
+            writerFinished.signal()
+        }
+        writer.start()
+
+        var observed = 0
+        var negative = 0
+        while observed < 50_000 {
+            if let reading = monitor.inFlight() {
+                observed += 1
+                if reading.age < .zero { negative += 1 }
+            }
+        }
+        stop.withLock { $0 = true }
+        _ = writerFinished.wait(timeout: .now() + .seconds(10))
+
+        #expect(negative == 0, "\(negative) of \(observed) readings had a negative age")
+    }
+
+    // MARK: - ADR 0012 I2: the stamp is readable while the connection is held
+
+    /// The actor's executor is the cooperative pool, so holding the actor parks one of its
+    /// threads. This test therefore needs a second pool thread to run on, and it waits on none:
+    /// it polls with `Task.sleep`, reads from a dedicated thread, and a failsafe on a GCD queue
+    /// releases the held actor even if the pool is too narrow to schedule the rest. On a pool of
+    /// one, the test fails after the failsafe instead of hanging the process.
+    ///
+    /// It asserts two things that must hold together. The actor really is held — a call that has
+    /// to enter it stays queued — and the stamp is readable regardless. Without the first, the
+    /// second proves nothing: a body that never occupied the actor would be "readable" too.
+    ///
+    /// What actually stops the stamp's read from needing the actor is `nonisolated` on
+    /// `SMCConnection.roundTrips`, and that is checked by the compiler: without it, the
+    /// synchronous read below does not compile.
     @Test("Reading the stamp does not enter the connection that is stamped")
     func theStampIsReadableWhileTheConnectionIsOccupied() async {
         let connection = SMCConnection()
         let monitor = connection.roundTrips
-        let occupied = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
-        let readerFinished = DispatchSemaphore(value: 0)
-        let observation = OSAllocatedUnfairLock<SMCRoundTripInFlight?>(initialState: nil)
+        let probeFinished = OSAllocatedUnfairLock(initialState: false)
 
-        // Occupy the actor with a body that holds a stamp open, as a wedged round trip would.
+        DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(30)) { release.signal() }
+
         let occupation = Task {
             await connection.occupyForTesting {
-                monitor.bracket(.open) {
-                    occupied.signal()
-                    release.wait()
-                }
+                monitor.bracket(.open) { release.wait() }
             }
         }
 
-        guard signalled(occupied, within: 10) else {
+        guard await poll(until: { monitor.inFlight() != nil }) else {
             Issue.record("the connection was never occupied")
             release.signal()
             await occupation.value
             return
         }
 
-        // `roundTrips` is `nonisolated`: this is a synchronous read with no `await`, while the
-        // actor is held. It runs on its own thread so that a read which did block fails by
-        // timing out, rather than hanging the test behind the call it was meant to observe.
-        let reader = Thread {
-            let seen = connection.roundTrips.inFlight()
-            observation.withLock { $0 = seen }
-            readerFinished.signal()
+        // A call that has to enter the actor, queued behind the occupation.
+        let probe = Task {
+            await connection.close()
+            probeFinished.withLock { $0 = true }
         }
-        reader.start()
-        let readerReturned = signalled(readerFinished, within: 5)
+
+        // `roundTrips` is `nonisolated`: a synchronous read, with no `await`, while the actor is
+        // held. On a thread of its own so that a read which did block fails by timing out.
+        let reading = await readOnDedicatedThread(connection.roundTrips)
+
+        // The probe must still be waiting after a window in which a free actor would have run
+        // it. A window can only fail to catch a probe that was slow; it cannot invent one.
+        for _ in 0..<25 { try? await Task.sleep(for: .milliseconds(10)) }
+        let probeRanWhileHeld = probeFinished.withLock { $0 }
 
         release.signal()
         await occupation.value
+        await probe.value
 
-        #expect(readerReturned, "the stamp could not be read while the connection was occupied")
-        #expect(observation.withLock { $0 }?.operation == .open)
+        #expect(reading != nil, "the stamp could not be read while the connection was occupied")
+        #expect(reading?.value?.operation == .open)
+        #expect(!probeRanWhileHeld, "the connection was not actually held while the stamp was read")
+        #expect(probeFinished.withLock { $0 }, "the queued call never ran once the actor was free")
         #expect(connection.roundTrips.inFlight() == nil)
     }
 
@@ -201,9 +249,10 @@ struct SMCRoundTripMonitorTests {
 
     /// Age must not grow across a system sleep, so it is measured on the suspending clock — a
     /// property of one `typealias`, asserted here as a property of the type — and it must be
-    /// **computed by the monitor, from its own clock, when it is asked**. The comparer mints
-    /// the instant: a caller-supplied or begin-time age could not be told apart from a
-    /// different clock family by anything but a real sleep.
+    /// **computed by the monitor, from its own clock, when it is asked, from the moment the
+    /// call began**. The comparer mints the instant: a caller-supplied or begin-time age could
+    /// not be told apart from a different clock family by anything but a real sleep, and an age
+    /// that ran from the monitor's creation would make every round trip as old as the process.
     ///
     /// This is the half CI can run. The other half — a real lid close with a round trip in
     /// flight — is a hardware observation and has not been made (ADR 0012 H1 conditions 3–4).
@@ -215,19 +264,22 @@ struct SMCRoundTripMonitorTests {
 
         let clock = SteppedClock()
         let monitor = SMCRoundTripMonitor(clock: clock)
+        // The monitor has existed for seven seconds when the call begins. An age measured from
+        // anywhere but the start of the call reads seven seconds too many.
+        clock.advance(by: .seconds(7))
 
         var ages: [Duration] = []
         monitor.bracket(.call(key: 0x4630_4163, selector: 5)) {
-            ages.append(monitor.inFlight()?.age ?? .seconds(-1))
+            ages.append(observeInFlight(monitor)?.age ?? .seconds(-1))
             clock.advance(by: .seconds(2))
-            ages.append(monitor.inFlight()?.age ?? .seconds(-1))
+            ages.append(observeInFlight(monitor)?.age ?? .seconds(-1))
             clock.advance(by: .seconds(3))
-            ages.append(monitor.inFlight()?.age ?? .seconds(-1))
+            ages.append(observeInFlight(monitor)?.age ?? .seconds(-1))
         }
 
         // Each reading is the monitor's own clock at the moment of the read, less the moment
-        // the stamp was taken: zero, then 2 s, then 5 s. An age fixed when the stamp was
-        // taken would read zero all three times.
+        // the call began: zero, then 2 s, then 5 s. An age fixed when the stamp was taken
+        // would read zero all three times.
         #expect(ages == [.zero, .seconds(2), .seconds(5)])
         #expect(monitor.inFlight() == nil)
     }
