@@ -21,6 +21,35 @@ extension ReclamationWatchdog {
     /// ADR 0008's context is the same defect: a comment telling an editor that load-bearing
     /// code was redundant. The field is gone rather than re-documented, because there is
     /// nothing to reuse if nothing is kept.
+    ///
+    /// ## Built once per registration
+    ///
+    /// Moved here from `manualControlEngaged(_:)` with #180, for the line budget this file's
+    /// header describes. That method creates an entry only when there is not one already, so
+    /// registering a fan twice without an intervening release keeps its `commanded` target,
+    /// its grace counter, its re-assert attempts and its blind-cycle count. It used to build a
+    /// fresh `HeldFan` unconditionally, and that was two defects rather than one:
+    ///
+    /// - **The grace was rearmed.** `uncommandedDivergentCycles` went back to zero, so a
+    ///   caller re-registering a fan every other cycle held it off automatic control
+    ///   indefinitely and the terminal action was never reached — twenty registrations bought
+    ///   forty divergent cycles, no restore, and a lease still live. That is the budget
+    ///   `gracedBeforeItsFirstCommand(_:of:fanAt:)` exists to bound, refillable on demand by
+    ///   the very caller it is meant to bound.
+    /// - **`commanded` was wiped.** `primaryDivergence(of:against:)` reaches
+    ///   `.targetDiverged` only behind `guard let commanded`, so a re-registered fan Aeolus
+    ///   *had* commanded became unjudgeable on that case until the next `commandedTarget(_:)`
+    ///   — a fan pinned at a number this mechanism had just forgotten it wrote, which is
+    ///   `CLAUDE.md` rule 6.
+    ///
+    /// The refill point is a genuine release, and each one drops the entry:
+    /// `manualControlReleased(fanAt:)` for a lease that ended, `finaliseRelease(fanAt:because:)`
+    /// for a fan § 5 gave up, and `restoreAndForget(fanAt:)` for a fan § 3 holds or no live
+    /// lease covers. A registration after any of them starts fresh, which is the case a fresh
+    /// `HeldFan` is actually for.
+    ///
+    /// `ReclamationRegistrationWindowTests.reRegisteringMidGraceDoesNotRefillIt` and
+    /// `.reRegisteringKeepsWhatWasCommanded` are the two halves.
     struct HeldFan: Sendable {
         /// The step last put on the wire, or `nil` when nothing has been commanded yet.
         var commanded: CommandedTarget?

@@ -274,7 +274,7 @@ struct ReclamationWatchdogStalenessTests {
     /// and after each write is ADR 0014 D4's, not #180's. What D2 guarantees is that the
     /// state is not permanent — the next cycle's lease check hands the fan back.
     ///
-    /// **Mutation:** delete the lease-check block from `examine(fanAt:)`. Run: red on the
+    /// **Mutation:** delete the `guard entitled` block from `examine(fanAt:)`. Run: red on the
     /// second cycle's restore, registry and log assertions: the fan reads back the 2,400 RPM
     /// just written, converged on both signals, and nothing else would revisit it.
     @Test("A lease that lapses during the re-assert is handed back by the next cycle")

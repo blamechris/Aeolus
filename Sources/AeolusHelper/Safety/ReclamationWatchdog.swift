@@ -101,12 +101,11 @@ import FanKit
 /// that cannot obtain an envelope restores rather than commanding; persistent read failure
 /// is divergence rather than a read to be retried forever.
 ///
-/// ## Not started, like § 3
+/// ## Running, with nothing to watch
 ///
-/// `ReclamationSupervisor` is the loop, and nothing constructs one. No lease can be granted
-/// in this build, so no fan is ever off automatic control and there is nothing to watch.
-/// [#103](https://github.com/blamechris/Aeolus/issues/103) owns the lifecycle that starts
-/// both supervisors, and E3 owns telling this actor what it commanded.
+/// `ReclamationSupervisor` is the loop: `HelperComposition` constructs it and `bringUp()`
+/// starts it. No lease can be granted in this build, so nothing registers a fan here and every
+/// cycle returns at once. E3 owns registering fans and telling this actor what it commanded.
 ///
 /// - Note: this file is over SwiftLint's 400-line warning, and it has crossed the 1000-line
 ///   **error** twice: when #169/#170/#172 landed beside the registration grace, and with ADR
@@ -238,31 +237,14 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     ///
     /// ## Re-registering a fan already held changes nothing about it
     ///
-    /// The entry is created only when there is not one already, so calling this twice
-    /// without an intervening `manualControlReleased(fanAt:)` is idempotent: the fan keeps
-    /// its `commanded` target, its grace counter, its re-assert attempts and its blind-cycle
-    /// count. It used to build a fresh `HeldFan` unconditionally, and that was two defects
-    /// rather than one:
+    /// The entry is created only when there is not one already, so its grace and its
+    /// `commanded` target survive a second call. `HeldFan` says what refilling either cost.
     ///
-    /// - **The grace was rearmed.** `uncommandedDivergentCycles` went back to zero, so a
-    ///   caller re-registering a fan every other cycle held it off automatic control
-    ///   indefinitely and the terminal action was never reached — twenty registrations bought
-    ///   forty divergent cycles, no restore, and a lease still live. That is the budget
-    ///   `gracedBeforeItsFirstCommand(_:of:fanAt:)` exists to bound, refillable on demand by
-    ///   the very caller it is meant to bound.
-    /// - **`commanded` was wiped.** `primaryDivergence(of:against:)` reaches
-    ///   `.targetDiverged` only behind `guard let commanded`, so a re-registered fan Aeolus
-    ///   *had* commanded became unjudgeable on that case until the next `commandedTarget(_:)`
-    ///   — a fan pinned at a number this mechanism had just forgotten it wrote, which is
-    ///   `CLAUDE.md` rule 6.
+    /// ## A live lease must already cover the fan
     ///
-    /// The refill point is a genuine release, and both of them drop the entry:
-    /// `manualControlReleased(fanAt:)` for a lease that ended, `finaliseRelease(fanAt:because:)`
-    /// for a fan this mechanism gave up. A registration after either of those starts fresh,
-    /// which is the case a fresh `HeldFan` is actually for.
-    ///
-    /// `ReclamationRegistrationWindowTests.reRegisteringMidGraceDoesNotRefillIt` and
-    /// `.reRegisteringKeepsWhatWasCommanded` are the two halves.
+    /// ADR 0009 D2: every examination asks the lease table before it believes a reading, so a
+    /// fan registered with no live lease covering it is `.leaseLapsed` on its first cycle and
+    /// handed back. Acquire, then engage, then register.
     ///
     /// Clears any reclamation recorded against this fan: something has just taken it off
     /// automatic control, so the ledger's claim that the system holds it is now false, and
@@ -444,15 +426,18 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // so a read that saw that restore land is followed by a query that sees the lease
         // gone — asked first, the restore reads as `.modeReclaimed` and is re-asserted. Before
         // both signals and a failed read's count: blindness is grounds to act on a held fan.
-        guard await leases.hasLiveLease(coveringFan: index) else {
-            log.reclamationLeaseLapsed(fan: index)
-            await restoreAndForget(fanAt: index)
-            return
-        }
+        let entitled = await leases.hasLiveLease(coveringFan: index)
 
-        // Re-fetched across the lease hop.
+        // Re-fetched across the lease hop before either answer is acted on, so a fan released
+        // during it gets no second restore and no false "may still be pinned". **No test can
+        // reach this guard:** the hop is to the concrete `LeaseAuthority`, which no seam wraps.
         guard let fan = held[index] else {
             log.reclamationFanReleasedMidExamination(fan: index, during: "the lease check")
+            return
+        }
+        guard entitled else {
+            log.reclamationLeaseLapsed(fan: index)
+            await restoreAndForget(fanAt: index)
             return
         }
 
@@ -920,12 +905,21 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     ///
     /// The restore is still attempted — it is the keystone verb, it consumes nothing, and
     /// whoever handed the fan back first may have been refused. What is **not** done here is
-    /// marking the ledger or revoking leases: `fire(_:from:)` already revoked every lease
-    /// before this mechanism could observe anything, a lapsed lease has nothing to revoke, and
-    /// claiming a reclamation would attribute § 3's deliberate release, or a lease ending, to
-    /// the operating system. Forgotten even when the restore is refused, as ADR 0009 D2's
-    /// "restore-and-forget" says: the residual is the `.fault` line below and nothing more.
+    /// marking the ledger or revoking leases. Revoking is § 3's own act — `fire(_:from:)`
+    /// revokes every lease once it has bridged the fans, so one can still be live while § 5
+    /// looks — a lapsed lease has nothing to revoke, and claiming a reclamation would blame
+    /// the operating system for § 3's release or a lease ending. Forgotten even when the
+    /// restore is refused, as ADR 0009 D2's "restore-and-forget" says: the `.fault` lines below
+    /// are the residual.
+    ///
+    /// **Forgotten before the restore, not after it.** A re-grant is the ordinary next event
+    /// for a fan handed back here, and a registration landing while the restore is in flight
+    /// must start a fresh entry, not be erased by this one: forgetting afterwards left a fan off
+    /// automatic control under a live lease with nothing watching it. `HelperFanRestorer` tells
+    /// § 5 before its write for the same reason, and unlike checking the entry's episode after
+    /// the write, this needs no identity `HeldFan` does not carry.
     private func restoreAndForget(fanAt index: Int) async {
+        held[index] = nil
         do {
             try await writer.restoreToAutomatic(.fan(index))
         } catch {
@@ -933,7 +927,6 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
                 verb: "restore", fan: index, detail: String(describing: error))
             log.reclamationFanMayStillBePinned(fan: index)
         }
-        held[index] = nil
         if await ledger.clearReclaimed(fanAt: index) {
             log.reclamationResolved(fan: index)
         }
