@@ -429,8 +429,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         let entitled = await leases.hasLiveLease(coveringFan: index)
 
         // Re-fetched across the lease hop before either answer is acted on, so a fan released
-        // during it gets no second restore and no false "may still be pinned". No seam wraps the
-        // hop; `ReclamationLeaseHopTests` lands a release inside it through the lease clock.
+        // during it gets no second restore and no false "may still be pinned". **Untested, and
+        // kept by this file's re-fetch rule.** No seam wraps the hop. The only way found to land
+        // a release inside it blocks a cooperative-pool thread from the lease clock, which failed
+        // on CI (run 37940001373) and is unsafe in a parallel suite; #344 tracks a seam that
+        // does not block.
         guard let fan = held[index] else {
             log.reclamationFanReleasedMidExamination(fan: index, during: "the lease check")
             return
