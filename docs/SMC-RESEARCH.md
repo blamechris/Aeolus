@@ -353,29 +353,69 @@ belongs to E4, not yet attempted. The catalog reflects this honestly:
 
 ### `F0Md`/`F1Md` have now been observed reading `1` — the first sighting on this machine
 
+> **Correction, 2026-10-09 ([#208](https://github.com/blamechris/Aeolus/issues/208)).** This
+> heading, and the claim under it that the key "genuinely takes the value `1`", outran the
+> evidence. The key was observed **decoding to non-zero**. Every `1` in the table below is
+> `FirmwareFanMode`'s fold (`0` is automatic, anything else is manual) printed as `0`/`1` by a test
+> that did not read the byte, so `2`, `0x80` or a decode artefact would have produced the same row.
+> **No raw `F<n>Md` value other than `0` has been recorded on this machine**, with a fan held or
+> without. The heading is left as written so that the references to it (this file, the hardware
+> tests, #208) still resolve; read "reading `1`" as "decoding non-zero". The table and the
+> paragraph that made the stronger claim are corrected in place below, and the paragraph's
+> original wording is quoted there.
+
 **Date:** 2026-09-05. **Machine:** `Mac16,5`, macOS 26.6.2. **Method:**
 `HelperHardwareTests.everyFanModeIsReadableAtStart` (named
 `everyFanIsOnAutomaticControlAtStart` when these readings were taken), read-only, through the production
 plane's `SMCReadScheduler` at `.supervisor` priority — one turn per fan, exactly as startup
-reconciliation reads them. One machine, and the readings below are single snapshots.
+reconciliation reads them. One machine, and the readings below are single snapshots. The test
+printed `FirmwareFanMode`, not the byte it was decoded from.
 
-| Time (UTC) | `F0Md` | `F1Md` | Competing tool |
+| Time (UTC) | `F0Md` (decoded) | `F1Md` (decoded) | Competing tool |
 |---|---|---|---|
 | 2026-09-05 ~16:40 | `0` | `0` | Macs Fan Control running, evidently not holding |
-| 2026-09-05 ~17:06 | `1` | `1` | Macs Fan Control running **and holding both fans** |
+| 2026-09-05 ~17:06 | non-zero (decoded fold, #208) | non-zero (decoded fold, #208) | Macs Fan Control running **and holding both fans** |
 | 2026-09-05 ~17:50 | `0` | `0` | Macs Fan Control still running, back to not holding |
 | 2026-09-05 20:13 | `0` | `0` | Macs Fan Control **quit** (process absent) |
 
+The two non-zero cells were recorded as `1` when this table was written. What they establish is
+that the decode was not zero. A `0` is a decoded value of exactly zero: the plane's
+`readControlState` throws on a key it cannot read rather than folding it into automatic, so on
+this path a `0` is not "the key did not answer" (the snapshot path does fold that case, #178).
+
 Three things follow, and the third is the one worth keeping.
 
-**`F<n>Md` genuinely takes the value `1` on Apple Silicon.** Until this reading the key had
-only ever been seen at `0` here, which made every mechanism keyed on it — startup
-reconciliation, the snapshot's `.manualFixed`, ADR 0011's whole foreign-control baseline —
-rest on a value nothing had witnessed. It has now been witnessed. The convention "0 =
-automatic, 1 = held" survives its first contact with a machine where something is actually
-holding a fan.
+**`F<n>Md` leaves `0` on `Mac16,5` (macOS 26.6.2) while a third-party tool holds the fan; to what
+value is not recorded.**
 
-**Nothing in Aeolus wrote it.** `SMCConnection.write` is SPI-gated and throws, no write
+> **Corrected 2026-10-09 ([#208](https://github.com/blamechris/Aeolus/issues/208)).** This
+> paragraph first read, in full: "**`F<n>Md` genuinely takes the value `1` on Apple Silicon.**
+> Until this reading the key had only ever been seen at `0` here, which made every mechanism keyed
+> on it — startup reconciliation, the snapshot's `.manualFixed`, ADR 0011's whole foreign-control
+> baseline — rest on a value nothing had witnessed. It has now been witnessed. The convention
+> "0 = automatic, 1 = held" survives its first contact with a machine where something is actually
+> holding a fan." That outran the evidence. The table's `1` is the non-zero branch of
+> `value == 0 ? .automatic : .manual`, so the reading supports "non-zero" and nothing narrower. It
+> does not support "1 = held", which remains the community report and has no witness here. What
+> survives is below.
+
+Until this reading the key had only ever been seen at `0` here, which made every mechanism keyed
+on it — startup reconciliation, the snapshot's `.manualFixed`, ADR 0011's whole foreign-control
+baseline — rest on a departure from `0` that nothing had witnessed. A departure from `0` has now
+been witnessed, and that is what the fold those mechanisms use acts on. Even that is an inference
+from a decode: this section does not record the declared type at the 17:06 reading, though it was
+`ui8` on 26.5.2 and again on 27.0.1, and a `ui8` decodes to its single byte.
+
+What is not known is the value. No raw `F<n>Md` byte other than `0x00` has been recorded on this
+machine. The raw bytes on record are `00`, from the 26.5.2 dump and the 27.0.1 dump (below); the
+27.0.1 sampler's 30 ticks recorded a decoded value of 0, which is lossless for a 1-byte `ui8` but is
+not a byte read. [ADR 0014](https://github.com/blamechris/Aeolus/pull/339) (#339, Proposed, so not yet a
+decision) schedules a read-only raw-byte capture of `F0Md`, `F1Md` and `Ftst` before any write. It
+declines (its D9) to take one with a third-party tool holding a fan before its first write run, so
+what a held fan reads stays unrecorded through that point. Nothing should code "write `1`" against
+this section as though the value had been observed.
+
+**Nothing in Aeolus wrote `F<n>Md`.** `SMCConnection.write` is SPI-gated and throws, no write
 selector appears in `Sources` (`WritePathAbsenceTests`, green), and the whole suite was
 running read-only. A third-party tool moved the key, which is precisely the case ADR 0011
 was written for and the case the 2026-09-04 triage on #103 predicted.
@@ -398,9 +438,11 @@ against. `HelperHardwareTests.snapshotFromRealHardware` now tolerates either val
 That row was left pinning `0` at #200, on the argument that its whole point is to say when
 this machine is *not* in the "nothing holding the fans" state and that loosening it would
 make it stop recording anything. The argument conflated the two things a test does. The
-**print** records — and it still records, the decoded mode per fan printed as `0`/`1` (not a
-register byte: nothing on this path reads one, #208), now with an explicit note naming any
-fan found in manual and saying, on the plane's own `writeCapability` rather than on a
+**print** records — and it still records. Since #208 it prints each fan's raw `F<n>Md` (the
+declared type and the bytes, from a second read through `SMCConnection.read`, before any decode)
+beside the decoded mode, where it used to print the decoded mode alone as `0`/`1`, which is what
+the table above was transcribed from. It carries an explicit note naming any fan found in manual
+and saying, on the plane's own `writeCapability` rather than on a
 literal, whether this build could have put it there. The **verdict** claims, and what a red verdict claimed was that this repository is
 broken, which it never was. A foreign hold was reproduced on 2026-09-13 during the #237
 review and reddened the suite on a tree whose write path is `.notBuilt`; the same suite had
@@ -438,7 +480,7 @@ during and after the capture (seen in the process list only; it was not inspecte
 
 | Key | Recorded on macOS 26 | Observed on 27.0.1 |
 |---|---|---|
-| `F0Md` | `ui8`, raw `00`, 0 (26.5.2, 2026-07-25). 0 or 1 by whether a competing tool held the fan (26.6.2, 2026-09-05). Attribute byte and `dataSize`: **not recorded** | `ui8`, `dataSize` 1, attributes `0xD0`, raw `00`. Read succeeded on the dump and on 30 of 30 ticks, value 0 on every tick |
+| `F0Md` | `ui8`, raw `00`, 0 (26.5.2, 2026-07-25). 0 or 1 by whether a competing tool held the fan (26.6.2, 2026-09-05). **Corrected 2026-10-09 (#208): the `1` is the decoded non-zero fold, not the byte.** Attribute byte and `dataSize`: **not recorded** | `ui8`, `dataSize` 1, attributes `0xD0`, raw `00`. Read succeeded on the dump and on 30 of 30 ticks, value 0 on every tick |
 | `F1Md` | as `F0Md` | `ui8`, `dataSize` 1, attributes `0xD0`, raw `00`. 30 of 30 ticks, value 0 |
 | `Ftst` | `ui8`, raw `00`, present (26.5.2). Read `0` before and after the lid close and at the fourth reading (26.6.2, 2026-09-05). Attribute byte and `dataSize`: **not recorded** | `ui8`, `dataSize` 1, attributes `0xD0`, raw `00`. 30 of 30 ticks, value 0 |
 | `F0Mn` | `flt`, raw `00c0a844`, 1350 RPM (26.5.2). Unchanged in all 10,570 rows of the 26.6.2 lid-close capture | `flt`, attributes `0x84`, raw `00c0a844`, 1350 RPM. 30 of 30 ticks |
@@ -488,8 +530,9 @@ read the real count each assert only a broad sanity range.
 
 **Not re-checked here, and why.**
 
-- **The value `1`.** Nothing was holding a fan during this capture, so `F<n>Md` reading `1` is
-  still an observation made on 26.6.2 only.
+- **A non-zero `F<n>Md`.** Nothing was holding a fan during this capture, so the decoded non-zero
+  reading (recorded as `1` before the 2026-10-09 correction under #208; no raw byte other than `0`
+  has been recorded) is still an observation made on 26.6.2 only.
 - **Every write.** Nothing was written. The questions that belong to E4 are exactly as open as
   they were: that writing `F<n>Md` engages manual control, that `Ftst` plus a retry loop yields
   the fans, the ~3 s yield, and the `0x82` write rejection.

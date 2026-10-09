@@ -227,6 +227,11 @@ client would be told *"another program holds it"* about:
   could not take it back, which is a considerably worse thing to be told is somebody else's
   fault).
 
+> **Corrected 2026-10-09 ([#208](https://github.com/blamechris/Aeolus/issues/208)).** "Reads `1`"
+> above means reads non-zero. The `1` recorded in `docs/SMC-RESEARCH.md` is the decoded fold, and no
+> raw `F<n>Md` byte other than `0x00` has been recorded on this machine. The argument does not
+> depend on the value, only on the register naming no owner.
+
 **`handbackUnconfirmed` is deliberately not a fourth union.** It is a subset of
 `releasing.keys` by its own invariant, so every fan in it is already accounted for by the third
 register. Adding it would change no answer and would suggest the two can disagree.
