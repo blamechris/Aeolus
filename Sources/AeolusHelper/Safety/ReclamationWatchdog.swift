@@ -429,8 +429,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         let entitled = await leases.hasLiveLease(coveringFan: index)
 
         // Re-fetched across the lease hop before either answer is acted on, so a fan released
-        // during it gets no second restore and no false "may still be pinned". **No test can
-        // reach this guard:** the hop is to the concrete `LeaseAuthority`, which no seam wraps.
+        // during it gets no second restore and no false "may still be pinned". No seam wraps the
+        // hop; `ReclamationLeaseHopTests` lands a release inside it through the lease clock.
         guard let fan = held[index] else {
             log.reclamationFanReleasedMidExamination(fan: index, during: "the lease check")
             return
@@ -915,9 +915,9 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// **Forgotten before the restore, not after it.** A re-grant is the ordinary next event
     /// for a fan handed back here, and a registration landing while the restore is in flight
     /// must start a fresh entry, not be erased by this one: forgetting afterwards left a fan off
-    /// automatic control under a live lease with nothing watching it. `HelperFanRestorer` tells
-    /// § 5 before its write for the same reason, and unlike checking the entry's episode after
-    /// the write, this needs no identity `HeldFan` does not carry.
+    /// automatic control under a live lease with nothing watching it. `HelperFanRestorer` also
+    /// tells § 5 before its write, and unlike checking the entry's episode after the write,
+    /// forgetting first needs no identity `HeldFan` does not carry.
     private func restoreAndForget(fanAt index: Int) async {
         held[index] = nil
         do {

@@ -244,24 +244,34 @@ struct ReclamationLeaseLapseTests {
             "a fan handed back because its lease lapsed is still reported as reclaimed")
     }
 
-    /// **A refused hand-back is reported, and the fan is forgotten anyway** — ADR 0009 D2's
-    /// "restore-and-forget", with its residual said out loud at `.fault`.
+    /// **A refused hand-back is reported, and the fan is forgotten and its ledger entry cleared
+    /// anyway** — ADR 0009 D2's "restore-and-forget", with its residual said out loud at
+    /// `.fault`.
+    ///
+    /// The fan diverges first, so it goes into the hand-back recorded as reclaimed: § 5 marks
+    /// it and tries to re-assert, and the firmware refuses that too. A refused restore must not
+    /// leave the mark behind, because a fan Aeolus handed back is not one the system took.
     ///
     /// **Mutation:** delete `log.reclamationFanMayStillBePinned(fan:)` from
-    /// `restoreAndForget(fanAt:)`. Run: red on the second assertion.
+    /// `restoreAndForget(fanAt:)`. Run: red on the "may still be under manual control"
+    /// assertion.
     /// **Mutation:** move `held[index] = nil` inside the `do`, after the restore, so a refused
     /// restore skips the forget. Run: red on the registry assertion, and on
-    /// `aFanRegisteredDuringItsHandBackStaysWatched`, which any late forget breaks. The
-    /// review's form of this mutant, a `return` in the `catch` before the forget, can no longer
-    /// change anything: the forget now runs before the restore, for that test's reason.
-    @Test("A refused hand-back is reported, and the fan is still forgotten")
+    /// `aFanRegisteredDuringItsHandBackStaysWatched`, which any late forget breaks.
+    /// **Mutation (M2):** add `return` after `log.reclamationFanMayStillBePinned(fan: index)`
+    /// in `restoreAndForget(fanAt:)`'s `catch`. The forget has already run, but the ledger clear
+    /// after the restore is skipped. Run: red on the ledger assertion.
+    @Test("A refused hand-back is reported, and the fan is still forgotten and cleared")
     func aRefusedHandBackIsReportedAndForgotten() async throws {
         let machine = ReclamationMachine(
             stages: [.nominal(writes: .refused(reason: "firmware said no"))],
-            fans: [0: .held(at: 2_400)])
+            fans: [0: .held(at: 1_800)])
         try await machine.hold(fan: 0, commanding: 2_400)
-        await machine.endLease()
+        await machine.watchdog.cycle()
+        #expect(
+            await machine.ledger.reclaimedFans == [0], "the setup never recorded a reclamation")
 
+        await machine.endLease()
         await machine.watchdog.cycle()
 
         #expect(machine.safetyLog.faults.contains { $0.contains("could not restore") })
@@ -269,6 +279,9 @@ struct ReclamationLeaseLapseTests {
             machine.safetyLog.faults.contains { $0.contains("may still be under manual control") },
             "a refused hand-back left a possibly pinned fan with no fault line")
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
+        #expect(
+            await machine.ledger.causes.isEmpty,
+            "a refused hand-back left the fan reported as reclaimed by the system")
     }
 
     /// **A re-grant during the hand-back is not erased by it.** A fan handed back here is

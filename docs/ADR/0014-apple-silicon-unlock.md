@@ -313,8 +313,8 @@ the first build that has one. In full means:
 - the § 3 registration on engage, in the driver, for both callers;
 - deregistration in `finaliseRelease` and `restoreAndForget`. The second was
   `releaseToThermalEmergency` until #342, and has three callers since: § 5 yielding to § 3,
-  `.leaseLapsed`, and a release during a re-assert write. The A4 author decides whether § 3
-  deregistration applies to each;
+  `.leaseLapsed`, and a release during a re-assert write. Whoever builds #9's slice-plan row
+  A4 (the engagement driver and #181) decides whether § 3 deregistration applies to each;
 - a test in which the emergency latches mid-write and the undo is refused. It ends with the fan in
   § 3's registry, bridged by § 3's next latched cycle;
 - the pre-engage ruling;

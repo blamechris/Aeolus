@@ -180,8 +180,10 @@ would have given §3 a second, independent chance at the same fan —
 
 **D2 landed in [#342](https://github.com/blamechris/Aeolus/pull/342)
 ([#180](https://github.com/blamechris/Aeolus/issues/180)), in every part this ADR names — and it
-is dormant until a caller registers fans with §5** (ADR 0014's A4 and A6): no lease can be
-granted in this build, so `held` is always empty and the check has nothing to judge.
+is dormant until a caller registers fans with §5** — rows A4 (the engagement driver and #181)
+and A6 (the level-6 `apply`) of [#9](https://github.com/blamechris/Aeolus/issues/9)'s slice
+plan. No lease can be granted in this build, so `held` is always empty and the check has
+nothing to judge.
 `ReclamationDivergence.leaseLapsed` exists, and `ReclamationWatchdog.examine(fanAt:)` decides it
 on every examination: the control-state read is taken, then
 `LeaseAuthority.hasLiveLease(coveringFan:)` is asked, and only then is the reading believed — a
@@ -324,7 +326,8 @@ mechanism exists: the correction belongs to the actor that performed the write.
   *intent* — no ruling is spent across a sweep, and the residual is not permanent — but not D1
   in full: the second pre-write ruling is missing (#181). Hard rule 2 no longer depends on a
   release notification being remembered; the notification is still sent, and is now a hint. The
-  check is dormant until a caller registers fans (A4/A6). The "As
+  check is dormant until a caller registers fans: #9's slice-plan rows A4 (the engagement
+  driver and #181) and A6 (the level-6 `apply`). The "As
   built" section says exactly which parts, so this bullet is not the audit.
 - **No XPC version bump.** Nothing here crosses the boundary. The eventual durable
   per-fan-unavailability wire reason belongs to #102 and is expected to be an additive,
