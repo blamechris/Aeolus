@@ -207,18 +207,29 @@ struct HelperLifecycleFirstInstallTests {
         #expect(controller.state == .brokenInstall(.systemCannotFindService))
         #expect(controller.lastFailure == nil)
         #expect(HelperStatusDisplay.text(for: controller.state).action == .register)
+
+        // The same answer again is not a new answer: macOS has still not given the helper a
+        // record, so a read that finds nothing must not make the attempt forgotten.
+        controller.refresh()
+        #expect(
+            controller.state == .brokenInstall(.systemCannotFindService),
+            "A further not-found is the same not-found; the attempt still stands")
     }
 
-    @Test("An attempt is forgotten once macOS has had a record; a later reset is a first install")
-    func attemptIsForgottenOnceTheSystemMovesOn() {
+    @Test(
+        "An attempt is forgotten once macOS gives another answer; a later reset is a first install",
+        arguments: [HelperDaemonStatus.requiresApproval, .enabled, .notRegistered])
+    func attemptIsForgottenOnceTheSystemMovesOn(otherAnswer: HelperDaemonStatus) {
         let service = FakeHelperDaemonService(status: .notFound)
         let controller = controller(embedding: .embedded, service: service)
         controller.register()
         #expect(controller.state == .brokenInstall(.systemCannotFindService))
 
-        service.nextStatus = .enabled
+        service.nextStatus = otherAnswer
         controller.refresh()
-        #expect(controller.state == .enabled)
+        #expect(
+            controller.state != .brokenInstall(.systemCannotFindService),
+            "macOS answered something other than not-found, so nothing is broken")
 
         // Background Task Management is reset: macOS knows nothing of the helper again.
         service.nextStatus = .notFound
@@ -226,6 +237,6 @@ struct HelperLifecycleFirstInstallTests {
 
         #expect(
             controller.state == .unknownToSystem,
-            "The old attempt succeeded since; it says nothing about this not-found")
+            "The old attempt got another answer since; it says nothing about this not-found")
     }
 }

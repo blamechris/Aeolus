@@ -62,6 +62,11 @@ enum HelperInstallationState: Sendable, Hashable {
     /// reads `effectiveItemDisposition: record not found` for the embedded plist. Observed
     /// on hardware (Mac16,5, macOS 27.0.1) with a Developer ID build in /Applications, #337.
     ///
+    /// It is also what Aeolus shows when it is relaunched after an attempt that left macOS
+    /// still without a record, or after the app was moved: the attempt is not remembered
+    /// across launches, and the answer is still true — macOS has no record — with the same
+    /// remedy.
+    ///
     /// Kept apart from `.notRegistered` because they are different answers from macOS, and
     /// the UI says what macOS said. They offer the same way forward.
     case unknownToSystem

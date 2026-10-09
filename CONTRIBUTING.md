@@ -134,7 +134,8 @@ sequence macOS went through, which the app's unit tests replay, was:
    this is a first launch, not a broken install.
 2. `register()` throws (`SMAppServiceErrorDomain` code 1, "Operation not permitted") in the
    same instant the item is created awaiting approval, and the status afterwards is
-   `.requiresApproval`. The throw is not a refusal and the app does not report it as one.
+   `.requiresApproval`. The throw is not, on its own, a refusal: the app judges it against the
+   status it reads afterwards.
 3. After approval in Login Items & Extensions the status is `.enabled`.
 
 The full results, including what the installed helper admitted and refused, are in

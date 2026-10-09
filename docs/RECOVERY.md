@@ -85,9 +85,11 @@ step 5's `bootout` line. The reasons worth knowing in advance:
   was listening. Check System Settings → Login Items & Extensions first.
 - *This build carries no Team ID.* A `fanctl` you built yourself with `swift build` cannot
   verify which process would answer, so it does not connect at all. That is expected, not a
-  fault — the copy inside `Aeolus.app` (below) is the one built to be admitted, and
-  [#82](https://github.com/blamechris/Aeolus/issues/82) tracks the signed build. Reads
-  (`fanctl list`, `fanctl sensors`) need none of this and keep working.
+  fault — the copy inside `Aeolus.app` (below) is the one built to be admitted. A Developer
+  ID-signed copy of it was admitted by an installed helper on 2026-10-09
+  ([#82](https://github.com/blamechris/Aeolus/issues/82#issuecomment-6076882014)); no signed
+  release is published yet. Reads (`fanctl list`, `fanctl sensors`) need none of this and keep
+  working.
 - *The helper accepted the request and did not answer within 10 seconds.* Nothing can be said
   about whether it took effect; go to step 5.
 

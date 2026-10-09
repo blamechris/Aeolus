@@ -78,8 +78,10 @@ enum HelperLifecycleFailure: Sendable, Hashable {
     /// A registration failure is contradicted by any state that is only reachable once
     /// macOS has the registration: awaiting approval, or enabled. A removal failure is
     /// **not** contradicted by `.enabled` — that is precisely the state an unregister that
-    /// failed leaves behind — and the local refusals describe the bundle, which a status
-    /// read cannot change. Exhaustive on purpose: a new failure has to decide.
+    /// failed leaves behind. The local refusals are about what the bundle contains, not about
+    /// what macOS says, so no status contradicts them; `refresh()` does re-probe the bundle,
+    /// but a failure of that kind is cleared by the next request, not by a status.
+    /// Exhaustive on purpose: a new failure has to decide.
     func isContradicted(by state: HelperInstallationState) -> Bool {
         switch self {
         case .registrationRejected:
@@ -149,6 +151,11 @@ final class HelperLifecycleController: ObservableObject {
     /// first launch (`.unknownToSystem`); with one, a broken install. Dropped as soon as
     /// macOS answers anything else, so an old attempt that went on to succeed cannot make a
     /// later, unrelated "not found" look like a failed install.
+    ///
+    /// Per process, and not persisted: after a relaunch it starts `false` again, so a
+    /// `.notFound` that survives a failed attempt reads as `.unknownToSystem` once more.
+    /// That is accurate — macOS still has no record — and offers the same remedy, the
+    /// `.register` action; it just no longer says an attempt was made.
     private var registrationAttempted = false
 
     /// - Parameters:
