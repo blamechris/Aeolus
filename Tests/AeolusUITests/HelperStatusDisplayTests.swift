@@ -62,7 +62,9 @@ struct HelperStatusDisplayTests {
         #expect(text.title.lowercased().contains("not installed yet"))
 
         let combined = (text.title + " " + text.detail).lowercased()
-        for claim in ["damaged", "broken", "reinstall", "cannot find"] {
+        // "moved" too: no hardware run has shown what macOS reports for a moved app, so the
+        // copy must not offer it as an explanation.
+        for claim in ["damaged", "broken", "reinstall", "cannot find", "moved"] {
             #expect(
                 !combined.contains(claim),
                 "A first launch has nothing wrong with it, and must not say '\(claim)'")
@@ -70,6 +72,9 @@ struct HelperStatusDisplayTests {
         #expect(
             text.detail.contains("no record"),
             "Say what macOS answered, so the user is not left guessing why it is not installed")
+        #expect(
+            text.detail.contains("first launch"),
+            "Name the one cause seen on hardware (#337), so the copy cannot drift to a guess")
     }
 
     @Test("Awaiting approval names System Settings and says no password prompt is coming")

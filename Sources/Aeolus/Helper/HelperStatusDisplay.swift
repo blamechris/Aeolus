@@ -115,9 +115,9 @@ enum HelperStatusDisplay {
     private static let unknownToSystemText = Text(
         title: "Helper not installed yet",
         detail:
-            "macOS has no record of Aeolus's privileged helper yet, as on a first launch "
-            + "or after the app was moved. Installing it asks macOS to add the helper, and "
-            + "needs your approval in System Settings afterwards.",
+            "macOS has no record of Aeolus's privileged helper yet, as on a first launch. "
+            + "Installing it asks macOS to add the helper, and needs your approval in System "
+            + "Settings afterwards.",
         action: .register,
         severity: .actionNeeded)
 

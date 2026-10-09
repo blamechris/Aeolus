@@ -63,9 +63,10 @@ enum HelperInstallationState: Sendable, Hashable {
     /// on hardware (Mac16,5, macOS 27.0.1) with a Developer ID build in /Applications, #337.
     ///
     /// It is also what Aeolus shows when it is relaunched after an attempt that left macOS
-    /// still without a record, or after the app was moved: the attempt is not remembered
-    /// across launches, and the answer is still true — macOS has no record — with the same
-    /// remedy.
+    /// still without a record: the attempt is not remembered across launches, and the
+    /// answer is still true — macOS has no record — with the same remedy. What macOS reports
+    /// for a registered app that is then moved has not been observed, so the copy does not
+    /// name it as a cause.
     ///
     /// Kept apart from `.notRegistered` because they are different answers from macOS, and
     /// the UI says what macOS said. They offer the same way forward.
