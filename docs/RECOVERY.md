@@ -101,8 +101,8 @@ That copy is the one built to be admitted. Aeolus's build embeds it as its own t
 with the code-signing identifier `com.blamechris.fanctl` — the identifier the helper's client
 requirement names — where a `swift build` binary is signed under its file name and refused.
 The identifier is necessary, not sufficient: the helper also requires the same Team ID and a
-Developer ID signature, so a copy from an ad-hoc-signed Monitor build can read sensors but is
-not one the helper will obey. (A Monitor build ships no helper in any case.)
+Developer ID signature, and no `com.apple.security.get-task-allow` entitlement, so a copy from
+an ad-hoc-signed Monitor build can read sensors but is not one the helper will obey. (A Monitor build ships no helper in any case.)
 
 There is no per-fan form: `fanctl reset` without `--all` prints usage and exits, because no
 request the helper accepts returns one fan on behalf of another process. `fanctl auto` sends

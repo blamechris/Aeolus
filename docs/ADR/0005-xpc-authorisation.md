@@ -44,6 +44,16 @@ equal to the **helper's own Team ID read from its own signature at runtime**, id
 `com.apple.security.get-task-allow`. The Debug helper additionally accepts Apple Development leaf
 certificates of the same team.
 
+> **Amended 2026-10-08 ([#335](https://github.com/blamechris/Aeolus/issues/335)).** The Release
+> `!entitlement["com.apple.security.get-task-allow"]` clause appears in both requirements — this
+> one on clients, and the client-side mirror below on the helper. A Release build satisfies it in
+> both directions only because `project.yml` turns Xcode's base-entitlement injection
+> (`CODE_SIGN_INJECT_BASE_ENTITLEMENTS`) off for `Full Release`. With it on, which is Xcode's
+> default, `Aeolus.app`, `AeolusHelper` and `fanctl` were all signed with the entitlement, so the
+> installed helper refused its own clients and a Release `fanctl` refused the helper. CI asks
+> Xcode what `Full Release` resolves for each of the three targets; it does not build or inspect
+> the signed binaries, which stay a by-hand `codesign -d --entitlements -` check.
+
 Requirement construction is pure, unit-tested code; the string is pre-compiled with
 `SecRequirementCreateWithString`. Every failure resolves to **refuse all connections**, logged at
 fault level:

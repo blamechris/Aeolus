@@ -102,11 +102,19 @@ outcomes: there is no configuration in which `Full` quietly produces an ad-hoc-s
 helper, because an ad-hoc-signed root daemon is one `SMAppService` will not register and
 one that would refuse every client anyway — it can read no Team ID from its own signature.
 
-A `Full Release` build carries no `com.apple.security.get-task-allow` entitlement
-(`project.yml` turns Xcode's base-entitlement injection off for that configuration), which is
-what an installed Release helper admits from its app and `fanctl`. A `Full Debug` build does
-carry it, and only a Debug helper's relaxed client requirement tolerates that; see
-[docs/ADR/0005-xpc-authorisation.md](docs/ADR/0005-xpc-authorisation.md).
+A `Full Release` build is meant to carry no `com.apple.security.get-task-allow` entitlement:
+`project.yml` turns Xcode's base-entitlement injection off for that configuration, and CI
+checks that setting, and that no target's entitlements file lists the entitlement, without
+building it. It has to be absent in both directions: the Release helper refuses a client that
+carries it, and a Release client refuses a helper that carries it. `Full Debug` does carry it,
+and a Debug helper and Debug clients tolerate that; see
+[docs/ADR/0005-xpc-authorisation.md](docs/ADR/0005-xpc-authorisation.md). Whether a signed build
+really lacks it is checked by hand with `codesign -d --entitlements - --xml <binary> | plutil -p -`.
+
+With no `get-task-allow`, a debugger cannot attach to a `Full Release` helper or app while SIP
+is on (Apple, "Resolving common notarization issues"). Debug and profile with `Full Debug`, and
+read a Release helper with `log show`. The generated `Aeolus (Full)` scheme's Profile action
+builds `Full Release`, so profiling from that scheme gets a build with no `get-task-allow`.
 
 After first launch you must approve the background item in **System Settings → General →
 Login Items & Extensions**. `SMAppService` cannot prompt for this, so if you skip it the
