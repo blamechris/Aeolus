@@ -569,6 +569,23 @@ extension SafetyLog {
         )
     }
 
+    /// A fan was released while one of § 5's re-assert writes was in flight.
+    ///
+    /// Unlike `reclamationFanReleasedMidExamination(fan:during:)`, § 5 restores this one itself
+    /// rather than leaving it to the lease core: the write it was awaiting may have landed
+    /// *after* the lease core's restore, and then nothing but § 5 knows the fan is off
+    /// automatic control. `.notice`, for the same reason as `reclamationLeaseLapsed(fan:)`.
+    func reclamationReleasedMidReassert(fan: Int, during: String) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) was released during \(during), part-way through a re-assert. That \
+            write may have landed after the release's own restore, so § 5 is restoring the \
+            fan itself and no longer watching it. Nothing is recorded as reclaimed.
+            """
+        )
+    }
+
     /// § 3 latched while § 5 was mid-re-assert, so the re-assert was undone.
     ///
     /// The compensating half of `ReclamationWatchdog.reassert(_:fanAt:attempt:)`. Check and

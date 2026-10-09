@@ -807,20 +807,39 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         }
 
         // Past this point the fan is OFF automatic control, so every exit below has to leave
-        // it somewhere deliberate.
+        // it somewhere deliberate. A fan released during either write is held by nobody, so
+        // both re-fetches below restore before they stop, where the envelope one only stops:
+        // this write may have landed after the release's own restore, and nothing else knows.
+        guard held[index] != nil else {
+            log.reclamationReleasedMidReassert(fan: index, during: "its manual-control write")
+            await restoreAndForget(fanAt: index)
+            return
+        }
+
+        let recommanded: CommandedTarget
         do {
-            let recommanded = try await writer.command(commanded.rpm, of: permit)
-            held[index]?.commanded = recommanded
-            log.reclamationReasserted(
-                fan: index,
-                rpm: recommanded.rpm,
-                attempt: attempt,
-                budget: ReclamationLimits.reassertAttemptBudget)
+            recommanded = try await writer.command(commanded.rpm, of: permit)
         } catch {
             log.reclamationReassertHalfLanded(fan: index, detail: String(describing: error))
             await finaliseRelease(fanAt: index, because: .systemReclaimed)
             return
         }
+
+        // A `guard`, and not `held[index]?.commanded = recommanded` as it was until #180: a
+        // release during the write made that assignment vanish while the line below reported
+        // a re-assert, and the fan was left off automatic control with nothing watching it.
+        guard var fan = held[index] else {
+            log.reclamationReleasedMidReassert(fan: index, during: "its command write")
+            await restoreAndForget(fanAt: index)
+            return
+        }
+        fan.commanded = recommanded
+        held[index] = fan
+        log.reclamationReasserted(
+            fan: index,
+            rpm: recommanded.rpm,
+            attempt: attempt,
+            budget: ReclamationLimits.reassertAttemptBudget)
 
         // **Verify after acting.** § 3 can latch during either write above, and check-then-
         // act cannot be made atomic across two actors — see `currentRuling()`. If it did,
@@ -897,7 +916,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     // MARK: - Falling back
 
     /// This fan is not § 5's to judge, so hand it back and stop watching it: § 3 holds the
-    /// fans, or — `.leaseLapsed` — nobody does.
+    /// fans, or — `.leaseLapsed`, and a release during a re-assert write — nobody does.
     ///
     /// The restore is still attempted — it is the keystone verb, it consumes nothing, and
     /// whoever handed the fan back first may have been refused. What is **not** done here is
