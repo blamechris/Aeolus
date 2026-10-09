@@ -558,8 +558,8 @@ struct ForeignManualControlReportingTests {
 
     /// A fan Aeolus's own live lease covers is never reported as another program's.
     ///
-    /// `F<n>Md` reads `1` for a fan Aeolus is holding and for a fan somebody else is
-    /// holding, and names no owner either way — so the lease exclusion in
+    /// `F<n>Md` reads non-zero (the decoded fold, #208) for a fan Aeolus is holding and for a
+    /// fan somebody else is holding, and names no owner either way — so the lease exclusion in
     /// `reportingForeignControl(of:heldByAeolus:awaitingConfirmation:reconciliation:)` is the
     /// only thing between a user and being told to go and quit software that is not running.
     /// Until this test existed the clause could be deleted with the whole non-hardware suite

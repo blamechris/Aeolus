@@ -44,6 +44,13 @@ live fan-state observation on this machine means anything.
 ago or by another vendor's tool that is running right now. **The register carries no owner**,
 and there is no second register that does.
 
+> **Corrected 2026-10-09 ([#208](https://github.com/blamechris/Aeolus/issues/208)).** "Reads `1`"
+> above is shorthand for "reads non-zero". The `1` recorded for 2026-09-05 in
+> `docs/SMC-RESEARCH.md` is `FirmwareFanMode`'s decoded fold (`0` automatic, anything else manual),
+> not a raw byte, and no raw `F<n>Md` byte other than `0x00` has been recorded on this machine. The
+> value a held fan reads is the community-reported `1`, not an observed one. This decision rests on
+> the register carrying no owner, which does not depend on which non-zero value it holds.
+
 Everything that *could* distinguish them was rejected:
 
 - **A breadcrumb on disk** — the helper writes "I hold fans 0 and 1" at engage time and reads
@@ -406,11 +413,11 @@ worth its drift cost. The ruling is the architect's #303 consult, run on Opus.
 
 | Assumption | Basis | If it fails |
 |---|---|---|
-| `F<n>Md` is readable at helper start | Observed on `Mac16,5`, both fans, 2026-09-05 — reading `0` at ~16:40, `1` at ~17:06, `0` again at ~17:50 | D3's machine-wide fallback, which needs no read |
-| `F<n>Md` actually takes the value `1` on this hardware | **Observed 2026-09-05, first sighting**: both fans read `1` with a competing tool holding them, then `0` again with that tool still running. Read-only, through the production scheduler; nothing in this build can write. See `docs/SMC-RESEARCH.md` | Nothing — the mechanisms keyed on it were resting on a value nobody had witnessed, and now one has been |
+| `F<n>Md` is readable at helper start | Observed on `Mac16,5`, both fans, 2026-09-05 — reading `0` at ~16:40, `1` at ~17:06, `0` again at ~17:50. **Corrected 2026-10-09 (#208): the `1` is the decoded non-zero fold, not a raw byte; no raw byte other than `0x00` has been recorded** | D3's machine-wide fallback, which needs no read |
+| `F<n>Md` actually takes the value `1` on this hardware | **Observed 2026-09-05, first sighting**: both fans read `1` with a competing tool holding them, then `0` again with that tool still running. Read-only, through the production scheduler; nothing in this build can write. See `docs/SMC-RESEARCH.md`. **Corrected 2026-10-09 (#208): what was witnessed is a decoded non-zero, and the value `1` was not; no raw byte other than `0x00` has been recorded, so this assumption is not established** | Nothing — the mechanisms keyed on it were resting on a value nobody had witnessed, and now one has been |
 | A foreign tool does not re-assert within one cycle of the startup restore | **Unverified** — needs E3/E4 bring-up with the tool actually holding a fan | The one-time restore becomes a visible flap; the decision does not change, because the alternative is the standing fight |
 | `F<n>Md == 1` means somebody is holding the fan | Community-reported, and the basis of every mechanism here. Consistent with the 2026-09-05 pair of readings, which moved with a competing tool's behaviour and with nothing else | Reconciliation restores fans nobody held — harmless, and indistinguishable from the healthy case |
-| Whether a fan reads manual is a property of the *machine at that instant*, not of the machine | **Observed 2026-09-05**: the same two fans read `1` and then `0` within an hour, with the same tool running throughout | Nothing here; but a hardware test pinning either value is a report about the reviewer's desktop, which is why `HelperHardwareTests` now asserts the pair |
+| Whether a fan reads manual is a property of the *machine at that instant*, not of the machine | **Observed 2026-09-05**: the same two fans read `1` and then `0` within an hour, with the same tool running throughout. **Corrected 2026-10-09 (#208): the `1` is the decoded non-zero fold** | Nothing here; but a hardware test pinning either value is a report about the reviewer's desktop, which is why `HelperHardwareTests` now asserts the pair |
 | Firmware can accept `F<n>Md = 0` and leave the fan in manual | **Unverified on hardware.** It is the premise of #291, #295, #300 and #303, modelled only by `ScriptedControlPlane.WriteBehaviour.reverted`; no mode write has ever been issued on `Mac16,5` | All four registers stay empty and their mechanisms are inert. Retire them together, not one at a time |
 | `SMAppService` accepts `KeepAlive`/`RunAtLoad` in a daemon plist | Documented-plausible; unverifiable until a signing identity exists | Restart policy needs another mechanism, and reconciliation only runs when a client connects — escalate before shipping self-renewal |
 
