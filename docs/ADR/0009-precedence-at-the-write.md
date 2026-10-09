@@ -156,9 +156,9 @@ than by quietly editing the decision down to what shipped.** Every `file:line` i
 entries below was read against `main` at `456124f`, not taken from #136's description, and
 should be read there: the files have moved since. Naming the sha is the point — the citations
 in the version of this section written at `c913448` had already drifted by one merge. The D2
-entries were rewritten when D2 was built
-([#180](https://github.com/blamechris/Aeolus/issues/180)) and cite symbols rather than lines,
-for the same reason.
+entries were rewritten when D2 was built, in
+[#342](https://github.com/blamechris/Aeolus/pull/342), and cite symbols rather than lines, for
+the same reason.
 
 **Landed.** `currentRuling()`
 (`Sources/AeolusHelper/Safety/ReclamationWatchdog.swift:289`) reads the latch and asks
@@ -178,8 +178,8 @@ refused undo emits `reclamationFanMayStillBePinned` (`:670`) and nothing more. R
 would have given §3 a second, independent chance at the same fan —
 [#181](https://github.com/blamechris/Aeolus/issues/181).
 
-**D2 landed with [#180](https://github.com/blamechris/Aeolus/issues/180), in every part this
-ADR names.** `ReclamationDivergence.leaseLapsed` exists, and `ReclamationWatchdog.examine(fanAt:)`
+**D2 landed in [#342](https://github.com/blamechris/Aeolus/pull/342)
+([#180](https://github.com/blamechris/Aeolus/issues/180)), in every part this ADR names.** `ReclamationDivergence.leaseLapsed` exists, and `ReclamationWatchdog.examine(fanAt:)`
 decides it on every examination: the control-state read is taken, then
 `LeaseAuthority.hasLiveLease(coveringFan:)` is asked, and only then is the reading believed — a
 failed read included. A fan no live lease covers goes to `restoreAndForget(fanAt:)`: the
@@ -311,7 +311,8 @@ mechanism exists: the correction belongs to the actor that performed the write.
   writes away from the safe state inherits D2: it must ask the lease table at the write, and
   the registry entry that got it there proves only that somebody once thought the fan was
   held. This is the sentence to quote at E3 when the control plane is written.
-- **`.leaseLapsed` landed** ([#180](https://github.com/blamechris/Aeolus/issues/180)). The
+- **`.leaseLapsed` landed** ([#342](https://github.com/blamechris/Aeolus/pull/342), for
+  [#180](https://github.com/blamechris/Aeolus/issues/180)). The
   tree satisfies D2 as decided, with the one-cycle residual "As built" states, and D1's
   *intent* — no ruling is spent across a sweep, and the residual is not permanent — but not D1
   in full: the second pre-write ruling is missing (#181). Hard rule 2 no longer depends on a
@@ -336,7 +337,7 @@ performed on this machine, so the timing of a real reclamation — and therefore
 of the window this decision bounds — is unobserved. Intel and M1/M2 ship `untested`.
 
 **Revisit when:** #181, #191 and #110 land (this ADR's "did not land" section retires — D2's
-entries in it retired with #180); §3 ever
+entries in it retired with #342); §3 ever
 gains a caller of `manualControlEngaged(_:)`, which would make registration available as the
 discharge for D1's residual; concurrent leases ship, since D2's liveness question becomes
 per-fan-per-lease rather than per-fan; or a fourth safety actor is added that writes away from

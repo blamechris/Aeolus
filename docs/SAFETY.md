@@ -1022,7 +1022,8 @@ the § 3 registration, and the refused undo — and ADR 0009's "As built, and wh
 section is the audit of which parts of that ruling are in the tree.
 
 **A write away from the safe state requires a live lease, checked at every examination.**
-ADR 0009's second ruling, built in [#180](https://github.com/blamechris/Aeolus/issues/180):
+ADR 0009's second ruling, built in [#342](https://github.com/blamechris/Aeolus/pull/342)
+([#180](https://github.com/blamechris/Aeolus/issues/180)):
 this section's registry of held fans is a hint, and the lease table is the authority. Every
 examination reads the fan, then asks the lease core whether a live lease covers it, and only
 then believes the reading. A held fan with no live lease is its own divergence class,
