@@ -53,6 +53,19 @@ enum HelperInstallationState: Sendable, Hashable {
     /// A helper is embedded but macOS has never been asked to install it.
     case notRegistered
 
+    /// A helper is embedded and macOS has no record of it at all: `SMAppService` reports
+    /// `.notFound`, and Aeolus has not asked macOS to install it since.
+    ///
+    /// This is what a first launch looks like, not damage. Background Task Management
+    /// creates its record when `register()` is called and not before, so until then the
+    /// answer is "not found" rather than "not registered" — the system log at that launch
+    /// reads `effectiveItemDisposition: record not found` for the embedded plist. Observed
+    /// on hardware (Mac16,5, macOS 27.0.1) with a Developer ID build in /Applications, #337.
+    ///
+    /// Kept apart from `.notRegistered` because they are different answers from macOS, and
+    /// the UI says what macOS said. They offer the same way forward.
+    case unknownToSystem
+
     /// macOS has accepted the registration and is waiting for the user to approve the
     /// background item in System Settings.
     ///
@@ -64,7 +77,9 @@ enum HelperInstallationState: Sendable, Hashable {
     /// macOS reports the daemon as installed and enabled.
     case enabled
 
-    /// Something is wrong with the installation itself, and retrying will not fix it.
+    /// Something is wrong with the installation itself. For a missing file in the bundle
+    /// retrying cannot help and none is offered; for `.systemCannotFindService`, asking
+    /// macOS to register again is the one thing the app can still do, so it is offered.
     case brokenInstall(HelperInstallDefect)
 
     /// macOS reported a status this version of Aeolus does not know. Reported as unknown
@@ -80,10 +95,17 @@ enum HelperInstallationState: Sendable, Hashable {
     ///     about a daemon it does not contain: the answer would be meaningless, and the
     ///     act of asking is how "not registered" ends up on screen in a build where
     ///     registering is impossible.
+    ///   - registrationAttempted: Whether Aeolus has asked macOS to register the helper
+    ///     and has not since seen any answer but `.notFound`. It changes the reading of
+    ///     `.notFound` and nothing else: before any attempt, "no record" is what a first
+    ///     launch looks like; after one, macOS had the chance to create a record and did
+    ///     not, which is worth reporting as broken. Required rather than defaulted so a
+    ///     caller cannot pick a reading by omission.
     /// - Returns: The one state that is true of both the bundle and the system.
     static func resolve(
         embedding: HelperEmbedding,
-        status: @autoclosure () -> HelperDaemonStatus
+        status: @autoclosure () -> HelperDaemonStatus,
+        registrationAttempted: Bool
     ) -> HelperInstallationState {
         switch embedding {
         case .absent:
@@ -104,11 +126,18 @@ enum HelperInstallationState: Sendable, Hashable {
         case .enabled:
             return .enabled
         case .notFound:
-            // Both files are on disk — this probe just checked — and macOS still cannot
-            // find the service. That is a broken install (moved while registered,
-            // damaged, or signed in a way registration will not accept), not a state a
-            // retry resolves, so it is reported as one rather than retried silently.
-            return .brokenInstall(.systemCannotFindService)
+            // Both files are on disk — this probe just checked — and macOS has no record
+            // of the service. On its own that is a first launch, not damage: the record
+            // is created by `register()`, so before one has been made `.notFound` is the
+            // expected answer, and reporting it as broken left nothing to click and made
+            // a first install impossible (#337).
+            //
+            // After an attempt it is different. macOS was asked, had the chance to create
+            // the record, and still reports none: moved while registered, damaged, or
+            // signed in a way registration will not accept. That is reported as broken —
+            // and still retryable, because registering again is something the app can do.
+            return registrationAttempted
+                ? .brokenInstall(.systemCannotFindService) : .unknownToSystem
         case .unrecognised(let rawValue):
             return .unrecognisedStatus(rawValue: rawValue)
         }
@@ -122,6 +151,10 @@ enum HelperInstallDefect: Sendable, Hashable {
     case helperExecutableMissing
     /// The executable is embedded; its launchd description is not.
     case daemonPlistMissing
-    /// Both are embedded, and macOS reports the service as not found anyway.
+    /// Both are embedded, and macOS still reports the service as not found after Aeolus
+    /// asked it to register the helper.
+    ///
+    /// Only ever the result of an attempt. `.notFound` before one is `.unknownToSystem`:
+    /// the same status, and not evidence of anything wrong.
     case systemCannotFindService
 }

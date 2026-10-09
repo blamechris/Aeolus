@@ -60,10 +60,34 @@ enum HelperLifecycleFailure: Sendable, Hashable {
     /// Refused locally: the bundle is damaged, and installing half a helper is worse than
     /// installing none.
     case installDamaged(HelperInstallDefect)
-    /// macOS refused the installation request.
+    /// `register()` threw, and the status macOS reported afterwards did not say the
+    /// registration had gone through.
+    ///
+    /// A throw alone is not a refusal. On a first install `register()` throws
+    /// (`SMAppServiceErrorDomain` code 1, "Operation not permitted") in the same instant
+    /// Background Task Management creates the item awaiting approval (#337); the status
+    /// is what says whether macOS refused, and `isContradicted(by:)` is how this case
+    /// defers to it.
     case registrationRejected(String)
     /// macOS refused the removal request.
     case removalRejected(String)
+
+    /// Whether `state` makes this failure untrue, so that showing it would be reporting a
+    /// failure beside a status that says otherwise.
+    ///
+    /// A registration failure is contradicted by any state that is only reachable once
+    /// macOS has the registration: awaiting approval, or enabled. A removal failure is
+    /// **not** contradicted by `.enabled` — that is precisely the state an unregister that
+    /// failed leaves behind — and the local refusals describe the bundle, which a status
+    /// read cannot change. Exhaustive on purpose: a new failure has to decide.
+    func isContradicted(by state: HelperInstallationState) -> Bool {
+        switch self {
+        case .registrationRejected:
+            return state == .awaitingApproval || state == .enabled
+        case .noHelperInThisBuild, .installDamaged, .removalRejected:
+            return false
+        }
+    }
 
     var message: String {
         switch self {
@@ -110,11 +134,22 @@ final class HelperLifecycleController: ObservableObject {
     @Published private(set) var state: HelperInstallationState
 
     /// The most recent failed request, if the last one failed. Cleared when a new request
-    /// starts, so a stale complaint cannot linger next to a state that has since changed.
+    /// starts, and dropped by any later status read that contradicts it
+    /// (`HelperLifecycleFailure.isContradicted(by:)`), so a stale complaint cannot linger
+    /// next to a state that has since changed — a refusal beside "installed and enabled".
     @Published private(set) var lastFailure: HelperLifecycleFailure?
 
     private let service: any HelperDaemonService
     private let embeddingProbe: @MainActor () -> HelperEmbedding
+
+    /// True from a `register()` call that reached `SMAppService` until the system next
+    /// reports anything other than `.notFound`.
+    ///
+    /// It is what separates the two readings of `.notFound`: with no attempt behind it, a
+    /// first launch (`.unknownToSystem`); with one, a broken install. Dropped as soon as
+    /// macOS answers anything else, so an old attempt that went on to succeed cannot make a
+    /// later, unrelated "not found" look like a failed install.
+    private var registrationAttempted = false
 
     /// - Parameters:
     ///   - service: The `SMAppService` seam. Defaults to the real one.
@@ -131,23 +166,49 @@ final class HelperLifecycleController: ObservableObject {
         self.service = service
         self.embeddingProbe = embeddingProbe
         state = HelperInstallationState.resolve(
-            embedding: embeddingProbe(), status: service.status)
+            embedding: embeddingProbe(), status: service.status, registrationAttempted: false)
     }
 
     /// Re-reads the bundle and the system.
     ///
     /// Worth calling whenever the app becomes active: the approval that moves
     /// `.awaitingApproval` to `.enabled` happens in System Settings, and the app is given
-    /// no notification of it.
+    /// no notification of it. That same approval is what retracts a registration failure
+    /// recorded earlier — `register()` can throw as the item is created awaiting approval —
+    /// so the read that publishes the new state also drops any failure it contradicts.
     func refresh() {
+        var observed: HelperDaemonStatus?
+        func read() -> HelperDaemonStatus {
+            let status = service.status
+            observed = status
+            return status
+        }
+
         state = HelperInstallationState.resolve(
-            embedding: embeddingProbe(), status: service.status)
+            embedding: embeddingProbe(), status: read(),
+            registrationAttempted: registrationAttempted)
+
+        // Only a status macOS actually gave can end the attempt; a build that was never
+        // asked (no helper embedded) leaves `observed` empty and the flag alone.
+        if let observed, observed != .notFound {
+            registrationAttempted = false
+        }
+        if let failure = lastFailure, failure.isContradicted(by: state) {
+            lastFailure = nil
+        }
     }
 
     /// Asks macOS to install the helper, then reports what macOS says afterwards.
     ///
     /// Refuses locally, without touching `SMAppService`, unless the helper is genuinely
     /// embedded in this bundle.
+    ///
+    /// A throw from `SMAppService.register()` is **not** taken as a refusal on its own. On a
+    /// first install it throws code 1 ("Operation not permitted") in the same instant
+    /// Background Task Management creates the item awaiting approval (#337), so the status
+    /// read after the call decides: awaiting approval or enabled means macOS did accept the
+    /// registration, and no refusal is shown; anything else means the throw is the best
+    /// account of what macOS said, and it is shown.
     func register() {
         lastFailure = nil
 
@@ -157,17 +218,26 @@ final class HelperLifecycleController: ObservableObject {
             return
         }
 
+        registrationAttempted = true
+        var thrown: Error?
         do {
             try service.register()
         } catch {
-            lastFailure = .registrationRejected(error.localizedDescription)
+            thrown = error
         }
 
-        // Unconditional, and after the failure is recorded rather than instead of it: the
-        // state the user sees is always the system's own answer. A successful call
-        // normally lands in .awaitingApproval, and a failed one may still have changed
-        // something.
+        // Unconditional, and before the failure is judged: the state the user sees is
+        // always the system's own answer. A successful call normally lands in
+        // .awaitingApproval, and a failed one may still have changed something — that
+        // answer is what decides whether the throw was a refusal at all.
         refresh()
+
+        if let thrown {
+            let failure = HelperLifecycleFailure.registrationRejected(thrown.localizedDescription)
+            if !failure.isContradicted(by: state) {
+                lastFailure = failure
+            }
+        }
     }
 
     /// Removes the helper's registration, then reports what macOS says afterwards.
@@ -216,6 +286,7 @@ final class HelperLifecycleController: ObservableObject {
         // Resolved from the embedding alone — the status autoclosure is not evaluated for
         // a build with no usable helper, so this reports the refusal without ever asking
         // macOS about a daemon Aeolus did not ship.
-        state = HelperInstallationState.resolve(embedding: embedding, status: service.status)
+        state = HelperInstallationState.resolve(
+            embedding: embedding, status: service.status, registrationAttempted: false)
     }
 }

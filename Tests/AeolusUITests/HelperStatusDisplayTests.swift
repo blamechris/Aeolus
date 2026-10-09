@@ -11,6 +11,7 @@ struct HelperStatusDisplayTests {
     private static let allStates: [HelperInstallationState] = [
         .unavailableInThisBuild,
         .notRegistered,
+        .unknownToSystem,
         .awaitingApproval,
         .enabled,
         .brokenInstall(.helperExecutableMissing),
@@ -51,6 +52,26 @@ struct HelperStatusDisplayTests {
         #expect(text.severity == .actionNeeded)
     }
 
+    @Test("A helper macOS has no record of yet offers to install, and does not claim damage")
+    func unknownToSystemOffersRegistrationWithoutClaimingDamage() {
+        // The state a first launch from /Applications is in. It used to be reported as a
+        // broken install with nothing to click, so the helper could never be installed.
+        let text = HelperStatusDisplay.text(for: .unknownToSystem)
+        #expect(text.action == .register)
+        #expect(text.severity == .actionNeeded)
+        #expect(text.title.lowercased().contains("not installed yet"))
+
+        let combined = (text.title + " " + text.detail).lowercased()
+        for claim in ["damaged", "broken", "moved", "reinstall", "cannot find"] {
+            #expect(
+                !combined.contains(claim),
+                "A first launch has nothing wrong with it, and must not say '\(claim)'")
+        }
+        #expect(
+            text.detail.contains("no record"),
+            "Say what macOS answered, so the user is not left guessing why it is not installed")
+    }
+
     @Test("Awaiting approval names System Settings and says no password prompt is coming")
     func awaitingApprovalExplainsTheStall() {
         let text = HelperStatusDisplay.text(for: .awaitingApproval)
@@ -75,19 +96,34 @@ struct HelperStatusDisplayTests {
     }
 
     @Test(
-        "A broken install says so plainly and never offers a retry",
+        "A damaged bundle says so plainly and never offers a retry",
         arguments: [
             HelperInstallDefect.helperExecutableMissing,
             .daemonPlistMissing,
-            .systemCannotFindService,
         ])
-    func brokenInstallsAreNotRetried(defect: HelperInstallDefect) {
+    func damagedBundlesAreNotRetried(defect: HelperInstallDefect) {
         let text = HelperStatusDisplay.text(for: .brokenInstall(defect))
         #expect(text.severity == .warning)
         #expect(
             text.action == nil,
             "Nothing here is fixed by asking SMAppService the same question again")
         #expect(text.detail.lowercased().contains("reinstall"))
+    }
+
+    @Test("macOS still not finding the helper after an install attempt reports what it said")
+    func systemStillCannotFindServiceReportsAndOffersARetry() {
+        let text = HelperStatusDisplay.text(for: .brokenInstall(.systemCannotFindService))
+        #expect(text.severity == .warning)
+        #expect(
+            text.action == .register,
+            "Registering again is what the app can still do, and the remedy for a moved bundle")
+        #expect(text.title.lowercased().contains("still"))
+        #expect(
+            text.detail.contains("not found"),
+            "Say what macOS returned rather than only that something is wrong")
+        #expect(
+            text.detail.contains("asked macOS"),
+            "The claim of breakage rests on an attempt having been made, and says so")
     }
 
     @Test("An unrecognised status is reported as unknown, with the raw code")
