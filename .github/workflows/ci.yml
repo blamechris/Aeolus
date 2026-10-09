@@ -268,7 +268,7 @@ jobs:
                       exit 1
                   fi
                   if /usr/libexec/PlistBuddy -c 'Print :com.apple.security.get-task-allow' "${FILE}" > /dev/null 2>&1; then
-                      echo "error: ${TARGET}'s entitlements file ${ENTITLEMENTS} lists com.apple.security.get-task-allow in Full Release."
+                      echo "error: ${TARGET}'s entitlements file ${ENTITLEMENTS} lists com.apple.security.get-task-allow (with any value) in Full Release."
                       echo "Xcode would sign it with that entitlement, and ${WHY}."
                       exit 1
                   fi
