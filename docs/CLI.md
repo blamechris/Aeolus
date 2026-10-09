@@ -314,15 +314,18 @@ It is built from the same `Sources/fanctl` by the `fanctl` target in `project.ym
 the code-signing identifier `com.blamechris.fanctl` — the one name the helper's client requirement
 allow-lists besides the app's. That identifier is declared once, in the target's
 `PRODUCT_BUNDLE_IDENTIFIER`, and `CommandLineIdentifierDriftTests` holds it equal to the constant the
-requirement is built from. Whether an installed helper admits the Developer ID–signed copy and refuses
-an ad-hoc one has not been run on hardware.
+requirement is built from. On 2026-10-09, on `Mac16,5` / macOS 27.0.1, an installed Developer ID
+`Full Release` helper admitted the Developer ID–signed copy (`fanctl status`, exit 0) and refused two
+Developer ID–signed probes that each failed one clause of its requirement. An ad-hoc `swift build`
+copy never reaches the helper at all: it carries no Team ID, so it refuses to connect and exits 3
+([the hardware check on #82](https://github.com/blamechris/Aeolus/issues/82#issuecomment-6076882014)).
 
-**The examples in this section are not captured from an installed helper.** None is installed
-on the development machine, and a signed `fanctl` is blocked on
-[#82](https://github.com/blamechris/Aeolus/issues/82). They are the shapes the end-to-end
-suites (`Tests/AeolusHelperTests/FanctlStatusTests.swift`, `FanctlAutoTests.swift`) produce
-against the real helper session with a simulated fan authority. Replace them with captured output once a signed build
-exists.
+**The examples in this section are not captured from an installed helper.** The 2026-10-09 check
+above reached one, but its output was summarised in that issue and not recorded verbatim here. The
+examples are the shapes the end-to-end suites
+(`Tests/AeolusHelperTests/FanctlStatusTests.swift`, `FanctlAutoTests.swift`) produce against the
+real helper session with a simulated fan authority. Replace them with captured output when someone
+records a run.
 
 ### Exit codes
 

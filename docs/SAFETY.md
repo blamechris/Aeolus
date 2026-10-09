@@ -1358,9 +1358,15 @@ including SMC reset key combinations by Mac family.
 state; a manual hardware check. `fanctl reset --all` now sends `restoreAllToAutomatic` over XPC
 and is exercised end to end — the real command, the real client, a real `NSXPCListener` and the
 real helper session — by `Tests/AeolusHelperTests/FanctlResetTests.swift`. **No hardware run has
-executed it**, and none can until [#82](https://github.com/blamechris/Aeolus/issues/82) produces a
-signed `fanctl`: a `swift build` binary carries no Team ID, so it refuses to pin the helper and the
-helper would refuse it, both by design.
+executed it.** What blocked one, a signed `fanctl` the installed helper admits
+([#82](https://github.com/blamechris/Aeolus/issues/82)), no longer does: on 2026-10-09, on
+`Mac16,5` / macOS 27.0.1, the `fanctl` embedded in a Developer ID `Full Release` build was
+admitted by the installed helper ([the hardware
+check](https://github.com/blamechris/Aeolus/issues/82#issuecomment-6076882014)). That ran
+`fanctl status`, not `reset --all`; the reset has still never been sent to an installed helper, and
+the write behind it is not built. A `swift build` binary carries no Team ID, so it refuses to pin
+the helper and the helper would refuse it, both by design — the ad-hoc binary was seen to refuse
+itself before connecting.
 
 **The CLI's call now exists; the firmware write and the handler's scope do not.** This line read
 *"the XPC call behind it is #15"* until #104, which reads as though the message did not exist, and
@@ -1694,9 +1700,12 @@ E3/E4 bring-up.* `HelperCompositionTests.reconciliationSitsBetweenTheBindAndTheS
 the ordering at the source, and `theServiceIsAdvertisedOnlyAfterBringUp` pins that clients cannot
 arrive first.
 
-**18. `fanctl reset --all` from SSH with the app not running.** *Executes: during E3/E4 bring-up,
-and additionally blocked on [#82](https://github.com/blamechris/Aeolus/issues/82) for a signed
-`fanctl` an installed helper will admit.* **Two** blockers remain of the three this row used to
+**18. `fanctl reset --all` from SSH with the app not running.** *Executes: during E3/E4 bring-up.
+The signed `fanctl` an installed helper will admit, which this row was also blocked on
+([#82](https://github.com/blamechris/Aeolus/issues/82)), now exists: the installed Developer ID
+`Full Release` helper admitted it for `fanctl status` on 2026-10-09 ([the hardware
+check](https://github.com/blamechris/Aeolus/issues/82#issuecomment-6076882014)). `reset --all`
+itself has not been run against it.* **Two** blockers remain of the three this row used to
 name: #159 wired the CLI to the XPC message, so the command now issues a real request and reports
 the helper's answer; the plane write still throws `.controlPathNotBuilt`, and the handler behind
 the message still issues no machine-wide restore of its own (§ 7), so a fan no live lease covers
@@ -1714,7 +1723,11 @@ fail-closed row, and a mutation-tested negative control — plus `AdmissionOrder
 the admission decision is taken before the connection is configured or resumed, so no message can
 arrive on a connection that does not yet carry the requirement. Whether the production requirement
 admits the real signed clients and refuses everything else is row 16's neighbour: it needs the
-Developer ID and is E2.5's manual check. This row also carries #104's corrupted-helper-state case.
+Developer ID and is E2.5's manual check. That check was run once, on 2026-10-09: the installed
+helper admitted the signed embedded `fanctl` and libxpc refused two Developer ID-signed probes, one
+failing the `get-task-allow` clause and one the identifier clause (ADR 0005, "Update — 2026-10-09").
+One machine, one OS version, and it re-runs on every change to the boundary. This row also carries
+#104's corrupted-helper-state case.
 
 ---
 

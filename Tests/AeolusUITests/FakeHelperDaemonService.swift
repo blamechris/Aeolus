@@ -16,6 +16,13 @@ final class FakeHelperDaemonService: HelperDaemonService {
     /// Applied by `register()` on success, modelling the fact that a daemon does not
     /// become `.enabled` just because registration was accepted.
     var statusAfterRegister: HelperDaemonStatus?
+    /// Applied by `register()` when it **throws**.
+    ///
+    /// Not a contradiction: on a first install `SMAppService.register()` throws
+    /// (`SMAppServiceErrorDomain` code 1, "Operation not permitted") in the same instant
+    /// Background Task Management creates the item awaiting approval, so the status after
+    /// the throw is `.requiresApproval`. Observed on hardware, #337.
+    var statusAfterFailedRegister: HelperDaemonStatus?
     /// Applied by `unregister()` on success.
     var statusAfterUnregister: HelperDaemonStatus?
 
@@ -38,7 +45,10 @@ final class FakeHelperDaemonService: HelperDaemonService {
 
     func register() throws {
         registerCallCount += 1
-        if let registerError { throw registerError }
+        if let registerError {
+            if let statusAfterFailedRegister { nextStatus = statusAfterFailedRegister }
+            throw registerError
+        }
         if let statusAfterRegister { nextStatus = statusAfterRegister }
     }
 
