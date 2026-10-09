@@ -189,6 +189,11 @@ struct LeaseAuthorityAccessTests {
         "heldLease(id: UUID, from: ConnectionID)",
         "expireLapsedLeases()",
         "nextExpiryDeadline()",
+        // #180's, and ADR 0009 D2's per-fan question for § 5. Synchronous and read-only: it
+        // reads `table` and `clock` and writes neither, sweeps nothing, and answers one
+        // boolean about one fan — so a caller can learn whether a fan is leased, which the
+        // snapshot already tells every client, and cannot change who holds it.
+        "hasLiveLease(coveringFan: Int)",
         "connectionDidInvalidate(_: ConnectionID)",
         "revokeLeases(coveringFan: Int, because: FanRestoreCause)",
         "revokeEveryLease(because: FanRestoreCause)",

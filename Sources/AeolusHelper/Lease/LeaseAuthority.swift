@@ -538,6 +538,10 @@ actor LeaseAuthority {
     /// `LeaseExpirySupervisor` sleeps until.
     func nextExpiryDeadline() -> ContinuousClock.Instant? { table.earliestDeadline }
 
+    /// ADR 0009 D2's per-fan question, asked by § 5 at `clock.now` — see
+    /// `LeaseTable.covers(_:liveAt:)`. It sweeps nothing: the TTL path hands lapsed fans back.
+    func hasLiveLease(coveringFan fan: Int) -> Bool { table.covers(fan, liveAt: clock.now) }
+
     // MARK: - Teardown path 2 of 2: connection death
 
     /// A connection died: crash, `SIGKILL`, logout, or an orderly disconnect.

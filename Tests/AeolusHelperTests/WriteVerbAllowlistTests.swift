@@ -471,7 +471,7 @@ struct WriteVerbAllowlistTests {
         "ReclamationWatchdog.swift: finaliseRelease(fanAt: Int, because: FanRestoreCause)",
         "ReclamationWatchdog.swift: manualControlReleased(fanAt: Int)",
         "ReclamationWatchdog.swift: reassert(_: CommandedTarget, fanAt: Int, attempt: Int)",
-        "ReclamationWatchdog.swift: releaseToThermalEmergency(fanAt: Int)",
+        "ReclamationWatchdog.swift: restoreAndForget(fanAt: Int)",
         "SMCFanControlPlane.swift: readControlState(ofFan: Int)",
         "SMCFanControlPlane.swift: readCriticalTemperatures(_: [SMCKey])",
         "SMCFanControlPlane.swift: readEnvelope(ofFan: Int)",
