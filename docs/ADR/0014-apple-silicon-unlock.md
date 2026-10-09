@@ -375,7 +375,8 @@ queued ahead of it at `.supervisor` (D7).
 
 1. **Enumerates fans** through the composition's `FanEnumerating` (`reading`), the seam
    reconciliation and `acquireLease` already use; the plane holds no provider of its own. It records
-   the indices, which become the fan set `.everyFan` writes.
+   the indices, which become the enumerated part of the fan set `.everyFan` writes (the touched set
+   is the other part), and it logs whether the enumeration succeeded, which D8's start-0 check reads.
 2. **Records key types.** By `READ_KEYINFO`, it records the declared type and size of every
    `F<n>Md`, and records `Ftst` as one of: **present** with its type; **absent**, because the
    firmware reported no such key; or **unknown**, because the read failed.
@@ -719,8 +720,8 @@ and fan 0's mode and availability cleared in ADR 0013's sense.
 **If the restore does not land**, take these steps in order. Take each step only if raw `F0Md`,
 `F1Md` and `Ftst` are not all `0` on the recorder 10 s after the previous step.
 
-1. **`fanctl reset --all`.** Every lease is released, then `.everyFan` writes every mode and then
-   the key, each attempted. This rests on D5's § 7 precondition. On a build without it, this step
+1. **`fanctl reset --all`.** Every lease is released, then `.everyFan` writes the mode of every
+   enumerated and every touched fan and then the key, each attempted. This rests on D5's § 7 precondition. On a build without it, this step
    restores covered fans by name only and clears no stray force key (`docs/SAFETY.md` row 18), so
    go straight to step 2.
 2. **`sudo launchctl bootout`.** This runs § 6's teardown, which issues two more `.everyFan`
