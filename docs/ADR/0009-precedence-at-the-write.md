@@ -152,11 +152,13 @@ Stated in full rather than left to be inferred, because this ADR is being writte
 mechanism merged and a reader will otherwise assume the decision and the tree agree. **The
 decision above is normative and is left as the #136 review settled it; this section is the
 audit against the tree, and where the two disagree the disagreement is recorded here rather
-than by quietly editing the decision down to what shipped.** Every `file:line` below was read
-against `main` at `456124f`, not taken from #136's description; the six files they land in are
-unchanged since, so a reader can check them against the tip. Naming the sha is the point — the
-citations in the version of this section written at `c913448` had already drifted by one
-merge.
+than by quietly editing the decision down to what shipped.** Every `file:line` in the D1
+entries below was read against `main` at `456124f`, not taken from #136's description, and
+should be read there: the files have moved since. Naming the sha is the point — the citations
+in the version of this section written at `c913448` had already drifted by one merge. The D2
+entries were rewritten when D2 was built
+([#180](https://github.com/blamechris/Aeolus/issues/180)) and cite symbols rather than lines,
+for the same reason.
 
 **Landed.** `currentRuling()`
 (`Sources/AeolusHelper/Safety/ReclamationWatchdog.swift:289`) reads the latch and asks
@@ -176,6 +178,62 @@ refused undo emits `reclamationFanMayStillBePinned` (`:670`) and nothing more. R
 would have given §3 a second, independent chance at the same fan —
 [#181](https://github.com/blamechris/Aeolus/issues/181).
 
+**D2 landed with [#180](https://github.com/blamechris/Aeolus/issues/180), in every part this
+ADR names.** `ReclamationDivergence.leaseLapsed` exists, and `ReclamationWatchdog.examine(fanAt:)`
+decides it on every examination: the control-state read is taken, then
+`LeaseAuthority.hasLiveLease(coveringFan:)` is asked, and only then is the reading believed — a
+failed read included. A fan no live lease covers goes to `restoreAndForget(fanAt:)`: the
+keystone restore, the `held` entry dropped, the ledger cleared, and no `markReclaimed` and no
+revocation, so `isReclaimedBySystem` stays false. The query is synchronous on the lease core,
+answers from `LeaseTable.covers(_:liveAt:)` — judged against the monotonic deadline, never
+against table presence, so a lease past its deadline that `LeaseExpirySupervisor` has not swept
+yet is not live — and sweeps nothing. The watchdog already held `leases`, so it adds no
+dependency edge and no reference cycle. `restoreAndForget(fanAt:)` is what
+`releaseToThermalEmergency(fanAt:)` was, renamed for its second caller, because §3's yield and a
+lapsed lease end the same way: the fan is not §5's to judge.
+
+The write-side re-fetch rule now holds at both of `reassert`'s writes. The optional chaining
+after `writer.command` is a `guard` re-fetch, and the same guard sits between
+`engageManualControl` and `command`, which had none either. Both **restore before they stop**,
+where the envelope re-fetch only stops: by then §5's own write may have landed after the
+release's restore, and nothing else knows the fan is off automatic control.
+`InterferingFanStateSensing` is a `FanControlPlane` as well as a read seam, with
+`.engageWrite`, `.commandWrite` and `.restoreWrite` moments, so each window is a scenario rather
+than an argument.
+
+**The order is a decision, not a placement.** D2 says *before the firmware signals*; as built it
+is also *after the read*. Every teardown path removes its table entry before it awaits the
+restore, so a read that saw a teardown's restore land is followed by a liveness query that sees
+the lease gone. Asked before the read, the same restore reads as `.modeReclaimed` and is marked
+and re-asserted. It is asked before a failed read is counted as well, because the blindness
+threshold — and the `.supervisorBlind` mark and whole-machine revocation it ends in — is a
+tolerance for a fan Aeolus holds. `ReclamationLeaseLapseTests` has a test for each half, and the
+mutation that moves the check to the other side of it turns that test red and no other.
+
+**Two findings from building it, both about the composition this ADR was written against.**
+First, `manualControlReleased(fanAt:)` stopped having no caller in `Sources/` at
+[#163](https://github.com/blamechris/Aeolus/issues/163): `HelperFanRestorer` calls it before
+every lease-core restore. D2 stays the authority and that call a hint. What D2 covers in the
+shipped composition is a lease past its deadline that has not been swept, and a fan registered
+after its lease ended — a level-6 write racing a release, which `AeolusXPCProtocol` documents.
+Second, and for the same reason, D2's bonus — §5 as the backstop for a restore that failed at
+lease end — is **not reachable there**. `HelperFanRestorer` deregisters §5 *before* the write,
+so a refused restore leaves the fan out of `held` altogether. What covers that fan is the lease
+core's `restoreAbandoned` refusal and §3 keeping a fan whose handback was refused registered —
+both `HelperFanRestorer`'s. The bonus holds only for a restorer that does not deregister first,
+which is the fixture's.
+
+**The residual D2 leaves, as built.** The lease is asked once per examination, not inside
+`reassert`'s writes. A lease that lapses during the envelope read or either write, with nothing
+told, is re-asserted in that cycle and handed back by the next cycle's `.leaseLapsed`. That is
+bounded at one cycle, so it is not permanent, which is the standard D1 holds a residual to.
+`ReclamationWatchdogStalenessTests.aLeaseLapsingDuringTheReassertIsHandedBackNextCycle` pins the
+bound. Asking before and after each write is D4's in ADR 0014
+([#339](https://github.com/blamechris/Aeolus/pull/339), Proposed), for §5 and level 6 alike,
+and is not built here.
+Restore-and-forget also forgets a fan whose restore was refused: `reclamationFanMayStillBePinned`
+is logged and nothing goes on watching it, which is the same residual D1's undo carries.
+
 **Did not land.**
 
 **D1's second pre-write ruling.** D1 prescribes a fresh latch read *"after `readEnvelope`
@@ -192,24 +250,6 @@ the envelope read and asserts that both writes land — `#expect(await machine.c
 [2_400])`, above ceiling — and are then undone. The second pre-write ruling would have refused
 them instead. [#181](https://github.com/blamechris/Aeolus/issues/181) carries it: it is the
 same fan, the same window, and the same residual that issue already owns.
-
-**One write-side `await` breaks the file's own re-fetch rule.** `:243` states the rule and
-`:246` states that *"optional chaining (`held[index]?.x = y`) is **not** that rule"*.
-`reassert`'s last write-side await does exactly that: `held[index]?.commanded = recommanded`
-(`:525`), immediately after `writer.command`. A lease released during that write makes the
-mutation vanish while the code around it goes on logging a successful re-assert. No test can
-see it, and that is itself the finding: `InterferingFanStateSensing.Moment`
-(`Tests/AeolusHelperTests/ReclamationWatchdogFixture.swift:256-261`) offers only
-`.controlStateRead` and `.envelopeRead`, so the fixture has no write-side interference seam at
-all. A fix needs a `.commandWrite` moment before it can be tested rather than asserted.
-[#180](https://github.com/blamechris/Aeolus/issues/180) carries it — it is the same
-lease-authority-at-the-write hole D2 exists to close.
-
-**D2 is unbuilt in every part:** there is no `.leaseLapsed` case, no liveness query on
-`LeaseAuthority`, and `leases` is still referenced from exactly one place in the watchdog —
-`revokeEveryLease` at `:684`. Hard rule 2 therefore still rests on notification discipline in
-the tree as it stands, which is the condition D2 exists to remove.
-[#180](https://github.com/blamechris/Aeolus/issues/180) carries it.
 
 **Three doc comments still describe the retired per-sweep ruling** — `:116` and `:735` name the
 removed `examine(fanAt:ruling:)` signature, and `:131` documents the latch as *"read once per
@@ -271,11 +311,12 @@ mechanism exists: the correction belongs to the actor that performed the write.
   writes away from the safe state inherits D2: it must ask the lease table at the write, and
   the registry entry that got it there proves only that somebody once thought the fan was
   held. This is the sentence to quote at E3 when the control plane is written.
-- **`.leaseLapsed` is owed** ([#180](https://github.com/blamechris/Aeolus/issues/180)). Until
-  it exists, the tree satisfies D1's *intent* — no ruling is spent across a sweep, and the
-  residual is not permanent — but not D1 in full, and not D2 at all: the second pre-write
-  ruling is missing (#181) and hard rule 2 depends on a notification that has been forgotten
-  twice. The "As built" section says exactly which parts, so this bullet is not the audit.
+- **`.leaseLapsed` landed** ([#180](https://github.com/blamechris/Aeolus/issues/180)). The
+  tree satisfies D2 as decided, with the one-cycle residual "As built" states, and D1's
+  *intent* — no ruling is spent across a sweep, and the residual is not permanent — but not D1
+  in full: the second pre-write ruling is missing (#181). Hard rule 2 no longer depends on a
+  notification being remembered; the notification is still sent, and is now a hint. The "As
+  built" section says exactly which parts, so this bullet is not the audit.
 - **No XPC version bump.** Nothing here crosses the boundary. The eventual durable
   per-fan-unavailability wire reason belongs to #102 and is expected to be an additive,
   forward-tolerant `Reason` — ADR 0007 consequence 3.
@@ -294,7 +335,8 @@ Every hardware observation this rests on is `Mac16,5` on macOS 26.6.2. No write 
 performed on this machine, so the timing of a real reclamation — and therefore the true width
 of the window this decision bounds — is unobserved. Intel and M1/M2 ship `untested`.
 
-**Revisit when:** `.leaseLapsed` lands (this ADR's "did not land" section retires); §3 ever
+**Revisit when:** #181, #191 and #110 land (this ADR's "did not land" section retires — D2's
+entries in it retired with #180); §3 ever
 gains a caller of `manualControlEngaged(_:)`, which would make registration available as the
 discharge for D1's residual; concurrent leases ship, since D2's liveness question becomes
 per-fan-per-lease rather than per-fan; or a fourth safety actor is added that writes away from

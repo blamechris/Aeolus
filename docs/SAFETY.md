@@ -81,7 +81,8 @@ strongly than the source does. This document was amended to match in #119; the p
 that changed say so, in place, rather than quietly reading as though they had always said
 it. ADR 0007 is still `Proposed`, as are ADR 0006, ADR 0008 and
 [ADR 0009](ADR/0009-precedence-at-the-write.md) — the middle one implemented and merged, the
-last one implemented in half — so that field lags practice here rather than signalling doubt.
+last one implemented but for D1's second pre-write ruling (#181) — so that field lags practice
+here rather than signalling doubt.
 
 ---
 
@@ -1020,28 +1021,38 @@ it — § 3's registry is not told about the re-assert either.
 the § 3 registration, and the refused undo — and ADR 0009's "As built, and what did not land"
 section is the audit of which parts of that ruling are in the tree.
 
-**A write away from the safe state requires a live lease, checked at the write.** ADR 0009's
-second ruling: this section's registry of held fans is a hint, and the lease table is the
-authority. A held fan with no live lease is its own divergence class, restored and forgotten,
-and never reported as a system reclamation — nobody took that fan, Aeolus simply stopped
-being entitled to it. **That half is decided and not yet built**
-([#180](https://github.com/blamechris/Aeolus/issues/180)), and the line is written this way
-deliberately: until it exists, § 1's guarantee that manual control is a lease rather than a
-setting rests on the control plane remembering to say when a lease ended, which is a
-discipline that has already been forgotten twice in shipped code.
+**A write away from the safe state requires a live lease, checked at every examination.**
+ADR 0009's second ruling, built in [#180](https://github.com/blamechris/Aeolus/issues/180):
+this section's registry of held fans is a hint, and the lease table is the authority. Every
+examination reads the fan, then asks the lease core whether a live lease covers it, and only
+then believes the reading. A held fan with no live lease is its own divergence class,
+`.leaseLapsed`, restored and forgotten, and never reported as a system reclamation — nobody
+took that fan, Aeolus simply stopped being entitled to it. So § 1's guarantee that manual
+control is a lease rather than a setting no longer rests on the control plane remembering to
+say when a lease ended; the helper still says so, before every lease-core restore, and that
+notice is now a courtesy rather than the control.
+
+The order is deliberate. The lease is asked *after* the read because every teardown drops its
+lease before it restores, so a read that saw that restore land is followed by a question that
+sees the lease gone; asked first, the same restore looks like the system taking the fan back.
+It is asked *before* either signal, and before an unreadable cycle is counted, because the
+tolerances this section grants are for fans Aeolus holds. **What it does not close:** the lease
+is asked once per examination, not inside the re-assert's writes, so a lease that lapses while
+a re-assert is in flight is re-asserted once and handed back on the next cycle — one second,
+not permanently. Checking before and after each write is ADR 0014's, and is not built.
 
 This is a correctness rule as much as a safety one. A UI that lies about fan state is
 worse than a UI that reports an error, because the user acts on it.
 
 *Tested by:* `Tests/AeolusHelperTests/ReclamationWatchdogTests.swift`,
 `ReclamationWatchdogRecoveryTests.swift`, `ReclamationWatchdogStalenessTests.swift`,
-`ReclamationRegistrationWindowTests.swift`, `ReclamationLimitsTests.swift`,
-`ReclamationLedgerTests.swift` and
+`ReclamationRegistrationWindowTests.swift`, `ReclamationLeaseLapseTests.swift`,
+`ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift` and
 `ReclamationSupervisorTests.swift` — mostly through `ScriptedControlPlane`, with four bespoke
-read seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express: a refused
-envelope, a read held open so overlapping reads would be visible, a read that runs a side
-effect while it is suspended, and a control-state read answered from a scripted sequence so a
-`F<n>Tg` can be readable on one cycle and not the next. § 1's line makes the same distinction
+seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express: a refused
+envelope, a read held open so overlapping reads would be visible, a read or write that runs a
+side effect while it is suspended, and a control-state read answered from a scripted sequence
+so a `F<n>Tg` can be readable on one cycle and not the next. § 1's line makes the same distinction
 for the same reason, and it is drawn rather than rounded off because "entirely through the
 scripted plane" is a claim about how much of the mechanism one shared double can reach. The
 registration grace above is the fourth suite, one test per answer the primary signal can give
@@ -1058,7 +1069,9 @@ could see a value read before an `await` and acted on after it — the watchdog 
 actor, and a lease can end, or § 3 can latch, in the middle of any SMC read it suspends in.
 Those interleavings are scripted rather than raced, via a read seam that runs a side effect
 *inside* one read, because a concurrency test that starts all its work at once cannot see a
-bug that needs work to **arrive**.
+bug that needs work to **arrive**. Three more, from #180, script a lease ending inside one of
+the re-assert's *writes* — the same seam, now a write seam too, because the re-fetch missing
+after the command write was invisible to a seam that could only interfere with reads.
 
 The re-assert budget and the blind-cycle threshold are **driven to exhaustion** by their
 tests rather than compared against their constants, so changing a constant changes what the
