@@ -102,6 +102,12 @@ outcomes: there is no configuration in which `Full` quietly produces an ad-hoc-s
 helper, because an ad-hoc-signed root daemon is one `SMAppService` will not register and
 one that would refuse every client anyway — it can read no Team ID from its own signature.
 
+A `Full Release` build carries no `com.apple.security.get-task-allow` entitlement
+(`project.yml` turns Xcode's base-entitlement injection off for that configuration), which is
+what an installed Release helper admits from its app and `fanctl`. A `Full Debug` build does
+carry it, and only a Debug helper's relaxed client requirement tolerates that; see
+[docs/ADR/0005-xpc-authorisation.md](docs/ADR/0005-xpc-authorisation.md).
+
 After first launch you must approve the background item in **System Settings → General →
 Login Items & Extensions**. `SMAppService` cannot prompt for this, so if you skip it the
 app appears broken rather than unapproved. The app's own footer says so while it is

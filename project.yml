@@ -99,9 +99,28 @@ settings:
     Full Debug:
       SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
       AEOLUS_EMBEDS_HELPER: YES
+    # Full Release alone turns off Xcode's base-entitlement injection, and the reason is the
+    # Release helper's client requirement. With CODE_SIGN_INJECT_BASE_ENTITLEMENTS = YES
+    # (the default) Xcode adds com.apple.security.get-task-allow to the signature of every
+    # `build`, Aeolus.app, AeolusHelper and the embedded fanctl alike. The Release helper's
+    # requirement ends in !entitlement["com.apple.security.get-task-allow"]
+    # (Sources/AeolusXPC/ClientAuthorisation/ClientRequirementText.swift,
+    # `debuggableEntitlement`), so it refused its own app and its own fanctl (#335). That
+    # failure is closed, and it reads as "the signed app and CLI cannot connect", not as a
+    # build setting.
+    #
+    # Full Debug keeps injection on purpose: a Debug helper selects the relaxed requirement
+    # variant, which tolerates the entitlement. The Monitor configurations carry no helper
+    # to refuse them and are untouched.
+    #
+    # It is set here, at project level, and not in Configs/Signing.xcconfig: a project-level
+    # setting outranks the project's base configuration file, so a maintainer's local
+    # Signing.xcconfig cannot turn injection back on for Release. CI asks Xcode what each
+    # target resolves ("Assert Full Release injects no get-task-allow entitlement").
     Full Release:
       SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
       AEOLUS_EMBEDS_HELPER: YES
+      CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
 
 # Signing.xcconfig is gitignored and absent on contributor machines and on CI. It is
 # included only by the Full configurations, so its absence cannot break a Monitor build.

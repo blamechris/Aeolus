@@ -150,6 +150,49 @@ jobs:
           done
           echo "RESOLVED IDENTIFIER ASSERTION PASSED: all four configurations resolve ${EXPECTED}"
 
+      # A Full Release build must not sign anything with com.apple.security.get-task-allow.
+      # Xcode adds that entitlement to a `build` when CODE_SIGN_INJECT_BASE_ENTITLEMENTS is
+      # YES, and the Release helper's client requirement ends in a clause that refuses any
+      # client carrying it (ClientRequirementText.debuggableEntitlement, ADR 0005). Left on,
+      # an installed Release helper refuses its own app and its own fanctl, and the
+      # refusal reads as "no helper installed", not as a build setting (#335).
+      #
+      # No job here builds Full Release, so nothing here can run `codesign -d --entitlements`
+      # on the result. This asks Xcode what the setting *resolves* for each of the three
+      # targets that get signed, which is the same answer the build acts on, needs no
+      # signing and no Signing.xcconfig, and is the same device the identifier assertion
+      # above uses. The signed binaries themselves stay the maintainer's check on #82.
+      #
+      # Full Debug is not asserted. A Debug helper selects the relaxed requirement variant,
+      # which tolerates the entitlement, so either value there is correct.
+      #
+      # An absent setting is an error, not "unset": it would mean the output was not what
+      # this step parses, and a loop that read nothing would pass.
+      - name: Assert Full Release injects no get-task-allow entitlement
+        run: |
+          set -euo pipefail
+          SETTINGS="${RUNNER_TEMP:-/tmp}/full-release-inject-settings.txt"
+
+          for TARGET in Aeolus AeolusHelper fanctl; do
+              xcodebuild \
+                -project Aeolus.xcodeproj \
+                -target "${TARGET}" \
+                -configuration "Full Release" \
+                -showBuildSettings > "${SETTINGS}"
+
+              # Anchored on the four-space indent and the whole key, as the step above does.
+              # More than one match comes back as several lines and fails the comparison.
+              INJECT=$(sed -n 's/^    CODE_SIGN_INJECT_BASE_ENTITLEMENTS = *\(.*\)$/\1/p' "${SETTINGS}")
+              if [ "${INJECT}" != "NO" ]; then
+                  echo "error: ${TARGET} resolves CODE_SIGN_INJECT_BASE_ENTITLEMENTS to '${INJECT}' in Full Release; it must be NO."
+                  echo "Xcode would sign it with com.apple.security.get-task-allow, which the Release"
+                  echo "helper's client requirement refuses. See project.yml's Full Release settings."
+                  exit 1
+              fi
+              echo "${TARGET}: Full Release CODE_SIGN_INJECT_BASE_ENTITLEMENTS=${INJECT}"
+          done
+          echo "FULL RELEASE ENTITLEMENT INJECTION ASSERTION PASSED: Aeolus, AeolusHelper and fanctl resolve NO"
+
       # This scheme compiles the AeolusHelper target, and that is the point of the job as
       # much as the app is. `swift build` compiles the helper *inside* the SwiftPM package;
       # xcodebuild compiles it as a native target that merely depends on the SMCCore
