@@ -355,7 +355,7 @@ belongs to E4, not yet attempted. The catalog reflects this honestly:
 
 > **Correction, 2026-10-09 ([#208](https://github.com/blamechris/Aeolus/issues/208)).** This
 > heading, and the claim under it that the key "genuinely takes the value `1`", outran the
-> evidence. The key was observed **decoding to non-zero**. Every `1` below is
+> evidence. The key was observed **decoding to non-zero**. Every `1` in the table below is
 > `FirmwareFanMode`'s fold (`0` is automatic, anything else is manual) printed as `0`/`1` by a test
 > that did not read the byte, so `2`, `0x80` or a decode artefact would have produced the same row.
 > **No raw `F<n>Md` value other than `0` has been recorded on this machine**, with a fan held or
@@ -385,8 +385,8 @@ this path a `0` is not "the key did not answer" (the snapshot path does fold tha
 
 Three things follow, and the third is the one worth keeping.
 
-**`F<n>Md` leaves `0` on Apple Silicon while a third-party tool holds the fan; to what value is
-not recorded.**
+**`F<n>Md` leaves `0` on `Mac16,5` (macOS 26.6.2) while a third-party tool holds the fan; to what
+value is not recorded.**
 
 > **Corrected 2026-10-09 ([#208](https://github.com/blamechris/Aeolus/issues/208)).** This
 > paragraph first read, in full: "**`F<n>Md` genuinely takes the value `1` on Apple Silicon.**
@@ -407,14 +407,15 @@ from a decode: this section does not record the declared type at the 17:06 readi
 `ui8` on 26.5.2 and again on 27.0.1, and a `ui8` decodes to its single byte.
 
 What is not known is the value. No raw `F<n>Md` byte other than `0x00` has been recorded on this
-machine; every raw read on record is `0x00` (the 26.5.2 dump, and the 27.0.1 dump and its 30 ticks,
-below). [ADR 0014](https://github.com/blamechris/Aeolus/pull/339) (#339, Proposed, so not yet a
+machine. The raw bytes on record are `00`, from the 26.5.2 dump and the 27.0.1 dump (below); the
+27.0.1 sampler's 30 ticks recorded a decoded value of 0, which is lossless for a 1-byte `ui8` but is
+not a byte read. [ADR 0014](https://github.com/blamechris/Aeolus/pull/339) (#339, Proposed, so not yet a
 decision) schedules a read-only raw-byte capture of `F0Md`, `F1Md` and `Ftst` before any write. It
 declines (its D9) to take one with a third-party tool holding a fan before its first write run, so
 what a held fan reads stays unrecorded through that point. Nothing should code "write `1`" against
 this section as though the value had been observed.
 
-**Nothing in Aeolus wrote it.** `SMCConnection.write` is SPI-gated and throws, no write
+**Nothing in Aeolus wrote `F<n>Md`.** `SMCConnection.write` is SPI-gated and throws, no write
 selector appears in `Sources` (`WritePathAbsenceTests`, green), and the whole suite was
 running read-only. A third-party tool moved the key, which is precisely the case ADR 0011
 was written for and the case the 2026-09-04 triage on #103 predicted.
@@ -479,7 +480,7 @@ during and after the capture (seen in the process list only; it was not inspecte
 
 | Key | Recorded on macOS 26 | Observed on 27.0.1 |
 |---|---|---|
-| `F0Md` | `ui8`, raw `00`, 0 (26.5.2, 2026-07-25). Decoded 0 or non-zero by whether a competing tool held the fan (26.6.2, 2026-09-05; decoded fold, not the byte, #208). Attribute byte and `dataSize`: **not recorded** | `ui8`, `dataSize` 1, attributes `0xD0`, raw `00`. Read succeeded on the dump and on 30 of 30 ticks, value 0 on every tick |
+| `F0Md` | `ui8`, raw `00`, 0 (26.5.2, 2026-07-25). 0 or 1 by whether a competing tool held the fan (26.6.2, 2026-09-05). **Corrected 2026-10-09 (#208): the `1` is the decoded non-zero fold, not the byte.** Attribute byte and `dataSize`: **not recorded** | `ui8`, `dataSize` 1, attributes `0xD0`, raw `00`. Read succeeded on the dump and on 30 of 30 ticks, value 0 on every tick |
 | `F1Md` | as `F0Md` | `ui8`, `dataSize` 1, attributes `0xD0`, raw `00`. 30 of 30 ticks, value 0 |
 | `Ftst` | `ui8`, raw `00`, present (26.5.2). Read `0` before and after the lid close and at the fourth reading (26.6.2, 2026-09-05). Attribute byte and `dataSize`: **not recorded** | `ui8`, `dataSize` 1, attributes `0xD0`, raw `00`. 30 of 30 ticks, value 0 |
 | `F0Mn` | `flt`, raw `00c0a844`, 1350 RPM (26.5.2). Unchanged in all 10,570 rows of the 26.6.2 lid-close capture | `flt`, attributes `0x84`, raw `00c0a844`, 1350 RPM. 30 of 30 ticks |

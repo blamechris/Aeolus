@@ -49,15 +49,27 @@ struct RawFanModeReading: Sendable, Equatable {
     /// Reads `F<fan>Md` through `connection`, keeping the bytes. Never throws: a recording must
     /// say a read failed rather than abort the row that is trying to record it.
     static func read(fan: Int, through connection: SMCConnection) async -> RawFanModeReading {
+        await read(fan: fan) { key in
+            // Idempotent, and a no-op once the production read has opened the connection; here
+            // so the helper does not depend on being called after one.
+            try await connection.open()
+            return try await connection.read(key)
+        }
+    }
+
+    /// The read with its source injected, so the mapping from a thrown error to `.unreadable`
+    /// is exercised without an SMC: the hardware rows reach it only when a real read fails,
+    /// which is a state a passing run never produces. `readKey` is never called for a fan
+    /// whose key cannot be formed.
+    static func read(
+        fan: Int, using readKey: (SMCKey) async throws -> SMCValue
+    ) async -> RawFanModeReading {
         guard let key = SMCKey.fanMode(fan) else {
             return RawFanModeReading(
                 fan: fan, outcome: .unreadable(reason: "F\(fan)Md is not a well-formed key"))
         }
         do {
-            // Idempotent, and a no-op once the production read has opened the connection; here
-            // so the helper does not depend on being called after one.
-            try await connection.open()
-            return RawFanModeReading(fan: fan, outcome: .read(try await connection.read(key)))
+            return RawFanModeReading(fan: fan, outcome: .read(try await readKey(key)))
         } catch {
             return RawFanModeReading(
                 fan: fan, outcome: .unreadable(reason: String(describing: error)))
@@ -83,7 +95,10 @@ struct RawFanModeReading: Sendable, Equatable {
             + note
     }
 
-    /// `ui8 0x00`: the declared type, then every byte, in hex. Or `unreadable (<reason>)`.
+    /// `ui8 0x00`: the declared type, then every byte, in hex, each byte separately written
+    /// and in the order the firmware returned them (`ui16 0x01 0x02`, never `0x0102`, which
+    /// would read as one integer in an order this type does not claim). Or
+    /// `unreadable (<reason>)`.
     ///
     /// Never a decoded number. A `ui8` of `0x02` renders as `0x02`; the only place the word
     /// "manual" or the digit `1` can come from is the decoded side of `entry(...)`.
@@ -92,8 +107,8 @@ struct RawFanModeReading: Sendable, Equatable {
         case .read(let value):
             let type = value.type.fourCharString.trimmingCharacters(in: .whitespaces)
             guard !value.bytes.isEmpty else { return "\(type) (no bytes)" }
-            let hex = value.bytes.map { String(format: "%02x", $0) }.joined()
-            return "\(type) 0x\(hex)"
+            let hex = value.bytes.map { String(format: "0x%02x", $0) }.joined(separator: " ")
+            return "\(type) \(hex)"
         case .unreadable(let reason):
             return "unreadable (\(reason))"
         }
@@ -112,7 +127,9 @@ struct RawFanModeReading: Sendable, Equatable {
     ///
     /// - Parameter decodedAutomatic: whether the production read (the plane's, or the
     ///   snapshot's) decoded this fan as automatic. Taken as a `Bool` because the two callers
-    ///   hold different mode types, and both are `value == 0` underneath.
+    ///   hold different mode types. They do not decode identically: the plane's read throws
+    ///   on a key it cannot read, while the snapshot's folds an unreadable key into automatic
+    ///   as well ([#178](https://github.com/blamechris/Aeolus/issues/178)).
     /// - Returns: One line, with the raw value first and any disagreement or failure flagged
     ///   in brackets after it.
     func entry(decodedAutomatic: Bool) -> String {
@@ -125,9 +142,13 @@ struct RawFanModeReading: Sendable, Equatable {
                 + "moved between the two reads, or one of them is wrong]"
         }
         if case .unreadable = outcome, decodedAutomatic {
-            // The snapshot path folds an unreadable key into automatic (#178). This read is
-            // the one that can tell the difference, so it says which case it is looking at.
-            line += " [raw read failed: the decoded automatic rests on the production read alone]"
+            // The snapshot path folds an unreadable key into automatic (#178), so on that path
+            // a decoded `automatic` is not evidence of a zero byte. This read is the one that
+            // could have told the cases apart, and it failed; the line says no byte was seen.
+            line +=
+                " [raw read failed, so no byte was seen here: the decoded automatic is the "
+                + "production read's alone, and on the snapshot path an unreadable key also "
+                + "decodes as automatic (#178)]"
         }
         return line
     }

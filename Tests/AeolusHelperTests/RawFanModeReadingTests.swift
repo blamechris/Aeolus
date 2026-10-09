@@ -7,7 +7,8 @@ import Testing
 /// ([#208](https://github.com/blamechris/Aeolus/issues/208)).
 ///
 /// The hardware tests that print these lines are gated on `Mac16,5` and skipped on CI, so the
-/// *rendering* is tested here over constructed `SMCValue`s, where it runs everywhere. What
+/// *rendering* is tested here over constructed `SMCValue`s, and the *read* over an injected
+/// source, so both run everywhere and neither touches the SMC. What
 /// these tests exist to refuse is the old print: `state.mode == .automatic ? 0 : 1`, which
 /// turned every non-zero byte into the digit `1` and was then transcribed as a register
 /// value. A rendering that folded would print `0x01` for a `0x02` byte, which is the case
@@ -38,8 +39,8 @@ struct RawFanModeReadingTests {
 
     /// The test the fold fails. `FirmwareFanMode` maps all of these to `.manual`, so a print
     /// built from it shows the same thing five times; a print of the bytes shows five
-    /// different ones. Each case also asserts the *other* digits are absent from the raw
-    /// part, so `0x01` cannot satisfy a `0x02` case by being a substring of something else.
+    /// different ones. The whole line is compared, not a substring of it, so `0x01` cannot
+    /// satisfy a `0x02` case by appearing somewhere in the line.
     @Test(
         "A non-zero byte is printed as itself, never as 1",
         arguments: [
@@ -51,9 +52,8 @@ struct RawFanModeReadingTests {
         let line = held.entry(decodedAutomatic: false)
 
         #expect(held.rawDescription == "ui8 \(hex)")
-        #expect(line == "F0Md raw ui8 \(hex); decoded manual (non-zero)")
         // The decoded side says "non-zero", and says nothing about which value.
-        #expect(!line.contains("decoded manual (1)") && !line.contains("=1"))
+        #expect(line == "F0Md raw ui8 \(hex); decoded manual (non-zero)")
     }
 
     @Test("A key that could not be read is never printed as a zero byte")
@@ -61,7 +61,6 @@ struct RawFanModeReadingTests {
         let failed = Self.unreadable("firmware: 0x82")
 
         #expect(failed.rawDescription == "unreadable (firmware: 0x82)")
-        #expect(!failed.rawDescription.contains("0x00"))
         // Decoded `manual` needs no caveat: a failed raw read cannot contradict it, and the
         // production read that said so did read something.
         #expect(
@@ -70,15 +69,16 @@ struct RawFanModeReadingTests {
     }
 
     /// #178: the snapshot folds an unreadable mode key into `.automatic`. The raw read is the
-    /// one that can tell that case from "firmware declared 0", so when it is the one that
-    /// failed, the line has to say the `automatic` beside it has nothing behind it but the
-    /// production read.
-    @Test("An unreadable raw read beside a decoded automatic says what that automatic rests on")
+    /// one that could tell that case from "firmware declared 0", so when it is the one that
+    /// failed, the line has to say that no byte was seen, and that the `automatic` beside it
+    /// may itself be a fold of an unreadable key rather than of a zero.
+    @Test("An unreadable raw read beside a decoded automatic says no byte was seen")
     func anUnreadableRawReadQualifiesTheAutomatic() {
         let line = Self.unreadable("no outcome").entry(decodedAutomatic: true)
 
         #expect(line.contains("raw unreadable (no outcome); decoded automatic"))
-        #expect(line.contains("rests on the production read alone"))
+        #expect(line.contains("no byte was seen here"))
+        #expect(line.contains("an unreadable key also decodes as automatic (#178)"))
     }
 
     @Test(
@@ -102,7 +102,9 @@ struct RawFanModeReadingTests {
         // decode.
         let wide = try Self.reading(type: .ui16, bytes: [0x01, 0x02])
 
-        #expect(wide.rawDescription == "ui16 0x0102")
+        // Each byte on its own, in the order returned: `0x0102` would read as one integer, in
+        // an order this recording does not claim.
+        #expect(wide.rawDescription == "ui16 0x01 0x02")
         #expect(!wide.entry(decodedAutomatic: true).contains("DISAGREE"))
         #expect(!wide.entry(decodedAutomatic: false).contains("DISAGREE"))
     }
@@ -137,12 +139,59 @@ struct RawFanModeReadingTests {
         #expect(report.hasSuffix(" NOTE: held."))
     }
 
-    @Test("A fan index that does not form a four-character key is unreadable, not a crash")
-    func aMalformedKeyIsReportedUnreadable() async {
-        // `F10Md` is five characters. The guard answers before the connection is touched, so
-        // this runs without hardware.
-        let reading = await RawFanModeReading.read(fan: 10, through: SMCConnection())
+    // MARK: - The read itself, over an injected source
 
+    // These drive `read(fan:using:)`, the seam under `read(fan:through:)`, so the paths a
+    // passing hardware run never takes (a read that throws, a key that cannot be formed) are
+    // exercised without an SMC. None of them touches `SMCConnection`.
+
+    private enum SourceFailure: Error { case refused }
+
+    /// The half of "an unreadable raw read is never printed as 0x00" that the rendering tests
+    /// cannot reach: the `catch` that turns a thrown read into `.unreadable`. A `catch` that
+    /// returned a zero-byte `.read` would render perfectly well and pass every test above.
+    @Test("A read that throws is recorded as unreadable, never as a zero byte")
+    func aThrownReadIsRecordedAsUnreadable() async throws {
+        let key = try #require(SMCKey.fanMode(0))
+        let failures: [any Error] = [SMCError.notReadable(key), SourceFailure.refused]
+
+        for failure in failures {
+            let reading = await RawFanModeReading.read(fan: 0) { _ in throw failure }
+
+            #expect(reading.outcome == .unreadable(reason: String(describing: failure)))
+            #expect(
+                reading.entry(decodedAutomatic: false)
+                    == "F0Md raw unreadable (\(String(describing: failure))); "
+                    + "decoded manual (non-zero)")
+        }
+    }
+
+    @Test("A successful read keeps the declared type and bytes, and asks for the fan's own key")
+    func aSuccessfulReadKeepsTheBytes() async throws {
+        let key = try #require(SMCKey.fanMode(1))
+        var asked: [String] = []
+
+        let reading = await RawFanModeReading.read(fan: 1) { requested in
+            asked.append(requested.rawValue)
+            return SMCValue(key: requested, type: .ui8, bytes: [0x02])
+        }
+
+        #expect(asked == ["F1Md"])
+        #expect(reading.outcome == .read(SMCValue(key: key, type: .ui8, bytes: [0x02])))
+        #expect(reading.rawDescription == "ui8 0x02")
+    }
+
+    @Test("A fan index that does not form a four-character key is unreadable, and is not read")
+    func aMalformedKeyIsReportedUnreadable() async {
+        // `F10Md` is five characters, so there is no key to ask for.
+        var called = false
+
+        let reading = await RawFanModeReading.read(fan: 10) { _ in
+            called = true
+            throw SourceFailure.refused
+        }
+
+        #expect(!called)
         #expect(reading.rawDescription == "unreadable (F10Md is not a well-formed key)")
     }
 }
