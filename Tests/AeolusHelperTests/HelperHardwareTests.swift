@@ -44,8 +44,10 @@ struct HelperHardwareTests {
     )
     func snapshotFromRealHardware() async throws {
         // One provider, read through twice: the fans and the mode key must come from the
-        // same source, or a snapshot is one instant's report assembled from two.
-        let provider = SMCSensorProvider()
+        // same source, or a snapshot is one instant's report assembled from two. The
+        // connection is named so the raw `F<n>Md` read below goes through the same one (#208).
+        let connection = SMCConnection()
+        let provider = SMCSensorProvider(connection: connection)
         let authority = ReadOnlyFanAuthority(
             provider: provider,
             fanMode: SnapshotFanModeReads(provider: provider), log: Self.log,
@@ -65,18 +67,20 @@ struct HelperHardwareTests {
             // `ReadOnlyFanReport.controlMode(_:)` — and which one this run observes is a
             // fact about the machine, not about this build. Printed rather than pinned to
             // one value; `everyFanModeIsReadableAtStart` is the checklist row that prints
-            // the same decoded mode as `0`/`1` — not a register byte either, #208 — and
-            // since #243 it records rather than pins that too.
+            // the same pair, and since #243 it records rather than pins that too.
             //
-            // Printed as what this test actually observed — the decoded mode — and never
-            // as a raw `F<n>Md` byte, because nothing here reads one: `.automatic` covers
-            // both "firmware declared 0" and "the key could not be read" (`controlMode(_:)`
-            // folds a `nil` read into `.automatic`, #178), and `.manualFixed` covers any
-            // non-zero value, not only `1`. A register value in this line would be a
-            // number nobody read (#208).
+            // The line carries two things and labels them as two. The snapshot's mode is
+            // the **decoded** one: `.automatic` covers both "firmware declared 0" and "the
+            // key could not be read" (`controlMode(_:)` folds a `nil` read into
+            // `.automatic`, #178), and `.manualFixed` covers any non-zero value, not only
+            // `1`. The **raw** `F<n>Md` bytes come from a second read through
+            // `SMCConnection.read(_:)`, before any fold (#208), so a recording taken here
+            // can say which of those it was. It is a second round trip, not the one the
+            // snapshot made, and `entry(decodedAutomatic:)` says so when the two disagree.
+            let raw = await RawFanModeReading.read(fan: fan.index, through: connection)
             print(
-                "fan \(fan.index) reads .\(fan.mode.rawValue) "
-                    + "(the decoded mode; the raw F\(fan.index)Md byte is not read here)")
+                "fan \(fan.index), snapshot mode .\(fan.mode.rawValue): "
+                    + raw.entry(decodedAutomatic: fan.mode == .automatic))
             // A tripwire on `controlMode(_:)`'s codomain, not on machine state: on this
             // path `mode` comes only from that function, which maps onto exactly
             // `{.automatic, .manualFixed}`, so no hardware state can fail this line and a
@@ -537,6 +541,13 @@ struct HelperHardwareTests {
     /// commit. CI arbitrates it neither way — GitHub's macOS runners are VMs with no SMC —
     /// so it could only ever fail where nobody was watching.
     ///
+    /// **The recording is the raw value, not the fold** ([#208](https://github.com/blamechris/Aeolus/issues/208)).
+    /// This row printed `FirmwareFanMode` as `0`/`1`, and the `1`s were transcribed into
+    /// `docs/SMC-RESEARCH.md` as though they were a register byte. They meant "non-zero".
+    /// Each fan is now also read through `SMCConnection.read(_:)` and printed as its declared
+    /// type and bytes (`RawFanModeReading`), with the decoded mode beside it. The verdict is
+    /// unchanged: the raw read cannot throw into this row, and nothing here writes.
+    ///
     /// **What is left can still go red**, which is the other half of that ruling: the
     /// enumeration must find fans, and every index it reports must be readable through the
     /// production plane. A read that throws, or an enumeration that returns nothing, fails
@@ -551,8 +562,10 @@ struct HelperHardwareTests {
     @Test("Every fan's F<n>Md reads through the production plane at the moment a helper starts")
     func everyFanModeIsReadableAtStart() async throws {
         // One provider for both reads. Two would be two views of the same connection on a
-        // suite whose other tests are timing the SMC, and this row needs neither.
-        let provider = SMCSensorProvider()
+        // suite whose other tests are timing the SMC, and this row needs neither. The
+        // connection is named so the raw read below goes through the same one (#208).
+        let connection = SMCConnection()
+        let provider = SMCSensorProvider(connection: connection)
         let plane = supervisorPlane(over: provider)
         let fans = try await SMCFanEnumeration.enumerate(provider: provider)
         let indices = fans.fanIndices.sorted()
@@ -561,7 +574,13 @@ struct HelperHardwareTests {
         var held: [Int] = []
         for index in indices {
             let state = try await plane.readControlState(ofFan: index)
-            observed.append("F\(index)Md=\(state.mode == .automatic ? 0 : 1)")
+            // The raw bytes, then the production fold beside them. This line used to print
+            // only `state.mode == .automatic ? 0 : 1`, so the `1` in the research document's
+            // table meant "non-zero" and was transcribed as though it were a byte (#208).
+            // The raw read is a recording, not a verdict: it cannot throw, and a failure to
+            // take it is printed as such rather than failing a row about the plane.
+            let raw = await RawFanModeReading.read(fan: index, through: connection)
+            observed.append(raw.entry(decodedAutomatic: state.mode == .automatic))
             if state.mode != .automatic { held.append(index) }
         }
 
@@ -589,12 +608,7 @@ struct HelperHardwareTests {
                 + "Either way, any fan timing measured elsewhere in this suite while it "
                 + "lasts is measuring that holder too."
 
-        print(
-            """
-            startup fan modes on Mac16,5: \(observed.joined(separator: ", ")) \
-            (0 = Apple's thermal management). Read through the production plane's scheduler, \
-            one supervisor turn per fan, exactly as startup reconciliation reads them.\(note)
-            """)
+        print(RawFanModeReading.startupReport(entries: observed, note: note))
 
         // The row's teeth, and neither is a fact about which mode this machine is in.
         // This one: the enumeration must find a fan. The other is the `try` inside the
