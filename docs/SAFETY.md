@@ -194,9 +194,12 @@ this document:
   deliberately distinct from the transient `.releaseInProgress`, so a client can tell
   *retrying* from *gave up*. `CLAUDE.md` rule 6 is the whole of it: the helper asked for
   automatic, was refused, and stopped asking, so it does not know what mode the fan is in.
-- **Nothing watches it.** Every path that reaches this state has already cleared § 5's
-  registry, so § 5 has no entry left to cycle over — see § 5 and #181, which owns
-  re-registration.
+- **Only § 3 watches it.** Every path that reaches this state has already cleared § 5's
+  registry, so § 5 has no entry left to cycle over — not even for ADR 0009 D2's
+  `.leaseLapsed`, which judges only fans still registered. What remains is § 3 keeping a fan
+  whose handback was refused registered, so an emergency still bridges it; below the ceiling,
+  nothing retries its restore short of § 7's panic verb.
+  [#343](https://github.com/blamechris/Aeolus/issues/343) owns that gap.
 - **A later restore the firmware accepts clears it, and nothing else does**
   ([#189](https://github.com/blamechris/Aeolus/issues/189)). The ledger was append-only for
   the life of the helper process until then, which made this the one state in this document
@@ -1031,7 +1034,8 @@ then believes the reading. A held fan with no live lease is its own divergence c
 took that fan, Aeolus simply stopped being entitled to it. So § 1's guarantee that manual
 control is a lease rather than a setting no longer rests on the control plane remembering to
 say when a lease ended; the helper still says so, before every lease-core restore, and that
-notice is now a courtesy rather than the control.
+notice is now a courtesy rather than the control. The check is dormant until something registers
+fans with § 5, which nothing in this build does.
 
 The order is deliberate. The lease is asked *after* the read because every teardown drops its
 lease before it restores, so a read that saw that restore land is followed by a question that

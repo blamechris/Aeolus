@@ -21,11 +21,13 @@ Developer ID helper on `Mac16,5` since [#82](https://github.com/blamechris/Aeolu
 (2026-10-09): the lease, the clamp and the permit (ADR 0008), § 3, § 5, § 4, § 6's reconciliation
 and signal teardown, and ADR 0012's watchdog.
 
-Three pieces are not built: ADR 0009 D2's lease check at the write
-([#180](https://github.com/blamechris/Aeolus/issues/180)), § 5's re-assert registering with § 3
+Two pieces are not built: § 5's re-assert registering with § 3
 ([#181](https://github.com/blamechris/Aeolus/issues/181)), and the rest of
 [#104](https://github.com/blamechris/Aeolus/issues/104). So E5
-([#7](https://github.com/blamechris/Aeolus/issues/7)) is open.
+([#7](https://github.com/blamechris/Aeolus/issues/7)) is open. ADR 0009 D2's lease check
+([#180](https://github.com/blamechris/Aeolus/issues/180)) is built, by
+[#342](https://github.com/blamechris/Aeolus/pull/342): § 5 asks it once per examination, not
+around each write, which D4 below still requires.
 
 The production plane answers `writeCapability == .notBuilt`, `SMCConnection.write(_:to:)` throws,
 and no write selector exists under `Sources/`.
@@ -57,7 +59,8 @@ Five facts about the tree constrain both:
    § 5's re-assert, through `SafetyActorWriter`.
 2. **A release can arrive mid-unlock.** `renewLease` and `releaseLease` are dispatched on arrival
    ([#229](https://github.com/blamechris/Aeolus/issues/229)), so a release can arrive while a
-   multi-second `apply` is still unlocking. ADR 0009 D2 is unbuilt (#180).
+   multi-second `apply` is still unlocking. ADR 0009 D2's check is built (#342) but is asked once
+   per § 5 examination, and not by `apply` at all.
 3. **One deadline covers every gated message.** `HelperClientDeadlines.gatedVerb` bounds every
    message behind the handshake gate, `apply` and the heartbeats alike. It is 5 s and unmeasured
    ([#325](https://github.com/blamechris/Aeolus/issues/325)). The reported yield is about 3 s.
@@ -308,7 +311,10 @@ because § 5's re-assert — the only existing caller of `engageManualControl` �
 the first build that has one. In full means:
 
 - the § 3 registration on engage, in the driver, for both callers;
-- deregistration in `finaliseRelease` and `releaseToThermalEmergency`;
+- deregistration in `finaliseRelease` and `restoreAndForget`. The second was
+  `releaseToThermalEmergency` until #342, and has three callers since: § 5 yielding to § 3,
+  `.leaseLapsed`, and a release during a re-assert write. The A4 author decides whether § 3
+  deregistration applies to each;
 - a test in which the emergency latches mid-write and the undo is refused. It ends with the fan in
   § 3's registry, bridged by § 3's next latched cycle;
 - the pre-engage ruling;
@@ -481,8 +487,9 @@ refused.
   emptied the engaged set and cleared the force-key flag before the sleep.
 - **#307 becomes reachable once `apply` registers with § 5.**
   [#307](https://github.com/blamechris/Aeolus/issues/307) is § 5's release erasing a re-engagement
-  that lands during its restore. D8 says why run 1 tolerates it, and requires it decided before
-  run 2.
+  that lands during its restore. #342 closed it for `restoreAndForget`, which now forgets before
+  it restores, so it remains for `finaliseRelease` only. D8 says why run 1 tolerates it, and
+  requires it decided before run 2.
 
 The level-6 body is built in E4, though `apply`'s comment attributes it to E3: E3
 ([#8](https://github.com/blamechris/Aeolus/issues/8)) lists no such item, and E4 is the only write
@@ -738,8 +745,11 @@ every hold in run 1 aims there.
 - **Both are reachable in run 1.** `apply` registers with § 5, and reconciliation can write from
   start 0.
 - **#307** needs a re-engagement to land during § 5's release write. Run 1 has one client, and that
-  client never re-acquires (ADR 0013 D1). #307's own text records that `finaliseRelease` is followed
-  by `revokeEveryLease`, which restores the fan.
+  client never re-acquires (ADR 0013 D1). Since #342 the release paths are `finaliseRelease` and
+  `restoreAndForget`, whose three callers are § 5 yielding to § 3, `.leaseLapsed`, and a release
+  during a re-assert write. `restoreAndForget` forgets before it restores, so a re-engagement
+  during its write survives; #342 tests that. #307's own text records that `finaliseRelease` is
+  followed by `revokeEveryLease`, which restores the fan.
 - **#201's path** needs a fan in manual at a start. Run 1 reaches that only through abort 7 (a
   helper restart mid-hold), or after recovery step 4's power cycle if U11 fails. In both cases the
   fan is at or above demand, and the recovery steps above apply.
