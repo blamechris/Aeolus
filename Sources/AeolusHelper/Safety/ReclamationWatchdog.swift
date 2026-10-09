@@ -130,6 +130,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// `RampGovernor` and has no property one could be assigned to.
     private let writer: SafetyActorWriter<Plane>
 
+    /// The authority on whether a fan in `held` is still Aeolus's to hold — asked in every
+    /// `examine(fanAt:)`, ADR 0009 D2 — and what `finaliseRelease(fanAt:because:)` revokes.
     private let leases: LeaseAuthority
 
     /// § 3's bit, read once per cycle to decide the incumbent. Never written here: this
@@ -298,6 +300,10 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// The deliberate counterpart to a reclamation: a lease released, expired, or torn
     /// down. The ledger is cleared too, because a fan Aeolus stopped asking for is not a
     /// fan the system took.
+    ///
+    /// **A hint, not the authority** — ADR 0009 D2. `HelperFanRestorer` calls this before
+    /// every lease-core restore, and `.leaseLapsed` is what hands back a fan whose lease
+    /// ended without it: past its deadline and not yet swept, or registered after its lease.
     func manualControlReleased(fanAt index: Int) async {
         held[index] = nil
         if await ledger.clearReclaimed(fanAt: index) {
@@ -410,16 +416,16 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         return SafetyArbiter.ruling(for: .reclamationWatchdog, incumbent: incumbent)
     }
 
-    /// One fan: read it, decide, act.
+    /// One fan: read it, ask whether anyone is entitled to it, decide, act.
     private func examine(fanAt index: Int) async {
         guard held[index] != nil else { return }
 
-        let state: FanControlState
+        // Read here, believed only below the lease check — a failed read included.
+        let reading: Result<FanControlState, any Error>
         do {
-            state = try await sensing.readControlState(ofFan: index)
+            reading = .success(try await sensing.readControlState(ofFan: index))
         } catch {
-            await cycleCouldNotSee(fanAt: index, detail: String(describing: error))
-            return
+            reading = .failure(error)
         }
 
         // Re-fetched after the read, never carried across it. `manualControlReleased(fanAt:)`
@@ -427,8 +433,35 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // is in flight; judging the fan from the pre-read copy reported an ordinary lease
         // expiry as the system reclaiming a fan, and revoked whatever lease was live at that
         // instant.
-        guard let fan = held[index] else {
+        guard held[index] != nil else {
             log.reclamationFanReleasedMidExamination(fan: index, during: "its control-state read")
+            return
+        }
+
+        // **`.leaseLapsed`, ADR 0009 D2: the lease table is the authority and `held` a hint**,
+        // so a fan no live lease covers is restored and forgotten whatever the reading says.
+        // After the read, never before: every teardown removes its entry before it restores,
+        // so a read that saw that restore land is followed by a query that sees the lease
+        // gone — asked first, the restore reads as `.modeReclaimed` and is re-asserted. Before
+        // both signals and a failed read's count: blindness is grounds to act on a held fan.
+        guard await leases.hasLiveLease(coveringFan: index) else {
+            log.reclamationLeaseLapsed(fan: index)
+            await restoreAndForget(fanAt: index)
+            return
+        }
+
+        // Re-fetched across the lease hop.
+        guard let fan = held[index] else {
+            log.reclamationFanReleasedMidExamination(fan: index, during: "the lease check")
+            return
+        }
+
+        let state: FanControlState
+        switch reading {
+        case .success(let read):
+            state = read
+        case .failure(let error):
+            await cycleCouldNotSee(fanAt: index, detail: String(describing: error))
             return
         }
 
@@ -612,7 +645,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             // system had reclaimed a fan § 3 had just deliberately released, and a
             // `isReclaimedBySystem` that stayed true for the rest of the process.
             log.reclamationYieldedToThermalEmergency(fan: index, divergence: divergence)
-            await releaseToThermalEmergency(fanAt: index)
+            await restoreAndForget(fanAt: index)
             return
         }
 
@@ -863,14 +896,17 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
 
     // MARK: - Falling back
 
-    /// § 3 holds the fans, so this one is level 2's to dispose of.
+    /// This fan is not § 5's to judge, so hand it back and stop watching it: § 3 holds the
+    /// fans, or — `.leaseLapsed` — nobody does.
     ///
     /// The restore is still attempted — it is the keystone verb, it consumes nothing, and
-    /// § 3's own restore may have been refused. What is **not** done here is marking the
-    /// ledger or revoking leases: `fire(_:from:)` already revoked every lease before this
-    /// mechanism could observe anything, and claiming a reclamation would attribute § 3's
-    /// deliberate release to the operating system.
-    private func releaseToThermalEmergency(fanAt index: Int) async {
+    /// whoever handed the fan back first may have been refused. What is **not** done here is
+    /// marking the ledger or revoking leases: `fire(_:from:)` already revoked every lease
+    /// before this mechanism could observe anything, a lapsed lease has nothing to revoke, and
+    /// claiming a reclamation would attribute § 3's deliberate release, or a lease ending, to
+    /// the operating system. Forgotten even when the restore is refused, as ADR 0009 D2's
+    /// "restore-and-forget" says: the residual is the `.fault` line below and nothing more.
+    private func restoreAndForget(fanAt index: Int) async {
         do {
             try await writer.restoreToAutomatic(.fan(index))
         } catch {

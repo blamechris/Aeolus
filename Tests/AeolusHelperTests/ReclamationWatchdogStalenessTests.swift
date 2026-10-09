@@ -97,12 +97,18 @@ struct ReclamationWatchdogStalenessTests {
             await machine.ledger.causes.isEmpty,
             "an ordinary lease release left an entry in § 5's ledger")
         #expect(await machine.didRestore(fan: 0) == false)
-        #expect(await machine.leases.activeLease() == nil)
+        // Non-`nil` since #180, when the fixture started leasing every held fan: the lease
+        // that was live at that instant is still live, which is the revocation the paragraph
+        // above describes not happening. It read `== nil` while no lease existed to revoke.
+        #expect(
+            await machine.leases.activeLease() != nil,
+            "an abandoned examination revoked the lease that was live while it ran")
         // **This assertion is what makes the test discriminate**, and without it the test
         // could not fail for the guard it is named after. Mutation-checked: deleting the
-        // re-fetch in `examine(fanAt:)` left every assertion above green, because the
-        // second re-fetch in `diverged(_:fanAt:)` catches the same release one hop later
-        // and returns before the ledger, the restore or the revocation is touched. The one
+        // re-fetch after the read in `examine(fanAt:)` left every assertion above green,
+        // because the next re-fetch — after the lease check since #180, in
+        // `diverged(_:fanAt:)` before that — catches the same release one hop later and
+        // returns before the ledger, the restore or the revocation is touched. The one
         // observable that changes is *where* the abandonment happened, so that is what is
         // asserted. Two guards that are each safe in combination are not two guards that
         // are each tested.

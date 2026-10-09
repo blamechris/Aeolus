@@ -84,6 +84,12 @@ struct KeystoneRestoreAttempt<Plane: FanControlPlane>: FanRestoreAttempting {
 ///   `finaliseRelease(fanAt:because:)` "drops the fan from its registry **regardless**" of
 ///   whether the restore threw.
 ///
+///   **Since ADR 0009 D2 (#180) this ordering is no longer the only thing closing that
+///   window.** § 5 asks the lease table before it believes a reading, and the lease entry is
+///   gone before this restore is issued, so a cycle landing in the window now hands the fan
+///   back as `.leaseLapsed` — a redundant restore, not a revocation. The ordering stays:
+///   the registry is a hint, and keeping a hint true costs nothing.
+///
 /// - **`ThermalEmergency` — after, and only for fans the firmware accepted — and it is
 ///   *marked*, not dropped.** Its registry is read by `fire(_:from:)`, which attempts to
 ///   bridge each entry to maximum RPM and then restore it — and forgets it whatever those

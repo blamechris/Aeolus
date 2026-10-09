@@ -305,8 +305,13 @@ struct ReclamationWatchdogRecoveryTests {
     /// `.modeReclaimed` on that sibling and **re-engaged manual control on a fan with no
     /// lease behind it**.
     ///
-    /// Change `held.removeAll()` back to dropping only `index` and the last assertion goes
-    /// red.
+    /// **Since #180 that harm is ADR 0009 D2's to stop as well, and it masks the guard.**
+    /// Delete `held.removeAll()` from `finaliseRelease(fanAt:because:)` and fan 1 stays
+    /// registered — but the same sweep examines it next, finds the lease just revoked, and
+    /// hands it back as `.leaseLapsed`: the registry still ends empty and the re-engage
+    /// assertion holds. Run against exactly that mutant, the whole suite stayed green. What
+    /// still differs is that fan 1 is handed back **twice** — once by the lease core's
+    /// revocation and again by § 5 — so the two assertions on that are what turn red now.
     @Test("Falling back stops watching every fan, not just the one that diverged")
     func fallingBackClearsTheWholeRegistry() async throws {
         let machine = ReclamationMachine(
@@ -325,6 +330,12 @@ struct ReclamationWatchdogRecoveryTests {
 
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
         #expect(machine.safetyLog.lines(containing: "also stopped watching").count == 1)
+        // Dropped by the revocation, not found unleased afterwards: the lease core hands
+        // fan 1 back, and § 5 issues no second restore of its own.
+        #expect(
+            await machine.didRestore(fan: 1) == false,
+            "§ 5 handed back a sibling the revocation it had just run was already handing back")
+        #expect(machine.safetyLog.lines(containing: "no live lease covers it").isEmpty)
         // Fan 1 was given up, not taken: it must not be reported as reclaimed.
         #expect(await machine.ledger.isReclaimed(fanAt: 1) == false)
 

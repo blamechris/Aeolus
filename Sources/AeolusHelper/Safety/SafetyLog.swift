@@ -550,6 +550,25 @@ extension SafetyLog {
         )
     }
 
+    /// A fan § 5 was watching has no live lease behind it, so it was handed back and forgotten
+    /// — ADR 0009 D2's `ReclamationDivergence.leaseLapsed`.
+    ///
+    /// `.notice`, not `.fault`: a lease ending is ordinary, and this is § 5 noticing one that
+    /// nothing told it about. If the restore is refused, `reclamationWriteFailed` and
+    /// `reclamationFanMayStillBePinned(fan:)` follow at `.fault`. It says no reclamation
+    /// happened because none did, and that is why the ledger is not marked.
+    func reclamationLeaseLapsed(fan: Int) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) is still registered with § 5, but \
+            \(ReclamationDivergence.leaseLapsed.summary): Aeolus is no longer entitled to \
+            hold it. Restoring it to automatic control and no longer watching it. This is not \
+            a reclamation — nothing is recorded as reclaimed and no lease is revoked.
+            """
+        )
+    }
+
     /// § 3 latched while § 5 was mid-re-assert, so the re-assert was undone.
     ///
     /// The compensating half of `ReclamationWatchdog.reassert(_:fanAt:attempt:)`. Check and

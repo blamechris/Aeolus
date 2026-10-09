@@ -151,10 +151,13 @@ struct HelperRestorerTests {
 
     /// § 5 stops watching a fan whose lease ended.
     ///
-    /// Without this, the watchdog's next cycle reads a fan that has just gone back to
-    /// automatic, calls it `.modeReclaimed`, restores it again, **revokes every lease on the
-    /// machine** and writes a `.fault` line blaming the operating system for a handback
-    /// Aeolus asked for.
+    /// Until ADR 0009 D2 (#180), without this the watchdog's next cycle read a fan that had
+    /// just gone back to automatic, called it `.modeReclaimed`, restored it again, **revoked
+    /// every lease on the machine** and wrote a `.fault` line blaming the operating system for
+    /// a handback Aeolus asked for. Its lease check now finds the lease gone first and hands
+    /// the fan back as `.leaseLapsed` instead, so what this pins is the registry — a hint —
+    /// being kept true, rather than the only thing standing between a release and a
+    /// revocation.
     ///
     /// **Mutation:** delete the `reclamationWatchdog?.manualControlReleased(fanAt:)` loop in
     /// `HelperFanRestorer.restoreToAutomatic(fans:because:)`. Run: red.

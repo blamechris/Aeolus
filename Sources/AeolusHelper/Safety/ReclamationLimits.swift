@@ -6,18 +6,19 @@
 
 // MARK: - Why a fan is believed lost
 
-/// What made this mechanism decide the system had taken a fan back.
+/// What made this mechanism decide a fan it is watching is no longer Aeolus's: the system
+/// took it back, or — `.leaseLapsed` — nobody is entitled to hold it any more.
 ///
 /// An enum rather than a string, because two of these are asserted on by tests and all of
-/// them end up in a `.fault` log line an operator reads. A bare "divergence detected" would
+/// them end up in a log line an operator reads. A bare "divergence detected" would
 /// make "the target read back wrong" indistinguishable from "the target could not be read
 /// at all", and those call for different diagnosis.
 ///
-/// **Every case here is a *primary*-signal finding, and the secondary signal deliberately
-/// has none.** There was an `actualShortfall` case, and it was the file's worst defect: it
-/// let a sustained actual-RPM shortfall travel the same path as a genuine reclamation and
-/// reach restore-plus-revoke on a fan whose `F<n>Tg` read back exactly what Aeolus
-/// commanded. Reaching the secondary signal at all *means* the firmware is holding our
+/// **Every case but `.leaseLapsed` is a *primary*-signal finding, and the secondary signal
+/// deliberately has none.** There was an `actualShortfall` case, and it was the file's worst
+/// defect: it let a sustained actual-RPM shortfall travel the same path as a genuine
+/// reclamation and reach restore-plus-revoke on a fan whose `F<n>Tg` read back exactly what
+/// Aeolus commanded. Reaching the secondary signal at all *means* the firmware is holding our
 /// target — `ReclamationWatchdog.examine(fanAt:)` returns early on any primary divergence —
 /// so a shortfall is a fan that cannot reach its speed, not a fan that was taken.
 /// `ReclamationWatchdog.reportShortfall(_:fanAt:)` carries it, it emits its own log line,
@@ -35,9 +36,22 @@ enum ReclamationDivergence: Sendable, Hashable {
     /// `F<n>Tg` reads back something other than what was commanded. § 5's primary signal.
     case targetDiverged(commanded: Double, readBack: Double)
 
+    /// No live lease covers this fan, so Aeolus is no longer entitled to hold it.
+    ///
+    /// [ADR 0009](../../../docs/ADR/0009-precedence-at-the-write.md) D2, and the one case that
+    /// is **not a firmware finding**: it comes from asking the lease table, in
+    /// `ReclamationWatchdog.examine(fanAt:)`, after the control-state read and before either
+    /// signal is computed from it. Its only action is restore-and-forget. It never reaches
+    /// `diverged(_:fanAt:)`, the ledger's reclaimed set or the terminal action, because the
+    /// system did not take this fan — Aeolus stopped being entitled to it, and reporting
+    /// `isReclaimedBySystem` would be `CLAUDE.md` rule 6 claiming a loss nobody caused.
+    case leaseLapsed
+
     /// One line for a log, and the reason this type is not a `String` in the first place.
     var summary: String {
         switch self {
+        case .leaseLapsed:
+            return "no live lease covers it"
         case .modeReclaimed:
             return "the firmware reports it on automatic control"
         case .targetUnreadable(let reason):
