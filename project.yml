@@ -51,8 +51,10 @@ settings:
     MARKETING_VERSION: "0.0.0"
     CURRENT_PROJECT_VERSION: "1"
   configs:
-    # Two things are set per-configuration here, and the signing trio is set on the
-    # Monitor configurations *only* — deliberately.
+    # Three things are set per-configuration here — the compilation conditions, the
+    # helper-embedding switch, and (Full Release only, see its block) base-entitlement
+    # injection — and the signing trio is set on the Monitor configurations *only*,
+    # deliberately.
     #
     # A project-level build setting outranks the project's base configuration file, so a
     # CODE_SIGN_IDENTITY of "-" written here in `base` would silently override whatever
@@ -99,9 +101,38 @@ settings:
     Full Debug:
       SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
       AEOLUS_EMBEDS_HELPER: YES
+    # Full Release alone turns off Xcode's base-entitlement injection, because the boundary
+    # refuses com.apple.security.get-task-allow in both directions. With
+    # CODE_SIGN_INJECT_BASE_ENTITLEMENTS = YES (Xcode's default) Xcode adds that entitlement
+    # to the signature of every `build` — Aeolus.app, AeolusHelper and the embedded fanctl
+    # alike — and then:
+    #
+    #   - the Release helper's client requirement ends in
+    #     !entitlement["com.apple.security.get-task-allow"]
+    #     (Sources/AeolusXPC/ClientAuthorisation/ClientRequirementText.swift,
+    #     `debuggableEntitlement`), so the helper refused its own app and its own fanctl;
+    #   - every Release client's mirror requirement on the helper appends the same clause
+    #     (Sources/AeolusXPC/ClientAuthorisation/HelperRequirementText.swift), so a Release
+    #     fanctl refused a helper that carried it.
+    #
+    # Both refusals fail closed and look like nothing (#335). The app opens no XPC connection
+    # yet and shows only SMAppService status, so it would report the helper installed and
+    # enabled; fanctl exits 3, as helperUnreachable when the helper refused the client and as
+    # helperSignatureRejected when the client refused the helper.
+    #
+    # Full Debug keeps injection on purpose: a Debug helper selects the relaxed requirement
+    # variant, which tolerates the entitlement, and a Debug client's mirror drops the clause.
+    # The Monitor configurations carry no helper to refuse them and are untouched.
+    #
+    # It is set here, at project level, and not in Configs/Signing.xcconfig: a project-level
+    # setting outranks the project's base configuration file, so a maintainer's local
+    # Signing.xcconfig cannot turn injection back on for Release. A restatement on a single
+    # target would outrank this one, which is why CI asks Xcode what each of the three
+    # targets resolves ("Assert Full Release injects no get-task-allow entitlement").
     Full Release:
       SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
       AEOLUS_EMBEDS_HELPER: YES
+      CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
 
 # Signing.xcconfig is gitignored and absent on contributor machines and on CI. It is
 # included only by the Full configurations, so its absence cannot break a Monitor build.
