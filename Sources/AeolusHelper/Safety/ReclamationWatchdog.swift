@@ -108,16 +108,14 @@ import FanKit
 /// [#103](https://github.com/blamechris/Aeolus/issues/103) owns the lifecycle that starts
 /// both supervisors, and E3 owns telling this actor what it commanded.
 ///
-/// - Note: this file is over SwiftLint's 400-line warning, as `ThermalEmergency.swift` and
-///   `LeaseAuthority.swift` already are, and it crossed the 1000-line **error** threshold
-///   once #169/#170/#172 landed alongside the registration grace. Both splits available
-///   without widening state have now been taken: `ReclamationDivergence` and
-///   `ReclamationLimits` are values rather than mechanism and live in
-///   `ReclamationLimits.swift`, and `primaryDivergence(of:against:)` and
-///   `actualShortfall(of:against:)` are `static` and pure and live in
-///   `ReclamationSignals.swift`. What is left is the actor and its private state: every
-///   remaining member either reads or writes `held`, or is `held`, so moving any of it into
-///   an extension in another file would mean widening that state to the whole module. That
+/// - Note: this file is over SwiftLint's 400-line warning, and it has crossed the 1000-line
+///   **error** twice: when #169/#170/#172 landed beside the registration grace, and with ADR
+///   0009 D2 (#180). Each split taken widened no state: `ReclamationDivergence` and
+///   `ReclamationLimits` are values and live in `ReclamationLimits.swift`;
+///   `primaryDivergence(of:against:)` and `actualShortfall(of:against:)` are `static` and
+///   pure and live in `ReclamationSignals.swift`; and `HeldFan` is a type, not state, and
+///   lives in `ReclamationHeldFan.swift`. Every remaining member reads or writes `held`, so
+///   moving any of it into another file would widen that state to the whole module. That
 ///   state is exactly what makes `examine(fanAt:ruling:)`'s read-then-mutate reasoning
 ///   checkable, and [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of
 ///   this space — including what to do when the next paragraph pushes this over again.
@@ -939,42 +937,5 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         }
 
         await leases.revokeEveryLease(because: cause)
-    }
-
-    // MARK: - Per-fan state
-
-    /// What this mechanism knows about one fan it is watching.
-    ///
-    /// **No write permit is kept here, deliberately.** One was, and it was read nowhere: a
-    /// `CommandableFan` stored at registration and overwritten by every envelope read. The
-    /// hazard was not the dead field, it was the sentence attached to it — *"replaced by
-    /// every successful re-assert, so it is never older than the last envelope actually
-    /// read"* — which is both inaccurate on its own terms and an argument, handed to the next
-    /// editor, for deleting `reassert(_:fanAt:attempt:)`'s fresh `readEnvelope(ofFan:)` and
-    /// passing the stored permit instead. That would remove the bounds check the branch
-    /// exists to perform and the "no envelope → restore, not command" failure path with it.
-    /// ADR 0008's context is the same defect: a comment telling an editor that load-bearing
-    /// code was redundant. The field is gone rather than re-documented, because there is
-    /// nothing to reuse if nothing is kept.
-    private struct HeldFan: Sendable {
-        /// The step last put on the wire, or `nil` when nothing has been commanded yet.
-        var commanded: CommandedTarget?
-        /// Cycles in a row that could not read this fan. Reset by any successful read.
-        var consecutiveReadFailures = 0
-        /// Cycles in a row the actual speed has been short of the commanded target. Reset
-        /// by convergence and by a fresh command.
-        var actualDwellCycles = 0
-        /// Re-asserts issued for the current episode. Reset by convergence.
-        var reassertAttempts = 0
-        /// Divergent cycles spent on this fan before anything was ever commanded on it —
-        /// the registration grace, see `gracedBeforeItsFirstCommand(_:of:fanAt:)`.
-        ///
-        /// **Spent, never reset.** A fan cannot be graced indefinitely by alternating
-        /// between divergence and convergence — `examine(fanAt:)`'s converged branch resets
-        /// the two counters below it and deliberately not this one — and it cannot be graced
-        /// indefinitely by being registered again either: the budget belongs to one
-        /// registration, and the only thing that refills it is a fresh `HeldFan`, which
-        /// `manualControlEngaged(_:)` builds only for a fan that is not already held.
-        var uncommandedDivergentCycles = 0
     }
 }
