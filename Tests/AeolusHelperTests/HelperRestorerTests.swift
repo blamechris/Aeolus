@@ -178,6 +178,31 @@ struct HelperRestorerTests {
             """)
     }
 
+    /// § 5 asks the **same** lease core the lease was granted by (ADR 0009 D2).
+    ///
+    /// The watchdog's lease check is only an authority if it reads the table clients are
+    /// granted from. Handed a lease core of its own, the check would find no lease for any fan
+    /// and hand back every fan a client holds on its first cycle, and every scenario built on
+    /// `ReclamationMachine` would still pass, because that fixture wires its own. Only the
+    /// composition can show the wiring.
+    ///
+    /// **Mutation:** in `HelperComposition`, pass the watchdog a separately constructed
+    /// `LeaseAuthority` as `leases:`. Run: red.
+    @Test("The reclamation watchdog judges leases from the lease core clients are granted by")
+    func theWatchdogAsksTheSameLeaseCore() async throws {
+        let helper = Self.composed()
+        await helper.bindSafetyRegistries()
+        _ = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: ConnectionID())
+        try await Self.engage(fan: 0, in: helper)
+
+        await helper.reclamationWatchdog.cycle()
+
+        #expect(
+            await helper.reclamationWatchdog.fansUnderManualControl == [0],
+            "§ 5 handed back a fan under a lease it could not see")
+    }
+
     /// § 3 keeps a fan whose handback the firmware accepted until its **own** cycle reads it
     /// automatic, and then stops listing it (#295).
     ///
