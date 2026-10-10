@@ -151,12 +151,21 @@ enum ReconciliationLimits {
     ///
     /// **A budget, not a timeout.** It is checked between fans, so it bounds the number of
     /// reads the pass will start — not the duration of any one of them. A single read that
-    /// never returns still hangs the bring-up, and that is deliberate rather than an
-    /// oversight: `HelperComposition.bringUp()` records the same choice for itself, because
-    /// a daemon that answers no connections is the fail-safe direction and a daemon serving
-    /// over unreconciled fans is not. Making one read cancellable would mean abandoning a
+    /// never returns still hangs the pass, and that is deliberate rather than an oversight:
+    /// `HelperComposition.bringUp()` records the same choice for itself, because a daemon
+    /// that answers no connections is the fail-safe direction and a daemon serving over
+    /// unreconciled fans is not. Making one read cancellable would mean abandoning a
     /// `.supervisor` turn mid-flight, which is the scheduler's invariant to keep, not this
     /// mechanism's to break.
+    ///
+    /// **It does not hang for ever, and this comment used to say it could.** The liveness
+    /// watchdog (ADR 0012) is armed as the first statement of `bringUp()`, before this pass's
+    /// first read. A round trip in flight for `WatchdogLimits.roundTrip` on two consecutive
+    /// ticks ends the helper non-zero, launchd restarts it, and the next pass reads again; a
+    /// bring-up that stalls anywhere that is not a stamped round trip is ended at
+    /// `WatchdogLimits.bringUpBound`, which is this budget plus two of those. The pass is
+    /// still not given a deadline of its own, and the watchdog does not abandon the read: it
+    /// ends the process.
     ///
     /// Five seconds against a machine whose 34-key curated supervisor read costs 5.6 ms and
     /// whose whole 2930-key snapshot costs 2.3 s (measured, `Mac16,5`): a two-fan

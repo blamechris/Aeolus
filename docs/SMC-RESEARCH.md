@@ -24,13 +24,17 @@ The machine available to this project:
 
 | Model identifier | Chip | macOS | Notes |
 |---|---|---|---|
-| `Mac16,5` | Apple M4 Max (12P/4E, 64 GB) | 26.6.2 (25G83) | Sole development machine |
+| `Mac16,5` | Apple M4 Max (12P/4E, 64 GB) | 27.0.1 (26A434) | Sole development machine |
 
-The machine ran 26.5.2 (25F84) for the 2026-07-25 session, and 26.6.2 (25G83) for the
-2026-08-20 one and for the 2026-09-05 lid-close capture. Each observation below is scoped to
-the build it was taken on, and says so; this row is the machine as it stood for those
-observations. By 2026-10-07 the development machine had moved to macOS 27.0.1 (26A434), and the
-issue #296 latency runs ("Per-round-trip SMC latency on Mac16,5", below) are on it.
+The machine ran 26.5.2 (25F84) for the 2026-07-25 session, and 26.6.2 (25G83) for the 2026-08-20
+one and for the 2026-09-05 lid-close capture. The upgrade date is not recorded: the machine has run
+27.0.1 since at least its boot at 2026-10-03 16:55 UTC, and every capture from 2026-10-07 on is on
+it. **Observations from 2026-09 and earlier were made on macOS 26 (26.6.2, or 26.5.2 for the
+earliest sessions), not on the 27.0.1 shown in the row above**, and none of them is assumed to hold
+on 27.0.1 until it has been re-checked there. Each observation below is scoped to the build it was
+taken on, and says so. The issue #296 latency runs ("Per-round-trip SMC latency on Mac16,5", below)
+are on 27.0.1, and so is the re-check of the mode keys and `Ftst` ("Mode keys and `Ftst` re-checked
+on macOS 27.0.1", below, issue [#323](https://github.com/blamechris/Aeolus/issues/323)).
 
 That is one Mac, from the M3-and-newer generation. It means:
 
@@ -349,29 +353,69 @@ belongs to E4, not yet attempted. The catalog reflects this honestly:
 
 ### `F0Md`/`F1Md` have now been observed reading `1` — the first sighting on this machine
 
+> **Correction, 2026-10-09 ([#208](https://github.com/blamechris/Aeolus/issues/208)).** This
+> heading, and the claim under it that the key "genuinely takes the value `1`", outran the
+> evidence. The key was observed **decoding to non-zero**. Every `1` in the table below is
+> `FirmwareFanMode`'s fold (`0` is automatic, anything else is manual) printed as `0`/`1` by a test
+> that did not read the byte, so `2`, `0x80` or a decode artefact would have produced the same row.
+> **No raw `F<n>Md` value other than `0` has been recorded on this machine**, with a fan held or
+> without. The heading is left as written so that the references to it (this file, the hardware
+> tests, #208) still resolve; read "reading `1`" as "decoding non-zero". The table and the
+> paragraph that made the stronger claim are corrected in place below, and the paragraph's
+> original wording is quoted there.
+
 **Date:** 2026-09-05. **Machine:** `Mac16,5`, macOS 26.6.2. **Method:**
 `HelperHardwareTests.everyFanModeIsReadableAtStart` (named
 `everyFanIsOnAutomaticControlAtStart` when these readings were taken), read-only, through the production
 plane's `SMCReadScheduler` at `.supervisor` priority — one turn per fan, exactly as startup
-reconciliation reads them. One machine, and the readings below are single snapshots.
+reconciliation reads them. One machine, and the readings below are single snapshots. The test
+printed `FirmwareFanMode`, not the byte it was decoded from.
 
-| Time (UTC) | `F0Md` | `F1Md` | Competing tool |
+| Time (UTC) | `F0Md` (decoded) | `F1Md` (decoded) | Competing tool |
 |---|---|---|---|
 | 2026-09-05 ~16:40 | `0` | `0` | Macs Fan Control running, evidently not holding |
-| 2026-09-05 ~17:06 | `1` | `1` | Macs Fan Control running **and holding both fans** |
+| 2026-09-05 ~17:06 | non-zero (decoded fold, #208) | non-zero (decoded fold, #208) | Macs Fan Control running **and holding both fans** |
 | 2026-09-05 ~17:50 | `0` | `0` | Macs Fan Control still running, back to not holding |
 | 2026-09-05 20:13 | `0` | `0` | Macs Fan Control **quit** (process absent) |
 
+The two non-zero cells were recorded as `1` when this table was written. What they establish is
+that the decode was not zero. A `0` is a decoded value of exactly zero: the plane's
+`readControlState` throws on a key it cannot read rather than folding it into automatic, so on
+this path a `0` is not "the key did not answer" (the snapshot path does fold that case, #178).
+
 Three things follow, and the third is the one worth keeping.
 
-**`F<n>Md` genuinely takes the value `1` on Apple Silicon.** Until this reading the key had
-only ever been seen at `0` here, which made every mechanism keyed on it — startup
-reconciliation, the snapshot's `.manualFixed`, ADR 0011's whole foreign-control baseline —
-rest on a value nothing had witnessed. It has now been witnessed. The convention "0 =
-automatic, 1 = held" survives its first contact with a machine where something is actually
-holding a fan.
+**`F<n>Md` leaves `0` on `Mac16,5` (macOS 26.6.2) while a third-party tool holds the fan; to what
+value is not recorded.**
 
-**Nothing in Aeolus wrote it.** `SMCConnection.write` is SPI-gated and throws, no write
+> **Corrected 2026-10-09 ([#208](https://github.com/blamechris/Aeolus/issues/208)).** This
+> paragraph first read, in full: "**`F<n>Md` genuinely takes the value `1` on Apple Silicon.**
+> Until this reading the key had only ever been seen at `0` here, which made every mechanism keyed
+> on it — startup reconciliation, the snapshot's `.manualFixed`, ADR 0011's whole foreign-control
+> baseline — rest on a value nothing had witnessed. It has now been witnessed. The convention
+> "0 = automatic, 1 = held" survives its first contact with a machine where something is actually
+> holding a fan." That outran the evidence. The table's `1` is the non-zero branch of
+> `value == 0 ? .automatic : .manual`, so the reading supports "non-zero" and nothing narrower. It
+> does not support "1 = held", which remains the community report and has no witness here. What
+> survives is below.
+
+Until this reading the key had only ever been seen at `0` here, which made every mechanism keyed
+on it — startup reconciliation, the snapshot's `.manualFixed`, ADR 0011's whole foreign-control
+baseline — rest on a departure from `0` that nothing had witnessed. A departure from `0` has now
+been witnessed, and that is what the fold those mechanisms use acts on. Even that is an inference
+from a decode: this section does not record the declared type at the 17:06 reading, though it was
+`ui8` on 26.5.2 and again on 27.0.1, and a `ui8` decodes to its single byte.
+
+What is not known is the value. No raw `F<n>Md` byte other than `0x00` has been recorded on this
+machine. The raw bytes on record are `00`, from the 26.5.2 dump and the 27.0.1 dump (below); the
+27.0.1 sampler's 30 ticks recorded a decoded value of 0, which is lossless for a 1-byte `ui8` but is
+not a byte read. [ADR 0014](https://github.com/blamechris/Aeolus/pull/339) (#339, Proposed, so not yet a
+decision) schedules a read-only raw-byte capture of `F0Md`, `F1Md` and `Ftst` before any write. It
+declines (its D9) to take one with a third-party tool holding a fan before its first write run, so
+what a held fan reads stays unrecorded through that point. Nothing should code "write `1`" against
+this section as though the value had been observed.
+
+**Nothing in Aeolus wrote `F<n>Md`.** `SMCConnection.write` is SPI-gated and throws, no write
 selector appears in `Sources` (`WritePathAbsenceTests`, green), and the whole suite was
 running read-only. A third-party tool moved the key, which is precisely the case ADR 0011
 was written for and the case the 2026-09-04 triage on #103 predicted.
@@ -394,9 +438,11 @@ against. `HelperHardwareTests.snapshotFromRealHardware` now tolerates either val
 That row was left pinning `0` at #200, on the argument that its whole point is to say when
 this machine is *not* in the "nothing holding the fans" state and that loosening it would
 make it stop recording anything. The argument conflated the two things a test does. The
-**print** records — and it still records, the decoded mode per fan printed as `0`/`1` (not a
-register byte: nothing on this path reads one, #208), now with an explicit note naming any
-fan found in manual and saying, on the plane's own `writeCapability` rather than on a
+**print** records — and it still records. Since #208 it prints each fan's raw `F<n>Md` (the
+declared type and the bytes, from a second read through `SMCConnection.read`, before any decode)
+beside the decoded mode, where it used to print the decoded mode alone as `0`/`1`, which is what
+the table above was transcribed from. It carries an explicit note naming any fan found in manual
+and saying, on the plane's own `writeCapability` rather than on a
 literal, whether this build could have put it there. The **verdict** claims, and what a red verdict claimed was that this repository is
 broken, which it never was. A foreign hold was reproduced on 2026-09-13 during the #237
 review and reddened the suite on a tree whose write path is `.notBuilt`; the same suite had
@@ -415,22 +461,108 @@ Still not verified: that writing `1` to `F<n>Md` engages manual control, or that
 returns a held fan to Apple's management. Both are writes and belong to E4. What is settled
 is only the read.
 
+### Mode keys and `Ftst` re-checked on macOS 27.0.1 — agrees on the fan keys, disagrees on the table around them (issue #323)
+
+The two sections above were taken on 26.5.2 and 26.6.2. The development machine now runs
+27.0.1, so this re-reads the same keys there. It changes nothing above; those sections stay as
+what 26.x showed.
+
+**Date:** 2026-10-08 06:43–06:44 UTC (2026-10-07 evening local). **Machine:** `Mac16,5`, Apple M4
+Max, **macOS 27.0.1 (26A434)**, up since 2026-10-03 16:55 UTC. **Method:** read
+selectors only, with repo code built at `main` `2c48e28`. `fanctl dump --json` (a full walk of
+the index table, one pass) and `smc-sampler --keys=F0Md,F1Md,Ftst,F0Mn,F0Mx,F0Ac --count=30
+--interval=1` (30 ticks, 06:44:02.563Z to 06:44:32.705Z). No root, no helper, no `set`, `reset` or
+`auto`; neither tool has a write path in this tree. The raw captures are kept outside the
+repository, as `Tools/SMCSampler/README.md` asks. A Macs Fan Control process was present before,
+during and after the capture (seen in the process list only; it was not inspected), and
+`F0Md`/`F1Md` read `0` throughout, so this was the "present, not holding" state of the
+2026-09-05 16:40 reading.
+
+| Key | Recorded on macOS 26 | Observed on 27.0.1 |
+|---|---|---|
+| `F0Md` | `ui8`, raw `00`, 0 (26.5.2, 2026-07-25). 0 or 1 by whether a competing tool held the fan (26.6.2, 2026-09-05). **Corrected 2026-10-09 (#208): the `1` is the decoded non-zero fold, not the byte.** Attribute byte and `dataSize`: **not recorded** | `ui8`, `dataSize` 1, attributes `0xD0`, raw `00`. Read succeeded on the dump and on 30 of 30 ticks, value 0 on every tick |
+| `F1Md` | as `F0Md` | `ui8`, `dataSize` 1, attributes `0xD0`, raw `00`. 30 of 30 ticks, value 0 |
+| `Ftst` | `ui8`, raw `00`, present (26.5.2). Read `0` before and after the lid close and at the fourth reading (26.6.2, 2026-09-05). Attribute byte and `dataSize`: **not recorded** | `ui8`, `dataSize` 1, attributes `0xD0`, raw `00`. 30 of 30 ticks, value 0 |
+| `F0Mn` | `flt`, raw `00c0a844`, 1350 RPM (26.5.2). Unchanged in all 10,570 rows of the 26.6.2 lid-close capture | `flt`, attributes `0x84`, raw `00c0a844`, 1350 RPM. 30 of 30 ticks |
+| `F0Mx` | `flt`, raw `0088b445`, 5777 RPM (26.5.2). Unchanged in the 26.6.2 capture | `flt`, attributes `0x85`, raw `0088b445`, 5777 RPM. 30 of 30 ticks |
+| `F0Ac` | 1343.07 RPM idle, below `F0Mn` (26.5.2). 0.0 on 2,904 of 10,570 ticks, asleep (26.6.2) | `flt`, attributes `0x84`. 1529.37 to 1577.51 RPM over the 30 ticks, never below `F0Mn` |
+
+`F1Mn` and `F1Mx` carry the same raw bytes and attributes as `F0Mn` and `F0Mx`. `F0Tg` and `F1Tg`
+carry `0xD4` (`flt`).
+
+**The mode keys and `Ftst` agree with every 26.x observation that was recorded.** Same declared
+type, same size, readable, same value. The attribute byte is the one column with nothing to
+compare against: no earlier section, test or ADR records it for these three keys, so `0xD0` is the
+first reading of it rather than a confirmation. Decoded with the bits this file already names, it
+is readable (`0x80`) and function-served (`0x10`) with `0x04` clear, and `0x40`, which this file
+has not interpreted, is also set. `F0Md`, `F1Md` and `Ftst` are three of the 20 `ui8` keys at
+`0xD0`, so the byte is not specific to them. That the function bit is set and a plain read still
+succeeds is the same shape as the 308 bit-`0x10` keys that read fine on 26.x (354 on 27.0.1; see
+the section on issue #52). `F0Mx` differs from `F0Mn` and `F0Ac` by bit `0x01`; no earlier record of either.
+
+**Disagreement — the key table around them is not the one 26.x recorded.** The fan keys did not
+move; the index they sit in did.
+
+| | 26.5.2 / 26.6.2 | 27.0.1 |
+|---|---|---|
+| `#KEY`, and keys walked | 3385 (26.5.2); 3386 (26.6.2) | **3512**; the walk matched it and the past-the-end probe found nothing |
+| Keys whose `READ_KEYINFO` fails | 3: `BDFU`, `CH0J`, `CHLS` (26.5.2) | **37**: those three and 34 more, in the families `YB*`, `YC*`, `YUv0`, `bdj0`, `bfD0` to `bfF0`, `bma0` to `bmn0`. Each failed with kernel result -536870207 (`0xE00002C1`); how the original three failed is not recorded |
+| Keys declaring more than 32 bytes | 30 | **49** (same sizes, 33 to 120) |
+| Keys that set bit `0x80` and still reject `READ_BYTES` | 52: `0x82` x21, `0x89` x20, `0xc7` x10, `0xcb` x1 | **52**: `0x82` x21, `0x89` x20, `0xc7` x10, and **`0xd8` x1** (`BFLV`, index 178, `ui8`, attributes `0x94`) — a **fifth** rejection code not seen on 26.x. `BMFL`, the one `0xcb` key, is not in the index |
+| Keys with bit `0x80` clear (declaring themselves unreadable) | 52 | **51** |
+| `flt` keys | 2073 | 2073 |
+| Other declared types (26.5.2 figures; `si8`, `si64` and `{jst` are unchanged) | `hex_` 318, `ui8` 245, `ui16` 236, `ui32` 223, `si32` 84, `si16` 49, `ch8*` 53, `flag` 50, `ui64` 23, `ioft` 11 | `hex_` 329, `ui8` 259, `ui16` 270, `ui32` 231, `si32` 86, `si16` 68, `ch8*` 55, `flag` 49, `ui64` 26, `ioft` 12 |
+
+The growth is in integer-typed keys (`hex_`, `ui8`, `ui16`, `ui32`, `si16` and others); the count of
+`flt` keys, which is where the temperature and fan readings live, is identical. The index grew by a
+net 126 keys against 26.6.2 (127 against 26.5.2); since `BMFL` is gone, that is not a count of new
+keys. This section did not enumerate which keys changed and does not say that any of them matters
+to fan control. It does mean three things.
+**First**, a key count or a readable-sensor count quoted elsewhere (3385 in `docs/CLI.md`'s
+examples, 2929 in
+[ADR 0006](ADR/0006-single-smc-reader.md) and in the helper's comments) is a figure for the build
+it was measured on, and is not a 27.0.1 figure. **Second**, 34 more keys fail `READ_KEYINFO` on this
+build than failed on 26.5.2, and the dump records them as failures instead of
+dropping them, which is the behaviour the dump was written for. **Third**, a test that pinned the
+26.x count would fail on this build for a reason that has nothing to do with fan control. None
+does today: 3385 and 2929 appear in comments and in synthetic fixtures, and the three tests that
+read the real count each assert only a broad sanity range.
+
+**Not re-checked here, and why.**
+
+- **A non-zero `F<n>Md`.** Nothing was holding a fan during this capture, so the decoded non-zero
+  reading (recorded as `1` before the 2026-10-09 correction under #208; no raw byte other than `0`
+  has been recorded) is still an observation made on 26.6.2 only.
+- **Every write.** Nothing was written. The questions that belong to E4 are exactly as open as
+  they were: that writing `F<n>Md` engages manual control, that `Ftst` plus a retry loop yields
+  the fans, the ~3 s yield, and the `0x82` write rejection.
+- **`F0Ac` below `F0Mn`** ("Disagreement 3"). One 30-second window with the fan at 1529 to 1578
+  RPM neither confirms nor refutes it on 27.0.1.
+- **The sleep and wake observations** ([#68](https://github.com/blamechris/Aeolus/issues/68),
+  [#209](https://github.com/blamechris/Aeolus/issues/209),
+  [#210](https://github.com/blamechris/Aeolus/issues/210)): the read connection surviving sleep,
+  IOKit wake delivery, the dark-wake sensor behaviour, and the `Ftst` reset, along with the 0 RPM
+  period after wake. These need a lid close and are **not** re-checked. They wait for the next
+  attended lid close, alongside the wake conditions of
+  [#296](https://github.com/blamechris/Aeolus/issues/296). Until then each stands as a 26.6.2
+  observation.
+
 ### The attribute byte — bit `0x80` is "readable", necessary but not sufficient
 
 Perfect correlation across all 3385 rows: every key that read successfully has bit 7 set,
 and no key with bit 7 clear ever read successfully. 52 keys correctly declare themselves
 unreadable this way.
 
-But the bit is **necessary, not sufficient**. A further 52 keys set bit 7 and still return
-an SMC error on `READ_BYTES`, spanning **four distinct rejection codes** — `rBK0`–`rBK9`
-and `rBKa`, `rLD0`–`rLD5`, `bVUP`, `bVDN`, `aP70`–`aP80` among them. (`rBKa` belongs to this
-52-key population but not to the narrower `0x82` group in the table below — it rejects with
-`0x89`; see that table for which key belongs to which code.) An earlier draft of this
-section called these "action/trigger keys," a characterisation made by feel rather than by
-inspecting anything structural. Issue #52 found what actually identifies the population:
-all 52 carry attribute bit `0x10` set. See "Bit `0x10` structurally identifies the 52-key
-rejection cluster" below for the full breakdown — the bit, not a guess about a key's role,
-is what distinguishes this cluster.
+But the bit is **necessary, not sufficient**. A further 52 keys set bit 7 and still return an SMC
+error on `READ_BYTES`, spanning **four distinct rejection codes** (on 26.x; 27.0.1 shows a fifth,
+`0xd8` on `BFLV` — see "Mode keys and `Ftst` re-checked on macOS 27.0.1") — `rBK0`–`rBK9` and
+`rBKa`, `rLD0`–`rLD5`, `bVUP`, `bVDN`, `aP70`–`aP80` among them. (`rBKa` belongs to this 52-key
+population but not to the narrower `0x82` group in the table below — it rejects with `0x89`; see
+that table for which key belongs to which code.) An earlier draft of this section called these
+"action/trigger keys," a characterisation made by feel rather than by inspecting anything
+structural. Issue #52 found what actually identifies the population: all 52 carry attribute bit
+`0x10` set. See "Bit `0x10` structurally identifies the 52-key rejection cluster" below for the
+full breakdown — the bit, not a guess about a key's role, is what distinguishes this cluster.
 
 Implication for enumeration: filter on the attribute bit as a cheap first pass, then let
 the read fail gracefully anyway. A failed read of one key must never abort enumeration of
@@ -457,7 +589,8 @@ range above it — is not a `0x82` key at all. It rejects with `0x89`, alongside
 `ioft` key referenced a few paragraphs below. Each key belongs to exactly one code; the
 four lists above partition the 52, they do not overlap.
 
-All four codes land on documented Intel result names, which supports the result-code
+All four codes (26.x) land on documented Intel result names — 27.0.1's fifth, `0xd8`, has not been
+matched to one — which supports the result-code
 namespace carrying over to Apple Silicon — **that carry-over is an assumption, not an
 observation**; none of the four has been independently verified against Apple Silicon
 firmware source, only against the community `AppleSmc.h` reference.
@@ -1214,7 +1347,12 @@ it matters.
 > come from a measurement. Four runs are in: idle (paced), idle back to back, contended by one
 > `fanctl` walker, and contended by three. The slowest of 912,000 timed reads took 11.45 ms, and
 > no read failed or hung.** The dark-wake and first-read-after-wake conditions are not measured,
-> H2 is not run, and D is not set. #296 stays open for those.
+> H2 is not run, and D is not set. #296 stays open for those. **"Idle" means no Aeolus build
+> or walker was running, not that nothing else used the SMC:** two processes of the Macs Fan
+> Control tool were running for every run (process list only, never inspected): the app, since
+> 2026-10-04 04:17 UTC, and its privileged helper, since 2026-10-03 16:57 UTC, two minutes after
+> boot. A fan-control tool reads fan speeds, so another SMC client was very likely present
+> throughout; that is an inference, not an observation.
 
 **Date:** 2026-10-07 (the two contended runs between 22:29 and 22:37 UTC). **Machine:**
 `Mac16,5`, Apple M4 Max, **macOS 27.0.1 (Build 26A434)**, as every capture's `start` record and
@@ -1283,8 +1421,16 @@ two, 10.06 and 10.07 ms, sit in a burst of four between +226.571 s and +226.602 
 7.64 ms at +258 s. In run 2b, 8 of the 9 reads over 5 ms that are *not* in that burst fell
 0.20 ± 0.02 s past a whole second of the run's own clock (+53.205, +89.216, +105.198 s, …), which
 points at a once-a-second source in phase with the run. It is not the tool's heartbeat, which
-fires about 0.01 s past the second; the source is not established. No Swift build was running in
+fires about 0.01 s past the second; the source is not established. One candidate, untested: the
+other fan-control tool running throughout (see the summary above) very likely reads the SMC, and
+a periodic reader would contend in exactly this shape. No Swift build was running in
 either run.
+
+The idle rows are therefore "idle of Aeolus, with another fan-control tool very likely reading
+the SMC". Whether the worst round trip is larger or smaller without it **is not measured**, and it
+cannot be assumed: the worst read here did not follow contention (11.453 ms idle paced against
+11.330 and 10.071 ms contended). A run with both of that tool's processes stopped is the clean
+idle row, and it has not been taken; quitting the app alone may leave its helper running.
 
 #### The worst round trip, and what it bounds
 

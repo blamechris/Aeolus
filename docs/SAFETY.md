@@ -81,7 +81,8 @@ strongly than the source does. This document was amended to match in #119; the p
 that changed say so, in place, rather than quietly reading as though they had always said
 it. ADR 0007 is still `Proposed`, as are ADR 0006, ADR 0008 and
 [ADR 0009](ADR/0009-precedence-at-the-write.md) — the middle one implemented and merged, the
-last one implemented in half — so that field lags practice here rather than signalling doubt.
+last one implemented but for D1's second pre-write ruling (#181) — so that field lags practice
+here rather than signalling doubt.
 
 ---
 
@@ -193,9 +194,12 @@ this document:
   deliberately distinct from the transient `.releaseInProgress`, so a client can tell
   *retrying* from *gave up*. `CLAUDE.md` rule 6 is the whole of it: the helper asked for
   automatic, was refused, and stopped asking, so it does not know what mode the fan is in.
-- **Nothing watches it.** Every path that reaches this state has already cleared § 5's
-  registry, so § 5 has no entry left to cycle over — see § 5 and #181, which owns
-  re-registration.
+- **Only § 3 watches it.** Every path that reaches this state has already cleared § 5's
+  registry, so § 5 has no entry left to cycle over — not even for ADR 0009 D2's
+  `.leaseLapsed`, which judges only fans still registered. What remains is § 3 keeping a fan
+  whose handback was refused registered, so an emergency still bridges it; below the ceiling,
+  nothing retries its restore short of § 7's panic verb.
+  [#343](https://github.com/blamechris/Aeolus/issues/343) owns that gap.
 - **A later restore the firmware accepts clears it, and nothing else does**
   ([#189](https://github.com/blamechris/Aeolus/issues/189)). The ledger was append-only for
   the life of the helper process until then, which made this the one state in this document
@@ -952,6 +956,25 @@ Persistent read failure is therefore treated as divergence: attempt a reconnect,
 restore automatic and report. § 3 having working telemetry is a precondition of § 1 granting
 a lease at all.
 
+**A read that never gets its turn is the quietest form of it**
+([#135](https://github.com/blamechris/Aeolus/issues/135)). The scheduler's gate is not
+cancellable — a queued turn is resumed by the scheduler and by nothing else — so a turn taken and not given back parks every later read in the process for
+good. Nothing throws, nothing is logged, and nothing completes to be counted, so the reconnect
+above never fires. The liveness watchdog ([§ 6](#6-restore-on-everything), ADR 0012) watches for
+it: a read parked at the gate for longer than **G = 2·D = 10 s**, with no stamped round trip
+older than one tick to explain the wait, logs one `.fault` naming the priority, the age and the
+queue depth, once per waiter. **After that fault the helper does nothing more**: it resumes and
+drops nothing and ends nothing, because the gate stays non-cancellable and there is no wait to
+abandon. What ends a helper whose gate never turns is § 6's cycle trigger — § 3 reads through the
+same gate and starves behind a leaked turn, and 15 s without a completed cycle ends the process.
+The fault is how the log says why, **when there is a waiter to say it**: if § 3's own read holds
+the leaked turn and nothing else is waiting (an idle helper, no client polling or asking for a
+lease), nothing parks, there is no fault, and D_cycle alone acts. Once the supervisors are
+stopped (the orderly teardown) the cycle trigger is not armed, and the fault says that nothing
+will end the helper for it. G is derived for the supervisor priority; a snapshot waiter behind
+enough concurrent snapshot clients can outlast it with nothing leaked. *Tested by:* `GateFaultTests.swift`,
+`GateWaitMonitorTests.swift` and `SchedulerObserversTests.swift`.
+
 When divergence is confirmed the helper either re-asserts control or falls back to automatic
 — and either way **tells the user**. It never continues reporting a target speed the
 hardware is ignoring.
@@ -1001,28 +1024,40 @@ it — § 3's registry is not told about the re-assert either.
 the § 3 registration, and the refused undo — and ADR 0009's "As built, and what did not land"
 section is the audit of which parts of that ruling are in the tree.
 
-**A write away from the safe state requires a live lease, checked at the write.** ADR 0009's
-second ruling: this section's registry of held fans is a hint, and the lease table is the
-authority. A held fan with no live lease is its own divergence class, restored and forgotten,
-and never reported as a system reclamation — nobody took that fan, Aeolus simply stopped
-being entitled to it. **That half is decided and not yet built**
-([#180](https://github.com/blamechris/Aeolus/issues/180)), and the line is written this way
-deliberately: until it exists, § 1's guarantee that manual control is a lease rather than a
-setting rests on the control plane remembering to say when a lease ended, which is a
-discipline that has already been forgotten twice in shipped code.
+**A write away from the safe state requires a live lease, checked at every examination.**
+ADR 0009's second ruling, built in [#342](https://github.com/blamechris/Aeolus/pull/342)
+([#180](https://github.com/blamechris/Aeolus/issues/180)):
+this section's registry of held fans is a hint, and the lease table is the authority. Every
+examination reads the fan, then asks the lease core whether a live lease covers it, and only
+then believes the reading. A held fan with no live lease is its own divergence class,
+`.leaseLapsed`, restored and forgotten, and never reported as a system reclamation — nobody
+took that fan, Aeolus simply stopped being entitled to it. So § 1's guarantee that manual
+control is a lease rather than a setting no longer rests on the control plane remembering to
+say when a lease ended; the helper still says so, before every lease-core restore, and that
+notice is now a courtesy rather than the control. The check is dormant until something registers
+fans with § 5, which nothing in this build does.
+
+The order is deliberate. The lease is asked *after* the read because every teardown drops its
+lease before it restores, so a read that saw that restore land is followed by a question that
+sees the lease gone; asked first, the same restore looks like the system taking the fan back.
+It is asked *before* either signal, and before an unreadable cycle is counted, because the
+tolerances this section grants are for fans Aeolus holds. **What it does not close:** the lease
+is asked once per examination, not inside the re-assert's writes, so a lease that lapses while
+a re-assert is in flight is re-asserted once and handed back on the next cycle — one second,
+not permanently. Checking before and after each write is ADR 0014's, and is not built.
 
 This is a correctness rule as much as a safety one. A UI that lies about fan state is
 worse than a UI that reports an error, because the user acts on it.
 
 *Tested by:* `Tests/AeolusHelperTests/ReclamationWatchdogTests.swift`,
 `ReclamationWatchdogRecoveryTests.swift`, `ReclamationWatchdogStalenessTests.swift`,
-`ReclamationRegistrationWindowTests.swift`, `ReclamationLimitsTests.swift`,
-`ReclamationLedgerTests.swift` and
+`ReclamationRegistrationWindowTests.swift`, `ReclamationLeaseLapseTests.swift`,
+`ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift` and
 `ReclamationSupervisorTests.swift` — mostly through `ScriptedControlPlane`, with four bespoke
-read seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express: a refused
-envelope, a read held open so overlapping reads would be visible, a read that runs a side
-effect while it is suspended, and a control-state read answered from a scripted sequence so a
-`F<n>Tg` can be readable on one cycle and not the next. § 1's line makes the same distinction
+seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express: a refused
+envelope, a read held open so overlapping reads would be visible, a read or write that runs a
+side effect while it is suspended, and a control-state read answered from a scripted sequence
+so a `F<n>Tg` can be readable on one cycle and not the next. § 1's line makes the same distinction
 for the same reason, and it is drawn rather than rounded off because "entirely through the
 scripted plane" is a claim about how much of the mechanism one shared double can reach. The
 registration grace above is the fourth suite, one test per answer the primary signal can give
@@ -1039,7 +1074,9 @@ could see a value read before an `await` and acted on after it — the watchdog 
 actor, and a lease can end, or § 3 can latch, in the middle of any SMC read it suspends in.
 Those interleavings are scripted rather than raced, via a read seam that runs a side effect
 *inside* one read, because a concurrency test that starts all its work at once cannot see a
-bug that needs work to **arrive**.
+bug that needs work to **arrive**. Three more, from #180, script a lease ending inside one of
+the re-assert's *writes* — the same seam, now a write seam too, because the re-fetch missing
+after the command write was invisible to a seam that could only interfere with reads.
 
 The re-assert budget and the blind-cycle threshold are **driven to exhaustion** by their
 tests rather than compared against their constants, so changing a constant changes what the
@@ -1062,7 +1099,7 @@ nothing observable, no longer. The rows this section owes hardware are in the
 ## 6. Restore on everything
 
 Automatic control is restored on every exit path: app quit, helper `SIGTERM`, logout,
-shutdown, uninstall, and crash. **Three mechanisms cover them, and which one covers which is
+shutdown, uninstall, and crash. **Four mechanisms cover them, and which one covers which is
 the whole content of this section.** It named a single mechanism until #119 — "a signal
 handler plus `atexit`" — and that one is undefined behaviour on the path it was written for.
 
@@ -1090,6 +1127,60 @@ handler plus `atexit`" — and that one is undefined behaviour on the path it wa
 - **Crash signals** — **no in-process restore at all.** `IOConnectCallStructMethod` is not
   async-signal-safe, and a crash is exactly when heap and lock state are unknown. A signal
   handler that calls into IOKit is undefined behaviour on the one path it exists to serve.
+- **A wedge — an SMC round trip, or a safety cycle, that does not return.** The liveness
+  watchdog ([ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md), built
+  in #329: `Sources/AeolusHelper/Lifecycle/LivenessWatchdog.swift`). `SMCConnection` is an
+  actor that calls IOKit synchronously inside itself, so a call that never returns holds it
+  for good: § 3 cannot read a temperature, § 5 cannot read a mode, and the teardown above
+  queues behind the same connection and never reaches its exit. Nothing in Swift can time out
+  a synchronous call, so the helper does not try. A timer on a dispatch queue of its own reads
+  a lock-guarded stamp — the round trip in flight, its raw key and selector, and an age on
+  the suspending clock, so a call in flight across a sleep does not age — and, on **two
+  consecutive 1 s ticks** over the same round trip, **logs one `.fault` and ends the process
+  with exit code `2`** (`TeardownOutcome.blind`) through the one exit seam — **synchronously,
+  on the watchdog's own queue**, with no hand-off to the cooperative pool, because the pool is
+  the thing that may not be making progress. The bounds are constants no message and no
+  configuration reaches (`WatchdogLimits`): **D = 5 s** for one round trip; **D_cycle = 15 s**
+  with no completed § 3 cycle while the supervisor runs, sized for up to sixteen
+  supervisor-priority reads outstanding at once and *firing* above that, which is the correct
+  outcome; **D_bringUp = 15 s** from arming until § 3 starts; and a **third trigger that ends
+  nothing**: a read parked at the scheduler's gate for longer than **G = 10 s** logs one
+  `.fault` and the helper does nothing more (§ 5). It is armed as the first
+  statement of `bringUp()`, before reconciliation's first read. It runs **no teardown and
+  makes no IOKit call**, because the teardown awaits the connection the wedge holds; whichever
+  of the two reaches the exit first wins, through one shared claim (`ProcessTermination`),
+  and the other is refused, and says so.
+
+  **This bullet promises less than the others, and the difference is the point.** Ending the
+  helper does not by itself restore anything:
+  - **A restart restores automatic control only if its pass reaches its keystone** — every
+    read the pass makes before the restore returns, and then the restore does. launchd
+    restarts a job it is keeping alive (`KeepAlive = { SuccessfulExit = false }`), and the
+    next process's reconciliation, above, reads before it restores. A wedge that outlives the
+    restart hangs one of those reads (the first, or a later one such as a fan's `F<n>Md`),
+    and the **round-trip trigger** ends the new process the same way, about D + 1–2 s after
+    the read began. The bring-up trigger (D_bringUp, 15 s) is not what ends it: it covers only
+    a stall that is not a stamped round trip, such as a hang in `open()`'s unstamped matching
+    or registry calls. launchd throttles the loop; and **nothing puts a fan back until the
+    driver answers.** A persistent wedge is a throttled restart loop whose every pass ends
+    *before* reconciliation completes, not one in which every pass ends in it.
+  - **Where launchd is itself removing or stopping the job** — `launchctl bootout`,
+    `SMAppService.unregister()`, a shutdown — exit code `2` is not followed by a restart, and
+    nothing restores the fans.
+  - **The orderly path above is bounded by D.** Only the round-trip trigger stays armed
+    through it: stopping § 3 ends the cycle trigger, because a stopped supervisor is not a
+    stall. A teardown restore in which any single SMC round trip takes longer than D is cut
+    off by the watchdog mid-restore. D is confirmed for reads only, so this is unmeasured for
+    the writes a restore makes; ADR 0012 lists that measurement among the things to do before
+    relying on it, and the E4 write-latency measurement must include a teardown restore.
+  - **A false positive** on a healthy machine ends the helper, and the successor's
+    reconciliation puts the fans back to automatic once its pass reaches its keystone, which
+    is the safe direction.
+
+  **What it is not:** it abandons nothing, times nothing out and reopens nothing. D is
+  provisional: it is confirmed for reads only, on `Mac16,5`, and not for write selectors, dark
+  wake or the first read after a wake (#296). It is a precondition of any lease grant on a
+  build with a write path.
 
 **Crash coverage is restart plus reconciliation**, uniformly, for every way the helper can
 die — including the ones no handler could ever reach: `SIGKILL`, a kernel panic, a power
@@ -1285,9 +1376,15 @@ including SMC reset key combinations by Mac family.
 state; a manual hardware check. `fanctl reset --all` now sends `restoreAllToAutomatic` over XPC
 and is exercised end to end — the real command, the real client, a real `NSXPCListener` and the
 real helper session — by `Tests/AeolusHelperTests/FanctlResetTests.swift`. **No hardware run has
-executed it**, and none can until [#82](https://github.com/blamechris/Aeolus/issues/82) produces a
-signed `fanctl`: a `swift build` binary carries no Team ID, so it refuses to pin the helper and the
-helper would refuse it, both by design.
+executed it.** What blocked one, a signed `fanctl` the installed helper admits
+([#82](https://github.com/blamechris/Aeolus/issues/82)), no longer does: on 2026-10-09, on
+`Mac16,5` / macOS 27.0.1, the `fanctl` embedded in a Developer ID `Full Release` build was
+admitted by the installed helper ([the hardware
+check](https://github.com/blamechris/Aeolus/issues/82#issuecomment-6076882014)). That ran
+`fanctl status`, not `reset --all`; the reset has still never been sent to an installed helper, and
+the write behind it is not built. A `swift build` binary carries no Team ID, so it refuses to pin
+the helper and the helper would refuse it, both by design — the ad-hoc binary was seen to refuse
+itself before connecting.
 
 **The CLI's call now exists; the firmware write and the handler's scope do not.** This line read
 *"the XPC call behind it is #15"* until #104, which reads as though the message did not exist, and
@@ -1621,9 +1718,12 @@ E3/E4 bring-up.* `HelperCompositionTests.reconciliationSitsBetweenTheBindAndTheS
 the ordering at the source, and `theServiceIsAdvertisedOnlyAfterBringUp` pins that clients cannot
 arrive first.
 
-**18. `fanctl reset --all` from SSH with the app not running.** *Executes: during E3/E4 bring-up,
-and additionally blocked on [#82](https://github.com/blamechris/Aeolus/issues/82) for a signed
-`fanctl` an installed helper will admit.* **Two** blockers remain of the three this row used to
+**18. `fanctl reset --all` from SSH with the app not running.** *Executes: during E3/E4 bring-up.
+The signed `fanctl` an installed helper will admit, which this row was also blocked on
+([#82](https://github.com/blamechris/Aeolus/issues/82)), now exists: the installed Developer ID
+`Full Release` helper admitted it for `fanctl status` on 2026-10-09 ([the hardware
+check](https://github.com/blamechris/Aeolus/issues/82#issuecomment-6076882014)). `reset --all`
+itself has not been run against it.* **Two** blockers remain of the three this row used to
 name: #159 wired the CLI to the XPC message, so the command now issues a real request and reports
 the helper's answer; the plane write still throws `.controlPathNotBuilt`, and the handler behind
 the message still issues no machine-wide restore of its own (§ 7), so a fan no live lease covers
@@ -1641,7 +1741,11 @@ fail-closed row, and a mutation-tested negative control — plus `AdmissionOrder
 the admission decision is taken before the connection is configured or resumed, so no message can
 arrive on a connection that does not yet carry the requirement. Whether the production requirement
 admits the real signed clients and refuses everything else is row 16's neighbour: it needs the
-Developer ID and is E2.5's manual check. This row also carries #104's corrupted-helper-state case.
+Developer ID and is E2.5's manual check. That check was run once, on 2026-10-09: the installed
+helper admitted the signed embedded `fanctl` and libxpc refused two Developer ID-signed probes, one
+failing the `get-task-allow` clause and one the identifier clause (ADR 0005, "Update — 2026-10-09").
+One machine, one OS version, and it re-runs on every change to the boundary. This row also carries
+#104's corrupted-helper-state case.
 
 ---
 

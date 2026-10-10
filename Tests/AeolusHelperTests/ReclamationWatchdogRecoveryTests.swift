@@ -33,6 +33,27 @@ struct ReclamationWatchdogRecoveryTests {
         #expect(await machine.attempts.contains(.engageManualControl(fan: 0)))
     }
 
+    /// A re-assert records **what it put on the wire**, which is the number the next cycle's
+    /// primary signal compares the read-back against. Asked for 99,000 RPM, the writer clamps
+    /// to the fan's declared maximum, so the two differ and a stale record is visible: the
+    /// next cycle would judge a correctly held 5,777 RPM as a divergence from 99,000.
+    ///
+    /// **Mutation:** replace `held[index] = fan` after the command write in
+    /// `reassert(_:fanAt:attempt:)` with `_ = fan`. Run: red on the recorded-target assertion.
+    @Test("A re-assert records the target it wrote, not the one it was asked for")
+    func aReassertRecordsTheTargetItWrote() async throws {
+        let machine = ReclamationMachine(fans: [0: .held(at: 1_800)])
+        try await machine.hold(fan: 0, commanding: 99_000)
+
+        await machine.watchdog.cycle()
+
+        let written = try #require(await machine.commandedRPMs.first, "the re-assert never wrote")
+        #expect(written < 99_000, "the envelope did not clamp the re-assert: this proves nothing")
+        #expect(
+            await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == written,
+            "§ 5 kept the target it was asked for instead of the one it put on the wire")
+    }
+
     /// A re-assert that cannot obtain an envelope **restores rather than commanding**.
     ///
     /// #126's acceptance criterion, and `docs/SAFETY.md` § 2's closing rule reached from
@@ -305,8 +326,17 @@ struct ReclamationWatchdogRecoveryTests {
     /// `.modeReclaimed` on that sibling and **re-engaged manual control on a fan with no
     /// lease behind it**.
     ///
-    /// Change `held.removeAll()` back to dropping only `index` and the last assertion goes
-    /// red.
+    /// **Since #180 that harm is ADR 0009 D2's to stop as well, and it masks the guard.**
+    /// Delete `held.removeAll()` from `finaliseRelease(fanAt:because:)` and fan 1 stays
+    /// registered — but the same sweep examines it next, finds the lease just revoked, and
+    /// hands it back as `.leaseLapsed`: the registry still ends empty and the re-engage
+    /// assertion holds. Run against exactly that mutant, the whole suite stayed green. What
+    /// still differs is that fan 1 is handed back **twice** — once by the lease core's
+    /// revocation and again by § 5 — so the two assertions on that are what turn red now.
+    ///
+    /// **Mutation:** delete the loop in `finaliseRelease(fanAt:because:)` that clears each
+    /// sibling's ledger entry. Run: red on `isReclaimed(fanAt: 1) == false` — which could not
+    /// fail until #342's review, because fan 1 had never been marked.
     @Test("Falling back stops watching every fan, not just the one that diverged")
     func fallingBackClearsTheWholeRegistry() async throws {
         let machine = ReclamationMachine(
@@ -319,12 +349,24 @@ struct ReclamationWatchdogRecoveryTests {
         // action — once its registration grace runs out — and that revokes the lease
         // covering fan 1 as well. Fan 1 is commanded and converged throughout: it is dropped
         // by the whole-machine revocation, never by a judgement of its own.
-        for _ in 1...ReclamationLimits.blindCyclesBeforeDivergence {
+        for _ in 1..<ReclamationLimits.blindCyclesBeforeDivergence {
             await machine.watchdog.cycle()
         }
+        // Fan 1 goes into the cycle that gives fan 0 up recorded as reclaimed, as it would be
+        // mid re-assert, so the ledger assertion below can fail. Set after the converged
+        // cycles, because each of them clears it.
+        await machine.ledger.markReclaimed(fanAt: 1)
+        #expect(await machine.ledger.isReclaimed(fanAt: 1), "the setup never marked fan 1")
+        await machine.watchdog.cycle()
 
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
         #expect(machine.safetyLog.lines(containing: "also stopped watching").count == 1)
+        // Dropped by the revocation, not found unleased afterwards: the lease core hands
+        // fan 1 back, and § 5 issues no second restore of its own.
+        #expect(
+            await machine.didRestore(fan: 1) == false,
+            "§ 5 handed back a sibling the revocation it had just run was already handing back")
+        #expect(machine.safetyLog.lines(containing: "no live lease covers it").isEmpty)
         // Fan 1 was given up, not taken: it must not be reported as reclaimed.
         #expect(await machine.ledger.isReclaimed(fanAt: 1) == false)
 

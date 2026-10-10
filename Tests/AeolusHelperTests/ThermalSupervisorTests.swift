@@ -20,7 +20,8 @@ struct ThermalSupervisorTests {
         let clock = TestClock(sleepBudget: 2)
 
         await ThermalSupervisor.run(
-            emergency: machine.emergency, clock: clock, interval: .seconds(1))
+            emergency: machine.emergency, clock: clock, interval: .seconds(1),
+            progress: ThermalCycleProgress())
 
         let reads = await machine.plane.attempts.filter {
             if case .readCriticalTemperatures = $0 { return true }
@@ -39,7 +40,8 @@ struct ThermalSupervisorTests {
         let clock = TestClock(start: start, sleepBudget: 1)
 
         await ThermalSupervisor.run(
-            emergency: machine.emergency, clock: clock, interval: .seconds(1))
+            emergency: machine.emergency, clock: clock, interval: .seconds(1),
+            progress: ThermalCycleProgress())
 
         #expect(clock.sleeps.first == start.advanced(by: .seconds(1)))
     }
@@ -53,7 +55,8 @@ struct ThermalSupervisorTests {
         let clock = TestClock(start: start, sleepBudget: 1)
 
         await ThermalSupervisor.run(
-            emergency: machine.emergency, clock: clock, interval: .zero)
+            emergency: machine.emergency, clock: clock, interval: .zero,
+            progress: ThermalCycleProgress())
 
         #expect(
             clock.sleeps.first
@@ -71,7 +74,8 @@ struct ThermalSupervisorTests {
         await machine.plane.advance()
 
         await ThermalSupervisor.run(
-            emergency: machine.emergency, clock: clock, interval: .seconds(1))
+            emergency: machine.emergency, clock: clock, interval: .seconds(1),
+            progress: ThermalCycleProgress())
 
         #expect(await machine.latch.isActive)
         #expect(await machine.leases.leaseCount == 0)
@@ -95,7 +99,8 @@ struct ThermalSupervisorTests {
         let machine = ThermalMachine(stages: [.at(44)])
         // A budget the loop cannot exhaust, so the only way out is cancellation.
         let supervisor = ThermalSupervisor(
-            emergency: machine.emergency, clock: TestClock(), interval: .seconds(1))
+            emergency: machine.emergency, clock: TestClock(), interval: .seconds(1),
+            progress: ThermalCycleProgress())
 
         await supervisor.start()
         while await machine.plane.attempts.count < 3 { await Task.yield() }
@@ -115,7 +120,8 @@ struct ThermalSupervisorTests {
     func startingTwiceRunsOneSupervisor() async {
         let machine = ThermalMachine(stages: [.at(44)])
         let supervisor = ThermalSupervisor(
-            emergency: machine.emergency, clock: TestClock(), interval: .seconds(1))
+            emergency: machine.emergency, clock: TestClock(), interval: .seconds(1),
+            progress: ThermalCycleProgress())
 
         #expect(await supervisor.start())
         #expect(await supervisor.start() == false)
@@ -141,7 +147,8 @@ struct ThermalSupervisorTests {
         #expect(await machine.latch.isActive)
 
         let supervisor = ThermalSupervisor(
-            emergency: machine.emergency, clock: TestClock(), interval: .seconds(1))
+            emergency: machine.emergency, clock: TestClock(), interval: .seconds(1),
+            progress: ThermalCycleProgress())
         await supervisor.start()
         await supervisor.stop()
 

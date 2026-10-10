@@ -102,17 +102,53 @@ outcomes: there is no configuration in which `Full` quietly produces an ad-hoc-s
 helper, because an ad-hoc-signed root daemon is one `SMAppService` will not register and
 one that would refuse every client anyway — it can read no Team ID from its own signature.
 
+A `Full Release` build is meant to carry no `com.apple.security.get-task-allow` entitlement:
+`project.yml` turns Xcode's base-entitlement injection off for that configuration, and CI
+checks that setting, and that no target's entitlements file lists the entitlement, without
+building it. It has to be absent in both directions: the Release helper refuses a client that
+carries it, and a Release client refuses a helper that carries it. `Full Debug` does carry it,
+and a Debug helper and Debug clients tolerate that; see
+[docs/ADR/0005-xpc-authorisation.md](docs/ADR/0005-xpc-authorisation.md). Whether a signed build
+really lacks it is checked by hand with `codesign -d --entitlements - --xml <binary> | plutil -p -`.
+
+With the hardened runtime on and no `get-task-allow`, a debugger cannot attach to a `Full Release`
+helper or app while SIP is on. Debug and profile with `Full Debug`, and read a Release helper with
+`log show`. The generated `Aeolus (Full)` scheme's Profile action builds `Full Release`, so
+profiling from that scheme gets a build with no `get-task-allow`.
+
 After first launch you must approve the background item in **System Settings → General →
 Login Items & Extensions**. `SMAppService` cannot prompt for this, so if you skip it the
 app appears broken rather than unapproved. The app's own footer says so while it is
 pending, and offers to open that settings pane.
 
-**Registering from an Apple Development-signed build is still unverified**, and so is
-registering from a Developer ID-signed one. Nobody has yet run either on a machine with a
-signing identity — they are two separate rows in the assumptions table in
-[docs/ADR/0005-xpc-authorisation.md](docs/ADR/0005-xpc-authorisation.md), because they name
-different certificates. If it turns out Apple Development certificates are not accepted for
-daemon registration, local iteration falls back to bootstrapping the helper by hand:
+**Registering from a Developer ID-signed build is verified.** On 2026-10-09, on `Mac16,5` /
+macOS 27.0.1, a Developer ID-signed `Full Release` build installed at `/Applications/Aeolus.app`
+registered its helper through `SMAppService`, the maintainer approved it in Login Items &
+Extensions, and `AeolusHelper` then ran as root (launchd `state = running`). That build carried
+a local UI change offering **Install Helper…** from the first-launch state, which is the
+behaviour [#337](https://github.com/blamechris/Aeolus/issues/337) makes permanent. The
+sequence macOS went through, which the app's unit tests replay, was:
+
+1. Before the first registration `SMAppService.daemon(plistName:).status` is `.notFound`.
+   Background Task Management has no record of the helper until `register()` creates one, so
+   this is a first launch, not a broken install.
+2. `register()` throws (`SMAppServiceErrorDomain` code 1, "Operation not permitted") in the
+   same instant the item is created awaiting approval, and the status afterwards is
+   `.requiresApproval`. The throw is not, on its own, a refusal: the app judges it against the
+   status it reads afterwards.
+3. After approval in Login Items & Extensions the status is `.enabled`.
+
+The full results, including what the installed helper admitted and refused, are in
+[the hardware check on #82](https://github.com/blamechris/Aeolus/issues/82#issuecomment-6076882014).
+The committed UI itself has not been run on hardware; this verifies the registration, not
+that wording.
+
+**Registering from an Apple Development-signed build is still unverified.** Nobody has yet
+run it on a machine with that certificate — it is a separate row in the assumptions table in
+[docs/ADR/0005-xpc-authorisation.md](docs/ADR/0005-xpc-authorisation.md) from the Developer ID
+one above, because they name different certificates. If it turns out Apple Development
+certificates are not accepted for daemon registration, local iteration falls back to
+bootstrapping the helper by hand:
 
 ```bash
 sudo launchctl bootstrap system /Applications/Aeolus.app/Contents/Library/LaunchDaemons/com.blamechris.Aeolus.Helper.plist

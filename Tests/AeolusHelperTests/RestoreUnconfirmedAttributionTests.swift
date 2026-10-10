@@ -44,6 +44,7 @@ struct RestoreUnconfirmedAttributionTests {
                 fanCount: 1,
                 extraKeys: ["F0Md": .reading("F0Md", snapshotSeesManual ? 1 : 0)]),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: AvailabilityFixture.safetyLog,

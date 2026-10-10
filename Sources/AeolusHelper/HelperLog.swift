@@ -206,9 +206,11 @@ struct HelperLog: Sendable {
     /// `.fault` because nothing else would say so. The line names what it cannot tell apart
     /// rather than guessing: the walk may be wedged inside an IOKit call — which, because
     /// `SMCConnection` is an actor, holds up **every** SMC read, the safety cycle's included
-    /// (#293) — or it may still be parked behind a connection rebuild that has itself not
-    /// returned. It also cannot rule out a machine that slept mid-walk: the alarm's clock is
-    /// continuous. What a client sees meanwhile is a snapshot that never answers.
+    /// (#293; the liveness watchdog, ADR 0012, ends the helper on a round trip that wedges, so
+    /// by the time this fires it is the other reading that is likely) — or it may still be
+    /// parked behind a connection rebuild that has itself not returned. It also cannot rule
+    /// out a machine that slept mid-walk: the alarm's clock is continuous. What a client sees
+    /// meanwhile is a snapshot that never answers.
     func discoveryWalkOverran(alarm: Duration) {
         log.fault(
             """

@@ -81,9 +81,11 @@ import Foundation
 /// an `apply` sent ahead of it landing on a lease the release had already dropped, or after it.
 /// A client that needs one of the three to be the last thing that happens must await its
 /// earlier replies first; the exemption buys promptness, not ordering.
-/// [#180](https://github.com/blamechris/Aeolus/issues/180) is the mechanism that makes the
-/// interleaving harmless — a write away from the safe state requires a live lease, checked
-/// at the write — and until it is built, this ordering is the client's to manage.
+/// [#180](https://github.com/blamechris/Aeolus/issues/180) built the helper's backstop for that
+/// interleaving — a fan held with no live lease is handed back at the next supervisor cycle —
+/// and it is dormant until a caller registers fans with that supervisor, which nothing in this
+/// build does. The check at `apply`'s own write arrives with the write path, which does not
+/// exist yet; until it does, this ordering is the client's to manage.
 ///
 /// **What ordering costs a client that pipelines.** One message at a time is one message at
 /// a time in both directions: while a sequenced message N is being handled, the sequenced

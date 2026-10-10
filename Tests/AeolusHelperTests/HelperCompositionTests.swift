@@ -44,14 +44,14 @@ import Testing
 @Suite("The helper's composition root")
 struct HelperCompositionTests {
 
-    private static func source(of file: String) throws -> String {
+    static func source(of file: String) throws -> String {
         let url = try #require(
             SeamScanner.swiftFiles().first { $0.lastPathComponent == file },
             "\(file) was not found in Sources")
         return try String(contentsOf: url, encoding: .utf8)
     }
 
-    private static func compositionSource() throws -> String {
+    static func compositionSource() throws -> String {
         strippingComments(try source(of: "HelperComposition.swift"))
     }
 
@@ -178,8 +178,10 @@ struct HelperCompositionTests {
     /// the observer directly and `SchedulerObservingTests` drives the scheduler's emission.
     /// Neither can see whether the daemon connects them.
     ///
-    /// **Mutation A:** drop `observer: connectionHealth` from the scheduler in
-    /// `production(log:)`. Run: red on the first.
+    /// **Mutation A:** drop `connectionHealth` from the scheduler's observers in
+    /// `production(log:)` (`SchedulerObservers([gateMonitor])`). Run: red on the first.
+    /// **Mutation A2:** put the gate monitor ahead of it (`[gateMonitor, connectionHealth]`).
+    /// Run: red on the first — the listener the helper already had stays first.
     /// **Mutation B:** delete `await connectionHealth.start(recovering: plane)` from
     /// `bringUp()`. Run: red on the second — and nothing else in the repository notices,
     /// because an unstarted pump simply buffers for ever.
@@ -187,7 +189,8 @@ struct HelperCompositionTests {
     func connectionHealthIsWiredToTheScheduler() throws {
         let source = Self.strippingWhitespace(try Self.compositionSource())
 
-        let schedulerReportsToIt = source.contains("observer:connectionHealth")
+        let schedulerReportsToIt = source.contains(
+            "observer:SchedulerObservers([connectionHealth,gateMonitor])")
         #expect(
             schedulerReportsToIt,
             """
@@ -767,7 +770,7 @@ struct HelperCompositionTests {
     /// So a match can name one composed expression exactly without depending on where
     /// `swift format` chose to wrap it. `contains("A(b: c)")` is precise and brittle;
     /// `contains("A(") && contains("c")` is wrap-proof and imprecise; this is both.
-    private static func strippingWhitespace(_ source: String) -> String {
+    static func strippingWhitespace(_ source: String) -> String {
         source.filter { !$0.isWhitespace }
     }
 
@@ -787,7 +790,7 @@ struct HelperCompositionTests {
     /// only *whole* `//` lines — a deliberate choice documented there — and this file's
     /// `contains` assertions run against source with a trailing comment on the same line as
     /// the code they match.
-    private static func strippingComments(_ source: String) -> String {
+    static func strippingComments(_ source: String) -> String {
         SeamScanner.strippingComments(source)
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map { line -> Substring in

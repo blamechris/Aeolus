@@ -33,6 +33,7 @@ struct AcceptedHandbackCompositionTests {
                     ])),
             snapshotProvider: fanProvider(fanCount: 1),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: SafetyLog(recording: { log.append($0, $1) }),

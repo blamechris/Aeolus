@@ -23,7 +23,8 @@ struct HelperInstallationStateTests {
             status: {
                 queried = true
                 return .notRegistered
-            }())
+            }(),
+            registrationAttempted: false)
 
         #expect(state == .unavailableInThisBuild)
         #expect(
@@ -39,35 +40,70 @@ struct HelperInstallationStateTests {
             status: {
                 queried = true
                 return .enabled
-            }())
+            }(),
+            registrationAttempted: false)
         let missingPlist = HelperInstallationState.resolve(
             embedding: .incomplete(.missingDaemonPlist),
             status: {
                 queried = true
                 return .enabled
-            }())
+            }(),
+            registrationAttempted: false)
 
         #expect(missingExecutable == .brokenInstall(.helperExecutableMissing))
         #expect(missingPlist == .brokenInstall(.daemonPlistMissing))
         #expect(queried == false)
     }
 
-    @Test("An embedded helper reports the system's own answer for the three live states")
-    func embeddedHelperReportsSystemStatus() {
+    @Test("A half-embedded helper stays broken whatever the attempt flag says")
+    func incompleteEmbeddingIgnoresTheAttemptFlag() {
+        // A missing file is a fact about the bundle; no registration attempt can change it,
+        // and `.notFound` here must never be read as the first-install case.
         #expect(
-            HelperInstallationState.resolve(embedding: .embedded, status: .notRegistered)
-                == .notRegistered)
+            HelperInstallationState.resolve(
+                embedding: .incomplete(.missingExecutable), status: .notFound,
+                registrationAttempted: false) == .brokenInstall(.helperExecutableMissing))
         #expect(
-            HelperInstallationState.resolve(embedding: .embedded, status: .requiresApproval)
-                == .awaitingApproval)
-        #expect(
-            HelperInstallationState.resolve(embedding: .embedded, status: .enabled) == .enabled)
+            HelperInstallationState.resolve(
+                embedding: .incomplete(.missingDaemonPlist), status: .notFound,
+                registrationAttempted: true) == .brokenInstall(.daemonPlistMissing))
     }
 
-    @Test(".notFound with both files on disk is a broken install, not a missing helper")
-    func notFoundWithFilesPresentIsBroken() {
+    @Test(
+        "An embedded helper reports the system's own answer for the three live states",
+        arguments: [false, true])
+    func embeddedHelperReportsSystemStatus(registrationAttempted: Bool) {
+        // The attempt flag only ever changes the reading of `.notFound`. For every other
+        // status the system's own answer stands whether or not Aeolus has called register().
         #expect(
-            HelperInstallationState.resolve(embedding: .embedded, status: .notFound)
+            HelperInstallationState.resolve(
+                embedding: .embedded, status: .notRegistered,
+                registrationAttempted: registrationAttempted) == .notRegistered)
+        #expect(
+            HelperInstallationState.resolve(
+                embedding: .embedded, status: .requiresApproval,
+                registrationAttempted: registrationAttempted) == .awaitingApproval)
+        #expect(
+            HelperInstallationState.resolve(
+                embedding: .embedded, status: .enabled,
+                registrationAttempted: registrationAttempted) == .enabled)
+    }
+
+    @Test(".notFound before any registration attempt is a first install, not a broken one")
+    func notFoundBeforeRegisteringIsUnknownToTheSystem() {
+        // Background Task Management has no record of a helper until register() creates
+        // one, and answers `.notFound` until then. Observed on hardware, #337.
+        #expect(
+            HelperInstallationState.resolve(
+                embedding: .embedded, status: .notFound, registrationAttempted: false)
+                == .unknownToSystem)
+    }
+
+    @Test(".notFound after Aeolus asked macOS to register is a broken install")
+    func notFoundAfterRegisteringIsBroken() {
+        #expect(
+            HelperInstallationState.resolve(
+                embedding: .embedded, status: .notFound, registrationAttempted: true)
                 == .brokenInstall(.systemCannotFindService))
     }
 
@@ -75,7 +111,7 @@ struct HelperInstallationStateTests {
     func unrecognisedStatusIsNotGuessedAt() {
         #expect(
             HelperInstallationState.resolve(
-                embedding: .embedded, status: .unrecognised(rawValue: 47))
-                == .unrecognisedStatus(rawValue: 47))
+                embedding: .embedded, status: .unrecognised(rawValue: 47),
+                registrationAttempted: false) == .unrecognisedStatus(rawValue: 47))
     }
 }

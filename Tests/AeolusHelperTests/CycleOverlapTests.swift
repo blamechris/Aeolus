@@ -100,8 +100,8 @@ struct CycleOverlapTests {
         #expect(await telemetry.peakOutstanding == 1)
 
         await telemetry.open()
-        await first.value
-        await second.value
+        _ = await first.value
+        _ = await second.value
 
         // The guard is a guard, not a latch: once the cycle is over the next one runs.
         await emergency.cycle()

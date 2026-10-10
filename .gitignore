@@ -11,6 +11,7 @@ AuthKey_*.p8
 Aeolus.xcodeproj/
 Configs/Aeolus-Info.plist
 Configs/AeolusHelper-Info.plist
+Configs/fanctl-Info.plist
 *.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
 
 # ---- Xcode ----

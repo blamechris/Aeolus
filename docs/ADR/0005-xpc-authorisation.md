@@ -44,6 +44,16 @@ equal to the **helper's own Team ID read from its own signature at runtime**, id
 `com.apple.security.get-task-allow`. The Debug helper additionally accepts Apple Development leaf
 certificates of the same team.
 
+> **Amended 2026-10-08 ([#335](https://github.com/blamechris/Aeolus/issues/335)).** The Release
+> `!entitlement["com.apple.security.get-task-allow"]` clause appears in both requirements — this
+> one on clients, and the client-side mirror below on the helper. A Release build satisfies it in
+> both directions only because `project.yml` turns Xcode's base-entitlement injection
+> (`CODE_SIGN_INJECT_BASE_ENTITLEMENTS`) off for `Full Release`. With it on, which is Xcode's
+> default, `Aeolus.app`, `AeolusHelper` and `fanctl` were all signed with the entitlement, so the
+> installed helper refused its own clients and a Release `fanctl` refused the helper. CI asks
+> Xcode what `Full Release` resolves for each of the three targets; it does not build or inspect
+> the signed binaries, which stay a by-hand `codesign -d --entitlements -` check.
+
 Requirement construction is pure, unit-tested code; the string is pre-compiled with
 `SecRequirementCreateWithString`. Every failure resolves to **refuse all connections**, logged at
 fault level:
@@ -123,7 +133,9 @@ identifier "com.blamechris.Aeolus.Helper"
 
 What no test can establish on either side is that this text admits the *installed* helper. That
 needs a Developer ID signature and an installed daemon, and is E2.5's manual `Mac16,5` checklist
-item, alongside "an ad-hoc-built client is refused by the installed helper".
+item, alongside "an ad-hoc-built client is refused by the installed helper". It was run once, on
+2026-10-09 — see the update of that date beside the known survivor, below — and it re-runs on
+every change to the boundary.
 
 **Versioning: the helper enforces negotiation.** Every connection is refused with
 `handshakeRequired` until `hello(clientProtocolVersion:)` succeeds with a version inside
@@ -316,17 +328,19 @@ optional DTO fields within a version, plus the capability set, provide the flexi
 |---|---|---|
 | `setCodeSigningRequirement` behaves as documented on macOS 26.x | **Verified by experiment on `Mac16,5` / macOS 26.5.2 (25F84)** — see the #72 log below | Fall back to hand-rolled audit-token checking behind the same delegate seam |
 | Same API behaves correctly on macOS 13–15 | Documented-available; **untestable here** | Ships the same "documented, untested" status as the Intel path; the compatibility matrix must say so |
-| `SMAppService.daemon` registration works from a **Developer ID**-signed `Full Debug` build | Unverified | The shipping path itself does not work; E2 needs a different registration mechanism, not a workaround |
+| `SMAppService.daemon` registration works from a **Developer ID**-signed `Full` build | **Verified by experiment on `Mac16,5` / macOS 27.0.1, 2026-10-09, for `Full Release`** — registered, approved in Login Items & Extensions, helper ran as root; see the 2026-10-09 log below and [#82's hardware check](https://github.com/blamechris/Aeolus/issues/82#issuecomment-6076882014). A `Full Debug` build was not the one registered | The shipping path itself does not work; E2 needs a different registration mechanism, not a workaround |
 | `SMAppService.daemon` registration works from an **Apple Development**-signed build | Unverified | Local iteration falls back to a manually `launchctl`-bootstrapped helper — a dev-workflow cost, not a design change |
+| The production client requirement, applied by the installed helper, admits the signed app's own `fanctl` and refuses a client that fails a clause | **Verified by experiment on `Mac16,5` / macOS 27.0.1, 2026-10-09** against a Developer ID `Full Release` helper — see the 2026-10-09 update beside the known survivor below. The admission was seen, and the refusal was seen for **two of the five Release clauses only**: `!entitlement["com.apple.security.get-task-allow"]` and the identifier. The anchor, certificate-chain and Team ID clauses were never failed on hardware. One machine, one OS version; the literal "ad-hoc client refused *by the helper*" case was not reachable (see the log) | The requirement text is wrong in a way no test can see; a signed client would be refused, or a foreign one admitted |
 
-Those last two were one row until #81's review pointed out they name different certificates
-and have different consequences. A Developer ID failure is a design problem; an Apple
+The two registration rows were one row until #81's review pointed out they name different
+certificates and have different consequences. A Developer ID failure is a design problem; an Apple
 Development failure is a workflow problem, and `CONTRIBUTING.md`'s manual `launchctl`
 fallback exists for the second row specifically — for contributors who hold an Apple
 Development certificate and no Developer ID. Verifying one says nothing about the other.
 
-**Verification log — 2026-07-31 (#73).** The last two rows above remain **unverified, and
-the reason is now known precisely.** The development machine has no signing identity
+**Verification log — 2026-07-31 (#73).** The two registration rows above were then
+**unverified, and the reason was known precisely.** (The Developer ID one was settled on
+2026-10-09; see that log below. The Apple Development one is still open.) The development machine has no signing identity
 configured for this project at all: `Configs/Signing.xcconfig` is absent, and a `Full`
 build asked to sign with `Apple Development` stops at *"Signing for 'Aeolus' requires a
 development team."* No Development-signed or Developer ID-signed build can be produced
@@ -361,6 +375,26 @@ writes to stderr and exits non-zero by design, and the plist carries no `RunAtLo
 `KeepAlive`, so launchd starts it only when something connects to the mach service. The
 question these rows ask is whether `SMAppService` accepts and registers the job, not
 whether the daemon does anything once started — it does not, until #72.
+
+**Verification log — 2026-10-09 (#82, #337). Developer ID registration works.** Measured on
+`Mac16,5` / macOS 27.0.1 with the `Full Release` configuration, Developer ID Application signing,
+installed at `/Applications/Aeolus.app`. The status sequence was:
+
+1. **Before the first registration, `SMAppService.daemon(plistName:).status` is `.notFound`.**
+   Background Task Management has no record of the helper until `register()` creates one — its log
+   reads `effectiveItemDisposition: record not found` for the embedded plist. That is a first
+   launch, not a damaged bundle, and reading it as the latter left a first install with no way
+   forward (#337).
+2. **`register()` throws — `SMAppServiceErrorDomain` code 1, "Operation not permitted" — in the
+   same instant Background Task Management creates the item awaiting approval.** The status read
+   afterwards is `.requiresApproval`. A throw is therefore not, on its own, a refusal; the status
+   afterwards is what says whether macOS accepted the request.
+3. **After the user approves the item in Login Items & Extensions the status is `.enabled`**, and
+   `AeolusHelper` runs as root (launchd `state = running`).
+
+That settles the Developer ID row of the table above for `Full Release`. It says nothing about the
+Apple Development row, which still has no result, and nothing about `Full Debug`, which was not the
+configuration registered. It is one machine and one OS version.
 
 **Verification log — 2026-08-01 (#72). `setCodeSigningRequirement` is enforced.** Measured on
 `Mac16,5` / macOS 26.5.2 (25F84) with an anonymous in-process `NSXPCListener`, so both peers carried
@@ -411,6 +445,26 @@ installed helper" — and it is the reason that item is load-bearing rather than
 listener test in the tree drives an admission policy declared in the *test target* that applies no
 requirement at all, precisely so no production wiring can select one; a green suite says the gate and
 the seam are correct, and says nothing whatever about the requirement.
+
+**Update — 2026-10-09 (#82): the helper-side survivor was exercised on hardware, once.** On
+`Mac16,5` / macOS 27.0.1, against the running Developer ID `Full Release` helper
+([the hardware check](https://github.com/blamechris/Aeolus/issues/82#issuecomment-6076882014)):
+the signed `fanctl` embedded in the app was **admitted** (`fanctl status`, exit 0, handshake
+completed at protocol 1), and two Developer ID-signed probes were **refused by libxpc inside the
+helper** — "Received message forbidden due to code signing requirement", Security status -67050,
+connection cancelled, never handshaken, no message delivered to Aeolus code. One probe carried
+`get-task-allow` and so failed the `!entitlement` clause; the other was re-signed as
+`com.blamechris.fanctl-probe` and so failed the identifier clause. So `setCodeSigningRequirement`,
+applied by the helper with the production requirement, was seen to admit and to refuse.
+
+Three bounds on that, so it is not read as more than it is. **It does not kill the mutation:**
+deleting the call still leaves the suite green on CI, and the manual check has been run once, not
+automated. **The literal checklist item was not reached:** an ad-hoc `swift build` `fanctl` never
+touches the helper, because the client refuses to connect without a Team ID of its own (the
+`.noTeamIdentifier` arm); the helper-side refusals above used Developer ID-signed probes that do
+connect. (`codesign --verify -R` against the Release client requirement also refuses the ad-hoc
+binary statically.) And **the client-side twin below stays a survivor**: the check records no run in
+which the client pinned a helper it should have refused.
 
 **The client side has the identical survivor, and it is recorded here beside its twin — added
 2026-09-06 (#158).** Deleting `connection.setCodeSigningRequirement(requirement.text)` from

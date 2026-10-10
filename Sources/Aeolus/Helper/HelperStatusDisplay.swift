@@ -71,6 +71,9 @@ enum HelperStatusDisplay {
                 action: .register,
                 severity: .actionNeeded)
 
+        case .unknownToSystem:
+            return unknownToSystemText
+
         case .awaitingApproval:
             return Text(
                 title: "Waiting for your approval in System Settings",
@@ -106,8 +109,22 @@ enum HelperStatusDisplay {
         }
     }
 
-    /// Split out only to keep `text(for:)` readable; every one of these is reported as
-    /// broken and none of them offers a retry.
+    /// A first launch, not damage. Same title and same way forward as `.notRegistered`; the
+    /// detail says what macOS actually answered, which is that it has no record yet, and
+    /// claims nothing is wrong with the app. Split out only to keep `text(for:)` readable.
+    private static let unknownToSystemText = Text(
+        title: "Helper not installed yet",
+        detail:
+            "macOS has no record of Aeolus's privileged helper yet, as on a first launch. "
+            + "Installing it asks macOS to add the helper, and needs your approval in System "
+            + "Settings afterwards.",
+        action: .register,
+        severity: .actionNeeded)
+
+    /// Split out only to keep `text(for:)` readable. Every one of these is reported as
+    /// broken. The two missing-file defects offer no retry — nothing the app does repairs
+    /// its own bundle — while `.systemCannotFindService` does, because asking macOS to
+    /// register again is exactly what the app can do about it.
     private static func text(forBrokenInstall defect: HelperInstallDefect) -> Text {
         switch defect {
         case .helperExecutableMissing:
@@ -131,14 +148,18 @@ enum HelperStatusDisplay {
                 severity: .warning)
 
         case .systemCannotFindService:
+            // Only reachable after an install attempt: `.notFound` before one is a first
+            // launch (`.unknownToSystem`). So this says what happened — macOS was asked and
+            // still answered "not found" — and offers the same action again.
             return Text(
-                title: "macOS cannot find Aeolus's helper",
+                title: "macOS still cannot find Aeolus's helper",
                 detail:
-                    "The helper and its launchd description are both inside the app, and macOS "
-                    + "reports the service as not found. That usually means Aeolus was moved "
-                    + "while installed, is damaged, or is not signed the way installation "
-                    + "requires. Reinstall it in /Applications rather than retrying from here.",
-                action: nil,
+                    "The helper and its launchd description are both inside the app. Aeolus "
+                    + "asked macOS to install the helper, and macOS still reports the service "
+                    + "as not found. That can mean Aeolus was moved while installed, is "
+                    + "damaged, or is not signed the way installation requires. Try installing "
+                    + "again; if it keeps happening, reinstall Aeolus in /Applications.",
+                action: .register,
                 severity: .warning)
         }
     }

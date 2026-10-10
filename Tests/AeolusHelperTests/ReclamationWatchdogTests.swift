@@ -237,7 +237,7 @@ struct ReclamationWatchdogTests {
         #expect(machine.safetyLog.lines(containing: "**not** recording it as reclaimed").count == 1)
         // **This is the assertion that discriminates**, and the one above cannot.
         // Mutation-checked: re-adding `ledger.markReclaimed` to the pre-empted branch left
-        // the ledger assertion above green, because `releaseToThermalEmergency(fanAt:)` ends
+        // the ledger assertion above green, because `restoreAndForget(fanAt:)` ends
         // with `ledger.clearReclaimed(fanAt:)` — the same call path marks the fan and then
         // erases the mark, so the end state is identical either way. What survives the
         // round trip is the `.fault` line `markReclaimed`'s transition report fires on the

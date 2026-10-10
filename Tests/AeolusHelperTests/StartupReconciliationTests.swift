@@ -39,6 +39,7 @@ struct StartupReconciliationTests {
             snapshotProvider: fanProvider(
                 fanCount: fanCount ?? fans.count, extraKeys: extraKeys),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             clock: clock,
             reconciliationBudget: budget,
             log: HelperRestorerTests.helperLog,
@@ -428,11 +429,11 @@ struct StartupReconciliationTests {
                     temperatures: LeaseFixture.nominalDieTemperatures,
                     writes: .refused(reason: "the firmware refused the mode write"))
             ])
-        let plane = ClockAdvancingPlane(wrapping: scripted, advancing: clock)
         let bounded = HelperComposition(
-            plane: plane,
+            plane: ClockAdvancingPlane(wrapping: scripted, advancing: clock),
             snapshotProvider: fanProvider(fanCount: 3),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             clock: clock,
             reconciliationBudget: .seconds(1),
             log: HelperRestorerTests.helperLog,
@@ -504,6 +505,7 @@ struct ForeignManualControlReportingTests {
             snapshotProvider: fanProvider(
                 fanCount: 1, extraKeys: ["F0Md": .reading("F0Md", 1)]),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)
@@ -548,6 +550,7 @@ struct ForeignManualControlReportingTests {
             snapshotProvider: fanProvider(
                 fanCount: 1, extraKeys: ["F0Md": .reading("F0Md", 1)]),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)
@@ -555,8 +558,8 @@ struct ForeignManualControlReportingTests {
 
     /// A fan Aeolus's own live lease covers is never reported as another program's.
     ///
-    /// `F<n>Md` reads `1` for a fan Aeolus is holding and for a fan somebody else is
-    /// holding, and names no owner either way — so the lease exclusion in
+    /// `F<n>Md` reads non-zero (the decoded fold, #208) for a fan Aeolus is holding and for a
+    /// fan somebody else is holding, and names no owner either way — so the lease exclusion in
     /// `reportingForeignControl(of:heldByAeolus:awaitingConfirmation:reconciliation:)` is the
     /// only thing between a user and being told to go and quit software that is not running.
     /// Until this test existed the clause could be deleted with the whole non-hardware suite
@@ -642,6 +645,7 @@ struct ForeignManualControlReportingTests {
             snapshotProvider: fanProvider(
                 fanCount: 1, extraKeys: ["F0Md": .reading("F0Md", 1)]),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)
@@ -670,6 +674,7 @@ struct ForeignManualControlReportingTests {
             snapshotProvider: fanProvider(
                 fanCount: 1, extraKeys: ["F0Md": .reading("F0Md", 1)]),
             criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)

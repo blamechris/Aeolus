@@ -192,6 +192,15 @@ enum AeolusHelperMain {
     /// `dispatchMain()` and serves nothing at all, which is the same fail-safe direction as
     /// a bring-up that hangs: refusing to serve is safe, serving over unreconciled fans is
     /// not.
+    ///
+    /// **Do not inline this into `main()`.** `main()` is `@MainActor`, and this works only
+    /// because this function is a nonisolated static: its `Task` inherits no actor, so the
+    /// bring-up runs on the cooperative pool while the main thread waits. Written inside
+    /// `main()` the `Task` would inherit the main actor, `broughtUp.wait()` would block the
+    /// very thread it needs, and the daemon would deadlock before `HelperComposition.bringUp()`
+    /// had armed the liveness watchdog — the one mechanism that would have noticed. (The
+    /// sentence above that "nothing in this target is `@MainActor`-isolated" is about this
+    /// frame, not about `main()`.)
     private static func bringUp(
         _ helper: HelperComposition<SMCFanControlPlane>,
         advertising listener: NSXPCListener,
