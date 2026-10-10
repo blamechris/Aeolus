@@ -348,4 +348,28 @@ public struct FanControlEnvelope: Sendable, Hashable {
         let floored = max(requestedRPM, lowestCommandableRPM)
         return FanTargetRPM(clamped: min(floored, highestCommandableRPM))
     }
+
+    /// The speed a percentage of this fan's **commandable** range names.
+    ///
+    /// `rpm = lowest + percent / 100 x (highest - lowest)`, rounded to a whole RPM, then passed
+    /// through `target(for:)`. The span runs from `lowestCommandableRPM`, not from the declared
+    /// minimum: a firmware minimum of zero is legal, and a 0 % that meant 0 RPM would be the
+    /// stop `CLAUDE.md` rule 3 forbids. On `Mac16,5`'s 1350 to 5777: 0 % is 1350, 50 % is
+    /// 3564 (3563.5 rounded), 75 % is 4670, 100 % is 5777.
+    ///
+    /// **The mapping lives here, once,** so `fanctl set`, the app's slider and a remote caller
+    /// cannot each round it differently ([#317](https://github.com/blamechris/Aeolus/issues/317)).
+    ///
+    /// Total, and the clamp is `target(for:)`'s rather than a second one beside it: a percentage
+    /// below zero or above a hundred, or an infinity, arrives as a request outside the range and
+    /// leaves on the nearest bound; NaN resolves to the floor. A client that wants such an input
+    /// *refused* has to do that where it can say why; `fanctl` does, with exit 64.
+    ///
+    /// - Parameter percent: A position in the commandable range, 0 for the slowest speed that
+    ///   may be commanded and 100 for the firmware maximum.
+    /// - Returns: A speed that may be written.
+    public func target(forPercent percent: Double) -> FanTargetRPM {
+        let span = highestCommandableRPM - lowestCommandableRPM
+        return target(for: (lowestCommandableRPM + percent / 100 * span).rounded())
+    }
 }

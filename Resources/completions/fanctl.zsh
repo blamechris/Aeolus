@@ -54,6 +54,7 @@ _fanctl() {
             'sensors:List every sensor this machine exposes.'
             'watch:Live-updating view of fan speeds, suitable for a terminal left open.'
             'status:Show what the helper reports about every fan and who holds them.'
+            'set:Hold one fan, or every fan, at a speed for a bounded time.'
             'auto:Ask the helper to return every fan to automatic control, then check.'
             'reset:Return fans to automatic control.'
             'dump:Dump every SMC key'\''s type, attributes, and raw bytes.'
@@ -63,7 +64,7 @@ _fanctl() {
         ;;
     arg)
         case "${words[1]}" in
-        list|sensors|watch|status|auto|reset|dump|help)
+        list|sensors|watch|status|set|auto|reset|dump|help)
             "_fanctl_${words[1]}" && ret=0
             ;;
         esac
@@ -116,6 +117,21 @@ _fanctl_status() {
     local -i ret=1
     local -ar arg_specs=(
         '--json[Emit one JSON document instead of text.]'
+        '--version[Show the version.]'
+        '(-h --help)'{-h,--help}'[Show help information.]'
+    )
+    _arguments -w -s -S : "${arg_specs[@]}" && ret=0
+
+    return "${ret}"
+}
+
+_fanctl_set() {
+    local -i ret=1
+    local -ar arg_specs=(
+        ':fan|all:'
+        ':N%|Nrpm:'
+        '--for[How long to hold\: whole seconds, minutes or hours (30s, 10m, 2h), from 10s to 8h. Required.]:duration:'
+        '--json[Emit newline-delimited JSON events instead of text.]'
         '--version[Show the version.]'
         '(-h --help)'{-h,--help}'[Show help information.]'
     )

@@ -123,10 +123,9 @@ than on first sight, because a fan mid-handback can carry a transient reason tha
 `fans` and `lease` were read after the request was sent, so a script need not parse prose to know
 whether the document describes the helper before the request or after it.
 
-### D1 — `set` is a bounded hold for the life of the process (decided; lands with #317)
+### D1 — `set` is a bounded hold for the life of the process (decided; built in #317, held)
 
-Recorded here so the three decisions read as one contract. Nothing in this ADR's change
-implements it.
+Recorded here so the three decisions read as one contract.
 
 `fanctl set` requires `--for`, from 10 seconds to 8 hours, and holds its lease for that long,
 renewing it for the life of the process **and its parent**. It exits 6 on any loss the helper
@@ -134,6 +133,78 @@ reports: a renewal error, a snapshot without its lease ID, a covered fan reclaim
 or a thermal emergency. It never retries and never re-acquires. When it ends it releases and runs
 D2's safe-state check. The reasoning and the output contract are
 [#317](https://github.com/blamechris/Aeolus/issues/317)'s.
+
+**As built.** `set` is implemented against the simulated helper and **does not merge before E5
+(#7) and the owner-supervised E4 acceptance (#9), per #15**; nothing here has driven a fan. The
+points below are where building it had to decide something the contract left open. Each is the
+direction that ends a hold earlier or reports less, never the one that claims more.
+
+- **The percentage mapping is `FanControlEnvelope.target(forPercent:)`**, once, in `FanKit`. The
+  gate is `FanState.controlEnvelope == .success` for a percentage and an rpm alike; an rpm outside
+  `[lowest, highest]` (`0rpm` included) is exit 2 and never clamped on the client.
+- **A covered fan the snapshot no longer reports** ends the hold as a loss (6). The contract's
+  list names `isReclaimedBySystem`; a fan that is simply absent cannot be called held.
+- **Exit 6, and a refused `apply`, skip the safe-state check.** There is nothing to confirm a
+  return to after a loss, the check can take its whole ten-second window against a thermal
+  emergency that will not clear, and `fanctl auto` is the way to ask. Only the ordinary endings
+  (`--for`, a signal, a parent that exited, a standard output that stopped draining) run it.
+- **A lease still listed when the check ends is 8, not 5.** `auto` maps it to 5 to name the
+  holder; for `set` the lease may be its own (the release did not take), and the message says
+  whose it is.
+- **A signal that arrives before the lease is taken is exit 1**, with nothing written to a fan.
+- **`endedBecause` is `refused` for 2, 4 and 5 before a hold and for any refused `apply`**, and
+  `null` for 3, 7 and 1 before a lease: those are not a "no" to this request.
+- **Standard output is written with `write(2)`, and never polled before a write.** A hold's
+  failure to write is an ending, not a crash. (A first version polled pipes and sockets for room
+  and wrote in chunks; "A write may park", below, is why that was withdrawn.)
+- **No stderr output while holding in text mode.** There is no change during a hold that does not
+  end it, so there is nothing for the contract's "changes to stderr" to carry.
+- **An `apply` that got no answer is not a refusal** (review of #324). Only an `AeolusXPCFault` is
+  the helper answering. A transport failure after the request was sent (`helperNeverAnswered`,
+  `replyNotDelivered`, `helperRestarted`) means the speed may have been applied: the lease is
+  released best-effort, the safe-state check **looks**, and the exit is the failure's own
+  classified code (non-zero), reported as `endedBecause: controlLost`. This revises the "refused
+  `apply` skips the check" point above for the unanswered case only.
+- **A signal ends the hold, whenever it lands.** Before the lease it is exit 1 with
+  `endedBecause: signal`; while `acquireLease` is in flight it releases the lease and sends no
+  speed (exit 1, `signal`); while holding it is the ordinary signal ending.
+- **A write may park; the hold never waits on it** (review of #324, which closed the case it
+  found three times and found the next each time). On macOS `poll` calls a pipe writable at
+  `PIPE_BUF` (512) bytes free and a `set --json` line is 560 to 1,127 bytes; a pipe at the
+  system's pipe-memory ceiling is called writable while full and cannot grow; a terminal under
+  XOFF parks a write; a pipe shared with another writer can lose the room it was promised. No
+  check before a write holds, so `set` does not write: each line is handed to a `LinePump`, a
+  writer thread of its own per stream, which may park in `write(2)` for as long as the kernel
+  makes it. The hold never waits on it.
+  - *A consumer that is not draining* is judged by the writer's **progress**: the oldest line
+    handed over not completely written within 2 s, or a failed write, ends the hold as
+    `outputClosed`. A stop request (signal, parent exit, deadline) is the reason whenever there is
+    one and never waits on the writer.
+  - *On every ending the lease is released and the safe state checked first.* Only then is the
+    closing event handed over, and the run waits for each stream at most 1 s.
+  - *The closing event goes to exactly one stream, whole:* standard output if it is idle (so at a
+    line boundary), otherwise standard error as the same line. Standard output is never given an
+    event to glue onto a fragment; both streams unable to take it within the bound means it is
+    dropped and the exit code stands alone.
+  - *Process exit abandons a parked writer thread.* That is deliberate. Bytes already written
+    stay in the pipe, so standard output can end with an incomplete final line.
+  - This replaces the first as-built description (chunks of `PIPE_BUF`, a `poll` between them, a
+    2 s bound on the wait), which was right for the state the first review found and wrong for
+    each state after it.
+- **SIGPIPE is ignored for the length of each write**, not blocked on the writing thread: measured
+  on macOS, the signal is raised at the process and delivered to another thread that has it
+  unblocked, so a thread mask does not stop a multi-threaded command being killed by it.
+- **`status` and `auto` write to the end.** A write that gave up on a slow reader, applied to
+  every command, dropped a line whenever a pipe had under 512 bytes free while its reader was
+  still there. EPIPE leaves their exit codes alone, and an inherited non-blocking descriptor
+  (`EAGAIN`) is waited on with `poll` and retried, so "delivered whole" holds there too.
+  `reset --all` does not use `Terminal`.
+- **Each renewal is scheduled from the last one**, not from the end of the work after it, so a
+  slow write shortens the next sleep instead of eating the two heartbeats the lease can miss.
+- **After the release, only what was read after the release is described.** When the check read
+  nothing, the text says the helper accepted the release and then stopped answering and that the
+  state of the lease and the fans is unknown; `snapshotFollowsRelease: false` in `--json` says the
+  same of the data.
 
 ## Rationale
 
