@@ -31,6 +31,16 @@ enum FirmwareFanMode: Sendable, Hashable {
     case manual
 }
 
+/// What one step of an engagement achieved ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)
+/// D2): the plane's step verb performs one step and reports progress, and `EngagementDriver`
+/// owns the cadence between steps. A refusal is a throw, never a third case.
+enum EngagementStep: Sendable, Hashable {
+    /// The mode write was accepted and read back raw `1` in the same turn (D3 step 2).
+    case engaged
+    /// The firmware is still holding the fan; the driver asks again after its poll interval.
+    case awaitingYield
+}
+
 /// One fan's firmware-declared envelope, as read.
 struct FanEnvelope: Sendable, Hashable {
     let index: Int
@@ -177,6 +187,27 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
     /// gates E3 and E4 rather than the one that pre-empts them. Every write verb on
     /// `SMCFanControlPlane` answers with this until those epics land.
     case controlPathNotBuilt
+
+    /// A restore was requested after this engagement began, so it writes nothing more
+    /// (ADR 0014 D4's restore epoch). Any restore supersedes any engagement.
+    case superseded
+
+    /// The fan's raw `F<n>Md` was not `0` before the first write, so it is not Aeolus's to take
+    /// (D3 step 1). Nothing was written.
+    case notAutomatic(index: Int, rawMode: UInt8)
+
+    /// The mode write was accepted and raw `F<n>Md` did not read back `1` (D3 step 2): `0` is
+    /// accepted-not-applied ([#291](https://github.com/blamechris/Aeolus/issues/291)); any
+    /// other value is outside the hypothesis and goes back to the architect.
+    case engagementNotConfirmed(index: Int, rawMode: UInt8)
+
+    /// A machine-wide restore wrote what it knew and could not know the rest (ADR 0014 D5).
+    ///
+    /// The bring-up enumeration failed, so `.everyFan` wrote the fans this process touched and
+    /// the force key — every write attempted — and fans this process never touched were not
+    /// written. `refusedWrite` describes the first of those writes the firmware refused, if
+    /// any did. Every caller treats it as a keystone that did not land.
+    case fanSetUnknown(refusedWrite: String?)
 }
 
 // MARK: - The one finiteness rule

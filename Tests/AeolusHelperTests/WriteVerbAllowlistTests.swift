@@ -192,6 +192,12 @@ struct WriteVerbAllowlistTests {
     ///   fan whose own restore is unconfirmed, so the next emergency can spend it (#300). It
     ///   writes nothing. `bridgeThenFileRestored(_:)` passes the same permit to those two in
     ///   turn, and only decides whether the second runs (#305).
+    /// - `EngagementDriver` ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D2):
+    ///   `engageManualControl(of:)` is the cadence around the plane's one-step verb, and the
+    ///   permit is the only thing it takes, so the lease it checks is the permit's own fan.
+    ///   `requireEntitlement(for:)` asks the latch and the lease about that permit and writes
+    ///   nothing. `manualControlEngaged(_:)` is § 3's registration role (#181), the requirement
+    ///   `ThermalEmergency`'s entry above already witnesses.
     private static let permitBearingVerbs: Set<String> = [
         "FanControlPlane.swift: commandTarget(_: AuthorisedFanTarget)",
         "FanControlPlane.swift: engageManualControl(of: CommandableFan)",
@@ -207,6 +213,9 @@ struct WriteVerbAllowlistTests {
         "ThermalEmergency.swift: restoredByEmergency(_: CommandableFan)",
         "ThermalEmergency.swift: bridgeThenFileRestored(_: CommandableFan)",
         "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan)",
+        "EngagementDriver.swift: engageManualControl(of: CommandableFan)",
+        "EngagementDriver.swift: requireEntitlement(for: CommandableFan)",
+        "EngagementDriver.swift: manualControlEngaged(_: CommandableFan)",
     ]
 
     /// The keystone verbs, which take no authorisation of any kind and must not start.
@@ -470,7 +479,8 @@ struct WriteVerbAllowlistTests {
         "ReclamationWatchdog.swift: examine(fanAt: Int)",
         "ReclamationWatchdog.swift: finaliseRelease(fanAt: Int, because: FanRestoreCause)",
         "ReclamationWatchdog.swift: manualControlReleased(fanAt: Int)",
-        "ReclamationWatchdog.swift: reassert(_: CommandedTarget, fanAt: Int, attempt: Int)",
+        "ReclamationWatchdog.swift: reassert(_: CommandedTarget, fanAt: Int, attempt: Int, "
+            + "reengaging: Bool)",
         "ReclamationWatchdog.swift: restoreAndForget(fanAt: Int)",
         "SMCFanControlPlane.swift: readControlState(ofFan: Int)",
         "SMCFanControlPlane.swift: readCriticalTemperatures(_: [SMCKey])",
@@ -507,6 +517,17 @@ struct WriteVerbAllowlistTests {
         "ThermalSupervisor.swift: run(emergency: ThermalEmergency<Plane>, "
             + "clock: some MonotonicClock, interval: Duration, progress: ThermalCycleProgress, "
             + "log: SafetyLog)",
+        // ADR 0014's index-taking and permit-free entries. `handBack(fanAt:)` is the driver's
+        // undo, and § 5's hand-back: it takes the fan's index, never the permit, and reaches a
+        // write only through `restoreToAutomatic(_:)`, whose `restoreVerbs` entry is the
+        // keystone (D2). `handbackAccepted(fanAt:)` is § 3's role's mark, which writes nothing.
+        // The preparation step's requirement, its conformer and the composition's call reach a
+        // write only through `restoreToAutomatic(.everyFan)` (D5): no new verb and no new scope.
+        "EngagementDriver.swift: handBack(fanAt: Int)",
+        "EngagementDriver.swift: handbackAccepted(fanAt: Int)",
+        "FanControlPlane.swift: prepareWritePath(enumerating: any FanEnumerating)",
+        "SMCFanControlPlane.swift: prepareWritePath(enumerating: any FanEnumerating)",
+        "HelperComposition.swift: prepareWritePath()",
     ]
 
     /// Every function in the helper that could reach a firmware write: the `async` ones,

@@ -128,6 +128,10 @@ struct CycleOverlapTests {
 /// detected. The control below runs the identical fixture without the cancellation and
 /// asserts the write **does** happen, so the pair says "this path reaches the write, and
 /// cancelling it is what stops it" rather than "nothing happened".
+///
+/// The pair's fan reads **automatic** — `.modeReclaimed` — because only a reclaimed mode is
+/// re-engaged since ADR 0014: the driver's first step refuses a fan whose raw mode is not `0`,
+/// so a target divergence on a fan still in manual is re-commanded with no mode write.
 @Suite("A cancelled sweep does not acquire a fan")
 struct CancelledSweepTests {
 
@@ -136,10 +140,10 @@ struct CancelledSweepTests {
     /// stopped, and `attempts` contains `.engageManualControl(fan: 0)`.
     @Test("A sweep cancelled inside its read never re-engages manual control")
     func aCancelledSweepDoesNotReEngage() async throws {
-        let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
+        let plane = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)])
         let sensing = GatedFanStateSensing(plane)
         let machine = ReclamationMachine(
-            plane: plane, fans: [0: .held(at: 1_800)], sensing: sensing)
+            plane: plane, fans: [0: .automatic(at: 1_800)], sensing: sensing)
         try await machine.hold(fan: 0, commanding: 2_400)
 
         let sweep = Task { await machine.watchdog.cycle() }
@@ -167,10 +171,10 @@ struct CancelledSweepTests {
     /// The control: the same fixture, not cancelled, reaches the write.
     @Test("The same divergence re-engages manual control when nothing was cancelled")
     func anUncancelledSweepDoesReEngage() async throws {
-        let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
+        let plane = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)])
         let sensing = GatedFanStateSensing(plane)
         let machine = ReclamationMachine(
-            plane: plane, fans: [0: .held(at: 1_800)], sensing: sensing)
+            plane: plane, fans: [0: .automatic(at: 1_800)], sensing: sensing)
         try await machine.hold(fan: 0, commanding: 2_400)
 
         let sweep = Task { await machine.watchdog.cycle() }
@@ -189,7 +193,7 @@ struct CancelledSweepTests {
     /// `SafetyLog.reclamationAbandonedOnCancellation(fan:)`. The line then claims a control
     /// state the firmware contradicts in the very fixture the guard was written against.
     ///
-    /// The scenario above is a `ReclamationDivergence.targetDiverged`, not a
+    /// This scenario, unlike the pair above, is a `ReclamationDivergence.targetDiverged`, not a
     /// `.modeReclaimed`: the firmware holds fan 0 at 1,800 RPM in `.manual` while Aeolus
     /// believes it commanded 2,400. Abandoning the re-assert there leaves the fan **off**
     /// Apple's thermal management holding a target Aeolus never wrote — so a log line saying
@@ -248,7 +252,8 @@ struct CancelledSweepTests {
     /// one-way switch, so a gated loop would only gate its first iteration.
     @Test("Sleep-wake cancellations do not exhaust the re-assert budget")
     func cancellationsDoNotExhaustTheBudget() async throws {
-        let machine = ReclamationMachine(fans: [0: .held(at: 1_800)])
+        // Reclaimed, so the write the budget was spent on is the re-engagement.
+        let machine = ReclamationMachine(fans: [0: .automatic(at: 1_800)])
         try await machine.hold(fan: 0, commanding: 2_400)
 
         for _ in 0..<ReclamationLimits.reassertAttemptBudget {

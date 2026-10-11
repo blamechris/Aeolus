@@ -22,7 +22,7 @@ struct ReclamationWatchdogRecoveryTests {
     /// test above is about the latch rather than about divergence being ignored.
     @Test("Below the ceiling, the same divergence is re-asserted")
     func belowTheCeilingItReasserts() async throws {
-        let machine = ReclamationMachine(fans: [0: .held(at: 1_800)])
+        let machine = ReclamationMachine(fans: [0: .automatic(at: 1_800)])
         try await machine.hold(fan: 0, commanding: 2_400)
 
         await machine.watchdog.cycle()
@@ -88,7 +88,7 @@ struct ReclamationWatchdogRecoveryTests {
                     writes: .honoured,
                     targetWrites: .refused(reason: "the firmware refused the target"))
             ],
-            fans: [0: .held(at: 1_800)])
+            fans: [0: .automatic(at: 1_800)])
         try await machine.hold(fan: 0, commanding: 2_400)
 
         await machine.watchdog.cycle()

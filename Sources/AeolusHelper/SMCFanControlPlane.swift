@@ -240,13 +240,20 @@ struct SMCFanControlPlane: FanControlPlane {
         throw FanControlPlaneError.controlPathNotBuilt
     }
 
-    func engageManualControl(of fan: CommandableFan) async throws {
+    func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
         throw FanControlPlaneError.controlPathNotBuilt
     }
 
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
         throw FanControlPlaneError.controlPathNotBuilt
+    }
+
+    /// Does nothing, and that is the requirement on a plane that cannot write: no enumeration,
+    /// no key-info read, no force-key read and no restore. The step's body is the E4 branch's
+    /// (ADR 0014 D5, slice B1), and arrives with the `.built` that makes it reachable.
+    func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation? {
+        nil
     }
 
     // MARK: - Decoding

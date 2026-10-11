@@ -56,6 +56,12 @@ struct ReclamationMachine<Writes: FanControlPlane> {
     let holder = ConnectionID()
     let watchdog: ReclamationWatchdog<Writes>
 
+    /// § 3, on the same plane and latch, so that the registration the driver owes it (#181) is
+    /// observable and its latched cycle can bridge what § 5 left registered. No test cycles it
+    /// unless it is about that: its stages read no temperature, so a cycle is blind, and a
+    /// blind latched cycle still takes back whatever is registered.
+    let emergency: ThermalEmergency<Writes>
+
     /// Everything § 5 said about itself, with levels.
     let safetyLog = RecordedLog()
 
@@ -73,13 +79,27 @@ struct ReclamationMachine<Writes: FanControlPlane> {
         restorer = RecordingFanRestorer()
         leases = LeaseFixture.authority(
             restorer: restorer, thermalEmergency: latch, clock: leaseClock)
+        let log = SafetyLog(recording: { [safetyLog] in safetyLog.append($0, $1) })
+        let telemetry = CuratedCriticalTemperatures(plane: writes, set: .mac16x5)
+        emergency = ThermalEmergency(
+            telemetry: telemetry,
+            sightings: CriticalTemperatureCache(source: telemetry, clock: leaseClock),
+            writer: SafetyActorWriter(plane: writes, level: .thermalEmergency),
+            leases: leases,
+            latch: latch,
+            handbackReadBack: LeaseFixture.reconciliation(over: plane),
+            log: log)
+        let writer = SafetyActorWriter(plane: writes, level: .reclamationWatchdog)
         watchdog = ReclamationWatchdog(
             sensing: sensing,
-            writer: SafetyActorWriter(plane: writes, level: .reclamationWatchdog),
+            writer: writer,
+            engagement: EngagementDriver(
+                writer: writer, leases: leases, latch: latch, emergency: emergency,
+                clock: leaseClock, log: log),
             leases: leases,
             latch: latch,
             ledger: ledger,
-            log: SafetyLog(recording: { [safetyLog] in safetyLog.append($0, $1) })
+            log: log
         )
     }
 }
@@ -500,9 +520,14 @@ actor InterferingFanStateSensing: FanControlPlane {
         if moment == .restoreWrite { await fireOnce() }
     }
 
-    func engageManualControl(of fan: CommandableFan) async throws {
-        try await plane.engageManualControl(of: fan)
+    func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
+        let step = try await plane.engageManualControl(of: fan)
         if moment == .engageWrite { await fireOnce() }
+        return step
+    }
+
+    func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation? {
+        await plane.prepareWritePath(enumerating: fans)
     }
 
     @discardableResult

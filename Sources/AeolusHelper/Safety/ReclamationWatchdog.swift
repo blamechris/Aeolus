@@ -31,11 +31,13 @@ import FanKit
 /// Reclamation mid-emergency means a more competent authority — one that can also throttle
 /// the SoC, which Aeolus never can — reached the same destination first.
 ///
-/// Asked in `diverged(_:fanAt:)` before a re-assert and again by `reassert(_:fanAt:attempt:)`
-/// after its writes (`currentRuling()`, via `SafetyArbiter.ruling(for:incumbent:)`), never by a
-/// second `if temperature > ceiling`. The latch over-refuses (safe) but lags a ceiling crossing
-/// by up to one § 3 cycle, so a re-assert can still be issued into that cycle; the re-check
-/// after the writes undoes one the latch engaged underneath them.
+/// Asked in `diverged(_:fanAt:)` before a re-assert, by the `EngagementDriver` before and after
+/// every step of its mode write, and again by `reassert(_:fanAt:attempt:)` after its command
+/// write (`currentRuling()`, via `SafetyArbiter.ruling(for:incumbent:)`), never by a second
+/// `if temperature > ceiling`. The latch over-refuses (safe) but lags a ceiling crossing by up
+/// to one § 3 cycle, so a re-assert can still be issued into that cycle; the re-checks after the
+/// writes undo one the latch engaged underneath them, and the driver's § 3 registration covers
+/// an undo the firmware refuses (#181).
 /// reclamation-watchdog.md § *"The above-ceiling rule is the arbiter, not an `if`"*.
 ///
 /// ## Reads are strictly sequential, and that is #134's answer for this issue
@@ -66,8 +68,8 @@ import FanKit
 ///   comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
 ///   Relocating prose cannot relieve `type_body_length`, which counts this body's code: about
-///   66 lines of headroom remain before its error at 350. New behaviour belongs in value
-///   types and the `EngagementDriver`
+///   56 lines of headroom remain before its error at 350 (294 code lines since #181). New
+///   behaviour belongs in value types and the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
 ///   [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of this space.
 actor ReclamationWatchdog<Plane: FanControlPlane> {
@@ -80,6 +82,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// Level 3's ungoverned writer. § 8 cannot reach it: `SafetyActorWriter` holds no
     /// `RampGovernor` and has no property one could be assigned to.
     private let writer: SafetyActorWriter<Plane>
+
+    /// What the re-assert engages through, and what every restore here hands back through: the
+    /// entitlement around each step, the § 3 registration, and the undo
+    /// ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md) D2, D4; #181).
+    private let engagement: EngagementDriver<Plane>
 
     /// The authority on whether a fan in `held` is still Aeolus's to hold — asked in every
     /// `examine(fanAt:)`, ADR 0009 D2 — and what `finaliseRelease(fanAt:because:)` revokes.
@@ -115,6 +122,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     init(
         sensing: any FanStateSensing,
         writer: SafetyActorWriter<Plane>,
+        engagement: EngagementDriver<Plane>,
         leases: LeaseAuthority,
         latch: ThermalEmergencyLatch,
         ledger: ReclamationLedger,
@@ -122,6 +130,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     ) {
         self.sensing = sensing
         self.writer = writer
+        self.engagement = engagement
         self.leases = leases
         self.latch = latch
         self.ledger = ledger
@@ -132,9 +141,9 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
 
     /// Registers a fan that has just been taken off automatic control.
     ///
-    /// Called by whoever performs `FanControlPlane.engageManualControl(of:)` — E3's control
-    /// plane, once it exists — at the same point it calls
-    /// `ThermalEmergency.manualControlEngaged(_:)`.
+    /// Called by whoever engages a fan, once `EngagementDriver.engageManualControl(of:)` has
+    /// returned — level 6's `apply`, once it exists. The driver has already registered the fan
+    /// with § 3 (`ThermalEmergency.manualControlEngaged(_:)`) by then.
     ///
     /// ## The ordering is normative: call this **after** the `F<n>Md` write has landed
     ///
@@ -551,7 +560,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
 
         let attempt = fan.reassertAttempts + 1
         held[index]?.reassertAttempts = attempt
-        await reassert(commanded, fanAt: index, attempt: attempt)
+        await reassert(
+            commanded, fanAt: index, attempt: attempt, reengaging: divergence == .modeReclaimed)
     }
 
     /// One bounded attempt to take the fan back, below the ceiling.
@@ -569,8 +579,15 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// that half-landed case restores at once.
     /// reclamation-watchdog.md § *"The two writes are not one step, and are not caught
     /// together"*.
+    ///
+    /// ## Only a reclaimed mode is re-engaged
+    ///
+    /// The mode write runs ADR 0014 D3's unlock through the driver, whose first step refuses a
+    /// fan whose raw mode is not `0` — so it is issued only for `.modeReclaimed`. A fan still in
+    /// manual whose target diverged is re-commanded alone, after the same entitlement the driver
+    /// asks before every step (#181), and the post-write ruling covers both.
     private func reassert(
-        _ commanded: CommandedTarget, fanAt index: Int, attempt: Int
+        _ commanded: CommandedTarget, fanAt index: Int, attempt: Int, reengaging: Bool
     ) async {
         let permit: CommandableFan
         do {
@@ -635,21 +652,33 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // whatever count is actually there. Floored at zero so a concurrent reset —
         // `convergence` zeroes this — cannot leave it negative and hand the fan an extra try.
         guard !Task.isCancelled else {
-            if let spent = held[index]?.reassertAttempts {
-                held[index]?.reassertAttempts = max(0, spent - 1)
-            }
+            // Through the value type, so a fan released meanwhile refunds nothing and the
+            // return below is the only thing that follows.
+            held[index]?.refundReassertAttempt()
             log.reclamationAbandonedOnCancellation(fan: index)
             return
         }
 
         do {
-            // Re-engage before re-commanding. The system took this fan back, so it is on
-            // automatic control: writing `F<n>Tg` without first writing `F<n>Md` would put
-            // a number on the wire that nothing honours.
-            try await writer.engageManualControl(of: permit)
+            // Re-engage before re-commanding a reclaimed fan: it is on automatic control, and
+            // writing `F<n>Tg` without first writing `F<n>Md` would put a number on the wire
+            // that nothing honours. The driver asks the ruling and the lease before every step
+            // — #181's pre-engage ruling — and has undone any step it took by the time it
+            // throws. A fan still in manual is asked the same entitlement before its command.
+            if reengaging {
+                try await engagement.engageManualControl(of: permit)
+            } else {
+                try await engagement.requireEntitlement(for: permit)
+            }
+        } catch let refusal as EngagementRefusal where refusal.yieldsTheFan {
+            // Not § 5's fan any more: `diverged`'s refusal path, without the attempt's write.
+            log.reclamationReassertYielded(fan: index, refusal: refusal)
+            await restoreAndForget(fanAt: index)
+            return
         } catch {
-            // The fan is still on Apple's thermal management, which is the safe state. The
-            // attempt is spent and the budget is what bounds the trying.
+            // The driver has handed back any step it took, so the fan is on Apple's thermal
+            // management — or, if that undo was refused, registered with § 3, and the driver
+            // said so at `.fault`. The attempt is spent and the budget is what bounds the trying.
             log.reclamationWriteFailed(
                 verb: "re-engage manual control of", fan: index,
                 detail: String(describing: error))
@@ -661,7 +690,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // both re-fetches below restore before they stop, where the envelope one only stops:
         // this write may have landed after the release's own restore, and nothing else knows.
         guard held[index] != nil else {
-            log.reclamationReleasedMidReassert(fan: index, during: "its manual-control write")
+            log.reclamationReleasedMidReassert(fan: index, during: "its first write")
             await restoreAndForget(fanAt: index)
             return
         }
@@ -691,13 +720,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             attempt: attempt,
             budget: ReclamationLimits.reassertAttemptBudget)
 
-        // **Verify after acting.** § 3 can latch during either write above, and check-then-
-        // act cannot be made atomic across two actors — see `currentRuling()`. If it did,
-        // this mechanism has just taken a fan off automatic control that level 2 wants on
-        // it, and nothing else will correct that: `ThermalEmergency.fire(_:from:)` empties
-        // its own registry as it goes and nothing re-registers a fan with it, so § 3's next
-        // cycle will not bridge this one. The undo is therefore this mechanism's own, and it
-        // resolves in the safe direction.
+        // **Verify after acting.** § 3 can latch during the command write above, and check-
+        // then-act cannot be made atomic across two actors — see `currentRuling()`. If it did,
+        // this mechanism has just commanded a fan level 2 wants on automatic control. The undo
+        // is this mechanism's own and resolves in the safe direction; if the firmware refuses
+        // it, the driver's § 3 registration is what bridges the fan in the emergency (#181).
         guard await currentRuling().permitsWrite else {
             log.reclamationUndoneAfterEmergencyLatched(fan: index)
             await finaliseRelease(fanAt: index, because: .systemReclaimed)
@@ -783,10 +810,14 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// automatic control under a live lease with nothing watching it. `HelperFanRestorer` also
     /// tells § 5 before its write, and unlike checking the entry's episode after the write,
     /// forgetting first needs no identity `HeldFan` does not carry.
+    ///
+    /// **§ 3 is deregistered by the hand-back, for all three callers** (#181): a restore the
+    /// firmware accepts marks the fan owed § 3's read-back, and a refused one leaves it in § 3's
+    /// registry. § 3's yield needs it most — a latched § 3 bridges what is registered.
     private func restoreAndForget(fanAt index: Int) async {
         held[index] = nil
         do {
-            try await writer.restoreToAutomatic(.fan(index))
+            try await engagement.handBack(fanAt: index)
         } catch {
             log.reclamationWriteFailed(
                 verb: "restore", fan: index, detail: String(describing: error))
@@ -817,9 +848,12 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// next cycle read `.modeReclaimed` on a sibling and **re-engaged manual control on a
     /// fan with no lease behind it**. Their ledger entries are cleared rather than marked:
     /// they were not reclaimed by anything, they were given up by this mechanism.
+    ///
+    /// The restore is the driver's hand-back, so § 3 is deregistered as `restoreAndForget`
+    /// describes (#181); the siblings are the lease core's, whose restorer tells § 3 itself.
     private func finaliseRelease(fanAt index: Int, because cause: FanRestoreCause) async {
         do {
-            try await writer.restoreToAutomatic(.fan(index))
+            try await engagement.handBack(fanAt: index)
         } catch {
             log.reclamationWriteFailed(
                 verb: "restore", fan: index, detail: String(describing: error))

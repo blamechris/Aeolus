@@ -597,8 +597,8 @@ extension SafetyLog {
             """
             The thermal emergency latch engaged while § 5 was re-asserting fan \(fan), so \
             the re-assert is being undone and the fan returned to automatic control. Level 2 \
-            outranks level 3, and nothing else would have corrected this: § 3 empties its \
-            own registry as it fires, so its next cycle would not have bridged this fan.
+            outranks level 3. If the firmware refuses the undo, the fan stays registered with \
+            § 3, whose next latched cycle bridges it.
             """
         )
     }
@@ -1523,6 +1523,89 @@ extension SafetyLog {
             Could not register for system power notifications: \
             \(String(describing: error)). Nothing will return the fans to automatic control \
             before this machine sleeps, and § 1's TTL is the only remaining path back.
+            """
+        )
+    }
+}
+
+// MARK: - The engagement driver and the write path's preparation (ADR 0014)
+
+extension SafetyLog {
+
+    /// An engagement reached `.engaged`, registered with § 3, and kept its entitlement.
+    func engagementEngaged(fan: Int, steps: Int, waited: Duration) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) came off automatic control after \(steps) step(s), \(waited) after its \
+            first. It is registered with § 3, whose next emergency bridges it.
+            """
+        )
+    }
+
+    /// An engagement was refused — by the entitlement, the plane or the yield budget.
+    func engagementRefused(fan: Int, steps: Int, detail: String) {
+        emit(
+            .notice,
+            """
+            The engagement of fan \(fan) was refused after \(steps) step(s): \(detail). Any \
+            step it issued has been undone.
+            """
+        )
+    }
+
+    /// The undo of a refused engagement was itself refused.
+    ///
+    /// `.fault`: the fan may be off automatic control with nothing holding it. What is left
+    /// watching it is § 3, which keeps a fan this driver registered until a read confirms it
+    /// automatic — the reason the registration precedes the after-check (#181).
+    func engagementUndoRefused(fan: Int, detail: String) {
+        emit(
+            .fault,
+            """
+            Could not undo the engagement of fan \(fan): \(detail). The fan may still be off \
+            automatic control; if it came off, § 3 keeps it registered and bridges it in the \
+            next thermal emergency.
+            """
+        )
+    }
+
+    /// § 5's re-assert was refused by its entitlement, because the fan is no longer § 5's.
+    func reclamationReassertYielded(fan: Int, refusal: EngagementRefusal) {
+        emit(
+            .notice,
+            """
+            § 5's re-assert of fan \(fan) was refused, \(refusal): a higher level holds the \
+            fans, or no lease covers this one, and any step it took has been undone. Handing \
+            it back rather than spending another attempt, and **not** recording it as \
+            reclaimed by the system.
+            """
+        )
+    }
+
+    /// What the write path's preparation step found at bring-up, and what it did.
+    ///
+    /// `.fault` when the enumeration failed or the machine-wide restore it issued was refused:
+    /// the first means a machine-wide restore can write only the fans this process touches,
+    /// and the second that a force key may still be set. D8's start-0 check reads this line.
+    func writePathPrepared(_ report: WritePathPreparation) {
+        let enumeration =
+            report.enumeratedFans.map { "enumerated \($0.count) fan(s) \($0.sorted())" }
+            ?? "could not enumerate the fans"
+        let restore: String
+        switch report.machineWideRestore {
+        case nil: restore = "issued no restore"
+        case .landed?: restore = "issued the machine-wide restore, which landed"
+        case .refused(let detail)?:
+            restore = "issued the machine-wide restore, which was refused: \(detail)"
+        }
+        var refused = false
+        if case .refused? = report.machineWideRestore { refused = true }
+        emit(
+            report.enumeratedFans == nil || refused ? .fault : .notice,
+            """
+            The write path's preparation step \(enumeration), found the force key \
+            \(report.forceKey), and \(restore).
             """
         )
     }

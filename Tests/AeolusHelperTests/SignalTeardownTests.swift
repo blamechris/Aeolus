@@ -200,7 +200,7 @@ struct SignalTeardownTests {
         await helper.signalTeardown.run(stoppingSupervisorsWith: {
             await journal.record(.supervisorsStopped)
             // What a § 3 fire or a § 5 re-assert does, at the one moment it can still do it.
-            try? await plane.engageManualControl(of: fan)
+            _ = try? await plane.engageManualControl(of: fan)
         })
 
         #expect(

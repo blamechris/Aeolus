@@ -60,6 +60,13 @@ extension ReclamationWatchdog {
         var actualDwellCycles = 0
         /// Re-asserts issued for the current episode. Reset by convergence.
         var reassertAttempts = 0
+
+        /// Gives back an attempt booked for a write that never reached the firmware —
+        /// `reassert`'s cancellation exit. Decremented rather than assigned, and floored at
+        /// zero, so a concurrent reset cannot leave it negative and hand the fan an extra try.
+        mutating func refundReassertAttempt() {
+            reassertAttempts = max(0, reassertAttempts - 1)
+        }
         /// Divergent cycles spent on this fan before anything was ever commanded on it —
         /// the registration grace, see `gracedBeforeItsFirstCommand(_:of:fanAt:)`.
         ///
