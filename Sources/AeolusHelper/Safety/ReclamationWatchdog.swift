@@ -31,66 +31,17 @@ import FanKit
 /// Reclamation mid-emergency means a more competent authority — one that can also throttle
 /// the SoC, which Aeolus never can — reached the same destination first.
 ///
-/// That rule is enforced by asking `SafetyArbiter.ruling(for:incumbent:)` whether level 3
-/// may write while level 2 holds the fans, and the answer is no because ADR 0007 orders
-/// them that way. It is deliberately **not** a second `if temperature > ceiling` here: a
-/// bespoke comparison would be a second copy of § 3's own ceiling arithmetic, in the file
-/// least able to keep it in step, and `ThermalEmergency` already documents that a margin
-/// subtracted in two places is a margin that can disagree with itself.
-///
-/// `ThermalEmergency`'s own doc names this moment: the arbiter *"still has no production
-/// caller"* with one actor implemented, and *"that half becomes load-bearing when the
-/// reclamation watchdog (#126) and sleep/wake (#103) arrive to contend with it"*. This is
-/// that arrival. Replacing `SafetyArbiter.ruling`'s body with `return .commands` now fails
-/// `ReclamationWatchdogTests.itNeverReassertsWhileTheThermalLatchHolds` as well as the
-/// arbiter's own tests — and, because the ruling is consulted twice per re-assert, also
-/// `itUndoesAReassertWhenTheEmergencyLatchesMidWrite`.
-///
-/// **What the latch buys, stated exactly.** The incumbent is read from
-/// `ThermalEmergencyLatch`, which is engaged from the cycle § 3 fires on until a fresh
-/// reading falls a hysteresis margin below the ceiling — so this refuses to re-assert
-/// through the whole band down to `ceiling − 5 °C`, which is *longer* than "above ceiling"
-/// strictly requires. Over-refusing is the safe direction: the fan is on Apple's thermal
-/// management throughout.
-///
-/// The gap in the other direction is one cycle. A temperature crossing the ceiling is not
-/// visible here until § 3's next cycle engages the latch, so a re-assert can be issued into
-/// the first second of an emergency. Making this read a temperature of its own to close that
-/// window would add a supervisor-priority read per cycle — see
-/// [#134](https://github.com/blamechris/Aeolus/issues/134) — for a window § 3 closes within
-/// one cycle by latching, after which this mechanism refuses.
-///
-/// **What does not close it is § 3 correcting the re-assert, and an earlier version of this
-/// paragraph claimed exactly that.** It said § 3's next cycle "bridges the fan to maximum and
-/// restores it, which overrides the re-assert rather than racing it". That is false, and
-/// checkably so: `ThermalEmergency.fire(_:from:)` empties `engagedFans` as it goes, and
-/// `ThermalEmergency.manualControlEngaged(_:)` has **no caller anywhere in `Sources/`** — so
-/// a fan this mechanism re-engaged is in no registry § 3 consults, and § 3's next cycle
-/// would leave it off automatic control indefinitely. Relying on another mechanism to clean
-/// up after this one was the wrong shape regardless; the correction belongs here, and
-/// `reassert(_:fanAt:attempt:)` performs it by re-checking the ruling **after** its writes
-/// and restoring if the latch engaged underneath them.
+/// Enforced by asking `SafetyArbiter.ruling(for:incumbent:)` just before each write
+/// (`currentRuling()`), never by a second `if temperature > ceiling`. The latch over-refuses
+/// (safe) and leaves a one-cycle gap that `reassert(_:fanAt:attempt:)` closes by re-checking.
+/// reclamation-watchdog.md § *"The above-ceiling rule is the arbiter, not an `if`"*.
 ///
 /// ## Reads are strictly sequential, and that is #134's answer for this issue
 ///
-/// One fan is examined at a time, `await`ed to completion before the next begins.
-/// `SMCReadScheduler` is FIFO within `.supervisor`, and the starvation quota forces a
-/// snapshot turn after every `maxConsecutiveOvertakes`, so *N* concurrently outstanding
-/// supervisor reads delay § 3's cycle by *N* supervisor turns **plus** roughly `N/2`
-/// quota-forced snapshot turns — and a snapshot turn is 64 keys where a control-state read
-/// is three. The forced turns, not the watchdog's own reads, are what would hurt.
-///
-/// Sequential examination means this actor contributes **at most one** supervisor waiter at
-/// any instant however many fans the machine has, so § 3's cycle queues behind at most one
-/// other supervisor read and `SMCReadScheduler`'s "at most two turns" bound very nearly
-/// holds. The cost is borne here — a full sweep takes N times one read's latency — and this
-/// mechanism runs at 1 Hz against N of 1 or 2 on real hardware, so there is nothing to buy
-/// by parallelising it.
-///
-/// #134's remaining questions are untouched by this: whether § 3's cycle should outrank
-/// other supervisor reads at all, whether grant-time `refuseIfBlind` reads should be
-/// coalesced, and whether a third priority level is warranted. This issue only declines to
-/// make them worse.
+/// One fan is examined at a time, `await`ed to completion before the next, so this actor is
+/// at most one supervisor waiter on `SMCReadScheduler` however many fans there are.
+/// reclamation-watchdog.md § *"Reads are strictly sequential, and that is #134's answer for
+/// this issue"*.
 ///
 /// ## The failure asymmetry, again
 ///
@@ -107,17 +58,14 @@ import FanKit
 /// starts it. No lease can be granted in this build, so nothing registers a fan here and every
 /// cycle returns at once. E3 owns registering fans and telling this actor what it commanded.
 ///
-/// - Note: this file is over SwiftLint's 400-line warning, and it has crossed the 1000-line
-///   **error** twice: when #169/#170/#172 landed beside the registration grace, and with ADR
-///   0009 D2 (#180). Each split taken widened no state: `ReclamationDivergence` and
-///   `ReclamationLimits` are values and live in `ReclamationLimits.swift`;
-///   `primaryDivergence(of:against:)` and `actualShortfall(of:against:)` are `static` and
-///   pure and live in `ReclamationSignals.swift`; and `HeldFan` is a type, not state, and
-///   lives in `ReclamationHeldFan.swift`. Every remaining member reads or writes `held`, so
-///   moving any of it into another file would widen that state to the whole module. That
-///   state is exactly what makes `examine(fanAt:ruling:)`'s read-then-mutate reasoning
-///   checkable, and [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of
-///   this space — including what to do when the next paragraph pushes this over again.
+/// - Note: every member below reads or writes `held`, so none can move to another file
+///   without widening it. The splits already taken, and the rationale relocated out of this
+///   file's doc comments, are recorded in
+///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
+///   The limit that binds next is this body's code (`type_body_length`), not the file's
+///   line count: new behaviour belongs in value types and the `EngagementDriver`
+///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
+///   [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of this space.
 actor ReclamationWatchdog<Plane: FanControlPlane> {
 
     /// The read half of the seam. **Not a `FanControlPlane`**, so this actor cannot
@@ -186,54 +134,27 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     ///
     /// ## The ordering is normative: call this **after** the `F<n>Md` write has landed
     ///
-    /// "At the same point" says nothing about which side, and only one of the two sides
-    /// works. E3 will be written against this comment, so the constraint is stated here
-    /// rather than discovered later.
-    ///
-    /// Registering *before* the mode write is not a harmless reordering. This mechanism runs
-    /// on its own 1 Hz loop, so a `cycle()` can land in the window between the registration
-    /// and the write. What it reads there is `mode == .automatic` on a fan with nothing
-    /// commanded, which is `.modeReclaimed` — the strongest primary signal there is — and
-    /// it reaches `diverged(_:fanAt:)`'s "nothing to re-assert" branch and
-    /// `finaliseRelease(fanAt:because:)` with `.systemReclaimed`: the fan restored, **every
-    /// lease on the machine revoked**, and a `.fault` line blaming the operating system —
-    /// milliseconds after a client was granted control it never got to use.
-    /// `ReclamationWatchdogRecoveryTests.aFanWithNoCommandedTargetIsRestored` and
-    /// `fallingBackClearsTheWholeRegistry` are that path, arrived at on purpose.
+    /// Register only after the `F<n>Md` write has landed. Registered first, a `cycle()` can read
+    /// `.modeReclaimed` on a fan with nothing commanded, restore it and revoke **every lease on
+    /// the machine** milliseconds after granting one.
+    /// reclamation-watchdog.md § *"The ordering is normative: call this **after** the
+    /// `F<n>Md` write has landed"*.
     ///
     /// ## The far side of the write is not free either, and the grace is what pays for it
     ///
-    /// An earlier version of this comment said the window after the mode write was safe, and
-    /// that a grace flag on `HeldFan` was therefore unnecessary. That was true of the
-    /// `.targetDiverged` case and of nothing else: both `.modeReclaimed` and
-    /// `.targetUnreadable` are decided *before* `primaryDivergence(of:against:)` consults
-    /// `commanded` at all, so a cycle landing in the `F<n>Md` write-to-read-back lag, or on
-    /// one unreadable `F<n>Tg`, reached the same whole-machine revocation from the ordering
-    /// this comment mandates. A write returning successfully and a read reflecting it are
-    /// different facts, and the lag between them is unmeasured on Apple Silicon.
-    ///
-    /// `gracedBeforeItsFirstCommand(_:of:fanAt:)` closes that window — #147's second remedy,
-    /// implemented rather than declined — by giving a fan with nothing commanded on it
-    /// `ReclamationLimits.blindCyclesBeforeDivergence` cycles before the primary signal
-    /// reaches the terminal action. So the ordering above is what this method requires, and
-    /// the grace is what makes obeying it survivable rather than merely correct on paper.
-    /// The two sides are not symmetrical after it: registering early still costs the client
-    /// its lease, three cycles later instead of one.
-    ///
-    /// `ReclamationRegistrationWindowTests` is the whole window, one test per answer
-    /// `primaryDivergence(of:against:)` can give inside it, so this comment claims no more
-    /// than the suite shows.
+    /// `gracedBeforeItsFirstCommand(_:of:fanAt:)` gives a fan with nothing commanded
+    /// `ReclamationLimits.blindCyclesBeforeDivergence` cycles before the primary signal reaches
+    /// the terminal action. Registering early still costs the client its lease, three cycles
+    /// later instead of one.
+    /// reclamation-watchdog.md § *"The far side of the write is not free either, and the
+    /// grace is what pays for it"*.
     ///
     /// ## The parameter stays a `CommandableFan`
     ///
-    /// Only `fan.index` is read, and with `HeldFan.permit` gone there is nothing else it is
-    /// stored into — so tidying this to `manualControlEngaged(fanAt index: Int)` looks free.
-    /// It is not: a `CommandableFan` can only be minted from a `FanEnvelope` that passed its
-    /// bounds gate, so the type is what makes registration lawful only from a caller that
-    /// was actually authorised to write to the fan. Widening it would let anything put a fan
-    /// into a registry whose entries this mechanism will later re-engage manual control on.
-    /// `ThermalEmergency.manualControlEngaged(_:)` takes the same parameter for the same
-    /// reason.
+    /// Only `fan.index` is read, but a `CommandableFan` can only be minted from an envelope
+    /// that passed its bounds gate, so the type is what makes registration lawful only from a
+    /// caller authorised to write the fan. reclamation-watchdog.md § *"The parameter stays a
+    /// `CommandableFan`"*.
     ///
     /// ## Re-registering a fan already held changes nothing about it
     ///
@@ -494,55 +415,23 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     ///
     /// ## The window this closes
     ///
-    /// `manualControlEngaged(_:)` mandates registration **after** the `F<n>Md` write lands,
-    /// and an earlier version of that comment claimed the far side of the write was
-    /// therefore safe without any grace. It is not, and the claim covered exactly one of the
-    /// three ways `primaryDivergence(of:against:)` can answer for a fan on which nothing has
-    /// been commanded yet:
-    ///
-    /// - `.targetDiverged` — unreachable, because that case is behind
-    ///   `guard let commanded else { return nil }`. This is the only case the old claim
-    ///   analysed, and it is the one that never needed a grace.
-    /// - `.modeReclaimed` — reached **before** `commanded` is consulted at all. A write that
-    ///   has returned successfully is not the same fact as a read that reflects it, and the
-    ///   `F<n>Md` write-to-read-back latency on Apple Silicon is unmeasured — `docs/SMC-
-    ///   RESEARCH.md`'s observed section is empty on this point. One cycle landing inside
-    ///   that lag reads automatic.
-    /// - `.targetUnreadable` — reached before `commanded` as well. A single unreadable
-    ///   `F<n>Tg` on a fan nothing has been commanded on took the terminal action on the
-    ///   spot, with none of the tolerance `cycleCouldNotSee(fanAt:detail:)` gives a fan that
-    ///   could not be read at all.
-    ///
-    /// Both of the latter two ended at `diverged(_:fanAt:)`'s "nothing to re-assert" branch:
-    /// the fan restored, **every lease on the machine revoked**, and a `.fault` line blaming
-    /// the operating system — milliseconds after a client was granted control it never got
-    /// to use. That is the defect [#147](https://github.com/blamechris/Aeolus/issues/147)
-    /// names, arrived at from the ordering it mandates rather than from the one it forbids.
+    /// On a fan with nothing commanded, `.modeReclaimed` (the write-to-read-back lag) and
+    /// `.targetUnreadable` are decided before `commanded` is consulted, and either would take
+    /// the terminal action: restore, revoke **every lease on the machine**, blame the OS (#147).
+    /// reclamation-watchdog.md § *"The window this closes"*.
     ///
     /// ## Why the failure asymmetry inverts here, and only here
     ///
-    /// This file's rule is that over-firing is the safe direction: handing a fan back to
-    /// Apple's thermal management costs cooling nobody chose, while under-firing leaves a
-    /// fan pinned at a speed nothing honours, which is `CLAUDE.md` rule 6. **On a fan with
-    /// no commanded target there is no such speed.** Nothing Aeolus picked is on the wire,
-    /// so the pinned-fan hazard the asymmetry is built around does not exist, and what
-    /// over-firing costs instead is the whole-machine revocation above — losing control that
-    /// is in fact still held, which is rule 6 in the direction people forget.
-    /// `reportShortfall(_:fanAt:)` declines the terminal action on the same grounds.
-    ///
-    /// So the tolerance is granted **only while `commanded` is `nil`**. The first
-    /// `commandedTarget(_:)` ends it for the rest of that registration, and a commanded fan
-    /// is judged exactly as strictly as before — including on the very next cycle.
+    /// With no commanded target there is no pinned-fan hazard, so over-firing costs the client
+    /// a lease it still held. The tolerance is granted only while `commanded` is `nil`; the first
+    /// `commandedTarget(_:)` ends it.
+    /// reclamation-watchdog.md § *"Why the failure asymmetry inverts here, and only here"*.
     ///
     /// ## Bounded by `blindCyclesBeforeDivergence`, and not by a fourth constant
     ///
-    /// The same number, because it is the same question: how many 1 Hz cycles may pass
-    /// without this mechanism being able to confirm a fan is ours before that becomes
-    /// divergence. Three cycles is three seconds — long against any plausible firmware
-    /// read-back lag and short against anything a user would notice — and a genuine
-    /// reclamation of an uncommanded fan is still restored and reported, just on the third
-    /// cycle rather than the first. `ReclamationLimitsTests` already holds that constant
-    /// under a literal ceiling, so this window cannot be widened into minutes either.
+    /// The same constant as `cycleCouldNotSee(fanAt:detail:)`, because it is the same question.
+    /// reclamation-watchdog.md § *"Bounded by `blindCyclesBeforeDivergence`, and not by a
+    /// fourth constant"*.
     ///
     /// Synchronous, so there is no suspension point between reading the counter and writing
     /// it back and no re-fetch is owed — `reportShortfall(_:fanAt:)`'s reason.
@@ -571,24 +460,10 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     ///
     /// ## Why this no longer reaches the terminal action
     ///
-    /// It used to, and that was the most consequential defect in this file. The secondary
-    /// signal is only ever *evaluated* when the primary has converged — `examine` returns
-    /// early on primary divergence — so reaching this function means `F<n>Md` reads manual
-    /// and `F<n>Tg` reads back exactly what Aeolus commanded. **The firmware is holding our
-    /// target.** Nothing has been reclaimed.
-    ///
-    /// A fan that is not reaching a target the firmware is faithfully holding is a fan that
-    /// *cannot* reach it: an obstruction, a failing bearing, a declared `F<n>Mx` the part
-    /// cannot actually achieve. The three things the mechanism could do about that are all
-    /// wrong. Re-asserting rewrites the number that is already correct. Restoring to
-    /// automatic makes it worse — Apple's thermal management will spin the same fan against
-    /// the same obstruction. And marking `isReclaimedBySystem` tells the user the system
-    /// took a fan it did not take, which is `CLAUDE.md` rule 6 in the direction people
-    /// forget: claiming to have *lost* control that is in fact still held.
-    ///
-    /// So it reports. The user is told, which is what `docs/SAFETY.md` § 5 asks for — *"and
-    /// either way tells the user"* — and the fan stays under the control it is genuinely
-    /// still under.
+    /// The secondary signal is only evaluated once the primary has converged, so the firmware
+    /// is holding Aeolus's target and nothing was reclaimed: a fan that cannot reach it is
+    /// reported, and neither re-asserted, restored nor marked `isReclaimedBySystem`.
+    /// reclamation-watchdog.md § *"Why this no longer reaches the terminal action"*.
     ///
     /// ## `==` and not `>=`
     ///
@@ -679,34 +554,17 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     ///
     /// ## It reads a fresh envelope, and that is deliberate
     ///
-    /// Not the permit taken when the fan came off automatic control — and `HeldFan` keeps no
-    /// permit at all, so there is not one to reach for. Permits do not expire
-    /// — `FanWriteAuthorisation.swift` is explicit that freshness is *"policy held by
-    /// review, not by the type"* — and § 3 depends on that, because its maximum write has
-    /// to be available while the machine is above ceiling and reading may be what has
-    /// failed. This branch is the opposite case: it runs below the ceiling, and it has just
-    /// successfully read this fan's control state, so reading works. A mechanism that can
-    /// read has no excuse to command a fan against bounds nobody has checked since the
-    /// system took it back.
-    ///
-    /// That is also what `CommandedTarget` withholding an `AuthorisedFanTarget` is for: it
-    /// makes the re-assert explicitly fallible rather than free, and this is where the
-    /// fallibility is spent.
-    ///
-    /// A re-assert that cannot obtain an envelope **restores rather than commanding** —
-    /// #126's acceptance criterion, and `FanControlPlane`'s §2 rule that the only action a
-    /// fan with untrusted bounds is subject to is the bounds-free restore verb.
+    /// A re-assert reads a fresh envelope rather than reusing a stored permit (`HeldFan` keeps
+    /// none), and one that cannot obtain an envelope restores rather than commanding (#126).
+    /// reclamation-watchdog.md § *"It reads a fresh envelope, and that is deliberate"*.
     ///
     /// ## The two writes are not one step, and are not caught together
     ///
-    /// `engageManualControl` then `command` were wrapped in a single `do`/`catch`, which
-    /// made a firmware that accepted the first and refused the second indistinguishable from
-    /// one that refused both. Those are opposite states: the second leaves the fan on
-    /// Apple's thermal management, which is safe, and the first leaves it **off** automatic
-    /// control holding whatever `F<n>Tg` the system last wrote — a fan pinned at a speed
-    /// nobody chose, which is the worst reachable state in this project. They are caught
-    /// separately, and the half-landed case restores immediately rather than waiting for a
-    /// budget to run out.
+    /// `engageManualControl` and `command` are caught separately: a firmware that took the first
+    /// and refused the second leaves the fan off automatic control at a speed nobody chose, so
+    /// that half-landed case restores at once.
+    /// reclamation-watchdog.md § *"The two writes are not one step, and are not caught
+    /// together"*.
     private func reassert(
         _ commanded: CommandedTarget, fanAt index: Int, attempt: Int
     ) async {
@@ -938,21 +796,9 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// The terminal action: hand the fan to Apple's thermal management and drop the leases
     /// that claimed it.
     ///
-    /// The restore is attempted whatever else failed, and consumes nothing a failing
-    /// machine might be unable to supply — ADR 0007's keystone. The ledger entry for `index`
-    /// is **kept**, and what it says depends on which caller got here, because since #140
-    /// the two are no longer one bit:
-    ///
-    /// - `.systemReclaimed` — the system does hold this fan now, that is what the user
-    ///   should be told, and it stays true until something deliberately takes it off
-    ///   automatic control again.
-    /// - `.supervisorBlind` — the helper could not read the fan, so this entry asserts
-    ///   **nothing** about who holds it. It records that § 5 gave the fan up and why, which
-    ///   is what `ManualControlAvailability.Reason.supervisorBlind` reports and what
-    ///   `FanState.isReclaimedBySystem` deliberately does not.
-    ///
-    /// Either way it is kept rather than cleared, for the reason `clearReclaimed(fanAt:)`
-    /// states: a fan this mechanism has just handed back is not a fan known to be fine.
+    /// The restore is attempted whatever else failed. The ledger entry for `index` is **kept**,
+    /// as `.systemReclaimed` or `.supervisorBlind` depending on the caller (#140).
+    /// reclamation-watchdog.md § *"The ledger entry `finaliseRelease` keeps"*.
     ///
     /// Every lease is revoked rather than the one covering this fan, for
     /// `ThermalEmergency.fire(_:from:)`'s reason: a lease is a claim over a *set* of fans,
