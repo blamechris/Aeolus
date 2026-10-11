@@ -12,7 +12,9 @@
 /// fans that are demonstrably fine) or as none (the inversion `FanRestoring` calls out —
 /// *"it converts 'the write was refused' into 'the teardown completed'"*). `.everyFan` also
 /// clears the Apple Silicon force key, which is a machine-wide act and not this path's to
-/// perform: § 7's panic verb owns it, and E5.4d wires it to the signal handlers.
+/// perform: § 7's panic verb owns it, and E5.4d wires it to the signal handlers. That a
+/// `.fan(index)` restore leaves the key alone is true only of a plane that cannot write: on one
+/// that can, it clears the key when it hands back the last fan the plane engaged (ADR 0014 D5).
 ///
 /// **Through `SafetyActorWriter`, never through the plane directly.** [ADR
 /// 0008](../../../docs/ADR/0008-write-authorisation.md) makes every write to a *fan* carry a

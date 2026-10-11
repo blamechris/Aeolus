@@ -318,7 +318,9 @@ writes turns, and it was re-run in the change that added them** (slice A4 of
 longest write turn is an engagement's first step on the force-key path: the raw `F<n>Md`
 pre-state, a fresh key info, the mode write, the force key's key info and its write — five
 round trips (`WatchdogLimits.writeTurnRoundTrips`). A Y-write and a `commandTarget` take three;
-a restore takes one write per key and no read, three on `Mac16,5` for the machine-wide one. One
+a restore takes one write per key and no read, three on `Mac16,5` for the machine-wide one.
+**Five is the longest turn only for a machine of up to four fans:** the machine-wide restore is
+fans + 1 writes, so a fifth fan makes it six and this term is re-run again. One
 engagement in progress is one outstanding reader while it waits for a turn and none while it
 sleeps between steps, so writes enter N as readers with a longer turn, not as new readers.
 

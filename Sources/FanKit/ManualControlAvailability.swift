@@ -165,13 +165,15 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// over it would be `CLAUDE.md` rule 6 — claiming control of a fan nothing has
         /// confirmed is listening.
         ///
-        /// The fan may still be pinned at a speed Aeolus is no longer tracking, and nothing
-        /// is watching it: every path that reaches this state clears `docs/SAFETY.md` § 5's
-        /// registry — `ReclamationWatchdog.finaliseRelease(fanAt:because:)` empties it before
-        /// it revokes, and `manualControlReleased(fanAt:)` drops the entry — so § 5 has no
-        /// entry left to cycle over. That gap is
-        /// [#181](https://github.com/blamechris/Aeolus/issues/181)'s, which owns
-        /// re-registration.
+        /// The fan may still be pinned at a speed Aeolus is no longer tracking: every path that
+        /// reaches this state clears `docs/SAFETY.md` § 5's registry —
+        /// `ReclamationWatchdog.finaliseRelease(fanAt:because:)` empties it before it revokes,
+        /// and `manualControlReleased(fanAt:)` drops the entry — so § 5 has no entry left to
+        /// cycle over. What can still watch it is § 3: since
+        /// [#181](https://github.com/blamechris/Aeolus/issues/181) a fan the engagement driver
+        /// engaged stays in § 3's registry until a read confirms it automatic, and § 3's next
+        /// emergency bridges it. A fan § 5 never engaged is
+        /// [#343](https://github.com/blamechris/Aeolus/issues/343)'s gap.
         ///
         /// **One route out short of a restart, since
         /// [#189](https://github.com/blamechris/Aeolus/issues/189)**, and only for the lease

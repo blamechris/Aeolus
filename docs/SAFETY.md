@@ -99,7 +99,9 @@ lease that has to be actively held.
   affected fan to automatic.
 
 **That bullet ended "and clears the Apple Silicon force key" until #104, and it was wrong.** An
-ordinary per-lease teardown restores only the fans that lease covered and leaves `Ftst` untouched:
+ordinary per-lease teardown restores only the fans that lease covered and, on a plane that cannot
+write, leaves `Ftst` untouched — on one that can, a `.fan(n)` restore also clears the key when it
+hands back the last fan the plane engaged (ADR 0014 D5), never while another depends on it:
 `KeystoneRestoreAttempt.restoreOnce(fanAt:)` issues `restoreToAutomatic(.fan(index))` and never
 `.everyFan`, and the type's own documentation gives the reason. `Ftst` is machine-wide rather than
 per-fan (§ 4), so clearing it belongs to the machine-wide restore verb — and is withheld from a
@@ -1044,10 +1046,11 @@ The order is deliberate. The lease is asked *after* the read because every teard
 lease before it restores, so a read that saw that restore land is followed by a question that
 sees the lease gone; asked first, the same restore looks like the system taking the fan back.
 It is asked *before* either signal, and before an unreadable cycle is counted, because the
-tolerances this section grants are for fans Aeolus holds. **What it does not close:** the lease
-is asked once per examination, not inside the re-assert's writes, so a lease that lapses while
-a re-assert is in flight is re-asserted once and handed back on the next cycle — one second,
-not permanently. Checking before and after each write is ADR 0014's, and is not built.
+tolerances this section grants are for fans Aeolus holds. Since #181 it is asked inside the
+re-assert too: ADR 0014's engagement driver asks it, with the precedence ruling, before and after
+every step of the mode write, and before the command of a fan that needs no mode write. **What
+it does not close:** nothing asks it after the command write, so a lease that lapses during that
+write is re-asserted once and handed back on the next cycle — one second, not permanently.
 
 This is a correctness rule as much as a safety one. A UI that lies about fan state is
 worse than a UI that reports an error, because the user acts on it.
@@ -1055,8 +1058,10 @@ worse than a UI that reports an error, because the user acts on it.
 *Tested by:* `Tests/AeolusHelperTests/ReclamationWatchdogTests.swift`,
 `ReclamationWatchdogRecoveryTests.swift`, `ReclamationWatchdogStalenessTests.swift`,
 `ReclamationRegistrationWindowTests.swift`, `ReclamationLeaseLapseTests.swift`,
-`ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift` and
-`ReclamationSupervisorTests.swift` — mostly through `ScriptedControlPlane`, with four bespoke
+`ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
+`ReclamationSupervisorTests.swift` and `ReclamationEmergencyRegistrationTests.swift`, with the
+engagement driver the re-assert engages through in `EngagementDriverTests.swift` and
+`EngagementEpochTests.swift` — mostly through `ScriptedControlPlane`, with four bespoke
 seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express: a refused
 envelope, a read held open so overlapping reads would be visible, a read or write that runs a
 side effect while it is suspended, and a control-state read answered from a scripted sequence

@@ -177,6 +177,26 @@ from the head of `e4/bring-up` and installs it over the current one. It is drive
   - **The driver's undo takes the fan's index, never the permit.** It joins `permitFreeFunctions`,
     because it reaches a write only through `restoreToAutomatic`.
 
+  **As built on `main` (slice A4 of #9, with #181):**
+  - § 5's re-assert calls the driver; `SafetyActorWriter.engageManualControl(of:)` is the
+    one-step pass-through the driver steps through, and nothing else in `Sources/` calls it.
+    `EngagementDriverTests.onlyTheDriverEngages` holds that.
+  - § 5 runs the unlock only for a reclaimed mode. D3's first step refuses a fan whose raw mode is
+    not `0`, so a fan still in manual whose target diverged is re-commanded alone, after the
+    driver's `requireEntitlement(for:)`.
+  - `permitBearingVerbs` gained the driver's `engageManualControl(of:)`, `firstStep(of:)` and
+    `requireEntitlement(for:)`, and § 3's role requirement `manualControlEngaged(_:)`.
+    `permitFreeFunctions` gained `handBack(fanAt:)` (the undo), `handbackAccepted(fanAt:)`, the
+    preparation step's requirement and its conformer, and `HelperComposition.prepareWritePath()`.
+  - A restore no longer erases an engagement's epoch record, so a restore of the engaging fan or a
+    machine-wide one supersedes it; a fresh engagement that finds an earlier one's record out of
+    date retries its first step once, after the entitlement (see `EngagementDriver.firstStep`).
+  - The restore's plan is decided when it is issued, inside its turn (`PlaneWriteLedger`).
+  - **B1 preconditions this leaves.** `PlaneWriteLedger` records the force key's presence but
+    not the declared type and size of each `F<n>Md` and of `Ftst`, which D7's encoding of a
+    restore needs; B1 adds them to the preparation record. And B1's production step must call
+    `recordModeWriteIssued(fanAt:)` for every mode write it issues.
+
 ### D3 — The engagement sequence, which is the hypothesis under test
 
 **Raw values, and where the fold remains.** The plane's own mode reads, and D8's recorder, use the
@@ -866,10 +886,12 @@ Each run's findings are recorded, and the branch revised, before the next.
   - The plane verb, the driver and `GovernedFanWriter.engageUnderLease(of:)` each take one permit;
     the plane verb gains a return value.
   - In `WriteVerbAllowlistTests`, the driver's engage and `engageUnderLease(of:)` join
-    `permitBearingVerbs`.
+    `permitBearingVerbs` — as built, with the driver's `firstStep(of:)` and
+    `requireEntitlement(for:)` and § 3's role requirement `manualControlEngaged(_:)` (D2).
   - Joining `permitFreeFunctions`, because each reaches a write only through `restoreToAutomatic`:
     the driver's undo, which takes an index and never the permit, and the preparation step's
-    requirement and its conformer.
+    requirement and its conformer — as built, with § 3's `handbackAccepted(fanAt:)` and the
+    composition's `prepareWritePath()`.
   - `WriteAuthorisationTests` is untouched.
 - **`FanControlPlaneError` gains `.fanSetUnknown`.**
 - **ADR 0004's write-time sentence and its assumption row are amended** to cover forward writes

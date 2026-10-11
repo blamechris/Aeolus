@@ -199,13 +199,17 @@ symbol, for the reason the D2 entries below are:
 
 What remains is D1's own residual, stated as D1 requires: the checks are not atomic with the
 write. It is no longer permanent on a refused undo, because §3 holds the fan until a read
-confirms it automatic.
+confirms it automatic. One instance of it is worth naming: ADR 0014's restore epoch is recorded
+*at* an engagement's first step, so a restore requested between the driver's check and that
+step's turn does not supersede it. Every genuine restore ends the lease or latches §3, and the
+driver asks both again after the step and undoes —
+`EngagementEpochTests.aRestoreBeforeTheFirstStepIsCaughtAfterIt` is that case.
 
 **D2 landed in [#342](https://github.com/blamechris/Aeolus/pull/342)
 ([#180](https://github.com/blamechris/Aeolus/issues/180)), in every part this ADR names — and it
-is dormant until a caller registers fans with §5** — rows A4 (the engagement driver and #181)
-and A6 (the level-6 `apply`) of [#9](https://github.com/blamechris/Aeolus/issues/9)'s slice
-plan. No lease can be granted in this build, so `held` is always empty and the check has
+is dormant until a caller registers fans with §5** — row A6 (the level-6 `apply`) of
+[#9](https://github.com/blamechris/Aeolus/issues/9)'s slice plan, now that A4 (the engagement
+driver and #181) has landed. No lease can be granted in this build, so `held` is always empty and the check has
 nothing to judge.
 `ReclamationDivergence.leaseLapsed` exists, and `ReclamationWatchdog.examine(fanAt:)` decides it
 on every examination: the control-state read is taken, then
@@ -341,8 +345,8 @@ mechanism exists: the correction belongs to the actor that performed the write.
   since #181: the second pre-write ruling is asked by the engagement driver, and both of D1's
   discharges — registration with §3 and the undo — are built. Hard rule 2 no longer depends on a
   release notification being remembered; the notification is still sent, and is now a hint. The
-  check is dormant until a caller registers fans: #9's slice-plan rows A4 (the engagement
-  driver and #181) and A6 (the level-6 `apply`). The "As
+  check is dormant until a caller registers fans: #9's slice-plan row A6 (the level-6
+  `apply`). The "As
   built" section says exactly which parts, so this bullet is not the audit.
 - **No XPC version bump.** Nothing here crosses the boundary. The eventual durable
   per-fan-unavailability wire reason belongs to #102 and is expected to be an additive,
