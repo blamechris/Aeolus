@@ -284,8 +284,9 @@ struct EngagementDriverTests {
     ///
     /// **Mutations:** in `ReclamationWatchdog.reassert`, engage through
     /// `writer.engageManualControl(of: permit)`, through `writer` and `.engageManualControl` on
-    /// two lines, through `writer.engageManualControl (of: permit)`, or through a method
-    /// reference `let step = writer.engageManualControl`. Run: red on each.
+    /// two lines, through `writer.engageManualControl (of: permit)`, through a method reference
+    /// `let step = writer.engageManualControl`, through an optional or force-unwrapped copy of
+    /// the writer (`maybe?.` / `maybe!.`), or through `(writer).`. Run: red on each.
     @Test("Nothing in the helper engages a fan except through the driver")
     func onlyTheDriverEngages() throws {
         var uses: Set<String> = []
@@ -313,10 +314,17 @@ struct EngagementDriverTests {
                 .engageManualControl(of: fan)
             _ = try await spaced.engageManualControl (of: fan)
             let step = referenced.engageManualControl
+            _ = try await chained?.engageManualControl(of: fan)
+            _ = try await unwrapped!.engageManualControl(of: fan)
+            _ = try await (parenthesised).engageManualControl(of: fan)
+            _ = try await ( padded ) . engageManualControl(of: fan)
             // commented.engageManualControl(of: fan)
             """
         #expect(
             try SeamScanner.receivers(of: "engageManualControl", inSource: source)
-                == ["split", "spaced", "referenced"])
+                == [
+                    "split", "spaced", "referenced", "chained", "unwrapped", "parenthesised",
+                    "padded",
+                ])
     }
 }

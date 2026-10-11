@@ -266,7 +266,8 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// beside it, so the fan whose lease the driver checks is the fan written.
     ///
     /// A step under a restore epoch older than the current one throws
-    /// `FanControlPlaneError.superseded` and writes nothing.
+    /// `FanControlPlaneError.superseded` and writes nothing. One that finds the epoch moved after
+    /// its mode write, before the force key's, throws `.supersededAfterWrite`.
     func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep
 
     /// Commands a target speed, `F<n>Tg`.

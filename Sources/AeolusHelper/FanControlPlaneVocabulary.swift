@@ -190,9 +190,15 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
 
     /// A restore was requested after this engagement's first step, so it writes nothing more
     /// (ADR 0014 D4's restore epoch) — a restore of any fan, this one's and a machine-wide one
-    /// included. Thrown before anything is written. A restore requested before the first
-    /// step's turn is not seen by the epoch; `PlaneWriteLedger` states that residual.
+    /// included. Thrown only by the step's admission, before it reads or writes anything; the
+    /// same discovery after a write is `.supersededAfterWrite`. A restore requested before the
+    /// first step's turn is not seen by the epoch; `PlaneWriteLedger` states that residual.
     case superseded
+
+    /// A restore was requested during this step's turn, **after its mode write was issued** —
+    /// D3 step 3's re-check before `Ftst = 1` — so the force key is not written. The mode write
+    /// may have landed: unlike `.superseded`, this is never retried and always undone.
+    case supersededAfterWrite
 
     /// The fan's raw `F<n>Md` was not `0` before the first write, so it is not Aeolus's to take
     /// (D3 step 1). Nothing was written.

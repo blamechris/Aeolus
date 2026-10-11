@@ -336,6 +336,11 @@ actor ScriptedControlPlane: FanControlPlane {
     /// How many times the preparation step ran.
     private(set) var preparations = 0
 
+    /// Run once, synchronously, inside the next step that wrote its mode and is about to write
+    /// the force key — the instant a production restore's epoch bump can arrive from another
+    /// thread mid-turn (ADR 0014 D3 step 3's re-check). See `duringNextModeWrite(_:)`.
+    private var duringModeWrite: (@Sendable () -> Void)?
+
     /// The machine-wide Apple Silicon force key, `Ftst`, as the **firmware** holds it: set, or
     /// clear.
     ///
@@ -396,6 +401,11 @@ actor ScriptedControlPlane: FanControlPlane {
 
     /// Sets or clears the force key without recording an attempt, for `setMode`'s reason: the
     /// state under test is one the firmware was left in, not one this process wrote.
+    /// Runs `effect` inside the next step, between its mode write and its force-key write.
+    func duringNextModeWrite(_ effect: @escaping @Sendable () -> Void) {
+        duringModeWrite = effect
+    }
+
     func setForceKey(_ isSet: Bool) {
         isForceKeySet = isSet
         if !isSet { heldUnderForceKey.removeAll() }
@@ -649,7 +659,11 @@ extension ScriptedControlPlane {
             if case .readsBack(let scripted) = unlock { raw = scripted }
             return try EngagementRules.afterReadBack(rawMode: raw, fanAt: index)
         case .setForceKey:
-            guard ledger.isCurrent(fanAt: index) else { throw FanControlPlaneError.superseded }
+            duringModeWrite?()
+            duringModeWrite = nil
+            guard ledger.isCurrent(fanAt: index) else {
+                throw FanControlPlaneError.supersededAfterWrite
+            }
             let step = try EngagementRules.afterForceKeyWrite(answerForceKeyWrite())
             ledger.recordForceKeyAccepted()
             return step

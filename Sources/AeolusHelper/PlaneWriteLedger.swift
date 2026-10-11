@@ -125,7 +125,8 @@ enum EngagementRules {
 /// step, so a restore requested between the driver's entitlement check and the first step's
 /// turn does not supersede it. That is ADR 0009 D1's residual — the check is not atomic with the
 /// write — and it is discharged the way D1 prescribes: every genuine restore path either ends
-/// the lease or latches § 3, and the driver asks both again after the step and undoes.
+/// the lease (immediately before or right after the restore) or latches § 3, and the driver
+/// asks both again after the step and undoes.
 final class PlaneWriteLedger: Sendable {
 
     /// How a step was admitted: an engagement's first step records the epoch it runs under.
@@ -236,13 +237,19 @@ final class PlaneWriteLedger: Sendable {
     }
 
     /// Issues a `.fan(index)` restore, inside its turn: the fan's mode write, then the force
-    /// key's clear if no engaged fan depends on the key any more — never while another does,
-    /// including one whose engagement completed after this restore was requested.
+    /// key's clear if nothing depends on the key any more — never while another engaged fan
+    /// does, including one whose engagement completed after this restore was requested, and
+    /// never while an engagement under the **current** epoch is still waiting for its yield: it
+    /// began after this restore was requested, so this restore does not supersede it, and it
+    /// may be the one that set the key. One under an older epoch is superseded anyway.
     func issueRestore(fanAt index: Int) -> RestorePlan {
         state.withLock { state in
             state.engaged.remove(index)
             if SMCKey.fanMode(index) != nil { state.touched.insert(index) }
-            let clearsKey = state.forceKeySet && state.engaged.isEmpty
+            let current = state.epoch
+            let clearsKey =
+                state.forceKeySet && state.engaged.isEmpty
+                && !state.inProgress.values.contains(current)
             if clearsKey { state.forceKeySet = false }
             return RestorePlan(modeFans: [index], clearsForceKey: clearsKey, fanSetUnknown: false)
         }

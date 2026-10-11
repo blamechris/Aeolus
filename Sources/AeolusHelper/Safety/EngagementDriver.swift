@@ -87,8 +87,9 @@ enum EngagementAftermath: Sendable, Hashable {
 /// more dangerous spelling** (ADR 0009 D1): a lease can end, or § 3 latch, between a check and
 /// the step's turn — and the epoch, which an engagement records *at* its first step, does not
 /// see a restore requested before that turn. That residual is discharged by acting and then
-/// checking: every genuine restore ends the lease or latches § 3, the entitlement is asked
-/// again after the step, and the fan is undone. The undo is a write the firmware can refuse,
+/// checking: every genuine restore ends the lease (immediately before or right after the
+/// restore) or latches § 3, the entitlement is asked again after the step, and the fan is
+/// undone. The undo is a write the firmware can refuse,
 /// so the fan is registered with § 3 **before** it — after `.engaged`, before the after-check;
 /// otherwise just before the undo — and stays in the registry § 3's next latched cycle bridges,
 /// until a read confirms it automatic.
@@ -96,10 +97,11 @@ enum EngagementAftermath: Sendable, Hashable {
 /// ## The undo
 ///
 /// On any throw once a step may have written, the fan is registered with § 3 and handed back
-/// (`handBack(fanAt:)`). A throw before any step answered gets neither when nothing was
-/// written: the entitlement refused before the first step or its retry, a first step
-/// superseded twice, or a first step refused as `.notAutomatic` — the fan was someone else's,
-/// and writing it back to automatic would be ADR 0011's contest.
+/// (`handBack(fanAt:)`) — `.supersededAfterWrite` included, whose mode write may have landed. A
+/// throw before any step answered gets neither when nothing was written: the entitlement
+/// refused before the first step or its retry, a first step superseded at its admission twice,
+/// or a first step refused as `.notAutomatic` — the fan was someone else's, and writing it back
+/// to automatic would be ADR 0011's contest.
 struct EngagementDriver<Plane: FanControlPlane>: Sendable {
 
     private let writer: SafetyActorWriter<Plane>
@@ -189,26 +191,32 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
         log.engagementEngaged(fan: index, steps: steps, waited: began.duration(to: clock.now))
     }
 
-    /// The first step, retried **once** when the plane answers `.superseded`.
+    /// The first step, retried **once** when the plane's admission answers `.superseded`.
     ///
-    /// The plane admits a step before it reads or writes anything, so a superseded first step
-    /// wrote nothing. And it can be superseded only by a record an earlier engagement of this
-    /// fan left behind — that engagement's undo is itself a restore — because this one has no
-    /// record of its own yet. The retry is safe because the entitlement is asked again first:
-    /// a restore that was real ended the lease (a lease teardown, § 4, § 7, § 6's exit) or came
-    /// with § 3's latch, and either refuses here. A second `.superseded` is a restore requested
-    /// during the retry itself, and stops the engagement with nothing written.
+    /// `.superseded` is thrown only by the step's admission, before it reads or writes anything,
+    /// so the first step wrote nothing. And it can be superseded there only by a record an
+    /// earlier engagement of this fan left behind — that engagement's undo is itself a restore —
+    /// because this one has no record of its own yet. The retry is safe because the entitlement
+    /// is asked again first: a restore that was real ended the lease (immediately before or
+    /// right after the restore: a lease teardown, § 4, § 7, § 6's exit, § 5's `finaliseRelease`)
+    /// or came with § 3's latch, and either refuses here. A second `.superseded` is a restore
+    /// requested during the retry itself, and stops the engagement with nothing written.
+    ///
+    /// **`.supersededAfterWrite` is never retried.** It is found after the step's mode write,
+    /// which may have landed, so it goes to the undo like any other refusal of a step that wrote.
     private func firstStep(of fan: CommandableFan) async throws -> EngagementStep {
         do {
             return try await writer.engageManualControl(of: fan)
         } catch FanControlPlaneError.superseded {
+            log.engagementFirstStepRetried(fan: fan.index)
             try await requireEntitlement(for: fan)
             return try await writer.engageManualControl(of: fan)
         }
     }
 
     /// Whether a throw before any step answered left nothing of this engagement's written: the
-    /// retry's entitlement refusal, or a first step refused before its write.
+    /// retry's entitlement refusal, or a first step refused before its write — at its admission
+    /// (`.superseded`) or at its pre-state (`.notAutomatic`). `.supersededAfterWrite` is not one.
     private static func wroteNothing(_ error: any Error) -> Bool {
         if error is EngagementRefusal { return true }
         switch error as? FanControlPlaneError {

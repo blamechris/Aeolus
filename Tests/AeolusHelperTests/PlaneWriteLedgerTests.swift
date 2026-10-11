@@ -64,6 +64,26 @@ struct PlaneWriteLedgerTests {
         #expect(ledger.engagedFans == [1])
     }
 
+    /// D5's gate, for an engagement that has not joined yet: a restore of fan 0 is requested,
+    /// fan 1's first step is then admitted under the **current** epoch, sets the key and awaits
+    /// its yield. That restore does not supersede it, so when it is issued it must not clear the
+    /// key fan 1 may have set.
+    ///
+    /// **Mutation:** revert `issueRestore(fanAt:)`'s `clearsKey` to
+    /// `state.forceKeySet && state.engaged.isEmpty`. Run: red.
+    @Test("A restore's turn leaves the key an engagement under the current epoch may have set")
+    func aRestoreLeavesAKeyACurrentEngagementSet() throws {
+        let ledger = PlaneWriteLedger(enumerated: [0, 1], forceKey: .present)
+        ledger.restoreRequested()
+        #expect(try ledger.admitStep(fanAt: 1) == .first)
+        ledger.recordForceKeyAccepted()
+
+        let plan = ledger.issueRestore(fanAt: 0)
+
+        #expect(plan.writes == [.mode(fan: 0)], "the key was cleared under an engagement it began")
+        #expect(ledger.isForceKeySet)
+    }
+
     // MARK: - The touched set
 
     /// A fan is touched from its first mode write, before anything confirms it: an accepted

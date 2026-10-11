@@ -1446,10 +1446,12 @@ extension SafetyLog {
             return "The machine-wide restore landed, so the force key was cleared."
         case .refused:
             return """
-                The machine-wide restore came back refused: at least one of its writes was \
-                refused, or its fan set was unknown — observed rather than merely unconfirmed. \
-                The force key's clear was attempted, so whether the key is still set is not \
-                known. On a build with no SMC write path that is every sleep.
+                The machine-wide restore came back refused — observed rather than merely \
+                unconfirmed. On a build with no SMC write path it refuses before writing \
+                anything, on every sleep, and the force key is as it was. On one that can \
+                write, at least one of its writes was refused or its fan set was unknown, and \
+                the force key's clear was attempted, so whether the key is still set is not \
+                known.
                 """
         }
     }
@@ -1562,6 +1564,20 @@ extension SafetyLog {
             """
             The engagement of fan \(fan) was refused after \(steps) step(s): \(detail). \
             \(outcome)
+            """
+        )
+    }
+
+    /// An engagement's first step was superseded at its admission — by a record an earlier
+    /// engagement of this fan left — and wrote nothing, so it is retried once (attempt 2) after
+    /// the entitlement is asked again. D3 logs every step's attempt; this is the retried one's.
+    func engagementFirstStepRetried(fan: Int) {
+        emit(
+            .notice,
+            """
+            The first step of fan \(fan)'s engagement was superseded before it wrote anything, \
+            by an earlier engagement's undo. Asking the entitlement again and retrying it once \
+            (attempt 2).
             """
         )
     }

@@ -101,7 +101,8 @@ lease that has to be actively held.
 **That bullet ended "and clears the Apple Silicon force key" until #104, and it was wrong.** An
 ordinary per-lease teardown restores only the fans that lease covered and, on a plane that cannot
 write, leaves `Ftst` untouched — on one that can, a `.fan(n)` restore also clears the key when it
-hands back the last fan the plane engaged (ADR 0014 D5), never while another depends on it:
+hands back the last fan the plane engaged (ADR 0014 D5), never while another depends on it —
+another engaged fan, or an engagement still waiting for its yield under the current epoch:
 `KeystoneRestoreAttempt.restoreOnce(fanAt:)` issues `restoreToAutomatic(.fan(index))` and never
 `.everyFan`, and the type's own documentation gives the reason. `Ftst` is machine-wide rather than
 per-fan (§ 4), so clearing it belongs to the machine-wide restore verb — and is withheld from a

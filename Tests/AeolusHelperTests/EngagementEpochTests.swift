@@ -67,6 +67,34 @@ struct EngagementEpochTests {
         #expect(await Self.forwardWrites(after: .mode(fan: 0, value: 0), on: rig.plane).isEmpty)
     }
 
+    /// **The second throw site.** A restore requested inside the first step's turn — after its
+    /// `0x82` mode write, before its `Ftst = 1` (D3 step 3's re-check) — stops the step, and the
+    /// mode write it already issued may have landed. That is `.supersededAfterWrite`: never
+    /// retried, and always registered with § 3 and undone.
+    ///
+    /// **Mutation:** delete the step-3 re-check from the scripted step. Run: red — the key is
+    /// written after the restore was requested. **Mutation:** retry `.supersededAfterWrite` in
+    /// `EngagementDriver.firstStep(of:)`. Run: red — the engagement runs on instead of stopping.
+    /// **Mutation:** count `.supersededAfterWrite` as writing nothing. Run: red — no
+    /// registration, no undo.
+    @Test("A restore inside the first step, after its mode write, is undone and never retried")
+    func aRestoreAfterTheFirstModeWriteIsUndone() async throws {
+        let rig = try await EngagementRig(unlock: .neverYields)
+        await rig.plane.duringNextModeWrite { rig.plane.ledger.restoreRequested() }
+
+        await #expect(throws: FanControlPlaneError.supersededAfterWrite) {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+
+        #expect(
+            await rig.plane.keyWrites == [.mode(fan: 0, value: 1), .mode(fan: 0, value: 0)],
+            "the force key was written after a restore was requested, or nothing was undone")
+        #expect(await rig.registry.engaged == [0], "the fan was not registered before its undo")
+        #expect(await rig.registry.accepted == [0])
+        #expect(rig.log.lines(containing: "Nothing was written").isEmpty)
+        #expect(rig.log.lines(containing: "retrying it once").isEmpty, "a written step was retried")
+    }
+
     // MARK: - The first step, and its retry
 
     /// An engagement's undo is a restore, so a fresh engagement of the same fan finds the
@@ -83,6 +111,9 @@ struct EngagementEpochTests {
                 try await rig.driver.engageManualControl(of: rig.fan(0))
             }
         }
+        // The retried attempt is logged as one (D3 logs every step's attempt), and the steps that
+        // ran are counted as before: the superseded attempt wrote nothing.
+        #expect(rig.log.lines(containing: "retrying it once (attempt 2)").count == 1)
     }
 
     /// The retry asks the entitlement first, so a restore that was real — it came with § 3's
@@ -109,7 +140,8 @@ struct EngagementEpochTests {
 
     /// **The residual the epoch cannot see** (ADR 0009 D1): a restore requested before the
     /// first step's turn is not recorded against an engagement that has not begun, so the
-    /// first step writes. A real restore ends the lease or latches § 3, and the driver's check
+    /// first step writes. A real restore ends the lease (immediately before or right after the
+    /// restore) or latches § 3, and the driver's check
     /// after the step catches it and undoes — acting and then checking, as D1 prescribes.
     @Test("A real restore before the first step's turn is caught by the check after the step")
     func aRestoreBeforeTheFirstStepIsCaughtAfterIt() async throws {

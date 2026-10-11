@@ -194,8 +194,11 @@ from the head of `e4/bring-up` and installs it over the current one. It is drive
   - The restore's plan is decided when it is issued, inside its turn (`PlaneWriteLedger`).
   - **B1 preconditions this leaves.** `PlaneWriteLedger` records the force key's presence but
     not the declared type and size of each `F<n>Md` and of `Ftst`, which D7's encoding of a
-    restore needs; B1 adds them to the preparation record. And B1's production step must call
-    `recordModeWriteIssued(fanAt:)` for every mode write it issues.
+    restore needs; B1 adds them to the preparation record. B1's production step must call
+    `recordModeWriteIssued(fanAt:)` for every mode write it issues. And B1's restore must call
+    `restoreRequested()` synchronously when it is called, **before** it waits for its scheduler
+    turn, and `issueRestore(fanAt:)` / `issueMachineWideRestore()` **inside** that turn: the
+    scripted double runs both in one actor turn, so no test on `main` can show the split.
 
 ### D3 — The engagement sequence, which is the hypothesis under test
 
@@ -272,7 +275,11 @@ twelve-way load while Apple's controller ramps `F<n>Tg`, then through the heat s
 5. **On `.engaged`**, the driver registers the fan with § 3, runs D4's after-check and returns.
    `apply` then registers the fan with § 5, commands its target, and reads `F<n>Tg` back.
 
-On any throw, the driver undoes (D4, D5) and refuses.
+On any throw, the driver undoes (D4, D5) and refuses — with two exemptions, both before anything
+of the engagement's was written: a first step refused `.notAutomatic` (undoing it would be ADR
+0011's contest), and a first step superseded at its admission, which the driver retries once after
+asking the entitlement again (as built, `EngagementDriver.firstStep`). A step superseded after its
+mode write, before `Ftst = 1`, is `.supersededAfterWrite`, and is undone.
 
 The budget is sized to the client rather than to the report: 3.5 s leaves `gatedVerb`'s 5 s room
 for the target write and its read-back. A budget that proves too short fails safe.
@@ -300,8 +307,10 @@ callers.
   engagement records the epoch at its first step. Once the epoch has moved, the engagement writes
   nothing more and throws `.superseded`.
 
-  A turn is one indivisible occupation of the connection. So no forward write lands after a
-  restore that was *requested* before that write's turn began.
+  A turn is one indivisible occupation of the connection. So no forward write **after an
+  engagement's first step** lands after a restore that was *requested* before that write's turn
+  began. The first step itself is the exception: it records the epoch, so a restore requested
+  before its turn is not seen — ADR 0009 D1's residual, below.
 - **After `.engaged`**, the driver registers the fan with § 3, then asks the entitlement again. If
   it has gone, the driver undoes.
 
@@ -313,10 +322,13 @@ force-key flag (D5), and the set of fans it has touched (D5).
 calling the window closed "would be the more dangerous spelling".
 
 - **What the epoch removes, structurally:** one race inside the plane, in which a forward write
-  lands after a restore that was requested first. A forward write that lands just ahead of a
+  of an engagement already under way lands after a restore that was requested first. A forward write that lands just ahead of a
   restore's turn is undone by that restore, which runs after it. That order is correct.
 - **What remains:** the epoch does **not** make the entitlement check atomic with the write. A
-  lease can end, or § 3 can latch, between the driver's check and the step's turn.
+  lease can end, or § 3 can latch, between the driver's check and the step's turn — and a restore
+  requested before an engagement's first step is not seen by the epoch at all. Every genuine
+  restore ends the lease (immediately before or right after the restore) or latches § 3, so the
+  driver's next check sees it.
 
   That residual is ADR 0009 D1's. It is discharged the way D1 prescribes, by acting and then
   checking: the after-check, then the undo. The undo is itself a write the firmware can refuse.
@@ -1147,6 +1159,7 @@ bump.
 | U12 | Sleep resets `Ftst` | Reported. Not depended on (D5) | Only the never-issued-keystone residual widens |
 | U13 | Apple's controller never commands above the declared `F<n>Mx` | The highest fan speed recorded under Apple's control is 3,683 RPM, against 5,777 declared (2026-08-20; key not recorded). The highest recorded `F0Tg` is 2,195 RPM. The pre-flight records `F<n>Tg` through a load and its soak | 1b's "at or above demand" fails by the excess. Aborts 9 and 1 catch it |
 | — | The preparation step can enumerate the fans and record both restore keys' types | `FNum`, `F<n>Md` and `Ftst` have read on every capture. Both are `ui8`, one byte, on 27.0.1 | `.everyFan` writes the touched set's fans and the force key, then throws `.fanSetUnknown`. An unknown key is written as one zero byte (D5, D7). Start 0 stops |
+| — | One engagement per fan at a time | True today: § 5 is the driver's only caller and its sweep is single-entrant. **Assumed and not enforced** — the ledger keeps one in-progress record per fan index, and a first-step retry that removes a stale record could remove a concurrent engagement's | An A6 precondition: before level 6 engages beside § 5, serialise engagements per fan or key the record per engagement. Also: § 5's `finaliseRelease` restores and then revokes the leases, so for that window a genuine restore has not yet ended the lease; harmless while § 5 is the only caller, and its order matters once A6 adds a concurrent one |
 | — | One lease-table entry, one production plane | True today | Concurrent leases or a second plane: re-check D4's epoch scope and D5's gate. Also, since #349: nothing refuses a grant while § 7's `.everyFan` is in flight, so a write under a lease granted in that window can be undone by it. Unreachable on `.notBuilt`; decided before A6 ([#350](https://github.com/blamechris/Aeolus/issues/350)) |
 
 Every observation above is `Mac16,5`; the write-path rows are hypotheses until D8 runs. Intel and

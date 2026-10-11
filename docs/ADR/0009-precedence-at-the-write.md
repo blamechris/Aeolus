@@ -201,7 +201,8 @@ What remains is D1's own residual, stated as D1 requires: the checks are not ato
 write. It is no longer permanent on a refused undo, because §3 holds the fan until a read
 confirms it automatic. One instance of it is worth naming: ADR 0014's restore epoch is recorded
 *at* an engagement's first step, so a restore requested between the driver's check and that
-step's turn does not supersede it. Every genuine restore ends the lease or latches §3, and the
+step's turn does not supersede it. Every genuine restore ends the lease (immediately before or
+right after the restore) or latches §3, and the
 driver asks both again after the step and undoes —
 `EngagementEpochTests.aRestoreBeforeTheFirstStepIsCaughtAfterIt` is that case.
 
