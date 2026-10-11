@@ -203,6 +203,92 @@ struct PanicPathScopeTripwireTests {
             message lands, and it may hold the keystone and the capability and nothing that \
             commands a fan — the shape E2 froze this boundary to (ADR 0014 D5).
             """)
+        // A role held as an existential can be cast back to what it wraps, and the cast need
+        // not name the type the denylist knows: `keystone as? SomeAlias`.
+        for cast in ["as?", "as!"] {
+            #expect(!code.contains(cast), "SupervisedFanAuthority.swift casts with `\(cast)`")
+        }
+    }
+
+    /// The authority's stored properties are exactly these declarations, by name **and** type.
+    ///
+    /// The denylist above names types, so a name it does not know evades it:
+    /// `typealias WholePlane = any FanControlPlane` in another file, then a stored
+    /// `WholePlane` here, reads as clean (the review of #349). An allowlist of whole
+    /// declarations cannot be evaded by a new name, because every new name is a failure.
+    /// Statics and an extension's members are scanned too: every `let` or `var` declared outside
+    /// a function body in this file.
+    ///
+    /// **Mutation:** add `typealias WholePlane = any FanControlPlane` to `FanAuthority.swift`
+    /// and `private let plane: WholePlane? = nil` to `SupervisedFanAuthority`. Run: red here and
+    /// in `nothingInSourcesAliasesAWiderRole`, and nowhere else.
+    @Test("The panic verb's type stores exactly the roles it is allowed, by name and type")
+    func theAuthorityStoresOnlyItsAllowedProperties() throws {
+        let allowed: Set<String> = [
+            "private let reading: ReadOnlyFanAuthority",
+            "private let leases: LeaseAuthority",
+            "private let reconciliation: any ReconciliationBaselineReporting",
+            "private let keystone: any KeystoneRestoring",
+            "private let writeCapability: any FanWriteCapabilityReporting",
+            "let controlGate = ControlMessageGate()",
+            "private let log: HelperLog",
+            "private static let shuttingDown = AeolusXPCFault.helperFailed(",
+        ]
+        let url = try #require(
+            try SeamScanner.swiftFiles().first {
+                $0.lastPathComponent == "SupervisedFanAuthority.swift"
+            })
+        let declared = Self.storedDeclarations(
+            in: SeamScanner.strippingComments(try String(contentsOf: url, encoding: .utf8)))
+
+        // Coverage: a scan that found nothing would pass the comparison below vacuously.
+        #expect(declared.contains("private let keystone: any KeystoneRestoring"))
+        #expect(
+            Set(declared) == allowed && declared.count == allowed.count,
+            """
+            SupervisedFanAuthority.swift declares \(declared.sorted()), not \
+            \(allowed.sorted()). It may hold the keystone and the capability and nothing that \
+            can command a fan (ADR 0014 D5). Every site below describes what it holds:
+            \(Self.checklist)
+            """)
+    }
+
+    /// Nothing under `Sources/` gives a wider role a second name.
+    ///
+    /// The allowlist above holds `SupervisedFanAuthority.swift`; this holds the names that file
+    /// could import. A `typealias` whose right-hand side names the plane, its read half, or a
+    /// writer that can command a fan is a way to spell one of them without the word.
+    @Test("No typealias anywhere in Sources renames the plane or a commanding writer")
+    func nothingInSourcesAliasesAWiderRole() throws {
+        let wider = try NSRegularExpression(
+            pattern: #"typealias\s+\w+[^=\n]*=[^\n]*\b(SMCFanControlPlane|FanControlPlane|"#
+                + #"FanStateSensing|SafetyActorWriter|GovernedFanWriter)\b"#)
+        var aliasing: [String] = []
+        for file in try SeamScanner.swiftFiles() {
+            let code = SeamScanner.strippingComments(try String(contentsOf: file, encoding: .utf8))
+            if wider.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)) != nil {
+                aliasing.append(file.lastPathComponent)
+            }
+        }
+        #expect(aliasing.isEmpty, "\(aliasing) give the plane or a commanding writer a new name")
+    }
+
+    /// Every `let`/`var` declaration outside a function body: the text at brace depth 0 and 1,
+    /// one declaration per line, whitespace collapsed.
+    private static func storedDeclarations(in code: String) -> [String] {
+        var shallow = ""
+        var depth = 0
+        for character in code {
+            if character == "{" { depth += 1 }
+            if depth <= 1, character != "{", character != "}" { shallow.append(character) }
+            if character == "}" { depth -= 1 }
+        }
+        let declaration =
+            #"^(?:(?:private|fileprivate|internal|public|package|static|"#
+            + #"nonisolated|lazy|weak|unowned)\s+)*(?:let|var)\s"#
+        return shallow.split(separator: "\n")
+            .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+            .filter { $0.range(of: declaration, options: .regularExpression) != nil }
     }
 
     // MARK: - The machine-wide scope
