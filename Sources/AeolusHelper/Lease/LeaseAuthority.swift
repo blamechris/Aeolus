@@ -559,10 +559,10 @@ actor LeaseAuthority {
 
     /// Drops every lease and restores every fan they covered.
     ///
-    /// The lease core's half of `restoreAllToAutomatic` — and, on every build that exists, the
+    /// The lease core's half of `restoreAllToAutomatic`, and on every build on `main` today the
     /// whole of what that message performs. The contract is global rather than lease-scoped, so
-    /// it additionally specifies `restoreToAutomatic(.everyFan)` on the plane; the shipped
-    /// handler deliberately issues no such call, and the decision lives at
+    /// the handler follows this with `restoreToAutomatic(.everyFan)` on a plane whose capability
+    /// is `.built` — there, not here: the decision, its gate and its order live at
     /// `SupervisedFanAuthority.restoreAllToAutomatic`. Read that before changing either.
     ///
     /// **Releasing leases is not restoring the machine**, and this paragraph was present
@@ -571,14 +571,15 @@ actor LeaseAuthority {
     /// here is one `restoreToAutomatic(.fan(index))` per fan in the sweep, through
     /// `KeystoneRestoreAttempt`. A fan another tool left in manual under no live lease is not
     /// touched, and neither is the machine-wide `Ftst` force key — `.everyFan` is the only
-    /// scope that clears it, and this is not one of its three call sites.
+    /// scope that clears it, and this is not one of its call sites; the handler is.
     ///
     /// ## The sweep is the table **and** `restoreAbandoned`
     ///
     /// Sweeps the table and `restoreAbandoned` (#189) in one `restore` call; touches nothing
-    /// foreign (ADR 0011); issues no machine-wide restore and never fails the message (#159);
-    /// and consults no per-`ConnectionID` state, the precondition for `HelperConnectionSession`'s
-    /// teardown-gate exemption (#95).
+    /// foreign (ADR 0011); issues no machine-wide restore itself — the handler does, after this,
+    /// on a plane that can write — and never fails the message (#159); and consults no
+    /// per-`ConnectionID` state, the precondition for `HelperConnectionSession`'s teardown-gate
+    /// exemption (#95).
     /// handback-ledger.md § *"`releaseEveryLease()`: what the sweep is, and what it is not"*.
     func releaseEveryLease() async {
         let dropped = table.removeAll()
@@ -827,11 +828,11 @@ actor LeaseAuthority {
     }
 
     /// Reads back every fan owed one and lifts the refusal over each that reads automatic.
-    /// `docs/SAFETY.md` § 7's second act, after `releaseEveryLease()`, and only § 7's: it is
-    /// the one caller with no keystone queued behind the read. A fan that reads manual or
-    /// will not read keeps the refusal it had, and stays owed. The set is re-read after the
-    /// await, so a refusal renewed meanwhile is not lifted. Why each of these:
-    /// handback-ledger.md § *"Accepted is not automatic"*.
+    /// `docs/SAFETY.md` § 7's last act, after the lease release and any machine-wide keystone:
+    /// the one caller with no keystone queued behind the read, because § 7 issues its own
+    /// first. A fan that reads manual or will not read keeps its refusal, and stays owed. The
+    /// set is re-read after the await, so a refusal renewed meanwhile is not lifted. Why each
+    /// of these: handback-ledger.md § *"Accepted is not automatic"*.
     func confirmAcceptedHandbacks() async {
         let owed = handbackAcceptedUnconfirmed
         guard !owed.isEmpty else { return }

@@ -96,11 +96,18 @@ actor ControlStateGatePlane: FanControlPlane {
     /// Mode reads parked right now.
     private(set) var heldModeReads = 0
 
-    init(_ wrapped: ScriptedControlPlane) {
+    /// - Parameters:
+    ///   - wrapped: The scripted firmware every verb but the mode read goes straight to.
+    ///   - capability: What the plane reports, fixed for its life as it is for any executable.
+    ///     `.notBuilt` is how a composed test asks the graph the question the production plane
+    ///     answers today, with the firmware's record still there to read; every write is still
+    ///     forwarded, so a write a `.notBuilt` graph should never issue is recorded if it is.
+    init(_ wrapped: ScriptedControlPlane, capability: FanWriteCapability = .built) {
         self.wrapped = wrapped
+        self.writeCapability = capability
     }
 
-    nonisolated var writeCapability: FanWriteCapability { .built }
+    nonisolated let writeCapability: FanWriteCapability
 
     /// Sets what mode reads do from now on. Leaving `.held` releases any read parked there.
     func modeReads(_ behaviour: ModeReads) {

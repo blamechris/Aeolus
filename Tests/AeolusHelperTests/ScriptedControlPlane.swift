@@ -280,6 +280,18 @@ actor ScriptedControlPlane: FanControlPlane {
     private var fans: [Int: FanCondition]
     private(set) var attempts: [Attempt] = []
 
+    /// The machine-wide Apple Silicon force key, `Ftst`: set, or clear.
+    ///
+    /// **Minimal by design**, and the minimum is the point
+    /// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md), slice A5): one flag, moved two
+    /// ways. `setForceKey(_:)` sets it as a helper that died holding the key left it, recording
+    /// no attempt; and a `restoreToAutomatic(.everyFan)` the stage honours clears it, as every
+    /// `.everyFan` must (D5). Nothing else touches it. No write sets it and no `.fan(n)` clears
+    /// it, because the unlock, the engaged set and `.fan(n)`'s clear when that set empties are
+    /// the driver's model, which is A4's. A test that needs those needs that model, not more of
+    /// this flag.
+    private(set) var isForceKeySet = false
+
     /// - Parameters:
     ///   - fans: The machine's fans and their state before anything is written. A fan
     ///     absent from this dictionary does not exist, and every operation naming it is
@@ -307,6 +319,12 @@ actor ScriptedControlPlane: FanControlPlane {
     /// misattribution ADR 0011 exists to prevent.
     func setMode(_ mode: FirmwareFanMode, ofFan index: Int) {
         fans[index]?.mode = mode
+    }
+
+    /// Sets or clears the force key without recording an attempt, for `setMode`'s reason: the
+    /// state under test is one the firmware was left in, not one this process wrote.
+    func setForceKey(_ isSet: Bool) {
+        isForceKeySet = isSet
     }
 
     private var stage: Stage { stages[min(stageIndex, stages.count - 1)] }
@@ -406,6 +424,9 @@ actor ScriptedControlPlane: FanControlPlane {
     /// available in exactly the cycle where every read has failed. A mock that refused this
     /// while blind would make the blindness scenario untestable and would quietly agree
     /// with an implementation that read before restoring.
+    ///
+    /// `.everyFan` also clears the force key, and only when the stage honours the write: a
+    /// refused or discarded restore leaves it exactly as it found it, like every other field.
     func restoreToAutomatic(_ scope: FanRestoreScope) async throws {
         attempts.append(.restoreToAutomatic(scope))
         let indices: [Int]
@@ -416,10 +437,15 @@ actor ScriptedControlPlane: FanControlPlane {
         case .everyFan:
             indices = Array(fans.keys)
         }
+        var landed = false
         try applyWrite { fans in
             for index in indices {
                 fans[index]?.mode = .automatic
             }
+            landed = true
+        }
+        if landed, scope == .everyFan {
+            isForceKeySet = false
         }
     }
 

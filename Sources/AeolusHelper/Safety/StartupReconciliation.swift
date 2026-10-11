@@ -526,8 +526,8 @@ actor StartupReconciliation<Plane: FanControlPlane>: ForeignManualControlSensing
     /// See `ForeignManualControlSensing`. One `.supervisor` turn per fan, sequentially, for
     /// `reconcile()`'s reason. No budget: its one caller is the lease core's
     /// `confirmAcceptedHandbacks()`, which only § 7's panic verb reaches, after the lease
-    /// teardown, with no keystone queued behind it — a read that never returns holds that
-    /// client's reply and leaves the fans refused, and holds nothing else.
+    /// teardown and § 7's own keystone, with none queued behind it — a read that never returns
+    /// holds that client's reply and leaves the fans refused, and holds nothing else.
     ///
     /// Built on `handbackReadings(of:)`, so the lease core and § 3 share one read loop and
     /// cannot disagree about what a fan read. What this adds is the log line for a throw,

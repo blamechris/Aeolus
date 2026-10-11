@@ -56,12 +56,24 @@ import FanKit
 /// bounds-free restore verb, holds for safety actors exactly as it holds for the control
 /// loop. Bypassing § 8 is not bypassing § 2, and conflating those two would be ADR 0007's
 /// conflict 4 with the classes swapped.
-struct SafetyActorWriter<Plane: FanControlPlane>: Sendable {
+///
+/// ## It is also a `KeystoneRestoring`
+///
+/// The conformance is its existing restore verb. § 7's panic verb is handed one of these at
+/// `.panicRestore`, **typed as the role** (`SupervisedFanAuthority`, ADR 0014 D5): only that
+/// role is restore-only. This type still has `commandMaximum(of:)`, `command(_:of:)` and
+/// `engageManualControl(of:)`, and anything holding it by its own type can call them. The
+/// level is provenance only; nothing reads it. It is not a writing protocol shared with
+/// `GovernedFanWriter`, which still declares no restore verb, so the exclusion above stands.
+struct SafetyActorWriter<Plane: FanControlPlane>: KeystoneRestoring {
 
     private let plane: Plane
 
-    /// Which safety actor is writing. Provenance for a log line and for the arbiter; never
-    /// an input to the arithmetic, because there is no arithmetic here to vary.
+    /// Which safety actor is writing: provenance only. Nothing reads it today — no log line
+    /// prints it, and the one caller of `SafetyArbiter.ruling(for:incumbent:)`,
+    /// `ReclamationWatchdog`, names its own level rather than asking a writer — so it is kept
+    /// for whoever makes the arbiter govern these writes. It is never an input to the
+    /// arithmetic, because there is no arithmetic here to vary.
     let level: SafetyActorLevel.Ungoverned
 
     init(plane: Plane, level: SafetyActorLevel.Ungoverned) {

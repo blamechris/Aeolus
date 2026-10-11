@@ -372,8 +372,16 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             watchdog: reclamationWatchdog, log: safetyLog)
         leaseExpirySupervisor = LeaseExpirySupervisor(authority: leases, log: leaseLog)
 
+        // § 7's two roles of the plane, and never the plane (ADR 0014 D5): the keystone, at the
+        // `.panicRestore` level every other machine-wide restore is issued at, and the same
+        // capability seam the lease core and the snapshot read. The level is provenance only:
+        // nothing reads `SafetyActorWriter.level` (see the restorer's note above). The writer
+        // can command a fan; the authority holds it only as `KeystoneRestoring`, which cannot.
+        // A whole plane here would put `commandTarget(_:)` one `await` from a client message.
         let authority = SupervisedFanAuthority(
-            reading: reading, leases: leases, reconciliation: reconciliation, log: log)
+            reading: reading, leases: leases, reconciliation: reconciliation,
+            keystone: SafetyActorWriter(plane: plane, level: .panicRestore),
+            writeCapability: plane, log: log)
         self.authority = authority
 
         // § 4, at ADR 0007's level 4 and through `SafetyActorWriter` like every other

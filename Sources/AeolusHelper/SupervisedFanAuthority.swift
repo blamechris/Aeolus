@@ -26,21 +26,28 @@ import Foundation
 /// — so the sentence above stays true of this build and stops being true of the build that can
 /// write, which is the whole point of it.
 ///
-/// ## It holds no plane, no capability reporter, and cannot write
+/// ## It holds no plane, and the one write it can name is the keystone
 ///
-/// It holds the read path and the lease core. Not a `FanControlPlane`: that would put
-/// `commandTarget(_:)` one `await` from a decoded client message, which is the shape E2
-/// froze this seam to prevent — see `FanControlPlane` and `FanStateSensing` for the same
-/// argument made twice already. And not a `FanWriteCapabilityReporting` either, which is a
-/// correction rather than an omission. An earlier draft of this file stored one and
-/// documented it as *"why `apply` refuses"*, while `apply`'s own documentation said the
-/// opposite two screens below: the refusal is **not** sourced from the seam, because there
-/// is no control loop here for a capable seam to reach. A stored property no method reads,
-/// carrying a doc comment that asserts a gate, is the same defect as the literal this file
-/// replaced — so it is gone, and `supervisedApplyRefusesEvenWhenTheSeamCanWrite` pins the
-/// behaviour it claimed to explain.
+/// It holds the read path, the lease core, and two narrow roles of the plane:
+/// `KeystoneRestoring`, whose one verb is `restoreToAutomatic(_:)`, and
+/// `FanWriteCapabilityReporting` ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)
+/// D5). Not a `FanControlPlane`: that would put `commandTarget(_:)` one `await` from a decoded
+/// client message, which is the shape E2 froze this seam to prevent — see `FanControlPlane`
+/// and `FanStateSensing` for the same argument made twice already. A restore is the one write
+/// a client message may cause, because its only expressible effect is the safe state, and § 7
+/// issues it only on a plane whose capability is `.built`.
+/// `AuthorityRoleTripwireTests` holds this file to the two roles.
 ///
-/// The capability gate that *is* consulted lives one layer down, in
+/// **The capability reporter is back, and this time something reads it.** An earlier draft of
+/// this file stored one and documented it as *"why `apply` refuses"*, while `apply`'s own
+/// documentation said the opposite two screens below: the refusal is **not** sourced from the
+/// seam, because there is no control loop here for a capable seam to reach. A stored property
+/// no method read, carrying a doc comment that asserted a gate, was the same defect as the
+/// literal this file replaced, so it was removed as decoration. It returned for § 7, whose
+/// panic verb reads it before the machine-wide restore. `apply` still does not read it, and
+/// `supervisedApplyRefusesEvenWhenTheSeamCanWrite` still pins that.
+///
+/// The capability gate that stops a forward write lives one layer down, in
 /// `LeaseAuthority.acquireLease`, where a refusal still stops a write from being attempted.
 /// E3 adds the control loop; it does not add it here by accident first.
 ///
@@ -52,7 +59,8 @@ import Foundation
 ///   documentation predicted: *"every method below carries a `FanAuthority` signature
 ///   verbatim, so the helper's control plane composes it with one-line forwards."*
 /// - `apply` — authorises, then refuses. There is no control loop to apply anything with.
-/// - `restoreAllToAutomatic` — § 7's panic verb, as much of it as this build can perform.
+/// - `restoreAllToAutomatic` — § 7's panic verb: every lease, then the machine-wide restore on
+///   a plane that can write, then the read-back.
 struct SupervisedFanAuthority: FanAuthority {
 
     /// The snapshot path, unchanged: `SMCFanEnumeration`, the discovered sensor set, and
@@ -75,6 +83,22 @@ struct SupervisedFanAuthority: FanAuthority {
     /// `StartupReconciliation` the lease core asks.
     private let reconciliation: any ReconciliationBaselineReporting
 
+    /// § 7's machine-wide restore: the keystone and nothing else.
+    ///
+    /// `HelperComposition` hands it a `SafetyActorWriter` at `.panicRestore`, the level of every
+    /// other machine-wide restore — provenance only, since nothing reads that level — typed as
+    /// the role. The writer itself can command a fan; the role it is held as cannot, so this
+    /// file cannot name a fan command.
+    private let keystone: any KeystoneRestoring
+
+    /// Whether the plane behind `keystone` can write at all, asked before the restore.
+    ///
+    /// The same seam the lease core and the snapshot are given, so § 7 and the grant path read
+    /// one property. On `.notBuilt` the restore is not issued: the plane would only throw
+    /// `.controlPathNotBuilt`, and a build that cannot write cannot have taken a fan off
+    /// automatic control.
+    private let writeCapability: any FanWriteCapabilityReporting
+
     /// E5.4d's teardown gate, closed by `SignalTeardown` before it hands the fans back.
     ///
     /// **Owned here and exposed, rather than injected**, which is the opposite of the rule
@@ -93,13 +117,20 @@ struct SupervisedFanAuthority: FanAuthority {
 
     private let log: HelperLog
 
+    /// `keystone` and `writeCapability` are required, for `reconciliation`'s reason: a default
+    /// would compile and build a panic verb that never restores, or one that never asks.
     init(
         reading: ReadOnlyFanAuthority, leases: LeaseAuthority,
-        reconciliation: some ReconciliationBaselineReporting, log: HelperLog
+        reconciliation: some ReconciliationBaselineReporting,
+        keystone: some KeystoneRestoring,
+        writeCapability: some FanWriteCapabilityReporting,
+        log: HelperLog
     ) {
         self.reading = reading
         self.leases = leases
         self.reconciliation = reconciliation
+        self.keystone = keystone
+        self.writeCapability = writeCapability
         self.log = log
     }
 
@@ -200,12 +231,12 @@ struct SupervisedFanAuthority: FanAuthority {
     ///
     /// The refusal is `.writePathNotBuilt` unconditionally, and it is **not** a literal
     /// standing in for the seam's `writeCapability`: there is no control loop in this type
-    /// for a capable plane to reach, so this type holds no capability reporter to consult —
-    /// see the note at the top of the file for why an unread one was removed rather than
-    /// left as decoration. A `.built` seam behind a helper with nothing to apply is a state
-    /// only a test can produce, and `supervisedApplyRefusesEvenWhenTheSeamCanWrite` produces
-    /// it: answering it any other way would claim a capability this file does not contain.
-    /// E3 owns the body; #17 owns the curve behind it.
+    /// for a capable plane to reach, so the capability reporter this type holds for § 7 is
+    /// deliberately not consulted here — see the note at the top of the file for why one was
+    /// once removed as decoration. A `.built` seam behind a helper with nothing to apply is a
+    /// state only a test can produce, and `supervisedApplyRefusesEvenWhenTheSeamCanWrite`
+    /// produces it: answering it any other way would claim a capability this file does not
+    /// contain. E3 owns the body; #17 owns the curve behind it.
     func apply(
         _ settings: [FanSetting],
         leaseID: UUID,
@@ -216,39 +247,61 @@ struct SupervisedFanAuthority: FanAuthority {
         throw AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
     }
 
-    /// Drops every lease and restores the fans they covered.
+    /// Drops every lease, issues the machine-wide restore on a plane that can write, and reads
+    /// back the handbacks the firmware accepted — in that order.
     ///
-    /// `docs/SAFETY.md` § 7's panic verb, as much of it as exists. `releaseEveryLease()` is
-    /// the lease core's half and it is real work now: each dropped lease's fans go through
-    /// `HelperFanRestorer`, so both safety registries are told and the firmware is asked.
+    /// `docs/SAFETY.md` § 7's panic verb, in three acts:
     ///
-    /// **It does not additionally call `restoreToAutomatic(.everyFan)` on the plane**, and
-    /// that is a decision rather than an omission. That verb throws `.controlPathNotBuilt`
-    /// unconditionally in this build, so calling it would convert a v1 message that succeeds
-    /// into one that always fails, while leaving the machine in precisely the same state.
-    /// The message's contract is frozen at v1 ([#159](https://github.com/blamechris/Aeolus/issues/159))
-    /// and keeps the fewest preconditions it can have. A fan some *other* tool left in manual
-    /// is not this verb's to clear either — startup reconciliation owns it
-    /// ([#164](https://github.com/blamechris/Aeolus/issues/164)), and E5.4d wires the machine-wide
-    /// restore to the signal handlers ([#166](https://github.com/blamechris/Aeolus/issues/166))
-    /// once there is a write path for it to use.
+    /// 1. **`releaseEveryLease()`**, the lease core's half: each dropped lease's fans, and every
+    ///    fan whose handback was abandoned (#189), go through `HelperFanRestorer`, so both
+    ///    safety registries are told and the firmware is asked, per fan.
+    /// 2. **`restoreToAutomatic(.everyFan)`, if and only if `writeCapability` is `.built`**
+    ///    ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D5). It reaches what the
+    ///    sweep cannot: a fan another tool pinned under no lease, one reconciliation recorded
+    ///    as `handbackRefused`, and the force key, which only `.everyFan` clears. On
+    ///    `.notBuilt`, which is every build on `main` today, it is not issued: the plane would
+    ///    throw `.controlPathNotBuilt`, and a build that cannot write cannot have put a fan into
+    ///    manual.
+    /// 3. **`confirmAcceptedHandbacks()`**, #291's read-back, which lifts a refusal whose
+    ///    handback the firmware accepted. It comes **after** the keystone, never before it: a
+    ///    read queued ahead of a keystone holds it for as long as the read takes (ADR 0007's
+    ///    2026-09-20 amendment). With no keystone behind it, a read that never returns holds
+    ///    this client's reply and nothing else.
+    ///
+    /// **The reply is v1's "accepted" in every case, so `AeolusXPCVersion` does not move.** A
+    /// refused machine-wide restore is caught here — explicitly, never with `try?` — and logged
+    /// at `.fault`, and the message still succeeds. The verb answers *accepted*, never *done*
+    /// (ADR 0013): the snapshot's existing reasons report each fan, and the fault line is the
+    /// only report of a force key left set. Until ADR 0014 this paragraph declined the restore,
+    /// because the plane verb throws on this build and a v1 message that succeeds would have
+    /// become one that always fails ([#159](https://github.com/blamechris/Aeolus/issues/159)).
+    /// Catching the throw keeps the success and the restore both, and the `.built` gate keeps
+    /// the call off a plane that has nothing to write with.
     ///
     /// **This paragraph is the one place that decision lives, and `PanicPathScopeTripwireTests`
-    /// is what makes that structural.** Three other sites described this verb as issuing the
-    /// machine-wide restore — `LeaseAuthority.releaseEveryLease`, `LeaseTeardownTests`, and
-    /// `AeolusXPCProtocol.restoreAllToAutomatic`'s own declaration, which named `Ftst` outright —
-    /// and `docs/SAFETY.md` § 7 inherited the claim from them
-    /// ([#228](https://github.com/blamechris/Aeolus/issues/228),
-    /// [#222](https://github.com/blamechris/Aeolus/issues/222)). The tripwire fails the moment a
-    /// plane verb appears in the body below, and its message is the list of documentation that
-    /// has to move in the same commit.
+    /// is what makes that structural.** It fails when the body below stops naming the three acts
+    /// in this order, or stops gating the second on `.built`, and its message is the list of
+    /// documentation that describes this verb's scope — the sites that once said it restored
+    /// every fan when it did not ([#228](https://github.com/blamechris/Aeolus/issues/228),
+    /// [#222](https://github.com/blamechris/Aeolus/issues/222)).
     func restoreAllToAutomatic(from connection: ConnectionID) async throws {
         await leases.releaseEveryLease()
+        var machineWide = HelperLog.MachineWideRestore.noWritePath
+        if writeCapability.writeCapability == .built {
+            do {
+                try await keystone.restoreToAutomatic(.everyFan)
+                machineWide = .accepted
+            } catch {
+                log.panicRestoreRefused(connection: connection, detail: String(describing: error))
+                machineWide = .refused
+            }
+        }
         // #291: the read-back that lifts a refusal whose handback the firmware just accepted.
         // A read, never a write, and here rather than inside the teardown because this verb
-        // has no keystone queued behind it — see `LeaseAuthority.confirmAcceptedHandbacks()`.
+        // queues no keystone behind it — its own is issued above, ahead of the read. See
+        // `LeaseAuthority.confirmAcceptedHandbacks()`.
         await leases.confirmAcceptedHandbacks()
-        log.restoredAllToAutomatic(connection: connection)
+        log.restoredAllToAutomatic(connection: connection, machineWide: machineWide)
     }
 
     func connectionDidInvalidate(_ connection: ConnectionID) async {

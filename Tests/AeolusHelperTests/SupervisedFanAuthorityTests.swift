@@ -232,12 +232,12 @@ struct SupervisedFanAuthorityTests {
     /// A **held** lease over a seam that can write is still refused, and the refusal names
     /// the build.
     ///
-    /// This is the assertion that stands behind removing the authority's stored
-    /// `FanWriteCapabilityReporting`: `apply` refuses because there is no control loop in
-    /// that type, not because the seam said `.notBuilt`. `ScriptedControlPlane` answers
-    /// `.built`, so a capability-sourced refusal would have to say something else here.
-    /// Without this test the deleted property and the doc comment that contradicted it were
-    /// indistinguishable from a working gate.
+    /// This is the assertion that stood behind removing the authority's stored
+    /// `FanWriteCapabilityReporting`, and it still stands now that § 7 holds one again: `apply`
+    /// refuses because there is no control loop in that type, not because the seam said
+    /// `.notBuilt`. `ScriptedControlPlane` answers `.built`, so a capability-sourced refusal
+    /// would have to say something else here. Without this test the deleted property and the
+    /// doc comment that contradicted it were indistinguishable from a working gate.
     ///
     /// **Mutation:** make `apply` return normally after the authorisation, as E3 eventually
     /// will. Run: red — which is the reminder that E3 owns replacing this test, not

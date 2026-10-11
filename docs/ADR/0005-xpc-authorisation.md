@@ -200,6 +200,15 @@ path must carry the fewest preconditions of anything in the protocol.
 > a claim about what the verb can express, which is exactly what makes a version fence in front
 > of it indefensible, and it holds whether or not this build can perform the whole of it.
 
+> **Amended 2026-10-10 ([#104](https://github.com/blamechris/Aeolus/issues/104)).** The reason
+> recorded above for withholding the machine-wide restore no longer holds, and the handler now
+> issues it: `SupervisedFanAuthority.restoreAllToAutomatic` releases every lease and then, if and
+> only if the plane's write capability is `.built`, issues `restoreToAutomatic(.everyFan)` ahead
+> of its read-back ([ADR 0014](0014-apple-silicon-unlock.md) D5). A refusal is caught and logged
+> at fault, so the message still succeeds and its contract does not move. Every build on `main`
+> answers `.notBuilt`, so the amendment above stays true of the shipped binary — no helper that
+> exists clears the force key yet — and the exemption's argument is untouched again.
+
 ## The lease: client-renewed, helper-enforced, two independent teardown paths
 
 - **Renewal is client-driven** on the heartbeat interval (TTL/3, per [SAFETY.md](../SAFETY.md) §1).

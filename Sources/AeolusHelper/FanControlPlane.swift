@@ -159,6 +159,38 @@ protocol SMCConnectionRecovering: Sendable {
     func reconnect() async throws
 }
 
+// MARK: - The keystone, as a role
+
+/// The keystone verb and nothing else: a role a mechanism can be handed so that it can return
+/// fans to automatic control without being able to take one off it.
+///
+/// ## Why it is a role of its own
+///
+/// `FanWriteCapabilityReporting`'s argument, made for the one write a client message may cause.
+/// `docs/SAFETY.md` § 7's panic verb issues the machine-wide restore, and the type it runs in,
+/// `SupervisedFanAuthority`, is where a decoded client message lands. Handing that type a whole
+/// `FanControlPlane` would put `commandTarget(_:)` and `engageManualControl(of:)` one `await`
+/// from the wire, which is the shape E2 froze the boundary to prevent. It is handed this and the
+/// capability instead ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D5), and
+/// `AuthorityRoleTripwireTests` holds its file to those two roles.
+///
+/// `FanControlPlane` refines this, so every plane answers it. `SafetyActorWriter` conforms with
+/// the verb it already had, and that is what the composition hands § 7 — typed as this role,
+/// which is what makes it restore-only; the writer's own type is not.
+protocol KeystoneRestoring: Sendable {
+
+    /// Returns fans to the system's own thermal management.
+    ///
+    /// The terminal action of every safety mechanism, and the only write on the plane that
+    /// takes no reading, no bound and no lease. It must stay that way: see `FanControlPlane`'s
+    /// documentation.
+    ///
+    /// `.everyFan` additionally clears the Apple Silicon force key. It resolves the fan set
+    /// from knowledge the conformer already holds — never from a read issued here, because
+    /// a restore that must first read cannot run while reading is what has failed.
+    func restoreToAutomatic(_ scope: FanRestoreScope) async throws
+}
+
 /// The seam itself: reads, the keystone, the write verbs — and, since
 /// [#103](https://github.com/blamechris/Aeolus/issues/103), whether the writes are there at
 /// all.
@@ -166,7 +198,9 @@ protocol SMCConnectionRecovering: Sendable {
 /// `FanWriteCapabilityReporting` is refined rather than restated, so every plane answers
 /// `writeCapability` and the lease core can be handed *only* that question. See that
 /// protocol for why the answer is synchronous and why it must be asked before any read.
-protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting {
+/// `KeystoneRestoring` is refined for the same reason, one verb wider: § 7's panic verb is
+/// handed the restore and nothing that commands a fan.
+protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, KeystoneRestoring {
 
     // MARK: - Reads
 
@@ -183,16 +217,9 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting {
 
     // MARK: - The keystone
 
-    /// Returns fans to the system's own thermal management.
-    ///
-    /// The terminal action of every safety mechanism, and the only operation on this
-    /// protocol that takes no reading, no bound and no lease. It must stay that way: see
-    /// this protocol's documentation.
-    ///
-    /// `.everyFan` additionally clears the Apple Silicon force key. It resolves the fan set
-    /// from knowledge the conformer already holds — never from a read issued here, because
-    /// a restore that must first read cannot run while reading is what has failed.
-    func restoreToAutomatic(_ scope: FanRestoreScope) async throws
+    // `restoreToAutomatic(_:)` is `KeystoneRestoring`'s requirement, refined above rather than
+    // restated here: one declaration, so the plane's keystone and the role § 7 is handed cannot
+    // come to differ.
 
     // MARK: - Manual control
 

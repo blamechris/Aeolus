@@ -90,7 +90,7 @@ the vocabulary is a compile error until it has been decided:
 
 | Class | Reasons | Effect |
 |---|---|---|
-| **Durable** | `foreignManualControl`, `restoreToAutomaticFailed` | **9**, whatever the mode reads. Waiting will not change it: nothing in Aeolus put the first there, and the firmware refused every attempt at the second. |
+| **Durable** | `foreignManualControl`, `restoreToAutomaticFailed` | **9**, whatever the mode reads. Waiting will not change it: nothing in Aeolus put the first there, and the firmware refused every attempt at the second. *2026-10-10:* on a plane that can write, the request includes the machine-wide restore ([ADR 0014](0014-apple-silicon-unlock.md) D5), which can return a foreign-held fan to automatic; how a durable refusal is then reported is [#351](https://github.com/blamechris/Aeolus/issues/351). |
 | **Pending** | `releaseInProgress`, `handbackUnconfirmed`, `restoreToAutomaticUnconfirmed`, `supervisorBlind`, `systemSleeping`, `unknown(_)` | **8**, whatever the mode reads: the helper has not established the fan's mode, or a restore is outstanding. Keep waiting. |
 | **Silent** | `writePathNotBuilt`, `boundsImplausible`, `leaseHeldByAnotherClient`, `selfRenewalNotBuilt`, `noThermalTelemetry`, `reclaimedBySystem` | The mode decides: automatic is cleared, anything else is 8. These are about manual control being *granted*, not about the fan. `writePathNotBuilt` is every fan on today's helper, and `auto` against it still exits 0; a lease is judged from `activeLease`, not from `leaseHeldByAnotherClient`. |
 
@@ -224,7 +224,7 @@ hardware rows measure the restore's real latency.
 
 | Assumption | Basis | If it fails |
 |---|---|---|
-| The helper ends every lease and attempts every fan it is accountable for when it takes `restoreAllToAutomatic` | `LeaseAuthority.releaseEveryLease` and SAFETY.md § 7, as built | `auto` reports what is left, as 5, 8 or 9. No CLI change. |
+| The helper ends every lease and attempts every fan it is accountable for when it takes `restoreAllToAutomatic` | `LeaseAuthority.releaseEveryLease` and SAFETY.md § 7, as built. *2026-10-10:* on a plane that can write, the request also includes the machine-wide restore ([ADR 0014](0014-apple-silicon-unlock.md) D5), which can return a foreign-held fan to automatic; how a durable refusal is then reported is [#351](https://github.com/blamechris/Aeolus/issues/351) | `auto` reports what is left, as 5, 8 or 9. No CLI change. |
 | Ten seconds covers the restore's visible latency | Not measured. No restore has been performed on hardware | Raise the window, or `auto` reports 8 for a restore that was working. |
 | `foreignManualControl` and `restoreToAutomaticFailed` are the only durable reasons, and the pending and silent classes above are right | `ManualControlAvailability`'s own documentation, and the classification decided on review of #321 | A new reason is a compile error in `SafeState.clearance(of:)`, and has to be decided there. |
 | The helper's `mode`, read beside the availability, is the best statement of a fan's state | `mode` alone is not (#178); the availability is the other field | #178 gives the wire a way to say "not known", and exit 0 is strengthened. |

@@ -3,16 +3,19 @@ import Testing
 
 @testable import AeolusHelper
 
-/// § 7's panic verb is **lease-scoped in effect and global in contract**, and the gap between
-/// those two is a documentation claim rather than an observable behaviour — so it is asserted
-/// against the source tree.
+/// § 7's panic verb is **global in contract**, and since
+/// [ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D5 it is global in effect on a plane
+/// that can write: it releases every lease, issues `restoreToAutomatic(.everyFan)` if and only
+/// if the plane's capability is `.built`, and then reads back. On every build on `main` the
+/// capability is `.notBuilt`, so what ships still releases leases and issues nothing more. The
+/// gap between "what the verb would do" and "what this binary does" is a documentation claim
+/// rather than an observable behaviour, so it is asserted against the source tree.
 ///
 /// [#228](https://github.com/blamechris/Aeolus/issues/228) is what this exists for, and the
 /// defect it records is worth restating because it is not a typo. The issue names three sites;
 /// `documentationSites` below is the verified list; it had **seven entries** when #228
-/// closed, and has eight now.
-/// `SupervisedFanAuthority.restoreAllToAutomatic` has always been right. Four said, in plain
-/// present indicative, that the verb additionally restores every enumerated fan —
+/// closed, and has eight now. Four said, in plain present indicative, that the verb restored
+/// every enumerated fan while it did not —
 /// `LeaseAuthority.releaseEveryLease`, `LeaseTeardownTests`,
 /// `AeolusXPCProtocol.restoreAllToAutomatic`'s declaration, which named the `Ftst` force key
 /// outright beside `fanctl reset --all`, and `ADR 0005`. A fifth, the ordering paragraph above
@@ -22,149 +25,168 @@ import Testing
 /// the document side without touching the source comments it came from. The eighth,
 /// `docs/records/handback-ledger.md`, joined when
 /// [#128](https://github.com/blamechris/Aeolus/issues/128) relocated `releaseEveryLease`'s
-/// paragraphs on the sweep there: they carry the statement that the machine-wide restore was
-/// declined (#159), which is this verb's scope.
+/// paragraphs on the sweep there: they carried the statement that the machine-wide restore was
+/// declined (#159), which is this verb's scope. #104 is the change that gave the verb the
+/// restore, and walked the list in the same commit.
 ///
-/// **Why a tripwire and not a behavioural test.** A behavioural test can only assert what the
-/// handler does, and what the handler does is already covered —
-/// `SupervisedFanAuthorityTests.restoreAllToAutomaticReachesTheLeaseCore` drives it and
-/// `LeaseReleaseTests.everyLeaseIsDropped` pins the lease core's half. Neither can fail when a
-/// comment starts promising something else, which is the failure #228 actually records: every
+/// **Why a tripwire and not a behavioural test.** The behaviour is covered:
+/// `PanicVerbMachineWideRestoreTests` drives both capabilities, the order and the refusal, and
+/// `FanctlResetCorruptedStateTests` drives the command end to end. None of those can fail when
+/// a comment starts promising something else, which is the failure #228 actually records: every
 /// one of those four sentences was written beside green tests. What has to be pinned is the
-/// **coupling** — the handler may not quietly acquire the machine-wide restore while the prose
-/// describing it stays as it is — and a coupling between code and prose has nothing to observe
-/// at runtime.
+/// **coupling** — the handler may not quietly change scope while the prose describing it stays
+/// as it is — and a coupling between code and prose has nothing to observe at runtime.
 ///
 /// **The limit, stated rather than discovered later.** This is text matching over stripped
-/// source, so it catches the realistic regression — somebody wiring E3/E4's write path into the
-/// panic verb and not revisiting the list below — and not a plane call reached through a name it
-/// cannot recognise. `everyMachineWideRestoreIsOneOfTheThreeKnownCallSites` is what narrows
-/// that: the machine-wide scope has to be *named* somewhere to be issued, and a fourth place
-/// naming it is a failure whatever calls it.
-@Suite("§ 7's panic verb stays lease-scoped, or the documentation moves with it")
+/// source, so it catches the realistic regression — the restore moved, ungated or dropped, and
+/// the list below not revisited — and not a plane call reached through a name it cannot
+/// recognise. `everyMachineWideRestoreIsOneOfTheKnownCallSites` is what narrows that: the
+/// machine-wide scope has to be *named* somewhere to be issued, and an unlisted place naming it
+/// is a failure whatever calls it. `AuthorityRoleTripwireTests` closes the other door, a plane
+/// handed to the verb under a name the body scan would not see.
+@Suite("§ 7's panic verb keeps its scope, or the documentation moves with it")
 struct PanicPathScopeTripwireTests {
 
     /// Every documentation site that describes this verb's scope, named here so a failure
     /// message can hand a maintainer the list rather than a diff.
     ///
-    /// This is the payload of the whole suite. When E3/E4 gives the panic verb a real
-    /// machine-wide restore, the two tests below go red **by design** — the correct response is
-    /// to walk this list, then invert or delete the assertion, not to delete it first.
+    /// This is the payload of the whole suite. A change to the verb's scope turns the tests
+    /// below red **by design** — the correct response is to walk this list, then change the
+    /// assertion, not to change it first. #104 did exactly that when it gave the verb its
+    /// machine-wide restore.
     static let documentationSites = [
         "Sources/AeolusHelper/SupervisedFanAuthority.swift — restoreAllToAutomatic's own "
-            + "paragraph, where the decision lives",
-        "Sources/AeolusHelper/Lease/LeaseAuthority.swift — releaseEveryLease",
+            + "paragraph, where the decision lives; its read-back note; and the type's header",
+        "Sources/AeolusHelper/Lease/LeaseAuthority.swift — releaseEveryLease, and "
+            + "confirmAcceptedHandbacks's \"no keystone queued behind the read\"",
         "docs/records/handback-ledger.md — \"`releaseEveryLease()`: what the sweep is, and "
-            + "what it is not\"",
+            + "what it is not\", and \"Accepted is not automatic\"",
         "Sources/AeolusHelper/FanAuthority.swift — the protocol requirement",
         "Sources/AeolusXPC/AeolusXPCProtocol.swift — the declaration, and the ordering "
             + "paragraph above it",
-        "docs/SAFETY.md — § 5's .everyFan call-site list and § 7's panic path",
+        "docs/SAFETY.md — § 1's .everyFan call-site list and § 7's panic path",
         "docs/ADR/0005-xpc-authorisation.md — \"Why the panic path is exempt\"",
         "Tests/AeolusHelperTests/LeaseTeardownTests.swift — LeaseReleaseTests.everyLeaseIsDropped",
     ]
 
-    private static var checklist: String {
+    /// The sites as a failure message's list. `AuthorityRoleTripwireTests` prints it too.
+    static var checklist: String {
         documentationSites.map { "  - \($0)" }.joined(separator: "\n")
     }
 
     // MARK: - The handler
 
-    /// `SupervisedFanAuthority.restoreAllToAutomatic`'s body names no control-plane restore.
+    /// `SupervisedFanAuthority.restoreAllToAutomatic`'s body releases every lease, then issues
+    /// the machine-wide restore behind a `.built` gate, then reads back — named once each, in
+    /// that order, with no `try?`.
     ///
-    /// The body is `await leases.releaseEveryLease()` and a log line. Both halves of that are
-    /// observable and tested; what is not observable is that nothing *else* is there, and the
-    /// four corrected comments are all statements that something else is.
+    /// Until #104 this asserted the opposite, that the body named no control-plane restore at
+    /// all; ADR 0014 D5 inverted it, and the order is the half the old test could not have
+    /// held. The read-back follows the keystone and is never queued ahead of it (ADR 0007's
+    /// 2026-09-20 amendment). `PanicVerbMachineWideRestoreTests` observes that order and both
+    /// capabilities' behaviour; this holds the text the documentation above describes.
     ///
-    /// Scoped to the one function rather than the whole type deliberately. The type composes
-    /// `ReadOnlyFanAuthority` and forwards the lease core, so a `restoreToAutomatic` legitimately
-    /// arriving elsewhere in it one day must not be able to redden this — and equally must not be
-    /// able to satisfy it.
+    /// Scoped to the one function rather than the whole type deliberately: a `.everyFan`
+    /// arriving elsewhere in the type must not be able to satisfy it, and
+    /// `everyMachineWideRestoreIsOneOfTheKnownCallSites` is what sees one that does.
     ///
-    /// The mutations are cited as run, not as they would read most neatly. The type holds no
-    /// plane, so the shortest thing that both compiles and has the defect's shape is a `nil`
-    /// existential — an implementer wiring E3/E4 would inject a real one, and the scan cannot
-    /// tell the two apart, which is the point.
-    ///
-    /// **Mutation:** add `let plane: (any FanControlPlane)? = nil` and
-    /// `try await plane?.restoreToAutomatic(.everyFan)` to the body. Run: red at both
-    /// forbidden tokens, and red at `everyMachineWideRestoreIsOneOfTheThreeKnownCallSites` too.
-    /// **Mutation:** delete `await leases.releaseEveryLease()` from the body. Run: red on the
+    /// **Mutation (`.built`):** drop the `if writeCapability.writeCapability == .built` gate,
+    /// issuing the restore unconditionally. Run: red on the gate assertion, and
+    /// `PanicVerbMachineWideRestoreTests.aPlaneThatCannotWriteGetsNoMachineWideRestore` red with
+    /// it. **Mutation (`.notBuilt` — the shipped behaviour):** delete the
+    /// `try await keystone.restoreToAutomatic(.everyFan)` statement. Run: red on the name count,
+    /// and `aBuiltPlaneGetsTheMachineWideRestore` red with it.
+    /// **Mutation:** move `await leases.confirmAcceptedHandbacks()` above the `.built` block. Run:
+    /// red on the order. **Mutation:** delete `await leases.releaseEveryLease()`. Run: red on the
     /// coverage assertion — the guard against a scan that reads nothing and reports it clean.
-    @Test("The shipped panic verb issues no control-plane restore")
-    func theShippedPanicVerbIssuesNoControlPlaneRestore() throws {
+    @Test("The panic verb issues the machine-wide restore only on a built plane, before the read")
+    func thePanicVerbIssuesTheMachineWideRestoreOnlyOnABuiltPlane() throws {
         let body = try Self.functionBody(
             of: "restoreAllToAutomatic", inFile: "SupervisedFanAuthority.swift")
 
         // Coverage, not decoration. A body extractor that resolved to an empty string — a
-        // renamed verb, a moved file, a brace scan that stopped matching — would satisfy every
-        // assertion below over a handler nobody read. The one call the body is known to contain
-        // is what proves the scan reached it.
-        #expect(
-            body.contains("releaseEveryLease"),
+        // renamed verb, a moved file, a brace scan that stopped matching — would satisfy a
+        // negative assertion over a handler nobody read. The call the body is known to open
+        // with is what proves the scan reached it.
+        let release = try #require(
+            body.range(of: "releaseEveryLease"),
             """
             restoreAllToAutomatic's body in SupervisedFanAuthority.swift does not call \
             releaseEveryLease. Either the panic verb no longer releases every lease — which is \
-            docs/SAFETY.md § 7's whole remaining substance — or this scan is not reading it, in \
-            which case the assertions below are green over nothing.
+            docs/SAFETY.md § 7's first act — or this scan is not reading it.
             """)
 
-        // #291: § 7 is the one caller that lifts a refusal whose handback the firmware
-        // accepted, because it is the one with no keystone queued behind the read.
+        for (token, what) in [
+            ("restoreToAutomatic", "the plane's restore verb"),
+            (".everyFan", "the machine-wide scope"),
+            ("writeCapability.writeCapability == .built", "the capability gate"),
+        ] {
+            let count = body.components(separatedBy: token).count - 1
+            #expect(
+                count == 1,
+                """
+                SupervisedFanAuthority.restoreAllToAutomatic names \(what) (`\(token)`) \
+                \(count) times, not once. The verb issues one machine-wide restore, gated on a \
+                plane that can write (ADR 0014 D5). If its scope has changed on purpose, every \
+                site below has to say so in the same commit:
+                \(Self.checklist)
+                """)
+        }
+        #expect(!body.contains("try?"), "the panic verb swallows an error with try?")
+
+        // #291: § 7 is the one caller of the read-back, and it comes after the keystone.
         //
         // **Mutation:** delete `await leases.confirmAcceptedHandbacks()` from the body. Run: red.
-        #expect(
-            body.contains("confirmAcceptedHandbacks"),
+        let readBack = try #require(
+            body.range(of: "confirmAcceptedHandbacks"),
             """
             restoreAllToAutomatic no longer reads back the fans whose handback the firmware \
             accepted, so nothing lifts a restoreAbandoned refusal for the life of the process.
             """)
-
-        for verb in ["restoreToAutomatic", "everyFan"] {
-            #expect(
-                !body.contains(verb),
-                """
-                SupervisedFanAuthority.restoreAllToAutomatic names `\(verb)`. That is the \
-                machine-wide restore, and the whole of #228 is that seven places describe this \
-                verb and four of them used to claim it already issues one. If the write path \
-                now exists and this is intended, every site below has to say so in the same \
-                commit:
-                \(Self.checklist)
-                Until then: the plane verb throws `.controlPathNotBuilt`, so issuing it converts \
-                a v1 message that succeeds into one that always fails for no change in machine \
-                state, and the contract is frozen at v1 (#159).
-                """)
-        }
+        let gate = try #require(body.range(of: ".built"))
+        let keystone = try #require(body.range(of: ".everyFan"))
+        #expect(
+            release.upperBound <= gate.lowerBound && gate.upperBound <= keystone.lowerBound
+                && keystone.upperBound <= readBack.lowerBound,
+            """
+            restoreAllToAutomatic no longer reads: release every lease, then the .built gate \
+            and the machine-wide restore, then the read-back. A read queued ahead of the \
+            keystone holds it for as long as the read takes (ADR 0007's 2026-09-20 \
+            amendment), and these say the order is this one:
+            \(Self.checklist)
+            """)
     }
 
     // MARK: - The machine-wide scope
 
-    /// `restoreToAutomatic(.everyFan)` is named in exactly three files under `Sources/`, and the
-    /// panic path is not among them.
+    /// `restoreToAutomatic(.everyFan)` is named in exactly four files under `Sources/`.
     ///
     /// This is what keeps the test above from being evadable by one indirection: the handler
     /// could call a free function, a new restorer type, or the lease core, and the body scan
     /// would see nothing. `.everyFan` is the only scope that clears the Apple Silicon force key
-    /// (`FanControlPlane.FanRestoreScope`), so it has to be *named* wherever it is issued, and a
-    /// fourth file naming it is a failure whatever reaches it.
+    /// (`FanControlPlane.FanRestoreScope`), so it has to be *named* wherever it is issued, and an
+    /// unlisted file naming it is a failure whatever reaches it.
     ///
-    /// The three are `docs/SAFETY.md` § 5's list, verbatim, and the reason each is legitimate is
-    /// that none of them is a lease teardown: § 4's sleep handback, § 6's orderly exit, and
-    /// § 6's startup-reconciliation fallback. Comments are stripped first, for the reason
-    /// `WritePathAbsenceTests` records — the prose explaining that the panic path is *not* one of
-    /// these sites names the token repeatedly, and a tripwire that fires on the sentence stating
-    /// the rule is a tripwire nobody keeps.
+    /// The four are `docs/SAFETY.md` § 1's list, verbatim, and none of them is a lease teardown:
+    /// § 4's sleep handback, § 6's orderly exit, § 6's startup-reconciliation fallback, and — on a
+    /// plane that can write — § 7's panic verb. On the E4 branch `SMCFanControlPlane.swift`
+    /// joins them (ADR 0014 D5): its restore branches on the scope and its preparation step
+    /// names it, and this scan, `code.contains(".everyFan")`, cannot tell either from a call
+    /// site. Comments are stripped first, for the reason `WritePathAbsenceTests` records — the
+    /// prose explaining these sites names the token repeatedly, and a tripwire that fires on the
+    /// sentence stating the rule is a tripwire nobody keeps.
     ///
     /// **Mutation:** add `let plane: (any FanControlPlane)? = nil` and
     /// `try await plane?.restoreToAutomatic(.everyFan)` to
-    /// `ReadOnlyFanAuthority.restoreAllToAutomatic`. Run: red **here only** — the test above
-    /// stays green, which is what proves this one discriminates rather than echoing it.
-    @Test("The machine-wide restore is issued from exactly three non-lease paths")
-    func everyMachineWideRestoreIsOneOfTheThreeKnownCallSites() throws {
+    /// `ReadOnlyFanAuthority.restoreAllToAutomatic`. Run: red **here only** — the tests above
+    /// stay green, which is what proves this one discriminates rather than echoing them.
+    @Test("The machine-wide restore is issued from exactly four known call sites")
+    func everyMachineWideRestoreIsOneOfTheKnownCallSites() throws {
         let expected: Set<String> = [
             "SignalTeardown.swift",
             "SystemPowerResponder.swift",
             "StartupReconciliation.swift",
+            "SupervisedFanAuthority.swift",
         ]
 
         var naming: Set<String> = []
@@ -179,9 +201,8 @@ struct PanicPathScopeTripwireTests {
             """
             the machine-wide restore is named in \(naming.sorted()), not \(expected.sorted()). \
             `.everyFan` additionally clears the Apple Silicon force key, so every call site is a \
-            machine-wide act: docs/SAFETY.md § 5 lists these three by name and says § 7's panic \
-            path is not among them. A site added or removed here contradicts that sentence, and \
-            these say the same thing:
+            machine-wide act: docs/SAFETY.md § 1 lists these four by name. A site added or \
+            removed here contradicts that sentence, and these say the same thing:
             \(Self.checklist)
             """)
     }

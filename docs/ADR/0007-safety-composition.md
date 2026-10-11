@@ -234,7 +234,8 @@ evidence* — is exactly the rule these read-backs implement.
 teardown, which § 4's sleep handback and SIGTERM's teardown both await *before* issuing the
 keystone — so an unbounded read would have held the keystone. The review of #291 caught it. The
 teardown now only marks such a fan as owed a read-back, and the read runs on § 7's panic verb,
-which has no keystone behind it (handback-ledger.md § *"Accepted is not automatic"*). § 4 itself
+which has no keystone queued behind the read — its own is issued first, since #104/#349 —
+(handback-ledger.md § *"Accepted is not automatic"*). § 4 itself
 reads nothing back: the machine sleeps whatever a read would say, and § 4 forbids firmware
 contact on wake. Its log line says the firmware *accepted* the write, not that the fans returned.
 

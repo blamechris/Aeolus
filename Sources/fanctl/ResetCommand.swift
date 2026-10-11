@@ -28,8 +28,8 @@ import Foundation
 ///   this file until review caught it. It reads as a test of the command and is not one: fan
 ///   behaviour under load is evidence about whoever is driving the fans, which on this build
 ///   was Apple's controller the whole time. The case it costs is the expensive one — a fan
-///   pinned by a foreign tool, which `docs/SAFETY.md` § 7 says this verb does not reach —
-///   where the fans do respond, the user infers success, and stops.
+///   pinned by a foreign tool, which this verb does not reach on a build that cannot write
+///   (`docs/SAFETY.md` § 7) — where the fans do respond, the user infers success, and stops.
 ///
 /// ## Every failure ends at the same place
 ///

@@ -99,7 +99,8 @@ struct AbandonedHandbackRecoveryTests {
     ///
     /// `panicPass(_:)` makes the two lease-core calls
     /// `SupervisedFanAuthority.restoreAllToAutomatic` makes, rather than going through it —
-    /// `PanicPathScopeTripwireTests` is what holds that body to those two calls.
+    /// `PanicPathScopeTripwireTests` is what holds that body to those two calls, with the
+    /// plane's machine-wide restore between them.
     ///
     /// **Mutation:** delete `restoreAbandoned.subtract(recovered)` from
     /// `LeaseAuthority.confirmAcceptedHandbacks`. Run: red — the fan is still refused after a

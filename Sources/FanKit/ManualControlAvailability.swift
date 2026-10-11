@@ -278,6 +278,11 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// Durable, and not in the way `.releaseInProgress` is transient: nothing in Aeolus
         /// will change it, because nothing in Aeolus put the fan there. It clears when the
         /// other writer hands the fan back.
+        ///
+        /// *2026-10-10:* one exception, on a plane that can write: `restoreAllToAutomatic`
+        /// includes the machine-wide restore (ADR 0014 D5), which can return a foreign-held fan
+        /// to automatic. How a durable refusal is then reported is
+        /// [#351](https://github.com/blamechris/Aeolus/issues/351).
         case foreignManualControl
         /// A reason this build does not recognise, carried verbatim so a newer helper
         /// can explain itself to an older client without a protocol bump. Render it

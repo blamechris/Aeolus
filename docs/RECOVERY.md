@@ -75,6 +75,14 @@ no SMC write path yet, so it answers this message as a no-op — see
 it becomes the real thing the moment the write path lands; until then, if the fans are wrong,
 go to step 5.
 
+**On a build that can write, the helper can also log a fault the command does not print.** If
+the firmware refuses the machine-wide restore, the helper still answers *accepted* and logs a
+fault saying fans may still be off automatic control and the force key may still be set; look
+for it with `log show --predicate 'subsystem == "dev.aeolus.AeolusHelper"' --last 5m`. Run
+`fanctl reset --all` once more; if the line comes back, go to step 5, then step 7, and step 8 if
+the fault returns; that a restart clears the force key is unverified (ADR 0014 U11). No build
+today can write, so this line cannot appear yet.
+
 **Exit 1 — "The helper did not confirm the reset request."** Followed by the reason, and by
 step 5's `bootout` line. The reasons worth knowing in advance:
 

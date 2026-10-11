@@ -135,6 +135,8 @@ the `releasing` count of every fan in the sweep, for as long as it took: the wro
 lifting a refusal nobody is waiting on. The #291 review caught the first draft doing exactly that.
 So the read runs in `confirmAcceptedHandbacks()`, which only § 7's panic verb calls — the one
 caller with nothing queued behind it, and the recovery verb a user reaches for when a fan is stuck.
+Since #104 § 7 issues its own machine-wide keystone on a plane that can write, and issues it
+*before* this read, so the read still holds nothing behind it (ADR 0014 D5).
 A sleep that hands such a fan back therefore lifts nothing; the next § 7 pass does.
 
 **A fan that reads manual, or will not read, keeps the refusal it already had**, and stays owed.
@@ -819,10 +821,13 @@ a per-source shape would leave one of them outside `releasing` while the other's
 restore was on the wire. Both, with the losing order spelled out:
 handback-ledger.md § *"The panic sweep has two sources"*.
 
-**It does not make the message fail**, which is the reason the *machine-wide* restore
-was declined here (#159): `restore(_:because:)` cannot throw, and a firmware that
-refuses again simply leaves the refusal standing. So a v1 message that succeeds keeps
-succeeding, and the contract does not move.
+**It does not make the message fail**: `restore(_:because:)` cannot throw, and a firmware
+that refuses again simply leaves the refusal standing. So a v1 message that succeeds keeps
+succeeding, and the contract does not move. That was also the reason the *machine-wide*
+restore was declined here (#159), and it is the reason the restore is not here now: since
+#104 the handler issues it after this returns, only on a plane that can write, and catches
+its refusal for the same end (ADR 0014 D5, `SupervisedFanAuthority.restoreAllToAutomatic`).
+This sweep still issues one `restoreToAutomatic(.fan(index))` per fan, never `.everyFan`.
 
 **Consults no per-`ConnectionID` state**, which is the precondition
 `HelperConnectionSession` documents for exempting that message from its teardown

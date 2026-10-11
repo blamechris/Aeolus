@@ -206,7 +206,7 @@ struct ReadOnlyFanAuthorityModeTests {
     /// `alreadyReported: false` unconditionally. Run: red here, on both fans.
     @Test("An unreadable mode is an error once per fan, and a debug line every time after")
     func unreadableModeIsReportedOncePerFanAtErrorLevel() async throws {
-        let recorder = RecordedHelperFanLines()
+        let recorder = RecordedHelperLines()
         // Two fans and no `F<n>Md` for either: every mode read fails, on every snapshot.
         let provider = fanProvider(fanCount: 2)
         let authority = ReadOnlyFanAuthority(
@@ -215,7 +215,7 @@ struct ReadOnlyFanAuthorityModeTests {
             log: HelperLog(
                 subsystem: "dev.aeolus.AeolusHelperTests",
                 category: "Mode",
-                recordingFanLines: { recorder.append($0, $1) }),
+                recording: { recorder.append($0, $1) }),
             thermalEmergency: ThermalEmergencyLatch(),
             reclamation: ReclamationLedger(),
             writeCapability: LeaseFixture.writePathNotBuilt(),
@@ -250,7 +250,8 @@ struct ReadOnlyFanAuthorityModeTests {
     }
 }
 
-/// A `HelperLog` fan-line sink a test can read back, **with the level**.
+/// A `HelperLog` sink a test can read back, **with the level** — every line's, since the review
+/// of #349 routed them all through one place.
 ///
 /// `NSLock` rather than an actor so an assertion can read it without an `await`, matching
 /// `RecordedLog` in `CriticalSensorSetTests.swift`, which does the same job for `SafetyLog`.
@@ -259,11 +260,11 @@ struct ReadOnlyFanAuthorityModeTests {
 /// normal for an entire architecture family, so whether the tenth occurrence is an error or a
 /// debug line is the difference between a diagnostic and a denial of service against whoever
 /// reads the log — and before this sink existed that choice was a claim no test could observe.
-final class RecordedHelperFanLines: @unchecked Sendable {
+final class RecordedHelperLines: @unchecked Sendable {
     private let lock = NSLock()
-    private var recorded: [(level: HelperLog.FanLineLevel, line: String)] = []
+    private var recorded: [(level: HelperLog.Level, line: String)] = []
 
-    func append(_ level: HelperLog.FanLineLevel, _ line: String) {
+    func append(_ level: HelperLog.Level, _ line: String) {
         lock.withLock { recorded.append((level, line)) }
     }
 
@@ -272,7 +273,7 @@ final class RecordedHelperFanLines: @unchecked Sendable {
     /// Substring matching on a phrase only the intended line can produce: asserting a whole
     /// prose line is a test that fails on a comma, and matching text a *different* line could
     /// also satisfy is a test that passes for the wrong reason.
-    func levels(containing needle: String) -> [HelperLog.FanLineLevel] {
+    func levels(containing needle: String) -> [HelperLog.Level] {
         lock.withLock { recorded.filter { $0.line.contains(needle) }.map(\.level) }
     }
 }
