@@ -98,11 +98,16 @@ enum KeystoneOutcome: Sendable, Hashable {
     /// Issued, and has not come back. Something is parked that may still land.
     case outstanding
 
-    /// Returned without throwing: the force key was cleared.
+    /// Returned without throwing: every write it issued was accepted, the force key's clear
+    /// included wherever the key exists.
     case landed
 
-    /// Returned by throwing: the firmware refused, so the force key was **not** cleared.
-    /// Distinct from `.outstanding` because it is an answer rather than the absence of one.
+    /// Returned by throwing: not seen to land. **It does not say the force key was not
+    /// cleared.** A restore attempts every write whatever the others answered (ADR 0014 D5), so
+    /// a refused mode write is still followed by the key's clear, and `.fanSetUnknown` is thrown
+    /// after the key's clear was issued. What it says is that at least one write was refused, or
+    /// that the fans this process never touched were not written. Distinct from `.outstanding`
+    /// because it is an answer rather than the absence of one.
     case refused
 }
 
@@ -430,10 +435,11 @@ struct SystemPowerResponder<Plane: FanControlPlane>: Sendable {
             await acknowledgement.keystoneReached(.landed)
         } catch {
             log.couldNotHandEveryFanBackBeforeSleep(error)
-            // A refusal is a *return*, and it is also a firmware answer: the force key was
-            // not cleared, and unlike `.outstanding` that is something this process observed
-            // rather than failed to observe. On a build with no write path this is every
-            // sleep, which is exactly why it may not share a sentence with `.landed`.
+            // A refusal is a *return*, and it is also an answer: something in the restore did
+            // not land — not necessarily the force key, which every restore still attempts to
+            // clear (ADR 0014 D5) — and unlike `.outstanding` that is something this process
+            // observed rather than failed to observe. On a build with no write path this is
+            // every sleep, which is exactly why it may not share a sentence with `.landed`.
             await acknowledgement.keystoneReached(.refused)
         }
     }

@@ -82,8 +82,8 @@ strongly than the source does. This document was amended to match in #119; the p
 that changed say so, in place, rather than quietly reading as though they had always said
 it. ADR 0007 is still `Proposed`, as are ADR 0006, ADR 0008 and
 [ADR 0009](ADR/0009-precedence-at-the-write.md) — the middle one implemented and merged, the
-last one implemented but for D1's second pre-write ruling (#181) — so that field lags practice
-here rather than signalling doubt.
+last one implemented in full since #181 — so that field lags practice here rather than
+signalling doubt.
 
 ---
 
@@ -99,7 +99,10 @@ lease that has to be actively held.
   affected fan to automatic.
 
 **That bullet ended "and clears the Apple Silicon force key" until #104, and it was wrong.** An
-ordinary per-lease teardown restores only the fans that lease covered and leaves `Ftst` untouched:
+ordinary per-lease teardown restores only the fans that lease covered and, on a plane that cannot
+write, leaves `Ftst` untouched — on one that can, a `.fan(n)` restore also clears the key when it
+hands back the last fan the plane engaged (ADR 0014 D5), never while another depends on it —
+another engaged fan, or an engagement still waiting for its yield under the current epoch:
 `KeystoneRestoreAttempt.restoreOnce(fanAt:)` issues `restoreToAutomatic(.fan(index))` and never
 `.everyFan`, and the type's own documentation gives the reason. `Ftst` is machine-wide rather than
 per-fan (§ 4), so clearing it belongs to the machine-wide restore verb — and is withheld from a
@@ -1015,16 +1018,17 @@ forever, so nothing revisits it.
 
 The window is narrowed rather than shut, and the bolded sentence above is worded to say so
 rather than to reassure. ADR 0009 prescribes a second precedence read after the envelope read
-and before manual control is re-engaged; **that read did not ship**, so § 3 can still latch
-during the envelope read and both writes will land above the ceiling. What corrects it is the
-check *after* the writes, which restores the fan in the safe direction — acting and then
-checking, because the check cannot be made atomic with the act across two actors. The residual
-that leaves is disclosed rather than rounded off: the undo is itself a restore, a restore can
-be refused, and a refused undo leaves the fan pinned with a log line and no mechanism watching
-it — § 3's registry is not told about the re-assert either.
-[#181](https://github.com/blamechris/Aeolus/issues/181) carries all three — the missing read,
-the § 3 registration, and the refused undo — and ADR 0009's "As built, and what did not land"
-section is the audit of which parts of that ruling are in the tree.
+and before manual control is re-engaged; since
+[#181](https://github.com/blamechris/Aeolus/issues/181) it is ADR 0014's `EngagementDriver`
+that asks it — before every step of the mode write, and before the command of a fan still in
+manual — so § 3 latching during the envelope read refuses the re-assert before it writes. What
+covers a latch after that is the check *after* the writes, which restores the fan in the safe
+direction — acting and then checking, because the check cannot be made atomic with the act
+across two actors. The undo is itself a restore and can be refused; what covers that is the
+driver registering the fan with § 3 before its after-check, so a fan whose undo was refused
+stays in the registry § 3's next latched cycle bridges, until a read confirms it automatic.
+ADR 0009's "As built, and what did not land" section is the audit of which parts of that ruling
+are in the tree.
 
 **A write away from the safe state requires a live lease, checked at every examination.**
 ADR 0009's second ruling, built in [#342](https://github.com/blamechris/Aeolus/pull/342)
@@ -1043,10 +1047,11 @@ The order is deliberate. The lease is asked *after* the read because every teard
 lease before it restores, so a read that saw that restore land is followed by a question that
 sees the lease gone; asked first, the same restore looks like the system taking the fan back.
 It is asked *before* either signal, and before an unreadable cycle is counted, because the
-tolerances this section grants are for fans Aeolus holds. **What it does not close:** the lease
-is asked once per examination, not inside the re-assert's writes, so a lease that lapses while
-a re-assert is in flight is re-asserted once and handed back on the next cycle — one second,
-not permanently. Checking before and after each write is ADR 0014's, and is not built.
+tolerances this section grants are for fans Aeolus holds. Since #181 it is asked inside the
+re-assert too: ADR 0014's engagement driver asks it, with the precedence ruling, before and after
+every step of the mode write, and before the command of a fan that needs no mode write. **What
+it does not close:** nothing asks it after the command write, so a lease that lapses during that
+write is re-asserted once and handed back on the next cycle — one second, not permanently.
 
 This is a correctness rule as much as a safety one. A UI that lies about fan state is
 worse than a UI that reports an error, because the user acts on it.
@@ -1054,8 +1059,10 @@ worse than a UI that reports an error, because the user acts on it.
 *Tested by:* `Tests/AeolusHelperTests/ReclamationWatchdogTests.swift`,
 `ReclamationWatchdogRecoveryTests.swift`, `ReclamationWatchdogStalenessTests.swift`,
 `ReclamationRegistrationWindowTests.swift`, `ReclamationLeaseLapseTests.swift`,
-`ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift` and
-`ReclamationSupervisorTests.swift` — mostly through `ScriptedControlPlane`, with four bespoke
+`ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
+`ReclamationSupervisorTests.swift` and `ReclamationEmergencyRegistrationTests.swift`, with the
+engagement driver the re-assert engages through in `EngagementDriverTests.swift` and
+`EngagementEpochTests.swift` — mostly through `ScriptedControlPlane`, with four bespoke
 seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express: a refused
 envelope, a read held open so overlapping reads would be visible, a read or write that runs a
 side effect while it is suspended, and a control-state read answered from a scripted sequence

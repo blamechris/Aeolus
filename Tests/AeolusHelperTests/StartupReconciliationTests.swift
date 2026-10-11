@@ -107,15 +107,18 @@ struct StartupReconciliationTests {
         await helper.bringUp()
         await helper.shutDown()
 
+        // Two, and the first is not reconciliation's: the write path's preparation step runs
+        // before it, could not read the force key on this blind machine either, and issues its
+        // own machine-wide restore for that (ADR 0014 D5). The second is this pass's.
         let issued = await Self.restores(helper)
         #expect(
-            issued == [.everyFan],
+            issued == [.everyFan, .everyFan],
             """
             A helper that could not read F<n>Md issued \(issued) \
-            instead of one unconditional machine-wide restore. ADR 0007's assumption table \
-            settles this: the keystone needs no data, so a helper that cannot say which \
-            fans are held hands back all of them. Returning early instead leaves every fan \
-            in whatever mode the dead process left it.
+            instead of one unconditional machine-wide restore after the preparation step's. \
+            ADR 0007's assumption table settles this: the keystone needs no data, so a helper \
+            that cannot say which fans are held hands back all of them. Returning early \
+            instead leaves every fan in whatever mode the dead process left it.
             """)
         #expect(
             await helper.reconciliation.unreconciledFans == [0, 1],
@@ -740,8 +743,12 @@ actor ClockAdvancingPlane: FanControlPlane {
         try await wrapped.restoreToAutomatic(scope)
     }
 
-    func engageManualControl(of fan: CommandableFan) async throws {
+    func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
         try await wrapped.engageManualControl(of: fan)
+    }
+
+    func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation? {
+        await wrapped.prepareWritePath(enumerating: fans)
     }
 
     @discardableResult

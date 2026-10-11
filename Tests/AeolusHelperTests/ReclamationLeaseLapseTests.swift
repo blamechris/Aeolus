@@ -263,9 +263,11 @@ struct ReclamationLeaseLapseTests {
     /// after the restore is skipped. Run: red on the ledger assertion.
     @Test("A refused hand-back is reported, and the fan is still forgotten and cleared")
     func aRefusedHandBackIsReportedAndForgotten() async throws {
+        // Reclaimed, so the first cycle's refused write is the re-engagement — which leaves
+        // the fan held and marked — rather than a command, whose refusal would give it up.
         let machine = ReclamationMachine(
             stages: [.nominal(writes: .refused(reason: "firmware said no"))],
-            fans: [0: .held(at: 1_800)])
+            fans: [0: .automatic(at: 1_800)])
         try await machine.hold(fan: 0, commanding: 2_400)
         await machine.watchdog.cycle()
         #expect(

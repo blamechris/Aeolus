@@ -12,7 +12,9 @@
 /// fans that are demonstrably fine) or as none (the inversion `FanRestoring` calls out —
 /// *"it converts 'the write was refused' into 'the teardown completed'"*). `.everyFan` also
 /// clears the Apple Silicon force key, which is a machine-wide act and not this path's to
-/// perform: § 7's panic verb owns it, and E5.4d wires it to the signal handlers.
+/// perform: § 7's panic verb owns it, and E5.4d wires it to the signal handlers. That a
+/// `.fan(index)` restore leaves the key alone is true only of a plane that cannot write: on one
+/// that can, it clears the key when it hands back the last fan the plane engaged (ADR 0014 D5).
 ///
 /// **Through `SafetyActorWriter`, never through the plane directly.** [ADR
 /// 0008](../../../docs/ADR/0008-write-authorisation.md) makes every write to a *fan* carry a
@@ -52,11 +54,9 @@ struct KeystoneRestoreAttempt<Plane: FanControlPlane>: FanRestoreAttempting {
 /// **This type closes the teardown half of that finding and none of the other.** What the
 /// quote lists is two symmetrical gaps, and only one is #163's: every `manualControlReleased`
 /// gained its production caller here, on both registries (§ 3's became
-/// `handbackAccepted(fanAt:)` in #295), while `manualControlEngaged` still
-/// has none in `Sources/` and is E3's to supply — nothing puts a fan *into* manual control in
-/// a build with no write path. Read the sentence as naming the two ends of a missing wire
-/// rather than as naming this file's subject; the engage end stays open, deliberately, and
-/// `HelperRestorerTests` has to register fan 0 by hand for exactly that reason.
+/// `handbackAccepted(fanAt:)` in #295). The engage end is not this file's: `EngagementDriver`
+/// calls `manualControlEngaged` on § 3 (#181), and nothing puts a fan *into* manual control in
+/// a build with no write path — which is why `HelperRestorerTests` registers fan 0 by hand.
 ///
 /// The wire is worth a type of its own rather than a closure at the composition root for one
 /// reason: the **order** of the two deregistrations relative to the write is a safety

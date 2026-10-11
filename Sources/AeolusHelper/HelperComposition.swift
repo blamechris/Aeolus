@@ -115,6 +115,9 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     let thermalEmergency: ThermalEmergency<Plane>
     let reclamationWatchdog: ReclamationWatchdog<Plane>
 
+    /// Where the write path's preparation step reports what it found (ADR 0014 D5).
+    let safetyLog: SafetyLog
+
     let thermalSupervisor: ThermalSupervisor<Plane>
     let reclamationSupervisor: ReclamationSupervisor<Plane>
 
@@ -262,6 +265,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         self.connectionHealth = connectionHealth
         self.gateMonitor = gateMonitor
         self.powerObserver = powerObserver
+        self.safetyLog = safetyLog
 
         // Built as locals and then handed round, because each is read by several mechanisms
         // and written by one, and because a stored property cannot be read while the rest of
@@ -351,9 +355,16 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             // uses, through the seam that does not log each throw — § 3 asks at 1 Hz.
             handbackReadBack: reconciliation,
             log: safetyLog)
+        // § 5's writer, shared with the driver it engages through: the driver's step verb and
+        // its undo are this writer's, and so is the level the arbiter is asked about. The driver
+        // registers every fan it engages with § 3 (#181), so it is built after § 3.
+        let reclamationWriter = SafetyActorWriter(plane: plane, level: .reclamationWatchdog)
         let reclamationWatchdog = ReclamationWatchdog(
             sensing: plane,
-            writer: SafetyActorWriter(plane: plane, level: .reclamationWatchdog),
+            writer: reclamationWriter,
+            engagement: EngagementDriver(
+                writer: reclamationWriter, leases: leases, latch: latch,
+                emergency: thermalEmergency, clock: clock, log: safetyLog),
             leases: leases,
             latch: latch,
             ledger: ledger,
@@ -447,6 +458,9 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     ///    advertised service can be handed one to release. `HelperFanRestorer` explains why
     ///    the binding is late at all — the graph is circular, and this is the edge that is
     ///    safest to close last.
+    /// 1½. **Prepare the write path** — ADR 0014 D5. After the bind, before reconciliation:
+    ///    it records what a machine-wide restore needs, and clears a force key a dead helper
+    ///    left set. A no-op on a plane that cannot write.
     /// 2. **Startup reconciliation** — `#164`, E5.4b. Between the bind and the supervisors,
     ///    because a fan restored by reconciliation must not be read by § 5's first cycle as
     ///    a reclamation, and because the restore it performs needs the registries bound.
@@ -500,6 +514,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         await watchdog.arm()
 
         await bindSafetyRegistries()
+        await prepareWritePath()
         await reconcileFans()
 
         // Another circular edge, closed for `bindSafetyRegistries()`'s reason: the
@@ -572,6 +587,19 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         await restorer.bind(
             thermalEmergency: thermalEmergency, reclamationWatchdog: reclamationWatchdog)
         await leases.bind(emergencyRestores: thermalEmergency)
+    }
+
+    /// The write path's preparation step ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)
+    /// D5), over the composition's own enumeration — `reading`, the one reconciliation and
+    /// `acquireLease` use.
+    ///
+    /// After the bind, because its machine-wide restore needs the registries bound; before
+    /// reconciliation, because it clears what reconciliation's per-fan pass cannot see — a force
+    /// key a dead helper left set with every fan already automatic. It never blocks serving, and
+    /// on a plane that cannot write it does nothing and nothing is logged.
+    func prepareWritePath() async {
+        guard let report = await plane.prepareWritePath(enumerating: reading) else { return }
+        safetyLog.writePathPrepared(report)
     }
 
     /// `docs/SAFETY.md` § 6's one-shot pass, over the fans this machine enumerates.

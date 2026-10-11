@@ -121,18 +121,21 @@ struct SafetyActorWriter<Plane: FanControlPlane>: KeystoneRestoring {
         try await plane.restoreToAutomatic(scope)
     }
 
-    /// Takes a fan back off the system's thermal management.
+    /// One step of taking a fan back off the system's thermal management.
     ///
     /// The one verb here that a safety actor uses to move a fan *away* from the safe state,
-    /// and it exists for exactly one caller: § 5's bounded re-assert. A fan the system has
-    /// reclaimed is on automatic control, so re-commanding its target without this first
-    /// writes a number nothing honours.
+    /// and it exists for exactly one caller: the `EngagementDriver` § 5's bounded re-assert
+    /// engages through, which asks the entitlement around every step and owns the cadence
+    /// between them ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md) D2). A fan the
+    /// system has reclaimed is on automatic control, so re-commanding its target without this
+    /// first writes a number nothing honours.
     ///
-    /// It is on this writer rather than reached through the plane directly because
-    /// `ReclamationWatchdog` holds no plane — see `FanStateSensing`. Like every verb here it
-    /// takes a `CommandableFan`, so § 2's plausibility gate binds it: a fan whose declared
-    /// bounds were refused cannot be taken off automatic control by a safety actor either.
-    func engageManualControl(of fan: CommandableFan) async throws {
+    /// It is on this writer rather than reached through the plane directly because neither the
+    /// driver nor `ReclamationWatchdog` holds a plane — see `FanStateSensing`. Like every verb
+    /// here it takes a `CommandableFan`, so § 2's plausibility gate binds it: a fan whose
+    /// declared bounds were refused cannot be taken off automatic control by a safety actor
+    /// either.
+    func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
         try await plane.engageManualControl(of: fan)
     }
 }

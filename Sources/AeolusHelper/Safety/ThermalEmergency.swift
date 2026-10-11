@@ -245,10 +245,11 @@ actor ThermalEmergency<Plane: FanControlPlane> {
 
     /// Registers the permit for a fan that has just been taken off automatic control.
     ///
-    /// Called by whoever performs `FanControlPlane.engageManualControl(of:)` — E3's control
-    /// plane, once it exists. That call already requires a `CommandableFan`, so the permit
-    /// this needs is always in the caller's hand at exactly the moment it is needed, and
-    /// there is never a reason for this type to read one for itself.
+    /// Called by `EngagementDriver` once an engagement reads back engaged, before its
+    /// after-check (ADR 0014 D4, #181) — for § 5's re-assert today, and level 6's `apply` once
+    /// it exists. The engagement already required a `CommandableFan`, so the permit this needs
+    /// is always in the caller's hand at exactly the moment it is needed, and there is never a
+    /// reason for this type to read one for itself.
     ///
     /// ## The same ordering as § 5, and it costs less to get wrong here
     ///

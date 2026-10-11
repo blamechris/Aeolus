@@ -56,6 +56,12 @@ struct ReclamationMachine<Writes: FanControlPlane> {
     let holder = ConnectionID()
     let watchdog: ReclamationWatchdog<Writes>
 
+    /// § 3, on the same plane and latch, so that the registration the driver owes it (#181) is
+    /// observable and its latched cycle can bridge what § 5 left registered. No test cycles it
+    /// unless it is about that: its stages read no temperature, so a cycle is blind, and a
+    /// blind latched cycle still takes back whatever is registered.
+    let emergency: ThermalEmergency<Writes>
+
     /// Everything § 5 said about itself, with levels.
     let safetyLog = RecordedLog()
 
@@ -73,13 +79,27 @@ struct ReclamationMachine<Writes: FanControlPlane> {
         restorer = RecordingFanRestorer()
         leases = LeaseFixture.authority(
             restorer: restorer, thermalEmergency: latch, clock: leaseClock)
+        let log = SafetyLog(recording: { [safetyLog] in safetyLog.append($0, $1) })
+        let telemetry = CuratedCriticalTemperatures(plane: writes, set: .mac16x5)
+        emergency = ThermalEmergency(
+            telemetry: telemetry,
+            sightings: CriticalTemperatureCache(source: telemetry, clock: leaseClock),
+            writer: SafetyActorWriter(plane: writes, level: .thermalEmergency),
+            leases: leases,
+            latch: latch,
+            handbackReadBack: LeaseFixture.reconciliation(over: plane),
+            log: log)
+        let writer = SafetyActorWriter(plane: writes, level: .reclamationWatchdog)
         watchdog = ReclamationWatchdog(
             sensing: sensing,
-            writer: SafetyActorWriter(plane: writes, level: .reclamationWatchdog),
+            writer: writer,
+            engagement: EngagementDriver(
+                writer: writer, leases: leases, latch: latch, emergency: emergency,
+                clock: leaseClock, log: log),
             leases: leases,
             latch: latch,
             ledger: ledger,
-            log: SafetyLog(recording: { [safetyLog] in safetyLog.append($0, $1) })
+            log: log
         )
     }
 }
@@ -452,6 +472,12 @@ actor InterferingFanStateSensing: FanControlPlane {
     private var effect: (@Sendable () async -> Void)?
     private var hasFired = false
 
+    /// An effect run before the plane is asked for the `ordinal`th engagement step — after the
+    /// driver's entitlement check and before the step's turn, which is where a production
+    /// restore can land (ADR 0014 D4). Independent of `moment`.
+    private var beforeEngageStep: (ordinal: Int, effect: @Sendable () async -> Void)?
+    private var engageSteps = 0
+
     /// Whether the effect actually ran.
     ///
     /// Asserted by every test using this type. A double whose interference silently never
@@ -469,6 +495,13 @@ actor InterferingFanStateSensing: FanControlPlane {
     /// usually needs the watchdog, which needs this.
     func interfere(with effect: @escaping @Sendable () async -> Void) {
         self.effect = effect
+    }
+
+    /// Runs `effect` before the `ordinal`th engagement step, counting from one.
+    func interfere(
+        beforeEngageStep ordinal: Int, with effect: @escaping @Sendable () async -> Void
+    ) {
+        beforeEngageStep = (ordinal, effect)
     }
 
     func readControlState(ofFan index: Int) async throws -> FanControlState {
@@ -500,9 +533,20 @@ actor InterferingFanStateSensing: FanControlPlane {
         if moment == .restoreWrite { await fireOnce() }
     }
 
-    func engageManualControl(of fan: CommandableFan) async throws {
-        try await plane.engageManualControl(of: fan)
+    func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
+        engageSteps += 1
+        if let pending = beforeEngageStep, pending.ordinal == engageSteps {
+            beforeEngageStep = nil
+            await pending.effect()
+            didFire = true
+        }
+        let step = try await plane.engageManualControl(of: fan)
         if moment == .engageWrite { await fireOnce() }
+        return step
+    }
+
+    func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation? {
+        await plane.prepareWritePath(enumerating: fans)
     }
 
     @discardableResult

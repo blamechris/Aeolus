@@ -188,6 +188,25 @@ protocol KeystoneRestoring: Sendable {
     /// `.everyFan` additionally clears the Apple Silicon force key. It resolves the fan set
     /// from knowledge the conformer already holds — never from a read issued here, because
     /// a restore that must first read cannot run while reading is what has failed.
+    ///
+    /// ## The contract a plane that can write keeps
+    ///
+    /// [ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D4, D5 and D7:
+    ///
+    /// - **A call supersedes every engagement past its first step**, synchronously and before
+    ///   it waits for a turn, so no later step writes after a restore that was requested first.
+    ///   What the restore writes is decided when it is *issued*, inside its turn.
+    /// - **One turn, no read.** The writes are encoded from what the preparation step recorded.
+    /// - **The unlock reversed**: every `F<n>Md = 0` in scope, then `Ftst = 0`, each attempted
+    ///   whatever the others answered; the call throws only after all of them were.
+    /// - **`.fan(n)` clears the force key when no engaged fan is left after it**, and never
+    ///   while another engaged fan depends on it.
+    /// - **`.everyFan` writes every enumerated fan and every fan this process engaged or
+    ///   restored by index**, then the key. If the bring-up enumeration failed it writes what
+    ///   it can name and throws `FanControlPlaneError.fanSetUnknown` after attempting it.
+    ///
+    /// `PlaneWriteLedger` holds that state and `RestorePlan` the order, so every such plane
+    /// keeps it by the same code.
     func restoreToAutomatic(_ scope: FanRestoreScope) async throws
 }
 
@@ -234,7 +253,22 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// to is the bounds-free mode verb, restore-to-automatic"* — made structural. Engaging
     /// such a fan is the worst reachable state: off Apple's management, and holding a speed
     /// Aeolus may never lawfully command, because there is no envelope to clamp one into.
-    func engageManualControl(of fan: CommandableFan) async throws
+    ///
+    /// ## One step, in one turn
+    ///
+    /// [ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D2, D3 and D7. The unlock's
+    /// sequence is the conformer's — which keys, which values, what a refusal code means,
+    /// whether the force key is needed — and its cadence is `EngagementDriver`'s. Each
+    /// call performs one step inside one `.supervisor` turn (a fresh key info, the write, and
+    /// its read-back) and returns `.engaged` or `.awaitingYield`; every refusal is a throw.
+    /// Nothing calls this but the driver, which asks the entitlement around every step and
+    /// undoes on any throw. The parameter list is still ADR 0008's: one permit and nothing
+    /// beside it, so the fan whose lease the driver checks is the fan written.
+    ///
+    /// A step under a restore epoch older than the current one throws
+    /// `FanControlPlaneError.superseded` and writes nothing. One that finds the epoch moved after
+    /// its mode write, before the force key's, throws `.supersededAfterWrite`.
+    func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep
 
     /// Commands a target speed, `F<n>Tg`.
     ///
@@ -250,6 +284,25 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// makes the mismatch unrepresentable rather than merely discouraged.
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget
+
+    // MARK: - Bring-up
+
+    /// The write path's preparation step, run once by `HelperComposition.bringUp()` between
+    /// binding the safety registries and reconciliation
+    /// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D5).
+    ///
+    /// It enumerates the fans through `fans` — the composition's own enumeration, the one
+    /// reconciliation and `acquireLease` use, because a plane holds no provider of its own —
+    /// records the restore keys' types and whether the force key exists, reads the key if it
+    /// does, and issues `restoreToAutomatic(.everyFan)` once if it reads set, is unknown, or
+    /// will not read. That covers a helper that died holding the key with every fan already
+    /// back in automatic, which reconciliation's per-fan pass cannot see.
+    ///
+    /// It never throws and never blocks serving: what it found and did is returned for the
+    /// composition to log. A plane that cannot write does nothing at all — no enumeration, no
+    /// read, no write — and returns `nil`. It reaches a write only through
+    /// `restoreToAutomatic(_:)`, so it is no new verb.
+    func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation?
 }
 
 // MARK: - Scope
@@ -258,7 +311,7 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
 enum FanRestoreScope: Sendable, Hashable {
     /// One fan.
     case fan(Int)
-    /// Every fan the conformer can address, plus the Apple Silicon force key. `SAFETY.md`
-    /// §7's panic verb.
+    /// Every fan the bring-up enumeration found and every fan this process engaged or restored
+    /// by index, plus the Apple Silicon force key (ADR 0014 D5). `SAFETY.md` §7's panic verb.
     case everyFan
 }

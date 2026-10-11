@@ -372,7 +372,7 @@ struct ScriptedControlPlaneTests {
     func aHonouredWriteLands() async throws {
         let plane = ScriptedControlPlane(fans: [0: .nominal], stages: [.nominal()])
 
-        try await plane.engageManualControl(of: nominalFan)
+        #expect(try await plane.engageManualControl(of: nominalFan) == .engaged)
         _ = try await plane.commandTarget(nominalFan.target(for: 4_200))
 
         let state = try await plane.readControlState(ofFan: 0)
@@ -389,7 +389,7 @@ struct ScriptedControlPlaneTests {
             fans: [0: .nominal],
             stages: [.nominal(temperatures: ["TC0P": 55]), .nominal(temperatures: ["TC0P": 97])])
 
-        try await plane.engageManualControl(of: nominalFan)
+        #expect(try await plane.engageManualControl(of: nominalFan) == .engaged)
         _ = try await plane.commandTarget(nominalFan.target(for: 4_200))
         await plane.advance()
 
