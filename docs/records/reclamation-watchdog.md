@@ -60,7 +60,9 @@ of code changed — the diff of `Sources/` for that change is comment lines only
 spans 284 of them against a warning at 250 and an **error at 350**: about 66 lines of headroom,
 and relocating prose cannot make more. [#181](https://github.com/blamechris/Aeolus/issues/181)
 spent ten of them routing the re-assert and every hand-back through ADR 0014's
-`EngagementDriver`, which holds the rest of that behaviour: 294, and about 56 left. `file_length` has not gone away either. At this file's
+`EngagementDriver`, which holds the rest of that behaviour: 294, and about 56 left.
+[#346](https://github.com/blamechris/Aeolus/issues/346)'s guard on the terminal action's ledger
+entry spent four more: 298, and about 52 left. `file_length` has not gone away either. At this file's
 present density, 2.9 lines per code line, it would error after roughly 55 new code lines, so
 which of the two limits is reached first depends on how much comment the new code carries.
 
@@ -364,3 +366,54 @@ the two are no longer one bit:
 
 Either way it is kept rather than cleared, for the reason `clearReclaimed(fanAt:)`
 states: a fan this mechanism has just handed back is not a fan known to be fine.
+
+### Kept through its own revocation
+
+*Added by [#346](https://github.com/blamechris/Aeolus/issues/346); not relocated from a doc comment.*
+
+Until #346 the entry was not kept in the composition the daemon runs. `finaliseRelease` ends
+by awaiting `LeaseAuthority.revokeEveryLease(because:)`, which restores through
+`HelperFanRestorer`, which calls `manualControlReleased(fanAt:)` for every fan it hands back
+— this one included — before its write. That call ran while `finaliseRelease` was suspended
+inside the revocation, cleared the entry the caller had just written, and logged it resolved,
+so `FanState.isReclaimedBySystem` reported a fan the system had taken as one it had not:
+`CLAUDE.md` rule 6, in the direction that hides a loss. No watchdog suite could see it,
+because `ReclamationMachine`'s `RecordingFanRestorer` never calls back.
+`FinaliseReleaseLedgerTests` drives the composed graph instead.
+
+`finaliseRelease` now puts the fan in `finalising` before its first suspension and takes it
+out when it returns, and `manualControlReleased(fanAt:)` still drops the registry entry for
+such a fan but does not clear its ledger entry. Nothing on the restore path changed: the
+hand-back and the revocation's restore are issued exactly as before, and the guard consumes
+nothing a restore depends on.
+
+**Why not re-mark after the revocation returns.** The clear and its "resolved" line would
+still happen in between, so a snapshot taken during the revocation would report the fan not
+reclaimed and the log would say the reclamation ended when it had not. Re-marking would also
+act after a suspension on a judgement made before it, which `cycle()`'s rule forbids: an
+engagement landing during the revocation clears the entry because something deliberately
+took the fan off automatic control, and marking it again afterwards would report a fan as
+lost that a client had just taken.
+
+**Why not have the restorer say which releases are § 5's own.** Passing the
+`FanRestoreCause` through `manualControlReleased` would let the watchdog skip the clear for
+`.systemReclaimed` and `.supervisorBlind`, but it infers ownership from a label any later
+revocation could carry, changes the lease side's notification for a fact only the watchdog
+holds, and misses a lease teardown that lands during the hand-back, which sends the same
+notice under its own cause.
+
+**Why the whole call, and not the revocation alone.** A lease ending during the hand-back —
+the TTL sweep, or the holder's connection dying — notifies § 5 about a fan it has already
+judged and is already giving up. The entry describes that judgement, so it is kept too —
+`FinaliseReleaseLedgerTests.aTeardownDuringTheHandBackKeepsTheEntry`, which goes red when the
+guard is opened around the revocation alone.
+
+**What still clears it, so it is not frozen.** `manualControlEngaged(_:)` clears
+unconditionally, during the call as at any other time, because an engagement is a statement
+about the world. Once `finaliseRelease` returns, every release notification clears as it
+always has: a later lease ending is a fan Aeolus stopped asking for, which is not a fan the
+system took. That is one place the first list above overstates — a lease granted and released
+without an engagement in between clears a `.systemReclaimed` entry although nothing took the
+fan off automatic control. It is the behaviour `manualControlReleased(fanAt:)` has always had,
+kept deliberately, and `FinaliseReleaseLedgerTests.anOrdinaryReleaseAfterwardsStillClearsTheEntry`
+holds it.

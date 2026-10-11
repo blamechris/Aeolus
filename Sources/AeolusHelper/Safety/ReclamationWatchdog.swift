@@ -68,7 +68,7 @@ import FanKit
 ///   comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
 ///   Relocating prose cannot relieve `type_body_length`, which counts this body's code: about
-///   56 lines of headroom remain before its error at 350 (294 code lines since #181). New
+///   52 lines of headroom remain before its error at 350 (298 code lines since #346). New
 ///   behaviour belongs in value types and the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
 ///   [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of this space.
@@ -112,6 +112,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// and a cycle over an empty registry does nothing at all — there is no fan pinned, so
     /// there is nothing that could be taken back.
     private var held: [Int: HeldFan] = [:]
+
+    /// The fan `finaliseRelease(fanAt:because:)` is giving up right now, whose ledger entry a
+    /// release notification must not clear (#346) — see `manualControlReleased(fanAt:)`. A set
+    /// only for legibility: one sweep runs at a time, so it never holds more than one fan.
+    private var finalising: Set<Int> = []
 
     /// `sensing` is an existential rather than `some FanStateSensing`, unlike
     /// `ThermalEmergency`'s `telemetry`. It is stored as one either way, and taking it as an
@@ -220,8 +225,16 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// **A hint, not the authority** — ADR 0009 D2. `HelperFanRestorer` calls this before
     /// every lease-core restore, and `.leaseLapsed` is what hands back a fan whose lease
     /// ended without it: past its deadline and not yet swept, or registered after its lease.
+    ///
+    /// **Except the ledger of a fan `finaliseRelease(fanAt:because:)` is giving up** (#346). Its
+    /// revocation's restorer sends this for that fan while the terminal action is suspended,
+    /// and clearing then erased the entry it keeps, so a fan the system took was reported as
+    /// not taken. The registry entry still goes, the restore is untouched, and the clear is
+    /// withheld only until that call returns. reclamation-watchdog.md § *"The ledger entry
+    /// `finaliseRelease` keeps"*.
     func manualControlReleased(fanAt index: Int) async {
         held[index] = nil
+        guard !finalising.contains(index) else { return }
         if await ledger.clearReclaimed(fanAt: index) {
             log.reclamationResolved(fan: index)
         }
@@ -832,7 +845,9 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// that claimed it.
     ///
     /// The restore is attempted whatever else failed. The ledger entry for `index` is **kept**,
-    /// as `.systemReclaimed` or `.supervisorBlind` depending on the caller (#140).
+    /// as `.systemReclaimed` or `.supervisorBlind` depending on the caller (#140) — and kept
+    /// through this call's own revocation, whose restorer tells § 5 the fan was released while
+    /// this is suspended: `finalising` withholds that clear until this returns (#346).
     /// reclamation-watchdog.md § *"The ledger entry `finaliseRelease` keeps"*.
     ///
     /// Every lease is revoked rather than the one covering this fan, for
@@ -852,6 +867,10 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// The restore is the driver's hand-back, so § 3 is deregistered as `restoreAndForget`
     /// describes (#181); the siblings are the lease core's, whose restorer tells § 3 itself.
     private func finaliseRelease(fanAt index: Int, because cause: FanRestoreCause) async {
+        // Before the first suspension, not around the revocation alone: a lease teardown landing
+        // during the hand-back sends the same notice about a fan § 5 has already judged.
+        finalising.insert(index)
+        defer { finalising.remove(index) }
         do {
             try await engagement.handBack(fanAt: index)
         } catch {
