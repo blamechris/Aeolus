@@ -36,7 +36,7 @@ import Foundation
 /// and `FanStateSensing` for the same argument made twice already. A restore is the one write
 /// a client message may cause, because its only expressible effect is the safe state, and § 7
 /// issues it only on a plane whose capability is `.built`.
-/// `PanicPathScopeTripwireTests.theAuthorityHoldsNoPlane` holds this file to the two roles.
+/// `AuthorityRoleTripwireTests` holds this file to the two roles.
 ///
 /// **The capability reporter is back, and this time something reads it.** An earlier draft of
 /// this file stored one and documented it as *"why `apply` refuses"*, while `apply`'s own

@@ -69,8 +69,11 @@ struct SafetyActorWriter<Plane: FanControlPlane>: KeystoneRestoring {
 
     private let plane: Plane
 
-    /// Which safety actor is writing. Provenance for a log line and for the arbiter; never
-    /// an input to the arithmetic, because there is no arithmetic here to vary.
+    /// Which safety actor is writing: provenance only. Nothing reads it today — no log line
+    /// prints it, and the one caller of `SafetyArbiter.ruling(for:incumbent:)`,
+    /// `ReclamationWatchdog`, names its own level rather than asking a writer — so it is kept
+    /// for whoever makes the arbiter govern these writes. It is never an input to the
+    /// arithmetic, because there is no arithmetic here to vary.
     let level: SafetyActorLevel.Ungoverned
 
     init(plane: Plane, level: SafetyActorLevel.Ungoverned) {

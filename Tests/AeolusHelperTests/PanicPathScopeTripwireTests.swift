@@ -42,7 +42,7 @@ import Testing
 /// the list below not revisited — and not a plane call reached through a name it cannot
 /// recognise. `everyMachineWideRestoreIsOneOfTheKnownCallSites` is what narrows that: the
 /// machine-wide scope has to be *named* somewhere to be issued, and an unlisted place naming it
-/// is a failure whatever calls it. `theAuthorityHoldsNoPlane` closes the other door, a plane
+/// is a failure whatever calls it. `AuthorityRoleTripwireTests` closes the other door, a plane
 /// handed to the verb under a name the body scan would not see.
 @Suite("§ 7's panic verb keeps its scope, or the documentation moves with it")
 struct PanicPathScopeTripwireTests {
@@ -69,7 +69,8 @@ struct PanicPathScopeTripwireTests {
         "Tests/AeolusHelperTests/LeaseTeardownTests.swift — LeaseReleaseTests.everyLeaseIsDropped",
     ]
 
-    private static var checklist: String {
+    /// The sites as a failure message's list. `AuthorityRoleTripwireTests` prints it too.
+    static var checklist: String {
         documentationSites.map { "  - \($0)" }.joined(separator: "\n")
     }
 
@@ -154,141 +155,6 @@ struct PanicPathScopeTripwireTests {
             amendment), and these say the order is this one:
             \(Self.checklist)
             """)
-    }
-
-    /// `SupervisedFanAuthority.swift` names no plane, no writer that can command a fan, no
-    /// permit and no forward write verb: it is handed `KeystoneRestoring` and
-    /// `FanWriteCapabilityReporting`, and nothing wider (ADR 0014 D5).
-    ///
-    /// The body scan above sees what the panic verb *calls*; it cannot see what the type
-    /// *holds*. A whole plane in a stored property would put `commandTarget(_:)` one `await`
-    /// from a decoded client message while every statement in the verb read exactly as before.
-    /// Type names are matched as identifiers, qualified or not, through
-    /// `WatchdogTripwireTests.mentions(of:in:)`, whose own fixtures cover that scan; the verbs
-    /// are matched as text, because they arrive as member accesses that scan deliberately
-    /// skips.
-    ///
-    /// **Mutation:** type `keystone` and its initialiser parameter as `any FanControlPlane` /
-    /// `some FanControlPlane`, the composition passing `plane`. Run: red on `FanControlPlane`
-    /// and on the coverage line — while every behavioural test stays green, because a plane
-    /// behind a restore-only body restores exactly as the role does.
-    @Test("The panic verb's type holds the keystone and the capability, and no plane")
-    func theAuthorityHoldsNoPlane() throws {
-        let url = try #require(
-            try SeamScanner.swiftFiles().first {
-                $0.lastPathComponent == "SupervisedFanAuthority.swift"
-            })
-        let code = SeamScanner.strippingComments(try String(contentsOf: url, encoding: .utf8))
-
-        // Coverage: the two roles are named, so the scan below is reading the file that holds
-        // them rather than an empty one.
-        #expect(code.contains("any KeystoneRestoring"), "the keystone role is not held")
-        #expect(
-            code.contains("any FanWriteCapabilityReporting"), "the capability role is not held")
-
-        let types = try WatchdogTripwireTests.mentions(
-            of: [
-                "FanControlPlane", "SMCFanControlPlane", "FanStateSensing", "SafetyActorWriter",
-                "GovernedFanWriter", "CommandableFan", "AuthorisedFanTarget", "FanTargetRPM",
-                "SMCConnection",
-            ],
-            in: code)
-        let verbs = ["commandTarget", "engageManualControl", "commandMaximum"].filter {
-            code.contains($0)
-        }
-        #expect(
-            types.isEmpty && verbs.isEmpty,
-            """
-            SupervisedFanAuthority.swift names \(types + verbs). It is where a decoded client \
-            message lands, and it may hold the keystone and the capability and nothing that \
-            commands a fan — the shape E2 froze this boundary to (ADR 0014 D5).
-            """)
-        // A role held as an existential can be cast back to what it wraps, and the cast need
-        // not name the type the denylist knows: `keystone as? SomeAlias`.
-        for cast in ["as?", "as!"] {
-            #expect(!code.contains(cast), "SupervisedFanAuthority.swift casts with `\(cast)`")
-        }
-    }
-
-    /// The authority's stored properties are exactly these declarations, by name **and** type.
-    ///
-    /// The denylist above names types, so a name it does not know evades it:
-    /// `typealias WholePlane = any FanControlPlane` in another file, then a stored
-    /// `WholePlane` here, reads as clean (the review of #349). An allowlist of whole
-    /// declarations cannot be evaded by a new name, because every new name is a failure.
-    /// Statics and an extension's members are scanned too: every `let` or `var` declared outside
-    /// a function body in this file.
-    ///
-    /// **Mutation:** add `typealias WholePlane = any FanControlPlane` to `FanAuthority.swift`
-    /// and `private let plane: WholePlane? = nil` to `SupervisedFanAuthority`. Run: red here and
-    /// in `nothingInSourcesAliasesAWiderRole`, and nowhere else.
-    @Test("The panic verb's type stores exactly the roles it is allowed, by name and type")
-    func theAuthorityStoresOnlyItsAllowedProperties() throws {
-        let allowed: Set<String> = [
-            "private let reading: ReadOnlyFanAuthority",
-            "private let leases: LeaseAuthority",
-            "private let reconciliation: any ReconciliationBaselineReporting",
-            "private let keystone: any KeystoneRestoring",
-            "private let writeCapability: any FanWriteCapabilityReporting",
-            "let controlGate = ControlMessageGate()",
-            "private let log: HelperLog",
-            "private static let shuttingDown = AeolusXPCFault.helperFailed(",
-        ]
-        let url = try #require(
-            try SeamScanner.swiftFiles().first {
-                $0.lastPathComponent == "SupervisedFanAuthority.swift"
-            })
-        let declared = Self.storedDeclarations(
-            in: SeamScanner.strippingComments(try String(contentsOf: url, encoding: .utf8)))
-
-        // Coverage: a scan that found nothing would pass the comparison below vacuously.
-        #expect(declared.contains("private let keystone: any KeystoneRestoring"))
-        #expect(
-            Set(declared) == allowed && declared.count == allowed.count,
-            """
-            SupervisedFanAuthority.swift declares \(declared.sorted()), not \
-            \(allowed.sorted()). It may hold the keystone and the capability and nothing that \
-            can command a fan (ADR 0014 D5). Every site below describes what it holds:
-            \(Self.checklist)
-            """)
-    }
-
-    /// Nothing under `Sources/` gives a wider role a second name.
-    ///
-    /// The allowlist above holds `SupervisedFanAuthority.swift`; this holds the names that file
-    /// could import. A `typealias` whose right-hand side names the plane, its read half, or a
-    /// writer that can command a fan is a way to spell one of them without the word.
-    @Test("No typealias anywhere in Sources renames the plane or a commanding writer")
-    func nothingInSourcesAliasesAWiderRole() throws {
-        let wider = try NSRegularExpression(
-            pattern: #"typealias\s+\w+[^=\n]*=[^\n]*\b(SMCFanControlPlane|FanControlPlane|"#
-                + #"FanStateSensing|SafetyActorWriter|GovernedFanWriter)\b"#)
-        var aliasing: [String] = []
-        for file in try SeamScanner.swiftFiles() {
-            let code = SeamScanner.strippingComments(try String(contentsOf: file, encoding: .utf8))
-            if wider.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)) != nil {
-                aliasing.append(file.lastPathComponent)
-            }
-        }
-        #expect(aliasing.isEmpty, "\(aliasing) give the plane or a commanding writer a new name")
-    }
-
-    /// Every `let`/`var` declaration outside a function body: the text at brace depth 0 and 1,
-    /// one declaration per line, whitespace collapsed.
-    private static func storedDeclarations(in code: String) -> [String] {
-        var shallow = ""
-        var depth = 0
-        for character in code {
-            if character == "{" { depth += 1 }
-            if depth <= 1, character != "{", character != "}" { shallow.append(character) }
-            if character == "}" { depth -= 1 }
-        }
-        let declaration =
-            #"^(?:(?:private|fileprivate|internal|public|package|static|"#
-            + #"nonisolated|lazy|weak|unowned)\s+)*(?:let|var)\s"#
-        return shallow.split(separator: "\n")
-            .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
-            .filter { $0.range(of: declaration, options: .regularExpression) != nil }
     }
 
     // MARK: - The machine-wide scope

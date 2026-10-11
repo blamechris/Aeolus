@@ -299,11 +299,20 @@ struct HelperLog: Sendable {
 
     // MARK: - Lifecycle
 
-    func listening(machServiceName: String, build: String) {
+    /// The service is advertised. What the line says about writing comes from the plane's own
+    /// `writeCapability`, asked at the call site: it read *"No SMC write path exists in this
+    /// build"* as a literal until the delta review of #349, which a build that can write would
+    /// still have printed.
+    func listening(machServiceName: String, build: String, writeCapability: FanWriteCapability) {
+        let writes =
+            switch writeCapability {
+            case .notBuilt: "No SMC write path exists in this build."
+            case .built: "This build has an SMC write path."
+            }
         notice(
             """
             AeolusHelper \(build) listening on \
-            \(machServiceName). No SMC write path exists in this build.
+            \(machServiceName). \(writes)
             """
         )
     }

@@ -172,7 +172,7 @@ protocol SMCConnectionRecovering: Sendable {
 /// `FanControlPlane` would put `commandTarget(_:)` and `engageManualControl(of:)` one `await`
 /// from the wire, which is the shape E2 froze the boundary to prevent. It is handed this and the
 /// capability instead ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D5), and
-/// `PanicPathScopeTripwireTests` holds its file to those two roles.
+/// `AuthorityRoleTripwireTests` holds its file to those two roles.
 ///
 /// `FanControlPlane` refines this, so every plane answers it. `SafetyActorWriter` conforms with
 /// the verb it already had, and that is what the composition hands § 7 — typed as this role,

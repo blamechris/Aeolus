@@ -213,7 +213,9 @@ enum AeolusHelperMain {
         }
         broughtUp.wait()
 
-        log.listening(machServiceName: AeolusXPCService.machServiceName, build: build)
+        log.listening(
+            machServiceName: AeolusXPCService.machServiceName, build: build,
+            writeCapability: helper.plane.writeCapability)
         listener.resume()
     }
 }
