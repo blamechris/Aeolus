@@ -34,8 +34,9 @@ same correction-in-place rule applies here as above.
 Not built: § 7's body and § 8's hysteresis — and **"§ 7's body" is narrower than it sounds**,
 which this line did not say until #104. The XPC message `restoreAllToAutomatic` has existed since
 E2.1, is implemented through the helper, is tested, and is the one message exempt from the version
-handshake gate. What is not built is `fanctl`'s call into it (#15) and the SMC write behind it
-(E3/E4). All of it is tracked as epic E5,
+handshake gate. What is not built is the SMC write behind it (E3/E4). This line also named
+`fanctl`'s call into it (#15) until that landed in #159, and the handler's own machine-wide restore,
+issued on a plane that can write, landed in #104 (§ 7). All of it is tracked as epic E5,
 and E5 blocks the write-path epics E3 and E4. No code that writes to the SMC merges before
 the safety subsystem exists and is tested.
 
@@ -103,25 +104,26 @@ ordinary per-lease teardown restores only the fans that lease covered and leaves
 `.everyFan`, and the type's own documentation gives the reason. `Ftst` is machine-wide rather than
 per-fan (§ 4), so clearing it belongs to the machine-wide restore verb — and is withheld from a
 per-lease teardown, which may be running alongside another client's still-live lease over a
-different fan. The three `.everyFan` call sites in `Sources/` are all non-lease paths, and they
+different fan. The four `.everyFan` call sites in `Sources/` are all non-lease paths, and they
 are § 4's sleep handback (`Lifecycle/SystemPowerResponder.swift`), § 6's orderly exit
-(`Lifecycle/SignalTeardown.swift`) and § 6's startup-reconciliation fallback
-(`Safety/StartupReconciliation.swift`). **That count and that list are asserted, not merely
-stated** — `PanicPathScopeTripwireTests` scans the tree for them, so a fourth site cannot arrive
-while this sentence goes on saying there are three (#228).
+(`Lifecycle/SignalTeardown.swift`), § 6's startup-reconciliation fallback
+(`Safety/StartupReconciliation.swift`) and § 7's panic verb (`SupervisedFanAuthority.swift`),
+which issues it only on a plane that can write. **That count and that list are asserted, not
+merely stated** — `PanicPathScopeTripwireTests` scans the tree for them, so a fifth site cannot
+arrive while this sentence goes on saying there are four (#228).
 
-**§ 7's panic path is not among them, and this paragraph said it was until the review of #104.**
-The machine-wide clear is § 7's by design, and the shipped verb does not issue it:
-`SupervisedFanAuthority.restoreAllToAutomatic` releases every lease and calls nothing on the
-control plane. That is a recorded decision rather than an omission — the plane verb throws
-`.controlPathNotBuilt` on this build, so issuing it would convert a v1 message that succeeds into
-one that always fails while leaving the machine in exactly the same state, and the message's
-contract is frozen at v1 ([#159](https://github.com/blamechris/Aeolus/issues/159)). The
-consequence for a reader is the one worth stating plainly: **on this build no path clears `Ftst`
-at all** — not a lease teardown, which never asks; not the panic verb, which does not ask either;
-and not the three call sites above, whose write throws. Every sentence in this document that has
-the panic path clearing the force key is describing the design, not the binary. The correction is
-recorded here rather than made silently, for the reason the status block above gives.
+**§ 7's panic path is among them, and on this build it still issues nothing.** This paragraph
+listed it until the review of #104, while the shipped verb issued no machine-wide restore; the
+review corrected that, and [ADR 0014](ADR/0014-apple-silicon-unlock.md) D5 then gave the verb
+one (#104). `SupervisedFanAuthority.restoreAllToAutomatic` releases every lease and then, if and
+only if the plane's `writeCapability` is `.built`, issues `restoreToAutomatic(.everyFan)` ahead of
+its read-back (§ 7). Every build on `main` answers `.notBuilt`, so the consequence for a reader is
+unchanged and still worth stating plainly: **on this build no path clears `Ftst` at all** — not a
+lease teardown, which never asks; not the panic verb, which asks only a plane that can write; and
+not the other three call sites, whose write throws. Every sentence in this document that has the
+panic path clearing the force key describes the design and a build that can write, not this
+binary. The correction is recorded here rather than made silently, for the reason the status block
+above gives.
 
 The heartbeat interval is a third of the TTL so that two consecutive missed beats are
 tolerated. A single scheduling hiccup must not surrender control; a dead client must.
@@ -1326,8 +1328,9 @@ firmware takes the mode write; both belong to E3/E4 bring-up.
 
 `fanctl reset --all` is specified to restore every fan to automatic, clear the force key, and
 drop all leases. It must work when the helper's state is inconsistent and when the app will not
-launch at all. **Read that as the design.** What ships today drops the leases and nothing else —
-the gap is itemised below and in row 18 of the [hardware checklist](#hardware-checklist).
+launch at all. **Read that as the design.** The handler does all three on a plane that can write;
+what ships today, on a plane that cannot, drops the leases and nothing else — the gap is itemised
+below and in row 18 of the [hardware checklist](#hardware-checklist).
 
 Handing the fans back to Apple's thermal management is always a valid state, so this
 command is safe to run at any time, from anywhere, including over SSH.
@@ -1346,16 +1349,33 @@ code-signing authorisation check, which is applied at the connection rather than
 "restore what this connection holds". E2's teardown-gate exemption depends on that staying
 true.
 
-**The built implementation satisfies that contract only through the lease core.**
-`SupervisedFanAuthority.restoreAllToAutomatic` is `await leases.releaseEveryLease()` and a log
-line: no `restoreToAutomatic(.everyFan)` reaches the control plane, so a fan held in manual under
-no live lease that Aeolus is *not* accountable for — one another tool pinned, one reconciliation
-recorded as `handbackRefused` — is outside what today's message touches, and no force-key clear is
-issued. That is deliberate and recorded at the source: the plane verb throws
-`.controlPathNotBuilt`, so calling it would make a
-v1 message that succeeds into one that always fails for no change in machine state, and the
-contract is frozen at v1 ([#159](https://github.com/blamechris/Aeolus/issues/159)). It is
-nonetheless a third missing piece, and it is not obtainable from the two named below.
+**The handler is three acts, and the second is gated on the plane**
+([ADR 0014](ADR/0014-apple-silicon-unlock.md) D5, [#104](https://github.com/blamechris/Aeolus/issues/104)).
+`SupervisedFanAuthority.restoreAllToAutomatic` releases every lease (`releaseEveryLease()`); then,
+if and only if the plane's `writeCapability` is `.built`, issues `restoreToAutomatic(.everyFan)`;
+then reads back the handbacks the firmware accepted (`confirmAcceptedHandbacks()`). The
+machine-wide restore is what reaches a fan held in manual under no live lease that Aeolus is *not*
+accountable for — one another tool pinned, one reconciliation recorded as `handbackRefused` — and
+the force key, which only `.everyFan` clears. It sits between the other two so that the read-back
+follows the keystone and never precedes it ([ADR 0007](ADR/0007-safety-composition.md)'s
+2026-09-20 amendment). The handler is handed two narrow roles of the plane — the keystone
+(`KeystoneRestoring`) and `FanWriteCapabilityReporting` — and never the plane itself, so it still
+cannot command a fan. On every build on `main` the capability is `.notBuilt`: the restore is not
+issued, and what ships is the lease release and the read-back.
+
+**The reply is v1's "accepted" in every case, and that is not a contract change.** A refused
+`.everyFan` is caught explicitly — never with `try?` — and logged at `.fault`, and the message
+still succeeds. Until #104 this section called the handler-side restore "a v1 contract change"
+that "belongs with the write path rather than before it", because the plane verb throws
+`.controlPathNotBuilt` on this build and calling it would have turned a v1 message that succeeds
+into one that always fails ([#159](https://github.com/blamechris/Aeolus/issues/159)). Catching the
+throw keeps the success, and the `.built` gate keeps the call off a plane with nothing to write
+with. The reply's shape and meaning are unchanged — *accepted*, never *done*
+([ADR 0013](ADR/0013-fanctl-control-contract.md)) — so `AeolusXPCVersion` does not move. A fan
+still manual after a refusal reads as such in the snapshot, under the reason the availability
+ladder already gives it; a force key left set has no snapshot field, and the fault line is the
+only report of it. The reply now follows one more restore call, which the client's 10 s
+`panicVerb` deadline covers; its round trip on hardware is unmeasured.
 
 **One fan under no live lease *is* touched, and it is the fan this path exists for**
 ([#189](https://github.com/blamechris/Aeolus/issues/189)). `releaseEveryLease()` sweeps
@@ -1365,18 +1385,28 @@ own: it leased them, put them off automatic, asked for them back and was refused
 `fansAeolusIsAccountableFor` counts them and ADR 0011's decline-the-contest rule does not apply.
 Before this they were unreachable by any restore the helper issued, because § 1's own refusal kept
 a lease over them from existing — so § 7 could not recover the one state § 1 called terminal, and
-a fan that entered it stayed there for the life of the process. A write the firmware accepts
-clears the refusal; one it refuses again leaves it standing, and the message succeeds either way,
-which is why this does not have the v1 problem the machine-wide call has.
+a fan that entered it stayed there for the life of the process. A write the firmware accepts,
+and then a read-back confirming the fan automatic (#291), clears the refusal; one it
+refuses again leaves it standing, and the message succeeds either way, as it does for the
+machine-wide call.
 
 [RECOVERY.md](RECOVERY.md) documents the procedure for when even that is unavailable,
 including SMC reset key combinations by Mac family.
 
-*Tested by (pending E3/E4):* integration tests invoked against a deliberately corrupted helper
-state; a manual hardware check. `fanctl reset --all` now sends `restoreAllToAutomatic` over XPC
-and is exercised end to end — the real command, the real client, a real `NSXPCListener` and the
-real helper session — by `Tests/AeolusHelperTests/FanctlResetTests.swift`. **No hardware run has
-executed it.** What blocked one, a signed `fanctl` the installed helper admits
+*Tested by:* an integration test invoked against a deliberately corrupted helper state,
+`Tests/AeolusHelperTests/FanctlResetCorruptedStateTests.swift` (#104). It drives the shipping
+`fanctl reset --all` through the real client, a real `NSXPCListener` and the real helper session,
+in front of the composed helper over `ScriptedControlPlane` answering `.built`, with every one of
+these at once: a lease whose connection is gone; a fan in manual under no lease, registered with
+§ 3 and § 5 while the lease table holds no lease over it; a stale `restoreAbandoned` entry; a
+latched § 3 with nothing bridged under it; and a force key set with nothing engaged. The command
+exits 0 saying *accepted*, and afterwards every fan is automatic, the key is clear, no lease is held
+and no refusal stands. A firmware that refuses the machine-wide restore still gets *accepted*, and
+a fault line. `PanicVerbMachineWideRestoreTests` holds both capabilities, the order and the
+refusal at the authority, and `FanctlResetTests` the command's own decisions against a healthy
+helper. That is the panic path as it behaves once a write path exists; every build on `main`
+answers `.notBuilt`. *Pending (E3/E4):* a manual hardware check, row 18's hardware half. **No
+hardware run has executed it.** What blocked one, a signed `fanctl` the installed helper admits
 ([#82](https://github.com/blamechris/Aeolus/issues/82)), no longer does: on 2026-10-09, on
 `Mac16,5` / macOS 27.0.1, the `fanctl` embedded in a Developer ID `Full Release` build was
 admitted by the installed helper ([the hardware
@@ -1386,10 +1416,11 @@ the write behind it is not built. A `swift build` binary carries no Team ID, so 
 the helper and the helper would refuse it, both by design — the ad-hoc binary was seen to refuse
 itself before connecting.
 
-**The CLI's call now exists; the firmware write and the handler's scope do not.** This line read
-*"the XPC call behind it is #15"* until #104, which reads as though the message did not exist, and
-then *"what is missing is the CLI's call and the firmware write"* until
-[#159](https://github.com/blamechris/Aeolus/issues/159) landed the call.
+**The CLI's call and the handler's scope now exist; the firmware write does not.** This line read
+*"the XPC call behind it is #15"* until #104's rewrite of this document, which reads as though the
+message did not exist; then *"what is missing is the CLI's call and the firmware write"* until
+[#159](https://github.com/blamechris/Aeolus/issues/159) landed the call; then *"the firmware
+write and the handler's scope do not"* until #104 gave the handler its machine-wide restore.
 `restoreAllToAutomatic` has existed since E2.1: it is declared on `AeolusXPCProtocol`, implemented
 through `HelperXPCService` → `HelperConnectionSession` → the authority, tested, and is the one
 message exempt from the version handshake gate. #159 is `fanctl`'s call into it. E3/E4 are the
@@ -1404,13 +1435,12 @@ the client decided, and prints step 5's `bootout` line; an unreachable helper is
 of the two possibilities ADR 0005 measured to be indistinguishable from the client's side.
 
 **Wiring the call was not sufficient, which the previous sentence read as though it were.** The
-handler behind the message is lease-scoped in effect (above), so a build with the call wired and a
-live write path would restore the fans live leases covered and still leave a foreign-held fan
-pinned and `Ftst` set. Two pieces remain, then: the firmware write (E3/E4), and the machine-wide
-restore inside the handler — which is a v1 contract change and belongs with the write path rather
-than before it. Until both land, § 7 describes the panic path rather than providing one, which
-matters more than the other pending lines here because this is the section the others fall back
-to.
+handler behind the message was lease-scoped in effect until #104, so a build with the call wired
+and a live write path would have restored the fans live leases covered and still left a
+foreign-held fan pinned and `Ftst` set. #104 put the machine-wide restore inside the handler,
+gated on the plane (above). One piece remains: the firmware write (E3/E4). Until it lands, § 7
+describes the panic path rather than providing one, which matters more than the other pending
+lines here because this is the section the others fall back to.
 
 ## 8. Rate limiting and hysteresis
 
@@ -1723,12 +1753,12 @@ The signed `fanctl` an installed helper will admit, which this row was also bloc
 ([#82](https://github.com/blamechris/Aeolus/issues/82)), now exists: the installed Developer ID
 `Full Release` helper admitted it for `fanctl status` on 2026-10-09 ([the hardware
 check](https://github.com/blamechris/Aeolus/issues/82#issuecomment-6076882014)). `reset --all`
-itself has not been run against it.* **Two** blockers remain of the three this row used to
+itself has not been run against it.* **One** blocker remains of the three this row used to
 name: #159 wired the CLI to the XPC message, so the command now issues a real request and reports
-the helper's answer; the plane write still throws `.controlPathNotBuilt`, and the handler behind
-the message still issues no machine-wide restore of its own (§ 7), so a fan no live lease covers
-stays pinned with `Ftst` set. This row is what checks that, and it is the reason the row is worth
-running rather than assuming.
+the helper's answer, and #104 gave the handler behind it a machine-wide restore of its own, issued
+on a plane that can write (§ 7); the plane write still throws `.controlPathNotBuilt`, so on this
+build a fan no live lease covers stays pinned with `Ftst` set. This row is what checks that the
+restore reaches the firmware, and it is the reason the row is worth running rather than assuming.
 
 The message itself exists, is exempt from the handshake gate, and is authorisation-checked. The
 exemption is covered by `AnonymousListenerTests`, `HandshakeGateTests` and
@@ -1745,7 +1775,8 @@ Developer ID and is E2.5's manual check. That check was run once, on 2026-10-09:
 helper admitted the signed embedded `fanctl` and libxpc refused two Developer ID-signed probes, one
 failing the `get-task-allow` clause and one the identifier clause (ADR 0005, "Update — 2026-10-09").
 One machine, one OS version, and it re-runs on every change to the boundary. This row also carries
-#104's corrupted-helper-state case.
+#104's corrupted-helper-state case; its scripted form, through the real client and listener, is
+`FanctlResetCorruptedStateTests` (§ 7).
 
 ---
 

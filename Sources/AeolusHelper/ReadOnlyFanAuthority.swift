@@ -266,7 +266,7 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// restore it no better than this success does. Shape frozen at v1: see the type doc,
     /// #159 and #164.
     func restoreAllToAutomatic(from connection: ConnectionID) async throws {
-        log.restoredAllToAutomatic(connection: connection)
+        log.restoredAllToAutomatic(connection: connection, machineWide: .notIssued)
     }
 
     /// Nothing to release: no lease can exist in E2, so no connection can be holding one.

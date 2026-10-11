@@ -36,13 +36,20 @@ import os
 /// would train whoever reads the log to ignore it.
 struct HelperLog: Sendable {
 
-    /// The two levels the fan lines below choose between. Only those lines, deliberately —
-    /// see `fanLineSink`.
+    /// The levels the fan lines below are emitted at, and only theirs — see `fanLineSink`.
     enum FanLineLevel: Sendable, Hashable {
         /// Persisted, and the level an operator goes looking at.
         case error
         /// Not persisted by default. What a repeat of an already-reported condition costs.
         case debug
+        /// § 7's refused machine-wide restore: fans may be off automatic control.
+        case fault
+    }
+
+    /// What § 7's machine-wide restore did: not issued (no write path), accepted (which is not
+    /// automatic), or refused (`panicRestoreRefused` has said so at fault level).
+    enum MachineWideRestore: Sendable, Hashable {
+        case notIssued, accepted, refused
     }
 
     private let log: Logger
@@ -54,8 +61,8 @@ struct HelperLog: Sendable {
     /// type interpolate a client-supplied string under a deliberate `privacy:` annotation,
     /// and funnelling those through one already-rendered `String` would move the redaction
     /// decision out of `os_log` — a change to what a shipping helper discloses, made for a
-    /// test's benefit. The fan lines interpolate an `Int` and an error description this
-    /// module produced, so mirroring them redacts nothing differently.
+    /// test's benefit. The two fan lines interpolate an `Int`, a `ConnectionID` this helper
+    /// minted and an error description this module produced, so mirroring redacts nothing.
     ///
     /// `nil` in every shipping build: `AeolusHelperMain` calls `init(subsystem:category:)`,
     /// which cannot set it.
@@ -178,15 +185,36 @@ struct HelperLog: Sendable {
         )
     }
 
-    /// The panic path ran.
-    func restoredAllToAutomatic(connection: ConnectionID) {
+    /// The panic path ran. It says what the helper did and no more: it used to add *"every fan
+    /// was already under the system's control"*, which no build can know.
+    func restoredAllToAutomatic(connection: ConnectionID, machineWide: MachineWideRestore) {
+        let restore =
+            switch machineWide {
+            case .notIssued:
+                "no machine-wide restore was issued, because this build has no SMC write path"
+            case .accepted:
+                "the firmware accepted the machine-wide restore, and accepted is not automatic"
+            case .refused:
+                "the machine-wide restore was refused (the fault line before this one)"
+            }
         log.notice(
             """
             Connection \(connection.logDescription, privacy: .public) asked for every fan \
-            to be restored to automatic. This build has no write path, so every fan was \
-            already under the system's control and nothing had to change.
+            to be restored to automatic. Every lease was released, and \(restore, privacy: .public).
             """
         )
+    }
+
+    /// § 7's machine-wide restore threw (`detail` is this module's own error). `fault`, as the
+    /// only report of a force key left set, which has no snapshot field (ADR 0014 D5).
+    func panicRestoreRefused(connection: ConnectionID, detail: String) {
+        let message = """
+            The machine-wide restore that connection \(connection.logDescription) asked for was \
+            refused (\(detail)). Fans may still be off automatic control and the force key set; \
+            every lease was released. Run fanctl reset --all again, or see docs/RECOVERY.md.
+            """
+        log.fault("\(message, privacy: .public)")
+        fanLineSink?(.fault, message)
     }
 
     // MARK: - Sensors
