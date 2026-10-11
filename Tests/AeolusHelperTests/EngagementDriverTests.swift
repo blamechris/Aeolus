@@ -184,7 +184,13 @@ struct EngagementDriverTests {
             try await rig.driver.engageManualControl(of: rig.fan(0))
         }
 
-        #expect(await rig.plane.keyWrites.suffix(2) == [.mode(fan: 0, value: 0), .forceKey(0)])
+        // One step and its key, before the latch, and nothing after it but the undo. The end
+        // state alone cannot discriminate: a driver that polled on to the yield is caught by its
+        // after-check and undone to the same writes.
+        #expect(
+            await rig.plane.keyWrites
+                == [.mode(fan: 0, value: 1), .forceKey(1), .mode(fan: 0, value: 0), .forceKey(0)],
+            "a step was taken after § 3 latched")
         #expect(await rig.plane.isForceKeySet == false)
         #expect(await rig.registry.engaged == [0], "the fan was not registered before its undo")
         #expect(await rig.registry.accepted == [0])
