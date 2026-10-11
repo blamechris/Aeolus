@@ -32,8 +32,9 @@ import Testing
 struct FanctlResetTests {
 
     /// One run's observable result: what swift-argument-parser would print, and what it
-    /// would exit with.
-    private struct Emitted {
+    /// would exit with. Shared with `FanctlResetCorruptedStateTests`, which drives the same
+    /// shipping `run()` against a composed helper.
+    struct Emitted {
         let message: String
         let exitCode: ExitCode
     }
@@ -92,7 +93,7 @@ struct FanctlResetTests {
     ///
     /// Only the connection is substituted — where to look, who may answer, how long to wait.
     /// The verb, the teardown and the report all come from the function under test.
-    private static func emitted(
+    static func emitted(
         over harness: ClientListenerHarness,
         waiting deadlines: HelperClientDeadlines = unhurried
     ) async throws -> Emitted {
