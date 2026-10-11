@@ -91,14 +91,16 @@ extension AutoCommand {
         "This run sent the request once and will not send it again."
 
     /// What mode a fan reads, in words that do not claim more than the helper said.
-    private static func reads(_ fan: FanState) -> String {
+    /// Internal: `fanctl set`'s ending reports the same fans in the same words.
+    static func reads(_ fan: FanState) -> String {
         fan.mode == .automatic ? "reads automatic" : "reads manual"
     }
 
     /// Fans the helper has not cleared, one line each, in the helper's own words: a mode that
     /// reads manual, or an availability that says the helper has not established the fan's mode
     /// — which is the one thing a mode of `automatic` cannot rule out.
-    private static func unclearedFanLines(
+    /// Internal for the same reason as `reads(_:)`.
+    static func unclearedFanLines(
         _ snapshot: SystemSnapshot, excluding excluded: [Int] = [], also: Bool = false
     ) -> [String] {
         let lead = also ? "is also not cleared" : "is not cleared"

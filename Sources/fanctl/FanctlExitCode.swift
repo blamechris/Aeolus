@@ -26,7 +26,11 @@ enum FanctlExitCode: Int32, CaseIterable, Sendable {
     case failure = 1
 
     /// The request does not fit this machine: a fan index it does not have, a speed outside
-    /// the fan's firmware range, a percentage for a fan whose range could not be read.
+    /// the fan's firmware range, a speed for a fan whose range is unusable (a bound that was not
+    /// read, or one `FanBoundsImplausibility` refuses — for a percentage and for an rpm alike).
+    ///
+    /// Decided against the helper's own snapshot, never on the command line: what is invalid on
+    /// every machine is 64, and this is for what is valid and does not fit this one.
     case requestDoesNotFit = 2
 
     /// The helper could not be reached, or would not be trusted: not installed, not approved,

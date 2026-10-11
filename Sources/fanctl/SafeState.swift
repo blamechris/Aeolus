@@ -5,7 +5,7 @@ import Foundation
 /// The safe-state check: "does the helper report every fan cleared and nothing leased?"
 ///
 /// **One implementation, for every command that asks for the safe state and then looks.**
-/// `fanctl auto` ends on it, and `fanctl set` will end on it after releasing its lease. Two
+/// `fanctl auto` ends on it, and `fanctl set` ends on it after releasing its lease. Two
 /// copies would be two definitions of "confirmed", and the day they disagreed one command would
 /// report the fans fine that the other reported pinned.
 ///
