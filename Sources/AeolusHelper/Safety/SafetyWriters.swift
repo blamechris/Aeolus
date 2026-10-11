@@ -56,7 +56,14 @@ import FanKit
 /// bounds-free restore verb, holds for safety actors exactly as it holds for the control
 /// loop. Bypassing § 8 is not bypassing § 2, and conflating those two would be ADR 0007's
 /// conflict 4 with the classes swapped.
-struct SafetyActorWriter<Plane: FanControlPlane>: Sendable {
+///
+/// ## It is also a `KeystoneRestoring`
+///
+/// The conformance is its existing restore verb, and it is what lets § 7's panic verb be
+/// handed one of these at `.panicRestore` while holding nothing that can command a fan
+/// (`SupervisedFanAuthority`, ADR 0014 D5). It is not a writing protocol shared with
+/// `GovernedFanWriter`, which still declares no restore verb, so the exclusion above stands.
+struct SafetyActorWriter<Plane: FanControlPlane>: KeystoneRestoring {
 
     private let plane: Plane
 
