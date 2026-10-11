@@ -86,7 +86,9 @@ struct SupervisedFanAuthority: FanAuthority {
     /// § 7's machine-wide restore: the keystone and nothing else.
     ///
     /// `HelperComposition` hands it a `SafetyActorWriter` at `.panicRestore`, the level of every
-    /// other machine-wide restore, typed as the role so this file cannot name a fan command.
+    /// other machine-wide restore — provenance only, since nothing reads that level — typed as
+    /// the role. The writer itself can command a fan; the role it is held as cannot, so this
+    /// file cannot name a fan command.
     private let keystone: any KeystoneRestoring
 
     /// Whether the plane behind `keystone` can write at all, asked before the restore.
@@ -284,7 +286,7 @@ struct SupervisedFanAuthority: FanAuthority {
     /// [#222](https://github.com/blamechris/Aeolus/issues/222)).
     func restoreAllToAutomatic(from connection: ConnectionID) async throws {
         await leases.releaseEveryLease()
-        var machineWide = HelperLog.MachineWideRestore.notIssued
+        var machineWide = HelperLog.MachineWideRestore.noWritePath
         if writeCapability.writeCapability == .built {
             do {
                 try await keystone.restoreToAutomatic(.everyFan)

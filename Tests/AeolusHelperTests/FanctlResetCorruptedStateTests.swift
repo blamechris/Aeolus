@@ -44,7 +44,7 @@ struct FanctlResetCorruptedStateTests {
     private static func composed(
         fans: [Int: ScriptedControlPlane.FanCondition],
         stages: [ScriptedControlPlane.Stage],
-        lines: RecordedHelperFanLines
+        lines: RecordedHelperLines
     ) -> HelperComposition<ScriptedControlPlane> {
         HelperComposition(
             plane: ScriptedControlPlane(fans: fans, stages: stages),
@@ -53,7 +53,7 @@ struct FanctlResetCorruptedStateTests {
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: HelperLog(
                 subsystem: "dev.aeolus.AeolusHelperTests", category: "ResetCorrupted",
-                recordingFanLines: { lines.append($0, $1) }),
+                recording: { lines.append($0, $1) }),
             leaseLog: LeaseFixture.log,
             safetyLog: HelperRestorerTests.safetyLog,
             teardown: TeardownSeams(sources: RecordingSignalSources()))
@@ -83,7 +83,7 @@ struct FanctlResetCorruptedStateTests {
     /// setup's own claims asserted — without them, every assertion after the command would be
     /// about some other state.
     private static func corrupted(
-        lines: RecordedHelperFanLines
+        lines: RecordedHelperLines
     ) async throws -> HelperComposition<ScriptedControlPlane> {
         let helper = Self.composed(
             fans: [0: .automatic(at: 2_400), 1: .automatic(at: 2_400), 2: .automatic(at: 2_400)],
@@ -133,7 +133,12 @@ struct FanctlResetCorruptedStateTests {
     }
 
     /// The command exits 0 saying the helper accepted the request, and afterwards every fan is
-    /// automatic, the force key is clear, no lease is held and no refusal stands.
+    /// automatic, the force key is clear, no lease is held and no handback refusal stands.
+    ///
+    /// **§ 3's latch is still set afterwards, and that is asserted rather than tidied away.** The
+    /// panic verb hands the fans back; it does not end a thermal emergency, which only § 3's own
+    /// cool-down releases (`CLAUDE.md` rule 5: no message disables a safety mechanism). So grants
+    /// stay refused until § 3 says otherwise, however the panic path went.
     ///
     /// The restore list is the half that says *how*: the sweep hands back the two fans Aeolus is
     /// accountable for — fan 0's lease and fan 2's abandoned handback — and the machine-wide
@@ -147,7 +152,7 @@ struct FanctlResetCorruptedStateTests {
     /// Run: red on the order — the read of fan 2 comes before `.everyFan`.
     @Test("Every fan ends automatic and the force key clear, and the reply says accepted")
     func corruptedStateEndsRestored() async throws {
-        let lines = RecordedHelperFanLines()
+        let lines = RecordedHelperLines()
         let helper = try await Self.corrupted(lines: lines)
         let plane = helper.plane
         let before = await plane.attempts.count
@@ -182,6 +187,9 @@ struct FanctlResetCorruptedStateTests {
             await helper.leases.fansWithAbandonedHandbacks.isEmpty,
             "fan 2 was handed back and read back automatic, and its refusal still stands")
         #expect(lines.levels(containing: "machine-wide restore that connection").isEmpty)
+        #expect(
+            await helper.latch.isActive,
+            "the panic path released § 3's latch, which only § 3's own cool-down may do")
 
         // Then how.
         #expect(
@@ -214,7 +222,7 @@ struct FanctlResetCorruptedStateTests {
     /// on the fault line.
     @Test("A refused machine-wide restore is still accepted, and logged at fault")
     func aRefusingFirmwareStillGetsAccepted() async throws {
-        let lines = RecordedHelperFanLines()
+        let lines = RecordedHelperLines()
         let helper = Self.composed(
             fans: [0: .init(mode: .manual)],
             stages: [

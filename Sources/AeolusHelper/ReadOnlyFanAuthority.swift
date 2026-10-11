@@ -265,8 +265,14 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// another tool left in manual is observable and unclearable here — and a refusal would
     /// restore it no better than this success does. Shape frozen at v1: see the type doc,
     /// #159 and #164.
+    ///
+    /// The log line names a cause only when it asked for one: the seam's capability, which this
+    /// type already holds. Behind a seam that can write it still issues nothing, and says only
+    /// that.
     func restoreAllToAutomatic(from connection: ConnectionID) async throws {
-        log.restoredAllToAutomatic(connection: connection, machineWide: .notIssued)
+        let machineWide: HelperLog.MachineWideRestore =
+            writeCapability.writeCapability == .notBuilt ? .noWritePath : .notIssued
+        log.restoredAllToAutomatic(connection: connection, machineWide: machineWide)
     }
 
     /// Nothing to release: no lease can exist in E2, so no connection can be holding one.
