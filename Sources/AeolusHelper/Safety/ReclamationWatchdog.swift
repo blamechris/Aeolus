@@ -229,9 +229,9 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// **Except the ledger of a fan `finaliseRelease(fanAt:because:)` is giving up** (#346). Its
     /// revocation's restorer sends this for that fan while the terminal action is suspended,
     /// and clearing then erased the entry it keeps, so a fan the system took was reported as
-    /// not taken. The registry entry still goes, the restore is untouched, and the clear is
-    /// withheld only until that call returns. reclamation-watchdog.md § *"The ledger entry
-    /// `finaliseRelease` keeps"*.
+    /// not taken. The registry entry still goes and the restore is untouched; this clear is
+    /// skipped, not postponed, so the mark stays until a later release or an engagement.
+    /// reclamation-watchdog.md § *"The ledger entry `finaliseRelease` keeps"*.
     func manualControlReleased(fanAt index: Int) async {
         held[index] = nil
         guard !finalising.contains(index) else { return }
@@ -846,8 +846,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     ///
     /// The restore is attempted whatever else failed. The ledger entry for `index` is **kept**,
     /// as `.systemReclaimed` or `.supervisorBlind` depending on the caller (#140) — and kept
-    /// through this call's own revocation, whose restorer tells § 5 the fan was released while
-    /// this is suspended: `finalising` withholds that clear until this returns (#346).
+    /// through this call's own revocation, whose release notice skips its clear while this runs:
+    /// the mark stays until a later release or engagement (#346).
     /// reclamation-watchdog.md § *"The ledger entry `finaliseRelease` keeps"*.
     ///
     /// Every lease is revoked rather than the one covering this fan, for

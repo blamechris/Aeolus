@@ -62,9 +62,10 @@ and relocating prose cannot make more. [#181](https://github.com/blamechris/Aeol
 spent ten of them routing the re-assert and every hand-back through ADR 0014's
 `EngagementDriver`, which holds the rest of that behaviour: 294, and about 56 left.
 [#346](https://github.com/blamechris/Aeolus/issues/346)'s guard on the terminal action's ledger
-entry spent four more: 298, and about 52 left. `file_length` has not gone away either. At this file's
-present density, 2.9 lines per code line, it would error after roughly 55 new code lines, so
-which of the two limits is reached first depends on how much comment the new code carries.
+entry spent four more: 298, and about 52 left. `file_length` has not gone away either, and since
+#346 it binds first: the file is 895 lines over 301 code lines, about 3.0 lines per code line,
+so at that density it errors after roughly 35 new code lines, well before the body's 52. The
+body's limit is reached first only by new code written at under about two lines per code line.
 
 New behaviour for #9's A4 and A6 belongs in the `EngagementDriver` that
 [ADR 0014](../ADR/0014-apple-silicon-unlock.md) specifies, and in value types beside `HeldFan`
@@ -383,7 +384,8 @@ because `ReclamationMachine`'s `RecordingFanRestorer` never calls back.
 
 `finaliseRelease` now puts the fan in `finalising` before its first suspension and takes it
 out when it returns, and `manualControlReleased(fanAt:)` still drops the registry entry for
-such a fan but does not clear its ledger entry. Nothing on the restore path changed: the
+such a fan but skips its ledger clear. The clear is dropped, not postponed: the mark stays
+until a later release notice or an engagement clears it. Nothing on the restore path changed: the
 hand-back and the revocation's restore are issued exactly as before, and the guard consumes
 nothing a restore depends on.
 
@@ -408,12 +410,27 @@ judged and is already giving up. The entry describes that judgement, so it is ke
 `FinaliseReleaseLedgerTests.aTeardownDuringTheHandBackKeepsTheEntry`, which goes red when the
 guard is opened around the revocation alone.
 
+**What it does not close.** A lease teardown — the TTL sweep, or the holder's connection dying —
+that reaches `LeaseAuthority` after the hand-back has returned but before
+`revokeEveryLease(because:)` runs takes the table entry itself, so the revocation finds nothing
+and returns at once. The teardown's own release notice is then still on its way through
+`HelperFanRestorer`, can arrive after the `defer` has closed the window, and clears the mark.
+That is derived from the code, not reproduced: no seam lands a teardown in that gap.
+
 **What still clears it, so it is not frozen.** `manualControlEngaged(_:)` clears
 unconditionally, during the call as at any other time, because an engagement is a statement
-about the world. Once `finaliseRelease` returns, every release notification clears as it
-always has: a later lease ending is a fan Aeolus stopped asking for, which is not a fan the
-system took. That is one place the first list above overstates — a lease granted and released
-without an engagement in between clears a `.systemReclaimed` entry although nothing took the
-fan off automatic control. It is the behaviour `manualControlReleased(fanAt:)` has always had,
-kept deliberately, and `FinaliseReleaseLedgerTests.anOrdinaryReleaseAfterwardsStillClearsTheEntry`
-holds it.
+about the world (`anEngagementDuringTheHandBackStillClears`). The guard is per fan, so the
+revocation's notice still clears any other fan's mark the revoked lease covered
+(`anotherFansMarkIsClearedByTheRevocation`). Once `finaliseRelease` returns, every release
+notification clears as it always has: a later lease ending is a fan Aeolus stopped asking for,
+which is not a fan the system took. That is one place the first list above overstates — a lease
+granted and released without an engagement in between clears a `.systemReclaimed` entry
+although nothing took the fan off automatic control. It is the behaviour
+`manualControlReleased(fanAt:)` has always had, kept deliberately, and
+`FinaliseReleaseLedgerTests.anOrdinaryReleaseAfterwardsStillClearsTheEntry` holds it.
+
+All of that holds at the actor level: these are the events that clear the mark. At the system
+level nothing yet guarantees one arrives. After a terminal action the snapshot publishes the
+mark as an availability that refuses the fan, while `acquireLease` would grant it, and both
+clearing events need a lease the snapshot tells a compliant client not to ask for.
+[#355](https://github.com/blamechris/Aeolus/issues/355) owns that mismatch.

@@ -86,6 +86,49 @@ struct FinaliseReleaseLedgerTests {
         await plane.attempts.filter { $0 == .restoreToAutomatic(.fan(0)) }
     }
 
+    /// The graph `HelperRestorerTests.composed` builds, over a plane it cannot take, for the
+    /// scenarios that need two fans or a write moment. Every argument but the plane and the
+    /// provider's fan count is that fixture's.
+    private static func composed<Plane: FanControlPlane>(
+        over plane: Plane, fanCount: Int = 1, log: RecordedLog
+    ) -> HelperComposition<Plane> {
+        HelperComposition(
+            plane: plane,
+            snapshotProvider: fanProvider(fanCount: fanCount),
+            criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            log: HelperRestorerTests.helperLog,
+            leaseLog: LeaseFixture.log,
+            safetyLog: SafetyLog(recording: { [log] in log.append($0, $1) }))
+    }
+
+    /// Fan 0 held, as `holding()` holds it, over `InterferingFanStateSensing` at `.restoreWrite`:
+    /// the first restore that lands is the terminal action's hand-back, because nothing restored
+    /// fan 0 before it.
+    private struct Interfered {
+        let helper: HelperComposition<InterferingFanStateSensing>
+        let plane: InterferingFanStateSensing
+        let scripted: ScriptedControlPlane
+        let holder: ConnectionID
+        let log: RecordedLog
+    }
+
+    private static func holdingThroughInterference() async throws -> Interfered {
+        let log = RecordedLog()
+        let scripted = ScriptedControlPlane(
+            fans: [0: .automatic(at: 2_400)],
+            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+        let plane = InterferingFanStateSensing(scripted, during: .restoreWrite)
+        let helper = Self.composed(over: plane, log: log)
+        await helper.bindSafetyRegistries()
+        let holder = ConnectionID()
+        _ = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: holder)
+        try await HelperRestorerTests.engage(fan: 0, in: helper)
+        return Interfered(
+            helper: helper, plane: plane, scripted: scripted, holder: holder, log: log)
+    }
+
     // MARK: - The entry is kept
 
     /// A fan the system took back, with nothing ever commanded on it, is still reported as
@@ -159,52 +202,33 @@ struct FinaliseReleaseLedgerTests {
     /// already giving up. The revocation then finds no lease. The guard has to be open by then,
     /// so it is opened before the hand-back's suspension rather than around the revocation.
     ///
-    /// Composed over `InterferingFanStateSensing`, whose `.restoreWrite` moment is the first
-    /// restore that lands — the hand-back's, because nothing restored fan 0 before it.
-    ///
     /// **Mutation:** move `finalising.insert(index)` and its `defer` in
     /// `ReclamationWatchdog.finaliseRelease(fanAt:because:)` to just above
     /// `leases.revokeEveryLease(because:)`. Run: red on the ledger and the "resolved" assertions.
     @Test("A lease ending during the terminal action's hand-back does not erase its entry")
     func aTeardownDuringTheHandBackKeepsTheEntry() async throws {
-        let log = RecordedLog()
-        let scripted = ScriptedControlPlane(
-            fans: [0: .automatic(at: 2_400)],
-            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
-        let plane = InterferingFanStateSensing(scripted, during: .restoreWrite)
-        let helper = HelperComposition(
-            plane: plane,
-            snapshotProvider: fanProvider(fanCount: 1),
-            criticalSensors: .mac16x5,
-            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
-            log: HelperRestorerTests.helperLog,
-            leaseLog: LeaseFixture.log,
-            safetyLog: SafetyLog(recording: { [log] in log.append($0, $1) }))
-        await helper.bindSafetyRegistries()
-        let holder = ConnectionID()
-        _ = try await helper.leases.acquireLease(
-            LeaseFixture.request(fans: [0]), from: holder)
-        try await HelperRestorerTests.engage(fan: 0, in: helper)
-        let leases = helper.leases
-        await plane.interfere { await leases.connectionDidInvalidate(holder) }
+        let held = try await Self.holdingThroughInterference()
+        let leases = held.helper.leases
+        let holder = held.holder
+        await held.plane.interfere { await leases.connectionDidInvalidate(holder) }
 
-        await Self.cycleToTheTerminalAction(helper)
+        await Self.cycleToTheTerminalAction(held.helper)
 
-        #expect(await plane.didFire, "the connection never died inside the hand-back")
+        #expect(await held.plane.didFire, "the connection never died inside the hand-back")
         #expect(
-            log.lines(containing: "no speed to re-assert").count == 1,
+            held.log.lines(containing: "no speed to re-assert").count == 1,
             "§ 5 never reached its terminal action, so nothing here was tested")
         #expect(
-            await Self.restoresOfFanZero(on: scripted).count == 2,
+            await Self.restoresOfFanZero(on: held.scripted).count == 2,
             "the hand-back, then the teardown's restore through the restorer, and nothing else")
         #expect(
-            await helper.ledger.isReclaimed(fanAt: 0),
+            await held.helper.ledger.isReclaimed(fanAt: 0),
             """
             a lease ending during § 5's hand-back erased the reclamation § 5 was giving the fan \
             up for: the guard opened too late.
             """)
         #expect(
-            log.lines(containing: Self.resolved).isEmpty,
+            held.log.lines(containing: Self.resolved).isEmpty,
             "the reclamation was logged resolved by a teardown racing the terminal action")
     }
 
@@ -245,4 +269,98 @@ struct FinaliseReleaseLedgerTests {
             """)
         #expect(log.lines(containing: Self.resolved).count == 1)
     }
+
+    /// The guard is **per fan**: the revocation's release notice still clears a mark on any
+    /// other fan the revoked lease covered.
+    ///
+    /// Fan 1 carries a mark kept by an earlier terminal action. A new lease covers both fans and
+    /// only fan 0 is engaged, so fan 1 is in no registry and `finaliseRelease`'s sibling loop never
+    /// sees it. When fan 0 is given up, the revocation hands fan 1 back as well, and that release
+    /// notice is the only thing that clears fan 1's mark: a fan Aeolus stopped asking for is not a
+    /// fan the system took.
+    ///
+    /// **Mutation (M4):** replace `guard !finalising.contains(index)` with
+    /// `guard finalising.isEmpty` in `manualControlReleased(fanAt:)`. Run: red on fan 1's mark
+    /// and its "resolved" line.
+    @Test("The terminal action's revocation still clears another fan's kept mark")
+    func anotherFansMarkIsClearedByTheRevocation() async throws {
+        let log = RecordedLog()
+        let scripted = ScriptedControlPlane(
+            fans: [0: .automatic(at: 2_400), 1: .automatic(at: 2_400)],
+            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+        let helper = Self.composed(over: scripted, fanCount: 2, log: log)
+        await helper.bindSafetyRegistries()
+        _ = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [1]), from: ConnectionID())
+        try await HelperRestorerTests.engage(fan: 1, in: helper)
+        await Self.cycleToTheTerminalAction(helper)
+        #expect(await helper.ledger.isReclaimed(fanAt: 1), "the setup kept no mark on fan 1")
+        await helper.thermalEmergency.cycle()
+
+        _ = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
+        try await HelperRestorerTests.engage(fan: 0, in: helper)
+        await Self.cycleToTheTerminalAction(helper)
+
+        #expect(log.lines(containing: "no speed to re-assert").count == 2)
+        #expect(
+            await scripted.attempts.filter { $0 == .restoreToAutomatic(.fan(1)) }.count == 3,
+            "fan 1's second revocation never reached the restorer, so nothing here was tested")
+        #expect(await helper.ledger.isReclaimed(fanAt: 0), "fan 0's own mark was not kept")
+        #expect(
+            await helper.ledger.isReclaimed(fanAt: 1) == false,
+            """
+            fan 1 was handed back by a revocation over a lease nothing engaged it under, and is \
+            still reported as taken by the system: the guard is skipping every fan's clear.
+            """)
+        #expect(log.lines(containing: "Fan 1 \(Self.resolved)").count == 1)
+    }
+
+    /// An **engagement** still clears the mark while the terminal action runs.
+    ///
+    /// The holder takes fan 0 off automatic control again during § 5's hand-back, under the
+    /// lease § 5 has not revoked yet. That is a statement about the world, so
+    /// `manualControlEngaged(_:)` clears unconditionally: a fan a client has just taken is not one
+    /// the system holds, and a mark left standing claims a loss nobody suffered — rule 6 again.
+    ///
+    /// **Mutation (M5):** add `guard !finalising.contains(fan.index) else { return }` above the
+    /// clear in `manualControlEngaged(_:)`. Run: red on the ledger, the snapshot and the
+    /// "resolved" line.
+    @Test("An engagement during the terminal action's hand-back still clears its mark")
+    func anEngagementDuringTheHandBackStillClears() async throws {
+        let held = try await Self.holdingThroughInterference()
+        let permit = try commandableFan(0, declaring: .held(at: 2_400))
+        let watchdog = held.helper.reclamationWatchdog
+        let leases = held.helper.leases
+        let probe = LeaseProbe()
+        await held.plane.interfere {
+            let live = await leases.hasLiveLease(coveringFan: 0)
+            await probe.record(live)
+            await watchdog.manualControlEngaged(permit)
+        }
+
+        await Self.cycleToTheTerminalAction(held.helper)
+
+        #expect(await held.plane.didFire, "nothing engaged fan 0 inside the hand-back")
+        #expect(
+            await probe.liveAtEngagement == true,
+            "the lease had already ended, so this was not the holder re-engaging")
+        #expect(held.log.lines(containing: "no speed to re-assert").count == 1)
+        #expect(await held.helper.leases.leaseCount == 0, "the terminal action revoked no lease")
+        #expect(
+            await held.helper.ledger.causes.isEmpty,
+            "a fan the holder took back during the hand-back is still reported as lost")
+        let snapshot = try await held.helper.authority.snapshot()
+        let fan = try #require(snapshot.fans.first { $0.index == 0 })
+        #expect(fan.isReclaimedBySystem == false)
+        #expect(held.log.lines(containing: Self.resolved).count == 1)
+    }
+}
+
+/// What the lease table answered inside an interference effect, so a scenario can prove the
+/// lease it is about was still live at that instant.
+private actor LeaseProbe {
+    private(set) var liveAtEngagement: Bool?
+
+    func record(_ live: Bool) { liveAtEngagement = live }
 }
