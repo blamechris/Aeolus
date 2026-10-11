@@ -79,7 +79,8 @@ struct EngagementDriverTests {
 
         #expect(await rig.plane.keyWrites.suffix(2) == [.mode(fan: 0, value: 0), .forceKey(0)])
         #expect(await rig.plane.isForceKeySet == false, "the undo left the force key set")
-        #expect(await rig.registry.engaged.isEmpty)
+        // Registered before the undo, and handed to § 3's read-back once it was accepted.
+        #expect(await rig.registry.engaged == [0])
         #expect(await rig.registry.accepted == [0])
     }
 
@@ -106,7 +107,8 @@ struct EngagementDriverTests {
         #expect(writes.first == .mode(fan: 0, value: 1))
         #expect(writes.last == .mode(fan: 0, value: 0), "a refused engagement was not undone")
         #expect(writes.contains(.forceKey(1)) == false, "D3 reached the force key")
-        #expect(await rig.registry.engaged.isEmpty)
+        // A mode write was issued, so § 3 is told before the undo in case the undo is refused.
+        #expect(await rig.registry.engaged == [0])
     }
 
     /// D3 step 1: a fan whose raw mode is not `0` is someone else's. Nothing is written — not
@@ -184,7 +186,8 @@ struct EngagementDriverTests {
 
         #expect(await rig.plane.keyWrites.suffix(2) == [.mode(fan: 0, value: 0), .forceKey(0)])
         #expect(await rig.plane.isForceKeySet == false)
-        #expect(await rig.registry.engaged.isEmpty, "a fan never engaged was registered")
+        #expect(await rig.registry.engaged == [0], "the fan was not registered before its undo")
+        #expect(await rig.registry.accepted == [0])
     }
 
     /// After `.engaged`: the fan is registered with § 3 **before** the after-check, so an undo
@@ -218,7 +221,8 @@ struct EngagementDriverTests {
     // MARK: - The restore epoch (D4)
 
     /// A restore requested while the engagement waits supersedes it: the next step writes
-    /// nothing, and the engagement is undone. Any restore, of any fan.
+    /// nothing, and the engagement is undone. A restore of another fan here; the engaging
+    /// fan's own and a machine-wide one are `EngagementEpochTests`'.
     ///
     /// **Mutation:** make `PlaneWriteLedger.admitStep(fanAt:)` return `.continuing` whatever
     /// the epoch. Run: red — the engagement polls on to the yield.
@@ -236,7 +240,7 @@ struct EngagementDriverTests {
             writes.filter { $0 == .mode(fan: 0, value: 1) }.count == 1,
             "a step wrote after a restore requested before it")
         #expect(writes.last == .mode(fan: 0, value: 0))
-        #expect(await rig.registry.engaged.isEmpty)
+        #expect(await rig.registry.engaged == [0], "the fan was not registered before its undo")
     }
 
     // MARK: - No turn held between steps (D7)
@@ -266,135 +270,47 @@ struct EngagementDriverTests {
 
     // MARK: - § 5 engages only through the driver
 
-    /// The plane's step verb is called from exactly two places in `Sources/`: the writer's
+    /// The plane's step verb is used from exactly two places in `Sources/`: the writer's
     /// one-step pass-through, and the driver. § 5 engages through the driver, never the writer.
+    /// Every use counts — a call, one split across lines or spaced before its parenthesis, and
+    /// an unapplied method reference — because `SeamScanner.receivers(of:inSource:)` normalises
+    /// the whitespace around each `.` before it looks.
     ///
-    /// **Mutation:** in `ReclamationWatchdog.reassert`, call
-    /// `writer.engageManualControl(of: permit)` in place of the driver. Run: red.
+    /// **Mutations:** in `ReclamationWatchdog.reassert`, engage through
+    /// `writer.engageManualControl(of: permit)`, through `writer` and `.engageManualControl` on
+    /// two lines, through `writer.engageManualControl (of: permit)`, or through a method
+    /// reference `let step = writer.engageManualControl`. Run: red on each.
     @Test("Nothing in the helper engages a fan except through the driver")
     func onlyTheDriverEngages() throws {
-        var calls: [String] = []
+        var uses: Set<String> = []
         for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
-            let code = SeamScanner.strippingComments(
-                try String(contentsOf: file, encoding: .utf8))
-            let pattern = try NSRegularExpression(pattern: #"(\w+)\.engageManualControl\(of:"#)
-            for match in pattern.matches(in: code, range: NSRange(code.startIndex..., in: code)) {
-                guard let receiver = Range(match.range(at: 1), in: code) else { continue }
-                calls.append("\(file.lastPathComponent): \(code[receiver])")
+            let source = try String(contentsOf: file, encoding: .utf8)
+            for receiver in try SeamScanner.receivers(of: "engageManualControl", inSource: source) {
+                uses.insert("\(file.lastPathComponent): \(receiver)")
             }
         }
         #expect(
-            calls.sorted() == [
+            uses == [
                 "EngagementDriver.swift: writer",
                 "ReclamationWatchdog.swift: engagement",
                 "SafetyWriters.swift: plane",
             ],
-            "a fan is engaged around the driver: \(calls.sorted())")
-    }
-}
-
-// MARK: - The rig
-
-/// One driver over one scripted plane: a lease over its fans, a latch, a recording § 3 role, and
-/// a clock whose sleeps can run a scenario's interference.
-private struct EngagementRig {
-
-    let plane: ScriptedControlPlane
-    let clock = PollingClock()
-    let latch = ThermalEmergencyLatch()
-    let registry = RecordingEmergencyRegistry()
-    let leases: LeaseAuthority
-    let log = RecordedLog()
-    let driver: EngagementDriver<InterferingFanStateSensing>
-    private let fans: [Int]
-
-    init(
-        unlock: ScriptedControlPlane.UnlockBehaviour, fans: [Int] = [0],
-        forceKey: ForceKeyPresence = .present, leased: Bool = true
-    ) async throws {
-        let plane = ScriptedControlPlane(
-            fans: Dictionary(uniqueKeysWithValues: fans.map { ($0, .nominal) }),
-            forceKey: forceKey, unlock: unlock)
-        try await self.init(
-            plane: plane, writes: InterferingFanStateSensing(plane, during: .restoreWrite),
-            fans: fans, leased: leased)
+            "a fan is engaged around the driver: \(uses.sorted())")
     }
 
-    init(
-        plane: ScriptedControlPlane, writes: InterferingFanStateSensing, fans: [Int] = [0],
-        leased: Bool = true
-    ) async throws {
-        self.plane = plane
-        self.fans = fans
-        leases = LeaseFixture.authority(thermalEmergency: latch, clock: clock.base)
-        let recording = log
-        driver = EngagementDriver(
-            writer: SafetyActorWriter(plane: writes, level: .reclamationWatchdog),
-            leases: leases, latch: latch, emergency: registry, clock: clock,
-            log: SafetyLog(recording: { recording.append($0, $1) }))
-        if leased {
-            _ = try await leases.acquireLease(
-                LeaseFixture.request(fans: fans), from: ConnectionID())
-        }
+    /// The scan sees every spelling of a use, and no declaration.
+    @Test("The member scan sees split, spaced and unapplied uses")
+    func theMemberScanSeesEverySpelling() throws {
+        let source = """
+            func engageManualControl(of fan: CommandableFan) async throws {}
+            _ = try await split
+                .engageManualControl(of: fan)
+            _ = try await spaced.engageManualControl (of: fan)
+            let step = referenced.engageManualControl
+            // commented.engageManualControl(of: fan)
+            """
+        #expect(
+            try SeamScanner.receivers(of: "engageManualControl", inSource: source)
+                == ["split", "spaced", "referenced"])
     }
-
-    func fan(_ index: Int) throws -> CommandableFan {
-        try commandableFan(index, declaring: .nominal)
-    }
-
-    func engageThermalEmergency() async {
-        await latch.engage(
-            by: CriticalTemperature(key: smcKey("Tp01"), celsius: 99), answering: [smcKey("Tp01")])
-    }
-
-    /// A real § 3 on this rig's plane and latch, for the scenario that cycles it.
-    func thermalEmergency() -> ThermalEmergency<ScriptedControlPlane> {
-        let telemetry = CuratedCriticalTemperatures(plane: plane, set: .mac16x5)
-        return ThermalEmergency(
-            telemetry: telemetry,
-            sightings: CriticalTemperatureCache(source: telemetry, clock: clock.base),
-            writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
-            leases: leases, latch: latch,
-            handbackReadBack: LeaseFixture.reconciliation(over: plane))
-    }
-}
-
-/// § 3's registration role, recorded.
-actor RecordingEmergencyRegistry: ThermalEmergencyRegistering {
-    private(set) var engaged: [Int] = []
-    private(set) var accepted: [Int] = []
-
-    func manualControlEngaged(_ fan: CommandableFan) { engaged.append(fan.index) }
-    func handbackAccepted(fanAt index: Int) { accepted.append(index) }
-}
-
-/// `TestClock`'s virtual time, plus a hook per sleep so a scenario can act while the driver waits
-/// between steps — the only moment it holds nothing.
-private final class PollingClock: MonotonicClock, @unchecked Sendable {
-    let base = TestClock()
-    private let lock = NSLock()
-    private var hooks: [Int: @Sendable () async -> Void] = [:]
-    private var intervals: [Duration] = []
-
-    var now: ContinuousClock.Instant { base.now }
-    var sleeps: [Duration] { lock.withLock { intervals } }
-
-    /// Runs `hook` after the `ordinal`th sleep, counting from one.
-    func onSleep(_ ordinal: Int, _ hook: @escaping @Sendable () async -> Void) {
-        lock.withLock { hooks[ordinal] = hook }
-    }
-
-    func sleep(until deadline: ContinuousClock.Instant) async throws {
-        let hook: (@Sendable () async -> Void)? = lock.withLock {
-            intervals.append(base.now.duration(to: deadline))
-            return hooks.removeValue(forKey: intervals.count)
-        }
-        try await base.sleep(until: deadline)
-        await hook?()
-    }
-}
-
-private actor CompletedCycles {
-    private(set) var results: [Bool] = []
-    func record(_ completed: Bool) { results.append(completed) }
 }

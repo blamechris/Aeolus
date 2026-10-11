@@ -1,0 +1,179 @@
+import Foundation
+import Testing
+
+@testable import AeolusHelper
+
+/// The restore epoch around the driver (ADR 0014 D4): which restores supersede an engagement,
+/// the first-step retry that makes a fresh engagement possible after an undo, and the residual
+/// the epoch cannot see.
+@Suite("The engagement driver and the restore epoch", .timeLimit(.minutes(1)))
+struct EngagementEpochTests {
+
+    // MARK: - Every restore supersedes an engagement past its first step
+
+    /// A restore of the engaging fan itself, while it waits for its yield, supersedes it: the
+    /// next step writes nothing, and the engagement is undone.
+    ///
+    /// **Mutation:** in `PlaneWriteLedger.issueRestore(fanAt:)`, erase the fan's in-progress
+    /// record (`state.inProgress[index] = nil`), as the first version did. Run: red — the next
+    /// step is admitted as a fresh first step and the fan is re-engaged.
+    @Test("A restore of the same fan mid-poll supersedes the engagement")
+    func aSameFanRestoreSupersedes() async throws {
+        let rig = try await EngagementRig(unlock: .heldUntilForced(stepsToYield: 2))
+        rig.clock.onSleep(1) { _ = try? await rig.plane.restoreToAutomatic(.fan(0)) }
+
+        await #expect(throws: FanControlPlaneError.superseded) {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+
+        #expect(await Self.forwardWrites(after: .mode(fan: 0, value: 0), on: rig.plane).isEmpty)
+        #expect(rig.plane.ledger.engagedFans.isEmpty)
+        #expect(await rig.plane.isForceKeySet == false)
+    }
+
+    /// A machine-wide restore mid-poll supersedes it too — § 4's order is the case: the leases
+    /// are released, then `.everyFan`, and no step may write after the keystone.
+    ///
+    /// **Mutation:** in `PlaneWriteLedger.issueMachineWideRestore()`, erase every in-progress
+    /// record (`state.inProgress.removeAll()`). Run: red.
+    @Test("A machine-wide restore mid-poll supersedes the engagement")
+    func aMachineWideRestoreSupersedes() async throws {
+        let rig = try await EngagementRig(unlock: .heldUntilForced(stepsToYield: 2))
+        rig.clock.onSleep(1) { _ = try? await rig.plane.restoreToAutomatic(.everyFan) }
+
+        await #expect(throws: FanControlPlaneError.superseded) {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+
+        #expect(await Self.forwardWrites(after: .forceKey(0), on: rig.plane).isEmpty)
+        #expect(rig.plane.ledger.engagedFans.isEmpty)
+        #expect(await rig.plane.isForceKeySet == false)
+    }
+
+    /// The production shape: the restore lands **after** the driver's entitlement check and
+    /// before the step's turn. No mode or key write follows it.
+    @Test("A restore between the entitlement check and a later step's turn writes nothing after")
+    func aRestoreBeforeALaterStepsTurnSupersedesIt() async throws {
+        let rig = try await EngagementRig(unlock: .heldUntilForced(stepsToYield: 2))
+        await rig.writes.interfere(beforeEngageStep: 2) {
+            _ = try? await rig.plane.restoreToAutomatic(.fan(0))
+        }
+
+        await #expect(throws: FanControlPlaneError.superseded) {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+
+        #expect(await rig.writes.didFire, "the scenario never arranged the interleaving")
+        #expect(await Self.forwardWrites(after: .mode(fan: 0, value: 0), on: rig.plane).isEmpty)
+    }
+
+    // MARK: - The first step, and its retry
+
+    /// An engagement's undo is a restore, so a fresh engagement of the same fan finds the
+    /// earlier one's record out of date. Its first step is superseded having written nothing,
+    /// and the driver asks the entitlement again and retries it once.
+    ///
+    /// **Mutation:** make `EngagementDriver.firstStep(of:)` call the step once, with no retry.
+    /// Run: red — the second engagement is refused `.superseded` before it starts.
+    @Test("A fresh engagement after an undo is not superseded by that undo")
+    func aFreshEngagementAfterAnUndoProceeds() async throws {
+        let rig = try await EngagementRig(unlock: .heldUntilForced(stepsToYield: 100))
+        for _ in 0..<2 {
+            await #expect(throws: EngagementRefusal.yieldDidNotArrive(fan: 0, steps: 35)) {
+                try await rig.driver.engageManualControl(of: rig.fan(0))
+            }
+        }
+    }
+
+    /// The retry asks the entitlement first, so a restore that was real — it came with § 3's
+    /// latch — refuses it, with nothing written and nothing to undo.
+    ///
+    /// **Mutation:** delete the `try await requireEntitlement(for: fan)` in
+    /// `EngagementDriver.firstStep(of:)`. Run: red — the retry engages above the ceiling.
+    @Test("A superseded first step is retried only if the entitlement still holds")
+    func theFirstStepRetryAsksTheEntitlement() async throws {
+        let rig = try await EngagementRig(unlock: .heldUntilForced(stepsToYield: 100))
+        await #expect(throws: EngagementRefusal.self) {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+        let before = await rig.plane.keyWrites.count
+        await rig.writes.interfere(beforeEngageStep: 36) { await rig.engageThermalEmergency() }
+
+        await #expect(throws: EngagementRefusal.preempted(fan: 0, by: .thermalEmergency)) {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+
+        #expect(await rig.writes.didFire, "the scenario never arranged the interleaving")
+        #expect(await rig.plane.keyWrites.count == before, "the retry wrote above the ceiling")
+    }
+
+    /// **The residual the epoch cannot see** (ADR 0009 D1): a restore requested before the
+    /// first step's turn is not recorded against an engagement that has not begun, so the
+    /// first step writes. A real restore ends the lease or latches § 3, and the driver's check
+    /// after the step catches it and undoes — acting and then checking, as D1 prescribes.
+    @Test("A real restore before the first step's turn is caught by the check after the step")
+    func aRestoreBeforeTheFirstStepIsCaughtAfterIt() async throws {
+        let rig = try await EngagementRig(unlock: .naive)
+        await rig.writes.interfere(beforeEngageStep: 1) {
+            await rig.engageThermalEmergency()
+            _ = try? await rig.plane.restoreToAutomatic(.fan(0))
+        }
+
+        await #expect(throws: EngagementRefusal.preempted(fan: 0, by: .thermalEmergency)) {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+
+        #expect(await rig.plane.keyWrites.contains(.mode(fan: 0, value: 1)), "D1's residual")
+        #expect(try await rig.plane.readControlState(ofFan: 0).mode == .automatic)
+        #expect(await rig.registry.engaged == [0])
+        #expect(await rig.registry.accepted == [0])
+    }
+
+    // MARK: - Cancellation, the log, and the constants
+
+    /// A cancelled engagement stops before its next step and undoes the one it took: § 5's
+    /// supervisor stopping is a cancellation.
+    ///
+    /// **Mutation:** delete `try Task.checkCancellation()` from the poll loop. Run: red — the
+    /// next step is written by a task that has been cancelled.
+    @Test("A cancelled engagement takes no further step and is undone")
+    func aCancelledEngagementIsUndone() async throws {
+        let rig = try await EngagementRig(unlock: .heldUntilForced(stepsToYield: 2))
+        // The hook runs on the engagement's own task, the unstructured one below.
+        rig.clock.onSleep(1) { withUnsafeCurrentTask { $0?.cancel() } }
+        let engagement = Task { try await rig.driver.engageManualControl(of: rig.fan(0)) }
+
+        await #expect(throws: CancellationError.self) { try await engagement.value }
+
+        let writes = await rig.plane.keyWrites
+        #expect(writes.filter { $0 == .mode(fan: 0, value: 1) }.count == 1)
+        #expect(writes.suffix(2) == [.mode(fan: 0, value: 0), .forceKey(0)])
+    }
+
+    /// An undo the firmware accepted raises no fault: `.fault` is for a fan that may be pinned.
+    @Test("A successful undo raises no fault")
+    func aSuccessfulUndoRaisesNoFault() async throws {
+        let rig = try await EngagementRig(unlock: .neverYields)
+        await #expect(throws: EngagementRefusal.yieldDidNotArrive(fan: 0, steps: 35)) {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+        #expect(rig.log.faults.isEmpty, "\(rig.log.faults)")
+        #expect(rig.log.lines(containing: "the restore landed").count == 1)
+    }
+
+    /// Run 1's figures, pinned where they are defined (ADR 0014 D3): a change is a decision.
+    @Test("The poll interval and yield budget are run 1's")
+    func theUnlockLimitsAreRunOnes() {
+        #expect(UnlockLimits.pollInterval == .milliseconds(100))
+        #expect(UnlockLimits.yieldBudget == .milliseconds(3_500))
+    }
+
+    /// Forward writes (`F<n>Md = 1`, `Ftst = 1`) after the first occurrence of `marker`.
+    private static func forwardWrites(
+        after marker: ScriptedControlPlane.KeyWrite, on plane: ScriptedControlPlane
+    ) async -> [ScriptedControlPlane.KeyWrite] {
+        let writes = await plane.keyWrites
+        guard let start = writes.firstIndex(of: marker) else { return [.forceKey(255)] }
+        return writes[start...].filter { $0 == .forceKey(1) || $0 == .mode(fan: 0, value: 1) }
+    }
+}

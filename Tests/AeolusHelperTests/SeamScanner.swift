@@ -656,3 +656,25 @@ enum SeamScanner {
         text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 }
+
+// MARK: - Member uses
+
+extension SeamScanner {
+
+    /// The receiver of every use of `member` in one file's code — a call, a call split across
+    /// lines (`writer\n    .member(of:`), one with a space before its parenthesis, and an
+    /// unapplied method reference (`writer.member`) alike.
+    ///
+    /// Comments are stripped and whitespace around each `.` removed first, so the spelling of a
+    /// use cannot hide it: a scan anchored on `receiver.member(` missed all three shapes. A
+    /// declaration (`func member(`) has no receiver and is not a use.
+    static func receivers(of member: String, inSource source: String) throws -> [String] {
+        let stripped = strippingComments(source)
+        let code = try NSRegularExpression(pattern: #"\s*\.\s*"#).stringByReplacingMatches(
+            in: stripped, range: NSRange(stripped.startIndex..., in: stripped), withTemplate: ".")
+        let use = try NSRegularExpression(pattern: #"(\w+)\."# + member + #"(?![A-Za-z0-9_])"#)
+        return use.matches(in: code, range: NSRange(code.startIndex..., in: code)).compactMap {
+            Range($0.range(at: 1), in: code).map { String(code[$0]) }
+        }
+    }
+}

@@ -83,4 +83,44 @@ struct ReclamationEmergencyRegistrationTests {
         #expect(machine.safetyLog.lines(containing: "no live lease covers it").count == 1)
         #expect(await machine.emergency.fansOwedHandbackReadBack == [0])
     }
+
+    /// The command-only re-assert asks the lease as well as the latch: a fan still in manual
+    /// whose lease lapsed during the envelope read is handed back, never commanded (hard rule
+    /// 2 — manual control is a lease).
+    ///
+    /// **Mutation:** make `EngagementDriver.requireEntitlement(for:)` ask only the arbiter.
+    /// Run: red on the command assertion.
+    @Test("A lease lapsing during the envelope read refuses the command-only re-assert")
+    func theCommandOnlyReassertAsksTheLease() async throws {
+        let firmware = ScriptedControlPlane.FanCondition.held(at: 1_800)
+        let plane = ScriptedControlPlane(fans: [0: firmware])
+        let sensing = InterferingFanStateSensing(plane, during: .envelopeRead)
+        let machine = ReclamationMachine(plane: plane, fans: [0: firmware], sensing: sensing)
+        try await machine.hold(fan: 0, commanding: 2_400)
+        await sensing.interfere { [machine] in machine.lapseLease() }
+
+        await machine.watchdog.cycle()
+
+        #expect(await sensing.didFire, "the scenario never arranged the interleaving")
+        #expect(await machine.commandedRPMs.isEmpty, "§ 5 commanded a fan no lease covers")
+        #expect(await machine.didRestore(fan: 0))
+    }
+
+    /// A budget that runs out spends the attempt and keeps the fan: the firmware refused, the
+    /// fan was not taken from § 5, so it is not handed back as though it had been.
+    ///
+    /// **Mutation:** make `EngagementRefusal.yieldsTheFan` true for `.yieldDidNotArrive`. Run:
+    /// red.
+    @Test("§ 5 keeps a fan whose engagement ran out of budget")
+    func aBudgetExpiryDoesNotYieldTheFan() async throws {
+        let plane = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)], unlock: .neverYields)
+        let machine = ReclamationMachine(plane: plane, fans: [0: .automatic(at: 1_800)])
+        try await machine.hold(fan: 0, commanding: 2_400)
+
+        await machine.watchdog.cycle()
+
+        #expect(await machine.watchdog.fansUnderManualControl == [0], "§ 5 gave the fan up")
+        #expect(machine.safetyLog.lines(containing: "no live lease covers it").isEmpty)
+        #expect(machine.safetyLog.lines(containing: "re-assert of fan 0 was refused").isEmpty)
+    }
 }

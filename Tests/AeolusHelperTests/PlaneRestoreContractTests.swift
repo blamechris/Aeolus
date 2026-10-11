@@ -102,14 +102,14 @@ struct PlaneRestoreContractTests {
     /// The restore epoch moves on the request itself, before any write, and supersedes every
     /// engagement in progress — a restore of a different fan included.
     ///
-    /// **Mutation:** delete `state.epoch &+= 1` from `restoreRequested(fanAt:)`. Run: red.
+    /// **Mutation:** delete `state.epoch &+= 1` from `restoreRequested()`. Run: red.
     @Test("Any restore request supersedes an engagement in progress")
     func aRestoreRequestMovesTheEpoch() throws {
         let ledger = PlaneWriteLedger(enumerated: [0, 1], forceKey: .present)
         #expect(try ledger.admitStep(fanAt: 0) == .first)
         #expect(try ledger.admitStep(fanAt: 0) == .continuing)
 
-        _ = ledger.restoreRequested(fanAt: 1)
+        ledger.restoreRequested()
 
         #expect(ledger.isCurrent(fanAt: 0) == false)
         #expect(throws: FanControlPlaneError.superseded) { try ledger.admitStep(fanAt: 0) }
@@ -332,6 +332,31 @@ struct PlaneRestoreContractTests {
         let line = try #require(recorded.lines(containing: "preparation step").first)
         #expect(line.contains("enumerated 2 fan(s) [0, 1]"))
         #expect(line.contains("which landed"))
+    }
+
+    /// The composition hands the driver § 3's own latch — a second latch would be an
+    /// entitlement check against a bit nothing sets.
+    @Test("The composed driver reads the composed latch")
+    func theComposedDriverReadsTheComposedLatch() throws {
+        let code = try HelperCompositionTests.compositionSource()
+        let start = try #require(code.range(of: "engagement: EngagementDriver("))
+        let rest = code[start.upperBound...]
+        let end = try #require(rest.range(of: "),"))
+        #expect(rest[..<end.lowerBound].contains("latch: latch"))
+    }
+
+    /// A machine-wide restore the preparation step issued and the firmware refused is a fault:
+    /// a force key may still be set.
+    @Test("A refused preparation restore is logged at fault")
+    func aRefusedPreparationRestoreIsAFault() {
+        let recorded = RecordedLog()
+        SafetyLog(recording: { recorded.append($0, $1) }).writePathPrepared(
+            WritePathPreparation(
+                enumeratedFans: [0, 1], forceKey: .reads(1),
+                machineWideRestore: .refused(detail: "no")))
+
+        #expect(recorded.levels == [.fault])
+        #expect(recorded.lines.first?.contains("which was refused") == true)
     }
 
     /// What the composition logs: `.fault` when the enumeration failed or the restore it issued

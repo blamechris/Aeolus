@@ -1446,9 +1446,10 @@ extension SafetyLog {
             return "The machine-wide restore landed, so the force key was cleared."
         case .refused:
             return """
-                The machine-wide restore came back refused, so the force key was **not** \
-                cleared — observed rather than merely unconfirmed. On a build with no SMC \
-                write path that is every sleep.
+                The machine-wide restore came back refused: at least one of its writes was \
+                refused, or its fan set was unknown — observed rather than merely unconfirmed. \
+                The force key's clear was attempted, so whether the key is still set is not \
+                known. On a build with no SMC write path that is every sleep.
                 """
         }
     }
@@ -1543,13 +1544,24 @@ extension SafetyLog {
         )
     }
 
-    /// An engagement was refused — by the entitlement, the plane or the yield budget.
-    func engagementRefused(fan: Int, steps: Int, detail: String) {
+    /// An engagement was refused — by the entitlement, the plane or the yield budget — and what
+    /// became of what it wrote. A refused undo is reported at `.fault` by its own line too.
+    func engagementRefused(
+        fan: Int, steps: Int, detail: String, aftermath: EngagementAftermath
+    ) {
+        let outcome: String
+        switch aftermath {
+        case .nothingWritten: outcome = "Nothing was written."
+        case .undone:
+            outcome = "It was registered with § 3 and handed back, and the restore landed."
+        case .undoRefused:
+            outcome = "Its hand-back was refused, so the fan may still be off automatic control."
+        }
         emit(
             .notice,
             """
-            The engagement of fan \(fan) was refused after \(steps) step(s): \(detail). Any \
-            step it issued has been undone.
+            The engagement of fan \(fan) was refused after \(steps) step(s): \(detail). \
+            \(outcome)
             """
         )
     }
@@ -1557,15 +1569,15 @@ extension SafetyLog {
     /// The undo of a refused engagement was itself refused.
     ///
     /// `.fault`: the fan may be off automatic control with nothing holding it. What is left
-    /// watching it is § 3, which keeps a fan this driver registered until a read confirms it
-    /// automatic — the reason the registration precedes the after-check (#181).
+    /// watching it is § 3: the driver registers the fan before any undo, and § 3 keeps it until
+    /// a read confirms it automatic (#181).
     func engagementUndoRefused(fan: Int, detail: String) {
         emit(
             .fault,
             """
             Could not undo the engagement of fan \(fan): \(detail). The fan may still be off \
-            automatic control; if it came off, § 3 keeps it registered and bridges it in the \
-            next thermal emergency.
+            automatic control. It is registered with § 3, which bridges it in the next thermal \
+            emergency.
             """
         )
     }
@@ -1576,9 +1588,9 @@ extension SafetyLog {
             .notice,
             """
             § 5's re-assert of fan \(fan) was refused, \(refusal): a higher level holds the \
-            fans, or no lease covers this one, and any step it took has been undone. Handing \
-            it back rather than spending another attempt, and **not** recording it as \
-            reclaimed by the system.
+            fans, or no lease covers this one. What the engagement wrote, and its undo, are \
+            reported by its own line. Handing the fan back rather than spending another \
+            attempt, and **not** recording it as reclaimed by the system.
             """
         )
     }

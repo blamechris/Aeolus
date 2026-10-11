@@ -504,14 +504,15 @@ actor ScriptedControlPlane: FanControlPlane {
     /// discarded write leaves its key exactly as it found it, like every other field.
     func restoreToAutomatic(_ scope: FanRestoreScope) async throws {
         attempts.append(.restoreToAutomatic(scope))
-        let plan: RestorePlan
-        switch scope {
-        case .fan(let index):
-            _ = try condition(ofFan: index)
-            plan = ledger.restoreRequested(fanAt: index)
-        case .everyFan:
-            plan = ledger.machineWideRestoreRequested()
-        }
+        if case .fan(let index) = scope { _ = try condition(ofFan: index) }
+        // Requested, then issued: one actor turn here, two moments on a plane whose restore
+        // waits for a scheduler turn between them — `PlaneWriteLedger` keeps them apart.
+        ledger.restoreRequested()
+        let plan =
+            switch scope {
+            case .fan(let index): ledger.issueRestore(fanAt: index)
+            case .everyFan: ledger.issueMachineWideRestore()
+            }
         try plan.attemptEvery { write in try applyRestoreWrite(write) }
     }
 
@@ -669,6 +670,7 @@ extension ScriptedControlPlane {
     /// it outright; a discarding stage accepts it and leaves the fan as it was.
     private func answerModeWrite(fanAt index: Int) throws -> FirmwareWriteAnswer {
         keyWrites.append(.mode(fan: index, value: 1))
+        ledger.recordModeWriteIssued(fanAt: index)
         guard try lands(stage.writes) else { return .accepted }
         switch unlock {
         case .naive:

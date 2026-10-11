@@ -188,8 +188,10 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
     /// `SMCFanControlPlane` answers with this until those epics land.
     case controlPathNotBuilt
 
-    /// A restore was requested after this engagement began, so it writes nothing more
-    /// (ADR 0014 D4's restore epoch). Any restore supersedes any engagement.
+    /// A restore was requested after this engagement's first step, so it writes nothing more
+    /// (ADR 0014 D4's restore epoch) — a restore of any fan, this one's and a machine-wide one
+    /// included. Thrown before anything is written. A restore requested before the first
+    /// step's turn is not seen by the epoch; `PlaneWriteLedger` states that residual.
     case superseded
 
     /// The fan's raw `F<n>Md` was not `0` before the first write, so it is not Aeolus's to take

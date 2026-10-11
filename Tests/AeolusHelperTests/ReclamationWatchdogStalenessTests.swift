@@ -346,10 +346,10 @@ struct ReclamationWatchdogStalenessTests {
     }
 
     /// **The residual, bounded.** A lease that lapses during the command write with nobody
-    /// told leaves `held` intact, so the re-fetch passes and the re-assert completes: D2 is
-    /// asked once per examination, not inside the re-assert's writes, and asking it before
-    /// and after each write is ADR 0014 D4's, not #180's. What D2 guarantees is that the
-    /// state is not permanent — the next cycle's lease check hands the fan back.
+    /// told leaves `held` intact, so the re-fetch passes and the re-assert completes. Since
+    /// #181 the driver asks the lease before the first write (ADR 0014 D4), but nothing asks it
+    /// after the command write. What D2 guarantees is that the state is not permanent — the
+    /// next cycle's lease check hands the fan back.
     ///
     /// **Mutation:** delete the `guard entitled` block from `examine(fanAt:)`. Run: red on the
     /// second cycle's restore, registry and log assertions: the fan reads back the 2,400 RPM

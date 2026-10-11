@@ -108,14 +108,24 @@ enum EngagementRules {
 /// preparation step recorded (D4, D5), lock-guarded under `SMCRoundTripMonitor`'s discipline so a
 /// plane that is a `struct` can hold it.
 ///
-/// - **The epoch** moves on every restore *request*, synchronously, before the restore waits
-///   for a turn. A step admitted under an older epoch writes nothing more (`admitStep(fanAt:)`).
+/// - **The epoch** moves when a restore is *requested* (`restoreRequested()`), synchronously,
+///   before the restore waits for its turn. An engagement records it at its first step, and a
+///   later step admitted under an older one writes nothing (`admitStep(fanAt:)`). That holds for
+///   a restore of any fan, the engaging fan's own and a machine-wide one included: a restore
+///   leaves the engagement's record as it was, and the mismatch is what supersedes it.
 /// - **The engaged set** holds a fan from its confirmed read-back until a restore covering it
-///   is issued, whatever the firmware then answers.
-/// - **The touched set** holds every addressable fan this plane engaged or restored by index,
-///   and never shrinks: a machine-wide restore writes it whatever the enumeration knew.
+///   is *issued* — inside the restore's turn, whatever the firmware then answers.
+/// - **The touched set** holds every addressable fan this plane issued a mode write to or
+///   restored by index, and never shrinks: a machine-wide restore writes it whatever the
+///   enumeration knew.
 /// - **The force-key flag** is set when this plane's `Ftst = 1` is accepted and cleared when a
 ///   restore issues `Ftst = 0`.
+///
+/// **What the epoch cannot see: an engagement's first step.** The epoch is recorded *at* that
+/// step, so a restore requested between the driver's entitlement check and the first step's
+/// turn does not supersede it. That is ADR 0009 D1's residual — the check is not atomic with the
+/// write — and it is discharged the way D1 prescribes: every genuine restore path either ends
+/// the lease or latches § 3, and the driver asks both again after the step and undoes.
 final class PlaneWriteLedger: Sendable {
 
     /// How a step was admitted: an engagement's first step records the epoch it runs under.
@@ -126,7 +136,8 @@ final class PlaneWriteLedger: Sendable {
 
     private struct State: Sendable {
         var epoch: UInt64 = 0
-        /// The epoch each engagement in progress recorded at its first step.
+        /// The epoch each engagement in progress recorded at its first step. A restore never
+        /// erases one; a step finding it out of date throws `.superseded` and removes it.
         var inProgress: [Int: UInt64] = [:]
         var engaged: Set<Int> = []
         var touched: Set<Int> = []
@@ -163,7 +174,12 @@ final class PlaneWriteLedger: Sendable {
     // MARK: - Engagement
 
     /// Admits one step for `index`, or throws `.superseded` when a restore was requested after
-    /// this engagement's first step. Called first in the step's turn, before any read or write.
+    /// the engagement's first step. Called first in the step's turn, before any read or write,
+    /// so a superseded step has written nothing.
+    ///
+    /// A record found out of date is removed as it refuses. A *fresh* engagement can find one —
+    /// left by an earlier engagement of the same fan, whose undo is itself a restore — and the
+    /// driver retries its first step once for that reason, after asking the entitlement again.
     func admitStep(fanAt index: Int) throws -> Admission {
         try state.withLock { state in
             guard let recorded = state.inProgress[index] else {
@@ -182,6 +198,12 @@ final class PlaneWriteLedger: Sendable {
     /// inside the turn, before the force-key write.
     func isCurrent(fanAt index: Int) -> Bool {
         state.withLock { $0.inProgress[index] == $0.epoch }
+    }
+
+    /// A mode write was issued to `index`: from here the fan may be off automatic control, so a
+    /// machine-wide restore must write it whatever the enumeration knows.
+    func recordModeWriteIssued(fanAt index: Int) {
+        state.withLock { _ = $0.touched.insert(index) }
     }
 
     /// The step read back raw `1`: the fan joins the engaged and touched sets.
@@ -205,12 +227,19 @@ final class PlaneWriteLedger: Sendable {
 
     // MARK: - Restores
 
-    /// A `.fan(index)` restore was requested. The fan's mode write, then the force key's clear
-    /// if no engaged fan depends on the key any more — never while another does.
-    func restoreRequested(fanAt index: Int) -> RestorePlan {
+    /// A restore was requested: the epoch moves, and every engagement in progress is superseded.
+    /// Called synchronously when `restoreToAutomatic(_:)` is called, before it waits for a turn,
+    /// so no forward write lands after a restore that was requested first. It decides nothing
+    /// else: what the restore writes is decided when it is issued.
+    func restoreRequested() {
+        state.withLock { $0.epoch &+= 1 }
+    }
+
+    /// Issues a `.fan(index)` restore, inside its turn: the fan's mode write, then the force
+    /// key's clear if no engaged fan depends on the key any more — never while another does,
+    /// including one whose engagement completed after this restore was requested.
+    func issueRestore(fanAt index: Int) -> RestorePlan {
         state.withLock { state in
-            state.epoch &+= 1
-            state.inProgress[index] = nil
             state.engaged.remove(index)
             if SMCKey.fanMode(index) != nil { state.touched.insert(index) }
             let clearsKey = state.forceKeySet && state.engaged.isEmpty
@@ -219,13 +248,11 @@ final class PlaneWriteLedger: Sendable {
         }
     }
 
-    /// A machine-wide restore was requested: every enumerated fan and every touched fan, then
-    /// the force key unless it is recorded absent. A failed enumeration is reported by the plan,
-    /// after every write it can name.
-    func machineWideRestoreRequested() -> RestorePlan {
+    /// Issues a machine-wide restore, inside its turn: every enumerated fan and every touched
+    /// fan, then the force key unless it is recorded absent. A failed enumeration is reported
+    /// by the plan, after every write it can name.
+    func issueMachineWideRestore() -> RestorePlan {
         state.withLock { state in
-            state.epoch &+= 1
-            state.inProgress.removeAll()
             state.engaged.removeAll()
             state.forceKeySet = false
             let fans = (state.enumerated ?? []).union(state.touched)

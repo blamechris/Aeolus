@@ -472,6 +472,12 @@ actor InterferingFanStateSensing: FanControlPlane {
     private var effect: (@Sendable () async -> Void)?
     private var hasFired = false
 
+    /// An effect run before the plane is asked for the `ordinal`th engagement step — after the
+    /// driver's entitlement check and before the step's turn, which is where a production
+    /// restore can land (ADR 0014 D4). Independent of `moment`.
+    private var beforeEngageStep: (ordinal: Int, effect: @Sendable () async -> Void)?
+    private var engageSteps = 0
+
     /// Whether the effect actually ran.
     ///
     /// Asserted by every test using this type. A double whose interference silently never
@@ -489,6 +495,13 @@ actor InterferingFanStateSensing: FanControlPlane {
     /// usually needs the watchdog, which needs this.
     func interfere(with effect: @escaping @Sendable () async -> Void) {
         self.effect = effect
+    }
+
+    /// Runs `effect` before the `ordinal`th engagement step, counting from one.
+    func interfere(
+        beforeEngageStep ordinal: Int, with effect: @escaping @Sendable () async -> Void
+    ) {
+        beforeEngageStep = (ordinal, effect)
     }
 
     func readControlState(ofFan index: Int) async throws -> FanControlState {
@@ -521,6 +534,12 @@ actor InterferingFanStateSensing: FanControlPlane {
     }
 
     func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
+        engageSteps += 1
+        if let pending = beforeEngageStep, pending.ordinal == engageSteps {
+            beforeEngageStep = nil
+            await pending.effect()
+            didFire = true
+        }
         let step = try await plane.engageManualControl(of: fan)
         if moment == .engageWrite { await fireOnce() }
         return step

@@ -193,8 +193,9 @@ protocol KeystoneRestoring: Sendable {
     ///
     /// [ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D4, D5 and D7:
     ///
-    /// - **A call supersedes every engagement**, synchronously and before it waits for a turn,
-    ///   so no forward write lands after a restore that was requested first.
+    /// - **A call supersedes every engagement past its first step**, synchronously and before
+    ///   it waits for a turn, so no later step writes after a restore that was requested first.
+    ///   What the restore writes is decided when it is *issued*, inside its turn.
     /// - **One turn, no read.** The writes are encoded from what the preparation step recorded.
     /// - **The unlock reversed**: every `F<n>Md = 0` in scope, then `Ftst = 0`, each attempted
     ///   whatever the others answered; the call throws only after all of them were.

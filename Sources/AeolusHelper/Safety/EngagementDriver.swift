@@ -52,6 +52,16 @@ enum EngagementRefusal: Error, Sendable, Hashable {
     }
 }
 
+/// What became of the writes of an engagement that was refused, for the log.
+enum EngagementAftermath: Sendable, Hashable {
+    /// Nothing was written.
+    case nothingWritten
+    /// The fan was registered with § 3 and handed back, and the restore was accepted.
+    case undone
+    /// The hand-back was refused: the fan may still be off automatic control.
+    case undoRefused
+}
+
 /// The cadence of an engagement: the entitlement before and after every step, the poll interval
 /// and yield budget between steps, the § 3 registration, and the undo (ADR 0014 D2, D4).
 ///
@@ -69,23 +79,27 @@ enum EngagementRefusal: Error, Sendable, Hashable {
 ///
 /// Before each step, a live lease must cover the fan and `SafetyArbiter` must permit the
 /// writer's level against § 3's latch. For § 5 the check before the first step is the
-/// pre-engage ruling #181 asks for. Inside each step the plane checks its restore epoch, so no
-/// forward write lands after a restore requested first. After `.engaged`, the fan is registered
-/// with § 3 and the entitlement asked again.
+/// pre-engage ruling #181 asks for. Inside each later step the plane checks its restore epoch,
+/// so no later step writes after a restore requested first. After `.engaged`, the fan is
+/// registered with § 3 and the entitlement asked again.
 ///
 /// **The checks are not atomic with the write, and saying the window is closed would be the
 /// more dangerous spelling** (ADR 0009 D1): a lease can end, or § 3 latch, between a check and
-/// the step's turn. That residual is discharged by acting and then checking — the after-check,
-/// then the undo — and the undo is a write the firmware can refuse. Registering with § 3
-/// **before** the after-check is what covers a refused undo: the fan stays in the registry § 3's
-/// next latched cycle bridges, until a read confirms it automatic.
+/// the step's turn — and the epoch, which an engagement records *at* its first step, does not
+/// see a restore requested before that turn. That residual is discharged by acting and then
+/// checking: every genuine restore ends the lease or latches § 3, the entitlement is asked
+/// again after the step, and the fan is undone. The undo is a write the firmware can refuse,
+/// so the fan is registered with § 3 **before** it — after `.engaged`, before the after-check;
+/// otherwise just before the undo — and stays in the registry § 3's next latched cycle bridges,
+/// until a read confirms it automatic.
 ///
 /// ## The undo
 ///
-/// On any throw once a step has been issued, the fan is handed back (`handBack(fanAt:)`). Two
-/// throws have nothing of this engagement's to undo, and get no restore: an entitlement refused
-/// before the first step, and a first step refused as `.notAutomatic` — the fan was someone
-/// else's, and writing it back to automatic would be ADR 0011's contest.
+/// On any throw once a step may have written, the fan is registered with § 3 and handed back
+/// (`handBack(fanAt:)`). A throw before any step answered gets neither when nothing was
+/// written: the entitlement refused before the first step or its retry, a first step
+/// superseded twice, or a first step refused as `.notAutomatic` — the fan was someone else's,
+/// and writing it back to automatic would be ADR 0011's contest.
 struct EngagementDriver<Plane: FanControlPlane>: Sendable {
 
     private let writer: SafetyActorWriter<Plane>
@@ -126,41 +140,81 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
     ///
     /// Returns once the plane answered `.engaged`, the fan is registered with § 3, and the
     /// entitlement still holds. Throws `EngagementRefusal` for the driver's own refusals and
-    /// whatever the plane threw for its; in both cases the undo has already run.
+    /// whatever the plane threw for its; in both cases the undo, if one was owed, has run.
     func engageManualControl(of fan: CommandableFan) async throws {
         let index = fan.index
         try await requireEntitlement(for: fan)
 
         let began = clock.now
         let deadline = began + UnlockLimits.yieldBudget
-        var steps = 0
+        var steps = 1
+        var answered = false
+        var registered = false
         do {
-            steps += 1
-            while try await writer.engageManualControl(of: fan) == .awaitingYield {
+            var answer = try await firstStep(of: fan)
+            answered = true
+            while answer == .awaitingYield {
                 let next = clock.now + UnlockLimits.pollInterval
                 guard next < deadline else {
                     throw EngagementRefusal.yieldDidNotArrive(fan: index, steps: steps)
                 }
                 try await clock.sleep(until: next)
+                try Task.checkCancellation()
                 try await requireEntitlement(for: fan)
                 steps += 1
+                answer = try await writer.engageManualControl(of: fan)
             }
             await emergency.manualControlEngaged(fan)
+            registered = true
             try await requireEntitlement(for: fan)
         } catch {
-            if case .notAutomatic? = error as? FanControlPlaneError {
-                log.engagementRefused(fan: index, steps: steps, detail: String(describing: error))
+            guard answered || !Self.wroteNothing(error) else {
+                log.engagementRefused(
+                    fan: index, steps: steps, detail: String(describing: error),
+                    aftermath: .nothingWritten)
                 throw error
             }
+            if !registered { await emergency.manualControlEngaged(fan) }
+            var aftermath = EngagementAftermath.undone
             do {
                 try await handBack(fanAt: index)
             } catch let undo {
+                aftermath = .undoRefused
                 log.engagementUndoRefused(fan: index, detail: String(describing: undo))
             }
-            log.engagementRefused(fan: index, steps: steps, detail: String(describing: error))
+            log.engagementRefused(
+                fan: index, steps: steps, detail: String(describing: error), aftermath: aftermath)
             throw error
         }
         log.engagementEngaged(fan: index, steps: steps, waited: began.duration(to: clock.now))
+    }
+
+    /// The first step, retried **once** when the plane answers `.superseded`.
+    ///
+    /// The plane admits a step before it reads or writes anything, so a superseded first step
+    /// wrote nothing. And it can be superseded only by a record an earlier engagement of this
+    /// fan left behind — that engagement's undo is itself a restore — because this one has no
+    /// record of its own yet. The retry is safe because the entitlement is asked again first:
+    /// a restore that was real ended the lease (a lease teardown, § 4, § 7, § 6's exit) or came
+    /// with § 3's latch, and either refuses here. A second `.superseded` is a restore requested
+    /// during the retry itself, and stops the engagement with nothing written.
+    private func firstStep(of fan: CommandableFan) async throws -> EngagementStep {
+        do {
+            return try await writer.engageManualControl(of: fan)
+        } catch FanControlPlaneError.superseded {
+            try await requireEntitlement(for: fan)
+            return try await writer.engageManualControl(of: fan)
+        }
+    }
+
+    /// Whether a throw before any step answered left nothing of this engagement's written: the
+    /// retry's entitlement refusal, or a first step refused before its write.
+    private static func wroteNothing(_ error: any Error) -> Bool {
+        if error is EngagementRefusal { return true }
+        switch error as? FanControlPlaneError {
+        case .superseded?, .notAutomatic?: return true
+        default: return false
+        }
     }
 
     /// The undo, and the hand-back § 5 issues for a fan it gives up: restore, then tell § 3 the

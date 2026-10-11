@@ -196,8 +196,9 @@ struct WriteVerbAllowlistTests {
     ///   `engageManualControl(of:)` is the cadence around the plane's one-step verb, and the
     ///   permit is the only thing it takes, so the lease it checks is the permit's own fan.
     ///   `requireEntitlement(for:)` asks the latch and the lease about that permit and writes
-    ///   nothing. `manualControlEngaged(_:)` is § 3's registration role (#181), the requirement
-    ///   `ThermalEmergency`'s entry above already witnesses.
+    ///   nothing. `firstStep(of:)` is the engage verb's first step and its one retry after a
+    ///   `.superseded` that wrote nothing. `manualControlEngaged(_:)` is § 3's registration
+    ///   role (#181), the requirement `ThermalEmergency`'s entry above already witnesses.
     private static let permitBearingVerbs: Set<String> = [
         "FanControlPlane.swift: commandTarget(_: AuthorisedFanTarget)",
         "FanControlPlane.swift: engageManualControl(of: CommandableFan)",
@@ -215,6 +216,7 @@ struct WriteVerbAllowlistTests {
         "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan)",
         "EngagementDriver.swift: engageManualControl(of: CommandableFan)",
         "EngagementDriver.swift: requireEntitlement(for: CommandableFan)",
+        "EngagementDriver.swift: firstStep(of: CommandableFan)",
         "EngagementDriver.swift: manualControlEngaged(_: CommandableFan)",
     ]
 
