@@ -434,10 +434,13 @@ nothing more.
 - **It is one of #104's two remaining code pieces (D8), and lands on `main` before run 1.** It
   carries these changes:
   - It inverts `PanicPathScopeTripwireTests.theShippedPanicVerbIssuesNoControlPlaneRestore`, with a
-    mutation for each capability.
+    mutation for each capability (renamed in #349 to
+    `thePanicVerbIssuesTheMachineWideRestoreOnlyOnABuiltPlane`).
   - It adds `SupervisedFanAuthority.swift` to the file set that
-    `everyMachineWideRestoreIsOneOfTheThreeKnownCallSites` holds.
-  - It walks that suite's seven `documentationSites`, including `docs/SAFETY.md` § 1's "three call
+    `everyMachineWideRestoreIsOneOfTheThreeKnownCallSites` holds (renamed in #349 to
+    `everyMachineWideRestoreIsOneOfTheKnownCallSites`).
+  - It walks that suite's eight `documentationSites` (seven when this was written; #345 added
+    `docs/records/handback-ledger.md`), including `docs/SAFETY.md` § 1's "three call
     sites" sentence. It corrects `docs/SAFETY.md` § 7's sentence calling the handler-side restore "a
     v1 contract change" that "belongs with the write path rather than before it": the reply's shape
     and meaning are unchanged — accepted, never done — so it is not a contract change and needs no
@@ -872,14 +875,16 @@ Each run's findings are recorded, and the branch revised, before the next.
 - **ADR 0004's write-time sentence and its assumption row are amended** to cover forward writes
   (D7).
 - **ADR 0011 is not amended.** The preparation step extends its D1 discourtesy to the force key.
-- **`PanicPathScopeTripwireTests`' file set grows from three to five:**
+- **`PanicPathScopeTripwireTests`' file set grows from three to five:** four on `main` since
+  #349, and five on the branch.
   - `SupervisedFanAuthority.swift` (§ 7, on `main`);
   - `SMCFanControlPlane.swift` (its scope switch and preparation step, on the branch).
 
   `SignalTeardown.swift`, `SystemPowerResponder.swift` and `StartupReconciliation.swift` are
-  unchanged. `theShippedPanicVerbIssuesNoControlPlaneRestore` is inverted. Its seven
-  `documentationSites` and the three named sites are walked, and its three "§ 5" references become
-  "§ 1".
+  unchanged. `theShippedPanicVerbIssuesNoControlPlaneRestore` is inverted (as
+  `thePanicVerbIssuesTheMachineWideRestoreOnlyOnABuiltPlane`, #349). Its eight
+  `documentationSites` (seven when this was written) and the three named sites are walked, and its
+  three "§ 5" references become "§ 1".
 - **`docs/SAFETY.md` § 1's statement that a per-lease teardown leaves `Ftst` untouched** becomes
   false on the branch, and is corrected at the merge.
 - **§ 4's `.refused` documentation** is corrected in the change that sets the seam's restore
@@ -1120,7 +1125,7 @@ bump.
 | U12 | Sleep resets `Ftst` | Reported. Not depended on (D5) | Only the never-issued-keystone residual widens |
 | U13 | Apple's controller never commands above the declared `F<n>Mx` | The highest fan speed recorded under Apple's control is 3,683 RPM, against 5,777 declared (2026-08-20; key not recorded). The highest recorded `F0Tg` is 2,195 RPM. The pre-flight records `F<n>Tg` through a load and its soak | 1b's "at or above demand" fails by the excess. Aborts 9 and 1 catch it |
 | — | The preparation step can enumerate the fans and record both restore keys' types | `FNum`, `F<n>Md` and `Ftst` have read on every capture. Both are `ui8`, one byte, on 27.0.1 | `.everyFan` writes the touched set's fans and the force key, then throws `.fanSetUnknown`. An unknown key is written as one zero byte (D5, D7). Start 0 stops |
-| — | One lease-table entry, one production plane | True today | Concurrent leases or a second plane: re-check D4's epoch scope and D5's gate |
+| — | One lease-table entry, one production plane | True today | Concurrent leases or a second plane: re-check D4's epoch scope and D5's gate. Also, since #349: nothing refuses a grant while § 7's `.everyFan` is in flight, so a write under a lease granted in that window can be undone by it. Unreachable on `.notBuilt`; decided before A6 ([#350](https://github.com/blamechris/Aeolus/issues/350)) |
 
 Every observation above is `Mac16,5`; the write-path rows are hypotheses until D8 runs. Intel and
 M1/M2 ship `untested`.

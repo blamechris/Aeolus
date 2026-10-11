@@ -1377,6 +1377,13 @@ ladder already gives it; a force key left set has no snapshot field, and the fau
 only report of it. The reply now follows one more restore call, which the client's 10 s
 `panicVerb` deadline covers; its round trip on hardware is unmeasured.
 
+**A residual, recorded rather than closed** ([#350](https://github.com/blamechris/Aeolus/issues/350)):
+nothing refuses a grant while § 7's machine-wide restore is in flight. `releaseEveryLease()` has
+already emptied the table when `.everyFan` goes on the wire, so an `acquireLease` arriving in that
+window can be granted, and a write made under it can then be undone by the restore still in
+flight. It cannot happen on any build on `main`, where no lease is granted on a `.notBuilt` plane;
+it is decided before A6 gives a lease a write to make.
+
 **One fan under no live lease *is* touched, and it is the fan this path exists for**
 ([#189](https://github.com/blamechris/Aeolus/issues/189)). `releaseEveryLease()` sweeps
 `LeaseAuthority.restoreAbandoned` — § 1's terminal state — beside the lease table, per fan
@@ -1401,7 +1408,8 @@ these at once: a lease whose connection is gone; a fan in manual under no lease,
 § 3 and § 5 while the lease table holds no lease over it; a stale `restoreAbandoned` entry; a
 latched § 3 with nothing bridged under it; and a force key set with nothing engaged. The command
 exits 0 saying *accepted*, and afterwards every fan is automatic, the key is clear, no lease is held
-and no refusal stands. A firmware that refuses the machine-wide restore still gets *accepted*, and
+and no handback refusal stands; § 3's latch is still set, because ending an emergency is § 3's own
+cool-down and no message's. A firmware that refuses the machine-wide restore still gets *accepted*, and
 a fault line. `PanicVerbMachineWideRestoreTests` holds both capabilities, the order and the
 refusal at the authority, and `FanctlResetTests` the command's own decisions against a healthy
 helper. That is the panic path as it behaves once a write path exists; every build on `main`

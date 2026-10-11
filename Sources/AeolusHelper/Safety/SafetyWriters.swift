@@ -59,9 +59,11 @@ import FanKit
 ///
 /// ## It is also a `KeystoneRestoring`
 ///
-/// The conformance is its existing restore verb, and it is what lets § 7's panic verb be
-/// handed one of these at `.panicRestore` while holding nothing that can command a fan
-/// (`SupervisedFanAuthority`, ADR 0014 D5). It is not a writing protocol shared with
+/// The conformance is its existing restore verb. § 7's panic verb is handed one of these at
+/// `.panicRestore`, **typed as the role** (`SupervisedFanAuthority`, ADR 0014 D5): only that
+/// role is restore-only. This type still has `commandMaximum(of:)`, `command(_:of:)` and
+/// `engageManualControl(of:)`, and anything holding it by its own type can call them. The
+/// level is provenance only; nothing reads it. It is not a writing protocol shared with
 /// `GovernedFanWriter`, which still declares no restore verb, so the exclusion above stands.
 struct SafetyActorWriter<Plane: FanControlPlane>: KeystoneRestoring {
 

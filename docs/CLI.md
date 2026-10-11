@@ -345,7 +345,7 @@ this table stops listing every code.
 | 6 | `controlLost` | Control was held and then lost: renewal refused or unanswered, the lease ended, the system reclaimed a fan, or a thermal emergency took over. |
 | 7 | `protocolVersionMismatch` | This `fanctl` and the helper share no protocol version. The message names both. |
 | 8 | `safeStateNotConfirmed` | A request for the safe state (releasing a lease, returning fans to automatic) that could not be confirmed. The lease still expires on its own. |
-| 9 | `cannotReturnToAutomatic` | The helper reports `foreignManualControl` or `restoreToAutomaticFailed` for a fan, **whatever mode the fan reads** (an unreadable mode is reported as automatic). Durable: repeating the request will not change it. The message carries the reason and its `docs/RECOVERY.md` advice. |
+| 9 | `cannotReturnToAutomatic` | The helper reports `foreignManualControl` or `restoreToAutomaticFailed` for a fan, **whatever mode the fan reads** (an unreadable mode is reported as automatic). Durable: repeating the request will not change it. The message carries the reason and its `docs/RECOVERY.md` advice. *2026-10-10:* on a plane that can write, the request includes the machine-wide restore ([ADR 0014](ADR/0014-apple-silicon-unlock.md) D5), which can return a foreign-held fan to automatic; how a durable refusal is then reported is [#351](https://github.com/blamechris/Aeolus/issues/351). |
 | 64 | `usage` | A malformed command line (swift-argument-parser's `EX_USAGE`). |
 
 Which errors map where: every `HelperClientError` and `AeolusXPCFault` case is classified
@@ -569,6 +569,12 @@ For `restoreToAutomaticFailed` the message adds that the advice naming `fanctl r
 request this run already made, and the step that needs neither this command nor the helper
 (stopping it). For a fan another program holds it does not, because stopping the helper does not
 release it.
+
+*2026-10-10:* on a plane that can write, the request includes the machine-wide restore
+([ADR 0014](ADR/0014-apple-silicon-unlock.md) D5), which can return a foreign-held fan to
+automatic; how a durable refusal is then reported is
+[#351](https://github.com/blamechris/Aeolus/issues/351). No build today can write, so the example
+above is what every build prints.
 
 ### `fanctl auto --json`
 

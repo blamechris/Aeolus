@@ -175,7 +175,8 @@ protocol SMCConnectionRecovering: Sendable {
 /// `PanicPathScopeTripwireTests` holds its file to those two roles.
 ///
 /// `FanControlPlane` refines this, so every plane answers it. `SafetyActorWriter` conforms with
-/// the verb it already had, and that is what the composition hands § 7, at § 7's own level.
+/// the verb it already had, and that is what the composition hands § 7 — typed as this role,
+/// which is what makes it restore-only; the writer's own type is not.
 protocol KeystoneRestoring: Sendable {
 
     /// Returns fans to the system's own thermal management.
