@@ -9,7 +9,8 @@ import Testing
 ///
 /// [#228](https://github.com/blamechris/Aeolus/issues/228) is what this exists for, and the
 /// defect it records is worth restating because it is not a typo. The issue names three sites;
-/// `documentationSites` below is the verified list, and it has **seven entries**.
+/// `documentationSites` below is the verified list; it had **seven entries** when #228
+/// closed, and has eight now.
 /// `SupervisedFanAuthority.restoreAllToAutomatic` has always been right. Four said, in plain
 /// present indicative, that the verb additionally restores every enumerated fan —
 /// `LeaseAuthority.releaseEveryLease`, `LeaseTeardownTests`,
@@ -18,7 +19,11 @@ import Testing
 /// that declaration, said "each fan" where it meant the fans the dropped leases covered. The
 /// seventh, `FanAuthority`'s requirement, was merely silent about the gap. `docs/SAFETY.md` § 7
 /// inherited the claim and [#222](https://github.com/blamechris/Aeolus/issues/222) corrected
-/// the document side without touching the source comments it came from.
+/// the document side without touching the source comments it came from. The eighth,
+/// `docs/records/handback-ledger.md`, joined when
+/// [#128](https://github.com/blamechris/Aeolus/issues/128) relocated `releaseEveryLease`'s
+/// paragraphs on the sweep there: they carry the statement that the machine-wide restore was
+/// declined (#159), which is this verb's scope.
 ///
 /// **Why a tripwire and not a behavioural test.** A behavioural test can only assert what the
 /// handler does, and what the handler does is already covered —
@@ -49,6 +54,8 @@ struct PanicPathScopeTripwireTests {
         "Sources/AeolusHelper/SupervisedFanAuthority.swift — restoreAllToAutomatic's own "
             + "paragraph, where the decision lives",
         "Sources/AeolusHelper/Lease/LeaseAuthority.swift — releaseEveryLease",
+        "docs/records/handback-ledger.md — \"`releaseEveryLease()`: what the sweep is, and "
+            + "what it is not\"",
         "Sources/AeolusHelper/FanAuthority.swift — the protocol requirement",
         "Sources/AeolusXPC/AeolusXPCProtocol.swift — the declaration, and the ordering "
             + "paragraph above it",

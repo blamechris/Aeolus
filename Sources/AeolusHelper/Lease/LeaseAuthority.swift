@@ -17,46 +17,24 @@ import Foundation
 ///   all**, asked once per grant. This one can cost a real hardware round trip, and since
 ///   [#134](https://github.com/blamechris/Aeolus/issues/134) usually does not.
 ///
-/// The third arrived with #124 and is the only one that reads. It is worth stating plainly
-/// here, because `acquireLease`'s `// ---- No await below this line ----` marker can only be
-/// reasoned about correctly by somebody who knows how many suspension points that method
-/// has: an earlier version of this paragraph said the type "cannot enumerate a fan, read a
-/// sensor, or write a value" and named only two dependencies, which would have hidden the
-/// slowest of the three from exactly that analysis.
-///
-/// It was `CriticalTemperatureSensing` until #134, and the swap is not a rename. A read is
-/// still what happens when there is no fresh evidence; what changed is that the grant path
-/// asks *"can § 3 see"* rather than *"read the curated set now"*, and § 3's own cycle is the
-/// authoritative answer to the first.
-/// [ADR 0010](../../../docs/ADR/0010-coalesced-supervisor-reads.md) records why, and
-/// `SightednessProving` explains why handing this type the cycle's telemetry no longer
-/// compiles.
+/// The third arrived with #124 and is a suspension point in `acquireLease` that an earlier
+/// version of this paragraph hid; since #134 it asks whether § 3 can see rather than reading
+/// the curated set now ([ADR 0010](../../../docs/ADR/0010-coalesced-supervisor-reads.md)).
+/// handback-ledger.md § *"Where this sits: the third role, and the swap from #134"*.
 ///
 /// **Still no write of any kind** — `SMCConnection.write` is SPI-gated and still
 /// throws, and no write selector exists anywhere in `Sources/`.
 ///
-/// The split keeps this fully testable with no hardware. It no longer keeps it free of the
-/// mock SMC: `LeaseFixture.authority` defaults `telemetry:` to a `CriticalTemperatureCache`
-/// over a `CuratedCriticalTemperatures` over `ScriptedControlPlane`, so every lease test now
-/// runs against the scripted firmware through the shipped cache.
-/// That is deliberate — a hand-rolled telemetry double would answer "sighted" without the
-/// curated key list or the plausibility gate ever running — and it means emptying
-/// `CriticalSensorSet.mac16x5` turns the lease suite red, which is a coupling worth knowing
-/// about before it surprises somebody.
+/// Tests run it against the shipped cache over the scripted firmware, not a hand-rolled
+/// double, so emptying `CriticalSensorSet.mac16x5` turns the lease suite red.
+/// handback-ledger.md § *"Where this sits: what the lease suite runs against"*.
 ///
 /// ## One lease at a time, and why the contract settles it
 ///
-/// `FanAuthority.snapshot()` takes **no `ConnectionID`**, and `SystemSnapshot.activeLease`
-/// is a single optional `Lease`. So the lease a snapshot reports is a global fact, identical
-/// for every client, and there is exactly one slot for it. Two simultaneous leases — even
-/// over disjoint fans — would be unreportable: one of them would be invisible to every
-/// client including its own holder, and a client that cannot see who holds the fans cannot
-/// tell "nothing is holding this" from "somebody else is". That is `CLAUDE.md` rule 6
-/// arriving one step earlier than usual.
-///
-/// The wire shape is frozen at v1 and shipped, so the choice is between refusing the second
-/// lease and misreporting it. This refuses it, with
+/// A snapshot reports one global `activeLease` and the wire shape is frozen at v1, so a
+/// second lease would be unreportable; it is refused with
 /// `.manualControlUnavailable(reason: .leaseHeldByAnotherClient)`.
+/// handback-ledger.md § *"One lease at a time, and why the contract settles it"*.
 ///
 /// ## Strict concurrency
 ///
@@ -87,6 +65,10 @@ import Foundation
 /// — no `swiftlint:disable`, no `.swiftlint.yml` override, and no split that would widen the
 /// `private` state `LeaseAuthorityAccessTests` holds — and #128 had already taken the one
 /// seam available without widening it.
+///
+/// Relocating prose cannot relieve `type_body_length`, which counts this body's code: about 85
+/// lines of headroom remain before its error at 350. New behaviour belongs in value types and
+/// the `EngagementDriver` (ADR 0014), not in this actor.
 actor LeaseAuthority {
 
     private let clock: any MonotonicClock
@@ -217,23 +199,10 @@ actor LeaseAuthority {
 
     /// Whether `docs/SAFETY.md` § 4 has closed this table for a sleep that is under way.
     ///
-    /// § 4 empties the table and hands every fan back in the window `.willSleep` opens, and
-    /// nothing in that sequence stops a *new* lease being taken while it runs. The hazard is
-    /// the one `acquireLease` already documents about its own straight-line region, arriving
-    /// from outside: a request parked on `refuseIfBlind`'s 34-key read resumes after § 4 has
-    /// emptied the table and restored, finds an empty table and no fan mid-handback, and
-    /// engages manual control as the machine stops running this process. The lease then
-    /// crosses the sleep with nothing having handed its fan back, which is the exact failure
-    /// § 4 exists to prevent, reached through the one door it does not close.
-    ///
-    /// **Set before the teardown and cleared on `.didWake`.** Clearing it is not a write —
-    /// § 4's "after wake: nothing" is about the firmware, and this touches no fan — so the
-    /// wake branch stays the absence it is documented to be.
-    ///
-    /// A helper that hears `.willSleep` and never hears the wake refuses every lease for the
-    /// life of the process. That is the fail-safe direction and is deliberately not guarded
-    /// against: refusing manual control is safe, and a lease taken on a machine this process
-    /// believes is asleep is not.
+    /// Set before § 4's teardown and cleared on `.didWake`, so no lease can be taken in the
+    /// window where the table is empty and the machine is about to sleep. A wake that never
+    /// comes refuses every lease, which is the fail-safe direction.
+    /// handback-ledger.md § *"`sleepSeal` — why the table is closed for a sleep"*.
     ///
     /// **Hearing them out of order is a different case, and it is guarded** — see
     /// `wakesAheadOfTheirSeal`. The fail-safe argument above covers a wake that never comes;
@@ -260,11 +229,11 @@ actor LeaseAuthority {
     /// seal for the life of the process, turning a fail-safe defect into a fail-dangerous one.
     /// Why counting cannot work here, and what a declined seal did to the count:
     /// handback-ledger.md § *"Pairing a sleep with its own wake"*.
-    private var latestWakeGeneration: UInt64 = 0
-
+    ///
     /// **What this does not claim**: the starved body still drops every lease and restores
     /// after the wake, and the client is never told it lost the lease. Bounded and honest
     /// rather than thermal — handback-ledger.md § *"Pairing a sleep with its own wake"*.
+    private var latestWakeGeneration: UInt64 = 0
 
     /// The generation of the `.willSleep` whose seal is currently standing.
     ///
@@ -309,30 +278,10 @@ actor LeaseAuthority {
     ///
     /// The order of the steps is the design, so it is worth reading as one:
     ///
-    /// 0. **The build's own write capability is refused before anything else**, because it
-    ///    is the only refusal here that is a fact about the *executable* rather than about
-    ///    the request or the machine. Nothing a client sends and nothing the SMC says can
-    ///    change it, so every other answer given ahead of it invites a retry that can never
-    ///    succeed — and one of those answers, `noThermalTelemetry`, can cost a real 34-key
-    ///    hardware read to produce. See `refuseIfWritePathNotBuilt`.
-    /// 1. **Self-renewal is refused next**, before any work is done for a request that
-    ///    cannot be granted whatever the machine says.
-    /// 2. The TTL is re-validated here although the listener already checked it. Sharing
-    ///    `AeolusXPCValidation` is not the same as the listener doing the checking
-    ///    (`CLAUDE.md` rule 7), and this method is reachable from the control plane as well
-    ///    as from a message.
-    /// 3. The suspension points: enumerating the machine's fans, then sweeping anything
-    ///    already lapsed — so the single-lease check below is made against live leases only,
-    ///    and a previous lease's fans are back on automatic before new ones are taken — then
-    ///    refusing if § 3 is latched, then proving the helper can still see a temperature at
-    ///    all, and finally asking § 6's baseline whether anything outside Aeolus is holding
-    ///    a requested fan. The sweep runs **before** all of those deliberately: a lapsed
-    ///    lease's fans go back to automatic whether or not this machine is blind and whether
-    ///    or not it is too hot, and neither is a machine on which to skip a restore. The
-    ///    foreign-control question comes last of the four things suspended on — the
-    ///    enumeration, § 3's latch, the telemetry read and it, three of which are refusals —
-    ///    because it is the only one whose cost scales with the number of fans asked for.
-    ///    See `refuseIfForeignManualControl(_:wanting:)`.
+    /// 0. – 3. In this order: the build's own write capability, self-renewal, TTL and holder
+    ///    re-validation, then the suspension points (enumerate, sweep lapsed leases, § 3's
+    ///    latch, sightedness, foreign control). Why each sits where it does:
+    ///    handback-ledger.md § *"The order of `acquireLease`'s steps"*.
     /// 4. **The liveness check, after the last suspension point and immediately before
     ///    registering.** Everything from there to the `insert` is straight-line: the actor
     ///    cannot be re-entered between the check and the act it guards.
@@ -498,17 +447,9 @@ actor LeaseAuthority {
 
     /// Expires every lapsed lease and restores its fans.
     ///
-    /// **Takes no instant.** A caller cannot supply one, so no caller can supply a
-    /// wall-clock-derived one — ADR 0005's monotonic rule made inexpressible rather than
-    /// merely documented, which is the argument `AeolusXPCProtocol` makes for the messages
-    /// it does not have.
-    ///
-    /// **Nothing on the connection-invalidation path calls this, and it calls nothing on
-    /// that path.** That is the independence ADR 0005 requires: *"Either mechanism alone
-    /// suffices; both must fail for the fans to stay pinned; they share no code path."* The
-    /// one thing the two paths do share is their terminal action, and that is deliberate —
-    /// ADR 0007's keystone is that restore-to-automatic is a single bounds-free verb every
-    /// safety mechanism ends in.
+    /// Takes no instant, and shares no code path with connection invalidation beyond the
+    /// terminal action — the independence ADR 0005 requires.
+    /// handback-ledger.md § *"`expireLapsedLeases`: no instant, and no shared path"*.
     ///
     /// Entries are removed **before** the restore is awaited, so a call interleaving during
     /// the restore finds an empty table and cannot restore the same fans twice. The whole
@@ -517,16 +458,9 @@ actor LeaseAuthority {
     /// path here is written — handback-ledger.md § *"One restore call per sweep"* has the
     /// argument, and `TeardownSweepTripwireTests` makes a return to the per-entry shape fail.
     ///
-    /// - Warning: Removing before restoring is the whole of what that buys, and the empty
-    ///   table cuts both ways. An emptied table is exactly what makes `acquireLease`'s
-    ///   liveness check pass, so a new lease **can** be granted over a fan whose restore is
-    ///   still parked inside `FanRestoring`. Demonstrated against this code, not theorised.
-    ///   What holds it shut today is the capability gate alone — `SMCFanControlPlane` answers
-    ///   `.notBuilt`, so `HelperFanRestorer`'s restore verb throws before touching the
-    ///   firmware and no lease can be granted to race in the first place. **#102 owns the
-    ///   interlock** for when that stops being true, and the reclamation watchdog is a
-    ///   backstop for it rather than a substitute. The losing order, and why #163 narrowed
-    ///   this warning rather than closing it, are in the same section of that document.
+    /// - Warning: removing before restoring means an emptied table can admit a new lease over
+    ///   a fan whose restore is still in flight. Only the capability gate holds that shut today;
+    ///   #102 owns the interlock. handback-ledger.md § *"The warning on `expireLapsedLeases`"*.
     func expireLapsedLeases() async {
         let lapsed = table.removeLapsed(asOf: clock.now)
         guard !lapsed.isEmpty else { return }
@@ -572,13 +506,9 @@ actor LeaseAuthority {
 
     /// Drops every lease covering `fan`, whole, and returns all of their fans to automatic.
     ///
-    /// `docs/SAFETY.md` § 3's revocation, and the only teardown path here that is not a
-    /// lease *ending*: the TTL, connection death and a voluntary release are all a holder
-    /// running out of claim, while this is a claim being taken from a client that did
-    /// nothing wrong. That is why it carries its own `FanRestoreCause` rather than reusing
-    /// one — an operator reading `log show` must be able to tell "the client went away"
-    /// from "the machine got too hot", and a cause that cannot be named is a mechanism that
-    /// cannot be audited.
+    /// `docs/SAFETY.md` § 3's revocation: a claim taken from a client that did nothing wrong,
+    /// not a lease ending, hence its own `FanRestoreCause`.
+    /// handback-ledger.md § *"`revokeLeases` is a claim being taken, not a lease ending"*.
     ///
     /// **It does not consult the latch, and must not.** `ThermalEmergency` engages the latch
     /// before it writes and calls this afterwards, so a check here would be the same fact
@@ -609,46 +539,12 @@ actor LeaseAuthority {
 
     /// Revokes **every** live lease, whatever fans it covers.
     ///
-    /// `docs/SAFETY.md` § 3 selects on this rather than on the emergency's own registry of
-    /// engaged fans, and the difference is a defect an adversarial review found rather than
-    /// a preference. A client can hold a live lease **without having engaged manual control
-    /// yet** — acquisition and the first write are separate messages — and such a fan is
-    /// still on automatic, so it appears in no registry of engaged fans. An emergency that
-    /// revoked only what it had bridged would latch, take back nothing, and leave that
-    /// lease live; the client's next write would then engage a fan into an emergency that
-    /// has already fired.
-    ///
-    /// It also closes a window the lease core cannot close from its own side. The latch is
-    /// a *different actor*, so `refuseIfThermalEmergencyActive` reads it across a hop and
-    /// then awaits `refuseIfBlind`'s sightedness proof before the straight-line region
-    /// begins — the emergency can engage during that hop, and the grant proceeds. #134
-    /// narrowed the window without closing it: the proof is usually served from § 3's own
-    /// last reading now rather than from a fresh 34-key read, so it is an actor hop rather
-    /// than a hardware round trip, and a hop is still a window. No
-    /// re-check below the marker can fix that, because the hop back is itself a window
-    /// ([#95](https://github.com/blamechris/Aeolus/issues/95) is the same shape). What
-    /// closes it is the emergency taking back whatever it finds, every cycle it holds.
-    ///
-    /// **"Every cycle" includes the cycles that can see nothing**, which is the half that
-    /// was not true when this paragraph was written. `ThermalEmergency.cycle()` used to
-    /// return on a failed read before reaching any revocation, so a lease granted in the
-    /// window survived for as long as the SMC stayed quiet — and `renewLease` consults
-    /// neither the latch nor telemetry, so its holder renewed indefinitely. See
-    /// `ThermalEmergency.cycleSawNothing(_:)`, which is where the claim above is now
-    /// honoured, and [#152](https://github.com/blamechris/Aeolus/issues/152) for the rest.
-    /// The releasing branch reaches no revocation either, and needs none: it is the branch
-    /// on which § 3 has stopped holding.
-    ///
-    /// Deliberately **not** shared with `releaseEveryLease()`, which drops the same table
-    /// for § 7's panic verb. They are different actors — levels 1 and 2 — and
-    /// `LeaseTable`'s own selectors are written out for exactly this reason: a shared
-    /// predicate remover is the first step towards one mechanism wearing several names, and
-    /// an operator reading `log show` must be able to tell the panic path from § 3.
-    /// **It is lease-scoped and stays lease-scoped**, which is a decision worth writing down
-    /// now that `releaseEveryLease()` is not: § 3 is a mechanism *taking* fans in order to
-    /// cool the machine, not a recovery verb, and a fan whose handback was abandoned is one
-    /// it may need to command hardest. handback-ledger.md § *"Why `revokeEveryLease` is not
-    /// given the same sweep"*; `PanicPathScopeTripwireTests` holds the two verbs apart.
+    /// Selected by § 3 on every live lease, not on its registry of engaged fans: a client can
+    /// hold a lease before it has engaged manual control, and the emergency takes that back on
+    /// every cycle it holds, including cycles that read nothing (#134, #152). Lease-scoped, and
+    /// deliberately not shared with `releaseEveryLease()`.
+    /// handback-ledger.md § *"Why § 3 revokes every lease, and why it is not
+    /// `releaseEveryLease()`"*.
     func revokeEveryLease(because cause: FanRestoreCause) async {
         let revoked = table.removeAll()
         guard !revoked.isEmpty else { return }
@@ -679,33 +575,11 @@ actor LeaseAuthority {
     ///
     /// ## The sweep is the table **and** `restoreAbandoned`
     ///
-    /// [#189](https://github.com/blamechris/Aeolus/issues/189) is why, and the reason is not a
-    /// widening of scope for its own sake: an abandoned fan was **unreachable by every restore
-    /// this actor issues**, because every other teardown path derives its fans from table
-    /// entries and `acquireLease` refuses every fan in `restoreAbandoned`. It is this verb
-    /// rather than another because this verb is the recovery one — § 7 is what a user reaches
-    /// for when the fans are stuck, and `docs/RECOVERY.md` is the step after it.
-    /// `revokeEveryLease(because:)` is deliberately not given the same sweep — see there.
-    ///
-    /// **It touches nothing foreign, so ADR 0011 is intact**, and **one `restore` call for the
-    /// whole sweep is load-bearing here rather than uniform** — the sweep has two sources, so
-    /// a per-source shape would leave one of them outside `releasing` while the other's
-    /// restore was on the wire. Both, with the losing order spelled out:
-    /// handback-ledger.md § *"The panic sweep has two sources"*.
-    ///
-    /// **It does not make the message fail**, which is the reason the *machine-wide* restore
-    /// was declined here (#159): `restore(_:because:)` cannot throw, and a firmware that
-    /// refuses again simply leaves the refusal standing. So a v1 message that succeeds keeps
-    /// succeeding, and the contract does not move.
-    ///
-    /// **Consults no per-`ConnectionID` state**, which is the precondition
-    /// `HelperConnectionSession` documents for exempting that message from its teardown
-    /// gate: `connection` is attribution only, so both post-invalidation orderings converge
-    /// on the same safe state. Making this consult per-connection state would invalidate the
-    /// exemption and needs revisiting alongside it —
-    /// [#95](https://github.com/blamechris/Aeolus/issues/95).
-    /// **One `restore` call over the union is what makes § 4's record complete rather than
-    /// partial** (#202 item 4): handback-ledger.md § *"What the one call buys § 4"*.
+    /// Sweeps the table and `restoreAbandoned` (#189) in one `restore` call; touches nothing
+    /// foreign (ADR 0011); issues no machine-wide restore and never fails the message (#159);
+    /// and consults no per-`ConnectionID` state, the precondition for `HelperConnectionSession`'s
+    /// teardown-gate exemption (#95).
+    /// handback-ledger.md § *"`releaseEveryLease()`: what the sweep is, and what it is not"*.
     func releaseEveryLease() async {
         let dropped = table.removeAll()
         let fans = dropped.reduce(into: restoreAbandoned) { $0.formUnion($1.fanIndices) }
@@ -720,13 +594,9 @@ actor LeaseAuthority {
     /// Synchronous, and called *before* the teardown rather than after it, so there is no
     /// instant at which the table is empty and unsealed — which is the whole window. See
     /// `sleepSeal`.
-    /// A seal whose own wake has already been answered is **not** set: see
-    /// `latestWakeGeneration` for the ordering that produces one, and for why declining is
-    /// the safe direction here even though sealing is the safe direction everywhere else.
-    ///
-    /// Declining leaves any *newer* seal standing untouched, which is what makes overlapping
-    /// episodes safe: a late `.willSleep` from episode 1 cannot reopen the table that episode
-    /// 2 has already closed.
+    /// A seal whose own wake has already been answered is **not** set, and declining leaves
+    /// any newer seal standing.
+    /// handback-ledger.md § *"`sealForSleep`: declining a seal its wake already answered"*.
     ///
     /// - Parameter generation: the notification's place in the delivery order, stamped on
     ///   IOKit's serial queue — see `SystemPowerNotification.generation`.
@@ -794,13 +664,9 @@ actor LeaseAuthority {
     /// The lease a client is shown **and every fan Aeolus is accountable for**, read in one
     /// hop.
     ///
-    /// One hop rather than two, because two would answer from two views of this actor: a lease
-    /// reported live beside an empty fan set, and therefore a fan under Aeolus's own lease
-    /// reported as foreign control. It is `fansAeolusIsAccountableFor` rather than the lease's
-    /// own fans, and **since [#187](https://github.com/blamechris/Aeolus/issues/187) it carries
-    /// the three registers apart** as well as their union — the union cannot answer *"why would
-    /// a grant over this fan be refused?"*, and a snapshot that had only it reported a
-    /// mid-handback fan and an abandoned one alike as available.
+    /// One hop, so the lease and the fan sets it is reported beside come from one view of this
+    /// actor; since #187 it carries the three registers apart as well as their union.
+    /// handback-ledger.md § *"`activeLeaseView()`: one hop, and three registers apart"*.
     ///
     /// The grant path has always judged against this set; the snapshot asks the same question of
     /// the same state, in the same hop. Both wrong answers an earlier version gave, and why the
@@ -864,26 +730,16 @@ actor LeaseAuthority {
 
     /// Refuses the grant while `docs/SAFETY.md` § 3 is holding.
     ///
-    /// **A revoked holder is not silently re-granted.** The emergency revokes the whole
-    /// lease covering a fan it fired on, and the client's ordinary response to losing a
-    /// lease is to acquire another one — so without this, the mechanism would hand the fans
-    /// straight back to the workload that overheated the machine, on a cycle bounded only
-    /// by how fast the client retries. Resuming is a fresh `acquireLease`, and it is
-    /// refused until a fresh reading falls a hysteresis margin below the ceiling.
-    ///
-    /// `.thermalEmergencyActive` already exists in `AeolusXPCFault` — E2 built the
-    /// vocabulary before the mechanism, so this consumes a fault case rather than adding
-    /// one, and `AeolusXPCVersion` does not move.
+    /// A revoked holder is not silently re-granted: the refusal holds until a fresh reading
+    /// falls a hysteresis margin below the ceiling. It consumes `.thermalEmergencyActive`, so
+    /// `AeolusXPCVersion` does not move.
+    /// handback-ledger.md § *"`refuseIfThermalEmergencyActive`: a revoked holder is not
+    /// silently re-granted"*.
     ///
     /// ## Why it sits above the blindness check
     ///
-    /// Both are refusals and both are true when both apply, so the question is which fact
-    /// the client is told. This one, for two reasons. It is the more consequential — a
-    /// machine above its thermal ceiling is a worse thing to grant a lease on than a machine
-    /// whose sensors went quiet — and it is the only one of the two that costs no hardware
-    /// round trip, so a latched machine refuses without spending an SMC read it does not
-    /// need. The same reasoning `refuseIfBlind` gives for sitting above the concurrent-lease
-    /// refusal, one step further up.
+    /// The more consequential fact, and the only one of the two that costs no hardware round
+    /// trip. handback-ledger.md § *"Why the thermal refusal sits above the blindness check"*.
     private func refuseIfThermalEmergencyActive(_ connection: ConnectionID) async throws {
         guard await thermalEmergency.isActive else { return }
         log.refusedThermalEmergency(connection)
@@ -892,24 +748,18 @@ actor LeaseAuthority {
 
     /// Every fan the lease core answers for itself, so exempt from the foreign-control step.
     ///
-    /// Three registers, and each one has a **more precise** refusal further down the grant
-    /// path — which is the whole reason they are excluded rather than judged. `F<n>Md` reads
-    /// `1` for all three and names no owner, so without this a client would be told "another
-    /// program holds it" about a fan another *client* legitimately leases, one that is
-    /// mid-handback, and one Aeolus put into manual and could not take back.
-    /// `handbackUnconfirmed` is deliberately not a fourth union: it is a subset of
-    /// `releasing.keys` by its own invariant, so adding it would change no answer.
+    /// The lease `table`, `restoreAbandoned` and `releasing` each have a more precise refusal
+    /// further down the grant path, so they are excluded from the foreign-control step.
+    /// handback-ledger.md § *"`fansAeolusIsAccountableFor`: why these three are exempt"*.
     ///
     /// **Read by the snapshot as well as by the gate**, through `activeLeaseView()`. One
     /// definition, because two would disagree the moment either moved. The three refusals it
     /// stands in for, and what the disagreement looked like:
     /// handback-ledger.md § *"What the snapshot is told"*.
     ///
-    /// `internal` since #128 moved `refuseIfForeignManualControl(_:wanting:)` out. It is
-    /// **derived and read-only**, and `activeLeaseView()` — `internal`, and what the control
-    /// plane calls — already returns exactly this set, so the widening exposes nothing new.
-    /// The three registers it unions stay `private`: this is the union, not a way to reach
-    /// them.
+    /// `internal` since #128: derived and read-only, and `activeLeaseView()` already returns
+    /// this set. handback-ledger.md § *"`fansAeolusIsAccountableFor` is `internal`, and why that
+    /// exposes nothing"*.
     var fansAeolusIsAccountableFor: Set<Int> {
         table.fansUnderLease.union(restoreAbandoned).union(releasing.keys)
     }
