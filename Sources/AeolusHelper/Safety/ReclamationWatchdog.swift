@@ -31,9 +31,11 @@ import FanKit
 /// Reclamation mid-emergency means a more competent authority — one that can also throttle
 /// the SoC, which Aeolus never can — reached the same destination first.
 ///
-/// Enforced by asking `SafetyArbiter.ruling(for:incumbent:)` just before each write
-/// (`currentRuling()`), never by a second `if temperature > ceiling`. The latch over-refuses
-/// (safe) and leaves a one-cycle gap that `reassert(_:fanAt:attempt:)` closes by re-checking.
+/// Asked in `diverged(_:fanAt:)` before a re-assert and again by `reassert(_:fanAt:attempt:)`
+/// after its writes (`currentRuling()`, via `SafetyArbiter.ruling(for:incumbent:)`), never by a
+/// second `if temperature > ceiling`. The latch over-refuses (safe) but lags a ceiling crossing
+/// by up to one § 3 cycle, so a re-assert can still be issued into that cycle; the re-check
+/// after the writes undoes one the latch engaged underneath them.
 /// reclamation-watchdog.md § *"The above-ceiling rule is the arbiter, not an `if`"*.
 ///
 /// ## Reads are strictly sequential, and that is #134's answer for this issue
@@ -58,12 +60,14 @@ import FanKit
 /// starts it. No lease can be granted in this build, so nothing registers a fan here and every
 /// cycle returns at once. E3 owns registering fans and telling this actor what it commanded.
 ///
-/// - Note: every member below reads or writes `held`, so none can move to another file
-///   without widening it. The splits already taken, and the rationale relocated out of this
-///   file's doc comments, are recorded in
+/// - Note: everything below reads or writes `held`, `log`, `ledger`, `writer`, `sensing`,
+///   `leases` or `latch`, so none of it can move to another file without widening that
+///   state. The splits already taken, and the rationale relocated out of this file's doc
+///   comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
-///   The limit that binds next is this body's code (`type_body_length`), not the file's
-///   line count: new behaviour belongs in value types and the `EngagementDriver`
+///   Relocating prose cannot relieve `type_body_length`, which counts this body's code: about
+///   66 lines of headroom remain before its error at 350. New behaviour belongs in value
+///   types and the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
 ///   [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of this space.
 actor ReclamationWatchdog<Plane: FanControlPlane> {
@@ -135,8 +139,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// ## The ordering is normative: call this **after** the `F<n>Md` write has landed
     ///
     /// Register only after the `F<n>Md` write has landed. Registered first, a `cycle()` can read
-    /// `.modeReclaimed` on a fan with nothing commanded, restore it and revoke **every lease on
-    /// the machine** milliseconds after granting one.
+    /// `.modeReclaimed` on a fan with nothing commanded; once the registration grace runs out
+    /// (three divergent cycles) it restores the fan and revokes **every lease on the machine**.
     /// reclamation-watchdog.md § *"The ordering is normative: call this **after** the
     /// `F<n>Md` write has landed"*.
     ///

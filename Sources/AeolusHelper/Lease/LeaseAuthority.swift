@@ -17,9 +17,9 @@ import Foundation
 ///   all**, asked once per grant. This one can cost a real hardware round trip, and since
 ///   [#134](https://github.com/blamechris/Aeolus/issues/134) usually does not.
 ///
-/// The third arrived with #124 and is the only one that reads, so it is the slowest
-/// suspension point in `acquireLease`; since #134 it asks whether § 3 can see rather than
-/// reading the curated set now ([ADR 0010](../../../docs/ADR/0010-coalesced-supervisor-reads.md)).
+/// The third arrived with #124 and is a suspension point in `acquireLease` that an earlier
+/// version of this paragraph hid; since #134 it asks whether § 3 can see rather than reading
+/// the curated set now ([ADR 0010](../../../docs/ADR/0010-coalesced-supervisor-reads.md)).
 /// handback-ledger.md § *"Where this sits: the third role, and the swap from #134"*.
 ///
 /// **Still no write of any kind** — `SMCConnection.write` is SPI-gated and still
@@ -66,9 +66,9 @@ import Foundation
 /// `private` state `LeaseAuthorityAccessTests` holds — and #128 had already taken the one
 /// seam available without widening it.
 ///
-/// The limit that binds next is this body's code (`type_body_length`, an error at 350), not
-/// the file's line count: new behaviour belongs in value types and the `EngagementDriver`
-/// ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
+/// Relocating prose cannot relieve `type_body_length`, which counts this body's code: about 85
+/// lines of headroom remain before its error at 350. New behaviour belongs in value types and
+/// the `EngagementDriver` (ADR 0014), not in this actor.
 actor LeaseAuthority {
 
     private let clock: any MonotonicClock
@@ -664,8 +664,8 @@ actor LeaseAuthority {
     /// The lease a client is shown **and every fan Aeolus is accountable for**, read in one
     /// hop.
     ///
-    /// One hop, so the snapshot and the grant gate answer from one view of this actor; since
-    /// #187 it carries the three registers apart as well as their union.
+    /// One hop, so the lease and the fan sets it is reported beside come from one view of this
+    /// actor; since #187 it carries the three registers apart as well as their union.
     /// handback-ledger.md § *"`activeLeaseView()`: one hop, and three registers apart"*.
     ///
     /// The grant path has always judged against this set; the snapshot asks the same question of
@@ -748,9 +748,9 @@ actor LeaseAuthority {
 
     /// Every fan the lease core answers for itself, so exempt from the foreign-control step.
     ///
-    /// Each of the three registers has a more precise refusal further down the grant path, so
-    /// it is excluded from the foreign-control step rather than judged by it.
-    /// handback-ledger.md § *"`fansAeolusIsAccountableFor`: why the three registers are exempt"*.
+    /// The lease `table`, `restoreAbandoned` and `releasing` each have a more precise refusal
+    /// further down the grant path, so they are excluded from the foreign-control step.
+    /// handback-ledger.md § *"`fansAeolusIsAccountableFor`: why these three are exempt"*.
     ///
     /// **Read by the snapshot as well as by the gate**, through `activeLeaseView()`. One
     /// definition, because two would disagree the moment either moved. The three refusals it

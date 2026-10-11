@@ -54,14 +54,15 @@ rationale that had outgrown a doc comment moved into a document, and each declar
 summary and a pointer to the section here. No reasoning was deleted or reworded, and no line
 of code changed — the diff of `Sources/` for that change is comment lines only.
 
-## What binds next: the type body, not the file
+## The limit prose cannot relieve: the type body
 
 `type_body_length` counts **code** lines only. At the time of the relocation this actor's body
-spans 284 of them against a warning at 250 and an **error at 350**, so moving prose out of the
-file bought room under `file_length` and none under `type_body_length`. The next slices will
-spend the second budget, not the first.
+spans 284 of them against a warning at 250 and an **error at 350**: about 66 lines of headroom,
+and relocating prose cannot make more. `file_length` has not gone away either. At this file's
+present density, 2.9 lines per code line, it would error after roughly 55 new code lines, so
+which of the two limits is reached first depends on how much comment the new code carries.
 
-New behaviour for #9's A4 and A6 therefore belongs in the `EngagementDriver` that
+New behaviour for #9's A4 and A6 belongs in the `EngagementDriver` that
 [ADR 0014](../ADR/0014-apple-silicon-unlock.md) specifies, and in value types beside `HeldFan`
 — `HeldFan` is the pattern, a type that holds no state of the actor's and so can live in its
 own file — and not in this actor's body, which should keep only what has to touch `held`.
@@ -109,6 +110,15 @@ would leave it off automatic control indefinitely. Relying on another mechanism 
 up after this one was the wrong shape regardless; the correction belongs here, and
 `reassert(_:fanAt:attempt:)` performs it by re-checking the ruling **after** its writes
 and restoring if the latch engaged underneath them.
+
+> **Corrected 2026-10-11 ([#345](https://github.com/blamechris/Aeolus/pull/345)).** "Indefinitely" above is false.
+> `ThermalEmergency.fire(_:from:)` ends in `leases.revokeEveryLease(because: .thermalEmergency)`,
+> which drops every live lease and restores the fans they covered, and a fan this mechanism
+> re-engages is under a live lease: `examine(fanAt:)` hands back any fan that none covers
+> (ADR 0009 D2). So the cycle that fires hands such a fan back even though no registry § 3
+> bridges holds it. What stands is the rest of the paragraph: relying on another mechanism to
+> clean up after this one was the wrong shape, and `reassert(_:fanAt:attempt:)` still performs
+> its own undo after the writes.
 
 ## Reads are strictly sequential, and that is #134's answer for this issue
 
@@ -167,6 +177,11 @@ lease on the machine revoked**, and a `.fault` line blaming the operating system
 milliseconds after a client was granted control it never got to use.
 `ReclamationWatchdogRecoveryTests.aFanWithNoCommandedTargetIsRestored` and
 `fallingBackClearsTheWholeRegistry` are that path, arrived at on purpose.
+
+> **Corrected 2026-10-11 ([#345](https://github.com/blamechris/Aeolus/pull/345)).** "Milliseconds after" predates the registration
+> grace, which the next section describes: a cycle landing in this window is graced for
+> `ReclamationLimits.blindCyclesBeforeDivergence` (three) cycles, so the restore and the
+> revocation arrive on the third divergent cycle rather than the first.
 
 ## The far side of the write is not free either, and the grace is what pays for it
 

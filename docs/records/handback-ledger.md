@@ -598,13 +598,15 @@ The same change re-attached a doc paragraph that had come loose from `latestWake
 (a `///` block followed by a blank line and then by the doc comment of `sealGeneration`, so it
 was attached to neither); it is unchanged and sits under that declaration again.
 
-### What binds next: the type body, not the file
+### The limit prose cannot relieve: the type body
 
 `type_body_length` counts **code** lines only. At the time of the relocation this actor's body
-spans 265 of them against a warning at 250 and an **error at 350**, so moving prose out of the
-file bought room under `file_length` and none under `type_body_length`.
+spans 265 of them against a warning at 250 and an **error at 350**: about 85 lines of headroom,
+and relocating prose cannot make more. `file_length` has not gone away either. At this file's
+present density, 3.1 lines per code line, it would error after roughly 48 new code lines, so
+which of the two limits is reached first depends on how much comment the new code carries.
 
-New behaviour for #9's A4 and A6 therefore belongs in the `EngagementDriver` that
+New behaviour for #9's A4 and A6 belongs in the `EngagementDriver` that
 [ADR 0014](../ADR/0014-apple-silicon-unlock.md) specifies, and in value types beside
 `LeaseTable` and `ConnectionTombstones` — which hold the table and the tombstones as values, so
 that no reference escapes and the actor decides in one straight-line region — and not in this
@@ -882,9 +884,9 @@ round trip, so a latched machine refuses without spending an SMC read it does no
 need. The same reasoning `refuseIfBlind` gives for sitting above the concurrent-lease
 refusal, one step further up.
 
-### `fansAeolusIsAccountableFor`: why the three registers are exempt
+### `fansAeolusIsAccountableFor`: why these three are exempt
 
-*From the doc comment of `fansAeolusIsAccountableFor`.*
+*From the doc comment of `fansAeolusIsAccountableFor`. The "three registers" here are the lease `table`, `restoreAbandoned` and `releasing`; elsewhere in this document "the three registers" are `releasing`, `handbackUnconfirmed` and `restoreAbandoned`.*
 
 Three registers, and each one has a **more precise** refusal further down the grant
 path — which is the whole reason they are excluded rather than judged. `F<n>Md` reads
