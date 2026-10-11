@@ -58,7 +58,9 @@ of code changed — the diff of `Sources/` for that change is comment lines only
 
 `type_body_length` counts **code** lines only. At the time of the relocation this actor's body
 spans 284 of them against a warning at 250 and an **error at 350**: about 66 lines of headroom,
-and relocating prose cannot make more. `file_length` has not gone away either. At this file's
+and relocating prose cannot make more. [#181](https://github.com/blamechris/Aeolus/issues/181)
+spent ten of them routing the re-assert and every hand-back through ADR 0014's
+`EngagementDriver`, which holds the rest of that behaviour: 294, and about 56 left. `file_length` has not gone away either. At this file's
 present density, 2.9 lines per code line, it would error after roughly 55 new code lines, so
 which of the two limits is reached first depends on how much comment the new code carries.
 
@@ -119,6 +121,12 @@ and restoring if the latch engaged underneath them.
 > bridges holds it. What stands is the rest of the paragraph: relying on another mechanism to
 > clean up after this one was the wrong shape, and `reassert(_:fanAt:attempt:)` still performs
 > its own undo after the writes.
+>
+> **Superseded by [#181](https://github.com/blamechris/Aeolus/issues/181).** The re-assert now
+> engages through ADR 0014's `EngagementDriver`, which calls `ThermalEmergency.manualControlEngaged(_:)`
+> when the mode write reads back engaged — so a fan this mechanism re-engaged *is* in the registry
+> § 3 bridges, and stays there when the undo is refused. The undo after the writes is still this
+> mechanism's own; the registration is the second chance ADR 0009 D1 names.
 
 ## Reads are strictly sequential, and that is #134's answer for this issue
 

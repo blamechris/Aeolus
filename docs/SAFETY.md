@@ -82,8 +82,8 @@ strongly than the source does. This document was amended to match in #119; the p
 that changed say so, in place, rather than quietly reading as though they had always said
 it. ADR 0007 is still `Proposed`, as are ADR 0006, ADR 0008 and
 [ADR 0009](ADR/0009-precedence-at-the-write.md) — the middle one implemented and merged, the
-last one implemented but for D1's second pre-write ruling (#181) — so that field lags practice
-here rather than signalling doubt.
+last one implemented in full since #181 — so that field lags practice here rather than
+signalling doubt.
 
 ---
 
@@ -1015,16 +1015,17 @@ forever, so nothing revisits it.
 
 The window is narrowed rather than shut, and the bolded sentence above is worded to say so
 rather than to reassure. ADR 0009 prescribes a second precedence read after the envelope read
-and before manual control is re-engaged; **that read did not ship**, so § 3 can still latch
-during the envelope read and both writes will land above the ceiling. What corrects it is the
-check *after* the writes, which restores the fan in the safe direction — acting and then
-checking, because the check cannot be made atomic with the act across two actors. The residual
-that leaves is disclosed rather than rounded off: the undo is itself a restore, a restore can
-be refused, and a refused undo leaves the fan pinned with a log line and no mechanism watching
-it — § 3's registry is not told about the re-assert either.
-[#181](https://github.com/blamechris/Aeolus/issues/181) carries all three — the missing read,
-the § 3 registration, and the refused undo — and ADR 0009's "As built, and what did not land"
-section is the audit of which parts of that ruling are in the tree.
+and before manual control is re-engaged; since
+[#181](https://github.com/blamechris/Aeolus/issues/181) it is ADR 0014's `EngagementDriver`
+that asks it — before every step of the mode write, and before the command of a fan still in
+manual — so § 3 latching during the envelope read refuses the re-assert before it writes. What
+covers a latch after that is the check *after* the writes, which restores the fan in the safe
+direction — acting and then checking, because the check cannot be made atomic with the act
+across two actors. The undo is itself a restore and can be refused; what covers that is the
+driver registering the fan with § 3 before its after-check, so a fan whose undo was refused
+stays in the registry § 3's next latched cycle bridges, until a read confirms it automatic.
+ADR 0009's "As built, and what did not land" section is the audit of which parts of that ruling
+are in the tree.
 
 **A write away from the safe state requires a live lease, checked at every examination.**
 ADR 0009's second ruling, built in [#342](https://github.com/blamechris/Aeolus/pull/342)
