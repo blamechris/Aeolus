@@ -47,6 +47,11 @@ struct HelperRestorerTests {
     /// paraphrased composition is the defect #163 exists to end, and it would be a strange
     /// place to reintroduce it.
     ///
+    /// `safetyLog` and `afterwards` are the same kind of parameter, for
+    /// `FinaliseReleaseLedgerTests` (#346): it reads what § 5 logged about the ledger, and its
+    /// blind scenario moves the firmware to a stage that stops answering once the lease is held.
+    /// The nominal stage is always first, so a grant's sightedness proof is unaffected.
+    ///
     /// **Fan 0 starts automatic, and it used to start `.held(at: 2_400)`.** That fixture
     /// meant "the firmware reports fan 0 in manual", which since #164 is a statement with
     /// consequences: startup reconciliation restores such a fan, and `acquireLease` refuses
@@ -60,14 +65,16 @@ struct HelperRestorerTests {
     static func composed(
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
         clock: some MonotonicClock = SystemMonotonicClock(),
-        snapshotProvider: some SensorProvider = fanProvider(fanCount: 1)
+        snapshotProvider: some SensorProvider = fanProvider(fanCount: 1),
+        safetyLog: SafetyLog = HelperRestorerTests.safetyLog,
+        afterwards: [ScriptedControlPlane.Stage] = []
     ) -> HelperComposition<ScriptedControlPlane> {
         HelperComposition(
             plane: ScriptedControlPlane(
                 fans: [0: .automatic(at: 2_400)],
                 stages: [
                     .nominal(temperatures: LeaseFixture.nominalDieTemperatures, writes: writes)
-                ]),
+                ] + afterwards),
             snapshotProvider: snapshotProvider,
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
