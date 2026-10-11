@@ -278,9 +278,9 @@ round-trip trigger at one of its reads, before the restore.)
 | Constant | Value | Bounds | Derivation |
 |---|---|---|---|
 | **D** | 5 s (provisional, reads only) | One stamped round trip. | About 437× the worst of 912,000 measured reads (11.45 ms; the four conditions in H1, [#296](https://github.com/blamechris/Aeolus/issues/296)). |
-| **D_cycle** | 3·D = 15 s | No completed § 3 cycle, while armed. | At least the interval (1 s), plus timer slop (0.1 s), plus D, plus the allowance at the design point of 12 outstanding supervisor reads (576 round trips × 11.453 ms = 6.60 s): 12.70 s. See below. |
-| **D_bringUp** | `ReconciliationLimits.budget` + 2·D = 15 s | Arming to `ThermalSupervisor.start()`. | The reconciliation budget (5 s) plus 2·D. Independent of the outstanding-read count: no client can reach the helper before `listener.resume()`. |
-| **G** | 2·D = 10 s, per parked waiter | [#135](https://github.com/blamechris/Aeolus/issues/135)'s gate-waiter `.fault`. | Must exceed the longest supervisor wait at the design point (a 3-key mode read behind both critical reads: the allowance less the cycle's writes and its own keys, 543 round trips × 11.453 ms = 6.22 s; corrected in PR C from 512 and 5.86 s, which counted § 3's own read as the worst waiter) and stay below D_cycle − interval − 2 ticks (12 s). Suppressed while a stamp is older than one tick. |
+| **D_cycle** | 3·D = 15 s | No completed § 3 cycle, while armed. | At least the interval (1 s), plus timer slop (0.1 s), plus D, plus the allowance at the design point of 12 outstanding supervisor reads (596 round trips × 11.453 ms = 6.83 s, re-run for ADR 0014's write turns; 576 and 6.60 s before them): 12.93 s. See below. |
+| **D_bringUp** | `ReconciliationLimits.budget` + 2·D = 15 s | Arming to `ThermalSupervisor.start()`. | The reconciliation budget (5 s) plus 2·D. Independent of the outstanding-read count: no client can reach the helper before `listener.resume()`. Re-checked for ADR 0014 D5's preparation step, which runs before reconciliation: at most 24 round trips for ten fans (0.27 s), inside the 2·D margin with a whole D to spare. |
+| **G** | 2·D = 10 s, per parked waiter | [#135](https://github.com/blamechris/Aeolus/issues/135)'s gate-waiter `.fault`. | Must exceed the longest supervisor wait at the design point (a reader behind both critical reads: the allowance less the cycle's writes and its own turn, 561 round trips × 11.453 ms = 6.43 s since ADR 0014's write turns, 543 and 6.22 s before them; corrected in PR C from 512 and 5.86 s, which counted § 3's own read as the worst waiter) and stay below D_cycle − interval − 2 ticks (12 s). Suppressed while a stamp is older than one tick. |
 | **Tick** | 1 s | The watchdog's timer, a `.strict` `DispatchSourceTimer`. | A verdict needs two over-bound ticks, so it lands at most two ticks after the bound is crossed. |
 
 **A verdict needs two consecutive over-bound ticks on the same sequence** (the same round-trip
@@ -304,17 +304,29 @@ supervisor reads first-come first-served, in turns of at most `maxKeysPerTurn` (
 forces a snapshot turn after every `maxConsecutiveOvertakes` (2) of them, so the allowance a
 cycle has to survive, in round trips, is
 
-> 64 + 34 + 3·(N − 2) + 64·(⌊(N − 1)/2⌋ + 1) + 34 + 30
+> 64 + 34 + 5·(N − 2) + 64·(⌊(N − 1)/2⌋ + 1) + 34 + 30
 
 term by term: **64**, the turn already in flight; **34**, the grant path's curated critical read
-(single-flight); **3·(N − 2)**, the other outstanding readers' mode reads (`readControlState`,
-three keys each); **64·(⌊(N − 1)/2⌋ + 1)**, the snapshot turns the overtake quota forces; **34**,
+(single-flight); **5·(N − 2)**, the other outstanding readers' turns, each taken at the longest a
+reader may take; **64·(⌊(N − 1)/2⌋ + 1)**, the snapshot turns the overtake quota forces; **34**,
 § 3's own read; **30**, a firing cycle's writes and read-backs on two fans. Every round trip is taken at the
 measured worst, as everywhere in this ADR.
-At N = 12 that is 576 round trips, and at the measured worst of 11.453 ms each, 6.60 s. Adding the
-interval, the slop and D gives **12.70 s**, which 15 s clears. At N = 16 the allowance is 716
-round trips (8.20 s) and the requirement 14.30 s; at N = 17 it is 783 (8.97 s) and 15.07 s. **15 s
-holds for N ≤ 16.**
+
+**The reader term was 3·(N − 2) — every other reader a 3-key mode read — until ADR 0014 D7 gave
+writes turns, and it was re-run in the change that added them** (slice A4 of
+[#9](https://github.com/blamechris/Aeolus/issues/9)), as the paragraph below requires. D7's
+longest write turn is an engagement's first step on the force-key path: the raw `F<n>Md`
+pre-state, a fresh key info, the mode write, the force key's key info and its write — five
+round trips (`WatchdogLimits.writeTurnRoundTrips`). A Y-write and a `commandTarget` take three;
+a restore takes one write per key and no read, three on `Mac16,5` for the machine-wide one. One
+engagement in progress is one outstanding reader while it waits for a turn and none while it
+sleeps between steps, so writes enter N as readers with a longer turn, not as new readers.
+
+At N = 12 that is 596 round trips, and at the measured worst of 11.453 ms each, 6.83 s. Adding the
+interval, the slop and D gives **12.93 s**, which 15 s clears. At N = 16 the allowance is 744
+round trips (8.52 s) and the requirement 14.62 s; at N = 17 it is 813 (9.31 s) and 15.41 s. **15 s
+holds for N ≤ 16**, as it did before the re-run (576, 716 and 783 round trips; 12.70, 14.30 and
+15.07 s).
 
 **Above the design point, the cycle trigger firing is the correct outcome**: the helper ends and
 the fans return to automatic, which is the safe direction. It is not a safety precondition to
@@ -532,10 +544,11 @@ acceptance criteria.
   priority, the age and the queue depth, and **the helper does nothing more**. A gate that never
   turns starves § 3 behind it, which is the case D_cycle already ends, so the fault is the
   diagnosis and the cycle trigger is the action. G = 2·D = 10 s sits above the longest legal
-  supervisor wait at the design point (6.22 s: a 3-key mode read that arrived last, behind both
-  34-key critical reads, 543 round trips) and below D_cycle − interval − 2 ticks (12 s); it holds
-  for up to 20 outstanding supervisor reads on `Mac16,5` (a wait of 9.43 s), and fails at 21
-  (10.19 s). Past that the line is logged for a queue that is long and moving, and it says so.
+  supervisor wait at the design point (6.43 s: a reader that arrived last, behind both 34-key
+  critical reads, 561 round trips; 6.22 s and 543 before ADR 0014's write turns) and below
+  D_cycle − interval − 2 ticks (12 s); it holds for up to 20 outstanding supervisor reads on
+  `Mac16,5` (a wait of 9.82 s), and fails at 21 (10.61 s). Past that the line is logged for a
+  queue that is long and moving, and it says so.
   The first draft's G = D was under the first side. **The snapshot priority's waiter is not
   derived:** it waits behind the other snapshot clients' turns as well, 64 round trips each, so
   on the order of a dozen concurrent snapshot clients outlast G with nothing wrong. The wait is computed

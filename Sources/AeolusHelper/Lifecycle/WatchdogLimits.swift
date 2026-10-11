@@ -30,7 +30,9 @@ enum WatchdogLimits {
 
     /// **D_bringUp**: from arming to `ThermalSupervisor.start()`. The reconciliation budget
     /// plus 2·D, and independent of how many reads are outstanding: no client can reach the
-    /// helper before `listener.resume()`.
+    /// helper before `listener.resume()`. It also covers the write path's preparation step,
+    /// which runs before reconciliation (ADR 0014 D5): at most 24 round trips for ten fans,
+    /// checked in `WatchdogLimitsTests` against the margin with a whole D to spare.
     static let bringUpBound: Duration = ReconciliationLimits.budget + roundTrip * 2
 
     /// **G**, 2·D: a scheduler waiter parked at the gate for longer than this, with no stamped
@@ -43,11 +45,12 @@ enum WatchdogLimits {
     /// `WatchdogLimitsTests`):
     ///
     /// - *Above* the longest legal **supervisor** wait at the design point of 12 supervisor reads
-    ///   outstanding, 6.22 s at the measured worst round trip: a 3-key mode read that arrived
-    ///   last, behind both 34-key critical reads, 543 round trips (see `gateWaitRoundTrips`). A
-    ///   gate fault below that would be logged for a queue that is full and moving. (The first
-    ///   draft set G = D = 5 s, under it.) It holds for up to 20 outstanding reads and fails at 21
-    ///   (10.19 s). **The snapshot priority's waiter is not derived:** it waits behind the other
+    ///   outstanding, 6.43 s at the measured worst round trip: a reader that arrived last, behind
+    ///   both 34-key critical reads and ten write turns, 561 round trips (see
+    ///   `gateWaitRoundTrips`). A gate fault below that would be logged for a queue that is full
+    ///   and moving. (The first draft set G = D = 5 s, under it.) It holds for up to 20
+    ///   outstanding reads and fails at 21 (10.61 s). **The snapshot priority's waiter is not
+    ///   derived:** it waits behind the other
     ///   snapshot clients' turns as well (64 round trips each), so enough concurrent snapshot
     ///   clients can outlast G with a queue that is full and moving.
     /// - *Below* D_cycle less the supervisor's interval and two ticks, 12 s: the fault has to be
@@ -88,6 +91,22 @@ enum WatchdogLimits {
     /// `acquireLease` or `restoreAllToAutomatic`.
     static let modeReadKeys = 3
 
+    /// The longest write turn [ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md) D7
+    /// allows: an engagement's first step on the force-key path — the raw `F<n>Md` pre-state,
+    /// a fresh key info, the mode write, the force key's key info and its write. A Y-write or a
+    /// `commandTarget` is three (key info, write, read-back); a restore issues no read and is
+    /// one write per key, three on `Mac16,5` for the machine-wide one and five for four fans.
+    ///
+    /// **One engagement in progress is one outstanding supervisor reader while it waits for a
+    /// turn, and none while it sleeps between steps**, so D7's writes enter N as readers whose
+    /// turn is this long rather than as new readers.
+    static let writeTurnRoundTrips = 5
+
+    /// The longest turn any outstanding supervisor reader takes: a mode read, or a write turn.
+    /// The allowance takes every other reader at this, which is the change ADR 0014 D7 asked
+    /// ADR 0012's arithmetic to re-run for.
+    static let readerTurnRoundTrips = max(modeReadKeys, writeTurnRoundTrips)
+
     /// A firing cycle's writes and read-backs on two fans (ADR 0012, "Outstanding reads, and
     /// why D_cycle is 15 s"): the last term of the allowance, taken at the same worst case.
     static let firingCycleRoundTrips = 30
@@ -95,11 +114,13 @@ enum WatchdogLimits {
     /// The round trips a § 3 cycle may have to wait behind, with `outstandingReads` readers
     /// outstanding (ADR 0012, "Outstanding reads, and why D_cycle is 15 s"):
     ///
-    /// > 64 + 34 + 3·(N − 2) + 64·(⌊(N − 1)/2⌋ + 1) + 34 + 30
+    /// > 64 + 34 + 5·(N − 2) + 64·(⌊(N − 1)/2⌋ + 1) + 34 + 30
     ///
     /// the turn already in flight; the grant path's curated critical read; the other readers'
-    /// mode reads; the snapshot turns the overtake quota forces; § 3's own read; and a firing
-    /// cycle's writes and read-backs.
+    /// turns, each taken at the longest a reader may take (`readerTurnRoundTrips`: a write turn,
+    /// since ADR 0014 — it was `3·(N − 2)`, mode reads only, before writes took turns); the
+    /// snapshot turns the overtake quota forces; § 3's own read; and a firing cycle's writes
+    /// and read-backs.
     ///
     /// `criticalReadKeys` is the size of the machine's curated critical set
     /// (`CriticalSensorSet.keys.count`: 34 on `Mac16,5`). It is a parameter and not a literal
@@ -107,11 +128,11 @@ enum WatchdogLimits {
     static func allowanceRoundTrips(outstandingReads: Int, criticalReadKeys: Int) -> Int {
         let turnInFlight = maxKeysPerTurn
         let grantPathRead = criticalReadKeys
-        let otherModeReads = modeReadKeys * max(outstandingReads - 2, 0)
+        let otherReaders = readerTurnRoundTrips * max(outstandingReads - 2, 0)
         let forcedSnapshotTurns =
             maxKeysPerTurn * (max(outstandingReads - 1, 0) / maxConsecutiveOvertakes + 1)
         let ownRead = criticalReadKeys
-        return turnInFlight + grantPathRead + otherModeReads + forcedSnapshotTurns + ownRead
+        return turnInFlight + grantPathRead + otherReaders + forcedSnapshotTurns + ownRead
             + firingCycleRoundTrips
     }
 
@@ -121,17 +142,18 @@ enum WatchdogLimits {
     /// ahead of nobody. The waiter's own read is not ahead of itself, and which waiter is worst
     /// depends on the machine:
     ///
-    /// - a **mode read** that arrived last (`modeReadKeys` round trips) is behind *both* critical
-    ///   reads, the grant path's and § 3's, so only its own keys come off the allowance;
+    /// - a **reader** that arrived last (`readerTurnRoundTrips`, as the allowance counts it) is
+    ///   behind *both* critical reads, the grant path's and § 3's, so only its own turn comes
+    ///   off the allowance;
     /// - **§ 3's own read** (`criticalReadKeys` round trips) is behind the grant path's but not
     ///   its own, so its own keys come off.
     ///
-    /// On `Mac16,5` (34 keys) the mode read is 31 round trips longer; on a machine with a
-    /// shorter set than a mode read, § 3's read is. The longer of the two is the bound.
+    /// On `Mac16,5` (34 keys) the reader's wait is 29 round trips longer; on a machine with a
+    /// shorter set than a reader's turn, § 3's read is. The longer of the two is the bound.
     static func gateWaitRoundTrips(outstandingReads: Int, criticalReadKeys: Int) -> Int {
         let allowance = allowanceRoundTrips(
             outstandingReads: outstandingReads, criticalReadKeys: criticalReadKeys)
-        return allowance - firingCycleRoundTrips - min(modeReadKeys, criticalReadKeys)
+        return allowance - firingCycleRoundTrips - min(readerTurnRoundTrips, criticalReadKeys)
     }
 
     /// What G must be more than: the longest legal wait at the gate, at the measured worst round
