@@ -60,7 +60,7 @@ import Foundation
 ///   verbatim, so the helper's control plane composes it with one-line forwards."*
 /// - `apply` — authorises, then refuses. There is no control loop to apply anything with.
 /// - `restoreAllToAutomatic` — § 7's panic verb: every lease, then the machine-wide restore on
-///   a plane that can write, then the read-back.
+///   a plane that can write, then the read-back, with every grant refused until all three end.
 struct SupervisedFanAuthority: FanAuthority {
 
     /// The snapshot path, unchanged: `SMCFanEnumeration`, the discovered sensor set, and
@@ -267,7 +267,14 @@ struct SupervisedFanAuthority: FanAuthority {
     ///    handback the firmware accepted. It comes **after** the keystone, never before it: a
     ///    read queued ahead of a keystone holds it for as long as the read takes (ADR 0007's
     ///    2026-09-20 amendment). With no keystone behind it, a read that never returns holds
-    ///    this client's reply and nothing else.
+    ///    this client's reply and the grant seal below — every grant refused, the safe
+    ///    direction — and no restore.
+    ///
+    /// **All three run inside `LeaseAuthority.sealingGrants(during:)`**
+    /// ([#350](https://github.com/blamechris/Aeolus/issues/350)), from before the sweep empties
+    /// the table until after the read-back, and `acquireLease` refuses `.releaseInProgress` for
+    /// as long as it is open. So no lease is granted that the restore in flight would undo. The
+    /// seal gates grants only: the restore reads nothing from it and waits on nothing new.
     ///
     /// **The reply is v1's "accepted" in every case, so `AeolusXPCVersion` does not move.** A
     /// refused machine-wide restore is caught here — explicitly, never with `try?` — and logged
@@ -281,27 +288,31 @@ struct SupervisedFanAuthority: FanAuthority {
     ///
     /// **This paragraph is the one place that decision lives, and `PanicPathScopeTripwireTests`
     /// is what makes that structural.** It fails when the body below stops naming the three acts
-    /// in this order, or stops gating the second on `.built`, and its message is the list of
-    /// documentation that describes this verb's scope — the sites that once said it restored
-    /// every fan when it did not ([#228](https://github.com/blamechris/Aeolus/issues/228),
+    /// in this order inside the seal, or stops gating the second on `.built`, and its message is
+    /// the list of documentation that describes this verb's scope — the sites that once said it
+    /// restored every fan when it did not ([#228](https://github.com/blamechris/Aeolus/issues/228),
     /// [#222](https://github.com/blamechris/Aeolus/issues/222)).
     func restoreAllToAutomatic(from connection: ConnectionID) async throws {
-        await leases.releaseEveryLease()
-        var machineWide = HelperLog.MachineWideRestore.noWritePath
-        if writeCapability.writeCapability == .built {
-            do {
-                try await keystone.restoreToAutomatic(.everyFan)
-                machineWide = .accepted
-            } catch {
-                log.panicRestoreRefused(connection: connection, detail: String(describing: error))
-                machineWide = .refused
+        let machineWide = await leases.sealingGrants {
+            await leases.releaseEveryLease()
+            var machineWide = HelperLog.MachineWideRestore.noWritePath
+            if writeCapability.writeCapability == .built {
+                do {
+                    try await keystone.restoreToAutomatic(.everyFan)
+                    machineWide = .accepted
+                } catch {
+                    log.panicRestoreRefused(
+                        connection: connection, detail: String(describing: error))
+                    machineWide = .refused
+                }
             }
+            // #291: the read-back that lifts a refusal whose handback the firmware just
+            // accepted. A read, never a write, and here rather than inside the teardown because
+            // this verb queues no keystone behind it — its own is issued above, ahead of the
+            // read. See `LeaseAuthority.confirmAcceptedHandbacks()`.
+            await leases.confirmAcceptedHandbacks()
+            return machineWide
         }
-        // #291: the read-back that lifts a refusal whose handback the firmware just accepted.
-        // A read, never a write, and here rather than inside the teardown because this verb
-        // queues no keystone behind it — its own is issued above, ahead of the read. See
-        // `LeaseAuthority.confirmAcceptedHandbacks()`.
-        await leases.confirmAcceptedHandbacks()
         log.restoredAllToAutomatic(connection: connection, machineWide: machineWide)
     }
 

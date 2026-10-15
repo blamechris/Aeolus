@@ -101,6 +101,9 @@ struct LeaseAuthorityAccessTests {
         // table open across a sleep without ever touching `sleepSeal` itself (#202 item 1).
         "var latestWakeGeneration: UInt64 = 0",
         "var sealGeneration: UInt64 = 0",
+        // § 7's grant seal (#350). Writable from elsewhere, it could reopen the gate under a
+        // panic verb still restoring, or close it for the life of the process.
+        "var machineWideRestoresInFlight = 0",
         "static let invalidatedInFlight",
         "func restore(_ fans: Set<Int>, because cause: FanRestoreCause) async {",
         "func refuseIfInvalidated(_ connection: ConnectionID) throws {",
@@ -204,6 +207,12 @@ struct LeaseAuthorityAccessTests {
         "recordUnconfirmedHandbacks()",
         "activeLease()",
         "activeLeaseView()",
+        // #350's. It runs a caller's closure with the grant gate sealed, and it can only seal:
+        // the count is private, the increment and decrement are paired in its own frame, and
+        // nothing it is handed can reach `table` or `restore(_:because:)` except through the
+        // internal methods already listed here. A caller elsewhere in the module can refuse
+        // grants for as long as its closure runs — the safe direction — and nothing more.
+        "sealingGrants(during: @Sendable () async -> Outcome)",
         "holdsTombstone(for: ConnectionID)",
         "bind(emergencyRestores: some EmergencyRestoreConfirming)",
     ]
