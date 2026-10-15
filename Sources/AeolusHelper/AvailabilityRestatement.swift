@@ -7,7 +7,7 @@ import FanKit
 //
 // Same trade as `LeaseAuthorityRefusals.swift`, and cheaper: `ReadOnlyFanReport` is a
 // namespace of pure functions with no state, so nothing widens with the move. The one member
-// that stayed behind is `availability(whenLedgerSays:writeCapabilityIs:bounds:)`, because
+// that stayed behind is `availability(writeCapabilityIs:bounds:)`, because
 // `fanState(for:reclamation:mode:writeCapability:)` calls it and it is `private`.
 //
 // ## The availability ladder, in one place
@@ -19,6 +19,17 @@ import FanKit
 // Anything else is `CLAUDE.md` rule 6 — a screen offering control that the click cannot get,
 // or refusing control the helper would in fact grant.
 //
+// **The rule has a corollary, and it binds both sides**
+// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s 2026-10-15 amendment): a grant
+// refusal, and the availability that mirrors it, is computed from **current evidence the grant
+// path consults**. A diagnosis of something that already happened is a fact, and is reported as
+// one. § 5's ledger is that kind of fact — `FanState.isReclaimedBySystem`, the fault log, the
+// lease it ended — and is never a rung here
+// ([#355](https://github.com/blamechris/Aeolus/issues/355)). A refusal that no read can clear
+// seals its own exit: the only events that clear the ledger need the lease it would refuse. On
+// the grant side the same rule is why `.boundsImplausible`, current evidence re-read on every
+// snapshot, belongs in the grant ([#270](https://github.com/blamechris/Aeolus/issues/270)).
+//
 // Highest first, with the step that produces each:
 //
 // | # | Reason | Produced by |
@@ -26,13 +37,15 @@ import FanKit
 // | 1 | `.restoreToAutomaticFailed` | `reportingHandbackState` — § 4/§ 5's durable register |
 // | 2 | `.handbackUnconfirmed` | `reportingHandbackState` — § 4's budget expired |
 // | 3 | `.releaseInProgress` | `reportingHandbackState` — a restore on the wire |
-// | 4 | `.supervisorBlind` | `availability(whenLedgerSays:…)` — § 5's ledger |
 // | 5 | § 6's durable refusal (not over step 6), then `.foreignManualControl` | § 6's baseline |
 // |   | … or `.restoreToAutomaticUnconfirmed`, for a fan § 3 keeps (#303) | § 3's kept set |
-// | 6 | `.writePathNotBuilt` | `availability(whenLedgerSays:…)` — the seam's capability |
-// | 7 | `.reclaimedBySystem` | `availability(whenLedgerSays:…)` — § 5's ledger |
-// | 8 | `.boundsImplausible` | `availability(whenLedgerSays:…)` — § 2's gate |
+// | 6 | `.writePathNotBuilt` | `availability(writeCapabilityIs:bounds:)` — the seam |
+// | 8 | `.boundsImplausible` | `availability(writeCapabilityIs:bounds:)` — § 2's gate |
 // | 9 | `.available` | nothing refused |
+//
+// **Steps 4 and 7 were § 5's ledger** — `.supervisorBlind` and `.reclaimedBySystem` — until
+// #355 removed them. The numbers are kept so that every reference to steps 5, 6 and 8 still
+// names the same rung.
 //
 // **Steps 1–3 and step 5 cannot both apply, so their relative order is not load-bearing and
 // is not relied on.** Every fan in one of the three handback registers is in
@@ -132,13 +145,15 @@ extension ReadOnlyFanReport {
     /// subset invariant, so without this ordering a client would be told *"retry in a moment"*
     /// about a restore that has already outlived a five-second budget.
     ///
-    /// ## It overwrites `.supervisorBlind`, and that is the one precedence this changes
+    /// ## What it overwrites
     ///
-    /// A fan § 5 went blind on, whose restore then failed, is in both the ledger and
-    /// `restoreAbandoned` — and `acquireLease` answers `.restoreToAutomaticFailed` for it. The
-    /// blindness is the diagnosis of how the fan was lost; the abandoned handback is the fact
-    /// that it is still pinned and Aeolus cannot take it back, which is both the more
-    /// consequential statement and the one the grant path makes. Agreement decides it.
+    /// The read path's answer, which since [#355](https://github.com/blamechris/Aeolus/issues/355)
+    /// is only ever the build, the bounds gate or `.available`. Before it, the read path said
+    /// `.supervisorBlind` for a fan § 5 went blind on, and one whose restore then failed was in
+    /// both the ledger and `restoreAbandoned`: this overwrote the blindness with
+    /// `.restoreToAutomaticFailed`, the answer `acquireLease` gives, because the abandoned
+    /// handback is the fact that the fan is still pinned. That fan reads the same today, with no
+    /// diagnosis left beneath it to overwrite.
     static func reportingHandbackState(
         of fan: FanState, given leases: LeaseAccountability
     ) -> FanState {
@@ -181,7 +196,7 @@ extension ReadOnlyFanReport {
 
     /// Step 5 of the ladder: § 6's post-reconciliation baseline, as one fan's availability.
     ///
-    /// ## The rule, and the two fans it leaves alone
+    /// ## The rule, and the one fan it leaves alone
     ///
     /// A fan whose firmware mode is not automatic, that no live lease covers, is under
     /// somebody else's control — startup reconciliation restored anything it found in manual
@@ -189,27 +204,34 @@ extension ReadOnlyFanReport {
     /// afterwards and not by Aeolus. See
     /// [ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md).
     ///
-    /// It is **not** applied over § 5's two causes. `.supervisorBlind` and a system
-    /// reclamation are statements about a fan Aeolus *engaged* — the ledger's registry holds
-    /// nothing else — and both are more specific than this one. Overwriting either would
-    /// replace a diagnosis with a guess, and in the reclamation case would blame a third
-    /// party for the operating system's act.
+    /// The fan it leaves alone is one Aeolus is accountable for, `held`, which steps 1–3
+    /// answer for more precisely. Everything else is judged, and in
+    /// `StartupReconciliation.refusalForGrant`'s order, question for question: the `held`
+    /// exemption, the durable reconciliation refusal, the mode guard, § 3's kept set (#303),
+    /// then `.foreignManualControl`. The one difference is the read the mode guard judges: the
+    /// grant takes a fresh one and refuses `.supervisorBlind` when it throws, while this judges
+    /// the snapshot's own, which reports an unreadable fan as automatic
+    /// ([#178](https://github.com/blamechris/Aeolus/issues/178)).
     ///
-    /// **The two causes are asked for differently, and that is the correction rather than a
-    /// quirk.** Blindness is read off the availability, because `availability(whenLedgerSays:
-    /// writeCapabilityIs:bounds:)` publishes it there. A reclamation is read off
-    /// `isReclaimedBySystem`, because on every build that has shipped that method deliberately
-    /// does *not* publish `.reclaimedBySystem` as an availability — #140's rule is that a
-    /// reclaimed fan is still `.writePathNotBuilt` in this build — so a switch looking for
-    /// `.unavailable(.reclaimedBySystem)` matched nothing at all. That arm was dead code, and
-    /// its deletion is not a loosening: the guard it promised is the `isReclaimedBySystem`
-    /// check that replaces it, which is keyed on the ledger's own cause and therefore cannot
-    /// be made dead by a change to what the availability says.
+    /// ## § 5's fans are judged like any other
     ///
-    /// That last sentence is the load-bearing one, and #194 is what proved it. A `.built` seam
-    /// now *does* make that method publish `.reclaimedBySystem`, so a switch-based guard would
-    /// have silently come back to life — with a reachability nothing here would have had to
-    /// argue for. The `isReclaimedBySystem` check is indifferent to the change.
+    /// [#355](https://github.com/blamechris/Aeolus/issues/355). Until it, this step exempted a
+    /// fan § 5 had given up: `!fan.isReclaimedBySystem` beside the `held` check, and an arm
+    /// returning a fan the read path had called `.supervisorBlind` untouched, on the argument
+    /// that a diagnosis outranks a guess. `refusalForGrant` makes no such exemption, so it was a
+    /// second place for the two answers to part: a fan § 5 gave up, that another program took
+    /// afterwards, read `.available` here while the grant refused it `.foreignManualControl`.
+    /// That is the ladder's corollary in this file's header, a past diagnosis standing in for
+    /// current evidence.
+    ///
+    /// The harm the exemption guarded against was blaming another program for the operating
+    /// system's hold. It does not need guarding here: under ADR 0014's U0 the system's hold
+    /// reads raw `F<n>Md = 0`, automatic, and never reaches the foreign answer, and Aeolus's own
+    /// restore that has not been confirmed is § 3's kept set below,
+    /// `.restoreToAutomaticUnconfirmed`. If U0 fails, the grant is already wrong the same way,
+    /// and ADR 0014 re-decides the mode fold before its first run. `isReclaimedBySystem` stays
+    /// set beside the answer, as history: it can go stale once another program takes the fan,
+    /// and the availability is the field that is current.
     ///
     /// Everything else is overwritten, including `.available`. Writing the guard as "only
     /// when the read path said `.writePathNotBuilt`" would pass today and silently stop
@@ -219,10 +241,7 @@ extension ReadOnlyFanReport {
     ///
     /// A fan reconciliation refused is refused whether it reads automatic now or not: the
     /// grant path asks the baseline *before* its fresh read, and answers from it without
-    /// reading at all. So the mode guard sits below it rather than above. The same two § 5
-    /// exemptions hold, for the same reason — and cannot in practice meet a durable refusal,
-    /// because § 5's registry holds only fans Aeolus engaged and a refused fan is never
-    /// granted to be engaged.
+    /// reading at all. So the mode guard sits below it rather than above.
     ///
     /// **Except over `.writePathNotBuilt`**, which the grant path answers first — see this
     /// file's header. Keyed on the read path's own answer rather than on a capability passed
@@ -245,11 +264,7 @@ extension ReadOnlyFanReport {
         of fan: FanState, heldByAeolus held: Set<Int>, awaitingConfirmation awaiting: Set<Int>,
         reconciliation baseline: ReconciliationBaseline
     ) -> FanState {
-        guard !held.contains(fan.index), !fan.isReclaimedBySystem else { return fan }
-        switch fan.manualControlAvailability {
-        case .unavailable(.supervisorBlind): return fan
-        default: break
-        }
+        guard !held.contains(fan.index) else { return fan }
         if fan.manualControlAvailability != .unavailable(.writePathNotBuilt),
             let durable = baseline.durableRefusal(overFans: [fan.index])
         {

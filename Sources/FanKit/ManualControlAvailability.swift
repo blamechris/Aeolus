@@ -45,6 +45,11 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// from "no such fan": the fan is right there and is refused anyway.
         case boundsImplausible
         /// The system has taken this fan back and is not currently yielding it.
+        ///
+        /// **No helper on `main` publishes this as an availability**
+        /// ([#355](https://github.com/blamechris/Aeolus/issues/355)): a reclamation is reported
+        /// as `FanState.isReclaimedBySystem`, a fact, and no grant is refused for it. The case
+        /// stays for wire stability — it is v1 vocabulary, and a client still renders it.
         case reclaimedBySystem
         /// Another client holds the manual-control lease.
         ///
@@ -234,13 +239,11 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// retrying is not the advice — blindness lasts until the SMC answers again, and
         /// nothing the client does affects that.
         case noThermalTelemetry
-        /// The helper cannot read *this fan's* control state, so the mechanism that would
-        /// notice it being taken back is blind on it.
+        /// The helper cannot read *this fan's* control state, or could not confirm it back
+        /// under automatic control at start-up, so it cannot say what it would be granting.
         ///
         /// `.noThermalTelemetry`'s argument one cardinality down: that one is the machine's
-        /// temperature going unreadable, this one is a single fan's state going unreadable
-        /// for `ReclamationLimits.blindCyclesBeforeDivergence` consecutive cycles, after
-        /// which § 5 reconnects, restores the fan and revokes the lease. ADR 0007's hole 2,
+        /// temperature going unreadable, this one is a single fan's state. ADR 0007's hole 2,
         /// with [#68](https://github.com/blamechris/Aeolus/issues/68) — a stale
         /// `io_connect_t` after wake — as the motivating case.
         ///
@@ -251,14 +254,24 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// loss of control that nothing had established — `CLAUDE.md` rule 6 in the
         /// direction that is easy to miss.
         ///
-        /// **Two producers, and the second is not a cycle at all.** Startup reconciliation
-        /// runs on a bounded budget — see
-        /// [ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md) —
-        /// and a fan it never reached before the budget ran out is a fan nobody has looked
-        /// at — the sentence above, arrived at by a different route. The helper serves
-        /// clients anyway, because refusing to answer a snapshot helps nobody, and refuses
-        /// a lease over that fan for the life of the process: reconciliation is one-shot
-        /// and never runs again, so nothing will revise the answer.
+        /// **Two producers, both of which the grant path shares**
+        /// ([#355](https://github.com/blamechris/Aeolus/issues/355)). The first is a grant-time
+        /// read of the fan's control state that throws: the grant is refused this way, and a
+        /// retry is reasonable, because the next read may answer. The second is startup
+        /// reconciliation, for a fan it could not confirm back under automatic control: one it
+        /// read back in manual after a write the firmware accepted, one whose read-back threw,
+        /// one whose mode would not read and whose restore was then refused, or one its bounded
+        /// budget never reached — see
+        /// [ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md). The
+        /// helper serves clients anyway, because refusing to answer a snapshot helps nobody,
+        /// and refuses a lease over that fan for the life of the process: reconciliation is
+        /// one-shot, so nothing will revise the answer. That producer is the one a snapshot
+        /// shows.
+        ///
+        /// **§ 5's blindness is not a producer.** § 5 still gives up a fan it cannot read for
+        /// `ReclamationLimits.blindCyclesBeforeDivergence` cycles, and that is history,
+        /// reported by its fault lines and the lease it ends — published here, it refused a
+        /// lease the helper would grant, after a reconnect that had often already worked.
         case supervisorBlind
         /// Something outside Aeolus is holding this fan in manual mode.
         ///

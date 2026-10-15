@@ -178,12 +178,13 @@ struct SupervisedFanAuthority: FanAuthority {
     /// mid-handback from one view of the lease core and accountable-to-nobody from another
     /// would be one instant's report built from two.
     ///
-    /// **The re-statement touches one field of one fan and nothing else.** The whole ordering,
-    /// and the § 5 causes each half deliberately does not overwrite, are in
-    /// `ReadOnlyFanReport` — see its type documentation for the ladder and
-    /// `restatingAvailability(of:given:reconciliation:)` for the entry point. The other three snapshot fields
-    /// are the read path's own and are passed through untouched: this re-assembles the value
-    /// rather than producing a second opinion about any of them.
+    /// **The re-statement touches one field of one fan and nothing else.** The whole ordering
+    /// is in `ReadOnlyFanReport` — see `AvailabilityRestatement.swift` for the ladder and
+    /// `restatingAvailability(of:given:reconciliation:)` for the entry point. Since
+    /// [#355](https://github.com/blamechris/Aeolus/issues/355) neither half exempts a fan § 5
+    /// gave up: its ledger is reported on `isReclaimedBySystem`, never as an availability. The
+    /// other three snapshot fields are the read path's own and are passed through untouched:
+    /// this re-assembles the value rather than producing a second opinion about any of them.
     func snapshot() async throws -> SystemSnapshot {
         let machine = try await reading.snapshot()
         let view = await leases.activeLeaseView()

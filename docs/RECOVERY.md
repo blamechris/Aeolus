@@ -138,8 +138,9 @@ that resolves this from a client; it is a property of what the firmware reported
 fan.
 
 **`reclaimedBySystem`** — The system has taken this fan back from manual control and Aeolus
-is not driving it right now. There is no user action; it returns to Aeolus's control if the
-system yields the fan again.
+is not driving it right now. Current helpers report this as the *Reclaimed by system* flag, not
+as a refusal. On a build that can write, asking again is allowed, and a refusal names its own
+reason.
 
 **`leaseHeldByAnotherClient`** — Another Aeolus client already holds the manual-control
 lease. It becomes available again once that lease ends or is released.
@@ -178,9 +179,12 @@ safely watch a fan under manual control and refuses new leases entirely. There i
 do from here; it clears when the SMC answers again, and retrying does not speed that up. If
 it does not clear, go to step 5.
 
-**`supervisorBlind`** — Aeolus cannot currently read this one fan's own control state, so it
-cannot tell whether something else has taken it back, and refuses a new lease over it. This
-may clear on its own if the connection recovers; if it does not, go to step 5.
+**`supervisorBlind`** — Aeolus could not confirm this one fan's own control state, so it
+cannot tell whether something else is holding it, and refuses a new lease over it. If a
+request was just refused this way, a read failed at that moment: retry. If the app or
+`fanctl status` keeps showing it, the helper could not confirm that fan back under automatic
+control at start-up — its mode would not read, read manual after the restore, or was never
+reached — and it stands until the helper restarts (step 5).
 
 **`foreignManualControl`** — Something other than Aeolus — another fan-control tool, or
 firmware that re-asserted manual mode — has put this fan under manual control. Quit or stop
