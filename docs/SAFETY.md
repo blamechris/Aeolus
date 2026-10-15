@@ -1030,22 +1030,42 @@ stays in the registry § 3's next latched cycle bridges, until a read confirms i
 ADR 0009's "As built, and what did not land" section is the audit of which parts of that ruling
 are in the tree.
 
-**A write away from the safe state requires a live lease, checked at every examination.**
-ADR 0009's second ruling, built in [#342](https://github.com/blamechris/Aeolus/pull/342)
-([#180](https://github.com/blamechris/Aeolus/issues/180)):
-this section's registry of held fans is a hint, and the lease table is the authority. Every
-examination reads the fan, then asks the lease core whether a live lease covers it, and only
-then believes the reading. A held fan with no live lease is its own divergence class,
-`.leaseLapsed`, restored and forgotten, and never reported as a system reclamation — nobody
-took that fan, Aeolus simply stopped being entitled to it. So § 1's guarantee that manual
-control is a lease rather than a setting no longer rests on the control plane remembering to
-say when a lease ended; the helper still says so, before every lease-core restore, and that
-notice is now a courtesy rather than the control. The check is dormant until something registers
-fans with § 5, which nothing in this build does.
+**A write away from the safe state requires the lease the fan was registered under to be live,
+checked at every examination.** ADR 0009's second ruling, built in
+[#342](https://github.com/blamechris/Aeolus/pull/342) and scoped to identity by
+[#357](https://github.com/blamechris/Aeolus/issues/357) and
+[#353](https://github.com/blamechris/Aeolus/issues/353). This section's registry of held fans is
+a hint, and the lease table is the authority. Every registration names the lease it was made
+under, the one `apply` authorised. Every examination reads the fan, then asks the lease core
+whether *that* lease is still live and still covers the fan, and only then believes the reading.
+Coverage alone is not the question: once a lease ends, another client can be granted the same fan
+within one cycle, and a coverage question answered by the newer lease let § 5 re-assert the old
+lease's target under it, or give the fan up and revoke the newer lease blaming the operating
+system. A held fan whose own lease is no longer live is `.leaseLapsed`: restored and forgotten
+whatever covers the fan now, and never reported as a system reclamation. That restore can
+supersede an engagement the newer lease has in progress (ADR 0014 D4); that `apply` is refused,
+which is the safe direction. The check is dormant until something registers fans with § 5, which
+nothing in this build does.
 
-The order is deliberate. The lease is asked *after* the read because every teardown drops its
-lease before it restores, so a read that saw that restore land is followed by a question that
-sees the lease gone; asked first, the same restore looks like the system taking the fan back.
+**Every act § 5 takes is taken for that lease and no other.** After every suspension § 5
+re-fetches the fan's record and stops if it is gone *or belongs to another lease*. A record under
+a newer lease means that lease's engagement holds the fan and its own record is watching it, so
+§ 5 neither restores, forgets nor commands it. The terminal action revokes only the lease it was
+holding the fan for, and only while that lease is live; if it has already ended, the fan is still
+handed back and no lease is revoked. A registration under a lease that is no longer live is
+refused, and one under a live lease replaces whatever an ended lease left. The engagement driver
+asks the same question, about the lease the engagement runs under, before and after every step.
+
+**What identity does not close.** A hand-back owed to an ended lease's record, or the undo of an
+engagement that outlived its lease, can land after a newer lease's engagement and before that
+lease registers the fan. Nothing sees it until the newer record's first examination, which reads
+the fan as reclaimed and re-asserts that lease's own target: one cycle, in the safe direction,
+with a reclamation reported that the system did not cause.
+
+The order is deliberate. The fan's own lease is asked *after* the read because every teardown
+drops its lease before it restores, so a read that saw that restore land is followed by a
+question that sees the lease gone; asked first, the same restore looks like the system taking the
+fan back.
 It is asked *before* either signal, and before an unreadable cycle is counted, because the
 tolerances this section grants are for fans Aeolus holds. Since #181 it is asked inside the
 re-assert too: ADR 0014's engagement driver asks it, with the precedence ruling, before and after
@@ -1059,8 +1079,9 @@ worse than a UI that reports an error, because the user acts on it.
 *Tested by:* `Tests/AeolusHelperTests/ReclamationWatchdogTests.swift`,
 `ReclamationWatchdogRecoveryTests.swift`, `ReclamationWatchdogStalenessTests.swift`,
 `ReclamationRegistrationWindowTests.swift`, `ReclamationLeaseLapseTests.swift`,
-`ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
-`ReclamationSupervisorTests.swift` and `ReclamationEmergencyRegistrationTests.swift`, with the
+`ReclamationLeaseIdentityTests.swift`, `ReclamationLimitsTests.swift`,
+`ReclamationLedgerTests.swift`, `ReclamationSupervisorTests.swift` and
+`ReclamationEmergencyRegistrationTests.swift`, with the
 engagement driver the re-assert engages through in `EngagementDriverTests.swift` and
 `EngagementEpochTests.swift` — mostly through `ScriptedControlPlane`, with four bespoke
 seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express: a refused

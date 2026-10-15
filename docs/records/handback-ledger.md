@@ -440,7 +440,11 @@ whose subject is concurrent-lease refusal rather than handback safety, so nothin
 two. The panic path reaches it through a second *source* of fans rather than a second entry.
 All five sweeps are written the one way so the reachable one is not a special case whose
 reason nobody can see, and `TeardownSweepTripwireTests` is what makes a return to the
-per-entry shape fail.
+per-entry shape fail. `revokeLease(id:because:)`
+([#353](https://github.com/blamechris/Aeolus/issues/353)) is not a sweep — it names one entry —
+and is written the same way: the entry removed synchronously, then one `restore` call, so it is
+the seventh path ADR 0009's "every lease-core teardown removes its table entry before it awaits
+the restore" counts.
 
 **The log line stays per entry on the revocation paths, and only the restore is unified.** A
 revocation is a claim being taken from a named client, so `log show` has to carry one line per
@@ -757,6 +761,34 @@ nothing wrong. That is why it carries its own `FanRestoreCause` rather than reus
 one — an operator reading `log show` must be able to tell "the client went away"
 from "the machine got too hot", and a cause that cannot be named is a mechanism that
 cannot be audited.
+
+### `revokeLease(id:because:)`: the one lease § 5 held the fan for
+
+*Added by [#353](https://github.com/blamechris/Aeolus/issues/353); not relocated from a doc
+comment. ADR 0009's 2026-10-15 amendment is the decision.*
+
+§ 5's terminal action used to call `revokeEveryLease(because:)`, for § 3's reason: a lease is a
+claim over a set of fans. Once a lease can end and another be granted over the same fan inside
+one § 5 cycle, "every lease" includes one granted after the episode § 5 is giving up, and a
+release and re-grant during § 5's refused command write revoked the new client's lease and told
+it the system had reclaimed a fan it never held. So § 5 now names the lease it was holding the
+fan for — the one the fan was registered under — and this revokes that lease and no other.
+
+- **Whole**, for the same reason `revokeLeases(coveringFan:because:)` is: trimming a fan out of
+  a lease would leave a client holding a subset it can no longer command.
+- **Only while it is live.** An ID the table does not hold is a lease that already ended, and a
+  lease past its deadline has already lapsed and is the TTL sweep's to hand back as
+  `.leaseExpired`. Either answers `false` and restores nothing, so `LeaseLog.revoked` — the
+  `.fault` that tells a client the system took control — is emitted only for a lease actually
+  taken.
+- **Removed synchronously, restored in one call**, as every teardown here is, so the fans enter
+  `releasing` before anything suspends and no grant can race in over them.
+- **Strictly narrower than `revokeEveryLease(because:)`**, which is already `internal`, and that
+  is the whole of `LeaseAuthorityAccessTests`' argument for acknowledging it: the worst a caller
+  elsewhere in the module can do with a lease's ID is what it can already do to every lease.
+
+§ 3 keeps `revokeEveryLease(because:)`: it takes back every claim on the machine in order to
+cool it, which is not § 5's question.
 
 ### Why § 3 revokes every lease, and why it is not `releaseEveryLease()`
 

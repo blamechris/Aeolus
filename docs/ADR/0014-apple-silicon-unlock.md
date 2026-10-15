@@ -1138,6 +1138,51 @@ Rejected: ADR 0011 bounds what that tool can do to the machine, not what it does
 only if U3 fails beyond about 4 s. It changes what `apply`'s reply means, so it needs a version
 bump.
 
+## Amendment (2026-10-15, [#353](https://github.com/blamechris/Aeolus/issues/353), [#357](https://github.com/blamechris/Aeolus/issues/357)) — an engagement asks about the lease it runs under
+
+**The defect in D4's residual argument.** D4 discharges the restore the epoch cannot see, one
+requested between the driver's check and an engagement's first step, with "every genuine restore
+ends the lease … so the driver's next check sees it". That holds only if the check asks about
+the engagement's own lease. As built it asks whether *any* live lease covers the fan, and a lease
+granted over the same fan once the first lease's restore has returned answers yes. The epoch
+cannot help: it is recorded at the first step's admission, after that restore was requested, so
+no later step of the engagement sees it; and nothing reads the epoch after `.engaged`. Under a
+re-grant the engagement runs on to `.engaged` and returns to a caller whose lease has ended.
+
+Where the epoch does cover a release and re-grant, it covers it fully. Every lease ends by
+restoring its fans; the restore moves the epoch when it is requested; and `acquireLease` refuses
+a fan in `releasing` until that restore returns. So the increment precedes any re-grant over the
+fan, and every later step refuses `.superseded`.
+
+**Decision.** The driver is bound to a lease per engagement. `EngagementDriver.under(lease:)`
+returns a copy that stores the identity, and `requireEntitlement(for:)` asks
+`hasLiveLease(id:coveringFan:)` about the permit's own fan. The composed driver is unbound and
+refuses every step. No engage verb's parameter list changes. § 5 binds it to the lease its record
+was registered under; level 6 binds it to the lease `apply` authorised.
+`WriteVerbAllowlistTests` gains one keyed companion: `ReclamationWatchdog.manualControlEngaged(_:
+CommandableFan, under: UUID)` may carry a `UUID`, because a registration writes nothing and its
+lease is judged against the permit's own fan at every examination. No write verb may.
+
+**A6's contract, fixed before A6 is written.**
+1. Engage through a driver bound to `apply`'s `leaseID`.
+2. Register each fan with `manualControlEngaged(_:under:)` under the same ID. A refusal is an
+   engagement failure: every fan this `apply` engaged is handed back, and the call is refused.
+3. Report each commanded target with `commandedTarget(_:under:)`.
+4. Ask `heldLease(id:from:)` again before replying, so the reply never says *applied* under a
+   lease that has ended.
+5. Map a superseded step to `.releaseInProgress`, unless the lease itself has gone.
+
+**What remains.** A restore owed to an ended lease, whether § 5's hand-back or a bound driver's
+undo, can land after a newer lease's engagement and before it registers. The newer record's
+first examination reads the fan as reclaimed and re-asserts its own target: one cycle, in the
+safe direction, with a reclamation reported that the system did not cause. Two engagements of
+one fan under one lease remain an A6 precondition.
+
+**No `AeolusXPCVersion` bump.** Nothing crosses the boundary.
+
+This amendment corrects clauses of a Proposed ADR rather than the decisions they sit under.
+**Status stays Proposed.**
+
 ## Assumptions and what would invalidate them
 
 | # | Assumption | Basis | If it fails |
@@ -1159,8 +1204,10 @@ bump.
 | U12 | Sleep resets `Ftst` | Reported. Not depended on (D5) | Only the never-issued-keystone residual widens |
 | U13 | Apple's controller never commands above the declared `F<n>Mx` | The highest fan speed recorded under Apple's control is 3,683 RPM, against 5,777 declared (2026-08-20; key not recorded). The highest recorded `F0Tg` is 2,195 RPM. The pre-flight records `F<n>Tg` through a load and its soak | 1b's "at or above demand" fails by the excess. Aborts 9 and 1 catch it |
 | — | The preparation step can enumerate the fans and record both restore keys' types | `FNum`, `F<n>Md` and `Ftst` have read on every capture. Both are `ui8`, one byte, on 27.0.1 | `.everyFan` writes the touched set's fans and the force key, then throws `.fanSetUnknown`. An unknown key is written as one zero byte (D5, D7). Start 0 stops |
-| — | One engagement per fan at a time | True today: § 5 is the driver's only caller and its sweep is single-entrant. **Assumed and not enforced** — the ledger keeps one in-progress record per fan index, and a first-step retry that removes a stale record could remove a concurrent engagement's | An A6 precondition: before level 6 engages beside § 5, serialise engagements per fan or key the record per engagement. Also: § 5's `finaliseRelease` restores and then revokes the leases, so for that window a genuine restore has not yet ended the lease; harmless while § 5 is the only caller, and its order matters once A6 adds a concurrent one |
+| — | One engagement per fan at a time | True today: § 5 is the driver's only caller and its sweep is single-entrant. **Assumed and not enforced** — the ledger keeps one in-progress record per fan index, and a first-step retry that removes a stale record could remove a concurrent engagement's | An A6 precondition: before level 6 engages beside § 5, serialise engagements per fan or key the record per engagement. Also: § 5's `finaliseRelease` restores and then revokes the leases, so for that window a genuine restore has not yet ended the lease; harmless while § 5 is the only caller, and its order matters once A6 adds a concurrent one. Across leases, a second engagement now fails safe (the 2026-10-15 identity amendment): the stale one's next check asks about its own ended lease and undoes, and the undo supersedes the other. Under one lease this remains an A6 precondition |
 | — | One lease-table entry, one production plane | True today | Concurrent leases or a second plane: re-check D4's epoch scope and D5's gate. Also, since #349: nothing refuses a grant while § 7's `.everyFan` is in flight, so a write under a lease granted in that window can be undone by it. Unreachable on `.notBuilt`; decided before A6 ([#350](https://github.com/blamechris/Aeolus/issues/350)) |
+| — | At most one live lease covers a fan | One lease at a time (`.leaseHeldByAnotherClient`) | Overlapping leases: § 5's records keyed per (fan, lease), and registration's arbitration re-decided |
+| — | Every lease-core restore notice for a fan precedes any grant over it | `releasing` is held from before the restorer's notices until it returns | A restore path bypassing `releasing` lets the index-keyed `manualControlReleased(fanAt:)` erase a newer lease's record; the notice must then carry the lease |
 
 Every observation above is `Mac16,5`; the write-path rows are hypotheses until D8 runs. Intel and
 M1/M2 ship `untested`.
