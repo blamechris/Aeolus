@@ -226,6 +226,47 @@ struct PanicGrantSealTests {
         #expect(await Self.grants(0, in: helper, because: "both panic verbs have returned"))
     }
 
+    /// A grant made after the seal opens and before the sweep empties the table is refused by
+    /// the seal, not as another client's lease: nothing inserts while the seal is open, so the
+    /// lease it can see is one the sweep is about to drop, and the snapshot already says
+    /// `.releaseInProgress` about it.
+    ///
+    /// The window is the panic verb's own — its closure leaves the lease core between
+    /// `sealingGrants` incrementing and `releaseEveryLease()` emptying the table — and nothing
+    /// in `Sources/` parks inside it, so this hands `sealingGrants(during:)` a closure that parks
+    /// at that point and then sweeps, as the verb's does.
+    ///
+    /// **Mutation:** move the seal's guard in `acquireLease` back below `guard table.isEmpty`.
+    /// Run: red — the grant is refused `.leaseHeldByAnotherClient` while the snapshot says
+    /// `.releaseInProgress`.
+    @Test("A lease the sealed sweep is about to drop is not reported as another client's")
+    func aGrantBetweenTheSealAndTheSweepIsRefusedByTheSeal() async throws {
+        let helper = Self.composed()
+        await helper.bindSafetyRegistries()
+        _ = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: ConnectionID())
+        let sealed = AsyncSignal()
+        let sweep = AsyncSignal()
+        let leases = helper.leases
+        let panic = observing {
+            await leases.sealingGrants {
+                await sealed.signal()
+                _ = try? await sweep.wait()
+                await leases.releaseEveryLease()
+            }
+        }
+        try await sealed.wait()
+        #expect(await helper.leases.leaseCount == 1, "the table is empty, so this asks nothing")
+
+        let refused = await Fixture.refusalForGrant(over: 0, from: helper.leases)
+        #expect(refused == .releaseInProgress)
+        #expect(try await Self.shownReason(ofFanAt: 0, in: helper) == refused)
+
+        await sweep.signal()
+        _ = try await finished("the sealed sweep to return", panic)
+        #expect(await helper.leases.leaseCount == 0)
+    }
+
     // MARK: - What the seal does not overwrite
 
     /// A fan another program holds keeps `.foreignManualControl` while the seal is open, in the

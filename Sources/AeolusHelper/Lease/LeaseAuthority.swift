@@ -358,6 +358,14 @@ actor LeaseAuthority {
             log.refusedSystemSleeping(connection)
             throw AeolusXPCFault.manualControlUnavailable(reason: .systemSleeping)
         }
+        // § 7's seal (#350), below the marker so a grant parked above it when § 7 begins meets
+        // it, and above the lease table because nothing inserts while it is open: a lease the
+        // table still shows is one this panic's sweep is about to drop. handback-ledger.md
+        // § "The grant gate's ordering", item 6.
+        guard machineWideRestoresInFlight == 0 else {
+            log.refusedDuringMachineWideRestore(connection)
+            throw AeolusXPCFault.manualControlUnavailable(reason: .releaseInProgress)
+        }
         // The durable refusal is checked first, deliberately. Both can apply at once — a
         // dying holder's fan is mid-handback while a second client legitimately holds
         // another — and `.releaseInProgress` documents itself as "retry in a moment". A
@@ -366,12 +374,6 @@ actor LeaseAuthority {
         guard table.isEmpty else {
             log.refusedConcurrentLease(connection)
             throw AeolusXPCFault.manualControlUnavailable(reason: .leaseHeldByAnotherClient)
-        }
-        // Here and nowhere earlier: a grant parked above the marker when § 7 begins must meet
-        // it (#350). handback-ledger.md § "The grant gate's ordering", item 6.
-        guard machineWideRestoresInFlight == 0 else {
-            log.refusedDuringMachineWideRestore(connection)
-            throw AeolusXPCFault.manualControlUnavailable(reason: .releaseInProgress)
         }
         let midHandback = request.fanIndices.filter { releasing[$0] != nil }
         guard midHandback.isEmpty else {
