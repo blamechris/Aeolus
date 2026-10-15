@@ -56,7 +56,7 @@ struct FinaliseReleaseLedgerTests {
     /// Cycles § 5 until the terminal action, which for both scenarios here is the
     /// `blindCyclesBeforeDivergence`th cycle — the registration grace for an uncommanded fan
     /// reading automatic, and the blindness threshold for one that cannot be read.
-    private static func cycleToTheTerminalAction<Plane: FanControlPlane>(
+    static func cycleToTheTerminalAction<Plane: FanControlPlane>(
         _ helper: HelperComposition<Plane>
     ) async {
         for _ in 1...ReclamationLimits.blindCyclesBeforeDivergence {
@@ -80,7 +80,7 @@ struct FinaliseReleaseLedgerTests {
         #expect(await helper.leases.leaseCount == 0, "the terminal action revoked no lease")
     }
 
-    private static func restoresOfFanZero(
+    static func restoresOfFanZero(
         on plane: ScriptedControlPlane
     ) async -> [ScriptedControlPlane.Attempt] {
         await plane.attempts.filter { $0 == .restoreToAutomatic(.fan(0)) }
@@ -105,7 +105,7 @@ struct FinaliseReleaseLedgerTests {
     /// Fan 0 held, as `holding()` holds it, over `InterferingFanStateSensing` at `.restoreWrite`:
     /// the first restore that lands is the terminal action's hand-back, because nothing restored
     /// fan 0 before it.
-    private struct Interfered {
+    struct Interfered {
         let helper: HelperComposition<InterferingFanStateSensing>
         let plane: InterferingFanStateSensing
         let scripted: ScriptedControlPlane
@@ -115,7 +115,7 @@ struct FinaliseReleaseLedgerTests {
         let log: RecordedLog
     }
 
-    private static func holdingThroughInterference() async throws -> Interfered {
+    static func holdingThroughInterference() async throws -> Interfered {
         let log = RecordedLog()
         let scripted = ScriptedControlPlane(
             fans: [0: .automatic(at: 2_400)],

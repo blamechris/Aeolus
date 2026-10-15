@@ -161,6 +161,96 @@ struct EngagementEpochTests {
         #expect(await rig.registry.accepted == [0])
     }
 
+    // MARK: - The lease the engagement runs under (#357)
+
+    /// The lease ends and another is granted over the fan before the first step's turn: the
+    /// release's restore is requested before the step's admission, so the epoch never sees it
+    /// (ADR 0009 D1's residual). D4 discharged it with "the driver's next check sees the lease
+    /// gone" — which a coverage question answered by the new lease defeated. Asked about the
+    /// engagement's own lease, the check before step 2 refuses, and the step taken is undone.
+    ///
+    /// **Mutation:** make `requireEntitlement(for:)` ignore the bound lease — ask whether any
+    /// live lease covers the fan. Run: red: the engagement runs on to `.engaged` and returns.
+    @Test("A release and re-grant before the first step is refused at the next step")
+    func aReleaseAndRegrantBeforeTheFirstStepIsRefusedAtTheNextStep() async throws {
+        let rig = try await EngagementRig(unlock: .heldUntilForced(stepsToYield: 2))
+        await rig.writes.interfere(beforeEngageStep: 1) {
+            await Self.releaseAndRegrant(fan: 0, on: rig)
+        }
+
+        await #expect(throws: EngagementRefusal.leaseNotLive(fan: 0)) {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+
+        #expect(await rig.writes.didFire, "the scenario never arranged the interleaving")
+        let writes = await rig.plane.keyWrites
+        #expect(
+            writes.filter { $0 == .mode(fan: 0, value: 1) }.count == 1,
+            "a step was written after the lease the engagement ran under had ended: \(writes)")
+        #expect(writes.suffix(2) == [.mode(fan: 0, value: 0), .forceKey(0)], "nothing was undone")
+        #expect(try await rig.plane.readControlState(ofFan: 0).mode == .automatic)
+        #expect(await rig.registry.engaged == [0], "the fan was not registered before its undo")
+        #expect(await rig.registry.accepted == [0])
+    }
+
+    /// The same release and re-grant before a naive firmware's one and only step. The step
+    /// writes and answers `.engaged`; the after-check asks about the engagement's own lease,
+    /// refuses, and the fan is undone rather than reported engaged to a caller whose lease
+    /// has ended.
+    ///
+    /// **Mutation (a):** as above. Run: red — the engagement returns.
+    /// **Mutation (b):** delete the after-check, the `try await requireEntitlement(for: fan)`
+    /// after `emergency.manualControlEngaged(fan)`. Run: red — the engagement returns.
+    @Test("A release and re-grant before a naive step is undone by the after-check")
+    func aReleaseAndRegrantBeforeANaiveStepIsUndoneByTheAfterCheck() async throws {
+        let rig = try await EngagementRig(unlock: .naive)
+        await rig.writes.interfere(beforeEngageStep: 1) {
+            await Self.releaseAndRegrant(fan: 0, on: rig)
+        }
+
+        await #expect(throws: EngagementRefusal.leaseNotLive(fan: 0)) {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+
+        #expect(await rig.writes.didFire, "the scenario never arranged the interleaving")
+        #expect(await rig.plane.keyWrites.contains(.mode(fan: 0, value: 1)), "D1's residual")
+        #expect(try await rig.plane.readControlState(ofFan: 0).mode == .automatic)
+        #expect(await rig.registry.engaged == [0])
+        #expect(await rig.registry.accepted == [0])
+    }
+
+    /// The composed driver is bound to no lease, and refuses every step — even with a live
+    /// lease over the fan. Binding is the caller's act, so forgetting it fails safe.
+    ///
+    /// **Mutation:** let an unbound driver through — in `requireEntitlement(for:)`, skip the
+    /// lease check when `lease` is `nil`. Run: red: the unbound driver engages the fan.
+    @Test("An unbound driver engages nothing")
+    func anUnboundDriverEngagesNothing() async throws {
+        let rig = try await EngagementRig(unlock: .naive)
+        let lease = try #require(rig.lease, "the rig holds no lease, so this proves nothing")
+        #expect(await rig.leases.hasLiveLease(id: lease.id, coveringFan: 0))
+
+        await #expect(throws: EngagementRefusal.leaseNotLive(fan: 0)) {
+            try await rig.unbound.engageManualControl(of: rig.fan(0))
+        }
+
+        #expect(await rig.plane.attempts.isEmpty, "an unbound driver issued a step")
+        #expect(await rig.registry.engaged.isEmpty)
+    }
+
+    /// The rig's lease ends the way a client dying ends it, its restore lands — moving the
+    /// epoch, as every lease end's restore does — and another client is granted the fan.
+    private static func releaseAndRegrant(fan index: Int, on rig: EngagementRig) async {
+        await rig.leases.connectionDidInvalidate(rig.holder)
+        do {
+            try await rig.plane.restoreToAutomatic(.fan(index))
+            _ = try await rig.leases.acquireLease(
+                LeaseFixture.request(fans: [index]), from: ConnectionID())
+        } catch {
+            Issue.record("the release and re-grant failed: \(error)")
+        }
+    }
+
     // MARK: - Cancellation, the log, and the constants
 
     /// A cancelled engagement stops before its next step and undoes the one it took: § 5's
