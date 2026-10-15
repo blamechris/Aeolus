@@ -33,6 +33,21 @@ struct UnreadModeAvailabilityTests {
             temperatures: LeaseFixture.nominalDieTemperatures, unreadableModes: fans)
     }
 
+    /// The precondition every scenario here rests on: the firmware the snapshot reads really does
+    /// leave `fan`'s mode unanswered now. Without it a stage that stopped applying would leave
+    /// each test asserting about a fan whose mode reads.
+    private static func expectModeUnread(
+        ofFan fan: Int, on firmware: ScriptedControlPlane,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws {
+        await #expect(
+            throws: FanControlPlaneError.self, "fan \(fan)'s mode reads",
+            sourceLocation: sourceLocation
+        ) {
+            try await firmware.firmwareMode(ofFan: fan)
+        }
+    }
+
     /// `AvailabilityFixture.composed`'s wiring over a plane and a provider the test chooses.
     private static func composed<Plane: FanControlPlane>(
         plane: Plane, provider: some SensorProvider
@@ -67,6 +82,7 @@ struct UnreadModeAvailabilityTests {
         let helper = Fixture.composed(afterwards: [Self.modesUnread([0])])
         await helper.bindSafetyRegistries()
         await helper.plane.advance()
+        try await Self.expectModeUnread(ofFan: 0, on: helper.plane)
         #expect(
             await helper.thermalEmergency.fansAwaitingRestoreConfirmation.isEmpty,
             "§ 3 is keeping fan 0, so this asks the narrow question rather than the broad one")
@@ -107,9 +123,7 @@ struct UnreadModeAvailabilityTests {
         let helper = Self.composed(
             plane: ControlStateGatePlane(firmware, capability: .notBuilt),
             provider: PlaneBackedProvider(over: firmware, fanCount: 1))
-        await #expect(throws: FanControlPlaneError.self, "fan 0's mode reads") {
-            try await firmware.firmwareMode(ofFan: 0)
-        }
+        try await Self.expectModeUnread(ofFan: 0, on: firmware)
 
         let snapshot = try await helper.authority.snapshot()
         let refusal = await Fixture.refusalForGrant(over: 0, from: helper.leases)
@@ -137,6 +151,7 @@ struct UnreadModeAvailabilityTests {
         _ = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [0]), from: ConnectionID())
         await helper.plane.advance()
+        try await Self.expectModeUnread(ofFan: 0, on: helper.plane)
         #expect(await helper.leases.activeLeaseView().accountableFans == [0])
 
         let snapshot = try await helper.authority.snapshot()
@@ -156,6 +171,7 @@ struct UnreadModeAvailabilityTests {
         let helper = Fixture.wedging(firmware: firmware)
         let parked = try await Fixture.parkedHandback(ofFanAt: 0, in: helper)
         await firmware.advance()
+        try await Self.expectModeUnread(ofFan: 0, on: firmware)
 
         let snapshot = try await helper.authority.snapshot()
         let refusal = await Fixture.refusalForGrant(over: 0, from: helper.leases)
@@ -194,6 +210,7 @@ struct UnreadModeAvailabilityTests {
             await helper.reconciliation.fansWithRefusedHandback == [0],
             "reconciliation handed fan 0 back, so there is no durable refusal to outrank anything")
         await helper.plane.advance()
+        try await Self.expectModeUnread(ofFan: 0, on: helper.plane)
 
         let snapshot = try await helper.authority.snapshot()
         let refusal = await Fixture.refusalForGrant(over: 0, from: helper.leases)
@@ -202,6 +219,73 @@ struct UnreadModeAvailabilityTests {
         #expect(
             try Fixture.availability(ofFanAt: 0, in: snapshot) == .unavailable(refusal),
             "the read that did not answer is standing in for a refusal no read can clear")
+    }
+
+    // MARK: - Over the bounds gate
+
+    /// `F0Mx`'s value in the scenarios below: a byte-swapped `flt`'s shape, which § 2's gate
+    /// refuses as implausible.
+    private static let implausibleMaximum: [String: Result<SensorReading, SensorReadFailure>] = [
+        SMCFanEnumeration.maximumKey(forFan: 0): .reading(
+            SMCFanEnumeration.maximumKey(forFan: 0), 1e14)
+    ]
+
+    /// A fan whose bounds are implausible and whose mode will not read reads `.supervisorBlind`,
+    /// the grant's answer: the grant has no bounds gate yet (#270), so its fresh read refuses
+    /// first, and step 5 restates the read path's `.boundsImplausible` as it restates
+    /// `.available`.
+    ///
+    /// `.boundsImplausible` is silent to `fanctl auto`, so a snapshot that kept it would exit 0
+    /// about a fan the grant refuses as blind: #360's defect, for such a fan.
+    ///
+    /// **Mutation:** in `ReadOnlyFanReport.reportingForeignControl(of:observedMode:heldByAeolus:
+    /// awaitingConfirmation:reconciliation:)`, key `canWrite` on
+    /// `fan.manualControlAvailability == .available`. Run: red on the agreement.
+    @Test("A fan with implausible bounds whose mode will not read reads the grant's own refusal")
+    func implausibleBoundsDoNotHideAnUnreadMode() async throws {
+        let helper = Fixture.composed(
+            extraKeys: Self.implausibleMaximum, afterwards: [Self.modesUnread([0])])
+        await helper.bindSafetyRegistries()
+        #expect(
+            try Fixture.availability(ofFanAt: 0, in: try await helper.authority.snapshot())
+                == .unavailable(.boundsImplausible),
+            "the read path does not judge fan 0's bounds implausible, so nothing here is asked")
+        await helper.plane.advance()
+        try await Self.expectModeUnread(ofFan: 0, on: helper.plane)
+
+        let snapshot = try await helper.authority.snapshot()
+        let refusal = await Fixture.refusalForGrant(over: 0, from: helper.leases)
+
+        #expect(refusal == .supervisorBlind, "the grant never reached its read of fan 0")
+        #expect(
+            try Fixture.availability(ofFanAt: 0, in: snapshot) == .unavailable(refusal),
+            """
+            the snapshot kept the bounds over a mode that did not read, while the grant refuses \
+            the fan as blind; fanctl auto treats the bounds as silent and exits 0.
+            """)
+    }
+
+    /// A fan reconciliation could not hand back reads that durable refusal over implausible
+    /// bounds, as the grant does: the grant asks the baseline before anything about the fan.
+    ///
+    /// **Mutation:** as above. Run: red — the snapshot says `.foreignManualControl`.
+    @Test("A durable reconciliation refusal is stated over implausible bounds")
+    func aDurableRefusalOutranksImplausibleBounds() async throws {
+        let refused = Fixture.firmwareRefusesTheModeWrite
+        let helper = Fixture.composed(writes: refused, extraKeys: Self.implausibleMaximum)
+        await helper.plane.setMode(.manual, ofFan: 0)
+        await helper.reconciliation.reconcile()
+        #expect(
+            await helper.reconciliation.fansWithRefusedHandback == [0],
+            "reconciliation handed fan 0 back, so there is no durable refusal to state")
+
+        let snapshot = try await helper.authority.snapshot()
+        let refusal = await Fixture.refusalForGrant(over: 0, from: helper.leases)
+
+        #expect(refusal == .restoreToAutomaticFailed)
+        #expect(
+            try Fixture.availability(ofFanAt: 0, in: snapshot) == .unavailable(refusal),
+            "the bounds are standing in for a refusal no read can clear")
     }
 
     // MARK: - One read
