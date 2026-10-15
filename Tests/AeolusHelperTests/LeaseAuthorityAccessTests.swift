@@ -101,8 +101,9 @@ struct LeaseAuthorityAccessTests {
         // table open across a sleep without ever touching `sleepSeal` itself (#202 item 1).
         "var latestWakeGeneration: UInt64 = 0",
         "var sealGeneration: UInt64 = 0",
-        // § 7's grant seal (#350). Writable from elsewhere, it could reopen the gate under a
-        // panic verb still restoring, or close it for the life of the process.
+        // The machine-wide restore seal (#350, #364). Writable from elsewhere, it could reopen
+        // the gate under a panic verb or a sleep handback still restoring, or close it for the
+        // life of the process.
         "var machineWideRestoresInFlight = 0",
         "static let invalidatedInFlight",
         "func restore(_ fans: Set<Int>, because cause: FanRestoreCause) async {",

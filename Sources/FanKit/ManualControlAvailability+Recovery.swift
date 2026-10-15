@@ -52,8 +52,9 @@ extension ManualControlAvailability.Reason {
                 + "implement one."
         case .releaseInProgress:
             return "This fan is mid-handback: a previous lease just ended and the write that "
-                + "returns it to automatic control has not completed yet, or a request to return "
-                + "every fan at once (`fanctl reset --all`, `fanctl auto`) is still running."
+                + "returns it to automatic control has not completed yet, or a restore of every "
+                + "fan at once is still running — `fanctl reset --all`, `fanctl auto`, or the "
+                + "handback before the Mac sleeps."
         case .handbackUnconfirmed:
             return "Aeolus asked for this fan back and stopped waiting for an answer before "
                 + "one arrived, so it does not yet know what mode the fan is in."

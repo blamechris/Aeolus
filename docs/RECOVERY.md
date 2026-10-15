@@ -149,9 +149,11 @@ lease. It becomes available again once that lease ends or is released.
 build does not implement one. Ask for a lease without self-renewal instead.
 
 **`releaseInProgress`** — This fan is mid-handback: a previous lease just ended and the write
-that returns it to automatic control has not completed yet, or a request to return every fan at
-once (`fanctl reset --all`, `fanctl auto`) is still running. Retry in a moment; this normally
-clears in milliseconds.
+that returns it to automatic control has not completed yet, or a restore of every fan at once is
+still running — `fanctl reset --all`, `fanctl auto`, or the handback the helper makes before the
+Mac sleeps, which can still be running just after it wakes. Retry in a moment; this normally
+clears in milliseconds. If it does not clear within a few seconds, that restore has not
+returned; go to step 5.
 
 **`handbackUnconfirmed`** — Aeolus asked for this fan back and stopped waiting for an answer
 before one arrived, so it does not yet know what mode the fan is in. The outstanding restore

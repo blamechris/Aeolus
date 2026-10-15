@@ -392,8 +392,8 @@ something less true than what was available.
    apply at once — a dying holder's fan is mid-handback while a second client legitimately
    holds another — and `.releaseInProgress` documents itself as *"retry in a moment"*. A client
    told that, when the real answer is *"somebody else holds the fans and will for as long as
-   they live"*, retries into a different refusal forever. § 7's seal, item 6, is checked before
-   both.
+   they live"*, retries into a different refusal forever. The machine-wide restore seal, item 6,
+   is checked before both.
 
 5. **An exemption that lapsed → `.releaseInProgress`**
    ([#311](https://github.com/blamechris/Aeolus/issues/311)). The foreign-control step above
@@ -406,24 +406,29 @@ something less true than what was available.
    longer in the set. Least durable of the six, so last: the retry reads the fan fresh.
    `GrantExemptionLapseTests` scripts the interleaving.
 
-6. **§ 7's grant seal → `.releaseInProgress`**
-   ([#350](https://github.com/blamechris/Aeolus/issues/350)). Numbered last because it was added
+6. **The machine-wide restore seal → `.releaseInProgress`**
+   ([#350](https://github.com/blamechris/Aeolus/issues/350),
+   [#364](https://github.com/blamechris/Aeolus/issues/364)). Numbered last because it was added
    last; it is **checked between items 3 and 4**, after `sleepSeal` and before `table.isEmpty`.
-   [The machine-wide restore seal](#the-machine-wide-restore-seal) is the mechanism.
+   [The machine-wide restore seal](#the-machine-wide-restore-seal) is the mechanism: § 7's panic
+   verb and, since #364, § 4's handback hold it.
 
    - **Before the lease table**, and that is not an exception to the durability order. No lease
-     is added while the seal is open, so a lease the table shows then is one this panic's sweep is
-     about to drop: it outlasts the seal by nothing. One can be seen only between the seal
-     opening and the sweep's `removeAll` — the verb's closure leaves the lease core in between —
+     is added while the seal is open, so a lease the table shows then is one the sealed sweep —
+     § 7's or § 4's — is about to drop: it outlasts the seal by nothing. One can be seen only
+     between the seal opening and the sweep's `removeAll` — the verb's closure leaves the lease
+     core in between —
      and a grant there was told `.leaseHeldByAnotherClient`, which stops being true within
      moments, while the snapshot said `.releaseInProgress`. The review of
      [#363](https://github.com/blamechris/Aeolus/pull/363) found that; the guard sat after the
      table, on the argument that a lease outlasts the seal, which it cannot here.
      `PanicGrantSealTests.aGrantBetweenTheSealAndTheSweepIsRefusedByTheSeal` holds the order.
-   - **After `sleepSeal`**, which lifts on the next `.didWake` and so outlasts the panic verb.
+   - **After `sleepSeal`**, which lifts on the next `.didWake` and so outlasts the panic verb,
+     and § 4's teardown on the ordinary path. When the wake came first — a declined seal — or
+     during the teardown, this seal alone answers for the teardown still running (#364).
    - **Before `releasing`**, and the two give the same reason, so the order changes only the log
-     line: a fan the panic sweep is handing back is refused under the line that names the panic
-     verb, which is the cause, rather than under the ordinary handback's.
+     line: a fan the sealed sweep is handing back is refused under the line that names the
+     machine-wide restore, which is the cause, rather than under the ordinary handback's.
    - **In the straight-line region, and nowhere above the marker.** A grant parked on a
      suspension point when the panic begins has already passed anything checked above it, so the
      only check that can meet it is one below the last `await` — #95's argument. A duplicate above
@@ -553,13 +558,19 @@ back, on the way into an emergency, the one fan it may need to command hardest.
 ## The machine-wide restore seal
 
 *Added by [#350](https://github.com/blamechris/Aeolus/issues/350); not relocated from a doc
-comment. [ADR 0014](../ADR/0014-apple-silicon-unlock.md)'s 2026-10-15 amendment is the decision.*
+comment. [ADR 0014](../ADR/0014-apple-silicon-unlock.md)'s 2026-10-15 amendment is the decision,
+and its #364/#347 amendment extends it to § 4.*
 
-`machineWideRestoresInFlight` counts the § 7 panic verbs inside
-`LeaseAuthority.sealingGrants(during:)`. While it is not zero, `acquireLease` refuses every grant
-`.releaseInProgress` under `LeaseLog.refusedDuringMachineWideRestore`. Its one caller is
-`SupervisedFanAuthority.restoreAllToAutomatic`, and all three of § 7's acts run inside it: the
-sweep, the `.built`-gated `.everyFan`, and the read-back.
+`machineWideRestoresInFlight` counts the machine-wide restores inside
+`LeaseAuthority.sealingGrants(during:)`: § 7's panic verbs and, since
+[#364](https://github.com/blamechris/Aeolus/issues/364), § 4's handbacks. While it is not zero,
+`acquireLease` refuses every grant `.releaseInProgress` under
+`LeaseLog.refusedDuringMachineWideRestore`. It has two callers.
+`SupervisedFanAuthority.restoreAllToAutomatic` runs all three of § 7's acts inside it: the sweep,
+the `.built`-gated `.everyFan`, and the read-back. `SystemPowerResponder.allowSleepAfterHandback`
+runs § 4's teardown inside it — the sweep and the keystone — on every `.willSleep`; § *"§ 4's
+handback runs inside it (#364)"* below is the argument. Most of this section is § 7's, and holds
+for § 4 unless that subsection says otherwise.
 
 **The defect it closes.** The panic verb ran `releaseEveryLease()`, then `.everyFan`, then
 `confirmAcceptedHandbacks()`, and nothing refused a grant in between. From the moment the sweep
@@ -599,11 +610,11 @@ frame, so the count cannot underflow.
 the seal, and no read is queued ahead of `.everyFan` (ADR 0007, 2026-09-20). The reply is v1's
 *accepted*, and the refusal is a reason `acquireLease` already threw, so `AeolusXPCVersion` does
 not move. § 4 keeps `sleepSeal`, § 6 its gate and second keystone, and reconciliation runs
-before the listener resumes. That puts § 7 and bring-up behind an airtight interlock, and § 4 and
-§ 6 behind narrower ones: § 4's `.everyFan` runs with the grant gate open whenever the episode's
-wake is answered before that restore returns — a declined seal, or a handback wedged across the
-sleep ([#364](https://github.com/blamechris/Aeolus/issues/364)) — and § 6's gate refuses a grant on
-arrival but not in flight, with `apply` refused by the same gate (docs/SAFETY.md § 1).
+before the listener resumes. That puts § 7, § 4 and bring-up behind an airtight interlock, and § 6
+behind a narrower one: its gate refuses a grant on arrival but not in flight, with `apply` refused
+by the same gate (docs/SAFETY.md § 1). § 4's was narrower too until #364 put its teardown inside
+this seal: its `.everyFan` ran with the gate open whenever the episode's wake was answered before
+that restore returned.
 
 **What the snapshot says.** `activeLeaseView()` reads the count in the same hop as the registers,
 as `LeaseAccountability.machineWideRestoreInFlight`, and the availability ladder's step 10 —
@@ -634,8 +645,100 @@ overwrite — each with the mutation it kills recorded on it. `PanicPathScopeTri
 the three acts inside the closure, and today it alone holds the read-back's place:
 `ControlStateGatePlane` parks every mode read, so a grant asked while the read-back is parked
 parks on its own foreign-control read too. A per-fan mode park could hold it behaviourally. The
-same suite holds that each runtime machine-wide restore is issued after its interlock is called —
-the order, not the gaps above.
+same suite holds that each runtime machine-wide restore is issued after its interlock is called,
+and § 7's and § 4's inside this seal.
+
+### § 4's handback runs inside it (#364)
+
+*[ADR 0014](../ADR/0014-apple-silicon-unlock.md)'s #364/#347 amendment is the decision.*
+
+`SystemPowerResponder.allowSleepAfterHandback` runs `handBackEveryFan(reportingTo:)` —
+`releaseEveryLease()`, then the `.everyFan` keystone — inside `sealingGrants(during:)` on every
+`.willSleep`, whatever `sealForSleep(generation:)` decided and whatever the wake does.
+`sealForSleep` still runs first and decides only the sleep seal. `.didWake` still writes nothing
+and never touches the count. `handBackEveryFan` itself is unchanged, so the keystone is still
+issued whatever the sweep did.
+
+**Two seals, because they are two facts.** `sleepSeal` belongs to the episode — the machine is
+going to sleep — set before the teardown and cleared by a wake newer than every sleep that met it
+([Pairing a sleep with its own wake](#pairing-a-sleep-with-its-own-wake)). The count belongs to
+the teardown: a restore that would undo a grant is in flight. They agree only when the teardown
+starts after the seal and ends before the wake, and three routes break that:
+
+- **A declined seal.** A strictly later wake has been seen, so `sealForSleep` declines, and the
+  starved body's sweep and keystone run on an awake machine. The review of
+  [#363](https://github.com/blamechris/Aeolus/pull/363) confirmed with a test that a grant during
+  that `.everyFan` was granted and outlived it.
+- **A keystone that outlives its wake.** With no lease, `.everyFan` is issued at once, the budget
+  acknowledges, the machine sleeps and wakes, and `.didWake` lifts the seal with the keystone
+  still pending.
+- **A sweep that outlives its wake.** A lease's per-fan restore outlasts the budget. After the wake
+  a grant over another fan went through, and § 4 issued `.everyFan` once the sweep returned.
+
+After A6 each is #350's harm on § 4's path: § 5 reads `.modeReclaimed` under a live lease. All
+three are unreachable on every build on `main`, where a `.notBuilt` plane grants no lease.
+
+**Which reason a client gets.** `acquireLease`'s guard, its position and its reason do not move.
+While `sleepSeal` stands the gate answers `.systemSleeping`, which it checks first. After a
+declined seal, or after a wake the teardown outlived, the count alone answers `.releaseInProgress`.
+A fan the sweep covered answers `.handbackUnconfirmed` once the budget has expired, which is
+checked above both. Item 6 of [The grant gate's ordering](#the-grant-gates-ordering) is where the
+guard sits.
+
+**What the declined teardown is for.** The later wake proves the sleep is over, not what it left
+behind. The starved body is still the only act in that episode that ends a lease which crossed the
+sleep: ADR 0007's sleep ruling has the client re-acquire deliberately, and otherwise only the TTL
+ends it, whose advance across a sleep is unmeasured
+([#210](https://github.com/blamechris/Aeolus/issues/210)). It is also the episode's only
+`.everyFan`, which returns the plane's engaged set and force-key flag to the state ADR 0014 D6's
+post-wake re-acquire assumes, on firmware that may have reset `Ftst` during the sleep (U12,
+reported only). So it keeps running, and the gate is shut while it does. Skipping it, or skipping
+only its `.everyFan`, would trade a refusal for a lease nothing hands back, or for a plane that
+disagrees with the firmware.
+
+**What it does not change.** The keystone gains no input and waits on nothing new: the count is
+raised on the lease actor before the sweep, no restore reads it, and no read is queued ahead of
+`.everyFan` (ADR 0007, 2026-09-20). `.everyFan` is not made conditional on the episode's seal still
+standing, which would make the keystone depend on lease-core state. Seal, release, keystone and
+acknowledge keep their order, and the budget its bound. On the handed-back path the count closes
+before the acknowledgement; behind a budget acknowledgement it stays open until the teardown
+returns.
+
+**What it costs.** A teardown that never returns holds the count, so every grant is refused
+`.releaseInProgress` after the wake as well as before it, until the teardown returns or
+[ADR 0012](../ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md) ends the helper. That
+is § 7's cost on the same terms, and the safe side: a lease granted there is one the pending
+`.everyFan` undoes when the wedge clears. "Retry in a moment" understates a wedge here as it does
+for § 7. A fan only the keystone covers is not given D33's register, which would be the second
+producer #202 item 2 refused.
+
+**What the snapshot says.** Step 10 re-states `.available` while the count is above zero. After a
+declined seal, and after a wake the teardown outlived, the snapshot and the grant both say
+`.releaseInProgress`. During a sealed teardown before the wake the grant says `.systemSleeping` and
+the snapshot `.releaseInProgress`, where it said `.available`:
+[#269](https://github.com/blamechris/Aeolus/issues/269)'s gap, narrower in availability and
+different in reason. When #269 gives `.systemSleeping` a rung, it goes above step 10, in the grant's
+order.
+
+**Why two tests were inverted.** `UnconfirmedHandbackTests.aWedgedHandbackDropsTheLeaseFirstAndLeavesTheFanUnconfirmed`
+and `SleepCycleSurvivalTests.aHandbackThatNeverReturnsIsStillRefusedAfterASecondWake` granted fan 1
+after the wake, with the sweep parked and the keystone still to come, and asserted it as correct;
+the second's own probe recorded cycle 1's keystone arriving after that grant. Both now assert fan 1
+refused `.releaseInProgress` and grant it once the teardown returns. The separator they used it for
+is now a reason: `.releaseInProgress` tells the running teardown apart from fan 0's
+`.handbackUnconfirmed` and from a stuck seal's `.systemSleeping`.
+
+**Airtight, and narrower.** § 7's, § 4's and bring-up's machine-wide restores now run behind
+airtight grant interlocks. § 6's is narrower, and harmless: its gate refuses a grant on arrival
+rather than in flight, and `apply` is refused by the same gate, so a grant that lands never engages
+and its `.everyFan` has nothing to undo.
+
+**Tested by** `SleepGrantSealTests`: a grant during a declined seal's teardown, with the keystone
+or the sweep parked; a keystone parked across its wake; and a sweep parked across its wake — each
+with the mutations it kills recorded on it. `PanicPathScopeTripwireTests` holds every call of
+`handBackEveryFan(` inside the one `sealingGrants` closure in `allowSleepAfterHandback`.
+`SleepCycleAccumulationTests`' fan-1 `.systemSleeping` expectation inside a parked, sealed window
+now also holds the sleep seal's guard above the count's.
 
 ## Pairing a sleep with its own wake
 
@@ -699,7 +802,9 @@ body still runs `releaseEveryLease()` and the keystone after the wake, so a leas
 between is dropped and its fan handed back at a moment nothing asked for. The fan goes back to
 **automatic** — the safe direction — and what the client is never told is that it lost the
 lease, since there is no revocation callback. That is `CLAUDE.md` rule 6, bounded and honest
-rather than thermal.
+rather than thermal. Since [#364](https://github.com/blamechris/Aeolus/issues/364) no lease can be
+taken *during* the starved teardown: it runs inside the machine-wide restore seal, so a grant while
+it runs is refused `.releaseInProgress` rather than granted and undone by its `.everyFan`.
 
 `SleepOrderingTests` pins all of it, including the sequence the counting version could not
 survive: `.didWake`, `.willSleep`, `.didWake`, `.willSleep`, with the second ordinary sleep

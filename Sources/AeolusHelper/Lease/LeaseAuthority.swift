@@ -246,9 +246,10 @@ actor LeaseAuthority: HeldLeaseRole {
     /// (#347). handback-ledger.md § *"Pairing a sleep with its own wake"*.
     private var sealGeneration: UInt64 = 0
 
-    /// How many § 7 panic verbs are inside `sealingGrants(during:)` right now; while it is not
-    /// zero no lease is granted (#350). A count rather than a flag because panics overlap, and
-    /// the first to return must not reopen the gate under the next.
+    /// How many machine-wide restores are inside `sealingGrants(during:)` right now — § 7's panic
+    /// verbs and § 4's handbacks; not § 6's teardown or bring-up's restore. While it is not zero
+    /// no lease is granted (#350, #364). A count rather than a flag because they overlap, and the
+    /// first to return must not reopen the gate under the next.
     /// handback-ledger.md § *"The machine-wide restore seal"*.
     private var machineWideRestoresInFlight = 0
 
@@ -361,10 +362,10 @@ actor LeaseAuthority: HeldLeaseRole {
             log.refusedSystemSleeping(connection)
             throw AeolusXPCFault.manualControlUnavailable(reason: .systemSleeping)
         }
-        // § 7's seal (#350), below the marker so a grant parked above it when § 7 begins meets
-        // it, and above the lease table because no lease is added while it is open: a lease
-        // the table still shows is one this panic's sweep is about to drop. handback-ledger.md
-        // § "The grant gate's ordering", item 6.
+        // The machine-wide restore seal (#350, #364), below the marker so a grant parked above
+        // it when § 7 or § 4 begins meets it, and above the lease table because no lease is
+        // added while it is open: a lease the table still shows is one the sealed sweep is about
+        // to drop. handback-ledger.md § "The grant gate's ordering", item 6.
         guard machineWideRestoresInFlight == 0 else {
             log.refusedDuringMachineWideRestore(connection)
             throw AeolusXPCFault.manualControlUnavailable(reason: .releaseInProgress)
@@ -702,16 +703,16 @@ actor LeaseAuthority: HeldLeaseRole {
         return outstanding
     }
 
-    // MARK: - The panic verb's grant seal
+    // MARK: - The machine-wide restore seal
 
     /// Runs `acts` with every grant refused `.releaseInProgress`, and reopens the gate when they
     /// return (#350).
     ///
-    /// `docs/SAFETY.md` § 7's three acts run inside it, so it opens before the sweep empties the
-    /// table and closes after the read-back. Scoped rather than a seal/unseal pair: the decrement
-    /// is a `defer` in the frame that increments, so nothing an edit puts between them can leak
-    /// it. It gates grants only — no restore reads it. handback-ledger.md § *"The machine-wide
-    /// restore seal"*.
+    /// `docs/SAFETY.md` § 7's three acts and § 4's handback run inside it (#364), so it opens
+    /// before the sweep empties the table and closes after the last act. Scoped rather than a
+    /// seal/unseal pair: the decrement is a `defer` in the frame that increments, so nothing an
+    /// edit puts between them can leak it. It gates grants only — no restore reads it.
+    /// handback-ledger.md § *"The machine-wide restore seal"*.
     func sealingGrants<Outcome: Sendable>(
         during acts: @Sendable () async -> Outcome
     ) async -> Outcome {

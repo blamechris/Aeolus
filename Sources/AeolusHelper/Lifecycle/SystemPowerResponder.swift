@@ -269,6 +269,19 @@ actor SleepAcknowledgement {
 /// is emptied, sees no lease and no fan mid-handback, and engages manual control as the
 /// machine stops running this process. Clearing the seal on wake writes nothing.
 ///
+/// **Two seals, because they are two facts**
+/// ([#364](https://github.com/blamechris/Aeolus/issues/364)). `sleepSeal` is the episode's —
+/// the machine is going to sleep — set before the teardown and lifted by a newer wake. The
+/// teardown's own extent is the other fact, and the two coincide only when it starts after the
+/// seal and ends before the wake. A seal declined because its wake was already answered breaks
+/// the first; a teardown that outlives its wake — the budget acknowledged, the machine slept
+/// and woke — breaks the second. So the teardown runs inside
+/// `LeaseAuthority.sealingGrants(during:)` on every `.willSleep`, the seal § 7's panic verb uses
+/// (#350). While the sleep seal stands a grant is refused `.systemSleeping`, and after a
+/// declined seal or a wake the teardown outlived, `.releaseInProgress`. The wake never touches
+/// the count, and no restore reads it, so the keystone waits on nothing new.
+/// handback-ledger.md § *"§ 4's handback runs inside it (#364)"*.
+///
 /// ## What the lease lines say in `log show`
 ///
 /// § 4's teardown goes through `releaseEveryLease()`, so each fan is logged with
@@ -357,8 +370,9 @@ struct SystemPowerResponder<Plane: FanControlPlane>: Sendable {
             await allowSleepAfterHandback(notification)
         case .didWake:
             // Clearing the seal is not a write and does not make this branch one. It touches
-            // no fan, issues no read, and reaches no plane — it reopens acquisition, which is
-            // the only thing about a wake this helper acts on. See `LeaseAuthority.sleepSeal`.
+            // no fan, issues no read, and reaches no plane — it lifts the sleep seal, which is
+            // the only thing about a wake this helper acts on. A teardown still running keeps
+            // the machine-wide restore seal it holds (#364). See `LeaseAuthority.sleepSeal`.
             await leases.unsealAfterWake(generation: notification.generation)
             log.wokeWithoutWriting()
         }
@@ -398,7 +412,10 @@ struct SystemPowerResponder<Plane: FanControlPlane>: Sendable {
             await acknowledgement.acknowledge(.budgetExpired)
         }
 
-        await handBackEveryFan(reportingTo: acknowledgement)
+        // Inside the machine-wide restore seal on every sleep, whatever `sealForSleep` decided
+        // and whatever the wake does: the sleep seal is the episode's, and this is the
+        // teardown's (#364). See "Acquisition is sealed for the duration" above.
+        await leases.sealingGrants { await handBackEveryFan(reportingTo: acknowledgement) }
 
         // Cancelled before the acknowledgement rather than after it, so the two paths cannot
         // both be live across this actor hop. The guard inside `SleepAcknowledgement` is what

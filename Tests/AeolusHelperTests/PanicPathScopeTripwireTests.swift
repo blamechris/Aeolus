@@ -172,43 +172,43 @@ struct PanicPathScopeTripwireTests {
             [
                 (release, "the lease release"), (gate, "the capability gate"),
                 (keystone, "the machine-wide restore"), (readBack, "the read-back"),
-            ], of: body)
+            ], of: body, in: "restoreAllToAutomatic")
     }
 
-    /// Each of `acts` lies inside the one `sealingGrants` closure in `body`, the panic verb's.
+    /// Each of `acts` lies inside the one `sealingGrants` closure in `body`, `caller`'s.
     private static func expectInsideTheSeal(
-        _ acts: [(Range<String.Index>, String)], of body: String
+        _ acts: [(Range<String.Index>, String)], of body: String, in caller: String
     ) throws {
         let seals = body.components(separatedBy: "sealingGrants").count - 1
-        #expect(seals == 1, "restoreAllToAutomatic names sealingGrants \(seals) times, not once")
+        #expect(seals == 1, "\(caller) names sealingGrants \(seals) times, not once")
         let sealed = try #require(
             Self.closureBody(after: "sealingGrants", in: body),
-            "restoreAllToAutomatic runs its acts in no sealingGrants closure this scan can find")
+            "\(caller) runs its acts in no sealingGrants closure this scan can find")
         for (act, what) in acts {
             #expect(
                 sealed.contains(act.lowerBound) && sealed.contains(act.upperBound),
                 """
-                restoreAllToAutomatic runs \(what) outside LeaseAuthority.sealingGrants(during:), \
-                so a lease can be granted while it runs and undone by the restore (#350). These \
-                say the seal covers all three acts:
+                \(caller) runs \(what) outside LeaseAuthority.sealingGrants(during:), so a lease \
+                can be granted while it runs and undone by its machine-wide restore (#350, \
+                #364). docs/SAFETY.md § 1 and these say what the seal covers:
                 \(Self.checklist)
                 """)
         }
     }
 
     /// Each machine-wide restore issued after bring-up is issued after its grant interlock is
-    /// called (`docs/SAFETY.md` § 1).
+    /// called (`docs/SAFETY.md` § 1), and § 7's and § 4's inside the machine-wide restore seal.
     ///
-    /// § 4 seals the table before its teardown, § 6's signal teardown closes the control gate
-    /// before its first keystone, and § 7 issues `.everyFan` inside `sealingGrants`. Bring-up's
-    /// fallback runs before the listener is resumed, which `HelperCompositionTests` holds.
+    /// § 4 seals the table before its teardown and runs the teardown inside `sealingGrants`, § 6's
+    /// signal teardown closes the control gate before its first keystone, and § 7 issues
+    /// `.everyFan` inside `sealingGrants`. Bring-up's fallback runs before the listener is
+    /// resumed, which `HelperCompositionTests` holds.
     ///
-    /// **This holds the order, not that every interlock is airtight.** § 7's and bring-up's are.
-    /// § 4's `.everyFan` runs with the grant gate open whenever the episode's wake is answered
-    /// before that restore returns — a declined seal, or a handback wedged across the sleep
-    /// ([#364](https://github.com/blamechris/Aeolus/issues/364)) — and § 6's gate refuses a grant
-    /// on arrival rather than in flight: one in flight can land, and `apply` is refused by the
-    /// same gate before the process exits.
+    /// **§ 7's, § 4's and bring-up's interlocks are airtight; § 6's is narrower, and harmless.**
+    /// Since [#364](https://github.com/blamechris/Aeolus/issues/364) every call of § 4's
+    /// `handBackEveryFan(` lies inside the one `sealingGrants` closure in
+    /// `allowSleepAfterHandback`. § 6's gate refuses a grant on arrival rather than in flight: one
+    /// in flight can land, and `apply` is refused by the same gate before the process exits.
     ///
     /// Calls are matched as identifiers with optional whitespace before `(`, because
     /// `keystone ()` compiles, and a `func` declaration is not counted as one.
@@ -217,7 +217,10 @@ struct PanicPathScopeTripwireTests {
     /// `SystemPowerResponder.allowSleepAfterHandback`. Run: red. **Mutation:** move
     /// `await gate.close()` below the first `_ = await keystone()` in `SignalTeardown.run`. Run:
     /// red. **Mutation:** the same, with that first call spelled `_ = await keystone ()` and the
-    /// second left after the close. Run: red.
+    /// second left after the close. Run: red. **Mutations (#364):** call `handBackEveryFan(` bare
+    /// in `allowSleepAfterHandback`; `sealingGrants {}` and then the bare call; the same with
+    /// `// handBackEveryFan(reportingTo: acknowledgement)` inside the empty closure; and a second
+    /// bare call elsewhere in the file. Run: red on each.
     @Test("Each runtime machine-wide restore is issued after its grant interlock")
     func everyRuntimeMachineWideRestoreFollowsItsGrantInterlock() throws {
         for site in [
@@ -255,7 +258,15 @@ struct PanicPathScopeTripwireTests {
         let panic = try Self.functionBody(
             of: "restoreAllToAutomatic", inFile: "SupervisedFanAuthority.swift")
         let keystone = try #require(panic.range(of: ".everyFan"), "§ 7 names no .everyFan")
-        try Self.expectInsideTheSeal([(keystone, "the machine-wide restore")], of: panic)
+        try Self.expectInsideTheSeal(
+            [(keystone, "the machine-wide restore")], of: panic, in: "restoreAllToAutomatic")
+
+        // #364: every call of § 4's teardown — the count above says they are all here.
+        let sleep = try Self.functionBody(
+            of: "allowSleepAfterHandback", inFile: "SystemPowerResponder.swift")
+        try Self.expectInsideTheSeal(
+            Self.calls(of: "handBackEveryFan", in: sleep).map { ($0, "§ 4's teardown") },
+            of: sleep, in: "allowSleepAfterHandback")
     }
 
     // MARK: - The machine-wide scope

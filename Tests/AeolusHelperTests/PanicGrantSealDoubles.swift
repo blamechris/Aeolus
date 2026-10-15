@@ -7,7 +7,8 @@ import SMCCore
 /// a time, over `ControlStateGatePlane`'s parkable mode reads (#350).
 ///
 /// `CycleWedgingRestorePlane` parks every restore while it is wedging and opens them all at once.
-/// The grant seal's tests need what it cannot say: `.everyFan` parked while a `.fan(n)` restore is
+/// The grant seal's tests — `PanicGrantSealTests` for § 7, and `SleepGrantSealTests` for § 4's
+/// handback (#364) — need what it cannot say: `.everyFan` parked while a `.fan(n)` restore is
 /// not, the other way round, and two overlapping `.everyFan` restores let go one at a time. And
 /// they need a grant parked on its foreign-control read at the same time, which is the mode read
 /// `ControlStateGatePlane` already parks — so this wraps it rather than repeating it.

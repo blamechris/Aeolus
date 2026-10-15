@@ -42,7 +42,7 @@ import FanKit
 // |   | … or `.restoreToAutomaticUnconfirmed`, for a fan § 3 keeps (#303) | § 3's kept set |
 // | 6 | `.writePathNotBuilt` | `availability(writeCapabilityIs:bounds:)` — the seam |
 // | 8 | `.boundsImplausible` | `availability(writeCapabilityIs:bounds:)` — § 2's gate |
-// | 10 | `.releaseInProgress` | `reportingMachineWideRestore` — § 7's grant seal (#350) |
+// | 10 | `.releaseInProgress` | `reportingMachineWideRestore` — the machine-wide restore seal |
 // | 9 | `.available` | nothing refused |
 //
 // **Steps 4 and 7 were § 5's ledger** — `.supervisorBlind` and `.reclaimedBySystem` — until
@@ -129,12 +129,15 @@ extension ReadOnlyFanReport {
             given: leases)
     }
 
-    /// Step 10 of the ladder: § 7's grant seal
-    /// ([#350](https://github.com/blamechris/Aeolus/issues/350)), as one fan's availability.
+    /// Step 10 of the ladder: the machine-wide restore seal
+    /// ([#350](https://github.com/blamechris/Aeolus/issues/350), #364), as one fan's availability.
     ///
-    /// While the panic verb runs, a fan that would otherwise read `.available` reads
-    /// `.unavailable(.releaseInProgress)`, the reason `acquireLease` throws for it. Every other
-    /// answer passes through untouched; see this file's header for why that is the whole rule.
+    /// While § 7's panic verb or § 4's handback runs, a fan that would otherwise read `.available`
+    /// reads `.unavailable(.releaseInProgress)`, the reason `acquireLease` throws for it. Every
+    /// other answer passes through untouched; see this file's header for why that is the whole
+    /// rule. During a sealed sleep the grant says `.systemSleeping` first, which this ladder does
+    /// not state yet ([#269](https://github.com/blamechris/Aeolus/issues/269)); #269's rung goes
+    /// above this one, in the grant's order.
     static func reportingMachineWideRestore(
         of fan: FanState, given leases: LeaseAccountability
     ) -> FanState {

@@ -30,7 +30,7 @@ import FanKit
 /// ## What is missing, and why
 ///
 /// `sleepSeal` and "is the table non-empty" are lease-core facts with no per-fan expression
-/// in a snapshot. § 7's grant seal is machine-wide too, and is carried anyway
+/// in a snapshot. The machine-wide restore seal is machine-wide too, and is carried anyway
 /// ([#350](https://github.com/blamechris/Aeolus/issues/350)): while it is open the grant refuses
 /// `.releaseInProgress` over every fan nothing else refuses, so the ladder can state it per fan by
 /// re-stating `.available` and nothing else. `sleepSeal` is not carried yet; that is #269's.
@@ -83,7 +83,8 @@ struct LeaseAccountability: Sendable {
     /// could matter; the other only mislabels.
     let restoresAwaitingConfirmation: Set<Int>
 
-    /// Whether § 7's panic verb is inside `LeaseAuthority.sealingGrants(during:)`, so every grant
-    /// is refused `.releaseInProgress` (#350). The ladder's last rung states it per fan.
+    /// Whether § 7's panic verb or § 4's handback is inside
+    /// `LeaseAuthority.sealingGrants(during:)`, so every grant is refused `.releaseInProgress`
+    /// (#350, #364). The ladder's last rung states it per fan.
     let machineWideRestoreInFlight: Bool
 }
