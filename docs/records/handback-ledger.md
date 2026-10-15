@@ -411,8 +411,8 @@ something less true than what was available.
    last; it is **checked between items 3 and 4**, after `sleepSeal` and before `table.isEmpty`.
    [The machine-wide restore seal](#the-machine-wide-restore-seal) is the mechanism.
 
-   - **Before the lease table**, and that is not an exception to the durability order. Nothing
-     inserts while the seal is open, so a lease the table shows then is one this panic's sweep is
+   - **Before the lease table**, and that is not an exception to the durability order. No lease
+     is added while the seal is open, so a lease the table shows then is one this panic's sweep is
      about to drop: it outlasts the seal by nothing. One can be seen only between the seal
      opening and the sweep's `removeAll` — the verb's closure leaves the lease core in between —
      and a grant there was told `.leaseHeldByAnotherClient`, which stops being true within
@@ -596,9 +596,10 @@ the seal, and no read is queued ahead of `.everyFan` (ADR 0007, 2026-09-20). The
 *accepted*, and the refusal is a reason `acquireLease` already threw, so `AeolusXPCVersion` does
 not move. § 4 keeps `sleepSeal`, § 6 its gate and second keystone, and reconciliation runs
 before the listener resumes. That puts § 7 and bring-up behind an airtight interlock, and § 4 and
-§ 6 behind narrower ones: § 4's teardown still runs with the gate open when `sealForSleep`
-declines ([#364](https://github.com/blamechris/Aeolus/issues/364)), and § 6's gate refuses a grant
-on arrival but not in flight, with `apply` refused by the same gate (docs/SAFETY.md § 1).
+§ 6 behind narrower ones: § 4's `.everyFan` runs with the grant gate open whenever the episode's
+wake is answered before that restore returns — a declined seal, or a handback wedged across the
+sleep ([#364](https://github.com/blamechris/Aeolus/issues/364)) — and § 6's gate refuses a grant on
+arrival but not in flight, with `apply` refused by the same gate (docs/SAFETY.md § 1).
 
 **What the snapshot says.** `activeLeaseView()` reads the count in the same hop as the registers,
 as `LeaseAccountability.machineWideRestoreInFlight`, and the availability ladder's step 10 —

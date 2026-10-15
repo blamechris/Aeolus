@@ -117,8 +117,9 @@ arrive while this sentence goes on saying there are four (#228). **Each is issue
 interlock, and two of the four interlocks have a gap.** § 7 runs inside
 `LeaseAuthority.sealingGrants(during:)` ([#350](https://github.com/blamechris/Aeolus/issues/350))
 and bring-up reconciles before the listener is resumed, so neither can undo a lease. § 4 seals the
-table before its teardown, except when `sealForSleep` declines a seal its wake already answered:
-that teardown's `.everyFan` runs with the gate open, and a grant during it outlives the restore
+table before its teardown, but its `.everyFan` runs with the grant gate open whenever the
+episode's wake is answered before that restore returns — a declined seal, or a handback wedged
+across the sleep — and a grant in that window outlives the restore
 ([#364](https://github.com/blamechris/Aeolus/issues/364), an A6 precondition). § 6's teardown closes
 the control gate first, but the gate refuses a grant on arrival, not one already in flight; such a
 grant can land, and `apply` is refused by the same gate before the process exits.
@@ -1414,7 +1415,7 @@ only report of it. The reply now follows one more restore call, which the client
 **No lease is granted while the panic verb runs** (#350). Its three acts run inside
 `LeaseAuthority.sealingGrants(during:)`, open from before the sweep empties the table until after
 the read-back. `acquireLease` refuses `.releaseInProgress` while it is open. The seal gates grants
-only: nothing reads it, the restore waits on nothing new, and the reply is unchanged.
+only: no restore reads it, the restore waits on nothing new, and the reply is unchanged.
 
 **One fan under no live lease *is* touched, and it is the fan this path exists for**
 ([#189](https://github.com/blamechris/Aeolus/issues/189)). `releaseEveryLease()` sweeps

@@ -204,10 +204,11 @@ struct PanicPathScopeTripwireTests {
     /// fallback runs before the listener is resumed, which `HelperCompositionTests` holds.
     ///
     /// **This holds the order, not that every interlock is airtight.** § 7's and bring-up's are.
-    /// § 4's teardown still runs when `sealForSleep` declines a seal its wake already answered,
-    /// with the gate open ([#364](https://github.com/blamechris/Aeolus/issues/364)), and § 6's
-    /// gate refuses a grant on arrival rather than in flight — one in flight can land, and `apply`
-    /// is refused by the same gate before the process exits.
+    /// § 4's `.everyFan` runs with the grant gate open whenever the episode's wake is answered
+    /// before that restore returns — a declined seal, or a handback wedged across the sleep
+    /// ([#364](https://github.com/blamechris/Aeolus/issues/364)) — and § 6's gate refuses a grant
+    /// on arrival rather than in flight: one in flight can land, and `apply` is refused by the
+    /// same gate before the process exits.
     ///
     /// Calls are matched as identifiers with optional whitespace before `(`, because
     /// `keystone ()` compiles, and a `func` declaration is not counted as one.

@@ -1165,8 +1165,8 @@ and overlapping panic verbs hold it until the last one ends. § 7's three acts r
 opens before the sweep empties the table and closes after the read-back. That is § 4's rule: no
 instant at which the table is empty and the gate is open.
 `acquireLease` checks it once, inside its straight-line region, after § 4's sleep-seal refusal and
-before the lease-table refusal: nothing inserts while it is open, so a lease the table shows then
-is one the sweep is about to drop. It refuses with `.releaseInProgress`, under a log line of its own.
+before the lease-table refusal: no lease is added while it is open, so a lease the table shows
+then is one the sweep is about to drop. It refuses with `.releaseInProgress`, under a log line of its own.
 The snapshot states the seal as the last rung before `.available`, read in the same hop as the
 registers.
 
@@ -1174,9 +1174,10 @@ registers.
 only, no restore reads it, and no read is queued ahead of `.everyFan` (ADR 0007, 2026-09-20). The
 reply is v1's *accepted*. § 4 keeps `sleepSeal`, § 6 its gate and second keystone, and reconciliation
 runs before the listener resumes. So § 7's and bring-up's machine-wide restores run behind a grant
-interlock. § 4's does too, except the teardown that runs when `sealForSleep` declines a seal its
-wake already answered, whose `.everyFan` runs with the gate open
-([#364](https://github.com/blamechris/Aeolus/issues/364), an A6 precondition). § 6's gate refuses
+interlock. § 4's does too, except that its `.everyFan` runs with the grant gate open whenever the
+episode's wake is answered before that restore returns — a declined seal, or a handback wedged
+across the sleep ([#364](https://github.com/blamechris/Aeolus/issues/364), an A6 precondition).
+§ 6's gate refuses
 a grant on arrival, not one already in flight; such a grant can land, and `apply` is refused by
 the same gate before the process exits.
 

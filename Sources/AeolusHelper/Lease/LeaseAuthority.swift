@@ -359,8 +359,8 @@ actor LeaseAuthority {
             throw AeolusXPCFault.manualControlUnavailable(reason: .systemSleeping)
         }
         // § 7's seal (#350), below the marker so a grant parked above it when § 7 begins meets
-        // it, and above the lease table because nothing inserts while it is open: a lease the
-        // table still shows is one this panic's sweep is about to drop. handback-ledger.md
+        // it, and above the lease table because no lease is added while it is open: a lease
+        // the table still shows is one this panic's sweep is about to drop. handback-ledger.md
         // § "The grant gate's ordering", item 6.
         guard machineWideRestoresInFlight == 0 else {
             log.refusedDuringMachineWideRestore(connection)
