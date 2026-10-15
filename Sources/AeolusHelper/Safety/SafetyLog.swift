@@ -650,21 +650,22 @@ extension SafetyLog {
         )
     }
 
-    /// Fans dropped from § 5's registry because the terminal action ended the lease they were
-    /// held under.
+    /// Fans dropped from § 5's registry because the terminal action is ending the lease they
+    /// were held under.
     ///
-    /// The terminal action revokes the lease it was holding the fan for, whole, so every other
-    /// fan § 5 was watching under that lease is now unleased. Dropping only the fan that
-    /// diverged left the siblings registered, and the next cycle re-engaged manual control on a
-    /// fan with no lease behind it. Records under another lease are not siblings (#357).
+    /// Emitted before that lease ends: the terminal action ends it whole next — revoked, or ended
+    /// as expired if it has lapsed — and that restores every fan it covered, or another path has
+    /// already ended it and restored them. Dropping only the fan that diverged left the siblings
+    /// registered, and the next cycle re-engaged manual control on a fan with no lease behind it.
+    /// Records under another lease are not siblings (#357).
     func reclamationSiblingsReleased(fans: [Int]) {
         emit(
             .notice,
             """
             § 5 also stopped watching fan(s) \
-            \(fans.map(String.init).joined(separator: ", ")): the terminal action ended the \
-            lease they were held under, so these are unleased and back on automatic control. \
-            They are not recorded as reclaimed — they were given up, not taken.
+            \(fans.map(String.init).joined(separator: ", ")): the terminal action is ending \
+            the lease they were held under, which hands them back to automatic control. They \
+            are not recorded as reclaimed — they were given up, not taken.
             """
         )
     }
@@ -1690,14 +1691,14 @@ extension SafetyLog {
     }
 
     /// The terminal action handed a fan back, but the lease it was holding the fan for had
-    /// already ended, so nothing was revoked — and no client is told the system took control
-    /// it had already given up (#353).
-    func reclamationRegisteringLeaseAlreadyEnded(fan: Int) {
+    /// already ended, or had lapsed and was ended as expired, so nothing was revoked — and no
+    /// client is told the system took control it had already given up (#353, #361).
+    func reclamationHandbackLeaseAlreadyEnded(fan: Int) {
         emit(
             .notice,
             """
             § 5 handed fan \(fan) back; the lease it was holding the fan for had already \
-            ended, so no lease was revoked.
+            ended, or had lapsed and was ended as expired, so no lease was revoked.
             """
         )
     }

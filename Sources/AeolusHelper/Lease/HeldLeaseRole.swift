@@ -17,5 +17,16 @@ protocol HeldLeaseRole: Sendable {
     func hasLiveLease(id: UUID, coveringFan fan: Int) async -> Bool
 
     /// `LeaseAuthority.revokeLease(id:because:)`.
-    func revokeLease(id: UUID, because cause: FanRestoreCause) async -> Bool
+    func revokeLease(id: UUID, because cause: FanRestoreCause) async -> LeaseRevocation
+}
+
+/// What `revokeLease(id:because:)` did with the lease it was asked to end (#361's panel).
+enum LeaseRevocation: Sendable, Hashable {
+    /// It was live: revoked whole, and its fans restored under the cause given.
+    case revoked
+    /// It had lapsed and not yet been swept: ended now, and its fans restored as
+    /// `.leaseExpired`, so nobody is told the system took control the lease had already lost.
+    case expired
+    /// The table no longer held it: another path had already ended it and restored its fans.
+    case gone
 }

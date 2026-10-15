@@ -66,9 +66,9 @@ import Foundation
 /// `private` state `LeaseAuthorityAccessTests` holds — and #128 had already taken the one
 /// seam available without widening it.
 ///
-/// Relocating prose cannot relieve `type_body_length`, which counts this body's code: 289 lines
-/// since #350's grant seal and #357's identity query and `revokeLease(id:because:)`, so 61 of
-/// headroom remain before its error at 350; the file is 908 lines against its error at 1000. New
+/// Relocating prose cannot relieve `type_body_length`, which counts this body's code: 290 lines
+/// since #350's grant seal and #357's identity query and `revokeLease(id:because:)`, so 60 of
+/// headroom remain before its error at 350; the file is 912 lines against its error at 1000. New
 /// behaviour belongs in value types and the `EngagementDriver` (ADR 0014), not in this actor.
 actor LeaseAuthority: HeldLeaseRole {
 
@@ -556,22 +556,26 @@ actor LeaseAuthority: HeldLeaseRole {
         await restore(fans, because: cause)
     }
 
-    /// Revokes the lease `id` names, **whole**, if it is live, and returns whether it did.
+    /// Ends the lease `id` names, **whole**, and says how: revoked under `cause` if it was live,
+    /// ended as `.leaseExpired` if it had lapsed and not been swept, or `.gone` if it had already
+    /// ended.
     ///
-    /// § 5's terminal action (#353): it revokes the lease it was holding the fan for and no
-    /// other. A lease already gone, or past its deadline, is not revoked — a lapsed one is left
-    /// to the TTL sweep, which records `.leaseExpired` — so no client is told the system took
-    /// control it had already given up. Removed synchronously before the one restore call, as
-    /// every teardown here is (#188). handback-ledger.md § *"`revokeLease(id:because:)`: the one
-    /// lease § 5 held the fan for"*.
-    func revokeLease(id: UUID, because cause: FanRestoreCause) async -> Bool {
-        guard let entry = table.entry(id: id), !entry.hasLapsed(asOf: clock.now) else {
-            return false
-        }
+    /// § 5's terminal action (#353): it ends the lease it was holding the fan for and no other.
+    /// A lapsed lease is ended **here**, inside the caller's call, rather than left to the TTL
+    /// sweep (#361's panel): the sweep's release notice would otherwise arrive after the caller
+    /// had finished and erase the ledger entry it keeps. It is recorded as `.leaseExpired`, so no
+    /// client is told the system took control it had already lost. Removed synchronously before
+    /// the one restore call, as every teardown here is (#188). handback-ledger.md
+    /// § *"`revokeLease(id:because:)`: the one lease § 5 held the fan for"*.
+    func revokeLease(id: UUID, because cause: FanRestoreCause) async -> LeaseRevocation {
+        guard let entry = table.entry(id: id) else { return .gone }
         table.remove(id: id)
-        log.revoked(entry.connection, fans: entry.fanIndices, because: cause)
-        await restore(entry.fanIndices, because: cause)
-        return true
+        let outcome: LeaseRevocation = entry.hasLapsed(asOf: clock.now) ? .expired : .revoked
+        if outcome == .revoked {
+            log.revoked(entry.connection, fans: entry.fanIndices, because: cause)
+        }
+        await restore(entry.fanIndices, because: outcome == .revoked ? cause : .leaseExpired)
+        return outcome
     }
 
     /// Revokes **every** live lease, whatever fans it covers.

@@ -201,7 +201,8 @@ struct LeaseAuthorityAccessTests {
         "connectionDidInvalidate(_: ConnectionID)",
         "revokeLeases(coveringFan: Int, because: FanRestoreCause)",
         // #353's, § 5's terminal revocation. Strictly narrower than `revokeEveryLease` below,
-        // which is already internal: one named lease, whole, only while it is live.
+        // which is already internal: one named lease, whole — revoked if live, ended as expired
+        // if lapsed (#361's panel).
         "revokeLease(id: UUID, because: FanRestoreCause)",
         "revokeEveryLease(because: FanRestoreCause)",
         "releaseEveryLease()",

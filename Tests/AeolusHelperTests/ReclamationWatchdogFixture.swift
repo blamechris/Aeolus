@@ -305,7 +305,7 @@ actor ParkableHeldLeases: HeldLeaseRole {
         return answer
     }
 
-    func revokeLease(id: UUID, because cause: FanRestoreCause) async -> Bool {
+    func revokeLease(id: UUID, because cause: FanRestoreCause) async -> LeaseRevocation {
         await leases.revokeLease(id: id, because: cause)
     }
 

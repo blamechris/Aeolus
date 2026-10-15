@@ -74,7 +74,7 @@ import Foundation
 ///   comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
 ///   Relocating prose cannot relieve `type_body_length`, which counts this body's code: about
-///   3 lines of headroom remain before its error at 350 (347 code lines since #361's review). New
+///   4 lines of headroom remain before its error at 350 (346 code lines since #361's panel). New
 ///   behaviour belongs in value types and the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
 ///   [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of this space.
@@ -925,11 +925,12 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     ///
     /// A record now under another lease is left to it. Otherwise the fan is handed back, every
     /// record of `lease` is dropped, and `lease` is revoked whole — a client left holding a
-    /// subset it can no longer command would be told it has control it does not have. If
-    /// `lease` has already ended the hand-back still runs and nothing is revoked.
+    /// subset it can no longer command would be told it has control it does not have. A lapsed
+    /// `lease` is ended as expired inside this call; one already ended is not touched, and the
+    /// hand-back runs either way.
     /// reclamation-watchdog.md § *"Every act is for the lease the fan was registered under"*.
     ///
-    /// The siblings are back on automatic control under no lease: dropping only `index` left
+    /// The siblings go back to automatic control with that lease's end: dropping only `index` left
     /// them registered, and the next cycle **re-engaged manual control on a fan with no lease
     /// behind it**. Their ledger entries are cleared rather than marked: they were not reclaimed
     /// by anything, they were given up by this mechanism.
@@ -969,9 +970,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             }
         }
 
-        guard await leases.revokeLease(id: lease, because: cause) else {
-            log.reclamationRegisteringLeaseAlreadyEnded(fan: index)
-            return
+        if await leases.revokeLease(id: lease, because: cause) != .revoked {
+            log.reclamationHandbackLeaseAlreadyEnded(fan: index)
         }
     }
 }

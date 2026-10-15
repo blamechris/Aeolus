@@ -1,3 +1,4 @@
+import FanKit
 import Testing
 
 @testable import AeolusHelper
@@ -87,5 +88,61 @@ extension FinaliseReleaseLedgerTests {
         #expect(fan.isReclaimedBySystem, "the user is told the system no longer holds the fan")
         #expect(log.lines(containing: "is no longer reported as taken from Aeolus").isEmpty)
         #expect(await helper.reclamationWatchdog.fansUnderManualControl.isEmpty)
+    }
+
+    /// **A lease that lapses during the terminal action keeps the mark through its expiry**
+    /// (#361's panel). Fan 0's episode reaches § 5's terminal action, and the lease passes its
+    /// deadline during the hand-back, unswept. `revokeLease` used to decline a lapsed lease and
+    /// leave it to the TTL sweep; the sweep then ended it after `finalising` had closed, and its
+    /// release notice erased the `.systemReclaimed` mark — #346's defect again. Main never had
+    /// it, because `revokeEveryLease`'s `removeAll()` took lapsed entries too. A lapsed lease is
+    /// now ended inside the call, as `.leaseExpired`, so the notice lands while `finalising`
+    /// holds the fan; `LeaseRevocationTests.revokeLeaseEndsALapsedLeaseAsExpired` holds the cause.
+    ///
+    /// **Mutation:** decline a lapsed lease in `revokeLease(id:because:)` again — `guard let
+    /// entry = table.entry(id: id), !entry.hasLapsed(asOf: clock.now) else { return .gone }`.
+    /// Run: red on the ledger and the snapshot after the sweep.
+    @Test(
+        "A lease lapsing during the hand-back keeps the terminal action's mark through its expiry")
+    func aLeaseLapsingDuringTheHandBackKeepsTheMarkThroughItsExpiry() async throws {
+        let log = RecordedLog()
+        let clock = TestClock()
+        let scripted = ScriptedControlPlane(
+            fans: [0: .automatic(at: 2_400)],
+            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
+        let plane = InterferingFanStateSensing(scripted, during: .restoreWrite)
+        let helper = HelperComposition(
+            plane: plane,
+            snapshotProvider: fanProvider(fanCount: 1),
+            criticalSensors: .mac16x5,
+            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: clock,
+            log: HelperRestorerTests.helperLog,
+            leaseLog: LeaseFixture.log,
+            safetyLog: SafetyLog(recording: { [log] in log.append($0, $1) }))
+        await helper.bindSafetyRegistries()
+        let lease = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: ConnectionID())
+        try await HelperRestorerTests.engage(fan: 0, in: helper, under: lease.id)
+        await plane.interfere { clock.advance(by: .seconds(Lease.defaultTimeToLive + 1)) }
+
+        await Self.cycleToTheTerminalAction(helper)
+
+        #expect(await plane.didFire, "the lease never lapsed inside the hand-back")
+        #expect(log.lines(containing: "no speed to re-assert").count == 1)
+        #expect(
+            log.lines(containing: "had already ended").count == 1, "the lapsed lease was revoked")
+        #expect(await helper.ledger.isReclaimed(fanAt: 0), "the terminal action kept no mark")
+
+        await helper.leases.expireLapsedLeases()
+
+        #expect(await helper.leases.leaseCount == 0, "the lapsed lease was never ended")
+        #expect(
+            await helper.ledger.isReclaimed(fanAt: 0),
+            "the lapsed lease's ending erased the mark the terminal action kept")
+        let snapshot = try await helper.authority.snapshot()
+        let fan = try #require(snapshot.fans.first { $0.index == 0 })
+        #expect(fan.isReclaimedBySystem, "the user is told the system no longer holds the fan")
+        #expect(log.lines(containing: "is no longer reported as taken from Aeolus").isEmpty)
     }
 }
