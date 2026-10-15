@@ -12,8 +12,10 @@ import SMCCore
 /// they need a grant parked on its foreign-control read at the same time, which is the mode read
 /// `ControlStateGatePlane` already parks — so this wraps it rather than repeating it.
 ///
-/// Every park suspends on an `AsyncSignal`, never on a blocked thread, so a `.timeLimit` that
-/// cancels the test unparks it too.
+/// Every park suspends on an `AsyncSignal`, never on a blocked thread. A test's `.timeLimit` does
+/// not unpark it: the parked restore runs in `observing`'s unstructured task, or in the task
+/// `BoundedFanRestorer` starts for a per-fan restore, and the test's cancellation reaches
+/// neither. So every test lets through what it parks before it returns.
 actor ScopeParkingPlane: FanControlPlane {
 
     /// The firmware below, with its mode-read gate.

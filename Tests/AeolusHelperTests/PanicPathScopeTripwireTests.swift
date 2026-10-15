@@ -57,8 +57,8 @@ struct PanicPathScopeTripwireTests {
     static let documentationSites = [
         "Sources/AeolusHelper/SupervisedFanAuthority.swift — restoreAllToAutomatic's own "
             + "paragraph, where the decision lives; its read-back note; and the type's header",
-        "Sources/AeolusHelper/Lease/LeaseAuthority.swift — releaseEveryLease, and "
-            + "confirmAcceptedHandbacks's \"no keystone queued behind the read\"",
+        "Sources/AeolusHelper/Lease/LeaseAuthority.swift — releaseEveryLease, sealingGrants, "
+            + "and confirmAcceptedHandbacks's \"no keystone queued behind the read\"",
         "docs/records/handback-ledger.md — \"`releaseEveryLease()`: what the sweep is, and "
             + "what it is not\", \"Accepted is not automatic\", and \"The machine-wide "
             + "restore seal\"",
@@ -159,13 +159,15 @@ struct PanicPathScopeTripwireTests {
 
         // #350: all three acts run inside the grant seal, which is named once.
         //
-        // **This property is held here and nowhere else for the read-back.** A behavioural test
-        // would park the read-back's mode read and ask for a grant — and the grant's own
-        // foreign-control read is a mode read too, so it parks on the same gate before it can
-        // reach the seal. `PanicGrantSealTests` holds the sweep and the restore.
+        // **Today only this holds the read-back's place.** `ControlStateGatePlane` parks every
+        // mode read, so a grant asked while the read-back is parked parks on its own
+        // foreign-control read before it reaches the seal; a per-fan mode park could hold it
+        // behaviourally, and none exists yet. `PanicGrantSealTests` holds the sweep and restore.
         //
         // **Mutation:** move `await leases.confirmAcceptedHandbacks()` below the closure. Run:
-        // red here only — every behavioural test of the seal stays green.
+        // red here only — every behavioural test of the seal stays green. **Mutation:** the same,
+        // leaving `return machineWide  // confirmAcceptedHandbacks: see below` inside it. Run:
+        // red, because `functionBody` strips trailing comments too.
         try Self.expectInsideTheSeal(
             [
                 (release, "the lease release"), (gate, "the capability gate"),
@@ -194,27 +196,37 @@ struct PanicPathScopeTripwireTests {
         }
     }
 
-    /// Every machine-wide restore issued after bring-up runs behind something that refuses a
-    /// grant — so no lease is granted that the restore would undo (`docs/SAFETY.md` § 1).
+    /// Each machine-wide restore issued after bring-up is issued after its grant interlock is
+    /// called (`docs/SAFETY.md` § 1).
     ///
     /// § 4 seals the table before its teardown, § 6's signal teardown closes the control gate
     /// before its first keystone, and § 7 issues `.everyFan` inside `sealingGrants`. Bring-up's
     /// fallback runs before the listener is resumed, which `HelperCompositionTests` holds.
     ///
+    /// **This holds the order, not that every interlock is airtight.** § 7's and bring-up's are.
+    /// § 4's teardown still runs when `sealForSleep` declines a seal its wake already answered,
+    /// with the gate open ([#364](https://github.com/blamechris/Aeolus/issues/364)), and § 6's
+    /// gate refuses a grant on arrival rather than in flight — one in flight can land, and `apply`
+    /// is refused by the same gate before the process exits.
+    ///
+    /// Calls are matched as identifiers with optional whitespace before `(`, because
+    /// `keystone ()` compiles, and a `func` declaration is not counted as one.
+    ///
     /// **Mutation:** delete `await leases.sealForSleep(generation: notification.generation)` from
     /// `SystemPowerResponder.allowSleepAfterHandback`. Run: red. **Mutation:** move
     /// `await gate.close()` below the first `_ = await keystone()` in `SignalTeardown.run`. Run:
-    /// red.
-    @Test("Every runtime machine-wide restore runs behind a grant interlock")
-    func everyRuntimeMachineWideRestoreRunsBehindAGrantInterlock() throws {
+    /// red. **Mutation:** the same, with that first call spelled `_ = await keystone ()` and the
+    /// second left after the close. Run: red.
+    @Test("Each runtime machine-wide restore is issued after its grant interlock")
+    func everyRuntimeMachineWideRestoreFollowsItsGrantInterlock() throws {
         for site in [
             (
                 file: "SystemPowerResponder.swift", caller: "allowSleepAfterHandback",
-                interlock: "sealForSleep(", issuer: "handBackEveryFan"
+                interlock: #"(?<![A-Za-z0-9_])sealForSleep\s*\("#, issuer: "handBackEveryFan"
             ),
             (
-                file: "SignalTeardown.swift", caller: "run", interlock: "gate.close()",
-                issuer: "keystone"
+                file: "SignalTeardown.swift", caller: "run",
+                interlock: #"(?<![A-Za-z0-9_])gate\s*\.\s*close\s*\("#, issuer: "keystone"
             ),
         ] {
             let issuing = try Self.functionBody(of: site.issuer, inFile: site.file)
@@ -222,21 +234,20 @@ struct PanicPathScopeTripwireTests {
                 issuing.contains(".everyFan"),
                 "\(site.file)'s \(site.issuer) no longer issues .everyFan; walk this tripwire")
 
-            let code = SeamScanner.strippingComments(try Self.source(of: site.file))
+            let code = HelperCompositionTests.strippingComments(try Self.source(of: site.file))
             let caller = try Self.functionBody(of: site.caller, inFile: site.file)
             let interlock = try #require(
-                caller.range(of: site.interlock),
-                "\(site.file)'s \(site.caller) no longer calls \(site.interlock)")
-            let calls = caller.components(separatedBy: "\(site.issuer)(").count - 1
-            let everywhere = code.components(separatedBy: "\(site.issuer)(").count - 2
-            let first = try #require(caller.range(of: "\(site.issuer)("))
+                caller.range(of: site.interlock, options: .regularExpression),
+                "\(site.file)'s \(site.caller) no longer calls its grant interlock")
+            let calls = Self.calls(of: site.issuer, in: caller)
+            let first = try #require(calls.first, "\(site.caller) no longer calls \(site.issuer)")
             #expect(
-                calls >= 1 && calls == everywhere && interlock.upperBound <= first.lowerBound,
+                calls.count == Self.calls(of: site.issuer, in: code).count
+                    && interlock.upperBound <= first.lowerBound,
                 """
-                \(site.file) issues .everyFan through \(site.issuer) somewhere \
-                \(site.interlock) does not precede it, so a lease can be granted that the \
-                machine-wide restore undoes. docs/SAFETY.md § 1 says every runtime call site \
-                runs behind a grant interlock.
+                \(site.file) issues .everyFan through \(site.issuer) somewhere its grant \
+                interlock does not precede, so a lease can be granted that the machine-wide \
+                restore undoes. docs/SAFETY.md § 1 says which call sites are interlocked.
                 """)
         }
 
@@ -298,7 +309,10 @@ struct PanicPathScopeTripwireTests {
 
     // MARK: - Parsing
 
-    /// The brace-balanced body of the first `func <name>` in `file`, comments stripped.
+    /// The brace-balanced body of the first `func <name>` in `file`, comments stripped —
+    /// trailing `//` comments included, through `HelperCompositionTests.strippingComments`,
+    /// because `SeamScanner`'s stripper drops whole comment lines only and a trailing comment
+    /// naming an act would otherwise stand in for it.
     ///
     /// Local rather than in `SeamScanner`, following `WritePathAbsenceTests`'
     /// `smcConnectionExtensionBodies`: the scanner owns the primitives more than one suite needs
@@ -307,7 +321,7 @@ struct PanicPathScopeTripwireTests {
     /// before — a `[^)]*` parameter list and a `<[^>]*>` generic clause both fail *silently*, by
     /// matching nothing at all.
     private static func functionBody(of name: String, inFile file: String) throws -> String {
-        let code = SeamScanner.strippingComments(try Self.source(of: file))
+        let code = HelperCompositionTests.strippingComments(try Self.source(of: file))
 
         let declaration = try #require(
             code.range(of: #"func\s+\#(name)(?![A-Za-z0-9_])"#, options: .regularExpression),
@@ -349,6 +363,25 @@ struct PanicPathScopeTripwireTests {
         }
         guard depth == 0 else { return nil }
         return code.index(after: open)..<code.index(before: index)
+    }
+
+    /// Every call of `name` in `code`: the whole identifier, optional whitespace, then `(`.
+    /// A `func name(` declaration is not a call and is left out.
+    private static func calls(of name: String, in code: String) -> [Range<String.Index>] {
+        let pattern = #"(?<![A-Za-z0-9_])"# + name + #"\s*\("#
+        var found: [Range<String.Index>] = []
+        var start = code.startIndex
+        while true {
+            let rest = start..<code.endIndex
+            guard let match = code.range(of: pattern, options: .regularExpression, range: rest)
+            else { break }
+            let before = code[..<match.lowerBound]
+            if before.range(of: #"(^|[^A-Za-z0-9_])func\s+$"#, options: .regularExpression) == nil {
+                found.append(match)
+            }
+            start = match.upperBound
+        }
+        return found
     }
 
     private static func source(of file: String) throws -> String {
