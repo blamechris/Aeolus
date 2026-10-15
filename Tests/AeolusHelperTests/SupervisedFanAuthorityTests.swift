@@ -38,15 +38,23 @@ import Testing
 @Suite("The helper's supervised authority", .timeLimit(.minutes(1)))
 struct SupervisedFanAuthorityTests {
 
-    /// A composed helper with fan 0 in both safety registries and the restorer bound, which
-    /// is the state the daemon is in once `bringUp()` has run and E3 has engaged a fan.
-    private static func engaged(
+    /// A composed helper with the restorer bound, which is the state the daemon is in once
+    /// `bringUp()` has run. A test that needs fan 0 in both safety registries engages it with
+    /// `engage(_:in:)` once it holds the lease — E3's order, which § 5 requires since #357.
+    private static func bound(
         writes: ScriptedControlPlane.WriteBehaviour = .honoured
-    ) async throws -> HelperComposition<ScriptedControlPlane> {
+    ) async -> HelperComposition<ScriptedControlPlane> {
         let helper = HelperRestorerTests.composed(writes: writes)
         await helper.bindSafetyRegistries()
-        try await HelperRestorerTests.engage(fan: 0, in: helper)
         return helper
+    }
+
+    /// Fan 0 into both safety registries under `lease`, as E3 will once it has engaged a fan.
+    private static func engage(
+        _ lease: Lease, in helper: HelperComposition<ScriptedControlPlane>
+    ) async throws {
+        try await HelperRestorerTests.engage(fan: 0, in: helper, under: lease.id)
+        #expect(await helper.reclamationWatchdog.fansUnderManualControl == [0])
     }
 
     /// § 5's registry, and the fans § 3 has been told were handed back.
@@ -76,7 +84,7 @@ struct SupervisedFanAuthorityTests {
     /// `throw AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)`. Run: red.
     @Test("A lease acquired through the authority is a lease the core holds")
     func acquiringThroughTheAuthorityReachesTheLeaseCore() async throws {
-        let helper = try await Self.engaged()
+        let helper = await Self.bound()
 
         let lease = try await helper.authority.acquireLease(
             LeaseFixture.request(fans: [0]), from: ConnectionID())
@@ -117,10 +125,10 @@ struct SupervisedFanAuthorityTests {
         let clock = TestClock()
         let helper = HelperRestorerTests.composed(clock: clock)
         await helper.bindSafetyRegistries()
-        try await HelperRestorerTests.engage(fan: 0, in: helper)
         let connection = ConnectionID()
         let lease = try await helper.authority.acquireLease(
             LeaseFixture.request(fans: [0]), from: connection)
+        try await Self.engage(lease, in: helper)
 
         clock.advance(by: .seconds(10))
         let renewed = try await helper.authority.renewLease(id: lease.id, from: connection)
@@ -159,10 +167,11 @@ struct SupervisedFanAuthorityTests {
     /// Run: red on the count, the tombstone, and both registries.
     @Test("An invalidated connection loses its leases and is tombstoned")
     func connectionDeathReachesTheLeaseCore() async throws {
-        let helper = try await Self.engaged()
+        let helper = await Self.bound()
         let connection = ConnectionID()
-        _ = try await helper.authority.acquireLease(
+        let lease = try await helper.authority.acquireLease(
             LeaseFixture.request(fans: [0]), from: connection)
+        try await Self.engage(lease, in: helper)
 
         await helper.authority.connectionDidInvalidate(connection)
 
@@ -191,9 +200,10 @@ struct SupervisedFanAuthorityTests {
     /// test reading the log would agree with it.
     @Test("The panic verb drops every lease and hands its fans back")
     func restoreAllToAutomaticReachesTheLeaseCore() async throws {
-        let helper = try await Self.engaged()
-        _ = try await helper.authority.acquireLease(
+        let helper = await Self.bound()
+        let lease = try await helper.authority.acquireLease(
             LeaseFixture.request(fans: [0]), from: ConnectionID())
+        try await Self.engage(lease, in: helper)
 
         try await helper.authority.restoreAllToAutomatic(from: ConnectionID())
 
@@ -222,7 +232,7 @@ struct SupervisedFanAuthorityTests {
     /// Run: red — the unknown lease is answered `.writePathNotBuilt`.
     @Test("Applying with an unknown lease is refused as unknown, not as unwritable")
     func applyAuthorisesBeforeItRefuses() async throws {
-        let helper = try await Self.engaged()
+        let helper = await Self.bound()
 
         await #expect(throws: AeolusXPCFault.leaseUnknown) {
             try await helper.authority.apply([], leaseID: UUID(), from: ConnectionID())
@@ -244,7 +254,7 @@ struct SupervisedFanAuthorityTests {
     /// deleting it.
     @Test("Applying with a held lease is refused even when the seam can write")
     func supervisedApplyRefusesEvenWhenTheSeamCanWrite() async throws {
-        let helper = try await Self.engaged()
+        let helper = await Self.bound()
         #expect(
             helper.plane.writeCapability == .built,
             "this test is vacuous unless the seam under the helper really can write")

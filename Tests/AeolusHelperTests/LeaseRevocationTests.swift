@@ -1,5 +1,6 @@
 import AeolusXPC
 import FanKit
+import Foundation
 import Testing
 
 @testable import AeolusHelper
@@ -68,6 +69,95 @@ struct LeaseRevocationTests {
 
         #expect(await restorer.causes == [.thermalEmergency])
         #expect(await restorer.causes != [.leaseExpired])
+    }
+
+    // MARK: - One named lease (#353)
+
+    /// § 5's terminal revocation names the lease it was holding the fan for, and revokes that
+    /// lease and no other: a different ID revokes nothing, and the named one goes whole, in one
+    /// restore carrying the cause.
+    ///
+    /// **Mutation:** make `revokeLease(id:because:)` select the table's lease rather than the
+    /// named one — `table.all.first` in place of `table.entry(id: id)`. Run: red on the
+    /// unnamed ID's refusal and the restores it made.
+    @Test("Revoking a lease by ID revokes only that lease, whole")
+    func revokeLeaseRevokesOnlyTheNamedLiveLeaseWhole() async throws {
+        let restorer = RecordingFanRestorer()
+        let authority = LeaseFixture.authority(restorer: restorer)
+        let lease = try await authority.acquireLease(
+            LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
+
+        #expect(
+            await authority.revokeLease(id: UUID(), because: .systemReclaimed) == .gone,
+            "a lease was revoked under an ID it was never granted")
+        #expect(await authority.leaseCount == 1)
+        #expect(await restorer.restores.isEmpty, "an unnamed lease's fans were handed back")
+
+        #expect(await authority.revokeLease(id: lease.id, because: .systemReclaimed) == .revoked)
+        #expect(await authority.leaseCount == 0)
+        #expect(await restorer.restoredFans == [Set([0, 1])], "the lease was not revoked whole")
+        #expect(await restorer.causes == [.systemReclaimed])
+    }
+
+    /// A lease past its deadline and not yet swept is **ended now, as expired**, not revoked
+    /// (#361's panel). It ended on its own, so revoking it would tell the client the system took
+    /// control it had already lost; and leaving it to the TTL sweep let the sweep's release
+    /// notice arrive after § 5's terminal action returned and erase the mark it keeps
+    /// (`FinaliseReleaseLedgerTests.aLeaseLapsingDuringTheHandBackKeepsTheMarkThroughItsExpiry`).
+    ///
+    /// **Mutation:** decline a lapsed lease again — `guard let entry = table.entry(id: id),
+    /// !entry.hasLapsed(asOf: clock.now) else { return .gone }`. Run: red on the outcome, the
+    /// count and the cause. **Mutation:** restore it under `cause` whatever its deadline —
+    /// `because: cause`. Run: red on the cause alone (`:123`). **Mutation:** treat it as revoked —
+    /// `let outcome: LeaseRevocation = .revoked`. Run: red on the outcome and the cause (`:121`,
+    /// `:123`) and on `FinaliseReleaseRevocationTests`' "had already ended" notice (`:133`).
+    @Test("Revoking a lapsed lease by ID ends it as expired")
+    func revokeLeaseEndsALapsedLeaseAsExpired() async throws {
+        let clock = TestClock()
+        let restorer = RecordingFanRestorer()
+        let authority = LeaseFixture.authority(restorer: restorer, clock: clock)
+        let lease = try await authority.acquireLease(
+            LeaseFixture.request(fans: [0]), from: ConnectionID())
+        clock.advance(by: .seconds(Lease.defaultTimeToLive))
+
+        #expect(await authority.revokeLease(id: lease.id, because: .systemReclaimed) == .expired)
+        #expect(await authority.leaseCount == 0, "the lapsed lease was left for the sweep")
+        #expect(
+            await restorer.causes == [.leaseExpired], "a lapsed lease was blamed on § 5's cause")
+    }
+
+    /// The entry leaves the table **before** the revocation's restore is awaited, as every
+    /// teardown here does (#188): while the restore is in flight the lease is not live, and a
+    /// grant over its fans is refused as `.releaseInProgress` rather than racing the restore.
+    /// The restore is held open by `RecordingFanRestorer`, which suspends on a continuation.
+    ///
+    /// **Mutation:** move `table.remove(id: id)` below `await restore(…)` in
+    /// `revokeLease(id:because:)`. Run: red on liveness, the count and the grant's refusal.
+    @Test("A revoked lease is gone before its restore is awaited")
+    func revokeLeaseRemovesTheEntryBeforeItsRestore() async throws {
+        let entered = AsyncSignal()
+        let release = AsyncSignal()
+        let restorer = RecordingFanRestorer(entered: entered, release: release)
+        let authority = LeaseFixture.authority(restorer: restorer)
+        let lease = try await authority.acquireLease(
+            LeaseFixture.request(fans: [0]), from: ConnectionID())
+        let revocation = observing {
+            await authority.revokeLease(id: lease.id, because: .systemReclaimed)
+        }
+        try await entered.wait()
+
+        #expect(
+            await authority.hasLiveLease(id: lease.id, coveringFan: 0) == false,
+            "the lease answered live while its revocation's restore was on the wire")
+        #expect(await authority.leaseCount == 0)
+        await #expect(
+            throws: AeolusXPCFault.manualControlUnavailable(reason: .releaseInProgress)
+        ) {
+            _ = try await authority.acquireLease(
+                LeaseFixture.request(fans: [0]), from: ConnectionID())
+        }
+        await release.signal()
+        #expect(try await finished("the revocation", revocation) == .revoked)
     }
 
     // MARK: - The refusal, and where it sits in the order

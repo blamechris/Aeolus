@@ -242,9 +242,9 @@ struct TerminalActionAvailabilityTests {
         let plane = ControlStateGatePlane(scripted)
         let helper = Ledger.composed(over: plane, log: log)
         await helper.bindSafetyRegistries()
-        _ = try await helper.leases.acquireLease(
+        let lease = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [0]), from: ConnectionID())
-        try await HelperRestorerTests.engage(fan: 0, in: helper)
+        try await HelperRestorerTests.engage(fan: 0, in: helper, under: lease.id)
         await plane.modeReads(.failing)
 
         await Ledger.cycleToTheTerminalAction(helper)

@@ -24,8 +24,12 @@ import Testing
 ///
 /// - **A lease whose connection is gone.** Fan 0 is held under a lease bound to a connection no
 ///   session will ever invalidate, so nothing but § 7 or its TTL ends it.
-/// - **A fan in manual under no lease, and registries that disagree with the table.** Fan 1 is
-///   off automatic control and registered with § 3 and § 5, and no lease covers it.
+/// - **A fan in manual under no lease, and a registry that disagrees with the table.** Fan 1 is
+///   off automatic control and registered with § 3, and no lease covers it. § 5 refuses a
+///   registration under a lease that does not cover the fan since #357, so it cannot be put in
+///   that state by registering; the refusal is part of the setup. It can still disagree with
+///   the table another way — a lease that ends unannounced leaves its record until the next
+///   examination hands it back — but the composed restorer announces every lease end.
 /// - **A stale `restoreAbandoned` entry.** Fan 2's handback was refused, so its refusal stands,
 ///   and the firmware has since come good with nothing having asked it again.
 /// - **A latched § 3 with nothing bridged under it.** The latch is engaged directly, as no cycle
@@ -97,22 +101,27 @@ struct FanctlResetCorruptedStateTests {
 
         // Fan 2: held, released against a firmware that refuses — abandoned — and then the
         // firmware comes good with nothing having asked it again.
-        try await HelperRestorerTests.engage(fan: 2, in: helper)
         let released = ConnectionID()
         let abandoned = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [2]), from: released)
+        try await HelperRestorerTests.engage(fan: 2, in: helper, under: abandoned.id)
         await plane.setMode(.manual, ofFan: 2)
         try await helper.leases.releaseLease(id: abandoned.id, from: released)
         await plane.advance()
 
         // Fan 0: held under a lease whose connection no session will ever invalidate.
-        try await HelperRestorerTests.engage(fan: 0, in: helper)
-        _ = try await helper.leases.acquireLease(
+        let orphaned = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [0]), from: ConnectionID())
+        try await HelperRestorerTests.engage(fan: 0, in: helper, under: orphaned.id)
         await plane.setMode(.manual, ofFan: 0)
 
-        // Fan 1: registered with both registries, in manual, under no lease.
-        try await HelperRestorerTests.engage(fan: 1, in: helper)
+        // Fan 1: registered with § 3, in manual, under no lease. § 5 refuses it: the only live
+        // lease does not cover fan 1.
+        await #expect(throws: EngagementRefusal.leaseNotLive(fan: 1)) {
+            try await HelperRestorerTests.engage(fan: 1, in: helper, under: orphaned.id)
+        }
+        await helper.thermalEmergency.manualControlEngaged(
+            try commandableFan(1, declaring: .held(at: 2_400)))
         await plane.setMode(.manual, ofFan: 1)
 
         // The key a dead holder left, and § 3 latched with nothing bridged under it.
@@ -124,8 +133,9 @@ struct FanctlResetCorruptedStateTests {
         #expect(await helper.leases.leaseCount == 1, "fan 0's orphaned lease is not held")
         #expect(await helper.leases.fansWithAbandonedHandbacks == [2], "fan 2 is not abandoned")
         #expect(
-            await helper.reclamationWatchdog.fansUnderManualControl.contains(1),
-            "§ 5 is not watching fan 1, so the registries and the table agree")
+            await helper.thermalEmergency.fansUnderManualControl.contains(1),
+            "§ 3 is not holding fan 1, so its registry and the table agree")
+        #expect(await helper.reclamationWatchdog.fansUnderManualControl == [0])
         #expect(try await Self.modes(plane, of: [0, 1, 2]) == [.manual, .manual, .manual])
         #expect(await plane.isForceKeySet)
         #expect(await helper.latch.isActive)

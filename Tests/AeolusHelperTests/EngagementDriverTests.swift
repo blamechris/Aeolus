@@ -277,7 +277,9 @@ struct EngagementDriverTests {
     // MARK: - § 5 engages only through the driver
 
     /// The plane's step verb is used from exactly two places in `Sources/`: the writer's
-    /// one-step pass-through, and the driver. § 5 engages through the driver, never the writer.
+    /// one-step pass-through, and the driver. § 5 engages through the driver, never the writer:
+    /// through `driver`, the copy `engagement.under(lease:)` binds to the record's lease (#357).
+    /// The composed `engagement` is bound to none and would refuse every step.
     /// Every use counts — a call, one split across lines or spaced before its parenthesis, and
     /// an unapplied method reference — because `SeamScanner.receivers(of:inSource:)` normalises
     /// the whitespace around each `.` before it looks.
@@ -299,7 +301,7 @@ struct EngagementDriverTests {
         #expect(
             uses == [
                 "EngagementDriver.swift: writer",
-                "ReclamationWatchdog.swift: engagement",
+                "ReclamationWatchdog.swift: driver",
                 "SafetyWriters.swift: plane",
             ],
             "a fan is engaged around the driver: \(uses.sorted())")

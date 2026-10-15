@@ -1,3 +1,4 @@
+import FanKit
 import Foundation
 import Testing
 
@@ -10,6 +11,9 @@ import Testing
 
 /// One driver over one scripted plane: a lease over its fans, a latch, a recording § 3 role, and
 /// a clock whose sleeps can run a scenario's interference.
+///
+/// `driver` is bound to the rig's lease with `under(lease:)`, as § 5 and level 6 bind theirs
+/// (#357); with no lease it is the composed driver, bound to none. `unbound` is always that.
 struct EngagementRig {
 
     let plane: ScriptedControlPlane
@@ -20,7 +24,14 @@ struct EngagementRig {
     let log = RecordedLog()
     /// The plane the driver writes through, which can act inside its steps.
     let writes: InterferingFanStateSensing
+    /// The driver every scenario engages through: bound to `lease` when there is one.
     let driver: EngagementDriver<InterferingFanStateSensing>
+    /// The driver as composed, bound to no lease, which refuses every step.
+    let unbound: EngagementDriver<InterferingFanStateSensing>
+    /// The lease `driver` is bound to, or `nil` for an unleased rig.
+    let lease: Lease?
+    /// The connection the rig's lease is bound to, so a scenario can end it.
+    let holder = ConnectionID()
     private let fans: [Int]
 
     init(
@@ -44,13 +55,19 @@ struct EngagementRig {
         self.fans = fans
         leases = LeaseFixture.authority(thermalEmergency: latch, clock: clock.base)
         let recording = log
-        driver = EngagementDriver(
+        let composed = EngagementDriver(
             writer: SafetyActorWriter(plane: writes, level: .reclamationWatchdog),
             leases: leases, latch: latch, emergency: registry, clock: clock,
             log: SafetyLog(recording: { recording.append($0, $1) }))
+        unbound = composed
         if leased {
-            _ = try await leases.acquireLease(
-                LeaseFixture.request(fans: fans), from: ConnectionID())
+            let granted = try await leases.acquireLease(
+                LeaseFixture.request(fans: fans), from: holder)
+            lease = granted
+            driver = composed.under(lease: granted.id)
+        } else {
+            lease = nil
+            driver = composed
         }
     }
 

@@ -66,10 +66,11 @@ import Foundation
 /// `private` state `LeaseAuthorityAccessTests` holds — and #128 had already taken the one
 /// seam available without widening it.
 ///
-/// Relocating prose cannot relieve `type_body_length`, which counts this body's code: 278 lines
-/// since #350's grant seal, so 72 of headroom remain before its error at 350. New behaviour
-/// belongs in value types and the `EngagementDriver` (ADR 0014), not in this actor.
-actor LeaseAuthority {
+/// Relocating prose cannot relieve `type_body_length`, which counts this body's code: 290 lines
+/// since #350's grant seal and #357's identity query and `revokeLease(id:because:)`, so 60 of
+/// headroom remain before its error at 350; the file is 912 lines against its error at 1000. New
+/// behaviour belongs in value types and the `EngagementDriver` (ADR 0014), not in this actor.
+actor LeaseAuthority: HeldLeaseRole {
 
     private let clock: any MonotonicClock
     private let wallClock: @Sendable () -> Date
@@ -486,9 +487,13 @@ actor LeaseAuthority {
     /// `LeaseExpirySupervisor` sleeps until.
     func nextExpiryDeadline() -> ContinuousClock.Instant? { table.earliestDeadline }
 
-    /// ADR 0009 D2's per-fan question, asked by § 5 at `clock.now` — see
-    /// `LeaseTable.covers(_:liveAt:)`. It sweeps nothing: the TTL path hands lapsed fans back.
-    func hasLiveLease(coveringFan fan: Int) -> Bool { table.covers(fan, liveAt: clock.now) }
+    /// ADR 0009 D2's question about one lease and one fan, asked at `clock.now` by § 5 and the
+    /// engagement driver — see `LeaseTable.covers(_:under:liveAt:)`. There is deliberately no
+    /// form that asks whether *any* lease covers a fan (#357). It sweeps nothing: the TTL path
+    /// hands lapsed fans back.
+    func hasLiveLease(id: UUID, coveringFan fan: Int) -> Bool {
+        table.covers(fan, under: id, liveAt: clock.now)
+    }
 
     // MARK: - Teardown path 2 of 2: connection death
 
@@ -549,6 +554,30 @@ actor LeaseAuthority {
         }
         let fans = revoked.reduce(into: Set<Int>()) { $0.formUnion($1.fanIndices) }
         await restore(fans, because: cause)
+    }
+
+    /// Ends the lease `id` names, **whole**, and says how: revoked under `cause` if it was live,
+    /// ended as `.leaseExpired` if it had lapsed and not been swept, or `.gone` if it had already
+    /// ended.
+    ///
+    /// § 5's terminal action (#353): it ends the lease it was holding the fan for and no other.
+    /// A lapsed lease is ended **here**, inside the caller's call, rather than left to the TTL
+    /// sweep (#361's panel): the sweep's release notice would otherwise arrive after the caller
+    /// had finished and erase the ledger entry it keeps. It is recorded as `.leaseExpired`, so no
+    /// client is told the system took control it had already lost. This closes only a lease still
+    /// in the table when the call arrives; one a sweep or teardown removed first is `.gone`, with
+    /// its notice possibly still in flight (#368). Removed synchronously before
+    /// the one restore call, as every teardown here is (#188). handback-ledger.md
+    /// § *"`revokeLease(id:because:)`: the one lease § 5 held the fan for"*.
+    func revokeLease(id: UUID, because cause: FanRestoreCause) async -> LeaseRevocation {
+        guard let entry = table.entry(id: id) else { return .gone }
+        table.remove(id: id)
+        let outcome: LeaseRevocation = entry.hasLapsed(asOf: clock.now) ? .expired : .revoked
+        if outcome == .revoked {
+            log.revoked(entry.connection, fans: entry.fanIndices, because: cause)
+        }
+        await restore(entry.fanIndices, because: outcome == .revoked ? cause : .leaseExpired)
+        return outcome
     }
 
     /// Revokes **every** live lease, whatever fans it covers.

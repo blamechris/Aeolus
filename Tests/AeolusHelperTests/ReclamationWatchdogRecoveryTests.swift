@@ -42,7 +42,8 @@ struct ReclamationWatchdogRecoveryTests {
     /// next cycle would judge a correctly held 5,777 RPM as a divergence from 99,000.
     ///
     /// **Mutation:** replace `held[index] = fan` after the command write in
-    /// `reassert(_:fanAt:attempt:)` with `_ = fan`. Run: red on the recorded-target assertion.
+    /// `reassert(_:fanAt:heldUnder:attempt:reengaging:)` with `_ = fan`. Run: red on the
+    /// recorded-target assertion.
     @Test("A re-assert records the target it wrote, not the one it was asked for")
     func aReassertRecordsTheTargetItWrote() async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 1_800)])
@@ -321,24 +322,24 @@ struct ReclamationWatchdogRecoveryTests {
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
     }
 
-    /// Falling back drops **every** fan, because the revocation it performs is whole-machine.
+    /// Falling back drops **every** fan of the lease, because the revocation it performs is.
     ///
-    /// `revokeEveryLease(because:)` drops every lease and the lease core restores the fans
-    /// they covered, so a sibling left in the registry is a fan that is now unleased and on
+    /// `revokeLease(id:because:)` drops the lease whole and the lease core restores the fans it
+    /// covered, so a sibling left in the registry is a fan that is now unleased and on
     /// automatic. Keeping it produced the worst possible follow-up: the next cycle read
     /// `.modeReclaimed` on that sibling and **re-engaged manual control on a fan with no
     /// lease behind it**.
     ///
     /// **Since #180 that harm is ADR 0009 D2's to stop as well, and it masks the guard.**
-    /// Delete `held.removeAll()` from `finaliseRelease(fanAt:because:)` and fan 1 stays
+    /// Drop only `index` in `finaliseRelease(fanAt:heldUnder:because:)` and fan 1 stays
     /// registered — but the same sweep examines it next, finds the lease just revoked, and
     /// hands it back as `.leaseLapsed`: the registry still ends empty and the re-engage
     /// assertion holds. Run against exactly that mutant, the whole suite stayed green. What
     /// still differs is that fan 1 is handed back **twice** — once by the lease core's
     /// revocation and again by § 5 — so the two assertions on that are what turn red now.
     ///
-    /// **Mutation:** delete the loop in `finaliseRelease(fanAt:because:)` that clears each
-    /// sibling's ledger entry. Run: red on `isReclaimed(fanAt: 1) == false` — which could not
+    /// **Mutation:** delete the loop in `finaliseRelease(fanAt:heldUnder:because:)` that clears
+    /// each sibling's ledger entry. Run: red on `isReclaimed(fanAt: 1) == false` — which could not
     /// fail until #342's review, because fan 1 had never been marked.
     @Test("Falling back stops watching every fan, not just the one that diverged")
     func fallingBackClearsTheWholeRegistry() async throws {
@@ -369,7 +370,7 @@ struct ReclamationWatchdogRecoveryTests {
         #expect(
             await machine.didRestore(fan: 1) == false,
             "§ 5 handed back a sibling the revocation it had just run was already handing back")
-        #expect(machine.safetyLog.lines(containing: "no live lease covers it").isEmpty)
+        #expect(machine.safetyLog.lines(containing: leaseLapsedNotice).isEmpty)
         // Fan 1 was given up, not taken: it must not be reported as reclaimed.
         #expect(await machine.ledger.isReclaimed(fanAt: 1) == false)
 

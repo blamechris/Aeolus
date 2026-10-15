@@ -56,9 +56,9 @@ struct PanicVerbMachineWideRestoreTests {
         in helper: HelperComposition<Plane>, setManual: () async -> Void
     ) async throws {
         await helper.bindSafetyRegistries()
-        try await HelperRestorerTests.engage(fan: 0, in: helper)
-        _ = try await helper.leases.acquireLease(
+        let lease = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [0]), from: ConnectionID())
+        try await HelperRestorerTests.engage(fan: 0, in: helper, under: lease.id)
         await setManual()
     }
 
@@ -302,10 +302,10 @@ struct PanicVerbMachineWideRestoreTests {
             safetyLog: HelperRestorerTests.safetyLog,
             teardown: TeardownSeams(sources: RecordingSignalSources()))
         await helper.bindSafetyRegistries()
-        try await HelperRestorerTests.engage(fan: 0, in: helper)
         let connection = ConnectionID()
         let lease = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [0]), from: connection)
+        try await HelperRestorerTests.engage(fan: 0, in: helper, under: lease.id)
         await firmware.setMode(.manual, ofFan: 0)
         try await helper.leases.releaseLease(id: lease.id, from: connection)
         #expect(

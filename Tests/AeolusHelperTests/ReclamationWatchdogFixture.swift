@@ -1,5 +1,6 @@
 import AeolusXPC
 import FanKit
+import Foundation
 import SMCCore
 import Testing
 
@@ -55,6 +56,9 @@ struct ReclamationMachine<Writes: FanControlPlane> {
     /// the way a client dying does.
     let holder = ConnectionID()
     let watchdog: ReclamationWatchdog<Writes>
+    /// What § 5 asks the lease core through, when a scenario parks its answers (#357): `nil`,
+    /// and § 5 asks `leases` directly, unless the machine was built `parkingLeaseHops`.
+    let leaseHops: ParkableHeldLeases?
 
     /// § 3, on the same plane and latch, so that the registration the driver owes it (#181) is
     /// observable and its latched cycle can bridge what § 5 left registered. No test cycles it
@@ -70,7 +74,8 @@ struct ReclamationMachine<Writes: FanControlPlane> {
         plane: ScriptedControlPlane,
         fans: [Int: ScriptedControlPlane.FanCondition],
         sensing: any FanStateSensing,
-        writes: Writes
+        writes: Writes,
+        parkingLeaseHops: Bool = false
     ) {
         self.plane = plane
         fanConditions = fans
@@ -79,6 +84,7 @@ struct ReclamationMachine<Writes: FanControlPlane> {
         restorer = RecordingFanRestorer()
         leases = LeaseFixture.authority(
             restorer: restorer, thermalEmergency: latch, clock: leaseClock)
+        leaseHops = parkingLeaseHops ? ParkableHeldLeases(leases) : nil
         let log = SafetyLog(recording: { [safetyLog] in safetyLog.append($0, $1) })
         let telemetry = CuratedCriticalTemperatures(plane: writes, set: .mac16x5)
         emergency = ThermalEmergency(
@@ -96,7 +102,7 @@ struct ReclamationMachine<Writes: FanControlPlane> {
             engagement: EngagementDriver(
                 writer: writer, leases: leases, latch: latch, emergency: emergency,
                 clock: leaseClock, log: log),
-            leases: leases,
+            leases: leaseHops ?? leases,
             latch: latch,
             ledger: ledger,
             log: log
@@ -112,15 +118,18 @@ extension ReclamationMachine where Writes == ScriptedControlPlane {
     ///   - sensing: the read seam, defaulting to the plane itself. Overridden only by tests
     ///     about a read failing in a way stages cannot express — an envelope that refuses
     ///     while control state still answers, or a read held open to observe concurrency.
+    ///   - parkingLeaseHops: whether § 5 asks the lease core through `leaseHops`, so a scenario
+    ///     can hold a liveness answer open while the world moves.
     init(
         stages: [ScriptedControlPlane.Stage] = [.nominal()],
         fans: [Int: ScriptedControlPlane.FanCondition] = [0: .held(at: 2_400)],
-        sensing: (any FanStateSensing)? = nil
+        sensing: (any FanStateSensing)? = nil,
+        parkingLeaseHops: Bool = false
     ) {
+        let plane = ScriptedControlPlane(fans: fans, stages: stages)
         self.init(
-            plane: ScriptedControlPlane(fans: fans, stages: stages),
-            fans: fans,
-            sensing: sensing)
+            plane: plane, fans: fans, sensing: sensing ?? plane, writes: plane,
+            parkingLeaseHops: parkingLeaseHops)
     }
 
     /// Wires a machine around a plane the test already built.
@@ -156,9 +165,12 @@ extension ReclamationMachine where Writes == InterferingFanStateSensing {
     init(
         plane: ScriptedControlPlane,
         fans: [Int: ScriptedControlPlane.FanCondition] = [0: .held(at: 2_400)],
-        interfering: InterferingFanStateSensing
+        interfering: InterferingFanStateSensing,
+        parkingLeaseHops: Bool = false
     ) {
-        self.init(plane: plane, fans: fans, sensing: interfering, writes: interfering)
+        self.init(
+            plane: plane, fans: fans, sensing: interfering, writes: interfering,
+            parkingLeaseHops: parkingLeaseHops)
     }
 }
 
@@ -172,7 +184,9 @@ extension ReclamationMachine {
     /// same number it commands.
     func hold(fan index: Int, commanding rpm: Double) async throws {
         try await holdWithoutCommanding(fan: index)
-        await watchdog.commandedTarget(CommandedTarget(fanIndex: index, rpm: rpm))
+        let lease = try #require(
+            await leases.activeLease(), "no lease to command fan \(index) under")
+        await watchdog.commandedTarget(CommandedTarget(fanIndex: index, rpm: rpm), under: lease.id)
     }
 
     /// Registers a fan with no target ever commanded on it.
@@ -180,16 +194,20 @@ extension ReclamationMachine {
     /// The state between `engageManualControl` and the first write. The mode check is the
     /// whole of what § 5 can say about such a fan.
     ///
-    /// Leased first when no lease is live — see "Every held fan is leased" on this type. A
-    /// scenario that took its own lease keeps it: the question is whether *any* lease is live,
-    /// so an explicit `lease(fans:)` first is never doubled, and one over a subset leaves the
-    /// other fans unleased on purpose.
+    /// Leased first when no lease is live — see "Every held fan is leased" on this type — and
+    /// registered under the active lease, as E3's `apply` registers under the lease it
+    /// authorised (#357). A scenario that took its own lease keeps it, so an explicit
+    /// `lease(fans:)` first is never doubled; one over a subset that leaves this fan out is
+    /// refused here with `.leaseNotLive`, as a registration under a lease that does not cover
+    /// the fan is.
     func holdWithoutCommanding(fan index: Int) async throws {
         let condition = try #require(fanConditions[index])
         if await leases.activeLease() == nil {
             try await lease(fans: fanConditions.keys.sorted())
         }
-        await watchdog.manualControlEngaged(try commandableFan(index, declaring: condition))
+        let lease = try #require(await leases.activeLease(), "no lease to hold fan \(index) under")
+        try await watchdog.manualControlEngaged(
+            try commandableFan(index, declaring: condition), under: lease.id)
     }
 
     /// Takes a lease over `fans`, bound to `holder`, so that a revocation is observable.
@@ -233,6 +251,67 @@ extension ReclamationMachine {
     /// Whether the watchdog restored this fan to automatic control.
     func didRestore(fan index: Int) async -> Bool {
         await plane.attempts.contains(.restoreToAutomatic(.fan(index)))
+    }
+}
+
+/// What § 5 logs for `.leaseLapsed` (#357), spelled out rather than read from
+/// `ReclamationDivergence.leaseLapsed.summary`, so a change to the wording is a change here too.
+let leaseLapsedNotice = "the lease it was registered under is no longer live"
+
+/// The lease core, with one liveness answer held open on a continuation once armed (#357).
+///
+/// The seam #344 asked for. The question is answered by the real `LeaseAuthority` first, so the
+/// held answer is a true one about the instant it was asked; holding it is what lands a release,
+/// a re-grant and a registration between the lease core answering and § 5 resuming, which is the
+/// suspension a reentrant actor is exposed to. It suspends on a continuation and blocks nothing,
+/// and cancellation resumes it. Every other call passes straight through.
+actor ParkableHeldLeases: HeldLeaseRole {
+    private let leases: LeaseAuthority
+    private var armed = false
+    private var parked: CheckedContinuation<Void, Never>?
+    private var cancelled = false
+
+    /// The answers given, in order, parked or not.
+    private(set) var answers: [Bool] = []
+
+    init(_ leases: LeaseAuthority) {
+        self.leases = leases
+    }
+
+    /// Holds the next liveness answer open until `release()`.
+    func parkNextAnswer() { armed = true }
+
+    /// Whether an answer is being held open now.
+    var isParked: Bool { parked != nil }
+
+    /// Lets the held answer go.
+    func release() {
+        parked?.resume()
+        parked = nil
+    }
+
+    func hasLiveLease(id: UUID, coveringFan fan: Int) async -> Bool {
+        let answer = await leases.hasLiveLease(id: id, coveringFan: fan)
+        answers.append(answer)
+        guard armed else { return answer }
+        armed = false
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if cancelled { continuation.resume() } else { parked = continuation }
+            }
+        } onCancel: {
+            Task { await self.cancel() }
+        }
+        return answer
+    }
+
+    func revokeLease(id: UUID, because cause: FanRestoreCause) async -> LeaseRevocation {
+        await leases.revokeLease(id: id, because: cause)
+    }
+
+    private func cancel() {
+        cancelled = true
+        release()
     }
 }
 
@@ -439,22 +518,23 @@ actor GatedFanStateSensing: FanStateSensing {
 ///
 /// ## The write seam too, since #180
 ///
-/// It is a `FanControlPlane` as well as a read seam, because the write-side defect #180 names
-/// could not be reached from a read: `reassert(_:fanAt:attempt:)` assigned what its command
-/// write returned through `held[index]?.commanded`, and a lease released *during that write*
-/// made the assignment vanish while § 5 logged a successful re-assert. With only the two read
-/// moments, nothing could release a lease there — which is why it survived #136's review. A
-/// write moment fires **after** the firmware has taken the write and while § 5 is still
-/// awaiting it, so the scenario is the worst one: the write landed, then the lease went. It
-/// fires only when the writer is on this double — `ReclamationMachine(plane:fans:interfering:)`.
+/// It is a `FanControlPlane` as well as a read seam, because the write-side defect #180 names could
+/// not be reached from a read: `reassert(_:fanAt:heldUnder:attempt:reengaging:)` assigned what its
+/// command write returned through `held[index]?.commanded`, and a lease released *during that
+/// write* made the assignment vanish while § 5 logged a successful re-assert. With only the two
+/// read moments, nothing could release a lease there — which is why it survived #136's review. A
+/// write moment fires **after** the firmware has taken the write and while § 5 is still awaiting
+/// it, so the scenario is the worst one: the write landed, then the lease went. It fires only when
+/// the writer is on this double — `ReclamationMachine(plane:fans:interfering:)`.
 actor InterferingFanStateSensing: FanControlPlane {
 
     /// Which read or write the effect happens inside.
     enum Moment: Sendable {
         /// Inside `readControlState(ofFan:)` — the suspension `examine(fanAt:)` resumes from.
         case controlStateRead
-        /// Inside `readEnvelope(ofFan:)` — the suspension `reassert(_:fanAt:attempt:)`
-        /// resumes from, and the one whose missing re-check wrote `F<n>Md` to an unleased fan.
+        /// Inside `readEnvelope(ofFan:)` — the suspension
+        /// `reassert(_:fanAt:heldUnder:attempt:reengaging:)` resumes from, and the one whose
+        /// missing re-check wrote `F<n>Md` to an unleased fan.
         case envelopeRead
         /// Inside `engageManualControl(of:)`, once `F<n>Md` has landed: between the re-assert's
         /// mode write and its command write.
@@ -462,6 +542,10 @@ actor InterferingFanStateSensing: FanControlPlane {
         /// Inside `commandTarget(_:)`, once `F<n>Tg` has landed: between the re-assert's command
         /// write and its post-write ruling.
         case commandWrite
+        /// Inside `commandTarget(_:)`, once the plane has **refused** `F<n>Tg`, before the error is
+        /// rethrown: the suspension the re-assert's half-landed catch resumes from (#353). Its
+        /// own moment, so `.commandWrite`'s "the write landed, then the world moved" is unchanged.
+        case refusedCommandWrite
         /// Inside `restoreToAutomatic(_:)`, once the restore has landed — the instant a
         /// scenario can ask what § 5 had recorded about a fan as it handed it back.
         case restoreWrite
@@ -551,7 +635,13 @@ actor InterferingFanStateSensing: FanControlPlane {
 
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
-        let commanded = try await plane.commandTarget(target)
+        let commanded: CommandedTarget
+        do {
+            commanded = try await plane.commandTarget(target)
+        } catch {
+            if moment == .refusedCommandWrite { await fireOnce() }
+            throw error
+        }
         if moment == .commandWrite { await fireOnce() }
         return commanded
     }
