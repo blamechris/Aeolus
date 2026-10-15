@@ -260,7 +260,8 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// retry is reasonable, because the next read may answer. The second is startup
         /// reconciliation, for a fan it could not confirm back under automatic control: one it
         /// read back in manual after a write the firmware accepted, one whose read-back threw,
-        /// or one its bounded budget never reached — see
+        /// one whose mode would not read and whose restore was then refused, or one its bounded
+        /// budget never reached — see
         /// [ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md). The
         /// helper serves clients anyway, because refusing to answer a snapshot helps nobody,
         /// and refuses a lease over that fan for the life of the process: reconciliation is

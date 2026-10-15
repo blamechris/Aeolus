@@ -194,7 +194,8 @@ be strengthened, and a fan whose mode could not be read can be given its own out
 > blindness no longer produces `supervisorBlind` on the wire: § 5's ledger is reported as a
 > fact, not an availability. So a fan § 5 gave up blind that is *still* unreadable reads
 > `automatic` with `available` beside it, and on a plane that can write `auto` would exit 0
-> without sending its restore, which is what this section rejects. It is tracked as
+> without sending its restore: the outcome "Exit 0 on the mode alone" rejects, reached by a
+> residue this section accepted only while a reason sat beside the fan. It is tracked as
 > [#360](https://github.com/blamechris/Aeolus/issues/360), which must close before A6.
 
 ### `supervisorBlind` as 9

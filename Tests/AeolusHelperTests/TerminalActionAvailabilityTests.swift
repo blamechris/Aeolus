@@ -229,7 +229,8 @@ struct TerminalActionAvailabilityTests {
     ///
     /// **Mutation (snapshot side):** re-add `if cause == .supervisorBlind { return
     /// .unavailable(.supervisorBlind) }` as the first statement of
-    /// `ReadOnlyFanReport.availability(writeCapabilityIs:bounds:)`. Run: red on the
+    /// `ReadOnlyFanReport.availability(writeCapabilityIs:bounds:)`, with the ledger cause passed
+    /// back in as a parameter. Run: red on the
     /// availability. **Mutation (grant side):** in `StartupReconciliation.refusalForGrant`,
     /// replace the catch's `return .supervisorBlind` with `continue`. Run: red on the refusal.
     @Test("Known gap #360: a fan § 5 gave up and still cannot read reads available, but is refused")

@@ -100,7 +100,7 @@ enum SafeState {
     ///   opens:** a fan § 5 gave up blind that is *still* unreadable then reads `automatic`
     ///   (#178's fallback) with no reason beside it, so on a plane that can write `auto` would
     ///   exit 0 without sending its restore while a grant over the fan is refused
-    ///   `supervisorBlind`. ADR 0013 rejects exactly that; it is
+    ///   `supervisorBlind`. ADR 0013 rejects exactly that, under "Exit 0 on the mode alone"; it is
     ///   [#360](https://github.com/blamechris/Aeolus/issues/360), an A6 precondition.
     /// - **`silent`** — the reasons about manual control being *granted*, not about the fan:
     ///   `writePathNotBuilt` (every fan on today's helper), `boundsImplausible`,
