@@ -51,7 +51,8 @@ extension ManualControlAvailability.Reason {
             return "A self-renewing lease was requested for this fan, and this build does not "
                 + "implement one."
         case .releaseInProgress:
-            return "This fan is mid-handback: a previous lease just ended and the write that "
+            return "This fan is mid-handback: a previous lease just ended, or `fanctl reset "
+                + "--all` or `fanctl auto` is returning every fan at once, and the write that "
                 + "returns it to automatic control has not completed yet."
         case .handbackUnconfirmed:
             return "Aeolus asked for this fan back and stopped waiting for an answer before "
