@@ -57,9 +57,8 @@ struct SnapshotAvailabilityTests {
     /// out, no arrangement of machine, ledger or lease core could produce `.available` from this
     /// helper at all — so the vocabulary's one affirmative answer was unreachable and untested.
     ///
-    /// **Mutation:** in `ReadOnlyFanReport.availability(whenLedgerSays:writeCapabilityIs:
-    /// bounds:)`, replace the body with
-    /// `.unavailable(.writePathNotBuilt)` — the literal #194 removed. Run: red.
+    /// **Mutation:** in `ReadOnlyFanReport.availability(writeCapabilityIs:bounds:)`, replace the
+    /// body with `.unavailable(.writePathNotBuilt)` — the literal #194 removed. Run: red.
     @Test("A fan on a seam that can write, with nothing else against it, reads available")
     func aFanThatClearsEveryGateOnABuiltSeamReadsAvailable() async throws {
         let helper = Fixture.composed()
@@ -111,8 +110,8 @@ struct SnapshotAvailabilityTests {
     /// byte-swapped `flt` — has no envelope to clamp into, so no target could ever be minted
     /// for it however capable the build is.
     ///
-    /// **Mutation:** in `availability(whenLedgerSays:writeCapabilityIs:bounds:)`, delete the
-    /// `bounds` arm so a `.built` seam falls straight through to `.available`. Run: red.
+    /// **Mutation:** in `availability(writeCapabilityIs:bounds:)`, delete the `bounds` arm so a
+    /// `.built` seam falls straight through to `.available`. Run: red.
     @Test("A bounds-implausible fan is refused for its bounds even on a seam that can write")
     func aBoundsImplausibleFanIsStillRefusedOnABuiltSeam() async throws {
         let helper = Fixture.composed(
@@ -133,21 +132,25 @@ struct SnapshotAvailabilityTests {
             """)
     }
 
-    /// A fan the system has taken back is not offered for manual control on a `.built` seam.
+    /// A fan § 5's ledger records as reclaimed is flagged, and reads what the grant answers.
     ///
-    /// #140 left `.reclaimedBySystem` unpublished as an availability, because on every build
-    /// that has shipped the honest answer was `.writePathNotBuilt` and `isReclaimedBySystem`
-    /// carried the fact. Sourcing the capability makes the fall-through reachable, and a bare
-    /// fall-through would answer `.available` for a fan macOS is holding — the exact inversion
-    /// #194 was filed about, one gate further down.
+    /// **Inverted by [#355](https://github.com/blamechris/Aeolus/issues/355), deliberately.**
+    /// This test used to require `.unavailable(.reclaimedBySystem)` here, on the argument that a
+    /// bare fall-through would offer a fan macOS is holding. But `acquireLease` never reads the
+    /// ledger: it reads the fan fresh and grants it, so that availability refused a lease the
+    /// helper grants, and nothing a compliant client could do would clear it. The ledger is
+    /// history and is reported as a fact, on `isReclaimedBySystem`; the availability is current
+    /// evidence, and agrees with the grant. `TerminalActionAvailabilityTests` asks the same
+    /// question after a real terminal action.
     ///
-    /// **Mutation:** delete the `cause == .systemReclaimed` arm from
-    /// `availability(whenLedgerSays:writeCapabilityIs:bounds:)`. Run: red — and note the fan
-    /// still reports `isReclaimedBySystem`, so a test reading only that field agrees with the
-    /// mutant.
-    @Test("A reclaimed fan is not reported available on a seam that can write")
-    func aReclaimedFanIsNotReportedAvailable() async throws {
+    /// **Mutation:** re-add `if cause == .systemReclaimed { return
+    /// .unavailable(.reclaimedBySystem) }` to `availability(writeCapabilityIs:bounds:)`, with
+    /// the ledger cause passed back in. Run: red — and note the fan still reports
+    /// `isReclaimedBySystem`, so a test reading only that field agrees with the mutant.
+    @Test("A reclaimed fan is flagged as reclaimed and reads available, as the grant answers")
+    func aReclaimedFanReadsWhatTheGrantAnswers() async throws {
         let helper = Fixture.composed()
+        await helper.bindSafetyRegistries()
         await helper.ledger.markReclaimed(fanAt: 0)
 
         let snapshot = try await helper.authority.snapshot()
@@ -155,8 +158,10 @@ struct SnapshotAvailabilityTests {
 
         #expect(fan.isReclaimedBySystem, "the ledger is not reaching the snapshot at all")
         #expect(
-            fan.manualControlAvailability == .unavailable(.reclaimedBySystem),
-            "a fan the operating system is holding is being offered for manual control")
+            fan.manualControlAvailability == .available,
+            "the snapshot refuses a fan the grant path grants, on the strength of § 5's history")
+        _ = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: ConnectionID())
     }
 
     // MARK: - #187: the lease core's refusals, in the read path
@@ -245,7 +250,7 @@ struct SnapshotAvailabilityTests {
     /// One fan's handback does not speak for its neighbour.
     ///
     /// The per-fan half, which every field on this path has needed its own test for — see
-    /// `ReadOnlyFanAuthorityLatchTests.blindnessIsReportedPerFan`. A re-statement keyed on
+    /// `ReadOnlyFanAuthorityLatchTests.reclamationIsReportedPerFan`. A re-statement keyed on
     /// "any fan is in the register" would disable the control for a whole machine because one
     /// fan's handback failed.
     ///

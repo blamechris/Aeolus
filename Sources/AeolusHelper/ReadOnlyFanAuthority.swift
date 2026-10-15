@@ -131,7 +131,7 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// than the plane, exactly as `LeaseAuthority` holds it, and required with no default —
     /// `.notBuilt` is the literal being removed, so a defaulted one would put it back where
     /// nothing could see it. See
-    /// `ReadOnlyFanReport.availability(whenLedgerSays:writeCapabilityIs:bounds:)`.
+    /// `ReadOnlyFanReport.availability(writeCapabilityIs:bounds:)`.
     private let writeCapability: any FanWriteCapabilityReporting
 
     /// The sensor keys this machine exposes, discovered once. `nil` until the first

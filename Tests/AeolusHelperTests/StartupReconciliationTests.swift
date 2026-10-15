@@ -628,20 +628,13 @@ struct ForeignManualControlReportingTests {
             """)
     }
 
-    /// A fan § 5 diagnosed as taken back by the operating system keeps that diagnosis.
-    ///
-    /// The precedence is keyed on the ledger's own cause, through `isReclaimedBySystem`,
-    /// rather than on an availability value. `availability(whenLedgerSays:)` maps a
-    /// reclamation to `.writePathNotBuilt` in this build — #140's rule — so the arm that
-    /// looked for `.unavailable(.reclaimedBySystem)` matched nothing and the protection it
-    /// documented did not exist.
-    ///
-    /// **Mutation:** delete `!fan.isReclaimedBySystem` from
-    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:awaitingConfirmation:
-    /// reconciliation:)`. Run: red.
-    @Test("A fan the system reclaimed is not reported as another program's")
-    func aReclaimedFanIsNotReportedAsForeign() async throws {
-        let reclaimed = HelperComposition(
+    /// One composed helper whose plane and provider both see fan 0 in manual, with fan 0
+    /// recorded in § 5's ledger by `mark`. Nothing brings it up, for this suite's reason: a
+    /// reconciliation pass would restore the fan out from under the rule being asked about.
+    private static func helperWithAManualFan(
+        markedBy mark: (ReclamationLedger) async -> Void
+    ) async -> HelperComposition<ScriptedControlPlane> {
+        let helper = HelperComposition(
             plane: ScriptedControlPlane(
                 fans: [0: .held(at: 2_400)],
                 stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)]),
@@ -652,47 +645,71 @@ struct ForeignManualControlReportingTests {
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)
-        await reclaimed.ledger.markReclaimed(fanAt: 0)
+        await mark(helper.ledger)
+        return helper
+    }
+
+    /// A fan § 5 recorded as taken by the operating system, that reads manual, is reported as
+    /// the grant path refuses it.
+    ///
+    /// **Inverted by [#355](https://github.com/blamechris/Aeolus/issues/355), deliberately.**
+    /// This test used to require that such a fan was *not* reported as foreign, through an
+    /// exemption keyed on `isReclaimedBySystem`, on the argument that it would "blame a third
+    /// party for the operating system's act". `refusalForGrant` has no such exemption — it reads
+    /// the fan fresh and refuses `.foreignManualControl` — so the exemption made the snapshot
+    /// read `.available` beside a refusal. Under ADR 0014's U0 the system's hold reads raw `0`
+    /// and never reaches this answer; a reclaimed fan that reads manual is one another program
+    /// took, or a diagnosis that was wrong, and the grant's answer is the current one.
+    ///
+    /// **Mutation:** re-add `, !fan.isReclaimedBySystem` to the `held` guard in
+    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:awaitingConfirmation:
+    /// reconciliation:)`. Run: red.
+    @Test("A reclaimed fan that reads manual is reported as the grant path refuses it")
+    func aReclaimedFanReadingManualAgreesWithTheGrant() async throws {
+        let reclaimed = await Self.helperWithAManualFan { await $0.markReclaimed(fanAt: 0) }
 
         let snapshot = try await reclaimed.authority.snapshot()
+        let refusal = await AvailabilityFixture.refusalForGrant(over: 0, from: reclaimed.leases)
 
         let fan = try #require(snapshot.fans.first)
         #expect(fan.isReclaimedBySystem, "§ 5's ledger entry did not reach the snapshot")
         #expect(
-            fan.manualControlAvailability != .unavailable(.foreignManualControl),
+            fan.manualControlAvailability == .unavailable(refusal),
             """
-            A fan the operating system took back is reported as being held by another \
-            program. reportingForeignControl's own documentation refuses exactly this — it \
-            "would blame a third party for the operating system's act" — and the guard that \
-            was supposed to prevent it matched an availability nothing produces.
+            The snapshot and the grant disagree about a fan § 5 once recorded as reclaimed: the \
+            ledger's history is standing in for what the fan reads now.
             """)
+        #expect(refusal == .foreignManualControl)
     }
 
-    @Test("A fan § 5 has already diagnosed keeps its own cause")
-    func theLedgersCauseOutranksTheBaseline() async throws {
-        let observed = HelperComposition(
-            plane: ScriptedControlPlane(
-                fans: [0: .held(at: 2_400)],
-                stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)]),
-            snapshotProvider: fanProvider(
-                fanCount: 1, extraKeys: ["F0Md": .reading("F0Md", 1)]),
-            criticalSensors: .mac16x5,
-            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
-            log: HelperRestorerTests.helperLog,
-            leaseLog: LeaseFixture.log,
-            safetyLog: Self.safetyLog)
-        await observed.ledger.markSupervisorBlind(fanAt: 0)
+    /// A fan § 5 recorded as blind, that reads manual, is reported as the grant path refuses it.
+    ///
+    /// **Inverted by #355, deliberately.** This test used to require `.supervisorBlind`: the
+    /// read path published § 5's blindness as an availability and step 5 left it untouched. The
+    /// grant reads the fan, which answers, and refuses it `.foreignManualControl`.
+    ///
+    /// **Mutation:** restore both halves #355 removed — the `.supervisorBlind` arm at the top of
+    /// `ReadOnlyFanReport.availability(writeCapabilityIs:bounds:)`, with the ledger cause passed
+    /// back in, and the `case .unavailable(.supervisorBlind): return fan` arm in
+    /// `reportingForeignControl`. Run: red. Either alone is green, and that is the shape of the
+    /// change rather than a gap: the first is overwritten by step 5's foreign answer, and the
+    /// second matches nothing once the first is gone. The first alone is red in
+    /// `TerminalActionAvailabilityTests`.
+    @Test("A blind-recorded fan that reads manual is reported as the grant path refuses it")
+    func aBlindRecordedFanReadingManualAgreesWithTheGrant() async throws {
+        let observed = await Self.helperWithAManualFan { await $0.markSupervisorBlind(fanAt: 0) }
 
         let snapshot = try await observed.authority.snapshot()
+        let refusal = await AvailabilityFixture.refusalForGrant(over: 0, from: observed.leases)
 
         #expect(
             try #require(snapshot.fans.first).manualControlAvailability
-                == .unavailable(.supervisorBlind),
+                == .unavailable(refusal),
             """
-            The foreign-control baseline overwrote § 5's own diagnosis. The ledger holds \
-            fans *Aeolus engaged*, so "the helper has gone blind on this fan" is both more \
-            specific and about a different subject than "somebody else has it".
+            The snapshot and the grant disagree about a fan § 5 once gave up blind: the ledger's \
+            history is standing in for what the fan reads now.
             """)
+        #expect(refusal == .foreignManualControl)
     }
 }
 

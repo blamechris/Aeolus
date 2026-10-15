@@ -984,6 +984,22 @@ When divergence is confirmed the helper either re-asserts control or falls back 
 — and either way **tells the user**. It never continues reporting a target speed the
 hardware is ignoring.
 
+**What the fallback leaves behind is a fact, not a refusal**
+([#355](https://github.com/blamechris/Aeolus/issues/355)). The terminal action hands the fan
+back, revokes the lease it was holding the fan for (#353), and keeps a ledger entry saying why
+(#346): the system took the fan, or the helper could not read it. The snapshot reports the first
+as `FanState.isReclaimedBySystem`; the second is in the fault log and in the lease's ending.
+Neither is a manual-control availability. The grant path never reads the ledger, and only an
+engagement or a release clears it, so a refusal keyed on it would stand for the life of the
+process — the only events that end it need the lease it refuses. On a build that can write, a
+client may ask for the fan again: the grant reads it fresh, the unlock runs with a fresh yield
+budget, and a landed engagement clears the mark and gives this section a fresh re-assert budget.
+The contest with the system is bounded per request, because no Aeolus client re-acquires on its
+own (ADR 0013 D1). The flag is history, and can go stale if another program takes the fan later;
+the availability beside it is current. A hardware run showing the system repeatedly reclaiming
+re-engaged fans reopens this ([ADR 0014](ADR/0014-apple-silicon-unlock.md)'s 2026-10-15
+amendment).
+
 **One window is graced, and only one.** A fan is registered as under manual control at the
 moment the `F<n>Md` write lands, which is before anything has been commanded on it. In that
 window the primary signal's target comparison cannot be made at all, and the two answers that
@@ -1331,10 +1347,12 @@ a keystone the firmware accepts but does not apply leaves that fan refused, only
 enumeration and the read-back, and on a seam that can write the snapshot names each durable
 refusal with the reason a grant over the same fan throws — while on one that cannot, it names
 none.
-`ForeignManualControlReportingTests` covers three fans the snapshot must **not** call
-somebody else's: one under a live lease, one whose handback was abandoned, and one § 5
-diagnosed as reclaimed by the system. `RestoreUnconfirmedAttributionTests` covers the other
-two, one from each of § 3's registers of restores no read has confirmed (#303).
+`ForeignManualControlReportingTests` covers two fans the snapshot must **not** call
+somebody else's — one under a live lease, one whose handback was abandoned — and, since
+[#355](https://github.com/blamechris/Aeolus/issues/355), two § 5 recorded as reclaimed or as
+blind that read manual, which the snapshot reports with the reason the grant throws for them.
+`RestoreUnconfirmedAttributionTests` covers two more fans that must not be called somebody
+else's, one from each of § 3's registers of restores no read has confirmed (#303).
 `HelperCompositionTests.reconciliationSitsBetweenTheBindAndTheSupervisors` holds the pass in
 its position. `LaunchDaemonPlistTests` holds the restart keys and the exit-code contract.
 *Pending hardware:* rows 2 to 7, 16 and 17 of the

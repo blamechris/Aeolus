@@ -75,24 +75,27 @@ struct ReadOnlyFanAuthorityLatchTests {
         #expect(try #require(snapshot.fans.first { $0.index == 0 }).isReclaimedBySystem == false)
     }
 
-    /// Blindness is reported as blindness, and never as `isReclaimedBySystem` — #140.
+    /// Blindness is never reported as `isReclaimedBySystem` — #140 — and is not an availability
+    /// either — #355.
     ///
     /// The two ways § 5 gives a fan up were one `Set<Int>` membership, so a helper that had
     /// merely stopped being able to read told the user the operating system had taken the
     /// fan. `FanState.isReclaimedBySystem`'s contract is narrower than that and the UI
-    /// renders it verbatim as "Reclaimed by system".
+    /// renders it verbatim as "Reclaimed by system". That half is unchanged.
     ///
-    /// `ManualControlAvailability.Reason` is where the honest answer goes, for the reason
-    /// `AeolusXPCVersion`'s bump policy names: adding a case to a forward-tolerantly decoded
-    /// vocabulary is additive, so an older client renders it generically rather than
-    /// failing to decode. It is also the reason that is *true* — the supervisor that would
-    /// protect a leased fan cannot see this one, which is `.noThermalTelemetry`'s argument
-    /// applied to the fan's own state rather than to the machine's temperature.
+    /// **The second half is inverted by
+    /// [#355](https://github.com/blamechris/Aeolus/issues/355), deliberately.** It used to
+    /// require `.unavailable(.supervisorBlind)` here, outranking the build. But § 5's blindness
+    /// is a record of what happened — reported by its fault lines and by the lease it ended —
+    /// and the grant path never reads it, so as an availability it said "cannot currently
+    /// read" for the life of the process, after a reconnect that had often worked, and refused
+    /// a lease the helper would grant. The availability is current evidence: here, the build.
     ///
-    /// Report `.systemReclaimed` for both causes and the first assertion goes red; drop the
-    /// blindness arm of the availability mapping and the second does.
-    @Test("A fan the ledger records as blind says blindness, not a system reclamation")
-    func theSnapshotReportsBlindnessAsBlindness() async throws {
+    /// Report `.systemReclaimed` for both causes and the first assertion goes red; re-add the
+    /// blindness arm to `ReadOnlyFanReport.availability(writeCapabilityIs:bounds:)`, with the
+    /// ledger cause passed back in, and the second does.
+    @Test("A fan the ledger records as blind is neither reported reclaimed nor refused for it")
+    func theSnapshotDoesNotReportBlindnessAsAReclamationOrARefusal() async throws {
         let ledger = ReclamationLedger()
         await ledger.markSupervisorBlind(fanAt: 1)
 
@@ -102,28 +105,13 @@ struct ReadOnlyFanAuthorityLatchTests {
 
         let blindFan = try #require(snapshot.fans.first { $0.index == 1 })
         #expect(blindFan.isReclaimedBySystem == false)
-        #expect(blindFan.manualControlAvailability == .unavailable(.supervisorBlind))
+        #expect(blindFan.manualControlAvailability == .unavailable(.writePathNotBuilt))
     }
 
-    /// The blind fan's neighbour keeps the build-level answer.
-    ///
-    /// `.writePathNotBuilt` is a fact about this executable, not about a fan, and it must
-    /// not be displaced for every fan by one fan's disposition. Replace the per-fan lookup
-    /// in the availability mapping with "any fan is blind" and this goes red where the test
-    /// above stays green.
-    @Test("A blind fan does not make its neighbour report as blind")
-    func blindnessIsReportedPerFan() async throws {
-        let ledger = ReclamationLedger()
-        await ledger.markSupervisorBlind(fanAt: 1)
-
-        let snapshot = try await authority(
-            provider: fanProvider(fanCount: 2), reclamation: ledger
-        ).snapshot()
-
-        #expect(
-            try #require(snapshot.fans.first { $0.index == 0 }).manualControlAvailability
-                == .unavailable(.writePathNotBuilt))
-    }
+    // `blindnessIsReportedPerFan` was deleted by #355. It held the blindness arm of the
+    // availability mapping to the fan it named, and with no such arm every fan reads the
+    // build's answer, so it could no longer fail. `reclamationIsReportedPerFan` above holds the
+    // per-fan rule for the field the ledger still reaches.
 
     /// An empty ledger reports every fan as ours — the state every build ships in today.
     @Test("An empty ledger reports no fan as reclaimed")
