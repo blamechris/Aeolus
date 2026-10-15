@@ -159,8 +159,9 @@ lasts one cycle and fails safe, and escalates to revoking the newer lease only i
 refuses three re-asserts, when the blame on the system is true.
 
 **What is untested, and kept by the rule.** The re-fetch across the lease hop in
-`examine(fanAt:)` has no seam that lands an event inside it without blocking a pool thread
-(#344). The identity re-fetch after the control-state read is caught one hop later by that same
+`examine(fanAt:)` has no test landing an event inside it (#344). `HeldLeaseRole` — § 5's role over
+the lease core, which narrows it to the two calls it makes — is now the seam that can, without
+blocking a pool thread; `ParkableHeldLeases` uses it for the registration's hop. The identity re-fetch after the control-state read is caught one hop later by that same
 lease-hop re-fetch, so only its log line tells it from a presence check;
 `ReclamationLeaseIdentityTests.aRecordRegisteredUnderANewLeaseDuringTheReadStopsTheExamination`
 asserts that line.

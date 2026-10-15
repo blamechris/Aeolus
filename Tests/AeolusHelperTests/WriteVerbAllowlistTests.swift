@@ -463,6 +463,11 @@ struct WriteVerbAllowlistTests {
         // #353's: § 5's terminal revocation, scoped to the lease it held the fan for. It
         // reaches a write only through `restore(_:because:)`, as the two beside it do.
         "LeaseAuthority.swift: revokeLease(id: UUID, because: FanRestoreCause)",
+        // § 5's role over the lease core (#357's review): the same two calls, as requirements
+        // `LeaseAuthority` witnesses. Asking writes nothing; revoking reaches a write only
+        // through the conformer's `restore(_:because:)`.
+        "HeldLeaseRole.swift: hasLiveLease(id: UUID, coveringFan: Int)",
+        "HeldLeaseRole.swift: revokeLease(id: UUID, because: FanRestoreCause)",
         "LeaseAuthority.swift: revokeLeases(coveringFan: Int, because: FanRestoreCause)",
         "LeaseAuthorityRefusals.swift: refuseIfBlind(_: ConnectionID)",
         "LeaseAuthorityRefusals.swift: refuseIfForeignManualControl(_: ConnectionID, "

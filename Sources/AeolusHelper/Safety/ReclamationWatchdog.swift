@@ -96,8 +96,9 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
 
     /// The authority on whether the lease a fan in `held` was registered under is still live —
     /// asked at registration and in every `examine(fanAt:)`, ADR 0009 D2 — and what
-    /// `finaliseRelease(fanAt:heldUnder:because:)` revokes.
-    private let leases: LeaseAuthority
+    /// `finaliseRelease(fanAt:heldUnder:because:)` revokes. A role, `HeldLeaseRole`, so § 5 can
+    /// ask those two things of the lease core and nothing else.
+    private let leases: any HeldLeaseRole
 
     /// § 3's bit, read once per cycle to decide the incumbent. Never written here: this
     /// mechanism does not engage or release a thermal emergency, and `ThermalEmergency`
@@ -136,7 +137,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         sensing: any FanStateSensing,
         writer: SafetyActorWriter<Plane>,
         engagement: EngagementDriver<Plane>,
-        leases: LeaseAuthority,
+        leases: any HeldLeaseRole,
         latch: ThermalEmergencyLatch,
         ledger: ReclamationLedger,
         log: SafetyLog = SafetyLog()
@@ -405,10 +406,9 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
 
         // Re-fetched across the lease hop before either answer is acted on, so a fan released
         // during it gets no second restore and no false "may still be pinned". **Untested, and
-        // kept by this file's re-fetch rule.** No seam wraps the hop. The only way found to land
-        // a release inside it blocks a cooperative-pool thread from the lease clock, which failed
-        // on CI (run 37940001373) and is unsafe in a parallel suite; #344 tracks a seam that
-        // does not block.
+        // kept by this file's re-fetch rule.** `HeldLeaseRole` is now the seam that holds the
+        // hop open without blocking a pool thread (the lease-clock route failed on CI, run
+        // 37940001373), and no test lands a release here with it yet: #344.
         guard isHeld(index, under: lease), let fan = held[index] else {
             log.reclamationFanReleasedMidExamination(fan: index, during: "the lease check")
             return

@@ -69,7 +69,7 @@ import Foundation
 /// Relocating prose cannot relieve `type_body_length`, which counts this body's code: about 85
 /// lines of headroom remain before its error at 350. New behaviour belongs in value types and
 /// the `EngagementDriver` (ADR 0014), not in this actor.
-actor LeaseAuthority {
+actor LeaseAuthority: HeldLeaseRole {
 
     private let clock: any MonotonicClock
     private let wallClock: @Sendable () -> Date
