@@ -30,22 +30,20 @@ struct PanicGrantSealTests {
     private typealias Fixture = AvailabilityFixture
 
     /// The daemon's wiring over firmware whose restores can be parked by scope. `manual` fans
-    /// read manual both in the firmware and in the snapshot's own mode read.
+    /// read manual both in the firmware and in the snapshot's own mode read, which is the
+    /// firmware's through `PlaneBackedProvider` (#360).
     private static func composed(
         fanCount: Int = 1, manual: Set<Int> = []
     ) -> HelperComposition<ScopeParkingPlane> {
         var fans: [Int: ScriptedControlPlane.FanCondition] = [:]
-        var modeKeys: [String: Result<SensorReading, SensorReadFailure>] = [:]
         for fan in 0..<fanCount {
             fans[fan] = manual.contains(fan) ? .init(mode: .manual) : .automatic(at: 2_400)
-            if manual.contains(fan) { modeKeys["F\(fan)Md"] = .reading("F\(fan)Md", 1) }
         }
+        let firmware = ScriptedControlPlane(
+            fans: fans, stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
         return HelperComposition(
-            plane: ScopeParkingPlane(
-                ScriptedControlPlane(
-                    fans: fans,
-                    stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])),
-            snapshotProvider: fanProvider(fanCount: fanCount, extraKeys: modeKeys),
+            plane: ScopeParkingPlane(firmware),
+            snapshotProvider: PlaneBackedProvider(over: firmware, fanCount: fanCount),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: Fixture.helperLog,

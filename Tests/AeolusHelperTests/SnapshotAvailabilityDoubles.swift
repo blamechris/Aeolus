@@ -67,14 +67,19 @@ enum AvailabilityFixture {
     /// the scripted firmware has never heard of throws `.fanNotAddressable`, which the grant
     /// gate would have to report as blindness. `LeaseFixture.automaticFans()` records the same
     /// hazard.
+    ///
+    /// The snapshot reads each fan's `F<n>Md` from that same firmware, through
+    /// `PlaneBackedProvider` (#360), so the two sides judge one machine.
     static func composed(
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
         fanCount: Int = 1,
         extraKeys: [String: Result<SensorReading, SensorReadFailure>] = [:]
     ) -> HelperComposition<ScriptedControlPlane> {
-        HelperComposition(
-            plane: Self.firmware(fanCount: fanCount, writes: writes),
-            snapshotProvider: fanProvider(fanCount: fanCount, extraKeys: extraKeys),
+        let firmware = Self.firmware(fanCount: fanCount, writes: writes)
+        return HelperComposition(
+            plane: firmware,
+            snapshotProvider: PlaneBackedProvider(
+                over: firmware, fanCount: fanCount, extraKeys: extraKeys),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: Self.helperLog,
@@ -85,9 +90,10 @@ enum AvailabilityFixture {
 
     /// The same wiring over firmware whose restore can be parked on demand.
     static func wedging() -> HelperComposition<CycleWedgingRestorePlane> {
-        HelperComposition(
-            plane: CycleWedgingRestorePlane(Self.firmware(fanCount: 1, writes: .honoured)),
-            snapshotProvider: fanProvider(fanCount: 1),
+        let firmware = Self.firmware(fanCount: 1, writes: .honoured)
+        return HelperComposition(
+            plane: CycleWedgingRestorePlane(firmware),
+            snapshotProvider: PlaneBackedProvider(over: firmware, fanCount: 1),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: Self.helperLog,

@@ -93,6 +93,17 @@ actor ScriptedControlPlane: FanControlPlane {
         /// `nil` means "whatever `writes` says". The case it exists for is a restore whose mode
         /// write is refused and whose key clear is not (ADR 0014 D5): every write is attempted.
         var forceKeyWrites: WriteBehaviour?
+        /// Fans whose `F<n>Md` does not answer this stage, on an SMC that otherwise does: every
+        /// read of the key throws `.readFailed`, while temperatures, the envelope and every write
+        /// behave as the rest of the stage says
+        /// ([#360](https://github.com/blamechris/Aeolus/issues/360)).
+        ///
+        /// `reads` cannot say it, because a failed stage blinds the critical temperatures too,
+        /// and the grant then refuses for telemetry before it reaches its read of the fan. And it
+        /// is a property of the firmware rather than of a wrapper round it, so the snapshot's own
+        /// read of the key — `PlaneBackedProvider`, through `firmwareMode(ofFan:)` — fails on
+        /// exactly the fans the plane's reads do.
+        var unreadableModes: Set<Int>
 
         init(
             temperatures: [String: Double] = [:],
@@ -101,7 +112,8 @@ actor ScriptedControlPlane: FanControlPlane {
             reconnects: ReconnectBehaviour = .refused(
                 reason: "the SMC did not come back; see SMCFanControlPlane.reconnect()"),
             targetWrites: WriteBehaviour? = nil,
-            forceKeyWrites: WriteBehaviour? = nil
+            forceKeyWrites: WriteBehaviour? = nil,
+            unreadableModes: Set<Int> = []
         ) {
             self.temperatures = temperatures
             self.reads = reads
@@ -109,6 +121,7 @@ actor ScriptedControlPlane: FanControlPlane {
             self.reconnects = reconnects
             self.targetWrites = targetWrites
             self.forceKeyWrites = forceKeyWrites
+            self.unreadableModes = unreadableModes
         }
 
         /// A stage where the SMC answers and the machine reads as given.
@@ -462,8 +475,7 @@ actor ScriptedControlPlane: FanControlPlane {
 
     func readControlState(ofFan index: Int) async throws -> FanControlState {
         attempts.append(.readControlState(fan: index))
-        try requireReadable(context: "fan \(index) control")
-        let fan = try condition(ofFan: index)
+        let fan = try modeReadable(ofFan: index, context: "fan \(index) control")
 
         return FanControlState(
             index: index,
@@ -565,6 +577,35 @@ actor ScriptedControlPlane: FanControlPlane {
     private func condition(ofFan index: Int) throws -> FanCondition {
         guard let fan = fans[index] else {
             throw FanControlPlaneError.fanNotAddressable(index: index)
+        }
+        return fan
+    }
+}
+
+// MARK: - The firmware's own answer for F<n>Md (#360)
+
+// An extension in this file for the unlock model's reason below: it reads the actor's private
+// state directly, and the actor's own body stays the read and restore model it was.
+extension ScriptedControlPlane {
+
+    /// What `F<n>Md` reads for fan `index` this stage, **recording no attempt**: the snapshot's own
+    /// read of the key, which `PlaneBackedProvider` serves from here.
+    ///
+    /// Not recorded because it is not a read this plane was asked for. The snapshot reads through
+    /// its provider, never through the plane (`SnapshotFanModeReads`), and a test counting the
+    /// plane's `attempts` is counting what the safety mechanisms asked the firmware.
+    func firmwareMode(ofFan index: Int) throws -> FirmwareFanMode {
+        try modeReadable(ofFan: index, context: "fan \(index) mode").mode
+    }
+
+    /// The one rule every read of `F<n>Md` answers by — `readControlState(ofFan:)`, the unlock
+    /// model's raw read, and `firmwareMode(ofFan:)`: the SMC answers this stage, the fan exists,
+    /// and its mode key is not one the stage leaves unanswered.
+    fileprivate func modeReadable(ofFan index: Int, context: String) throws -> FanCondition {
+        try requireReadable(context: context)
+        let fan = try condition(ofFan: index)
+        guard !stage.unreadableModes.contains(index) else {
+            throw FanControlPlaneError.readFailed(detail: "\(context): F\(index)Md did not answer")
         }
         return fan
     }
@@ -674,10 +715,7 @@ extension ScriptedControlPlane {
 
     /// Raw `F<n>Md`, through the stage's read behaviour: `0` on automatic, `1` on manual.
     private func readRawMode(ofFan index: Int) throws -> UInt8 {
-        if case .failed(let reason) = stage.reads {
-            throw FanControlPlaneError.readFailed(detail: "fan \(index) mode: \(reason)")
-        }
-        return try condition(ofFan: index).mode == .automatic ? 0 : 1
+        try modeReadable(ofFan: index, context: "fan \(index) mode").mode == .automatic ? 0 : 1
     }
 
     /// `F<n>Md = 1`, answered as this stage and `UnlockBehaviour` say. A refused stage refuses

@@ -365,8 +365,7 @@ struct StartupReconciliationReadBackTests {
         let helper = HelperComposition(
             plane: ReadBackScriptedPlane(
                 wrapping: scripted, unreadableModes: [1], keystoneMisses: [2]),
-            snapshotProvider: fanProvider(
-                fanCount: 3, extraKeys: ["F2Md": .reading("F2Md", 1)]),
+            snapshotProvider: PlaneBackedProvider(over: scripted, fanCount: 3),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: HelperRestorerTests.helperLog,

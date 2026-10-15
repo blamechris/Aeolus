@@ -65,17 +65,22 @@ struct HelperRestorerTests {
     static func composed(
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
         clock: some MonotonicClock = SystemMonotonicClock(),
-        snapshotProvider: some SensorProvider = fanProvider(fanCount: 1),
+        // `nil` is the firmware's own `F0Md`, through `PlaneBackedProvider` (#360): a snapshot
+        // that could not read the mode the plane answers would be judging another machine.
+        snapshotProvider: (any SensorProvider)? = nil,
         safetyLog: SafetyLog = HelperRestorerTests.safetyLog,
         afterwards: [ScriptedControlPlane.Stage] = []
     ) -> HelperComposition<ScriptedControlPlane> {
-        HelperComposition(
-            plane: ScriptedControlPlane(
-                fans: [0: .automatic(at: 2_400)],
-                stages: [
-                    .nominal(temperatures: LeaseFixture.nominalDieTemperatures, writes: writes)
-                ] + afterwards),
-            snapshotProvider: snapshotProvider,
+        let firmware = ScriptedControlPlane(
+            fans: [0: .automatic(at: 2_400)],
+            stages: [
+                .nominal(temperatures: LeaseFixture.nominalDieTemperatures, writes: writes)
+            ] + afterwards)
+        let reader: any SensorProvider =
+            snapshotProvider ?? PlaneBackedProvider(over: firmware, fanCount: 1)
+        return HelperComposition(
+            plane: firmware,
+            snapshotProvider: reader,
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             clock: clock,

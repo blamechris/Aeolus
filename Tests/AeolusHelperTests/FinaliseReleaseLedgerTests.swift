@@ -40,10 +40,11 @@ struct FinaliseReleaseLedgerTests {
     ///
     /// Not `private`, with the two helpers below it: `TerminalActionAvailabilityTests` (#355)
     /// asks what the snapshot and the grant say after this same terminal action. Its third
-    /// scenario needs the snapshot's `F0Md` to move, which is `snapshotProvider`.
+    /// scenario needs the snapshot's `F0Md` to move, which is `snapshotProvider`; `nil` reads the
+    /// firmware's own, as `HelperRestorerTests.composed` does (#360).
     static func holding(
         afterwards: [ScriptedControlPlane.Stage] = [],
-        snapshotProvider: some SensorProvider = fanProvider(fanCount: 1)
+        snapshotProvider: (any SensorProvider)? = nil
     ) async throws -> (helper: HelperComposition<ScriptedControlPlane>, log: RecordedLog) {
         let log = RecordedLog()
         let helper = HelperRestorerTests.composed(
