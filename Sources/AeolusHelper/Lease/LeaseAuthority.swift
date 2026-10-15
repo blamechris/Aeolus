@@ -476,6 +476,14 @@ actor LeaseAuthority {
     /// `LeaseTable.covers(_:liveAt:)`. It sweeps nothing: the TTL path hands lapsed fans back.
     func hasLiveLease(coveringFan fan: Int) -> Bool { table.covers(fan, liveAt: clock.now) }
 
+    /// ADR 0009 D2's question about one lease and one fan, asked at `clock.now` by § 5 and the
+    /// engagement driver — see `LeaseTable.covers(_:under:liveAt:)`. There is deliberately no
+    /// form that asks whether *any* lease covers a fan (#357). It sweeps nothing: the TTL path
+    /// hands lapsed fans back.
+    func hasLiveLease(id: UUID, coveringFan fan: Int) -> Bool {
+        table.covers(fan, under: id, liveAt: clock.now)
+    }
+
     // MARK: - Teardown path 2 of 2: connection death
 
     /// A connection died: crash, `SIGKILL`, logout, or an orderly disconnect.
@@ -535,6 +543,24 @@ actor LeaseAuthority {
         }
         let fans = revoked.reduce(into: Set<Int>()) { $0.formUnion($1.fanIndices) }
         await restore(fans, because: cause)
+    }
+
+    /// Revokes the lease `id` names, **whole**, if it is live, and returns whether it did.
+    ///
+    /// § 5's terminal action (#353): it revokes the lease it was holding the fan for and no
+    /// other. A lease already gone, or past its deadline, is not revoked — a lapsed one is left
+    /// to the TTL sweep, which records `.leaseExpired` — so no client is told the system took
+    /// control it had already given up. Removed synchronously before the one restore call, as
+    /// every teardown here is (#188). handback-ledger.md § *"`revokeLease(id:because:)`: the one
+    /// lease § 5 held the fan for"*.
+    func revokeLease(id: UUID, because cause: FanRestoreCause) async -> Bool {
+        guard let entry = table.entry(id: id), !entry.hasLapsed(asOf: clock.now) else {
+            return false
+        }
+        table.remove(id: id)
+        log.revoked(entry.connection, fans: entry.fanIndices, because: cause)
+        await restore(entry.fanIndices, because: cause)
+        return true
     }
 
     /// Revokes **every** live lease, whatever fans it covers.

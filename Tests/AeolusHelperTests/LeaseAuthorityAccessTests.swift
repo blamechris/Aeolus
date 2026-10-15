@@ -194,8 +194,15 @@ struct LeaseAuthorityAccessTests {
         // boolean about one fan — so a caller can learn whether a fan is leased, which the
         // snapshot already tells every client, and cannot change who holds it.
         "hasLiveLease(coveringFan: Int)",
+        // #357's: the same question about one named lease. Synchronous and read-only, as above;
+        // a caller holding a lease's ID can learn whether it is live, which
+        // `heldLease(id:from:)` already answers its holder.
+        "hasLiveLease(id: UUID, coveringFan: Int)",
         "connectionDidInvalidate(_: ConnectionID)",
         "revokeLeases(coveringFan: Int, because: FanRestoreCause)",
+        // #353's, § 5's terminal revocation. Strictly narrower than `revokeEveryLease` below,
+        // which is already internal: one named lease, whole, only while it is live.
+        "revokeLease(id: UUID, because: FanRestoreCause)",
         "revokeEveryLease(because: FanRestoreCause)",
         "releaseEveryLease()",
         "confirmAcceptedHandbacks()",

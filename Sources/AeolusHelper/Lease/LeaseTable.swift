@@ -128,6 +128,29 @@ struct LeaseTable: Sendable {
         entries.values.contains { $0.fanIndices.contains(fan) && !$0.hasLapsed(asOf: instant) }
     }
 
+    /// Whether the entry `id` names exists, covers `fan`, and has **not lapsed** as of
+    /// `instant`.
+    ///
+    /// [ADR 0009](../../../docs/ADR/0009-precedence-at-the-write.md) D2's question, and the
+    /// narrow one it asks for: one lease, one fan, at one instant, from a safety actor about to
+    /// act for a fan it believes is held under that lease.
+    /// `LeaseAuthority.hasLiveLease(id:coveringFan:)` is the only caller.
+    ///
+    /// **About one lease, never about whichever covers the fan** (#353, #357). Once a lease
+    /// ends, another can be granted over the same fan within one § 5 cycle, and a question
+    /// answered by the newer lease judged the older lease's record under it.
+    ///
+    /// **Judged against the deadline, never against presence**, and that is why
+    /// `fansUnderLease` is not reused. A lease whose deadline has passed stays in this table
+    /// until `LeaseExpirySupervisor` sweeps it, and an answer of "covered" in that window is
+    /// § 5 re-asserting a fan whose lease has already expired — the write D2 exists to refuse.
+    /// `hasLapsed(asOf:)` is the same `>=` every other expiry decision here uses, so this
+    /// cannot call a lease live that `heldLease(id:from:)` would refuse as expired.
+    func covers(_ fan: Int, under id: UUID, liveAt instant: ContinuousClock.Instant) -> Bool {
+        guard let entry = entries[id] else { return false }
+        return entry.fanIndices.contains(fan) && !entry.hasLapsed(asOf: instant)
+    }
+
     func entry(id: UUID) -> LeaseRecord? { entries[id] }
 
     mutating func insert(_ entry: LeaseRecord) {
