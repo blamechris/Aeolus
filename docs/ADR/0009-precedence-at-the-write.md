@@ -323,6 +323,9 @@ too (ADR 0014, amended alongside).
   the lease core about that lease and decides in one straight-line region: a lease that is not
   live is refused and records nothing; a live one keeps its own record and replaces one an
   ended lease left. At most one live lease covers a fan, so the replaced record is always stale.
+  A fan released or registered while the question was out is refused too, because the answer
+  no longer describes it (a per-fan generation, captured before the hop), and only an accepted
+  registration clears the fan's ledger entry.
 - `examine(fanAt:)` asks `hasLiveLease(id:coveringFan:)` about the record's own lease, in the
   same place. `.leaseLapsed`'s action is unchanged: restore-and-forget, whatever covers the fan
   now.

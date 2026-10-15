@@ -1281,6 +1281,12 @@ lease is judged against the permit's own fan at every examination. No write verb
 1. Engage through a driver bound to `apply`'s `leaseID`.
 2. Register each fan with `manualControlEngaged(_:under:)` under the same ID. A refusal is an
    engagement failure: every fan this `apply` engaged is handed back, and the call is refused.
+   A refusal never leaves a fan off automatic control unwatched even before that hand-back:
+   the driver returned after an after-check that found the lease live, so a lease that has since
+   ended restores the fan after the engagement's writes, and a fan released or registered while
+   § 5 asked is being restored or is watched by the newer record. Register one fan at a time per
+   lease: a second registration of the same fan under the same lease, in flight at once, is
+   refused, and the hand-back would then contest § 5's record of the first.
 3. Report each commanded target with `commandedTarget(_:under:)`.
 4. Ask `heldLease(id:from:)` again before replying, so the reply never says *applied* under a
    lease that has ended.

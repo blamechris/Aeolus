@@ -1069,7 +1069,8 @@ a newer lease means that lease's engagement holds the fan and its own record is 
 § 5 neither restores, forgets nor commands it. The terminal action revokes only the lease it was
 holding the fan for, and only while that lease is live; if it has already ended, the fan is still
 handed back and no lease is revoked. A registration under a lease that is no longer live is
-refused, and one under a live lease replaces whatever an ended lease left. The engagement driver
+refused, as is one whose fan was released or registered while it asked, and a refused
+registration clears nothing; one under a live lease replaces whatever an ended lease left. The engagement driver
 asks the same question, about the lease the engagement runs under, before and after every step.
 
 **What identity does not close.** A hand-back owed to an ended lease's record, or the undo of an

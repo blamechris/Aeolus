@@ -74,7 +74,7 @@ import Foundation
 ///   comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
 ///   Relocating prose cannot relieve `type_body_length`, which counts this body's code: about
-///   8 lines of headroom remain before its error at 350 (342 code lines since #357). New
+///   5 lines of headroom remain before its error at 350 (345 code lines since #361's review). New
 ///   behaviour belongs in value types and the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
 ///   [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of this space.
@@ -126,6 +126,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// entry a release notification must not clear (#346) — see `manualControlReleased(fanAt:)`. A
     /// set only for legibility: one sweep runs at a time, so it never holds more than one fan.
     private var finalising: Set<Int> = []
+
+    /// How many times each fan has been released or registered, so a registration can tell
+    /// whether its lease answer still describes the fan when it resumes (#357's review). Bumped
+    /// by every release notice and every accepted registration; never reset.
+    private var registrations: [Int: UInt64] = [:]
 
     /// `sensing` is an existential rather than `some FanStateSensing`, unlike
     /// `ThermalEmergency`'s `telemetry`. It is stored as one either way, and taking it as an
@@ -186,30 +191,31 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// ## Under the lease the engagement ran under, which must be live
     ///
     /// One lease hop, then a straight-line decision (#357): a lease that is not live or does not
-    /// cover the fan is refused with `.leaseNotLive` and records nothing; a live one keeps its
-    /// own record and replaces an ended lease's. Acquire, then engage, then register.
+    /// cover the fan, or a fan released or registered while the question was out, is refused
+    /// with `.leaseNotLive` and touches nothing; a current, live one keeps its own record and
+    /// replaces an ended lease's. Acquire, then engage, then register.
     /// reclamation-watchdog.md § *"Every act is for the lease the fan was registered under"*.
     ///
-    /// Clears any reclamation recorded against this fan: something has just taken it off
-    /// automatic control, so the ledger's claim that the system holds it is now false, and
-    /// a stale `true` there would report a fan as lost that a client is about to command.
-    /// That half is unconditional, because it is a statement about the world rather than
-    /// about this registry.
+    /// An accepted registration clears any reclamation recorded against this fan, whatever this
+    /// registry held: something has just taken it off automatic control, so the ledger's claim
+    /// that the system holds it is false. A refused one clears nothing — it is evidence of no
+    /// engagement — so a mark the terminal action kept stands.
     func manualControlEngaged(_ fan: CommandableFan, under lease: UUID) async throws {
-        let live = await leases.hasLiveLease(id: lease, coveringFan: fan.index)
-        if live {
-            let existing = held[fan.index]
-            if let existing, existing.lease != lease {
-                log.reclamationReplacedEndedLeaseRecord(fan: fan.index)
-            }
-            held[fan.index] = HeldFan.registering(lease, over: existing)
+        let index = fan.index
+        let generation = registrations[index, default: 0]
+        let live = await leases.hasLiveLease(id: lease, coveringFan: index)
+        guard live, registrations[index, default: 0] == generation else {
+            log.reclamationRegistrationRefused(fan: index, whileReleasedOrRegistered: live)
+            throw EngagementRefusal.leaseNotLive(fan: index)
         }
-        if await ledger.clearReclaimed(fanAt: fan.index) {
-            log.reclamationResolved(fan: fan.index)
+        let existing = held[index]
+        if let existing, existing.lease != lease {
+            log.reclamationReplacedEndedLeaseRecord(fan: index)
         }
-        guard live else {
-            log.reclamationRegistrationRefused(fan: fan.index)
-            throw EngagementRefusal.leaseNotLive(fan: fan.index)
+        held[index] = HeldFan.registering(lease, over: existing)
+        registrations[index, default: 0] &+= 1
+        if await ledger.clearReclaimed(fanAt: index) {
+            log.reclamationResolved(fan: index)
         }
     }
 
@@ -252,6 +258,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// reclamation-watchdog.md § *"The ledger entry `finaliseRelease` keeps"*.
     func manualControlReleased(fanAt index: Int) async {
         held[index] = nil
+        registrations[index, default: 0] &+= 1
         guard !finalising.contains(index) else { return }
         if await ledger.clearReclaimed(fanAt: index) {
             log.reclamationResolved(fan: index)

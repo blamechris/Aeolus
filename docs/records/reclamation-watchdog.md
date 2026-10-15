@@ -75,7 +75,8 @@ estimate made before the change was 323 — the identity re-fetches cost no line
 registration's decision, the two other-lease guards, `isHeld(_:under:)`, the lease parameter on
 five signatures and `commandWriteFailed(fanAt:heldUnder:detail:)` (moved out of `reassert` for
 its cyclomatic complexity) did. The next behaviour that has to touch `held` needs #128's split
-decided first.
+decided first. The review of #361 spent three more on the registration's generation: **345, and
+about 5 left.**
 
 New behaviour for #9's A4 and A6 belongs in the `EngagementDriver` that
 [ADR 0014](../ADR/0014-apple-silicon-unlock.md) specifies, and in value types beside `HeldFan`
@@ -130,8 +131,39 @@ back is still handed back.
 decides in a straight line: a lease that is not live, or does not cover the fan, is refused with
 `.leaseNotLive` and records nothing; a live one keeps a record of its own and replaces one an
 ended lease left. At most one live lease covers a fan, so the replaced record is always stale,
-and a late registration under an ended lease cannot evict a live one. The ledger clear stays
-unconditional, for the reason the method gives.
+and a late registration under an ended lease cannot evict a live one.
+
+**The answer has to still describe the fan when the registration resumes** (the review of #361,
+its C1). The lease hop is a suspension, and the actor is reentrant across it: L1's registration
+could be told L1 was live, and resume after L1 ended, its release notice ran, and L2 was granted,
+engaged and registered the fan. Holding a true answer about an instant that had passed, it took
+L2's record for an ended lease's and replaced it, and the next cycle handed back the fan L2
+holds. So each fan carries a generation, bumped by every release notice and every accepted
+registration, captured before the hop and compared after it; a registration that finds it
+moved is refused and touches nothing. Both bumps are needed: the notice is a hint (D2), so a
+lease can end with § 5 never told, and then only L2's registration moves the generation. A
+lease that answered not live never becomes live again, so a `false` cannot be stale.
+
+**A refused registration clears nothing** (the same review, its C2). The ledger clear used to be
+"unconditional, because it is a statement about the world": something had just taken the fan
+off automatic control. That was true only of a registration § 5 accepted. A refused one is
+evidence of no engagement § 5 can stand behind, and clearing on it erased a `.systemReclaimed`
+mark the terminal action had kept, so the snapshot told the user the system no longer held a
+fan nothing had taken back. The clear now follows acceptance; on an accepted registration it is
+still unconditional, whatever this registry held.
+
+**Why a refusal never leaves a fan off automatic control with nothing watching it.** A
+registration follows its engagement, and the driver returned only after its after-check found
+the lease live, so every one of that engagement's writes landed while the lease was live. A
+refusal means either the lease is not live — it ended after that after-check, and every lease
+end restores its fans with a restore requested after those writes, so it lands after them — or
+the fan's generation moved, which is a release notice (a lease-core restore of the fan, issued
+after the lease ended) or another accepted registration, whose record watches the fan from then
+on. A6's contract adds its own hand-back of every fan the refused `apply` engaged, and a restore
+the firmware refuses leaves the fan in § 3's registry, where the driver put it. One case is A6's
+to prevent, not this method's: two registrations of one fan under one live lease at once — the
+second is refused, and A6's hand-back would then contest § 5's record of the first. That is the
+existing precondition that engagements of one fan are serialised.
 
 **Forgotten before the restore, and why identity does not make that redundant.**
 `restoreAndForget` used to say that forgetting first "needs no identity `HeldFan` does not

@@ -1646,16 +1646,20 @@ extension SafetyLog {
 
     // MARK: - docs/SAFETY.md § 5 — the lease a fan was registered under (#353, #357)
 
-    /// A registration arrived under a lease that is no longer live, or does not cover the fan,
-    /// so § 5 recorded nothing. Its caller owns the hand-back of what it engaged (ADR 0014's
-    /// 2026-10-15 amendment, A6's contract).
-    func reclamationRegistrationRefused(fan: Int) {
+    /// A registration arrived under a lease that is no longer live, or does not cover the fan —
+    /// or the fan was released or registered again while § 5 was asking about it, so the answer
+    /// no longer described the fan — and § 5 recorded nothing. Its caller owns the hand-back of
+    /// what it engaged (ADR 0014's 2026-10-15 amendment, A6's contract).
+    func reclamationRegistrationRefused(fan: Int, whileReleasedOrRegistered: Bool) {
+        let reason =
+            whileReleasedOrRegistered
+            ? "it was released or registered again while § 5 asked about its lease"
+            : "the lease it was engaged under is no longer live, or does not cover it"
         emit(
             .notice,
             """
-            § 5 refused to register fan \(fan): the lease it was engaged under is no longer \
-            live, or does not cover it. Nothing is recorded, and the engagement's caller hands \
-            the fan back.
+            § 5 refused to register fan \(fan): \(reason). Nothing is recorded, and the \
+            engagement's caller hands the fan back.
             """
         )
     }
