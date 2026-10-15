@@ -76,7 +76,7 @@ registration's decision, the two other-lease guards, `isHeld(_:under:)`, the lea
 five signatures and `commandWriteFailed(fanAt:heldUnder:detail:)` (moved out of `reassert` for
 its cyclomatic complexity) did. The next behaviour that has to touch `held` needs #128's split
 decided first. The review of #361 spent five more on the registration's generation and the
-terminal action's lease: **347, and about 3 left.**
+terminal action's lease: 347. The panel's lapse fix gave one back: **346, and about 4 left.**
 
 New behaviour for #9's A4 and A6 belongs in the `EngagementDriver` that
 [ADR 0014](../ADR/0014-apple-silicon-unlock.md) specifies, and in value types beside `HeldFan`
@@ -159,7 +159,7 @@ lease was live before the terminal action and resuming inside its hand-back, bef
 revocation, was accepted and cleared the `.systemReclaimed` mark the terminal action keeps
 (#346): the fan handed back, its lease revoked, and the user told the system no longer holds it.
 `finaliseRelease` now moves the generation in the same straight-line region as
-`finalising.insert`, before its first suspension, so such a registration resumes refused and
+`finalising[index] = lease`, before its first suspension, so such a registration resumes refused and
 touches nothing, and the terminal action completes as it would have — it revokes that lease
 anyway.
 
@@ -167,13 +167,14 @@ anyway.
 too.** `finalising` records the lease the terminal action is giving each fan up for, and a
 registration under that lease is refused while it does, and keeps the mark. This reverses what
 #346 pinned — that such an engagement clears the mark — and the reversal is deliberate, decided
-in #361 under lease identity. #346 pinned it when the terminal action revoked every lease. Under
-identity the same `finaliseRelease` call revokes exactly that lease, whose restore undoes the
-engagement, and drops its record after the hand-back; clearing the mark therefore told the user
-the system no longer holds a fan it did reclaim, which is C3's outcome by another route and a
-rule-6 misreport. The refusal is A6's engagement failure, so `apply` hands the fan back as well,
-which matches the revocation. A registration under any other lease is accepted, as identity
-requires (`aTerminalActionLeavesANewerLeasesRecordAlone`).
+in #361. The reason is rule 6 and consistency with C3, not identity: the terminal action revoked
+that lease before identity too (`revokeEveryLease` included it), so the revocation in the same
+call has always undone such an engagement and dropped its record, and clearing the mark has
+always told the user the system no longer holds a fan it did reclaim. C3 is that outcome by
+another route, and refusing one but not the other would be inconsistent. The refusal is A6's
+engagement failure, so `apply` hands the fan back as well, which matches the revocation. A
+registration under any other lease is accepted, as identity requires
+(`aTerminalActionLeavesANewerLeasesRecordAlone`).
 `FinaliseReleaseLedgerTests.aSameLeaseRegistrationDuringTheHandBackIsRefusedAndKeepsTheMark`
 holds it.
 
@@ -204,9 +205,11 @@ carry". `HeldFan` carries one now, and forget-first stays anyway: it also keeps 
 under the **same** lease made during the restore, which an identity check after the restore
 could not tell from the record it was forgetting.
 
-**The terminal action.** `finaliseRelease` revokes only the lease it was holding the fan for,
-through `LeaseAuthority.revokeLease(id:because:)`, whole, and only while that lease is live: a
-lapsed one is left to the TTL sweep, which records `.leaseExpired`. It drops that lease's records
+**The terminal action.** `finaliseRelease` ends only the lease it was holding the fan for,
+through `LeaseAuthority.revokeLease(id:because:)`, whole: revoked if it is live, and ended as
+`.leaseExpired` inside the call if it has lapsed unswept — the sweep, left to it, ended the lease
+after `finalising` had closed, and its release notice erased the mark (#361's panel). It drops
+that lease's records
 — the siblings, and a same-lease re-engagement made during the hand-back, which the revocation
 restores (#307's same-lease form) — and keeps every other lease's. If the lease has already
 ended the hand-back still runs and nothing is revoked, with one `.notice`, so `LeaseLog`'s
@@ -219,15 +222,19 @@ lease is every lease, so the ordinary case does not change. § 3 keeps `revokeEv
 to an ended lease's record, or the undo of an engagement that outlived its lease — can land after
 a newer lease's engagement and before that lease registers the fan. On its first cycle the
 newer record reads `.modeReclaimed` and re-asserts its own target: one false "Reclamation
-detected" line and a temporary `isReclaimedBySystem`, both clearing once the fan converges. It
-lasts one cycle and fails safe, and escalates to revoking the newer lease only if the firmware
-refuses three re-asserts, when the blame on the system is true.
+detected" line and a false `isReclaimedBySystem`. The re-assert takes one cycle and fails safe,
+and escalates to revoking the newer lease only if the firmware refuses three re-asserts, when the
+blame on the system is true. The mark lasts longer: only a cycle converged on both signals clears
+it, and a fan still short of its new target takes the shortfall branch, which returns before that
+clear — so it stands while the fan ramps, and indefinitely if the fan cannot reach the target
+([#366](https://github.com/blamechris/Aeolus/issues/366)).
 
 **What is untested, and kept by the rule.** The re-fetch across the lease hop in
 `examine(fanAt:)` has no test landing an event inside it (#344). `HeldLeaseRole` — § 5's role over
 the lease core, which narrows it to the two calls it makes — is now the seam that can, without
-blocking a pool thread; `ParkableHeldLeases` uses it for the registration's hop. The identity re-fetch after the control-state read is caught one hop later by that same
-lease-hop re-fetch, so only its log line tells it from a presence check;
+blocking a pool thread; `ParkableHeldLeases` uses it for the registration's hop. The identity
+re-fetch after the control-state read is caught one hop later by that same lease-hop re-fetch,
+so only its log line tells it from a presence check;
 `ReclamationLeaseIdentityTests.aRecordRegisteredUnderANewLeaseDuringTheReadStopsTheExamination`
 asserts that line.
 
@@ -628,6 +635,14 @@ the way out; the release that ended the lease sent its notice while `finalising`
 and that notice skipped its clear as any other during the call does.
 `FinaliseReleaseLedgerTests.theTerminalActionRevokesOnlyTheLeaseItHeldTheFanFor` releases and
 re-grants inside the hand-back.
+
+**A lease that lapsed during the call, since #361's panel.** It used to be the gap the paragraph
+above names, by another route: `revokeLease` declined a lapsed lease, `finalising` closed, and the
+TTL sweep then ended it and its notice cleared the mark — #346's defect again, which `main` never
+had because `revokeEveryLease`'s `removeAll()` took lapsed entries too. `revokeLease` now ends a
+lapsed lease inside the call, as `.leaseExpired`, so its notice lands while `finalising` holds the
+fan. `FinaliseReleaseLedgerTests.aLeaseLapsingDuringTheHandBackKeepsTheMarkThroughItsExpiry`
+lapses the lease inside the hand-back.
 
 **What still clears it, so it is not frozen.** An accepted `manualControlEngaged(_:under:)`
 clears, because an engagement is a statement about the world. #346 pinned that it also clears

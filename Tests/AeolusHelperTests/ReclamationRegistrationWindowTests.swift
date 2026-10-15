@@ -19,9 +19,9 @@ import Testing
 /// as safe.
 ///
 /// The terminal action on the far side of these tests is not merely a fan restored, it is
-/// `finaliseRelease(fanAt:heldUnder:because:)` revoking **every lease on the machine** and a
-/// `.fault` line blaming the operating system. That is why the lease assertion, not the restore
-/// assertion, is the point of each one.
+/// `finaliseRelease(fanAt:heldUnder:because:)` revoking **the client's lease** — every lease on the
+/// machine until #353 — and a `.fault` line blaming the operating system. That is why the lease
+/// assertion, not the restore assertion, is the point of each one.
 @Suite("The reclamation watchdog's registration window")
 struct ReclamationRegistrationWindowTests {
 
@@ -33,12 +33,12 @@ struct ReclamationRegistrationWindowTests {
     /// commanded yet, because E3 writes `F<n>Tg` next. A supervisor cycle can land in it, and
     /// what it must do is nothing at all.
     ///
-    /// The lease assertion is the point. `finaliseRelease(fanAt:heldUnder:because:)` does not
-    /// revoke one lease, it revokes **every** lease on the machine, so a fan judged reclaimed
-    /// inside this window costs a client the control it was granted milliseconds earlier — and the
-    /// log blames the operating system for it. The *other* ordering produces exactly that, and
-    /// `ReclamationWatchdogRecoveryTests.aFanWithNoCommandedTargetIsRestored` is that same registry
-    /// entry read as `.automatic` instead.
+    /// The lease assertion is the point. `finaliseRelease(fanAt:heldUnder:because:)` revokes the
+    /// lease the fan was registered under — every lease on the machine until #353 — so a fan judged
+    /// reclaimed inside this window costs a client the control it was granted milliseconds earlier
+    /// — and the log blames the operating system for it. The *other* ordering produces exactly
+    /// that, and `ReclamationWatchdogRecoveryTests.aFanWithNoCommandedTargetIsRestored` is that
+    /// same registry entry read as `.automatic` instead.
     ///
     /// This is the `.targetDiverged` third of the window — the firmware answers manual with
     /// a readable target and only the commanded side is missing. It is the one third that
@@ -76,7 +76,7 @@ struct ReclamationRegistrationWindowTests {
     /// `primaryDivergence(of:against:)` answers `.targetUnreadable` before it looks at the
     /// commanded target at all, so on a fan registered after its `F<n>Md` write and awaiting its
     /// first `F<n>Tg` write, a single unreadable target read used to take the terminal action on
-    /// the spot: ledger marked, fan restored, and **every lease on the machine** revoked — none of
+    /// the spot: ledger marked, fan restored, and **the client's lease** revoked — none of
     /// the tolerance `cycleCouldNotSee(fanAt:heldUnder:detail:)` grants a fan that could not be
     /// read at all. Reproduced on this fixture before the fix, with a `.fault` line telling an
     /// operator the system had taken a fan nothing had yet been commanded on.
@@ -100,7 +100,7 @@ struct ReclamationRegistrationWindowTests {
 
         #expect(
             await machine.leases.activeLease()?.id == lease.id,
-            "one unreadable target read cost the client every lease on the machine")
+            "one unreadable target read cost the client its lease")
         #expect(await machine.watchdog.fansUnderManualControl == [0])
         #expect(await machine.didRestore(fan: 0) == false)
         #expect(await machine.ledger.reclaimedFans.isEmpty)

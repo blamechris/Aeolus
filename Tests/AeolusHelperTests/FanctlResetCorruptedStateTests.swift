@@ -26,8 +26,10 @@ import Testing
 ///   session will ever invalidate, so nothing but § 7 or its TTL ends it.
 /// - **A fan in manual under no lease, and a registry that disagrees with the table.** Fan 1 is
 ///   off automatic control and registered with § 3, and no lease covers it. § 5 refuses a
-///   registration under a lease that does not cover the fan since #357, so it can no longer
-///   disagree with the table this way; the refusal is part of the setup.
+///   registration under a lease that does not cover the fan since #357, so it cannot be put in
+///   that state by registering; the refusal is part of the setup. It can still disagree with
+///   the table another way — a lease that ends unannounced leaves its record until the next
+///   examination hands it back — but the composed restorer announces every lease end.
 /// - **A stale `restoreAbandoned` entry.** Fan 2's handback was refused, so its refusal stands,
 ///   and the firmware has since come good with nothing having asked it again.
 /// - **A latched § 3 with nothing bridged under it.** The latch is engaged directly, as no cycle

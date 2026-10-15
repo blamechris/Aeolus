@@ -331,13 +331,14 @@ struct FinaliseReleaseLedgerTests {
     /// mark is kept**.
     ///
     /// The holder registers fan 0 again during § 5's hand-back, under the lease § 5 has not
-    /// revoked yet. **This is the deliberate reversal of #346's pinning**, decided in #361 under
-    /// lease identity. #346 pinned that such an engagement clears the mark when the terminal
-    /// action revoked every lease. Under identity the same `finaliseRelease` call revokes exactly
-    /// that lease, whose restore undoes the engagement, and drops its record after the
-    /// hand-back, so clearing the mark told the user the system no longer holds a fan it did
-    /// reclaim: C3's outcome by another route, and `CLAUDE.md` rule 6. The refusal is A6's
-    /// engagement failure, so `apply` hands the fan back too, which matches the revocation.
+    /// revoked yet. **This is the deliberate reversal of #346's pinning**, decided in #361. #346
+    /// pinned that such an engagement clears the mark. The reason to reverse it is `CLAUDE.md`
+    /// rule 6 and consistency with C3, not identity: the same `finaliseRelease` call revoked that
+    /// lease before identity too, so its restore has always undone the engagement and the record
+    /// has always been dropped after the hand-back, and clearing the mark has always told the
+    /// user the system no longer holds a fan it did reclaim. C3 is that outcome by another route,
+    /// and this test is the same rule. The refusal is A6's engagement failure, so `apply` hands
+    /// the fan back too, which matches the revocation.
     ///
     /// **Mutation:** drop `finalising[index] != lease` from `manualControlEngaged(_:under:)`'s
     /// refusal. Run: red on the refusal, the ledger, the snapshot and the "resolved" line.

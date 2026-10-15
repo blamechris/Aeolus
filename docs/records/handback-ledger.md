@@ -727,7 +727,7 @@ spans 265 of them against a warning at 250 and an **error at 350**: about 85 lin
 and relocating prose cannot make more. [#350](https://github.com/blamechris/Aeolus/issues/350)'s
 grant seal took it to 278, leaving 72, and the file to 885 lines of its 1000.
 [#357](https://github.com/blamechris/Aeolus/issues/357)'s identity query and
-`revokeLease(id:because:)` took it to 289, leaving 61, and the file to 908. `file_length` has not
+`revokeLease(id:because:)` took it to 290, leaving 60, and the file to 912. `file_length` has not
 gone away either. At this file's present density, about 3.1 lines per code line, it would error
 after roughly 30 new code lines, so which of the two limits is reached first depends on how much
 comment the new code carries.
@@ -896,11 +896,13 @@ fan for — the one the fan was registered under — and this revokes that lease
 
 - **Whole**, for the same reason `revokeLeases(coveringFan:because:)` is: trimming a fan out of
   a lease would leave a client holding a subset it can no longer command.
-- **Only while it is live.** An ID the table does not hold is a lease that already ended, and a
-  lease past its deadline has already lapsed and is the TTL sweep's to hand back as
-  `.leaseExpired`. Either answers `false` and restores nothing, so `LeaseLog.revoked` — the
-  `.fault` that tells a client the system took control — is emitted only for a lease actually
-  taken.
+- **Revoked only while it is live.** An ID the table does not hold is a lease that already
+  ended, and answers `.gone` and restores nothing. A lease past its deadline and not yet swept is
+  ended inside the call and restored as `.leaseExpired` — it answers `.expired` — rather than left
+  to the TTL sweep, whose release notice would otherwise arrive after § 5's terminal action
+  returned and erase the mark it keeps (#361's panel). Neither is logged as revoked, so
+  `LeaseLog.revoked` — the `.fault` that tells a client the system took control — is emitted only
+  for a lease actually taken.
 - **Removed synchronously, restored in one call**, as every teardown here is, so the fans enter
   `releasing` before anything suspends and no grant can race in over them.
 - **Strictly narrower than `revokeEveryLease(because:)`**, which is already `internal`, and that

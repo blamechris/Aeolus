@@ -324,8 +324,10 @@ too (ADR 0014, amended alongside).
   live is refused and records nothing; a live one keeps its own record and replaces one an
   ended lease left. At most one live lease covers a fan, so the replaced record is always stale.
   A fan released or registered while the question was out is refused too, because the answer
-  no longer describes it (a per-fan generation, captured before the hop), and only an accepted
-  registration clears the fan's ledger entry.
+  no longer describes it (a per-fan generation, captured before the hop, which the terminal
+  action also moves as it begins), and so is a registration under the lease the terminal action
+  is giving the fan up for, while it does. Only an accepted registration clears the fan's
+  ledger entry.
 - `examine(fanAt:)` asks `hasLiveLease(id:coveringFan:)` about the record's own lease, in the
   same place. `.leaseLapsed`'s action is unchanged: restore-and-forget, whatever covers the fan
   now.
@@ -333,10 +335,11 @@ too (ADR 0014, amended alongside).
   under another lease, as an instruction to stop.* An absent record after a write is restored
   before stopping, as before. A record under another lease is left untouched: that lease's
   engagement holds the fan, and its own record watches it.
-- `finaliseRelease` revokes only the lease it was holding the fan for, through
-  `LeaseAuthority.revokeLease(id:because:)`, and only while it is live. It drops only that
-  lease's records. If the lease has already ended, the hand-back still runs and nothing is
-  revoked.
+- `finaliseRelease` ends only the lease it was holding the fan for, through
+  `LeaseAuthority.revokeLease(id:because:)`: revoked if it is live, ended as `.leaseExpired`
+  inside the call if it has lapsed unswept, so its release notice lands while the terminal
+  action still keeps its ledger entry. It drops only that lease's records. If the lease has
+  already ended, the hand-back still runs and nothing is revoked.
 - `hasLiveLease(coveringFan:)` is deleted, so nothing can ask the coverage question.
 
 **What does not change.** D2's order. Restore-and-forget as `.leaseLapsed`'s only action. The

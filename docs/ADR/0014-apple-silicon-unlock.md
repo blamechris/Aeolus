@@ -1290,7 +1290,9 @@ CommandableFan, under: UUID)` may carry a `UUID`, because a registration writes 
 lease is judged against the permit's own fan at every examination. No write verb may.
 
 **A6's contract, fixed before A6 is written.**
-1. Engage through a driver bound to `apply`'s `leaseID`.
+1. Engage through a driver bound to the ID `heldLease(id:from:)` returned for the calling
+   connection. That call is the ownership check: a lease bound to another connection, or
+   lapsed, never reaches the driver.
 2. Register each fan with `manualControlEngaged(_:under:)` under the same ID. A refusal is an
    engagement failure: every fan this `apply` engaged is handed back, and the call is refused.
    A refusal never leaves a fan off automatic control unwatched even before that hand-back:
@@ -1298,11 +1300,16 @@ lease is judged against the permit's own fan at every examination. No write verb
    ended restores the fan after the engagement's writes, and a fan released or registered while
    § 5 asked is being restored or is watched by the newer record. Register one fan at a time per
    lease: a second registration of the same fan under the same lease, in flight at once, is
-   refused, and the hand-back would then contest § 5's record of the first.
+   refused, and the hand-back would then contest § 5's record of the first. A registration
+   under the lease § 5's terminal action is giving the fan up for is refused too, while it does:
+   the revocation in the same call undoes that engagement.
 3. Report each commanded target with `commandedTarget(_:under:)`.
 4. Ask `heldLease(id:from:)` again before replying, so the reply never says *applied* under a
    lease that has ended.
-5. Map a superseded step to `.releaseInProgress`, unless the lease itself has gone.
+5. Map a superseded step to `.releaseInProgress`, unless the lease itself has gone. Map a
+   registration's `.leaseNotLive` by asking `heldLease(id:from:)` again: if it still succeeds,
+   the refusal was under a live lease — the fan's generation moved, or § 5 is giving the fan up
+   — and it is `.releaseInProgress`; otherwise it is the lease fault that call throws.
 
 **What remains.** A restore owed to an ended lease, whether § 5's hand-back or a bound driver's
 undo, can land after a newer lease's engagement and before it registers. The newer record's

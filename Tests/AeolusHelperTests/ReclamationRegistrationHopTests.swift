@@ -22,10 +22,10 @@ extension ReclamationLeaseIdentityTests {
     /// ended with § 5 never told, D2's premise), and both, the shipping order. `ParkableHeldLeases`
     /// holds the answer open on a continuation.
     ///
-    /// **Mutation:** drop the generation half of the refusal in `manualControlEngaged(_:under:)` —
-    /// `guard live else {` for `guard live, registrations[index, default: 0] == generation else
-    /// {`. Run: red in all three. **Mutation:** delete the `registrations[index, default: 0] &+=
-    /// 1` after the registration's record is written. Run: red when L2 registers unannounced.
+    /// **Mutation:** drop the generation half of the refusal in `manualControlEngaged(_:under:)`,
+    /// leaving `guard live, finalising[index] != lease else {`. Run: red in all three.
+    /// **Mutation:** delete the `registrations[index, default: 0] &+= 1` after the
+    /// registration's record is written. Run: red when L2 registers unannounced.
     /// **Mutation:** delete the same line from `manualControlReleased(fanAt:)`. Run: red on the
     /// notice alone.
     @Test(

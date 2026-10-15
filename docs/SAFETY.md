@@ -1016,7 +1016,7 @@ moment the `F<n>Md` write lands, which is before anything has been commanded on 
 window the primary signal's target comparison cannot be made at all, and the two answers that
 *are* reachable — the mode still reading automatic, or `F<n>Tg` not reading — are exactly
 what the lag between a mode write and a read reflecting it looks like. Confirming divergence
-there costs the client every lease on the machine milliseconds after it was granted one, with
+there costs the client its lease milliseconds after it was granted one, with
 a fault line blaming the operating system for it. So divergence on a fan with **nothing
 commanded** is tolerated for `blindCyclesBeforeDivergence` cycles — three, so three seconds —
 before it reaches the fallback above; for those cycles the user is told nothing beyond a
@@ -1077,18 +1077,26 @@ nothing in this build does.
 **Every act § 5 takes is taken for that lease and no other.** After every suspension § 5
 re-fetches the fan's record and stops if it is gone *or belongs to another lease*. A record under
 a newer lease means that lease's engagement holds the fan and its own record is watching it, so
-§ 5 neither restores, forgets nor commands it. The terminal action revokes only the lease it was
-holding the fan for, and only while that lease is live; if it has already ended, the fan is still
-handed back and no lease is revoked. A registration under a lease that is no longer live is
-refused, as is one whose fan was released or registered while it asked, and a refused
-registration clears nothing; one under a live lease replaces whatever an ended lease left. The engagement driver
-asks the same question, about the lease the engagement runs under, before and after every step.
+§ 5 neither restores, forgets nor commands it. The terminal action ends only the lease it was
+holding the fan for: revoked if it is live, ended as expired if it has lapsed unswept — inside the
+call, so its release notice cannot erase the mark the terminal action keeps — and not touched if
+it has already ended; the fan is handed back in every case. A registration under a lease that is
+no longer live is refused, as is one whose fan was released or registered while it asked, and one
+under the lease the terminal action is giving the fan up for, while it does: the terminal action
+moves the registration's generation as it begins, and that lease's engagement is about to be
+undone by the revocation in the same call. A refused registration clears nothing; one under a
+live lease replaces whatever an ended lease left. The engagement driver asks the same question,
+about the lease the engagement runs under, before and after every step.
 
 **What identity does not close.** A hand-back owed to an ended lease's record, or the undo of an
 engagement that outlived its lease, can land after a newer lease's engagement and before that
 lease registers the fan. Nothing sees it until the newer record's first examination, which reads
-the fan as reclaimed and re-asserts that lease's own target: one cycle, in the safe direction,
-with a reclamation reported that the system did not cause.
+the fan as reclaimed and re-asserts that lease's own target, in the safe direction, with a
+reclamation reported that the system did not cause. The false mark lasts longer than the cycle
+that sets it: it is cleared only by a cycle that finds the fan converged on both signals, and a
+fan still short of its new target takes the shortfall branch, which returns before that clear —
+so it stands for as long as the fan ramps, and indefinitely if it cannot reach the target
+([#366](https://github.com/blamechris/Aeolus/issues/366)).
 
 The order is deliberate. The fan's own lease is asked *after* the read because every teardown
 drops its lease before it restores, so a read that saw that restore land is followed by a
@@ -1107,15 +1115,19 @@ worse than a UI that reports an error, because the user acts on it.
 *Tested by:* `Tests/AeolusHelperTests/ReclamationWatchdogTests.swift`,
 `ReclamationWatchdogRecoveryTests.swift`, `ReclamationWatchdogStalenessTests.swift`,
 `ReclamationRegistrationWindowTests.swift`, `ReclamationLeaseLapseTests.swift`,
-`ReclamationLeaseIdentityTests.swift`, `ReclamationLimitsTests.swift`,
-`ReclamationLedgerTests.swift`, `ReclamationSupervisorTests.swift` and
-`ReclamationEmergencyRegistrationTests.swift`, with the
+`ReclamationLeaseIdentityTests.swift`, `ReclamationRegistrationHopTests.swift`,
+`ReclamationTerminalEntryTests.swift`, `ReclamationRefusedCommandWriteTests.swift`,
+`FinaliseReleaseLedgerTests.swift`, `FinaliseReleaseRevocationTests.swift`,
+`LeaseRevocationTests.swift`, `ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
+`ReclamationSupervisorTests.swift` and `ReclamationEmergencyRegistrationTests.swift`, with the
 engagement driver the re-assert engages through in `EngagementDriverTests.swift` and
-`EngagementEpochTests.swift` — mostly through `ScriptedControlPlane`, with four bespoke
+`EngagementEpochTests.swift` — mostly through `ScriptedControlPlane`, with five bespoke
 seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express: a refused
 envelope, a read held open so overlapping reads would be visible, a read or write that runs a
-side effect while it is suspended, and a control-state read answered from a scripted sequence
-so a `F<n>Tg` can be readable on one cycle and not the next. § 1's line makes the same distinction
+side effect while it is suspended, a control-state read answered from a scripted sequence so a
+`F<n>Tg` can be readable on one cycle and not the next, and a lease answer held open on a
+continuation (`ParkableHeldLeases`) so a release, a re-grant or the terminal action can land
+between the lease core answering and § 5 resuming. § 1's line makes the same distinction
 for the same reason, and it is drawn rather than rounded off because "entirely through the
 scripted plane" is a claim about how much of the mechanism one shared double can reach. The
 registration grace above is the fourth suite, one test per answer the primary signal can give

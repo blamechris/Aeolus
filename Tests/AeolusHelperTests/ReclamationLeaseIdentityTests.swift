@@ -142,9 +142,10 @@ struct ReclamationLeaseIdentityTests {
     /// At most one live lease covers a fan, so the lease core is the only arbiter between the
     /// two.
     ///
-    /// **Mutation:** in `ReclamationWatchdog.manualControlEngaged(_:under:)`, record
-    /// unconditionally — drop the `if live` around the registration, keeping the refusal. Run:
-    /// red on `lastCommanded` and the cycle's restore.
+    /// **Mutation:** in `ReclamationWatchdog.manualControlEngaged(_:under:)`, drop `live` from the
+    /// refusal — `guard registrations[index, default: 0] == generation, finalising[index] !=
+    /// lease else {` — so a lease that is not live records. Run: red on the refusal,
+    /// `lastCommanded` and the cycle's restore.
     @Test("A late registration under an ended lease is refused and evicts nothing")
     func aLateRegistrationUnderAnEndedLeaseIsRefusedAndEvictsNothing() async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 2_000)])
