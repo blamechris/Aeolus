@@ -27,6 +27,8 @@ enum LeaseRevocation: Sendable, Hashable {
     /// It had lapsed and not yet been swept: ended now, and its fans restored as
     /// `.leaseExpired`, so nobody is told the system took control the lease had already lost.
     case expired
-    /// The table no longer held it: another path had already ended it and restored its fans.
+    /// The table no longer held it: another path had already removed it. That path's restore,
+    /// and its release notice, may still be in flight — a sweep or teardown landing after the
+    /// terminal action's hand-back and before this call can clear the mark it keeps (#368).
     case gone
 }

@@ -1076,17 +1076,21 @@ nothing in this build does.
 
 **Every act § 5 takes is taken for that lease and no other.** After every suspension § 5
 re-fetches the fan's record and stops if it is gone *or belongs to another lease*. A record under
-a newer lease means that lease's engagement holds the fan and its own record is watching it, so
-§ 5 neither restores, forgets nor commands it. The terminal action ends only the lease it was
-holding the fan for: revoked if it is live, ended as expired if it has lapsed unswept — inside the
-call, so its release notice cannot erase the mark the terminal action keeps — and not touched if
-it has already ended; the fan is handed back in every case. A registration under a lease that is
-no longer live is refused, as is one whose fan was released or registered while it asked, and one
-under the lease the terminal action is giving the fan up for, while it does: the terminal action
-moves the registration's generation as it begins, and that lease's engagement is about to be
-undone by the revocation in the same call. A refused registration clears nothing; one under a
-live lease replaces whatever an ended lease left. The engagement driver asks the same question,
-about the lease the engagement runs under, before and after every step.
+a newer lease means that lease's engagement holds the fan and its own record is watching it, so §
+5 neither restores, forgets nor commands it. The terminal action ends only the lease it was
+holding the fan for: revoked if it is live, ended as expired if it has lapsed and is still
+unswept — inside the call, so its release notice cannot erase the mark the terminal action keeps
+— and not touched if it has already ended; the fan is handed back in every case. A sweep or a
+teardown that removes the lease after the hand-back and before the revocation can still erase
+that mark with its own notice, a gap `main` shares
+([#368](https://github.com/blamechris/Aeolus/issues/368), an A6 precondition). A registration
+under a lease that is no longer live is refused, as is one whose fan was released or registered
+while it asked, and one under the lease the terminal action is giving the fan up for, while it
+does: the terminal action moves the registration's generation as it begins, and that lease's
+engagement is about to be undone by the revocation in the same call. A refused registration
+clears nothing; one under a live lease replaces whatever an ended lease left. The engagement
+driver asks the same question, about the lease the engagement runs under, before and after every
+step.
 
 **What identity does not close.** A hand-back owed to an ended lease's record, or the undo of an
 engagement that outlived its lease, can land after a newer lease's engagement and before that

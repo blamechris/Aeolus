@@ -207,16 +207,18 @@ could not tell from the record it was forgetting.
 
 **The terminal action.** `finaliseRelease` ends only the lease it was holding the fan for,
 through `LeaseAuthority.revokeLease(id:because:)`, whole: revoked if it is live, and ended as
-`.leaseExpired` inside the call if it has lapsed unswept — the sweep, left to it, ended the lease
-after `finalising` had closed, and its release notice erased the mark (#361's panel). It drops
-that lease's records
-— the siblings, and a same-lease re-engagement made during the hand-back, which the revocation
-restores (#307's same-lease form) — and keeps every other lease's. If the lease has already
-ended the hand-back still runs and nothing is revoked, with one `.notice`, so `LeaseLog`'s
-"revoked" fault is emitted only for a lease actually revoked. The fault line that led there —
-budget spent, half-landed, no envelope, undone after the emergency, blind — stays: it describes
-the firmware or the sensing, and that is still true. With one lease at a time a live registering
-lease is every lease, so the ordinary case does not change. § 3 keeps `revokeEveryLease`.
+`.leaseExpired` inside the call if it has lapsed and is still unswept — the sweep, left to it,
+ended the lease after `finalising` had closed, and its release notice erased the mark (#361's
+panel). A lease a sweep or teardown removes after the hand-back and before the revocation is
+still exposed to that, [#368](https://github.com/blamechris/Aeolus/issues/368). It drops that
+lease's records — the siblings, and a same-lease re-engagement made during the hand-back, which
+the revocation restores (#307's same-lease form) — and keeps every other lease's. If the lease
+has already ended the hand-back still runs and nothing is revoked, with one `.notice`, so
+`LeaseLog`'s "revoked" fault is emitted only for a lease actually revoked. The fault line that
+led there — budget spent, half-landed, no envelope, undone after the emergency, blind — stays: it
+describes the firmware or the sensing, and that is still true. With one lease at a time a live
+registering lease is every lease, so the ordinary case does not change. § 3 keeps
+`revokeEveryLease`.
 
 **What identity does not close (residual C2).** A stale actor's restore — § 5's hand-back owed
 to an ended lease's record, or the undo of an engagement that outlived its lease — can land after
@@ -624,10 +626,13 @@ guard is opened around the revocation alone.
 
 **What it does not close.** A lease teardown — the TTL sweep, or the holder's connection dying —
 that reaches `LeaseAuthority` after the hand-back has returned but before
-`revokeLease(id:because:)` runs takes the table entry itself, so the revocation finds nothing
-and returns at once. The teardown's own release notice is then still on its way through
-`HelperFanRestorer`, can arrive after the `defer` has closed the window, and clears the mark.
-That is derived from the code, not reproduced: no seam lands a teardown in that gap.
+`revokeLease(id:because:)` runs takes the table entry itself, so the revocation finds nothing and
+returns at once. The teardown's own release notice is then still on its way through
+`HelperFanRestorer`, can arrive after the `defer` has closed the window, and clears the mark. It
+is reproduced, not only derived: a detached teardown launched from the restore-write seam lands
+in that gap, and under load it lost 5–15 marks per 1000 runs. `main` has the same shape.
+[#368](https://github.com/blamechris/Aeolus/issues/368) tracks it, an A6 precondition; this
+change does not close it.
 
 **A lease that ended before the revocation, since #353.** `revokeLease(id:because:)` then revokes
 nothing and sends no release notice of its own, so the mark is kept with nothing to clear it on
@@ -636,13 +641,16 @@ and that notice skipped its clear as any other during the call does.
 `FinaliseReleaseLedgerTests.theTerminalActionRevokesOnlyTheLeaseItHeldTheFanFor` releases and
 re-grants inside the hand-back.
 
-**A lease that lapsed during the call, since #361's panel.** It used to be the gap the paragraph
-above names, by another route: `revokeLease` declined a lapsed lease, `finalising` closed, and the
-TTL sweep then ended it and its notice cleared the mark — #346's defect again, which `main` never
-had because `revokeEveryLease`'s `removeAll()` took lapsed entries too. `revokeLease` now ends a
-lapsed lease inside the call, as `.leaseExpired`, so its notice lands while `finalising` holds the
-fan. `FinaliseReleaseLedgerTests.aLeaseLapsingDuringTheHandBackKeepsTheMarkThroughItsExpiry`
-lapses the lease inside the hand-back.
+**A lease that lapsed during the call and is still unswept, since #361's panel.** `revokeLease`
+used to decline such a lease, `finalising` closed, and the TTL sweep then ended it and its notice
+cleared the mark — #346's defect again, which `main` never had because `revokeEveryLease`'s
+`removeAll()` took lapsed entries too. `revokeLease` now ends a lapsed lease still in the table
+inside the call, as `.leaseExpired`, so its notice lands while `finalising` holds the fan.
+`FinaliseReleaseLedgerTests.aLeaseLapsingDuringTheHandBackKeepsTheMarkThroughItsExpiry` lapses
+the lease inside the hand-back. That is all #361 closes here: the supervisor sweeps at the
+deadline, so a lease that lapses during the terminal action can still be swept in the tail
+between the hand-back and the revocation, and then it is the gap the paragraph above names, which
+[#368](https://github.com/blamechris/Aeolus/issues/368) tracks.
 
 **What still clears it, so it is not frozen.** An accepted `manualControlEngaged(_:under:)`
 clears, because an engagement is a statement about the world. #346 pinned that it also clears

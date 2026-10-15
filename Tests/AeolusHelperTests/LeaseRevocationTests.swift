@@ -107,8 +107,10 @@ struct LeaseRevocationTests {
     ///
     /// **Mutation:** decline a lapsed lease again — `guard let entry = table.entry(id: id),
     /// !entry.hasLapsed(asOf: clock.now) else { return .gone }`. Run: red on the outcome, the
-    /// count and the cause. **Mutation:** restore it under `cause` whatever its deadline. Run:
-    /// red on the outcome and the cause.
+    /// count and the cause. **Mutation:** restore it under `cause` whatever its deadline —
+    /// `because: cause`. Run: red on the cause alone (`:123`). **Mutation:** treat it as revoked —
+    /// `let outcome: LeaseRevocation = .revoked`. Run: red on the outcome and the cause (`:121`,
+    /// `:123`) and on `FinaliseReleaseRevocationTests`' "had already ended" notice (`:133`).
     @Test("Revoking a lapsed lease by ID ends it as expired")
     func revokeLeaseEndsALapsedLeaseAsExpired() async throws {
         let clock = TestClock()

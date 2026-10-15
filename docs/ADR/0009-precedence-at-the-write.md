@@ -337,9 +337,12 @@ too (ADR 0014, amended alongside).
   engagement holds the fan, and its own record watches it.
 - `finaliseRelease` ends only the lease it was holding the fan for, through
   `LeaseAuthority.revokeLease(id:because:)`: revoked if it is live, ended as `.leaseExpired`
-  inside the call if it has lapsed unswept, so its release notice lands while the terminal
-  action still keeps its ledger entry. It drops only that lease's records. If the lease has
-  already ended, the hand-back still runs and nothing is revoked.
+  inside the call if it has lapsed and is still unswept, so its release notice lands while the
+  terminal action still keeps its ledger entry. A lease a sweep or teardown removes between the
+  hand-back and the revocation is not covered: its notice can still clear the entry
+  ([#368](https://github.com/blamechris/Aeolus/issues/368), an A6 precondition `main` shares). It
+  drops only that lease's records. If the lease has already ended, the hand-back still runs and
+  nothing is revoked.
 - `hasLiveLease(coveringFan:)` is deleted, so nothing can ask the coverage question.
 
 **What does not change.** D2's order. Restore-and-forget as `.leaseLapsed`'s only action. The

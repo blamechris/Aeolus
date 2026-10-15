@@ -564,7 +564,9 @@ actor LeaseAuthority: HeldLeaseRole {
     /// A lapsed lease is ended **here**, inside the caller's call, rather than left to the TTL
     /// sweep (#361's panel): the sweep's release notice would otherwise arrive after the caller
     /// had finished and erase the ledger entry it keeps. It is recorded as `.leaseExpired`, so no
-    /// client is told the system took control it had already lost. Removed synchronously before
+    /// client is told the system took control it had already lost. This closes only a lease still
+    /// in the table when the call arrives; one a sweep or teardown removed first is `.gone`, with
+    /// its notice possibly still in flight (#368). Removed synchronously before
     /// the one restore call, as every teardown here is (#188). handback-ledger.md
     /// § *"`revokeLease(id:because:)`: the one lease § 5 held the fan for"*.
     func revokeLease(id: UUID, because cause: FanRestoreCause) async -> LeaseRevocation {

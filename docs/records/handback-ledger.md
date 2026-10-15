@@ -896,13 +896,15 @@ fan for — the one the fan was registered under — and this revokes that lease
 
 - **Whole**, for the same reason `revokeLeases(coveringFan:because:)` is: trimming a fan out of
   a lease would leave a client holding a subset it can no longer command.
-- **Revoked only while it is live.** An ID the table does not hold is a lease that already
-  ended, and answers `.gone` and restores nothing. A lease past its deadline and not yet swept is
-  ended inside the call and restored as `.leaseExpired` — it answers `.expired` — rather than left
-  to the TTL sweep, whose release notice would otherwise arrive after § 5's terminal action
-  returned and erase the mark it keeps (#361's panel). Neither is logged as revoked, so
-  `LeaseLog.revoked` — the `.fault` that tells a client the system took control — is emitted only
-  for a lease actually taken.
+- **Revoked only while it is live.** An ID the table does not hold is a lease that already ended,
+  and answers `.gone` and restores nothing. A lease past its deadline and not yet swept is ended
+  inside the call and restored as `.leaseExpired` — it answers `.expired` — rather than left to
+  the TTL sweep, whose release notice would otherwise arrive after § 5's terminal action returned
+  and erase the mark it keeps (#361's panel). That covers a lease still in the table when the
+  call arrives; one a sweep or teardown removed first answers `.gone`, and its notice can still
+  erase the mark ([#368](https://github.com/blamechris/Aeolus/issues/368)). Neither is logged as
+  revoked, so `LeaseLog.revoked` — the `.fault` that tells a client the system took control — is
+  emitted only for a lease actually taken.
 - **Removed synchronously, restored in one call**, as every teardown here is, so the fans enter
   `releasing` before anything suspends and no grant can race in over them.
 - **Strictly narrower than `revokeEveryLease(because:)`**, which is already `internal`, and that
