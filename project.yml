@@ -161,6 +161,13 @@ targets:
     # UI without an app bundle or a signing identity.
     sources:
       - path: Sources/Aeolus/main.swift
+      # The app icon. The catalog lives in Resources/, not next to the code in
+      # Sources/Aeolus, because that directory is also the AeolusUI SwiftPM target's path:
+      # SwiftPM would pick an .xcassets up there as a resource of the library, and
+      # `swift build` would start needing the asset compiler for something only the app
+      # bundle uses. The PNGs inside are derived, by Tools/AppIcon/make-appiconset.sh, from
+      # the drawing in Tools/AppIcon/generate-app-icon.swift.
+      - path: Resources/Assets.xcassets
       # Resources/catalog is not listed here on purpose. FanKit's own Package.swift
       # resource declaration already embeds it as Aeolus_FanKit.bundle — the one
       # CatalogLoader actually reads via Bundle(for:)-based lookup — and this app
@@ -220,6 +227,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.blamechris.Aeolus
         PRODUCT_NAME: Aeolus
         COMBINE_HIDPI_IMAGES: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:
         Full Debug:
           CODE_SIGN_ENTITLEMENTS: Configs/Aeolus.entitlements
