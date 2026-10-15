@@ -1222,7 +1222,8 @@ for the grant. It is not for `fanctl auto`: with the mode reported `automatic` (
 beside it, `auto` on a plane that can write would exit 0 without sending its restore, the outcome
 ADR 0013 rejects under "Exit 0 on the mode alone" (its "Exit 0 only when the mode was actually read"
 accepted that residue only while a reason sat beside the fan). That is
-[#360](https://github.com/blamechris/Aeolus/issues/360), an A6 precondition.
+[#360](https://github.com/blamechris/Aeolus/issues/360), an A6 precondition. *(Closed on a seam that
+can write by the #360 amendment below.)*
 `isReclaimedBySystem` is history after the terminal action and can go stale if another program later
 takes the fan; the availability beside it is correct.
 
@@ -1264,6 +1265,73 @@ same commit, would then be justified. Revisit too if D8's measured § 7 round tr
 This amendment corrects clauses of a Proposed ADR rather than the decisions they sit under.
 **Status stays Proposed.**
 
+## Amendment (2026-10-15, [#360](https://github.com/blamechris/Aeolus/issues/360)) — a fan whose mode did not read answers what the grant's fresh read answers
+
+Found in the review of #359, and an A6 precondition like the two above. Unreachable on every build
+on `main`, for the same reason: a `.notBuilt` seam answers `.writePathNotBuilt` before anything this
+changes.
+
+**The defect.** The #355 half above left one gap and called it fail-safe: a fan whose `F<n>Md` does
+not read reads `.available`, while the grant's fresh read throws and refuses it `.supervisorBlind`.
+It is fail-safe for the grant and not for `fanctl auto`: the fan reads `automatic` by #178's fold
+with no reason beside it, so `auto` sends no restore and exits 0, the outcome ADR 0013 rejects under
+"Exit 0 on the mode alone". #359's review reached it through § 5's terminal action. § 5 is not
+needed: a foreign-held fan whose mode stops reading reads the same.
+
+**Decision.** Step 5 of the availability ladder judges the read path's own `F<n>Md` answer three
+ways, as `StartupReconciliation.refusalForGrant` judges its fresh read: no answer is
+`.supervisorBlind`, automatic is left to the rungs below, and manual is § 3's kept set or
+`.foreignManualControl`. `ReadOnlyFanAuthority` hands the answer to the restatement beside the
+snapshot it was read for, from the same read. `FanState.mode` is unchanged.
+
+- **After the `held` exemption and the durable reconciliation refusal**, as in the grant, which
+  skips the fans Aeolus is accountable for and asks the baseline before it reads.
+- **Not over `.writePathNotBuilt`**, which the grant answers before it reads anything. Answering
+  `.supervisorBlind` there would state a reason no grant returns, on every fan of every Mac without
+  `F<n>Md`, which by the reported key map is every Intel Mac.
+- **For every fan, not only § 3's kept set.** The grant refuses any fan it cannot read; a rung keyed
+  on § 3's set mirrors a subset of that rule.
+- **Above #350's seal**, which re-states only a fan nothing else refused: the grant's fresh read is
+  above its straight-line region, and the seal check is inside it.
+- **Disjoint from steps 1–3**, by the argument they already rest on: a fan in a handback register
+  is in `fansAeolusIsAccountableFor`, and step 5 returns it untouched.
+
+This is current evidence the grant path consults, so it keeps the rule above.
+
+**What it costs.** A read that fails on one snapshot and answers on the next refuses, for that
+snapshot, a lease the next grant could get. Every step-5 answer has that staleness: the foreign
+answer judges the same read. For `fanctl auto`, a transient failure costs one unneeded restore and a
+poll. A lasting one gives exit 8 with the reason's advice, as ADR 0013 D3 says a blind fan gets.
+
+**What remains.** On a `.notBuilt` seam, which is every build on `main`, an unreadable fan still
+reads `automatic` with `.writePathNotBuilt` beside it, and `auto` exits 0 about it: #178's, because
+the wire cannot yet say a mode is not known. Where the grant refuses earlier, `.noThermalTelemetry`
+or `.systemSleeping`, the snapshot has no rung yet (#269), and an unreadable fan reads
+`.supervisorBlind`, a refusal the grant makes once those clear. #270 places its bounds gate relative
+to the fresh read and moves steps 5 and 8 together.
+
+**No `AeolusXPCVersion` bump.** No field, case or method changes. `.supervisorBlind` is on the wire
+and already published for the reconciliation producer, and "cannot read this fan's control state" is
+exactly this producer. No shipped helper publishes anything new: every one is `.notBuilt`.
+
+**Alternatives considered.**
+
+- *Only a fan in § 3's kept set.* Closes #359's scenario and leaves the general gap.
+- *Over `.writePathNotBuilt` too, as foreign control is.* `auto` exits 8 for ever on every Intel
+  Mac, by a reason no grant returns. #178 decides how such a build says "not known".
+- *A wire field or mode case for "not read", read by `SafeState`.* Fixes the CLI and leaves the
+  availability offering a lease the grant refuses. #178's design, and it composes with this one.
+- *Two consecutive unread snapshots before refusing.* The grant refuses on one failed read; a
+  debounce is state in a pure function and a second definition of blind.
+
+**Revisit if** a hardware run shows `F<n>Md` failing at `.snapshot` while it reads at `.supervisor`,
+or flickering on `Mac16,5`: fix the read, do not debounce the rung. Revisit too when #178 lets the
+wire say a mode is not known; the rung stays, and ADR 0013's exit 0 can then be strengthened on a
+`.notBuilt` seam. The ruling is the architect's #360 consult, run on Opus.
+
+This amendment corrects a clause of a Proposed ADR, not the decision it sits under. **Status stays
+Proposed.**
+
 ## Assumptions and what would invalidate them
 
 | # | Assumption | Basis | If it fails |
@@ -1288,6 +1356,7 @@ This amendment corrects clauses of a Proposed ADR rather than the decisions they
 | — | One engagement per fan at a time | True today: § 5 is the driver's only caller and its sweep is single-entrant. **Assumed and not enforced** — the ledger keeps one in-progress record per fan index, and a first-step retry that removes a stale record could remove a concurrent engagement's | An A6 precondition: before level 6 engages beside § 5, serialise engagements per fan or key the record per engagement. Also: § 5's `finaliseRelease` restores and then revokes the leases, so for that window a genuine restore has not yet ended the lease; harmless while § 5 is the only caller, and its order matters once A6 adds a concurrent one. A § 5 registration is not tied to the lease that made it (the 2026-10-15 amendment's "What remains"); A6 closes it. |
 | — | One lease-table entry, one production plane | True today | Concurrent leases or a second plane: re-check D4's epoch scope and D5's gate. Since the 2026-10-15 amendment, no lease is granted while § 7's panic verb runs (`sealingGrants(during:)`). The seal is machine-wide, so concurrent leases or a second plane re-check that it still covers every restore that can undo a grant. |
 | — | A re-grant after § 5's terminal action is a client's request | `AeolusXPCClient` and ADR 0013 D1 never re-acquire; the app has no control UI yet | A self-re-acquiring client makes the contest with the system unbounded: a measured, time-limited ledger refusal, mirrored in the snapshot |
+| — | The snapshot's `F<n>Md` read and the grant's fresh read fail together | Code: one scheduler and connection, the same key and `FirmwareFanMode(declaredByFirmware:)` decode behind the same finiteness rule; a `.snapshot` read waits and never fails for its priority. They differ only in priority and instant. Every recorded `F<n>Md` read on `Mac16,5` answered, and none was taken while reads were failing | The #360 rung refuses leases the helper grants. Fix the read, and re-decide here |
 
 Every observation above is `Mac16,5`; the write-path rows are hypotheses until D8 runs. Intel and
 M1/M2 ship `untested`.

@@ -183,9 +183,11 @@ it does not clear, go to step 5.
 **`supervisorBlind`** — Aeolus could not confirm this one fan's own control state, so it
 cannot tell whether something else is holding it, and refuses a new lease over it. If a
 request was just refused this way, a read failed at that moment: retry. If the app or
-`fanctl status` keeps showing it, the helper could not confirm that fan back under automatic
-control at start-up — its mode would not read, read manual after the restore, or was never
-reached — and it stands until the helper restarts (step 5).
+`fanctl status` keeps showing it, there are two causes. Either the helper cannot read the
+fan's mode now — a snapshot on a helper that can write says so when its own read of the fan
+did not answer — or it could not confirm the fan back under automatic control at start-up:
+its mode would not read, read manual after the restore, or was never reached. The first
+clears when the read answers; the second stands until the helper restarts (step 5).
 
 **`foreignManualControl`** — Something other than Aeolus — another fan-control tool, or
 firmware that re-asserted manual mode — has put this fan under manual control. Quit or stop
