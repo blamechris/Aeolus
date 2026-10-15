@@ -362,8 +362,9 @@ the two are no longer one bit:
   automatic control again.
 - `.supervisorBlind` — the helper could not read the fan, so this entry asserts
   **nothing** about who holds it. It records that § 5 gave the fan up and why, which
-  is what `ManualControlAvailability.Reason.supervisorBlind` reports and what
-  `FanState.isReclaimedBySystem` deliberately does not.
+  the fault log and the lease's ending report and `FanState.isReclaimedBySystem`
+  deliberately does not. Until #355 the snapshot also published it as
+  `ManualControlAvailability.Reason.supervisorBlind`; it is history, not a refusal.
 
 Either way it is kept rather than cleared, for the reason `clearReclaimed(fanAt:)`
 states: a fan this mechanism has just handed back is not a fan known to be fine.
@@ -430,7 +431,10 @@ although nothing took the fan off automatic control. It is the behaviour
 `FinaliseReleaseLedgerTests.anOrdinaryReleaseAfterwardsStillClearsTheEntry` holds it.
 
 All of that holds at the actor level: these are the events that clear the mark. At the system
-level nothing yet guarantees one arrives. After a terminal action the snapshot publishes the
-mark as an availability that refuses the fan, while `acquireLease` would grant it, and both
-clearing events need a lease the snapshot tells a compliant client not to ask for.
-[#355](https://github.com/blamechris/Aeolus/issues/355) owns that mismatch.
+level nothing guarantees one arrives, and since
+[#355](https://github.com/blamechris/Aeolus/issues/355) nothing needs to. Until it, the snapshot
+published the mark as an availability that refused the fan while `acquireLease` would grant it,
+and both clearing events needed a lease the snapshot told a compliant client not to ask for.
+Resolved by #355: the snapshot reports the mark as a fact — `isReclaimedBySystem` for a
+reclamation, the fault log and the lease's ending for blindness — and never as an availability,
+so the snapshot answers what the grant answers and a client may ask for the fan again.

@@ -238,6 +238,15 @@ verified cannot happen — and that is too load-bearing to rest on a manual page
   > availability value would therefore have come back to life silently, with a reachability
   > nobody argued for. Keying it on `FanState.isReclaimedBySystem` was correct for the reason
   > this bullet gives, and is now correct for a second one.
+
+  > **Amended 2026-10-15 (#355).** The exemption is removed, and with it the claim this bullet
+  > makes. `refusalForGrant` never exempted such a fan, so a fan § 5 had given up that another
+  > program then took read `.available` on the snapshot while the grant refused it
+  > `.foreignManualControl`. The snapshot now asks the grant's questions in the grant's order,
+  > and § 5's ledger is reported as a fact, `isReclaimedBySystem`, never as an availability —
+  > so `.reclaimedBySystem` is again never published, now on every seam. Under ADR 0014's U0
+  > the system's hold reads raw `0` and never reaches the foreign answer. See ADR 0014's
+  > 2026-10-15 amendment.
 - **The snapshot also states the three handback registers apart**, not merely their union
   ([#187](https://github.com/blamechris/Aeolus/issues/187)). The union answers *"is this fan
   somebody else's?"*, which is this ADR's question; it cannot answer *"why would a grant over it

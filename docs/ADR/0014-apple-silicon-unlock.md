@@ -1138,6 +1138,115 @@ Rejected: ADR 0011 bounds what that tool can do to the machine, not what it does
 only if U3 fails beyond about 4 s. It changes what `apply`'s reply means, so it needs a version
 bump.
 
+## Amendment (2026-10-15, [#350](https://github.com/blamechris/Aeolus/issues/350), [#355](https://github.com/blamechris/Aeolus/issues/355)) — no lease is granted while § 7 runs, and § 5's ledger is history, not a refusal
+
+Two A6 preconditions, found in the reviews of #349 and #354. Both are unreachable on every build
+on `main`, where a `.notBuilt` plane grants no lease, and both are decided before A6 gives a lease a
+write to make. They rest on one rule, stated here and in `AvailabilityRestatement.swift`: **a grant
+refusal, and the snapshot availability that mirrors it, is computed from current evidence the
+grant path consults. A diagnosis of something that already happened is a fact, and is reported as
+one.**
+
+### #350 — the panic verb seals the grant gate for its whole duration
+
+**The defect.** `restoreAllToAutomatic` runs `releaseEveryLease()`, then
+`restoreToAutomatic(.everyFan)`, then `confirmAcceptedHandbacks()`. From the moment the sweep empties
+the table, nothing refuses a grant over a fan the sweep does not cover. While `.everyFan` is awaited,
+nothing refuses any grant. After A6, a lease granted and applied in that window is undone by
+`.everyFan` and survives it, so § 5 reads `.modeReclaimed` under a live lease. It then either
+re-asserts, so level 3 undoes level 1, or gives the fan up blaming the operating system. D4's epoch
+covers the forward writes of an engagement already under way. It does not cover a lease granted into
+a restore that will undo it.
+
+**Decision.** `LeaseAuthority.sealingGrants(during:)` counts machine-wide restores in flight. It
+increments when it begins and decrements in a `defer` in the same frame, so a throw cannot leak it,
+and overlapping panic verbs hold it until the last one ends. § 7's three acts run inside it, so it
+opens before the sweep empties the table and closes after the read-back. That is § 4's rule: no
+instant at which the table is empty and the gate is open.
+`acquireLease` checks it once, inside its straight-line region, after the lease-table refusal and
+before the `releasing` refusal. It refuses with `.releaseInProgress`, under a log line of its own.
+The snapshot states the seal as the last rung before `.available`, read in the same hop as the
+registers.
+
+**What it does not change.** The keystone gains no input and waits on nothing. The seal gates grants
+only, no restore reads it, and no read is queued ahead of `.everyFan` (ADR 0007, 2026-09-20). The
+reply is v1's *accepted*. § 4 keeps `sleepSeal`, § 6 its gate and second keystone, and reconciliation
+runs before the listener resumes. So every machine-wide restore now runs behind a grant interlock.
+
+**What remains.** The seal does not tie a § 5 registration to the lease that made it. An `apply`
+whose lease ends between the driver's after-check and its § 5 registration leaves an entry that D2
+judges under whichever lease covers the fan next. A6 closes that, either by registering under the
+lease's identity or by re-asking its lease after registering.
+
+### #355 — the snapshot publishes § 5's ledger as a fact, never as an availability
+
+**The defect.** Since #354 the terminal action keeps its ledger entry. The snapshot published it as
+an availability (`.supervisorBlind` on any seam, `.reclaimedBySystem` on a `.built` one), while
+`acquireLease` never consults the ledger. So after a terminal action the snapshot refused, for the
+life of the process, a lease the helper would grant. Only an engagement or a release clears the mark,
+and both need that lease: #189's register that seals its own exit.
+
+**Decision.** The grant does not move; the snapshot does.
+
+- **`ReadOnlyFanReport.availability` no longer reads the ledger.**
+- **`.systemReclaimed` stays on `FanState.isReclaimedBySystem`.** § 5's blindness is reported by its
+  fault lines and by the revocation itself. Its present-tense sentence, "cannot currently read", was
+  false whenever the reconnect had worked.
+- **Step 5 no longer exempts § 5's fans,** so it answers as `refusalForGrant` does: the durable
+  reconciliation refusal, the mode guard, § 3's kept set (#303), then `.foreignManualControl`. Under U0
+  the system's hold reads raw `0` and never reaches the foreign answer. If U0 fails, the grant is
+  already wrong the same way, and D3 re-decides the fold before run 1.
+- **A re-grant re-runs the unlock** with a fresh yield budget (D3, D6). A landed engagement clears the
+  mark, and § 5 judges the fan afresh with a fresh re-assert budget. Every re-grant is a client's
+  request (ADR 0013 D1), so the contest with the system is bounded per request.
+
+After this change, `.supervisorBlind` has two producers, both of which the grant shares: the fan
+reconciliation never established, and a grant-time read that failed. No helper on `main` publishes
+`.reclaimedBySystem` as an availability; the case stays for wire stability.
+
+**What remains.** A fan § 5 gave up blind that is *still* unreadable reads `.available` while the
+grant's fresh read refuses it. That is the gap every unreadable fan already has, and it is fail-safe.
+`isReclaimedBySystem` is history after the terminal action and can go stale if another program later
+takes the fan; the availability beside it is correct.
+
+### #270 is the same rule, moving the other side
+
+`.boundsImplausible` is current evidence, re-read on demand, and it makes a lease unusable, so the
+grant should refuse it. #270's scope and slot (D8, before the merge) are unchanged.
+
+### No `AeolusXPCVersion` bump
+
+No field, case or method changes. The seal refuses with a reason `acquireLease` already throws. The
+availability now conforms to its documented meaning, and no shipped helper ever published what is
+removed: § 5's ledger is empty on a `.notBuilt` plane.
+
+**Alternatives considered.**
+
+- *Hold every enumerated fan in `releasing`.* Enumeration is a hardware read. Taken before the
+  keystone, it is a read queued ahead of it, and if it fails the window reopens. It would also give
+  `releasing` and `handbackUnconfirmed` a second writer.
+- *Re-sweep after the keystone.* § 5 can cycle in between, and the re-sweep revokes a lease just
+  granted.
+- *§ 5 discounts a reclamation that follows a machine-wide restore.* It cures the diagnosis and
+  leaves a client holding a lease a restore already in flight will undo.
+- *The plane refuses a first step while a machine-wide restore is pending.* Partial: an engagement
+  completed under a lease granted during the sweep is still undone.
+- *An explicit seal/unseal pair.* It leaks on the first throw an edit adds; the scoped form costs
+  nothing.
+- *Refuse the grant on § 5's ledger.* No read can clear `.systemReclaimed`, so it seals its own exit.
+  It also makes a misdiagnosis durable (D9's foreign writer, U4). A cooldown adds an unmeasured
+  constant and a second definition of "reclaimed".
+- *Clear the ledger at the grant's fresh read.* That is the decision above, plus a mutation on the
+  grant path.
+
+**Revisit if** a run shows the system repeatedly reclaiming re-engaged fans, or a client re-acquires
+on its own. A ledger-keyed refusal with a measured time limit, and the snapshot rung restored in the
+same commit, would then be justified. Revisit too if D8's measured § 7 round trip makes the seal's
+"retry in a moment" untrue. The ruling is the architect's #350/#355 consult, run on Opus.
+
+This amendment corrects clauses of a Proposed ADR rather than the decisions they sit under.
+**Status stays Proposed.**
+
 ## Assumptions and what would invalidate them
 
 | # | Assumption | Basis | If it fails |
@@ -1159,8 +1268,9 @@ bump.
 | U12 | Sleep resets `Ftst` | Reported. Not depended on (D5) | Only the never-issued-keystone residual widens |
 | U13 | Apple's controller never commands above the declared `F<n>Mx` | The highest fan speed recorded under Apple's control is 3,683 RPM, against 5,777 declared (2026-08-20; key not recorded). The highest recorded `F0Tg` is 2,195 RPM. The pre-flight records `F<n>Tg` through a load and its soak | 1b's "at or above demand" fails by the excess. Aborts 9 and 1 catch it |
 | — | The preparation step can enumerate the fans and record both restore keys' types | `FNum`, `F<n>Md` and `Ftst` have read on every capture. Both are `ui8`, one byte, on 27.0.1 | `.everyFan` writes the touched set's fans and the force key, then throws `.fanSetUnknown`. An unknown key is written as one zero byte (D5, D7). Start 0 stops |
-| — | One engagement per fan at a time | True today: § 5 is the driver's only caller and its sweep is single-entrant. **Assumed and not enforced** — the ledger keeps one in-progress record per fan index, and a first-step retry that removes a stale record could remove a concurrent engagement's | An A6 precondition: before level 6 engages beside § 5, serialise engagements per fan or key the record per engagement. Also: § 5's `finaliseRelease` restores and then revokes the leases, so for that window a genuine restore has not yet ended the lease; harmless while § 5 is the only caller, and its order matters once A6 adds a concurrent one |
-| — | One lease-table entry, one production plane | True today | Concurrent leases or a second plane: re-check D4's epoch scope and D5's gate. Also, since #349: nothing refuses a grant while § 7's `.everyFan` is in flight, so a write under a lease granted in that window can be undone by it. Unreachable on `.notBuilt`; decided before A6 ([#350](https://github.com/blamechris/Aeolus/issues/350)) |
+| — | One engagement per fan at a time | True today: § 5 is the driver's only caller and its sweep is single-entrant. **Assumed and not enforced** — the ledger keeps one in-progress record per fan index, and a first-step retry that removes a stale record could remove a concurrent engagement's | An A6 precondition: before level 6 engages beside § 5, serialise engagements per fan or key the record per engagement. Also: § 5's `finaliseRelease` restores and then revokes the leases, so for that window a genuine restore has not yet ended the lease; harmless while § 5 is the only caller, and its order matters once A6 adds a concurrent one. A § 5 registration is not tied to the lease that made it (the 2026-10-15 amendment's "What remains"); A6 closes it. |
+| — | One lease-table entry, one production plane | True today | Concurrent leases or a second plane: re-check D4's epoch scope and D5's gate. Since the 2026-10-15 amendment, no lease is granted while § 7's panic verb runs (`sealingGrants(during:)`). The seal is machine-wide, so concurrent leases or a second plane re-check that it still covers every restore that can undo a grant. |
+| — | A re-grant after § 5's terminal action is a client's request | `AeolusXPCClient` and ADR 0013 D1 never re-acquire; the app has no control UI yet | A self-re-acquiring client makes the contest with the system unbounded: a measured, time-limited ledger refusal, mirrored in the snapshot |
 
 Every observation above is `Mac16,5`; the write-path rows are hypotheses until D8 runs. Intel and
 M1/M2 ship `untested`.
