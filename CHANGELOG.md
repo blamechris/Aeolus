@@ -50,6 +50,10 @@ number, negotiated at connect time. Protocol changes are called out explicitly b
   fan that passed the gate yields a `FanControlEnvelope`, and an envelope is the only
   thing that can make a speed to write. No protocol change — E2 wrote that vocabulary in
   advance for exactly this.
+- **An app icon.** A five-bladed fan rotor on a blue-teal tile, original artwork drawn in
+  code by `Tools/AppIcon/generate-app-icon.swift` and committed as an asset catalog under
+  `Resources/Assets.xcassets`, so it can be regenerated and reviewed rather than trusted.
+  No protocol change.
 
 ### Fixed
 - **The 0-RPM ban was vacuous on hardware declaring a minimum of zero.** Clamping a target
