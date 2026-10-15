@@ -392,8 +392,8 @@ something less true than what was available.
    apply at once — a dying holder's fan is mid-handback while a second client legitimately
    holds another — and `.releaseInProgress` documents itself as *"retry in a moment"*. A client
    told that, when the real answer is *"somebody else holds the fans and will for as long as
-   they live"*, retries into a different refusal forever. § 7's seal, item 6, is checked between
-   the two.
+   they live"*, retries into a different refusal forever. § 7's seal, item 6, is checked before
+   both.
 
 5. **An exemption that lapsed → `.releaseInProgress`**
    ([#311](https://github.com/blamechris/Aeolus/issues/311)). The foreign-control step above
@@ -408,13 +408,19 @@ something less true than what was available.
 
 6. **§ 7's grant seal → `.releaseInProgress`**
    ([#350](https://github.com/blamechris/Aeolus/issues/350)). Numbered last because it was added
-   last; it is **checked between item 4's two halves**, after `table.isEmpty` and before
-   `releasing`. [The machine-wide restore seal](#the-machine-wide-restore-seal) is the mechanism.
+   last; it is **checked between items 3 and 4**, after `sleepSeal` and before `table.isEmpty`.
+   [The machine-wide restore seal](#the-machine-wide-restore-seal) is the mechanism.
 
-   - **After the lease table**, because a lease another client holds outlasts the seal: the seal
-     ends when the panic verb returns, the lease when its holder lets go. The two barely
-     co-occur — the first thing inside the seal is the sweep emptying the table — and in that
-     instant the lease is the truer answer.
+   - **Before the lease table**, and that is not an exception to the durability order. Nothing
+     inserts while the seal is open, so a lease the table shows then is one this panic's sweep is
+     about to drop: it outlasts the seal by nothing. One can be seen only between the seal
+     opening and the sweep's `removeAll` — the verb's closure leaves the lease core in between —
+     and a grant there was told `.leaseHeldByAnotherClient`, which stops being true within
+     moments, while the snapshot said `.releaseInProgress`. The review of
+     [#363](https://github.com/blamechris/Aeolus/pull/363) found that; the guard sat after the
+     table, on the argument that a lease outlasts the seal, which it cannot here.
+     `PanicGrantSealTests.aGrantBetweenTheSealAndTheSweepIsRefusedByTheSeal` holds the order.
+   - **After `sleepSeal`**, which lifts on the next `.didWake` and so outlasts the panic verb.
    - **Before `releasing`**, and the two give the same reason, so the order changes only the log
      line: a fan the panic sweep is handing back is refused under the line that names the panic
      verb, which is the cause, rather than under the ordinary handback's.
@@ -569,7 +575,8 @@ than one call in it. An edit that reorders the acts then cannot move one of them
 it without moving it out of the closure, which `PanicPathScopeTripwireTests` sees. The read-back
 writes nothing, so holding grants across it costs one read's worth of `.releaseInProgress`. The
 reply is sent after the seal closes, so a client polling after its own panic reply — `fanctl
-auto`, `fanctl reset --all` — never sees it.
+auto`, `fanctl reset --all` — sees the seal only when another panic verb overlaps its own, or when
+its 10 s `panicVerb` deadline expired before the reply arrived.
 
 **Scoped, not a seal/unseal pair.** An explicit pair, like § 4's `sealForSleep`, is correct the
 day it is written and leaks the first time an edit puts a `throw` between the two calls — and a
@@ -588,7 +595,10 @@ frame, so the count cannot underflow.
 the seal, and no read is queued ahead of `.everyFan` (ADR 0007, 2026-09-20). The reply is v1's
 *accepted*, and the refusal is a reason `acquireLease` already threw, so `AeolusXPCVersion` does
 not move. § 4 keeps `sleepSeal`, § 6 its gate and second keystone, and reconciliation runs
-before the listener resumes, so every machine-wide restore now runs behind a grant interlock.
+before the listener resumes. That puts § 7 and bring-up behind an airtight interlock, and § 4 and
+§ 6 behind narrower ones: § 4's teardown still runs with the gate open when `sealForSleep`
+declines ([#364](https://github.com/blamechris/Aeolus/issues/364)), and § 6's gate refuses a grant
+on arrival but not in flight, with `apply` refused by the same gate (docs/SAFETY.md § 1).
 
 **What the snapshot says.** `activeLeaseView()` reads the count in the same hop as the registers,
 as `LeaseAccountability.machineWideRestoreInFlight`, and the availability ladder's step 10 —
@@ -613,12 +623,14 @@ fix adds.
   "Retry in a moment" rests on it, and a long one would make that sentence untrue.
 
 **Tested by** `PanicGrantSealTests`: a grant during the machine-wide restore, a grant parked
-above the marker when the panic begins, a grant over a fan the sweep does not cover, overlapping
-panics, and a refusal the seal must not overwrite — each with the mutation it kills recorded on
-it. `PanicPathScopeTripwireTests` holds the three acts inside the closure, which no behavioural
-test can: a grant cannot be parked behind the read-back's mode read without parking its own
-foreign-control read too. The same suite holds that each runtime machine-wide restore runs behind
-its interlock.
+above the marker when the panic begins, a grant between the seal opening and the sweep, a grant
+over a fan the sweep does not cover, overlapping panics, and a refusal the seal must not
+overwrite — each with the mutation it kills recorded on it. `PanicPathScopeTripwireTests` holds
+the three acts inside the closure, and today it alone holds the read-back's place:
+`ControlStateGatePlane` parks every mode read, so a grant asked while the read-back is parked
+parks on its own foreign-control read too. A per-fan mode park could hold it behaviourally. The
+same suite holds that each runtime machine-wide restore is issued after its interlock is called —
+the order, not the gaps above.
 
 ## Pairing a sleep with its own wake
 
@@ -708,7 +720,7 @@ was attached to neither); it is unchanged and sits under that declaration again.
 `type_body_length` counts **code** lines only. At the time of the relocation this actor's body
 spans 265 of them against a warning at 250 and an **error at 350**: about 85 lines of headroom,
 and relocating prose cannot make more. [#350](https://github.com/blamechris/Aeolus/issues/350)'s
-grant seal took it to 278, leaving 72, and the file to 883 lines of its 1000. `file_length` has not gone away either. At this file's
+grant seal took it to 278, leaving 72, and the file to 885 lines of its 1000. `file_length` has not gone away either. At this file's
 present density, 3.1 lines per code line, it would error after roughly 48 new code lines, so
 which of the two limits is reached first depends on how much comment the new code carries.
 

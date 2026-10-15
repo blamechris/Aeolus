@@ -1158,20 +1158,31 @@ re-asserts, so level 3 undoes level 1, or gives the fan up blaming the operating
 covers the forward writes of an engagement already under way. It does not cover a lease granted into
 a restore that will undo it.
 
-**Decision.** `LeaseAuthority.sealingGrants(during:)` counts machine-wide restores in flight. It
+**Decision.** `LeaseAuthority.sealingGrants(during:)` counts the § 7 panic verbs inside it — on
+every plane, `.notBuilt` included, and never § 4's or § 6's `.everyFan`. It
 increments when it begins and decrements in a `defer` in the same frame, so a throw cannot leak it,
 and overlapping panic verbs hold it until the last one ends. § 7's three acts run inside it, so it
 opens before the sweep empties the table and closes after the read-back. That is § 4's rule: no
 instant at which the table is empty and the gate is open.
-`acquireLease` checks it once, inside its straight-line region, after the lease-table refusal and
-before the `releasing` refusal. It refuses with `.releaseInProgress`, under a log line of its own.
+`acquireLease` checks it once, inside its straight-line region, after § 4's sleep-seal refusal and
+before the lease-table refusal: nothing inserts while it is open, so a lease the table shows then
+is one the sweep is about to drop. It refuses with `.releaseInProgress`, under a log line of its own.
 The snapshot states the seal as the last rung before `.available`, read in the same hop as the
 registers.
 
 **What it does not change.** The keystone gains no input and waits on nothing. The seal gates grants
 only, no restore reads it, and no read is queued ahead of `.everyFan` (ADR 0007, 2026-09-20). The
 reply is v1's *accepted*. § 4 keeps `sleepSeal`, § 6 its gate and second keystone, and reconciliation
-runs before the listener resumes. So every machine-wide restore now runs behind a grant interlock.
+runs before the listener resumes. So § 7's and bring-up's machine-wide restores run behind a grant
+interlock. § 4's does too, except the teardown that runs when `sealForSleep` declines a seal its
+wake already answered, whose `.everyFan` runs with the gate open
+([#364](https://github.com/blamechris/Aeolus/issues/364), an A6 precondition). § 6's gate refuses
+a grant on arrival, not one already in flight; such a grant can land, and `apply` is refused by
+the same gate before the process exits.
+
+*Corrected in the review of [#363](https://github.com/blamechris/Aeolus/pull/363):* this
+subsection said the seal counted machine-wide restores, put its guard after the lease-table
+refusal, and said every machine-wide restore ran behind a grant interlock.
 
 **What remains.** The seal does not tie a § 5 registration to the lease that made it. An `apply`
 whose lease ends between the driver's after-check and its § 5 registration leaves an entry that D2
