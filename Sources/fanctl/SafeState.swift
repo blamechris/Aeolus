@@ -94,11 +94,14 @@ enum SafeState {
     ///   `restoreToAutomaticUnconfirmed`, `systemSleeping`, `unknown` (which the type says is
     ///   never to be treated as available) and `supervisorBlind`. A blind fan's state is
     ///   *unknown*, not manual, so it is 8 and not 9 even though reconciliation can leave it so
-    ///   for the life of the process.
+    ///   for the life of the process. A snapshot carries it only for that reconciliation
+    ///   refusal: since #355 the helper does not publish § 5's ledger as an availability, so a
+    ///   fan § 5 gave up blind no longer makes `reset --all` or `auto` wait out the window.
     /// - **`silent`** — the reasons about manual control being *granted*, not about the fan:
     ///   `writePathNotBuilt` (every fan on today's helper), `boundsImplausible`,
     ///   `leaseHeldByAnotherClient` (a lease is judged from `activeLease`),
-    ///   `selfRenewalNotBuilt`, `noThermalTelemetry` and `reclaimedBySystem`.
+    ///   `selfRenewalNotBuilt`, `noThermalTelemetry` and `reclaimedBySystem` (which no helper
+    ///   on `main` publishes as an availability; `isReclaimedBySystem` carries the fact).
     ///
     /// **Exhaustive, with no `default:` arm,** so a reason added to the vocabulary is a compile
     /// error here rather than a quiet "silent": the classification decides whether to wait at

@@ -70,8 +70,8 @@ extension ManualControlAvailability.Reason {
             return "Aeolus cannot currently read a critical temperature, so it cannot safely "
                 + "watch a fan under manual control."
         case .supervisorBlind:
-            return "Aeolus cannot currently read this fan's own control state, so it cannot "
-                + "tell whether something else has taken it back."
+            return "Aeolus has not been able to read this fan's own control state, so it "
+                + "cannot tell whether something else is holding it."
         case .foreignManualControl:
             return "Something other than Aeolus has put this fan under manual control."
         case .unknown:
@@ -95,8 +95,8 @@ extension ManualControlAvailability.Reason {
             return "There is no user action that resolves this from this client; it is a "
                 + "property of what the firmware reported for this fan's bounds."
         case .reclaimedBySystem:
-            return "There is no user action; it returns to Aeolus's control if the system "
-                + "yields the fan again."
+            return "Current helpers report this as the fan's Reclaimed by system flag, not as "
+                + "a refusal: asking again is allowed, and a refusal names its own reason."
         case .leaseHeldByAnotherClient:
             return "It becomes available again once that lease ends or is released."
         case .selfRenewalNotBuilt:
@@ -120,8 +120,9 @@ extension ManualControlAvailability.Reason {
             return "There is nothing to do from here; it clears when the SMC answers again, "
                 + "and retrying does not speed that up."
         case .supervisorBlind:
-            return "It may clear on its own if the connection recovers; if it does not, see "
-                + "docs/RECOVERY.md."
+            return "If a request was just refused this way, a read failed at that moment: "
+                + "retry. If it keeps being reported, the helper never read this fan at "
+                + "start-up and it stands until the helper restarts; see docs/RECOVERY.md."
         case .foreignManualControl:
             return "Quit or stop the other program that is driving this fan."
         case .unknown:
