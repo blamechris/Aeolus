@@ -343,8 +343,13 @@ struct StartupReconciliationReadBackTests {
 
     /// #204's item 2: the snapshot names the refusal the grant path would throw.
     ///
-    /// Fan 0 reads automatic and is clean. Fan 1's mode never reads, so it stays
-    /// `unreconciled`. Fan 2 is left in manual by a keystone the firmware accepted, and the
+    /// Fan 0 reads automatic and is clean. Fan 1's mode does not read *at reconciliation* —
+    /// `ReadBackScriptedPlane` fails it there — so it stays `unreconciled`; the snapshot reads it
+    /// automatic since, through `PlaneBackedProvider`, which reads the firmware past that
+    /// wrapper. **The split is deliberate**: it is the only check that a durable refusal outlives a
+    /// mode that reads automatic again, so fan 1 must not move onto an `unreadableModes` stage,
+    /// where #360's rung would answer `.supervisorBlind` in the durable refusal's place. Fan 2 is
+    /// left in manual by a keystone the firmware accepted, and the
     /// snapshot's own `F2Md` read says manual too — the sequence a real machine produces —
     /// so the durable refusal has to outrank foreign control, not merely replace
     /// `.available`. On a seam that can write, before #204 the snapshot offered fan 1 as

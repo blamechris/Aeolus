@@ -15,9 +15,9 @@ import Testing
 ///
 /// This is #360 as a user meets it. Before it, the fan read `automatic` by #178's fold with
 /// `.available` beside it, so `auto` judged the machine cleared, sent no restore and exited 0 —
-/// the outcome ADR 0013 rejects under "Exit 0 only when the mode was actually read". Every build on
-/// `main` is `.notBuilt`, so this is the command as it will behave once a write path exists, and
-/// nothing here is evidence about hardware.
+/// the outcome ADR 0013 rejects under "Exit 0 on the mode alone". Every build on `main` is
+/// `.notBuilt`, so this is the command as it will behave once a write path exists, and nothing
+/// here is evidence about hardware.
 ///
 /// Time is `VirtualSettleTime`'s, as in `FanctlAutoTests`: its sleep advances a virtual clock and
 /// returns, so the 10-second window costs nothing and no thread is ever held waiting. Every

@@ -1206,7 +1206,8 @@ and both need that lease: #189's register that seals its own exit.
   fault lines and by the revocation itself. Its present-tense sentence, "cannot currently read", was
   false whenever the reconnect had worked.
 - **Step 5 no longer exempts § 5's fans,** so it answers as `refusalForGrant` does: the durable
-  reconciliation refusal, the mode guard, § 3's kept set (#303), then `.foreignManualControl`. Under U0
+  reconciliation refusal, the mode guard (three-way since the #360 amendment below), § 3's kept set
+  (#303), then `.foreignManualControl`. Under U0
   the system's hold reads raw `0` and never reaches the foreign answer. If U0 fails, the grant is
   already wrong the same way, and D3 re-decides the fold before run 1.
 - **A re-grant re-runs the unlock** with a fresh yield budget (D3, D6). A landed engagement clears the
@@ -1214,7 +1215,8 @@ and both need that lease: #189's register that seals its own exit.
   request (ADR 0013 D1), so the contest with the system is bounded per request.
 
 After this change, `.supervisorBlind` has two producers, both of which the grant shares: the fan
-reconciliation never established, and a grant-time read that failed. No helper on `main` publishes
+reconciliation never established, and a grant-time read that failed. The #360 amendment below makes
+the snapshot state the second as well, from its own read. No helper on `main` publishes
 `.reclaimedBySystem` as an availability; the case stays for wire stability.
 
 **What remains.** A fan § 5 gave up blind that is *still* unreadable reads `.available` while the
@@ -1347,7 +1349,8 @@ snapshot it was read for, from the same read. `FanState.mode` is unchanged.
 - **Not over `.writePathNotBuilt`**, which the grant answers before it reads anything. Answering
   `.supervisorBlind` there would state a reason no grant returns, on every fan of every Mac without
   `F<n>Md`, which by the reported key map is every Intel Mac.
-- **For every fan, not only § 3's kept set.** The grant refuses any fan it cannot read; a rung keyed
+- **For every fan Aeolus is not accountable for, not only § 3's kept set.** The grant refuses any such
+  fan it cannot read; a rung keyed
   on § 3's set mirrors a subset of that rule.
 - **Above #350's seal**, which re-states only a fan nothing else refused: the grant's fresh read is
   above its straight-line region, and the seal check is inside it.
@@ -1363,10 +1366,14 @@ poll. A lasting one gives exit 8 with the reason's advice, as ADR 0013 D3 says a
 
 **What remains.** On a `.notBuilt` seam, which is every build on `main`, an unreadable fan still
 reads `automatic` with `.writePathNotBuilt` beside it, and `auto` exits 0 about it: #178's, because
-the wire cannot yet say a mode is not known. Where the grant refuses earlier, `.noThermalTelemetry`
-or `.systemSleeping`, the snapshot has no rung yet (#269), and an unreadable fan reads
-`.supervisorBlind`, a refusal the grant makes once those clear. #270 places its bounds gate relative
-to the fresh read and moves steps 5 and 8 together.
+the wire cannot yet say a mode is not known. Where the grant refuses before its fresh read — § 3's
+latch (`thermalEmergencyActive`) and `.noThermalTelemetry`, the only machine-state refusals ahead of
+it besides the build — an
+unreadable fan reads `.supervisorBlind`, a refusal the grant makes once those clear; the snapshot
+has no `.noThermalTelemetry` rung yet (#269). The sleep seal is checked *after* the fresh read, so
+while it holds the grant also answers `.supervisorBlind` for such a fan and the two agree; #269's
+`.systemSleeping` rung therefore goes below step 5 and above step 10. #270 places its bounds gate
+relative to the fresh read and moves steps 5 and 8 together.
 
 **No `AeolusXPCVersion` bump.** No field, case or method changes. `.supervisorBlind` is on the wire
 and already published for the reconciliation producer, and "cannot read this fan's control state" is
@@ -1383,7 +1390,11 @@ exactly this producer. No shipped helper publishes anything new: every one is `.
   debounce is state in a pure function and a second definition of blind.
 
 **Revisit if** a hardware run shows `F<n>Md` failing at `.snapshot` while it reads at `.supervisor`,
-or flickering on `Mac16,5`: fix the read, do not debounce the rung. Revisit too when #178 lets the
+or flickering on `Mac16,5`: fix the read, do not debounce the rung. Revisit before any plane reports
+`.built` on a platform whose mode is not `F<n>Md` — Intel's `FS! ` bitmask: the snapshot's
+`SnapshotFanModeReads` must take the same branch as the plane's read, or share its decode, in the
+same change, or every fan reads `.supervisorBlind` for ever while the grant grants. Revisit too when
+#178 lets the
 wire say a mode is not known; the rung stays, and ADR 0013's exit 0 can then be strengthened on a
 `.notBuilt` seam. The ruling is the architect's #360 consult, run on Opus.
 
@@ -1416,7 +1427,7 @@ Proposed.**
 | — | A re-grant after § 5's terminal action is a client's request | `AeolusXPCClient` and ADR 0013 D1 never re-acquire; the app has no control UI yet | A self-re-acquiring client makes the contest with the system unbounded: a measured, time-limited ledger refusal, mirrored in the snapshot |
 | — | At most one live lease covers a fan | One lease at a time (`.leaseHeldByAnotherClient`) | Overlapping leases: § 5's records keyed per (fan, lease), and registration's arbitration re-decided |
 | — | Every lease-core restore notice for a fan precedes any grant over it | `releasing` is held from before the restorer's notices until it returns | A restore path bypassing `releasing` lets the index-keyed `manualControlReleased(fanAt:)` erase a newer lease's record; the notice must then carry the lease |
-| — | The snapshot's `F<n>Md` read and the grant's fresh read fail together | Code: one scheduler and connection, the same key and `FirmwareFanMode(declaredByFirmware:)` decode behind the same finiteness rule; a `.snapshot` read waits and never fails for its priority. They differ only in priority and instant. Every recorded `F<n>Md` read on `Mac16,5` answered, and none was taken while reads were failing | The #360 rung refuses leases the helper grants. Fix the read, and re-decide here |
+| — | The snapshot's `F<n>Md` read and the grant's fresh read fail together | Code: one scheduler and connection, the same key and `FirmwareFanMode(declaredByFirmware:)` decode behind the same finiteness rule; a `.snapshot` read waits and never fails for its priority. They differ only in priority and instant. Every recorded `F<n>Md` read on `Mac16,5` answered, and none was taken while reads were failing | The #360 rung refuses leases the helper grants. Fix the read, and re-decide here. The same holds for a platform whose mode is not `F<n>Md` (Intel, `FS! `): the snapshot's read must take the plane's branch, or share its decode, in the same change |
 
 Every observation above is `Mac16,5`; the write-path rows are hypotheses until D8 runs. Intel and
 M1/M2 ship `untested`.

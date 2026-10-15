@@ -187,7 +187,8 @@ request was just refused this way, a read failed at that moment: retry. If the a
 fan's mode now — a snapshot on a helper that can write says so when its own read of the fan
 did not answer — or it could not confirm the fan back under automatic control at start-up:
 its mode would not read, read manual after the restore, or was never reached. The first
-clears when the read answers; the second stands until the helper restarts (step 5).
+clears when the read answers; the second stands until the helper restarts (step 5). If it never
+clears, which cause it is does not matter: go to step 5 and restart the helper.
 
 **`foreignManualControl`** — Something other than Aeolus — another fan-control tool, or
 firmware that re-asserted manual mode — has put this fan under manual control. Quit or stop

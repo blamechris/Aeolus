@@ -62,6 +62,14 @@ extension FanStateSensing {
 /// or two extra turns against the 48 a full snapshot already takes; the alternative — one
 /// batched read of every fan's mode key — would make this seam something `FanStateSensing`
 /// could no longer satisfy, and the composability is worth more than 2% of a turn budget.
+///
+/// **It must read the mode the way the plane does** ([#360](https://github.com/blamechris/Aeolus/issues/360)).
+/// Step 5 of the availability ladder refuses a fan this read did not answer `.supervisorBlind`,
+/// on the grounds that the grant's own read — `SMCFanControlPlane.readControlState(ofFan:)` —
+/// would fail too. Today both read `F<n>Md` through one decode. The day the plane gains a
+/// platform branch (Intel expresses the mode as bit *n* of `FS!`), this type takes the same
+/// branch or shares its decode in the same change; otherwise a `.built` plane on that platform
+/// reports every fan blind while the grant grants. ADR 0014's #360 assumption row says so too.
 struct SnapshotFanModeReads: FanModeSensing {
 
     private let provider: any SensorProvider

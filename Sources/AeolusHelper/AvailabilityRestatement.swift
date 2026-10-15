@@ -72,16 +72,17 @@ import FanKit
 // the durable refusals the one-shot pass left — `.supervisorBlind` for a fan whose mode it
 // never established or confirmed, `.restoreToAutomaticFailed` for one it could not hand back
 // — through the same `ReconciliationBaseline.durableRefusal(overFans:)` the grant path calls,
-// so the two cannot drift ([#204](https://github.com/blamechris/Aeolus/issues/204)). Then the
-// fan's mode, judged three ways from the snapshot's own `F<n>Md` read where the grant path
-// takes a fresh one: automatic is left to the rungs below, manual is foreign control, and **no
-// answer is `.supervisorBlind`**, the grant's own answer when its read throws
-// ([#360](https://github.com/blamechris/Aeolus/issues/360)). Before #204 only foreign control
-// was asked here, so on a seam that can write a fan reconciliation had refused read
+// so the two cannot drift ([#204](https://github.com/blamechris/Aeolus/issues/204)). The second
+// and third judge the fan's mode from the snapshot's own `F<n>Md` read, where the grant path
+// takes a fresh one. **The second is whether the mode read at all: no answer is
+// `.supervisorBlind`**, the grant's own answer when its read throws
+// ([#360](https://github.com/blamechris/Aeolus/issues/360)). The third is whether it reads
+// manual: automatic is left to the rungs below, and manual is foreign control. Before #204 only
+// the third was asked here, so on a seam that can write a fan reconciliation had refused read
 // `.available`, or `.foreignManualControl`; before #360 a fan whose mode did not read was
 // judged automatic, by #178's fold, and read `.available` while the grant refused it.
 //
-// **The no-answer arm covers every fan Aeolus is not accountable for**, not only § 3's kept set:
+// **The second covers every fan Aeolus is not accountable for**, not only § 3's kept set:
 // the grant refuses any candidate whose read throws. The read path hands the answer over beside
 // the snapshot it was read for — `ReadOnlyFanAuthority.observe()`, one read and one dictionary —
 // because `FanState.mode` cannot carry it: the wire has no way yet to say "not known" (#178).
@@ -111,7 +112,10 @@ import FanKit
 // `LeaseAccountability`: a snapshot has no `ConnectionID`, so the helper cannot know whether
 // the reader is the holder. `.systemSleeping` is absent for a weaker reason — § 4's seal is
 // machine-wide state the snapshot does not read — and is
-// [#269](https://github.com/blamechris/Aeolus/issues/269)'s.
+// [#269](https://github.com/blamechris/Aeolus/issues/269)'s. Its rung goes **below step 5 and
+// above step 10**: `acquireLease` checks the sleep seal after its fresh read, so while the seal
+// holds a fan whose mode did not read is still refused `.supervisorBlind`, and the two agree.
+// `.noThermalTelemetry`, which the grant checks *before* that read, is #269's too.
 
 extension ReadOnlyFanReport {
 

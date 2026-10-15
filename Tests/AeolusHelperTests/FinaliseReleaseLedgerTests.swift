@@ -96,8 +96,14 @@ struct FinaliseReleaseLedgerTests {
 
     /// The graph `HelperRestorerTests.composed` builds, over a plane it cannot take, for the
     /// scenarios that need two fans or a write moment. Every argument but the plane and the
-    /// provider's fan count is that fixture's. Not `private`, for `holding`'s reason:
-    /// `TerminalActionAvailabilityTests` composes it over a plane whose mode reads fail.
+    /// provider's fan count is that fixture's.
+    ///
+    /// **Its snapshot provider is `fanProvider`, which has no `F<n>Md`**, so its snapshots read
+    /// every fan's mode unread while the plane answers it. Nothing over it asserts an
+    /// availability — its tests read the ledger, the log and `isReclaimedBySystem` — so that is
+    /// harmless here and would not be for an availability claim (#360). Moving it onto
+    /// `PlaneBackedProvider`, which needs the scripted firmware beneath the wrapping plane, is
+    /// [#370](https://github.com/blamechris/Aeolus/issues/370).
     static func composed<Plane: FanControlPlane>(
         over plane: Plane, fanCount: Int = 1, log: RecordedLog
     ) -> HelperComposition<Plane> {

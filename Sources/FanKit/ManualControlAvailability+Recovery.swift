@@ -123,8 +123,9 @@ extension ManualControlAvailability.Reason {
         case .supervisorBlind:
             return "If a request was just refused this way, a read failed at that moment: "
                 + "retry. If it keeps being reported, the helper either cannot read this fan "
-                + "now or never read it at start-up. The first clears when a read answers; the "
-                + "second stands until the helper restarts. See docs/RECOVERY.md."
+                + "now or could not confirm it back under automatic control at start-up. The "
+                + "first clears when a read answers; the second stands until the helper "
+                + "restarts. See docs/RECOVERY.md."
         case .foreignManualControl:
             return "Quit or stop the other program that is driving this fan."
         case .unknown:

@@ -464,7 +464,9 @@ always present, with `null` for "not present".
 - **`fans[].actualRPM` / `minimumRPM` / `maximumRPM`** — `{ "value": Double?,
   "unavailableReason": String? }`, exactly one non-null. A failed read is never a `0`.
 - **`fans[].mode`** — `automatic`, `manualFixed` or `manualCurve`. **`targetRPM`** is the
-  commanded target or `null`.
+  commanded target or `null`. `automatic` is also what a mode the helper could not read reports
+  (#178), so read `manualControl` beside it: `supervisorBlind` there means the helper could not
+  confirm the fan's mode.
 - **`fans[].manualControl`** — `state` is `available` or `unavailable`; when unavailable,
   `reason` is the stable wire value to branch on (`writePathNotBuilt`,
   `leaseHeldByAnotherClient`, `foreignManualControl`, …) and `summary`/`advice` are the text
