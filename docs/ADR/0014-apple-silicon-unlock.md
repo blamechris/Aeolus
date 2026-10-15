@@ -1267,9 +1267,9 @@ This amendment corrects clauses of a Proposed ADR rather than the decisions they
 
 ## Amendment (2026-10-15, [#360](https://github.com/blamechris/Aeolus/issues/360)) — a fan whose mode did not read answers what the grant's fresh read answers
 
-Found in the review of #359, and an A6 precondition like the two above. Unreachable on every build
-on `main`, for the same reason: a `.notBuilt` seam answers `.writePathNotBuilt` before anything this
-changes.
+Found in the review of #359, and an A6 precondition like #350's and #355's. Unreachable on every
+build on `main`, for the same reason: a `.notBuilt` seam answers `.writePathNotBuilt` before anything
+this changes.
 
 **The defect.** The #355 half above left one gap and called it fail-safe: a fan whose `F<n>Md` does
 not read reads `.available`, while the grant's fresh read throws and refuses it `.supervisorBlind`.
