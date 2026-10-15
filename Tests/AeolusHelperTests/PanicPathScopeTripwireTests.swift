@@ -60,7 +60,8 @@ struct PanicPathScopeTripwireTests {
         "Sources/AeolusHelper/Lease/LeaseAuthority.swift — releaseEveryLease, and "
             + "confirmAcceptedHandbacks's \"no keystone queued behind the read\"",
         "docs/records/handback-ledger.md — \"`releaseEveryLease()`: what the sweep is, and "
-            + "what it is not\", and \"Accepted is not automatic\"",
+            + "what it is not\", \"Accepted is not automatic\", and \"The machine-wide "
+            + "restore seal\"",
         "Sources/AeolusHelper/FanAuthority.swift — the protocol requirement",
         "Sources/AeolusXPC/AeolusXPCProtocol.swift — the declaration, and the ordering "
             + "paragraph above it",
@@ -155,6 +156,94 @@ struct PanicPathScopeTripwireTests {
             amendment), and these say the order is this one:
             \(Self.checklist)
             """)
+
+        // #350: all three acts run inside the grant seal, which is named once.
+        //
+        // **This property is held here and nowhere else for the read-back.** A behavioural test
+        // would park the read-back's mode read and ask for a grant — and the grant's own
+        // foreign-control read is a mode read too, so it parks on the same gate before it can
+        // reach the seal. `PanicGrantSealTests` holds the sweep and the restore.
+        //
+        // **Mutation:** move `await leases.confirmAcceptedHandbacks()` below the closure. Run:
+        // red here only — every behavioural test of the seal stays green.
+        try Self.expectInsideTheSeal(
+            [
+                (release, "the lease release"), (gate, "the capability gate"),
+                (keystone, "the machine-wide restore"), (readBack, "the read-back"),
+            ], of: body)
+    }
+
+    /// Each of `acts` lies inside the one `sealingGrants` closure in `body`, the panic verb's.
+    private static func expectInsideTheSeal(
+        _ acts: [(Range<String.Index>, String)], of body: String
+    ) throws {
+        let seals = body.components(separatedBy: "sealingGrants").count - 1
+        #expect(seals == 1, "restoreAllToAutomatic names sealingGrants \(seals) times, not once")
+        let sealed = try #require(
+            Self.closureBody(after: "sealingGrants", in: body),
+            "restoreAllToAutomatic runs its acts in no sealingGrants closure this scan can find")
+        for (act, what) in acts {
+            #expect(
+                sealed.contains(act.lowerBound) && sealed.contains(act.upperBound),
+                """
+                restoreAllToAutomatic runs \(what) outside LeaseAuthority.sealingGrants(during:), \
+                so a lease can be granted while it runs and undone by the restore (#350). These \
+                say the seal covers all three acts:
+                \(Self.checklist)
+                """)
+        }
+    }
+
+    /// Every machine-wide restore issued after bring-up runs behind something that refuses a
+    /// grant — so no lease is granted that the restore would undo (`docs/SAFETY.md` § 1).
+    ///
+    /// § 4 seals the table before its teardown, § 6's signal teardown closes the control gate
+    /// before its first keystone, and § 7 issues `.everyFan` inside `sealingGrants`. Bring-up's
+    /// fallback runs before the listener is resumed, which `HelperCompositionTests` holds.
+    ///
+    /// **Mutation:** delete `await leases.sealForSleep(generation: notification.generation)` from
+    /// `SystemPowerResponder.allowSleepAfterHandback`. Run: red. **Mutation:** move
+    /// `await gate.close()` below the first `_ = await keystone()` in `SignalTeardown.run`. Run:
+    /// red.
+    @Test("Every runtime machine-wide restore runs behind a grant interlock")
+    func everyRuntimeMachineWideRestoreRunsBehindAGrantInterlock() throws {
+        for site in [
+            (
+                file: "SystemPowerResponder.swift", caller: "allowSleepAfterHandback",
+                interlock: "sealForSleep(", issuer: "handBackEveryFan"
+            ),
+            (
+                file: "SignalTeardown.swift", caller: "run", interlock: "gate.close()",
+                issuer: "keystone"
+            ),
+        ] {
+            let issuing = try Self.functionBody(of: site.issuer, inFile: site.file)
+            #expect(
+                issuing.contains(".everyFan"),
+                "\(site.file)'s \(site.issuer) no longer issues .everyFan; walk this tripwire")
+
+            let code = SeamScanner.strippingComments(try Self.source(of: site.file))
+            let caller = try Self.functionBody(of: site.caller, inFile: site.file)
+            let interlock = try #require(
+                caller.range(of: site.interlock),
+                "\(site.file)'s \(site.caller) no longer calls \(site.interlock)")
+            let calls = caller.components(separatedBy: "\(site.issuer)(").count - 1
+            let everywhere = code.components(separatedBy: "\(site.issuer)(").count - 2
+            let first = try #require(caller.range(of: "\(site.issuer)("))
+            #expect(
+                calls >= 1 && calls == everywhere && interlock.upperBound <= first.lowerBound,
+                """
+                \(site.file) issues .everyFan through \(site.issuer) somewhere \
+                \(site.interlock) does not precede it, so a lease can be granted that the \
+                machine-wide restore undoes. docs/SAFETY.md § 1 says every runtime call site \
+                runs behind a grant interlock.
+                """)
+        }
+
+        let panic = try Self.functionBody(
+            of: "restoreAllToAutomatic", inFile: "SupervisedFanAuthority.swift")
+        let keystone = try #require(panic.range(of: ".everyFan"), "§ 7 names no .everyFan")
+        try Self.expectInsideTheSeal([(keystone, "the machine-wide restore")], of: panic)
     }
 
     // MARK: - The machine-wide scope
@@ -218,10 +307,7 @@ struct PanicPathScopeTripwireTests {
     /// before — a `[^)]*` parameter list and a `<[^>]*>` generic clause both fail *silently*, by
     /// matching nothing at all.
     private static func functionBody(of name: String, inFile file: String) throws -> String {
-        let url = try #require(
-            try SeamScanner.swiftFiles().first { $0.lastPathComponent == file },
-            "\(file) is not in the source tree")
-        let code = SeamScanner.strippingComments(try String(contentsOf: url, encoding: .utf8))
+        let code = SeamScanner.strippingComments(try Self.source(of: file))
 
         let declaration = try #require(
             code.range(of: #"func\s+\#(name)(?![A-Za-z0-9_])"#, options: .regularExpression),
@@ -236,14 +322,39 @@ struct PanicPathScopeTripwireTests {
             code.range(of: "{", range: close..<code.endIndex),
             "func \(name) in \(file) has no body")
 
+        let body = Self.balancedBody(openingAt: brace.lowerBound, in: code)
+        #expect(body != nil, "func \(name) in \(file) has an unbalanced body")
+        return body.map { String(code[$0]) } ?? ""
+    }
+
+    /// The range inside the first `{ … }` after `token` in `code` — the trailing closure of a
+    /// call — or `nil` when there is none or it does not balance.
+    private static func closureBody(after token: String, in code: String) -> Range<String.Index>? {
+        guard let call = code.range(of: token),
+            let brace = code[call.upperBound...].firstIndex(of: "{")
+        else { return nil }
+        return balancedBody(openingAt: brace, in: code)
+    }
+
+    /// The range between the `{` at `open` and the `}` that closes it, by depth count.
+    private static func balancedBody(
+        openingAt open: String.Index, in code: String
+    ) -> Range<String.Index>? {
         var depth = 1
-        var index = brace.upperBound
+        var index = code.index(after: open)
         while index < code.endIndex, depth > 0 {
             if code[index] == "{" { depth += 1 }
             if code[index] == "}" { depth -= 1 }
             index = code.index(after: index)
         }
-        #expect(depth == 0, "func \(name) in \(file) has an unbalanced body")
-        return String(code[brace.upperBound..<code.index(before: index)])
+        guard depth == 0 else { return nil }
+        return code.index(after: open)..<code.index(before: index)
+    }
+
+    private static func source(of file: String) throws -> String {
+        let url = try #require(
+            try SeamScanner.swiftFiles().first { $0.lastPathComponent == file },
+            "\(file) is not in the source tree")
+        return try String(contentsOf: url, encoding: .utf8)
     }
 }
