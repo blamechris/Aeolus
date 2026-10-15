@@ -279,8 +279,8 @@ struct SupervisedFanAuthorityTests {
     /// authority never reported at all.
     ///
     /// **Mutation:** in `SupervisedFanAuthority.snapshot()`, hoist the lease read above the
-    /// machine read — `let lease = await leases.activeLease()` before
-    /// `let machine = try await reading.snapshot()`. Run: red.
+    /// machine read — `let view = await leases.activeLeaseView()` before
+    /// `let machine = try await reading.observe()`. Run: red.
     @Test("The lease is read after the machine, so one lapsing mid-read is reported gone")
     func theLeaseIsReadAfterTheMachineNotBefore() async throws {
         let clock = TestClock()

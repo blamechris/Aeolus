@@ -180,26 +180,32 @@ struct SupervisedFanAuthority: FanAuthority {
     ///
     /// **The re-statement touches one field of one fan and nothing else.** The whole ordering
     /// is in `ReadOnlyFanReport` — see `AvailabilityRestatement.swift` for the ladder and
-    /// `restatingAvailability(of:given:reconciliation:)` for the entry point. Since
+    /// `restatingAvailability(of:observedMode:given:reconciliation:)` for the entry point. Since
     /// [#355](https://github.com/blamechris/Aeolus/issues/355) neither half exempts a fan § 5
     /// gave up: its ledger is reported on `isReclaimedBySystem`, never as an availability. The
     /// other three snapshot fields are the read path's own and are passed through untouched:
     /// this re-assembles the value rather than producing a second opinion about any of them.
+    ///
+    /// **The machine read is `observe()`, not `snapshot()`**
+    /// ([#360](https://github.com/blamechris/Aeolus/issues/360)): it hands back each fan's
+    /// `F<n>Md` answer beside the snapshot built from it, because step 5 refuses a fan whose
+    /// mode did not read and `FanState.mode` reports such a fan automatic.
     func snapshot() async throws -> SystemSnapshot {
-        let machine = try await reading.snapshot()
+        let machine = try await reading.observe()
         let view = await leases.activeLeaseView()
         // Its own hop, and that is safe for a reason the lease view does not share: the
         // baseline is fixed before the listener resumes, so no two reads of it can differ.
         let baseline = await reconciliation.baseline()
         return SystemSnapshot(
-            fans: machine.fans.map {
+            fans: machine.snapshot.fans.map {
                 ReadOnlyFanReport.restatingAvailability(
-                    of: $0, given: view, reconciliation: baseline)
+                    of: $0, observedMode: machine.modes[$0.index], given: view,
+                    reconciliation: baseline)
             },
-            sensors: machine.sensors,
+            sensors: machine.snapshot.sensors,
             activeLease: view.lease,
-            isThermalEmergencyActive: machine.isThermalEmergencyActive,
-            capturedAt: machine.capturedAt
+            isThermalEmergencyActive: machine.snapshot.isThermalEmergencyActive,
+            capturedAt: machine.snapshot.capturedAt
         )
     }
 

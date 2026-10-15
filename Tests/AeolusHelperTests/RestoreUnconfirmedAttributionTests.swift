@@ -263,8 +263,8 @@ struct RestoreUnconfirmedAttributionTests {
     /// re-acquisition throughout that window, and nothing else in this suite would notice.
     ///
     /// **Mutation:** in `ReadOnlyFanReport.reportingForeignControl`, move the
-    /// `if awaiting.contains(fan.index)` arm above `guard fan.mode != .automatic`. Run: red on
-    /// `shown`.
+    /// `if awaiting.contains(fan.index)` arm out of `case .manual:` to above the
+    /// `switch observedMode`. Run: red on `shown`.
     /// **Mutation:** in `StartupReconciliation.refusalForGrant`, move the
     /// `if awaiting.contains(fan)` arm above `guard state.mode == .manual`. Run: red — the
     /// re-acquisition throws.

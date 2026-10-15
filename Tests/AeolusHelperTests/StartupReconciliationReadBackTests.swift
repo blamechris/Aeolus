@@ -350,9 +350,9 @@ struct StartupReconciliationReadBackTests {
     /// `.available`. On a seam that can write, before #204 the snapshot offered fan 1 as
     /// `.available` and blamed another program for fan 2.
     ///
-    /// **Mutation A:** in `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:
-    /// reconciliation:)`, delete the `if … let durable = …` block. Run: red — fan 1 reads
-    /// `.available`, fan 2 `.foreignManualControl`.
+    /// **Mutation A:** in `ReadOnlyFanReport.reportingForeignControl(of:observedMode:heldByAeolus:
+    /// awaitingConfirmation:reconciliation:)`, delete the `if … let durable = …` block. Run: red —
+    /// fan 1 reads `.available`, fan 2 `.foreignManualControl`.
     /// **Mutation B:** insert `if fan.mode != .automatic { return restating(fan, as:
     /// .unavailable(.foreignManualControl)) }` above that block. Run: red — fan 2.
     @Test("The snapshot reports reconciliation's refusal with the reason a grant throws")
@@ -408,11 +408,11 @@ struct StartupReconciliationReadBackTests {
     /// which `HelperHardwareTests.expectHonestAvailability` holds this machine to. Fan 2's
     /// mode never reads, so it is unreconciled.
     ///
-    /// **Mutation A:** delete `fan.manualControlAvailability != .unavailable(.writePathNotBuilt),`
-    /// from `reportingForeignControl`. Run: red — fan 1 reads `.restoreToAutomaticFailed` and
+    /// **Mutation A:** delete `canWrite, ` from the durable refusal's `if` in
+    /// `reportingForeignControl`. Run: red — fan 1 reads `.restoreToAutomaticFailed` and
     /// fan 2 `.supervisorBlind`.
     /// **Mutation B:** append `|| baseline.refusedHandbacks.contains(fan.index)` to that
-    /// condition — the refused-handback half alone. Run: red — fan 1.
+    /// `canWrite` — the refused-handback half alone. Run: red — fan 1.
     @Test("On a seam that cannot write, the snapshot names no reconciliation refusal")
     func aSeamThatCannotWriteShowsNoDurableRefusal() async throws {
         let scripted = ScriptedControlPlane(

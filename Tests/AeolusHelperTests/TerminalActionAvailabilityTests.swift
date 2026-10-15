@@ -74,8 +74,8 @@ struct TerminalActionAvailabilityTests {
     /// blind stage ends. The snapshot reads `F0Md` through its own provider, which does not
     /// answer the key while the plane is blind and answers automatic afterwards; its count of
     /// answered reads proves the snapshot read the mode, because an unreadable mode is reported
-    /// automatic too (#178). That is also why the availability alone cannot tell this fan from
-    /// one still blind — the case `aStillBlindFanReadsAvailableWhileTheGrantRefusesIt` pins.
+    /// automatic too (#178). Since #360 the availability tells this fan from one still blind as
+    /// well — `aStillBlindFanReadsTheGrantsRefusal`.
     ///
     /// **Mutation:** re-add `if cause == .supervisorBlind { return
     /// .unavailable(.supervisorBlind) }` as the first statement of
@@ -128,8 +128,8 @@ struct TerminalActionAvailabilityTests {
     /// beside it is current.
     ///
     /// **Mutation:** re-add `, !fan.isReclaimedBySystem` to the `held` guard in
-    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:awaitingConfirmation:
-    /// reconciliation:)`. Run: red on the agreement.
+    /// `ReadOnlyFanReport.reportingForeignControl(of:observedMode:heldByAeolus:
+    /// awaitingConfirmation:reconciliation:)`. Run: red on the agreement.
     @Test("A fan § 5 gave up that another program then takes reads the grant's own refusal")
     func aFanTakenAfterTheTerminalActionAgreesWithTheGrant() async throws {
         let provider = ModeSwitchingProvider(fanCount: 1)
@@ -171,7 +171,7 @@ struct TerminalActionAvailabilityTests {
     /// unconfirmed restore by the grant's own reclassification, not another program's — and
     /// the ledger mark beside it must not exempt it. Unlike the test above, § 3 is not cycled.
     ///
-    /// **Mutation:** in `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:
+    /// **Mutation:** in `ReadOnlyFanReport.reportingForeignControl(of:observedMode:heldByAeolus:
     /// awaitingConfirmation:reconciliation:)`, make the guard
     /// `guard !held.contains(fan.index), !(fan.isReclaimedBySystem && awaiting.contains(fan.index))
     /// else { return fan }`. Run: red on the agreement, while the test above stays green.
@@ -207,70 +207,69 @@ struct TerminalActionAvailabilityTests {
         #expect(refusal == .restoreToAutomaticUnconfirmed)
     }
 
-    // MARK: - The gap #360 holds open
+    // MARK: - The gap #360 closed
 
-    /// **A known, accepted divergence, pinned until
-    /// [#360](https://github.com/blamechris/Aeolus/issues/360) closes it.** A fan § 5 gave up
-    /// blind whose control state *still* will not read reads `.available` on the snapshot,
-    /// while the grant's fresh read refuses it `.supervisorBlind`.
+    /// A fan § 5 gave up blind whose mode *still* will not read reads the reason the grant throws
+    /// for it, `.supervisorBlind`.
     ///
-    /// This asserts today's behaviour, not a property to keep. The grant side is fail-safe —
-    /// no lease is granted — but on a plane that can write, `fanctl auto` reads that snapshot as
-    /// cleared and exits 0 without sending its restore, which ADR 0013 rejects. #360 decides
-    /// the remedy and flips this test to agreement. Until then a move in either direction is
-    /// red here, so nothing changes it silently: the snapshot starting to refuse goes red on the
-    /// availability, and the grant answering anything else, or granting, on the refusal.
+    /// **Pinned as a known gap until [#360](https://github.com/blamechris/Aeolus/issues/360)
+    /// closed it.** This test asserted that the snapshot said `.available` here while the grant's
+    /// fresh read refused the fan `.supervisorBlind`: fail-safe for the grant, and not for
+    /// `fanctl auto`, which read the fan as cleared and exited 0 without its restore. Step 5 of the
+    /// ladder now judges the snapshot's own `F0Md` answer as the grant judges its read, so the two
+    /// agree. `FanState.mode` still folds the unread mode into automatic (#178).
     ///
-    /// Blind on the fan's control state alone, through `ControlStateGatePlane`, the way a fan
-    /// can be on a machine whose temperatures still answer. `ScriptedControlPlane`'s blind stage
-    /// blinds the temperatures too, and the grant's answer would then depend on whether the
-    /// sighting from the first grant had aged out. The snapshot's provider has no `F0Md`, so its
-    /// mode read fails as well.
+    /// The firmware's own stage leaves `F0Md` unanswered while its temperatures answer, so § 3 is
+    /// sighted and the grant reaches its read of the fan, and the snapshot's provider reads the key
+    /// from the same firmware (`PlaneBackedProvider`). Each step is proved before the claim: the
+    /// snapshot read the mode while the fan was held, § 5 gave it up blind, § 3 still keeps it,
+    /// reconciliation refused nothing that could answer `.supervisorBlind` in the rung's place, and
+    /// the grant's refusal is the fresh read's.
     ///
-    /// **Mutation (snapshot side):** re-add `if cause == .supervisorBlind { return
-    /// .unavailable(.supervisorBlind) }` as the first statement of
-    /// `ReadOnlyFanReport.availability(writeCapabilityIs:bounds:)`, with the ledger cause passed
-    /// back in as a parameter. Run: red on the
-    /// availability. **Mutation (grant side):** in `StartupReconciliation.refusalForGrant`,
-    /// replace the catch's `return .supervisorBlind` with `continue`. Run: red on the refusal.
-    @Test("Known gap #360: a fan § 5 gave up and still cannot read reads available, but is refused")
-    func aStillBlindFanReadsAvailableWhileTheGrantRefusesIt() async throws {
-        let log = RecordedLog()
-        let scripted = ScriptedControlPlane(
-            fans: [0: .automatic(at: 2_400)],
-            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
-        let plane = ControlStateGatePlane(scripted)
-        let helper = Ledger.composed(over: plane, log: log)
-        await helper.bindSafetyRegistries()
-        _ = try await helper.leases.acquireLease(
-            LeaseFixture.request(fans: [0]), from: ConnectionID())
-        try await HelperRestorerTests.engage(fan: 0, in: helper)
-        await plane.modeReads(.failing)
+    /// **Mutation:** delete the `case nil:` arm's restatement in
+    /// `ReadOnlyFanReport.reportingForeignControl(of:observedMode:heldByAeolus:
+    /// awaitingConfirmation:reconciliation:)`, returning `fan`. Run: red on the agreement.
+    /// **Mutation:** in `SupervisedFanAuthority.snapshot()`, pass `observedMode: .automatic`.
+    /// Run: red on the agreement.
+    @Test("A fan § 5 gave up whose mode still will not read reads the grant's own refusal")
+    func aStillBlindFanReadsTheGrantsRefusal() async throws {
+        let (helper, log) = try await Ledger.holding(
+            afterwards: [
+                ScriptedControlPlane.Stage(
+                    temperatures: LeaseFixture.nominalDieTemperatures, unreadableModes: [0])
+            ])
+        await helper.plane.setMode(.manual, ofFan: 0)
+        let held = try #require(try await helper.authority.snapshot().fans.first { $0.index == 0 })
+        #expect(held.mode == .manualFixed, "the snapshot does not read the plane's firmware")
+        await helper.plane.advance()
 
         await Ledger.cycleToTheTerminalAction(helper)
         #expect(
             log.lines(containing: "because the helper cannot read its state").count == 1,
             "§ 5 never gave the blind fan up, so nothing here was tested")
-        #expect(
-            await scripted.attempts.filter { $0 == .restoreToAutomatic(.fan(0)) }.count == 2,
-            "the hand-back and the revocation's restore should each have reached the firmware")
-        #expect(await helper.leases.leaseCount == 0, "the terminal action revoked no lease")
+        await Ledger.expectTheRevocationRestoredThroughTheRestorer(helper)
         #expect(await helper.ledger.isSupervisorBlind(fanAt: 0), "the terminal action kept no mark")
+        await helper.thermalEmergency.cycle()
+        #expect(
+            await helper.thermalEmergency.fansAwaitingRestoreConfirmation == [0],
+            "§ 3 confirmed a hand-back it cannot read, so the fan is not the one #360 is about")
+        #expect(
+            await helper.reconciliation.baseline().durableRefusal(overFans: [0]) == nil,
+            "reconciliation refuses fan 0 itself, which would answer in the rung's place")
 
         let snapshot = try await helper.authority.snapshot()
         let fan = try #require(snapshot.fans.first { $0.index == 0 })
         let refusal = await AvailabilityFixture.refusalForGrant(over: 0, from: helper.leases)
 
+        #expect(refusal == .supervisorBlind, "the grant never reached its fresh read of fan 0")
+        #expect(fan.mode == .automatic, "#178's fold moved: an unread mode is reported automatic")
         #expect(fan.isReclaimedBySystem == false, "blindness reported as a system reclamation")
         #expect(
-            fan.manualControlAvailability == .available,
+            fan.manualControlAvailability == .unavailable(refusal),
             """
-            the snapshot's answer for a still-blind fan moved. If that is #360's remedy, flip \
-            this test to agreement with the grant; if not, something else changed the ladder.
+            the snapshot offers a fan the grant refuses as blind: its own read of fan 0's mode did \
+            not answer, and step 5 reported the fan available.
             """)
-        #expect(
-            refusal == .supervisorBlind,
-            "the grant no longer refuses a fan whose control state it cannot read as blind")
     }
 }
 
@@ -279,7 +278,8 @@ struct TerminalActionAvailabilityTests {
 /// through its provider, never through the plane (`SnapshotFanModeReads`).
 ///
 /// Until a mode is set the key answers as that provider's does: not present, which the snapshot
-/// reports as automatic (#178).
+/// reports as automatic (#178) and, on this plane that can write, as `.supervisorBlind` for a fan
+/// nothing holds (#360). Every test here sets the mode before the snapshot it asserts on.
 private actor ModeSwitchingProvider: SensorProvider {
     nonisolated let identifier = "mode-switching"
 
