@@ -327,19 +327,22 @@ struct FinaliseReleaseLedgerTests {
         #expect(log.lines(containing: "Fan 1 \(Self.resolved)").count == 1)
     }
 
-    /// An **engagement** still clears the mark while the terminal action runs.
+    /// A registration under the lease the terminal action is giving up is **refused, and the
+    /// mark is kept**.
     ///
-    /// The holder takes fan 0 off automatic control again during § 5's hand-back, under the
-    /// lease § 5 has not revoked yet. That is a statement about the world, so
-    /// `manualControlEngaged(_:under:)` clears unconditionally: a fan a client has just taken is
-    /// not one the system holds, and a mark left standing claims a loss nobody suffered — rule 6
-    /// again.
+    /// The holder registers fan 0 again during § 5's hand-back, under the lease § 5 has not
+    /// revoked yet. **This is the deliberate reversal of #346's pinning**, decided in #361 under
+    /// lease identity. #346 pinned that such an engagement clears the mark when the terminal
+    /// action revoked every lease. Under identity the same `finaliseRelease` call revokes exactly
+    /// that lease, whose restore undoes the engagement, and drops its record after the
+    /// hand-back, so clearing the mark told the user the system no longer holds a fan it did
+    /// reclaim: C3's outcome by another route, and `CLAUDE.md` rule 6. The refusal is A6's
+    /// engagement failure, so `apply` hands the fan back too, which matches the revocation.
     ///
-    /// **Mutation (M5):** add `guard !finalising.contains(fan.index) else { return }` above the
-    /// clear in `manualControlEngaged(_:under:)`. Run: red on the ledger, the snapshot and the
-    /// "resolved" line.
-    @Test("An engagement during the terminal action's hand-back still clears its mark")
-    func anEngagementDuringTheHandBackStillClears() async throws {
+    /// **Mutation:** drop `finalising[index] != lease` from `manualControlEngaged(_:under:)`'s
+    /// refusal. Run: red on the refusal, the ledger, the snapshot and the "resolved" line.
+    @Test("A registration under the lease being given up is refused, and the mark is kept")
+    func aSameLeaseRegistrationDuringTheHandBackIsRefusedAndKeepsTheMark() async throws {
         let held = try await Self.holdingThroughInterference()
         let permit = try commandableFan(0, declaring: .held(at: 2_400))
         let watchdog = held.helper.reclamationWatchdog
@@ -349,28 +352,27 @@ struct FinaliseReleaseLedgerTests {
         await held.plane.interfere {
             let live = await leases.hasLiveLease(id: lease, coveringFan: 0)
             await probe.record(live)
-            do {
+            await #expect(throws: EngagementRefusal.leaseNotLive(fan: 0)) {
                 try await watchdog.manualControlEngaged(permit, under: lease)
-            } catch {
-                Issue.record("the holder's re-engagement was refused: \(error)")
             }
         }
 
         await Self.cycleToTheTerminalAction(held.helper)
 
-        #expect(await held.plane.didFire, "nothing engaged fan 0 inside the hand-back")
+        #expect(await held.plane.didFire, "nothing registered fan 0 inside the hand-back")
         #expect(
             await probe.liveAtEngagement == true,
-            "the lease had already ended, so this was not the holder re-engaging")
+            "the lease had already ended, so this was not the holder re-registering")
         #expect(held.log.lines(containing: "no speed to re-assert").count == 1)
         #expect(await held.helper.leases.leaseCount == 0, "the terminal action revoked no lease")
         #expect(
-            await held.helper.ledger.causes.isEmpty,
-            "a fan the holder took back during the hand-back is still reported as lost")
+            await held.helper.ledger.isReclaimed(fanAt: 0),
+            "a registration under the lease being given up erased the terminal action's mark")
         let snapshot = try await held.helper.authority.snapshot()
         let fan = try #require(snapshot.fans.first { $0.index == 0 })
-        #expect(fan.isReclaimedBySystem == false)
-        #expect(held.log.lines(containing: Self.resolved).count == 1)
+        #expect(fan.isReclaimedBySystem, "the user is told the system no longer holds the fan")
+        #expect(held.log.lines(containing: Self.resolved).isEmpty)
+        #expect(await held.helper.reclamationWatchdog.fansUnderManualControl.isEmpty)
     }
 }
 

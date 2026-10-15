@@ -1653,7 +1653,7 @@ extension SafetyLog {
     func reclamationRegistrationRefused(fan: Int, whileReleasedOrRegistered: Bool) {
         let reason =
             whileReleasedOrRegistered
-            ? "it was released or registered again while § 5 asked about its lease"
+            ? "§ 5 is giving it up, or it was released or registered while § 5 asked its lease"
             : "the lease it was engaged under is no longer live, or does not cover it"
         emit(
             .notice,

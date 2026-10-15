@@ -75,8 +75,8 @@ estimate made before the change was 323 — the identity re-fetches cost no line
 registration's decision, the two other-lease guards, `isHeld(_:under:)`, the lease parameter on
 five signatures and `commandWriteFailed(fanAt:heldUnder:detail:)` (moved out of `reassert` for
 its cyclomatic complexity) did. The next behaviour that has to touch `held` needs #128's split
-decided first. The review of #361 spent four more on the registration's generation: **346, and
-about 4 left.**
+decided first. The review of #361 spent five more on the registration's generation and the
+terminal action's lease: **347, and about 3 left.**
 
 New behaviour for #9's A4 and A6 belongs in the `EngagementDriver` that
 [ADR 0014](../ADR/0014-apple-silicon-unlock.md) specifies, and in value types beside `HeldFan`
@@ -161,12 +161,21 @@ revocation, was accepted and cleared the `.systemReclaimed` mark the terminal ac
 `finaliseRelease` now moves the generation in the same straight-line region as
 `finalising.insert`, before its first suspension, so such a registration resumes refused and
 touches nothing, and the terminal action completes as it would have — it revokes that lease
-anyway. A registration that *begins* during the hand-back is not refused by this: one under
-another, live lease must be kept (`aTerminalActionLeavesANewerLeasesRecordAlone`), and one under
-the same lease still clears the mark, as #346 decided
-(`FinaliseReleaseLedgerTests.anEngagementDuringTheHandBackStillClears`). Whether that last case
-should keep the mark instead — the revocation in the same call undoes the engagement it
-describes — is an open question, recorded rather than decided here.
+anyway.
+
+**A registration that begins during the hand-back, under the lease being given up, is refused
+too.** `finalising` records the lease the terminal action is giving each fan up for, and a
+registration under that lease is refused while it does, and keeps the mark. This reverses what
+#346 pinned — that such an engagement clears the mark — and the reversal is deliberate, decided
+in #361 under lease identity. #346 pinned it when the terminal action revoked every lease. Under
+identity the same `finaliseRelease` call revokes exactly that lease, whose restore undoes the
+engagement, and drops its record after the hand-back; clearing the mark therefore told the user
+the system no longer holds a fan it did reclaim, which is C3's outcome by another route and a
+rule-6 misreport. The refusal is A6's engagement failure, so `apply` hands the fan back as well,
+which matches the revocation. A registration under any other lease is accepted, as identity
+requires (`aTerminalActionLeavesANewerLeasesRecordAlone`).
+`FinaliseReleaseLedgerTests.aSameLeaseRegistrationDuringTheHandBackIsRefusedAndKeepsTheMark`
+holds it.
 
 **A refused registration clears nothing** (the same review, its C2). The ledger clear used to be
 "unconditional, because it is a statement about the world": something had just taken the fan
@@ -620,10 +629,12 @@ and that notice skipped its clear as any other during the call does.
 `FinaliseReleaseLedgerTests.theTerminalActionRevokesOnlyTheLeaseItHeldTheFanFor` releases and
 re-grants inside the hand-back.
 
-**What still clears it, so it is not frozen.** `manualControlEngaged(_:under:)` clears
-unconditionally, during the call as at any other time, because an engagement is a statement
-about the world (`anEngagementDuringTheHandBackStillClears`). The guard is per fan, so the
-revocation's notice still clears any other fan's mark the revoked lease covered
+**What still clears it, so it is not frozen.** An accepted `manualControlEngaged(_:under:)`
+clears, because an engagement is a statement about the world. #346 pinned that it also clears
+during the call (`anEngagementDuringTheHandBackStillClears`); #361 reversed that for a
+registration under the lease the call is giving up, which is now refused and keeps the mark —
+"Every act is for the lease the fan was registered under" above has why. The guard is per fan,
+so the revocation's notice still clears any other fan's mark the revoked lease covered
 (`anotherFansMarkIsClearedByTheRevocation`). Once `finaliseRelease` returns, every release
 notification clears as it always has: a later lease ending is a fan Aeolus stopped asking for,
 which is not a fan the system took. That is one place the first list above overstates — a lease

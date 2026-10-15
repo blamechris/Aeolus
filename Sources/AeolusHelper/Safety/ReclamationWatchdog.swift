@@ -74,7 +74,7 @@ import Foundation
 ///   comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
 ///   Relocating prose cannot relieve `type_body_length`, which counts this body's code: about
-///   4 lines of headroom remain before its error at 350 (346 code lines since #361's review). New
+///   3 lines of headroom remain before its error at 350 (347 code lines since #361's review). New
 ///   behaviour belongs in value types and the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
 ///   [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of this space.
@@ -122,10 +122,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// there is nothing that could be taken back.
     private var held: [Int: HeldFan] = [:]
 
-    /// The fan `finaliseRelease(fanAt:heldUnder:because:)` is giving up right now, whose ledger
-    /// entry a release notification must not clear (#346) — see `manualControlReleased(fanAt:)`. A
-    /// set only for legibility: one sweep runs at a time, so it never holds more than one fan.
-    private var finalising: Set<Int> = []
+    /// The fan `finaliseRelease(fanAt:heldUnder:because:)` is giving up right now, and the lease
+    /// it is giving it up for. A release notification must not clear that fan's ledger entry
+    /// (#346) — see `manualControlReleased(fanAt:)` — and a registration under that lease is
+    /// refused (#361). One sweep runs at a time, so it never holds more than one fan.
+    private var finalising: [Int: UUID] = [:]
 
     /// How many times each fan has been released, registered or given up, so a registration can
     /// tell whether its lease answer still describes the fan when it resumes (#361's review).
@@ -192,9 +193,10 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// ## Under the lease the engagement ran under, which must be live
     ///
     /// One lease hop, then a straight-line decision (#357): a lease that is not live or does not
-    /// cover the fan, or a fan released or registered while the question was out, is refused
-    /// with `.leaseNotLive` and touches nothing; a current, live one keeps its own record and
-    /// replaces an ended lease's. Acquire, then engage, then register.
+    /// cover the fan, a fan released or registered while the question was out, or one § 5's
+    /// terminal action is giving up for this same lease, is refused with `.leaseNotLive` and
+    /// touches nothing; a current, live one keeps its own record and replaces an ended lease's.
+    /// Acquire, then engage, then register.
     /// reclamation-watchdog.md § *"Every act is for the lease the fan was registered under"*.
     ///
     /// An accepted registration clears any reclamation recorded against this fan, whatever this
@@ -205,7 +207,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         let index = fan.index
         let generation = registrations[index, default: 0]
         let live = await leases.hasLiveLease(id: lease, coveringFan: index)
-        guard live, registrations[index, default: 0] == generation else {
+        guard live, registrations[index, default: 0] == generation, finalising[index] != lease
+        else {
             log.reclamationRegistrationRefused(fan: index, whileReleasedOrRegistered: live)
             throw EngagementRefusal.leaseNotLive(fan: index)
         }
@@ -260,7 +263,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     func manualControlReleased(fanAt index: Int) async {
         held[index] = nil
         registrations[index, default: 0] &+= 1
-        guard !finalising.contains(index) else { return }
+        guard finalising[index] == nil else { return }
         if await ledger.clearReclaimed(fanAt: index) {
             log.reclamationResolved(fan: index)
         }
@@ -943,10 +946,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // Before the first suspension, not around the revocation alone: a lease teardown landing
         // during the hand-back sends the same notice about a fan § 5 has already judged. The
         // generation moves here too, so a registration already in flight resumes refused rather
-        // than clearing the mark this keeps (#361's review, C3).
-        finalising.insert(index)
+        // than clearing the mark this keeps (#361's review, C3); one under `lease` arriving
+        // during the hand-back is refused by the entry itself.
+        finalising[index] = lease
         registrations[index, default: 0] &+= 1
-        defer { finalising.remove(index) }
+        defer { finalising[index] = nil }
         do {
             try await engagement.handBack(fanAt: index)
         } catch {
