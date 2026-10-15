@@ -79,19 +79,28 @@ extension ReclamationLeaseIdentityTests {
     /// **A registration in flight when § 5's terminal action begins** (#361's review, C3).
     /// Fan 0 is held under L1 and reads automatic with nothing commanded, so its third cycle is
     /// the terminal action. A second registration under the same L1 — a re-apply — is told L1 is
-    /// live and parked before that cycle; it resumes inside the terminal action's hand-back,
-    /// before the revocation. The generation had not moved, so it was accepted and cleared the
-    /// `.systemReclaimed` mark the terminal action keeps (#346): the fan handed back, its lease
-    /// revoked, and the user told the system no longer holds it — rule 6.
+    /// live and parked before that cycle. Resuming inside the hand-back, before the revocation,
+    /// or after the terminal action returned with § 5 never told of the revocation (this
+    /// fixture's restorer sends no notice), it was accepted and cleared the `.systemReclaimed`
+    /// mark the terminal action keeps (#346): the fan handed back, its lease revoked, and the
+    /// user told the system no longer holds it — rule 6.
     ///
-    /// The ledger is what the snapshot's `isReclaimedBySystem` reads; the composed helper has no
-    /// lease-hop seam, so this asserts the ledger itself.
+    /// Two guards refuse it, and each resumption point needs a different one. Inside the
+    /// hand-back, the same-lease `finalising` refusal and the generation bump at the terminal
+    /// action's entry both do. Afterwards, only the bump does: `finalising` is clear again and no
+    /// notice moved the generation. The ledger is what the snapshot's `isReclaimedBySystem`
+    /// reads; the composed helper has no lease-hop seam, so this asserts the ledger itself.
     ///
     /// **Mutation:** delete the `registrations[index, default: 0] &+= 1` beside
-    /// `finalising.insert(index)` in `finaliseRelease(fanAt:heldUnder:because:)`. Run: red on
-    /// the refusal, the ledger and the "resolved" line.
-    @Test("A registration resuming inside the terminal action's hand-back clears nothing")
-    func aRegistrationResumingInsideTheTerminalActionClearsNothing() async throws {
+    /// `finalising[index] = lease` in `finaliseRelease(fanAt:heldUnder:because:)`. Run: red on
+    /// the resumption after the terminal action: the refusal, the ledger and the "resolved"
+    /// line. With `finalising[index] != lease` dropped from the refusal as well: red on both.
+    @Test(
+        "A registration in flight when the terminal action begins clears nothing",
+        arguments: [true, false])
+    func aRegistrationInFlightAtTheTerminalActionClearsNothing(
+        resumesInsideTheHandBack: Bool
+    ) async throws {
         let plane = ScriptedControlPlane(fans: [0: .automatic(at: 2_400)])
         let sensing = InterferingFanStateSensing(plane, during: .restoreWrite)
         let machine = ReclamationMachine(
@@ -106,25 +115,28 @@ extension ReclamationLeaseIdentityTests {
             try await machine.watchdog.manualControlEngaged(permit, under: held)
         }
         #expect(await yieldUntil("the re-apply's lease answer to park") { await hops.isParked })
-        await sensing.interfere {
-            await hops.release()
-            await yieldUntil("the re-apply to resume inside the hand-back") {
-                await reapply.isFinished.isSet
+        if resumesInsideTheHandBack {
+            await sensing.interfere {
+                await hops.release()
+                await yieldUntil("the re-apply to resume inside the hand-back") {
+                    await reapply.isFinished.isSet
+                }
             }
         }
 
         for _ in 1...ReclamationLimits.blindCyclesBeforeDivergence {
             await machine.watchdog.cycle()
         }
+        await hops.release()
 
-        #expect(await sensing.didFire, "the terminal action's hand-back never reached the seam")
+        #expect(await sensing.didFire == resumesInsideTheHandBack)
         #expect(machine.safetyLog.lines(containing: "no speed to re-assert").count == 1)
         await #expect(throws: EngagementRefusal.leaseNotLive(fan: 0)) {
             try await finished("the re-apply's registration", reapply)
         }
         #expect(
             await machine.ledger.isReclaimed(fanAt: 0),
-            "a registration resuming inside the terminal action erased the mark it keeps")
+            "a registration in flight across the terminal action erased the mark it keeps")
         #expect(machine.safetyLog.lines(containing: "is no longer reported as taken").isEmpty)
         #expect(await machine.leases.leaseCount == 0, "the terminal action did not revoke L1")
         #expect(await machine.restorer.causes == [.systemReclaimed])
