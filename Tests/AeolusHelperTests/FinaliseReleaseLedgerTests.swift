@@ -1,6 +1,7 @@
 import AeolusXPC
 import FanKit
 import Foundation
+import SMCCore
 import Testing
 
 @testable import AeolusHelper
@@ -36,11 +37,17 @@ struct FinaliseReleaseLedgerTests {
 
     /// A composed helper whose safety log is recorded, bound, holding fan 0 under a live lease
     /// and registered with both safety actors in E3's order: lease, then engage.
-    private static func holding(
-        afterwards: [ScriptedControlPlane.Stage] = []
+    ///
+    /// Not `private`, with the two helpers below it: `TerminalActionAvailabilityTests` (#355)
+    /// asks what the snapshot and the grant say after this same terminal action. Its third
+    /// scenario needs the snapshot's `F0Md` to move, which is `snapshotProvider`.
+    static func holding(
+        afterwards: [ScriptedControlPlane.Stage] = [],
+        snapshotProvider: some SensorProvider = fanProvider(fanCount: 1)
     ) async throws -> (helper: HelperComposition<ScriptedControlPlane>, log: RecordedLog) {
         let log = RecordedLog()
         let helper = HelperRestorerTests.composed(
+            snapshotProvider: snapshotProvider,
             safetyLog: SafetyLog(recording: { [log] in log.append($0, $1) }),
             afterwards: afterwards)
         await helper.bindSafetyRegistries()
@@ -56,7 +63,7 @@ struct FinaliseReleaseLedgerTests {
     /// Cycles § 5 until the terminal action, which for both scenarios here is the
     /// `blindCyclesBeforeDivergence`th cycle — the registration grace for an uncommanded fan
     /// reading automatic, and the blindness threshold for one that cannot be read.
-    private static func cycleToTheTerminalAction<Plane: FanControlPlane>(
+    static func cycleToTheTerminalAction<Plane: FanControlPlane>(
         _ helper: HelperComposition<Plane>
     ) async {
         for _ in 1...ReclamationLimits.blindCyclesBeforeDivergence {
@@ -66,7 +73,7 @@ struct FinaliseReleaseLedgerTests {
 
     /// The driver's hand-back, then the revocation's restore through the bound restorer — which
     /// tells § 5 before it writes. Two restores of fan 0 is the evidence the echo ran.
-    private static func expectTheRevocationRestoredThroughTheRestorer(
+    static func expectTheRevocationRestoredThroughTheRestorer(
         _ helper: HelperComposition<ScriptedControlPlane>
     ) async {
         let restores = await Self.restoresOfFanZero(on: helper.plane)
