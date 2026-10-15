@@ -230,7 +230,7 @@ struct PanicGrantSealTests {
     }
 
     /// A grant made after the seal opens and before the sweep empties the table is refused by
-    /// the seal, not as another client's lease: nothing inserts while the seal is open, so the
+    /// the seal, not as another client's lease: no lease is added while the seal is open, so the
     /// lease it can see is one the sweep is about to drop, and the snapshot already says
     /// `.releaseInProgress` about it.
     ///
