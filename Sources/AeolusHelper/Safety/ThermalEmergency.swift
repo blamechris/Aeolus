@@ -253,7 +253,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     ///
     /// ## The same ordering as § 5, and it costs less to get wrong here
     ///
-    /// `ReclamationWatchdog.manualControlEngaged(_:)` mandates that both registrations
+    /// `ReclamationWatchdog.manualControlEngaged(_:under:)` mandates that both registrations
     /// happen **after** the `F<n>Md` write lands, and states the argument at length. E3's
     /// author will be looking at one call site with two calls on it, so the constraint is
     /// restated here rather than left to be found in the sibling file.

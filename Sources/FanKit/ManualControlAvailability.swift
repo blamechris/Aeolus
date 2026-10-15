@@ -167,9 +167,9 @@ public enum ManualControlAvailability: Sendable, Hashable {
         ///
         /// The fan may still be pinned at a speed Aeolus is no longer tracking: every path that
         /// reaches this state clears `docs/SAFETY.md` § 5's registry —
-        /// `ReclamationWatchdog.finaliseRelease(fanAt:because:)` empties it before it revokes,
-        /// and `manualControlReleased(fanAt:)` drops the entry — so § 5 has no entry left to
-        /// cycle over. What can still watch it is § 3: since
+        /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` empties it before it
+        /// revokes, and `manualControlReleased(fanAt:)` drops the entry — so § 5 has no entry left
+        /// to cycle over. What can still watch it is § 3: since
         /// [#181](https://github.com/blamechris/Aeolus/issues/181) a fan the engagement driver
         /// engaged stays in § 3's registry until a read confirms it automatic, and § 3's next
         /// emergency bridges it. A fan § 5 never engaged is

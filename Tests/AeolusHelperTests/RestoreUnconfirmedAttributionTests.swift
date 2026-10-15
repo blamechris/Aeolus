@@ -58,10 +58,10 @@ struct RestoreUnconfirmedAttributionTests {
         in helper: HelperComposition<ControlStateGatePlane>
     ) async throws -> (ConnectionID, Lease) {
         await helper.bindSafetyRegistries()
-        try await HelperRestorerTests.engage(fan: 0, in: helper)
         let connection = ConnectionID()
         let lease = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [0]), from: connection)
+        try await HelperRestorerTests.engage(fan: 0, in: helper, under: lease.id)
         await helper.plane.wrapped.setMode(.manual, ofFan: 0)
         return (connection, lease)
     }
@@ -242,7 +242,9 @@ struct RestoreUnconfirmedAttributionTests {
         try await Self.engageThenRelease(in: helper)
         #expect(await helper.leases.fansWithAbandonedHandbacks == [0])
 
-        try await HelperRestorerTests.engage(fan: 0, in: helper)
+        // § 3 alone: no lease is live, so § 5 would refuse the registration (#357).
+        await helper.thermalEmergency.manualControlEngaged(
+            try commandableFan(0, declaring: .held(at: 2_400)))
         await Self.fireAndCool(in: helper)
         #expect(await helper.thermalEmergency.isHolding == false, "the latch never released")
         #expect(

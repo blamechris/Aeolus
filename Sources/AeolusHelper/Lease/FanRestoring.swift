@@ -44,7 +44,7 @@ import Foundation
 /// all.
 ///
 /// `docs/SAFETY.md` § 5 already settled the same question the same way for the mechanism
-/// next door: `ReclamationWatchdog.finaliseRelease(fanAt:because:)` attempts the restore,
+/// next door: `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` attempts the restore,
 /// logs a fault if it throws, and drops the fan from its registry **regardless** — bounded,
 /// then report, never "keep trying". Two mechanisms in one subsystem must not disagree
 /// about what a failed restore means.

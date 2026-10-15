@@ -8,12 +8,12 @@ import Testing
 /// § 5's terminal action keeps the ledger entry it gives a fan up under, **in the composed
 /// helper** ([#346](https://github.com/blamechris/Aeolus/issues/346)).
 ///
-/// `ReclamationWatchdog.finaliseRelease(fanAt:because:)` hands the fan back and then revokes
-/// every lease. In the composition the daemon runs, that revocation reaches
-/// `HelperFanRestorer.restoreToAutomatic(fans:because:)`, which tells § 5 about every fan it
-/// hands back — `manualControlReleased(fanAt:)` — while `finaliseRelease` is still suspended
-/// inside the revocation. Until #346 that notification cleared the entry the terminal action
-/// had just been given, logged it "resolved", and a fan the system had taken was reported to
+/// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` hands the fan back and then
+/// revokes the lease it was holding the fan for. In the composition the daemon runs, that
+/// revocation reaches `HelperFanRestorer.restoreToAutomatic(fans:because:)`, which tells § 5 about
+/// every fan it hands back — `manualControlReleased(fanAt:)` — while `finaliseRelease` is still
+/// suspended inside the revocation. Until #346 that notification cleared the entry the terminal
+/// action had just been given, logged it "resolved", and a fan the system had taken was reported to
 /// the user as one it had not: `CLAUDE.md` rule 6, in the direction that hides a loss.
 ///
 /// **Composed, because nothing smaller can see it.** Every watchdog suite runs over
@@ -47,9 +47,9 @@ struct FinaliseReleaseLedgerTests {
         #expect(
             await helper.restorer.isBound,
             "the restorer is unbound, so the echo this suite is about cannot happen")
-        _ = try await helper.leases.acquireLease(
+        let lease = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [0]), from: ConnectionID())
-        try await HelperRestorerTests.engage(fan: 0, in: helper)
+        try await HelperRestorerTests.engage(fan: 0, in: helper, under: lease.id)
         return (helper, log)
     }
 
@@ -110,6 +110,8 @@ struct FinaliseReleaseLedgerTests {
         let plane: InterferingFanStateSensing
         let scripted: ScriptedControlPlane
         let holder: ConnectionID
+        /// The lease fan 0 is held under, which the terminal action revokes.
+        let lease: UUID
         let log: RecordedLog
     }
 
@@ -122,11 +124,12 @@ struct FinaliseReleaseLedgerTests {
         let helper = Self.composed(over: plane, log: log)
         await helper.bindSafetyRegistries()
         let holder = ConnectionID()
-        _ = try await helper.leases.acquireLease(
+        let lease = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [0]), from: holder)
-        try await HelperRestorerTests.engage(fan: 0, in: helper)
+        try await HelperRestorerTests.engage(fan: 0, in: helper, under: lease.id)
         return Interfered(
-            helper: helper, plane: plane, scripted: scripted, holder: holder, log: log)
+            helper: helper, plane: plane, scripted: scripted, holder: holder, lease: lease.id,
+            log: log)
     }
 
     // MARK: - The entry is kept
@@ -203,8 +206,8 @@ struct FinaliseReleaseLedgerTests {
     /// so it is opened before the hand-back's suspension rather than around the revocation.
     ///
     /// **Mutation:** move `finalising.insert(index)` and its `defer` in
-    /// `ReclamationWatchdog.finaliseRelease(fanAt:because:)` to just above
-    /// `leases.revokeEveryLease(because:)`. Run: red on the ledger and the "resolved" assertions.
+    /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` to just above
+    /// `leases.revokeLease(id:because:)`. Run: red on the ledger and the "resolved" assertions.
     @Test("A lease ending during the terminal action's hand-back does not erase its entry")
     func aTeardownDuringTheHandBackKeepsTheEntry() async throws {
         let held = try await Self.holdingThroughInterference()
@@ -246,8 +249,8 @@ struct FinaliseReleaseLedgerTests {
     /// hand-back, which is what the grant's foreign-control step waits for (#303).
     ///
     /// **Mutation:** delete `defer { finalising.remove(index) }` from
-    /// `ReclamationWatchdog.finaliseRelease(fanAt:because:)`. Run: red on the ledger and the
-    /// "resolved" assertions.
+    /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)`. Run: red on the ledger and
+    /// the "resolved" assertions.
     @Test("A later, ordinary lease release still clears the kept entry")
     func anOrdinaryReleaseAfterwardsStillClearsTheEntry() async throws {
         let (helper, log) = try await Self.holding()
@@ -290,16 +293,16 @@ struct FinaliseReleaseLedgerTests {
             stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
         let helper = Self.composed(over: scripted, fanCount: 2, log: log)
         await helper.bindSafetyRegistries()
-        _ = try await helper.leases.acquireLease(
+        let first = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [1]), from: ConnectionID())
-        try await HelperRestorerTests.engage(fan: 1, in: helper)
+        try await HelperRestorerTests.engage(fan: 1, in: helper, under: first.id)
         await Self.cycleToTheTerminalAction(helper)
         #expect(await helper.ledger.isReclaimed(fanAt: 1), "the setup kept no mark on fan 1")
         await helper.thermalEmergency.cycle()
 
-        _ = try await helper.leases.acquireLease(
+        let second = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
-        try await HelperRestorerTests.engage(fan: 0, in: helper)
+        try await HelperRestorerTests.engage(fan: 0, in: helper, under: second.id)
         await Self.cycleToTheTerminalAction(helper)
 
         #expect(log.lines(containing: "no speed to re-assert").count == 2)
@@ -320,11 +323,12 @@ struct FinaliseReleaseLedgerTests {
     ///
     /// The holder takes fan 0 off automatic control again during § 5's hand-back, under the
     /// lease § 5 has not revoked yet. That is a statement about the world, so
-    /// `manualControlEngaged(_:)` clears unconditionally: a fan a client has just taken is not one
-    /// the system holds, and a mark left standing claims a loss nobody suffered — rule 6 again.
+    /// `manualControlEngaged(_:under:)` clears unconditionally: a fan a client has just taken is
+    /// not one the system holds, and a mark left standing claims a loss nobody suffered — rule 6
+    /// again.
     ///
     /// **Mutation (M5):** add `guard !finalising.contains(fan.index) else { return }` above the
-    /// clear in `manualControlEngaged(_:)`. Run: red on the ledger, the snapshot and the
+    /// clear in `manualControlEngaged(_:under:)`. Run: red on the ledger, the snapshot and the
     /// "resolved" line.
     @Test("An engagement during the terminal action's hand-back still clears its mark")
     func anEngagementDuringTheHandBackStillClears() async throws {
@@ -332,11 +336,16 @@ struct FinaliseReleaseLedgerTests {
         let permit = try commandableFan(0, declaring: .held(at: 2_400))
         let watchdog = held.helper.reclamationWatchdog
         let leases = held.helper.leases
+        let lease = held.lease
         let probe = LeaseProbe()
         await held.plane.interfere {
-            let live = await leases.hasLiveLease(coveringFan: 0)
+            let live = await leases.hasLiveLease(id: lease, coveringFan: 0)
             await probe.record(live)
-            await watchdog.manualControlEngaged(permit)
+            do {
+                try await watchdog.manualControlEngaged(permit, under: lease)
+            } catch {
+                Issue.record("the holder's re-engagement was refused: \(error)")
+            }
         }
 
         await Self.cycleToTheTerminalAction(held.helper)

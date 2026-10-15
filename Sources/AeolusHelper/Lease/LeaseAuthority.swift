@@ -472,10 +472,6 @@ actor LeaseAuthority {
     /// `LeaseExpirySupervisor` sleeps until.
     func nextExpiryDeadline() -> ContinuousClock.Instant? { table.earliestDeadline }
 
-    /// ADR 0009 D2's per-fan question, asked by § 5 at `clock.now` — see
-    /// `LeaseTable.covers(_:liveAt:)`. It sweeps nothing: the TTL path hands lapsed fans back.
-    func hasLiveLease(coveringFan fan: Int) -> Bool { table.covers(fan, liveAt: clock.now) }
-
     /// ADR 0009 D2's question about one lease and one fan, asked at `clock.now` by § 5 and the
     /// engagement driver — see `LeaseTable.covers(_:under:liveAt:)`. There is deliberately no
     /// form that asks whether *any* lease covers a fan (#357). It sweeps nothing: the TTL path

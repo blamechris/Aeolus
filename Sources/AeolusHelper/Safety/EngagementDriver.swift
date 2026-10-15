@@ -1,3 +1,5 @@
+import Foundation
+
 /// The unlock's cadence, as constants: the driver's, where `RestoreLimits` bounds the opposite
 /// direction ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md) D3).
 enum UnlockLimits {
@@ -35,15 +37,16 @@ enum EngagementRefusal: Error, Sendable, Hashable {
     /// § 3's latch outranks the driver's level: ADR 0009 D1's ruling, read at the write.
     case preempted(fan: Int, by: SafetyActorLevel)
 
-    /// No live lease covers the fan: ADR 0009 D2, through #180's per-fan query.
+    /// The lease the act runs under is not live or does not cover the fan, or the driver was
+    /// never bound to one: ADR 0009 D2, asked about that lease and no other (#357).
     case leaseNotLive(fan: Int)
 
     /// `UnlockLimits.yieldBudget` elapsed with the firmware still holding the fan.
     case yieldDidNotArrive(fan: Int, steps: Int)
 
-    /// Whether the fan is no longer the caller's to hold — a higher level has it, or no lease
-    /// covers it — rather than refused by the firmware. § 5 hands such a fan back instead of
-    /// spending another attempt on it.
+    /// Whether the fan is no longer the caller's to hold — a higher level has it, or the lease it
+    /// is held under is not live — rather than refused by the firmware. § 5 hands such a fan back
+    /// instead of spending another attempt on it.
     var yieldsTheFan: Bool {
         switch self {
         case .preempted, .leaseNotLive: return true
@@ -70,29 +73,32 @@ enum EngagementAftermath: Sendable, Hashable {
 ///
 /// ## Its sources are stored, never arguments
 ///
-/// The lease core's per-fan liveness query, § 3's latch, its writer's level, and § 3's
-/// registration role are set at composition. So its verb takes one permit and nothing else, and
-/// it always asks about **the permit's own index**: the fan whose lease is checked cannot differ
-/// from the fan being written.
+/// The lease core, § 3's latch, its writer's level, and § 3's registration role are set at
+/// composition. The lease is the one exception: the caller binds it per engagement with
+/// `under(lease:)`, and the composed driver is bound to none, so it refuses every step (#357).
+/// Its verbs still take one permit and nothing else, and the lease is always judged against
+/// **the permit's own index**: the fan whose lease is checked cannot differ from the fan being
+/// written.
 ///
 /// ## What it checks, and what is left
 ///
-/// Before each step, a live lease must cover the fan and `SafetyArbiter` must permit the
-/// writer's level against § 3's latch. For § 5 the check before the first step is the
+/// Before each step, the bound lease must be live and cover the fan, and `SafetyArbiter` must
+/// permit the writer's level against § 3's latch. For § 5 the check before the first step is the
 /// pre-engage ruling #181 asks for. Inside each later step the plane checks its restore epoch,
 /// so no later step writes after a restore requested first. After `.engaged`, the fan is
 /// registered with § 3 and the entitlement asked again.
 ///
-/// **The checks are not atomic with the write, and saying the window is closed would be the
-/// more dangerous spelling** (ADR 0009 D1): a lease can end, or § 3 latch, between a check and
-/// the step's turn — and the epoch, which an engagement records *at* its first step, does not
-/// see a restore requested before that turn. That residual is discharged by acting and then
-/// checking: every genuine restore ends the lease (immediately before or right after the
-/// restore) or latches § 3, the entitlement is asked again after the step, and the fan is
-/// undone. The undo is a write the firmware can refuse,
-/// so the fan is registered with § 3 **before** it — after `.engaged`, before the after-check;
-/// otherwise just before the undo — and stays in the registry § 3's next latched cycle bridges,
-/// until a read confirms it automatic.
+/// **The checks are not atomic with the write, and saying the window is closed would be the more
+/// dangerous spelling** (ADR 0009 D1): a lease can end, or § 3 latch, between a check and the
+/// step's turn — and the epoch, which an engagement records *at* its first step, does not see a
+/// restore requested before that turn. That residual is discharged by acting and then checking:
+/// every genuine restore ends the lease (immediately before or right after the restore) or latches
+/// § 3, the entitlement is asked again after the step, and the fan is undone. It asks about the
+/// engagement's own lease, so one granted over the fan once that restore returned does not answer
+/// for it (ADR 0014's 2026-10-15 amendment). The undo is a write the firmware can refuse, so the
+/// fan is registered with § 3 **before** it — after `.engaged`, before the after-check; otherwise
+/// just before the undo — and stays in the registry § 3's next latched cycle bridges, until a read
+/// confirms it automatic.
 ///
 /// ## The undo
 ///
@@ -111,11 +117,14 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
     private let emergency: any ThermalEmergencyRegistering
     private let clock: any MonotonicClock
     private let log: SafetyLog
+    /// The lease this engagement runs under. `nil` at composition, which refuses every step.
+    private var lease: UUID?
 
     /// - Parameters:
     ///   - writer: the writer whose step verb this drives, and whose restore is the undo. Its
     ///     level is the one the arbiter is asked about.
-    ///   - leases: the lease core, asked `hasLiveLease(coveringFan:)` about the permit's fan.
+    ///   - leases: the lease core, asked `hasLiveLease(id:coveringFan:)` about the bound lease
+    ///     and the permit's fan.
     ///   - latch: § 3's latch, read for the arbiter's incumbent.
     ///   - emergency: § 3's registration role, told of every fan this engages and hands back.
     ///   - clock: what the poll interval and the yield budget are measured on. The composition's
@@ -136,6 +145,15 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
         self.emergency = emergency
         self.clock = clock
         self.log = log
+    }
+
+    /// This driver, bound to the lease an engagement runs under: § 5's record's, or the one
+    /// level 6's `apply` authorised (ADR 0014, 2026-10-15 amendment). Synchronous and
+    /// permit-free; it writes nothing.
+    func under(lease id: UUID) -> EngagementDriver {
+        var bound = self
+        bound.lease = id
+        return bound
     }
 
     /// Takes one fan off automatic control, a step at a time, or refuses having handed it back.
@@ -236,8 +254,9 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
         await emergency.handbackAccepted(fanAt: index)
     }
 
-    /// The entitlement: § 3's latch through `SafetyArbiter`, then the lease table, both asked
-    /// now and both about the permit's own index.
+    /// The entitlement: § 3's latch through `SafetyArbiter`, then the lease table about the
+    /// bound lease, both asked now and both about the permit's own index. An unbound driver is
+    /// refused here, so it never steps.
     ///
     /// Asked before and after every step, and by § 5 before a re-assert's command on a fan that
     /// needs no mode write — the same question, so the two cannot come to differ.
@@ -247,7 +266,7 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
         if case .preempted(let by) = SafetyArbiter.ruling(for: level, incumbent: incumbent) {
             throw EngagementRefusal.preempted(fan: index, by: by)
         }
-        guard await leases.hasLiveLease(coveringFan: index) else {
+        guard let lease, await leases.hasLiveLease(id: lease, coveringFan: index) else {
             throw EngagementRefusal.leaseNotLive(fan: index)
         }
     }
