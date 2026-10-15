@@ -229,6 +229,46 @@ struct ReadOnlyFanAuthorityModeTests {
         #expect(recorder.levels(containing: "Fan 1's mode key") == [.error, .debug, .debug])
     }
 
+    /// A fan whose mode reads again is forgotten by the throttle, so its next episode is an error
+    /// again rather than a `.debug` line nothing persists (#360's review).
+    ///
+    /// On a helper that can write, an unread mode is refused `.supervisorBlind`; a second episode
+    /// logged only at `.debug` would leave that refusal with nothing in the persisted log saying
+    /// why. The firmware's own stages drive it — unanswered, unanswered, answered, unanswered —
+    /// read through `PlaneBackedProvider`, so the answer in between is a real read.
+    ///
+    /// **Mutation:** delete `reportedUnreadable.remove(index)` from
+    /// `ObservedFanModes.modes(ofFans:)`. Run: red — the last level is `.debug`.
+    @Test("A fan whose mode reads again is reported at error level on its next failure")
+    func aRecoveredModeIsReportedAgainAtErrorLevel() async throws {
+        let recorder = RecordedHelperLines()
+        let unanswered = ScriptedControlPlane.Stage(unreadableModes: [0])
+        let firmware = ScriptedControlPlane(
+            fans: [0: .automatic(at: 2_400)],
+            stages: [unanswered, unanswered, .nominal(), unanswered])
+        let provider = PlaneBackedProvider(over: firmware, fanCount: 1)
+        let authority = ReadOnlyFanAuthority(
+            provider: provider,
+            fanMode: SnapshotFanModeReads(provider: provider),
+            log: HelperLog(
+                subsystem: "dev.aeolus.AeolusHelperTests",
+                category: "Mode",
+                recording: { recorder.append($0, $1) }),
+            thermalEmergency: ThermalEmergencyLatch(),
+            reclamation: ReclamationLedger(),
+            writeCapability: LeaseFixture.writePathNotBuilt(),
+            now: { Date(timeIntervalSince1970: 1_000_000) }
+        )
+
+        for _ in 0..<4 {
+            _ = try await authority.snapshot()
+            await firmware.advance()
+        }
+
+        #expect(await provider.answeredModeReads == 1, "the read in between never answered")
+        #expect(recorder.levels(containing: "Fan 0's mode key") == [.error, .debug, .error])
+    }
+
     /// The other half of #148's title, and the one that stays a literal — deliberately.
     ///
     /// `FanState.targetRPM` is documented as *"the speed the helper is currently asking

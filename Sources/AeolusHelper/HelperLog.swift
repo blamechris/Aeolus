@@ -271,11 +271,13 @@ struct HelperLog: Sendable {
     /// `F<n>Md` did not answer for one fan, so the snapshot could not say who owns it.
     ///
     /// The wire has no way to report "not known" at protocol version 1 — see
-    /// `ReadOnlyFanReport.controlMode(_:)` — so this line is the only place the gap is
-    /// visible. It is `error` rather than `info` for that reason: what reaches the client is
-    /// a fallback, and an operator diagnosing "why does Aeolus say this fan is automatic"
-    /// needs to find this. Expected on every Intel Mac, which expresses fan mode as a
-    /// bitmask rather than as this key.
+    /// `ReadOnlyFanReport.controlMode(_:)` — so the fan's mode reaches the client as a
+    /// fallback, `automatic`. On a helper that can write, the availability beside it says
+    /// `supervisorBlind` (#360); on one that cannot, every build that has shipped, this line is
+    /// the only place the gap is visible. It is `error` rather than `info` for that reason: an
+    /// operator diagnosing "why does Aeolus say this fan is automatic", or "why is it blind",
+    /// needs to find this. Expected on every Intel Mac, which expresses fan mode as a bitmask
+    /// rather than as this key.
     ///
     /// **Which is exactly why only the first occurrence per fan is an error.** `snapshot()`
     /// is on a 1 Hz path, so an unthrottled line here is about 86,400 error-level entries per
@@ -285,14 +287,16 @@ struct HelperLog: Sendable {
     /// they go to `.debug`, which is not persisted by default. The wording is identical
     /// either way: the level carries the distinction, not the prose. The caller owns the
     /// "have I said this about this fan before" state, because this type is a value and holds
-    /// none — `ObservedFanModes.reportedUnreadable`.
+    /// none — `ObservedFanModes.reportedUnreadable`, which forgets a fan once its read answers,
+    /// so a later episode is an error again.
     func fanModeUnreadable(fanIndex: Int, reason: String, alreadyReported: Bool) {
         emit(
             alreadyReported ? .debug : .error,
             """
             Fan \(fanIndex)'s mode key could not be read (\(reason)). This snapshot reports \
-            it as automatic, which is a fallback and not an observation: the wire has no way \
-            to say "not known" at protocol version 1.
+            its mode as automatic, which is a fallback and not an observation: the wire has no \
+            way to say "not known" at protocol version 1. A helper that can write reports its \
+            manual control as supervisorBlind, unless Aeolus is holding or handing back the fan.
             """
         )
     }
