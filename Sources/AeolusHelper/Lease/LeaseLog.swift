@@ -530,6 +530,22 @@ extension LeaseLog {
         )
     }
 
+    /// A client asked for a fan while § 7's panic verb was returning every fan to automatic
+    /// control (#350).
+    ///
+    /// `.notice`, for `refusedMidHandback`'s reason: it clears itself when the panic verb returns,
+    /// so a client seeing it repeatedly is watching a panic verb that does not.
+    func refusedDuringMachineWideRestore(_ connection: ConnectionID) {
+        log.notice(
+            """
+            Connection \(connection.logDescription, privacy: .public) asked for manual \
+            control while a request to return every fan to automatic control (fanctl auto, \
+            fanctl reset --all) is still running. Refused: a lease granted now could be \
+            undone by that restore. Ask again once it has finished.
+            """
+        )
+    }
+
     func refusedConcurrentLease(_ connection: ConnectionID) {
         log.info(
             """

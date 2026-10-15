@@ -66,8 +66,11 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// rather than granting a lease whose backstop has never been watched to work.
         /// See [ADR 0007](../../docs/ADR/0007-safety-composition.md).
         case selfRenewalNotBuilt
-        /// The fan is mid-handback: a previous lease has ended and the restore-to-automatic
-        /// write for this fan has not completed yet.
+        /// The fan is mid-handback: a previous lease has ended and its restore-to-automatic write
+        /// has not completed yet, or `docs/SAFETY.md` § 7's panic verb (`fanctl reset --all`,
+        /// `fanctl auto`) is still running — its sweep, its machine-wide restore or its read-back.
+        /// While that runs, every fan nothing else refuses reads this, so its machine-wide restore
+        /// cannot undo a lease granted under it ([#350](https://github.com/blamechris/Aeolus/issues/350)).
         ///
         /// Transient, and the shortest-lived reason here — `systemSleeping` is the other
         /// transient one, and it lasts until the machine wakes. Granting during the window would

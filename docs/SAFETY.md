@@ -113,7 +113,18 @@ are § 4's sleep handback (`Lifecycle/SystemPowerResponder.swift`), § 6's order
 (`Safety/StartupReconciliation.swift`) and § 7's panic verb (`SupervisedFanAuthority.swift`),
 which issues it only on a plane that can write. **That count and that list are asserted, not
 merely stated** — `PanicPathScopeTripwireTests` scans the tree for them, so a fifth site cannot
-arrive while this sentence goes on saying there are four (#228).
+arrive while this sentence goes on saying there are four (#228). **Each is issued behind a grant
+interlock, and two of the four interlocks have a gap.** § 7 runs inside
+`LeaseAuthority.sealingGrants(during:)` ([#350](https://github.com/blamechris/Aeolus/issues/350))
+and bring-up reconciles before the listener is resumed, so neither can undo a lease. § 4 seals the
+table before its teardown, but its `.everyFan` runs with the grant gate open whenever the
+episode's wake is answered before that restore returns — a declined seal, or a handback wedged
+across the sleep — and a grant in that window outlives the restore
+([#364](https://github.com/blamechris/Aeolus/issues/364), an A6 precondition). § 6's teardown closes
+the control gate first, but the gate refuses a grant on arrival, not one already in flight; such a
+grant can land, and `apply` is refused by the same gate before the process exits.
+`PanicPathScopeTripwireTests` holds the three runtime orderings and `HelperCompositionTests`
+bring-up's.
 
 **§ 7's panic path is among them, and on this build it still issues nothing.** This paragraph
 listed it until the review of #104, while the shipped verb issued no machine-wide restore; the
@@ -1424,12 +1435,10 @@ ladder already gives it; a force key left set has no snapshot field, and the fau
 only report of it. The reply now follows one more restore call, which the client's 10 s
 `panicVerb` deadline covers; its round trip on hardware is unmeasured.
 
-**A residual, recorded rather than closed** ([#350](https://github.com/blamechris/Aeolus/issues/350)):
-nothing refuses a grant while § 7's machine-wide restore is in flight. `releaseEveryLease()` has
-already emptied the table when `.everyFan` goes on the wire, so an `acquireLease` arriving in that
-window can be granted, and a write made under it can then be undone by the restore still in
-flight. It cannot happen on any build on `main`, where no lease is granted on a `.notBuilt` plane;
-it is decided before A6 gives a lease a write to make.
+**No lease is granted while the panic verb runs** (#350). Its three acts run inside
+`LeaseAuthority.sealingGrants(during:)`, open from before the sweep empties the table until after
+the read-back. `acquireLease` refuses `.releaseInProgress` while it is open. The seal gates grants
+only: no restore reads it, the restore waits on nothing new, and the reply is unchanged.
 
 **One fan under no live lease *is* touched, and it is the fan this path exists for**
 ([#189](https://github.com/blamechris/Aeolus/issues/189)). `releaseEveryLease()` sweeps
@@ -1458,8 +1467,8 @@ exits 0 saying *accepted*, and afterwards every fan is automatic, the key is cle
 and no handback refusal stands; § 3's latch is still set, because ending an emergency is § 3's own
 cool-down and no message's. A firmware that refuses the machine-wide restore still gets *accepted*, and
 a fault line. `PanicVerbMachineWideRestoreTests` holds both capabilities, the order and the
-refusal at the authority, and `FanctlResetTests` the command's own decisions against a healthy
-helper. That is the panic path as it behaves once a write path exists; every build on `main`
+refusal at the authority, `PanicGrantSealTests` the grant seal (#350), and `FanctlResetTests` the
+command's own decisions against a healthy helper. That is the panic path as it behaves once a write path exists; every build on `main`
 answers `.notBuilt`. *Pending (E3/E4):* a manual hardware check, row 18's hardware half. **No
 hardware run has executed it.** What blocked one, a signed `fanctl` the installed helper admits
 ([#82](https://github.com/blamechris/Aeolus/issues/82)), no longer does: on 2026-10-09, on
