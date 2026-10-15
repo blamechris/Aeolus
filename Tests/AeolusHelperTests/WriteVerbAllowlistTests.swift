@@ -177,7 +177,14 @@ struct WriteVerbAllowlistTests {
     /// against the permit's own fan at registration and at every examination, so a mismatched
     /// pair ends as a refused registration or `.leaseLapsed`, never as a write. Keyed rather
     /// than added to `clampedCompanions`, so no write verb can take a `UUID` beside its permit:
-    /// `everyEngageVerbTakesAPermit` and this suite both stay red for one that does.
+    /// this suite stays red for one that does, and so does `everyEngageVerbTakesAPermit` unless
+    /// the parameter has a default containing parentheses, such as `= UUID()`, whose
+    /// declaration its scan misses ([#362](https://github.com/blamechris/Aeolus/issues/362)).
+    ///
+    /// A key is a file and a signature, not a declaring type, so a second declaration with the
+    /// same signature in the same file — an extension on a writer, say — would share the
+    /// exemption. `aPermitTravelsBesideNothingThatNamesAFan` therefore requires exactly one
+    /// declaration per keyed key (#361's panel).
     private static let keyedCompanions: [String: Set<String>] = [
         "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan, under: UUID)": ["UUID"]
     ]
@@ -664,6 +671,16 @@ struct WriteVerbAllowlistTests {
         // permit-bearing verb written that way fail this guard with **no entry a maintainer
         // could add** — the list is keyed, so it can never hold the second one.
         let bearingKeys = Set(bearing.map(\.key))
+        for key in Self.keyedCompanions.keys.sorted() {
+            let carriers = bearing.filter { $0.key == key }
+            #expect(
+                carriers.count == 1,
+                """
+                \(carriers.count) declarations carry the keyed exemption `\(key)`. It is for one \
+                registration verb; a second declaration with the same signature in that file \
+                would travel a `UUID` beside a permit under its exemption.
+                """)
+        }
         #expect(
             bearingKeys == Self.permitBearingVerbs,
             "this scan is looking at \(bearingKeys.count) verbs, not the acknowledged list")
