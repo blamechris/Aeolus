@@ -74,7 +74,7 @@ import Foundation
 ///   comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
 ///   Relocating prose cannot relieve `type_body_length`, which counts this body's code: about
-///   5 lines of headroom remain before its error at 350 (345 code lines since #361's review). New
+///   4 lines of headroom remain before its error at 350 (346 code lines since #361's review). New
 ///   behaviour belongs in value types and the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
 ///   [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of this space.
@@ -127,9 +127,10 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// set only for legibility: one sweep runs at a time, so it never holds more than one fan.
     private var finalising: Set<Int> = []
 
-    /// How many times each fan has been released or registered, so a registration can tell
-    /// whether its lease answer still describes the fan when it resumes (#357's review). Bumped
-    /// by every release notice and every accepted registration; never reset.
+    /// How many times each fan has been released, registered or given up, so a registration can
+    /// tell whether its lease answer still describes the fan when it resumes (#361's review).
+    /// Bumped by every release notice, every accepted registration and the terminal action's
+    /// entry; never reset.
     private var registrations: [Int: UInt64] = [:]
 
     /// `sensing` is an existential rather than `some FanStateSensing`, unlike
@@ -940,8 +941,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             return
         }
         // Before the first suspension, not around the revocation alone: a lease teardown landing
-        // during the hand-back sends the same notice about a fan § 5 has already judged.
+        // during the hand-back sends the same notice about a fan § 5 has already judged. The
+        // generation moves here too, so a registration already in flight resumes refused rather
+        // than clearing the mark this keeps (#361's review, C3).
         finalising.insert(index)
+        registrations[index, default: 0] &+= 1
         defer { finalising.remove(index) }
         do {
             try await engagement.handBack(fanAt: index)

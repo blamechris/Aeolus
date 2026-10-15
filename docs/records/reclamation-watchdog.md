@@ -75,8 +75,8 @@ estimate made before the change was 323 — the identity re-fetches cost no line
 registration's decision, the two other-lease guards, `isHeld(_:under:)`, the lease parameter on
 five signatures and `commandWriteFailed(fanAt:heldUnder:detail:)` (moved out of `reassert` for
 its cyclomatic complexity) did. The next behaviour that has to touch `held` needs #128's split
-decided first. The review of #361 spent three more on the registration's generation: **345, and
-about 5 left.**
+decided first. The review of #361 spent four more on the registration's generation: **346, and
+about 4 left.**
 
 New behaviour for #9's A4 and A6 belongs in the `EngagementDriver` that
 [ADR 0014](../ADR/0014-apple-silicon-unlock.md) specifies, and in value types beside `HeldFan`
@@ -143,6 +143,30 @@ registration, captured before the hop and compared after it; a registration that
 moved is refused and touches nothing. Both bumps are needed: the notice is a hint (D2), so a
 lease can end with § 5 never told, and then only L2's registration moves the generation. A
 lease that answered not live never becomes live again, so a `false` cannot be stale.
+
+**What the generation still lets through, and why that is safe.** A lease that lapses or ends
+with no notice and no other registration leaves the generation where it was, so a stale `true`
+is accepted and records the fan under a lease that has ended. Nothing is overwritten — only the
+same lease's record, or none, can be in the slot, because any other lease's registration would
+have moved the generation — and the next examination asks D2 about that record's own lease,
+finds it not live, and hands the fan back as `.leaseLapsed`. That holds with the terminal
+action's bump below: a registration accepted after a terminal action returned finds no record
+and no live lease, and is handed back the same way.
+
+**The terminal action moves it too** (the same review, its C3). The generation did not move when
+§ 5 itself began giving the fan up. A registration under the same lease — a re-apply — told its
+lease was live before the terminal action and resuming inside its hand-back, before the
+revocation, was accepted and cleared the `.systemReclaimed` mark the terminal action keeps
+(#346): the fan handed back, its lease revoked, and the user told the system no longer holds it.
+`finaliseRelease` now moves the generation in the same straight-line region as
+`finalising.insert`, before its first suspension, so such a registration resumes refused and
+touches nothing, and the terminal action completes as it would have — it revokes that lease
+anyway. A registration that *begins* during the hand-back is not refused by this: one under
+another, live lease must be kept (`aTerminalActionLeavesANewerLeasesRecordAlone`), and one under
+the same lease still clears the mark, as #346 decided
+(`FinaliseReleaseLedgerTests.anEngagementDuringTheHandBackStillClears`). Whether that last case
+should keep the mark instead — the revocation in the same call undoes the engagement it
+describes — is an open question, recorded rather than decided here.
 
 **A refused registration clears nothing** (the same review, its C2). The ledger clear used to be
 "unconditional, because it is a statement about the world": something had just taken the fan

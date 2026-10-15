@@ -23,7 +23,7 @@ import Testing
 struct ReclamationLeaseIdentityTests {
 
     /// A lease over fan 0 from a connection the fixture never used.
-    private static func regrant<Writes>(
+    static func regrant<Writes>(
         _ machine: ReclamationMachine<Writes>
     ) async throws -> Lease {
         try await machine.leases.acquireLease(
@@ -31,14 +31,14 @@ struct ReclamationLeaseIdentityTests {
     }
 
     /// Fan 0's permit, minted from its declared condition as the fixture mints one.
-    private static func permit<Writes>(
+    static func permit<Writes>(
         _ machine: ReclamationMachine<Writes>
     ) throws -> CommandableFan {
         try commandableFan(0, declaring: try #require(machine.fanConditions[0]))
     }
 
     /// The lease the fixture's `hold` registered under.
-    private static func activeLease<Writes>(
+    static func activeLease<Writes>(
         _ machine: ReclamationMachine<Writes>
     ) async throws -> UUID {
         try #require(await machine.leases.activeLease()).id
@@ -167,71 +167,6 @@ struct ReclamationLeaseIdentityTests {
         #expect(await machine.didRestore(fan: 0) == false)
         #expect(await machine.watchdog.fansUnderManualControl == [0])
         #expect(machine.safetyLog.lines(containing: "refused to register fan 0").count == 1)
-    }
-
-    /// **A registration delayed across its own lease hop** (#357's review, C1). L1's
-    /// registration asks the lease core and is told L1 is live; before it resumes, L1 ends, and
-    /// L2 may be granted, engage and register fan 0 at 2,000 RPM. L1's registration then resumes
-    /// holding a true answer about an instant that has passed. Acting on it replaced L2's record
-    /// with a fresh one under L1, and the next cycle judged that record `.leaseLapsed` and handed
-    /// back the fan L2 holds.
-    ///
-    /// Three arrivals, one per guard: the release notice alone, L2's registration alone (a lease
-    /// ended with § 5 never told, D2's premise), and both, the shipping order. `ParkableHeldLeases`
-    /// holds the answer open on a continuation.
-    ///
-    /// **Mutation:** drop the generation half of the refusal in `manualControlEngaged(_:under:)` —
-    /// `guard live else {` for `guard live, registrations[index, default: 0] == generation else
-    /// {`. Run: red in all three. **Mutation:** delete the `registrations[index, default: 0] &+=
-    /// 1` after the registration's record is written. Run: red when L2 registers unannounced.
-    /// **Mutation:** delete the same line from `manualControlReleased(fanAt:)`. Run: red on the
-    /// notice alone.
-    @Test(
-        "A registration whose lease ends during its lease hop records nothing, evicts nothing",
-        arguments: [
-            (notice: true, regrant: true), (notice: false, regrant: true),
-            (notice: true, regrant: false),
-        ])
-    func aRegistrationWhoseLeaseEndsDuringItsLeaseHopEvictsNothing(
-        notice: Bool, regrant: Bool
-    ) async throws {
-        let machine = ReclamationMachine(fans: [0: .held(at: 2_000)], parkingLeaseHops: true)
-        let hops = try #require(machine.leaseHops)
-        let ended = try await machine.lease()
-        let permit = try Self.permit(machine)
-        await hops.parkNextAnswer()
-        let late = observing {
-            try await machine.watchdog.manualControlEngaged(permit, under: ended.id)
-        }
-        #expect(await yieldUntil("L1's lease answer to park") { await hops.isParked })
-
-        await machine.endLease()
-        if notice { await machine.watchdog.manualControlReleased(fanAt: 0) }
-        let next = regrant ? try await Self.regrant(machine) : nil
-        if let next {
-            try await machine.watchdog.manualControlEngaged(permit, under: next.id)
-            await machine.watchdog.commandedTarget(
-                CommandedTarget(fanIndex: 0, rpm: 2_000), under: next.id)
-        }
-        await hops.release()
-
-        await #expect(throws: EngagementRefusal.leaseNotLive(fan: 0)) {
-            try await finished("L1's delayed registration", late)
-        }
-        #expect(await hops.answers.first == true, "L1's answer was not the parked true one")
-        guard let next else {
-            #expect(
-                await machine.watchdog.fansUnderManualControl.isEmpty,
-                "a registration resuming after its lease's release recorded the fan")
-            return
-        }
-        #expect(
-            await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_000,
-            "a registration resuming on a stale answer replaced the live lease's record")
-        await machine.watchdog.cycle()
-        #expect(await machine.didRestore(fan: 0) == false, "§ 5 handed back the live lease's fan")
-        #expect(await machine.watchdog.fansUnderManualControl == [0])
-        #expect(await machine.leases.activeLease()?.id == next.id)
     }
 
     /// A target reported under an ended lease does not reach the live lease's record.

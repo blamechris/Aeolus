@@ -165,9 +165,12 @@ extension ReclamationMachine where Writes == InterferingFanStateSensing {
     init(
         plane: ScriptedControlPlane,
         fans: [Int: ScriptedControlPlane.FanCondition] = [0: .held(at: 2_400)],
-        interfering: InterferingFanStateSensing
+        interfering: InterferingFanStateSensing,
+        parkingLeaseHops: Bool = false
     ) {
-        self.init(plane: plane, fans: fans, sensing: interfering, writes: interfering)
+        self.init(
+            plane: plane, fans: fans, sensing: interfering, writes: interfering,
+            parkingLeaseHops: parkingLeaseHops)
     }
 }
 
