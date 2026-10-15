@@ -1205,7 +1205,11 @@ reconciliation never established, and a grant-time read that failed. No helper o
 `.reclaimedBySystem` as an availability; the case stays for wire stability.
 
 **What remains.** A fan § 5 gave up blind that is *still* unreadable reads `.available` while the
-grant's fresh read refuses it. That is the gap every unreadable fan already has, and it is fail-safe.
+grant's fresh read refuses it. That is the gap every unreadable fan already has, and it is fail-safe
+for the grant. It is not for `fanctl auto`: with the mode reported `automatic` (#178) and nothing
+beside it, `auto` on a plane that can write would exit 0 without sending its restore, which ADR 0013's
+"Exit 0 only when the mode was actually read" rejects. That is
+[#360](https://github.com/blamechris/Aeolus/issues/360), an A6 precondition.
 `isReclaimedBySystem` is history after the terminal action and can go stale if another program later
 takes the fan; the availability beside it is correct.
 

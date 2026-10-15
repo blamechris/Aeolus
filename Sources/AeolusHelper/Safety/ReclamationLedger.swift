@@ -63,6 +63,14 @@ actor ReclamationLedger {
         /// `ReclamationLimits.blindCyclesBeforeDivergence` consecutive cycles, a reconnect
         /// was attempted, and the fan went back to automatic control anyway. ADR 0007's
         /// hole 2. Nothing here is a statement about the operating system.
+        ///
+        /// **Nothing in production reads this cause for its own sake** since
+        /// [#355](https://github.com/blamechris/Aeolus/issues/355). The snapshot asks only
+        /// whether a fan's cause is `.systemReclaimed`, so a blind entry's one effect on the
+        /// wire is that it is not that: by "last diagnosis wins" it displaces a reclamation.
+        /// The episode is reported by the fault line § 5 logs and by the lease it ends, never
+        /// as an availability; `supervisorBlindFans` and `isSupervisorBlind(fanAt:)` are for
+        /// tests and diagnostics.
         case supervisorBlind
     }
 

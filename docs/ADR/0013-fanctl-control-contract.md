@@ -190,6 +190,13 @@ the other pending reasons, which D3 reads. What remains unbuildable is a fan who
 be read with *no* reason beside it. **Revisit when** #178 changes the snapshot: exit 0 can then
 be strengthened, and a fan whose mode could not be read can be given its own outcome.
 
+> **Note, 2026-10-15 (#355).** One case this section relied on is gone. Since #355, § 5's
+> blindness no longer produces `supervisorBlind` on the wire: § 5's ledger is reported as a
+> fact, not an availability. So a fan § 5 gave up blind that is *still* unreadable reads
+> `automatic` with `available` beside it, and on a plane that can write `auto` would exit 0
+> without sending its restore, which is what this section rejects. It is tracked as
+> [#360](https://github.com/blamechris/Aeolus/issues/360), which must close before A6.
+
 ### `supervisorBlind` as 9
 
 Rejected. It can last the life of the process, but 9 asserts the fan is held in a way retrying

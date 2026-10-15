@@ -1325,10 +1325,12 @@ a keystone the firmware accepts but does not apply leaves that fan refused, only
 enumeration and the read-back, and on a seam that can write the snapshot names each durable
 refusal with the reason a grant over the same fan throws — while on one that cannot, it names
 none.
-`ForeignManualControlReportingTests` covers three fans the snapshot must **not** call
-somebody else's: one under a live lease, one whose handback was abandoned, and one § 5
-diagnosed as reclaimed by the system. `RestoreUnconfirmedAttributionTests` covers the other
-two, one from each of § 3's registers of restores no read has confirmed (#303).
+`ForeignManualControlReportingTests` covers two fans the snapshot must **not** call
+somebody else's — one under a live lease, one whose handback was abandoned — and, since
+[#355](https://github.com/blamechris/Aeolus/issues/355), two § 5 recorded as reclaimed or as
+blind that read manual, which the snapshot reports with the reason the grant throws for them.
+`RestoreUnconfirmedAttributionTests` covers two more fans that must not be called somebody
+else's, one from each of § 3's registers of restores no read has confirmed (#303).
 `HelperCompositionTests.reconciliationSitsBetweenTheBindAndTheSupervisors` holds the pass in
 its position. `LaunchDaemonPlistTests` holds the restart keys and the exit-code contract.
 *Pending hardware:* rows 2 to 7, 16 and 17 of the

@@ -70,8 +70,8 @@ extension ManualControlAvailability.Reason {
             return "Aeolus cannot currently read a critical temperature, so it cannot safely "
                 + "watch a fan under manual control."
         case .supervisorBlind:
-            return "Aeolus has not been able to read this fan's own control state, so it "
-                + "cannot tell whether something else is holding it."
+            return "Aeolus could not confirm this fan's own control state: a read of it failed, "
+                + "or start-up could not confirm it back under automatic control."
         case .foreignManualControl:
             return "Something other than Aeolus has put this fan under manual control."
         case .unknown:
@@ -121,8 +121,9 @@ extension ManualControlAvailability.Reason {
                 + "and retrying does not speed that up."
         case .supervisorBlind:
             return "If a request was just refused this way, a read failed at that moment: "
-                + "retry. If it keeps being reported, the helper never read this fan at "
-                + "start-up and it stands until the helper restarts; see docs/RECOVERY.md."
+                + "retry. If it keeps being reported, start-up could not confirm this fan back "
+                + "under automatic control, and that stands until the helper restarts; see "
+                + "docs/RECOVERY.md."
         case .foreignManualControl:
             return "Quit or stop the other program that is driving this fan."
         case .unknown:

@@ -179,11 +179,12 @@ safely watch a fan under manual control and refuses new leases entirely. There i
 do from here; it clears when the SMC answers again, and retrying does not speed that up. If
 it does not clear, go to step 5.
 
-**`supervisorBlind`** — Aeolus has not been able to read this one fan's own control state, so
-it cannot tell whether something else is holding it, and refuses a new lease over it. If a
+**`supervisorBlind`** — Aeolus could not confirm this one fan's own control state, so it
+cannot tell whether something else is holding it, and refuses a new lease over it. If a
 request was just refused this way, a read failed at that moment: retry. If the app or
-`fanctl status` keeps showing it, the helper never read that fan at start-up and it stands
-until the helper restarts (step 5).
+`fanctl status` keeps showing it, the helper could not confirm that fan back under automatic
+control at start-up — its mode would not read, read manual after the restore, or was never
+reached — and it stands until the helper restarts (step 5).
 
 **`foreignManualControl`** — Something other than Aeolus — another fan-control tool, or
 firmware that re-asserted manual mode — has put this fan under manual control. Quit or stop
