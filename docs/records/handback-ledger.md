@@ -679,6 +679,21 @@ Stamping is deliberately much weaker than making the bodies run in order, which 
 the seam. It lets a *reader* of two events tell which came first, whatever order their bodies
 ran in, which is all the seal needs.
 
+**A sleep that meets the seal still records its generation**
+([#347](https://github.com/blamechris/Aeolus/issues/347)). Until #347 `sealForSleep(generation:)`
+returned at `guard !sleepSeal` without writing `sealGeneration`, so a `.willSleep` that found
+episode 1's seal still standing left the generation at episode 1's. Episode 1's starved
+`.didWake` — newer than that seal, older than the sleep that met it — then cleared the seal while
+the newer episode's machine was going to sleep. Every `.willSleep` that is not declined now sets
+`sealGeneration` to the larger of its own generation and the one standing, whether or not it sets
+the seal. **The larger, not its own:** a starved older `.willSleep` that runs after a newer one
+sealed, before any wake has been seen, is not declined, and assigning its generation would lower
+the seal below a stale wake. It still cannot latch, for the reason above: nothing is counted or
+spent. A sleep that sets the seal from open is newer than every wake seen, and so newer than the
+generation standing, which makes the larger its own; the wake that follows the newest sleep is
+newer than every sleep that met the seal. `SleepOrderingTests` holds both sequences. The second is
+green on the code before #347 and red under plain assignment: it pins the form of the fix.
+
 **What it does not fix**, stated because the fix is easy to over-read: the starved `.willSleep`
 body still runs `releaseEveryLease()` and the keystone after the wake, so a lease taken in
 between is dropped and its fan handed back at a moment nothing asked for. The fan goes back to
@@ -1005,6 +1020,10 @@ the safe direction here even though sealing is the safe direction everywhere els
 Declining leaves any *newer* seal standing untouched, which is what makes overlapping
 episodes safe: a late `.willSleep` from episode 1 cannot reopen the table that episode
 2 has already closed.
+
+A sleep that is not declined and finds the seal already standing still records its
+generation, the larger of its own and the one there (#347): see
+[Pairing a sleep with its own wake](#pairing-a-sleep-with-its-own-wake).
 
 ### `activeLeaseView()`: one hop, and three registers apart
 

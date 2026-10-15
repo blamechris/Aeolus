@@ -236,12 +236,14 @@ actor LeaseAuthority: HeldLeaseRole {
     /// rather than thermal — handback-ledger.md § *"Pairing a sleep with its own wake"*.
     private var latestWakeGeneration: UInt64 = 0
 
-    /// The generation of the `.willSleep` whose seal is currently standing.
+    /// The generation of the newest non-declined `.willSleep` that set or met the seal standing.
     ///
     /// Without it a *stale* wake would clear a live seal: if episode 2's `.willSleep` body
     /// runs before episode 1's starved `.didWake` body, that late wake is older than the seal
     /// it would otherwise open, and the machine is at that moment going to sleep. A wake
-    /// clears the seal only when it is newer than the seal standing.
+    /// clears the seal only when it is newer than every sleep that met it — so a sleep that
+    /// finds the seal already standing still records its generation, the larger of the two
+    /// (#347). handback-ledger.md § *"Pairing a sleep with its own wake"*.
     private var sealGeneration: UInt64 = 0
 
     /// How many § 7 panic verbs are inside `sealingGrants(during:)` right now; while it is not
@@ -641,7 +643,8 @@ actor LeaseAuthority: HeldLeaseRole {
     /// instant at which the table is empty and unsealed — which is the whole window. See
     /// `sleepSeal`.
     /// A seal whose own wake has already been answered is **not** set, and declining leaves
-    /// any newer seal standing.
+    /// any newer seal standing. One that is not declined records its generation even when it
+    /// finds the seal standing, and records the larger of the two (#347).
     /// handback-ledger.md § *"`sealForSleep`: declining a seal its wake already answered"*.
     ///
     /// - Parameter generation: the notification's place in the delivery order, stamped on
@@ -651,9 +654,9 @@ actor LeaseAuthority: HeldLeaseRole {
             log.declinedASealItsWakeAlreadyAnswered()
             return
         }
+        sealGeneration = max(sealGeneration, generation)
         guard !sleepSeal else { return }
         sleepSeal = true
-        sealGeneration = generation
         log.sealedForSleep()
     }
 

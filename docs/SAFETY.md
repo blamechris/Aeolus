@@ -853,7 +853,11 @@ nothing pinned. That the seal is paired with *its own* episode: a `.willSleep` w
 starved until after its wake does not close the table, a wake older than the seal standing
 does not reopen it, and — the sequence that matters most — `.didWake`, `.willSleep`,
 `.didWake`, `.willSleep` still seals on the second ordinary sleep, so one unpaired wake cannot
-disable the seal for the life of the process. That the keystone is **observed** in each of its
+disable the seal for the life of the process. Since #347 it holds two more sequences: a wake
+older than a sleep that *met* the standing seal, rather than set it, does not reopen it; and a
+starved older sleep that runs after a newer one sealed does not lower the seal below a stale
+wake, which pins the larger generation rather than plain assignment. That the keystone is
+**observed** in each of its
 four states rather than inferred from an empty register: never issued, issued and outstanding,
 landed, refused. And that a wedge on the first fan still records every fan the sweep covered,
 on a two-fan machine, which is the smallest that can tell "every fan" from "the first fan".
