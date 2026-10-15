@@ -469,7 +469,11 @@ whose subject is concurrent-lease refusal rather than handback safety, so nothin
 two. The panic path reaches it through a second *source* of fans rather than a second entry.
 All five sweeps are written the one way so the reachable one is not a special case whose
 reason nobody can see, and `TeardownSweepTripwireTests` is what makes a return to the
-per-entry shape fail.
+per-entry shape fail. `revokeLease(id:because:)`
+([#353](https://github.com/blamechris/Aeolus/issues/353)) is not a sweep — it names one entry —
+and is written the same way: the entry removed synchronously, then one `restore` call, so it is
+the seventh path ADR 0009's "every lease-core teardown removes its table entry before it awaits
+the restore" counts.
 
 **The log line stays per entry on the revocation paths, and only the restore is unified.** A
 revocation is a claim being taken from a named client, so `log show` has to carry one line per
@@ -721,9 +725,12 @@ was attached to neither); it is unchanged and sits under that declaration again.
 `type_body_length` counts **code** lines only. At the time of the relocation this actor's body
 spans 265 of them against a warning at 250 and an **error at 350**: about 85 lines of headroom,
 and relocating prose cannot make more. [#350](https://github.com/blamechris/Aeolus/issues/350)'s
-grant seal took it to 278, leaving 72, and the file to 885 lines of its 1000. `file_length` has not gone away either. At this file's
-present density, 3.1 lines per code line, it would error after roughly 48 new code lines, so
-which of the two limits is reached first depends on how much comment the new code carries.
+grant seal took it to 278, leaving 72, and the file to 885 lines of its 1000.
+[#357](https://github.com/blamechris/Aeolus/issues/357)'s identity query and
+`revokeLease(id:because:)` took it to 290, leaving 60, and the file to 912. `file_length` has not
+gone away either. At this file's present density, about 3.1 lines per code line, it would error
+after roughly 30 new code lines, so which of the two limits is reached first depends on how much
+comment the new code carries.
 
 New behaviour for #9's A4 and A6 belongs in the `EngagementDriver` that
 [ADR 0014](../ADR/0014-apple-silicon-unlock.md) specifies, and in value types beside
@@ -874,6 +881,38 @@ nothing wrong. That is why it carries its own `FanRestoreCause` rather than reus
 one — an operator reading `log show` must be able to tell "the client went away"
 from "the machine got too hot", and a cause that cannot be named is a mechanism that
 cannot be audited.
+
+### `revokeLease(id:because:)`: the one lease § 5 held the fan for
+
+*Added by [#353](https://github.com/blamechris/Aeolus/issues/353); not relocated from a doc
+comment. ADR 0009's 2026-10-15 amendment is the decision.*
+
+§ 5's terminal action used to call `revokeEveryLease(because:)`, for § 3's reason: a lease is a
+claim over a set of fans. Once a lease can end and another be granted over the same fan inside
+one § 5 cycle, "every lease" includes one granted after the episode § 5 is giving up, and a
+release and re-grant during § 5's refused command write revoked the new client's lease and told
+it the system had reclaimed a fan it never held. So § 5 now names the lease it was holding the
+fan for — the one the fan was registered under — and this revokes that lease and no other.
+
+- **Whole**, for the same reason `revokeLeases(coveringFan:because:)` is: trimming a fan out of
+  a lease would leave a client holding a subset it can no longer command.
+- **Revoked only while it is live.** An ID the table does not hold is a lease that already ended,
+  and answers `.gone` and restores nothing. A lease past its deadline and not yet swept is ended
+  inside the call and restored as `.leaseExpired` — it answers `.expired` — rather than left to
+  the TTL sweep, whose release notice would otherwise arrive after § 5's terminal action returned
+  and erase the mark it keeps (#361's panel). That covers a lease still in the table when the
+  call arrives; one a sweep or teardown removed first answers `.gone`, and its notice can still
+  erase the mark ([#368](https://github.com/blamechris/Aeolus/issues/368)). Neither is logged as
+  revoked, so `LeaseLog.revoked` — the `.fault` that tells a client the system took control — is
+  emitted only for a lease actually taken.
+- **Removed synchronously, restored in one call**, as every teardown here is, so the fans enter
+  `releasing` before anything suspends and no grant can race in over them.
+- **Strictly narrower than `revokeEveryLease(because:)`**, which is already `internal`, and that
+  is the whole of `LeaseAuthorityAccessTests`' argument for acknowledging it: the worst a caller
+  elsewhere in the module can do with a lease's ID is what it can already do to every lease.
+
+§ 3 keeps `revokeEveryLease(because:)`: it takes back every claim on the machine in order to
+cool it, which is not § 5's question.
 
 ### Why § 3 revokes every lease, and why it is not `releaseEveryLease()`
 

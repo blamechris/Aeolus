@@ -588,9 +588,10 @@ extension SafetyLog {
 
     /// § 3 latched while § 5 was mid-re-assert, so the re-assert was undone.
     ///
-    /// The compensating half of `ReclamationWatchdog.reassert(_:fanAt:attempt:)`. Check and
-    /// act cannot be made atomic across two actors, so the ruling is verified again after
-    /// the writes and this is what happens when it changed underneath them.
+    /// The compensating half of
+    /// `ReclamationWatchdog.reassert(_:fanAt:heldUnder:attempt:reengaging:)`. Check and act cannot
+    /// be made atomic across two actors, so the ruling is verified again after the writes and this
+    /// is what happens when it changed underneath them.
     func reclamationUndoneAfterEmergencyLatched(fan: Int) {
         emit(
             .fault,
@@ -649,20 +650,22 @@ extension SafetyLog {
         )
     }
 
-    /// Fans dropped from § 5's registry because the revocation that just ran took their
-    /// leases too.
+    /// Fans dropped from § 5's registry because the terminal action is ending the lease they
+    /// were held under.
     ///
-    /// `revokeEveryLease(because:)` is whole-machine, so every other fan § 5 was watching is
-    /// now unleased. Dropping only the fan that diverged left the siblings registered, and
-    /// the next cycle re-engaged manual control on a fan with no lease behind it.
+    /// Emitted before that lease ends: the terminal action ends it whole next — revoked, or ended
+    /// as expired if it has lapsed — and that restores every fan it covered, or another path has
+    /// already ended it and restored them. Dropping only the fan that diverged left the siblings
+    /// registered, and the next cycle re-engaged manual control on a fan with no lease behind it.
+    /// Records under another lease are not siblings (#357).
     func reclamationSiblingsReleased(fans: [Int]) {
         emit(
             .notice,
             """
             § 5 also stopped watching fan(s) \
-            \(fans.map(String.init).joined(separator: ", ")): the revocation that just ran \
-            dropped every lease on the machine, so these are unleased and back on automatic \
-            control. They are not recorded as reclaimed — they were given up, not taken.
+            \(fans.map(String.init).joined(separator: ", ")): the terminal action is ending \
+            the lease they were held under, which hands them back to automatic control. They \
+            are not recorded as reclaimed — they were given up, not taken.
             """
         )
     }
@@ -703,8 +706,8 @@ extension SafetyLog {
             """
             Reclamation on fan \(fan) survived \(attempts) re-assert attempt(s) — \
             \(divergence.summary). The budget is spent: the fan goes back to automatic \
-            control and every lease is revoked, rather than Aeolus continuing a contest it \
-            is losing while reporting a speed nothing is honouring.
+            control and the lease it was held under is revoked, rather than Aeolus continuing \
+            a contest it is losing while reporting a speed nothing is honouring.
             """
         )
     }
@@ -774,7 +777,7 @@ extension SafetyLog {
     }
 
     /// A cycle could not read one held fan. The first of a run only — see
-    /// `ReclamationWatchdog.cycleCouldNotSee(fanAt:detail:)`.
+    /// `ReclamationWatchdog.cycleCouldNotSee(fanAt:heldUnder:detail:)`.
     func reclamationCycleUnreadable(fan: Int, detail: String) {
         emit(
             .notice,
@@ -1604,9 +1607,10 @@ extension SafetyLog {
             .notice,
             """
             § 5's re-assert of fan \(fan) was refused, \(refusal): a higher level holds the \
-            fans, or no lease covers this one. What the engagement wrote, and its undo, are \
-            reported by its own line. Handing the fan back rather than spending another \
-            attempt, and **not** recording it as reclaimed by the system.
+            fans, or the lease it was held under is no longer live. What the engagement \
+            wrote, and its undo, are reported by its own line. Handing the fan back rather \
+            than spending another attempt, and **not** recording it as reclaimed by the \
+            system.
             """
         )
     }
@@ -1634,6 +1638,67 @@ extension SafetyLog {
             """
             The write path's preparation step \(enumeration), found the force key \
             \(report.forceKey), and \(restore).
+            """
+        )
+    }
+}
+
+extension SafetyLog {
+
+    // MARK: - docs/SAFETY.md § 5 — the lease a fan was registered under (#353, #357)
+
+    /// A registration arrived under a lease that is no longer live, or does not cover the fan —
+    /// or the fan was released or registered again while § 5 was asking about it, so the answer
+    /// no longer described the fan — and § 5 recorded nothing. Its caller owns the hand-back of
+    /// what it engaged (ADR 0014's 2026-10-15 amendment, A6's contract).
+    func reclamationRegistrationRefused(fan: Int, whileReleasedOrRegistered: Bool) {
+        let reason =
+            whileReleasedOrRegistered
+            ? "§ 5 is giving it up, or it was released or registered while § 5 asked its lease"
+            : "the lease it was engaged under is no longer live, or does not cover it"
+        emit(
+            .notice,
+            """
+            § 5 refused to register fan \(fan): \(reason). Nothing is recorded, and the \
+            engagement's caller hands the fan back.
+            """
+        )
+    }
+
+    /// A registration under a live lease replaced the record an ended lease left. At most one
+    /// live lease covers a fan, so the replaced record was stale; the new one starts fresh.
+    func reclamationReplacedEndedLeaseRecord(fan: Int) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) was registered with § 5 under a new lease, replacing the record an \
+            ended lease left. It starts fresh: nothing commanded and no attempt spent.
+            """
+        )
+    }
+
+    /// § 5 was about to act on a fan whose record now belongs to another lease, so it did
+    /// nothing: that lease's engagement holds the fan, and its own record watches it.
+    func reclamationLeftToAnotherLease(fan: Int) {
+        emit(
+            .notice,
+            """
+            § 5 left fan \(fan) alone: it is now registered under another lease, whose \
+            engagement holds it and whose own record watches it. Nothing was restored, \
+            forgotten or revoked for the lease § 5 was acting for.
+            """
+        )
+    }
+
+    /// The terminal action handed a fan back, but the lease it was holding the fan for had
+    /// already ended, or had lapsed and was ended as expired, so nothing was revoked — and no
+    /// client is told the system took control it had already given up (#353, #361).
+    func reclamationHandbackLeaseAlreadyEnded(fan: Int) {
+        emit(
+            .notice,
+            """
+            § 5 handed fan \(fan) back; the lease it was holding the fan for had already \
+            ended, or had lapsed and was ended as expired, so no lease was revoked.
             """
         )
     }

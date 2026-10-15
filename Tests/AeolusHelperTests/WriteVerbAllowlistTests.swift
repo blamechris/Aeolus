@@ -170,6 +170,25 @@ struct WriteVerbAllowlistTests {
     /// it is the signature ADR 0008 exists to make unrepresentable.
     private static let clampedCompanions = ["Double", "Duration"]
 
+    /// Companions allowed beside a permit for **one named key**, and for no other verb.
+    ///
+    /// `ReclamationWatchdog.manualControlEngaged(_:under:)` carries the `UUID` of the lease the
+    /// fan was engaged under (#357). A registration writes nothing, and its lease is judged
+    /// against the permit's own fan at registration and at every examination, so a mismatched
+    /// pair ends as a refused registration or `.leaseLapsed`, never as a write. Keyed rather
+    /// than added to `clampedCompanions`, so no write verb can take a `UUID` beside its permit:
+    /// this suite stays red for one that does, and so does `everyEngageVerbTakesAPermit` unless
+    /// the parameter has a default containing parentheses, such as `= UUID()`, whose
+    /// declaration its scan misses ([#362](https://github.com/blamechris/Aeolus/issues/362)).
+    ///
+    /// A key is a file and a signature, not a declaring type, so a second declaration with the
+    /// same signature in the same file — an extension on a writer, say — would share the
+    /// exemption. `aPermitTravelsBesideNothingThatNamesAFan` therefore requires exactly one
+    /// declaration per keyed key (#361's panel).
+    private static let keyedCompanions: [String: Set<String>] = [
+        "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan, under: UUID)": ["UUID"]
+    ]
+
     /// The verbs that carry a permit: they command a fan, take one off automatic control,
     /// mint the permit, or hold one for a safety actor that will.
     ///
@@ -185,9 +204,11 @@ struct WriteVerbAllowlistTests {
     ///   `command(towards:of:since:)` is the control loop's governed step.
     /// - `FanWriteAuthorisation.target(for:)` is the *producer*: it clamps into the permit's
     ///   own envelope and stamps the permit's own index. It writes nothing.
-    /// - `ThermalEmergency` / `ReclamationWatchdog`'s `manualControlEngaged(_:)` store a
-    ///   permit minted elsewhere, so the emergency's maximum write needs no read while the
-    ///   machine is above ceiling. `bridgeToMaximumThenRelease(_:)` is what spends it.
+    /// - `ThermalEmergency.manualControlEngaged(_:)` stores a permit minted elsewhere, so the
+    ///   emergency's maximum write needs no read while the machine is above ceiling.
+    ///   `bridgeToMaximumThenRelease(_:)` is what spends it.
+    ///   `ReclamationWatchdog.manualControlEngaged(_:under:)` reads only the permit's index and
+    ///   writes nothing; its `UUID` is `keyedCompanions`' one entry.
     ///   `ThermalEmergency.restoredByEmergency(_:)` keeps a permit § 3 already held, for a
     ///   fan whose own restore is unconfirmed, so the next emergency can spend it (#300). It
     ///   writes nothing. `bridgeThenFileRestored(_:)` passes the same permit to those two in
@@ -214,7 +235,7 @@ struct WriteVerbAllowlistTests {
         "ThermalEmergency.swift: bridgeToMaximumThenRelease(_: CommandableFan)",
         "ThermalEmergency.swift: restoredByEmergency(_: CommandableFan)",
         "ThermalEmergency.swift: bridgeThenFileRestored(_: CommandableFan)",
-        "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan)",
+        "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan, under: UUID)",
         "EngagementDriver.swift: engageManualControl(of: CommandableFan)",
         "EngagementDriver.swift: requireEntitlement(for: CommandableFan)",
         "EngagementDriver.swift: firstStep(of: CommandableFan)",
@@ -286,28 +307,28 @@ struct WriteVerbAllowlistTests {
     /// The list is long on purpose. Its job is not to be read, it is to make a new verb
     /// impossible to add silently.
     ///
-    /// `BoundedFanRestorer.attemptUncancellably(fanAt:)` is the entry most likely to be
-    /// read as misfiled, so the reason is written down rather than left to be re-derived. It
-    /// sits *between* two entries on the restore list — `restoreToAutomatic(fans:because:)`
-    /// calls it and it calls `restoreOnce(fanAt:)` — and holds no permit, which is the same
-    /// shape as every other function here that reaches the keystone: `LeaseAuthority`'s
-    /// `revokeEveryLease(because:)` and `ReclamationWatchdog.finaliseRelease(fanAt:because:)`
-    /// are on this list for exactly that reason. What it adds is a `Task` that does not
-    /// inherit cancellation, not a decision about whether the restore may happen — so
-    /// `restoreVerbs`, whose entries are the verbs ADR 0007 names, would be the misfiling.
+    /// `BoundedFanRestorer.attemptUncancellably(fanAt:)` is the entry most likely to be read as
+    /// misfiled, so the reason is written down rather than left to be re-derived. It sits *between*
+    /// two entries on the restore list — `restoreToAutomatic(fans:because:)` calls it and it calls
+    /// `restoreOnce(fanAt:)` — and holds no permit, which is the same shape as every other function
+    /// here that reaches the keystone: `LeaseAuthority`'s `revokeEveryLease(because:)` and
+    /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` are on this list for exactly
+    /// that reason. What it adds is a `Task` that does not inherit cancellation, not a decision
+    /// about whether the restore may happen — so `restoreVerbs`, whose entries are the verbs ADR
+    /// 0007 names, would be the misfiling.
     ///
-    /// [#167](https://github.com/blamechris/Aeolus/issues/167)'s five entries are filed here
-    /// on the same rule, and the one worth defending is
-    /// `SystemPowerResponder.handBackEveryFan(reportingTo:)`. It drops every lease and then
-    /// issues the machine-wide keystone, so it *causes* two writes — and causing a write is
-    /// not what the restore list is for. Its entries are the verbs ADR 0007 names, spelled
-    /// as ADR 0007 spells them; this one reaches the firmware only through
-    /// `SafetyActorWriter.restoreToAutomatic(_:)` and `LeaseAuthority.releaseEveryLease()`,
-    /// both already acknowledged, which is exactly the shape of `revokeEveryLease(because:)`
-    /// and `ReclamationWatchdog.finaliseRelease(fanAt:because:)` here. `allowSleepAfterHandback`
-    /// and `respond(to:)` are its callers, and the two `acknowledge` verbs put no fan write on
-    /// any wire at all — one of them calls `IOAllowPowerChange`, which is a kernel message
-    /// about power state and nothing to do with a fan.
+    /// [#167](https://github.com/blamechris/Aeolus/issues/167)'s five entries are filed here on the
+    /// same rule, and the one worth defending is
+    /// `SystemPowerResponder.handBackEveryFan(reportingTo:)`. It drops every lease and then issues
+    /// the machine-wide keystone, so it *causes* two writes — and causing a write is not what the
+    /// restore list is for. Its entries are the verbs ADR 0007 names, spelled as ADR 0007 spells
+    /// them; this one reaches the firmware only through `SafetyActorWriter.restoreToAutomatic(_:)`
+    /// and `LeaseAuthority.releaseEveryLease()`, both already acknowledged, which is exactly the
+    /// shape of `revokeEveryLease(because:)` and
+    /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` here.
+    /// `allowSleepAfterHandback` and `respond(to:)` are its callers, and the two `acknowledge`
+    /// verbs put no fan write on any wire at all — one of them calls `IOAllowPowerChange`, which is
+    /// a kernel message about power state and nothing to do with a fan.
     ///
     /// [#164](https://github.com/blamechris/Aeolus/issues/164) added five here and two to
     /// `restoreVerbs`, and the split is worth stating because startup reconciliation both
@@ -451,6 +472,14 @@ struct WriteVerbAllowlistTests {
         "LeaseAuthority.swift: releaseEveryLease()",
         "LeaseAuthority.swift: releaseLease(id: UUID, from: ConnectionID)",
         "LeaseAuthority.swift: revokeEveryLease(because: FanRestoreCause)",
+        // #353's: § 5's terminal revocation, scoped to the lease it held the fan for. It
+        // reaches a write only through `restore(_:because:)`, as the two beside it do.
+        "LeaseAuthority.swift: revokeLease(id: UUID, because: FanRestoreCause)",
+        // § 5's role over the lease core (#357's review): the same two calls, as requirements
+        // `LeaseAuthority` witnesses. Asking writes nothing; revoking reaches a write only
+        // through the conformer's `restore(_:because:)`.
+        "HeldLeaseRole.swift: hasLiveLease(id: UUID, coveringFan: Int)",
+        "HeldLeaseRole.swift: revokeLease(id: UUID, because: FanRestoreCause)",
         "LeaseAuthority.swift: revokeLeases(coveringFan: Int, because: FanRestoreCause)",
         "LeaseAuthorityRefusals.swift: refuseIfBlind(_: ConnectionID)",
         "LeaseAuthorityRefusals.swift: refuseIfForeignManualControl(_: ConnectionID, "
@@ -482,16 +511,23 @@ struct WriteVerbAllowlistTests {
         "ReadOnlyFanAuthority.swift: walkEveryKey()",
         "ReclamationSupervisor.swift: run(watchdog: ReclamationWatchdog<Plane>, "
             + "clock: some MonotonicClock, interval: Duration, log: SafetyLog)",
+        // #353's: the command write's refusal, out of `reassert` for its complexity budget. It
+        // reaches a write only through `restoreAndForget` and `finaliseRelease`, beside it here.
+        "ReclamationWatchdog.swift: commandWriteFailed(fanAt: Int, heldUnder: UUID, "
+            + "detail: String)",
         "ReclamationWatchdog.swift: currentRuling()",
         "ReclamationWatchdog.swift: cycle()",
-        "ReclamationWatchdog.swift: cycleCouldNotSee(fanAt: Int, detail: String)",
-        "ReclamationWatchdog.swift: diverged(_: ReclamationDivergence, fanAt: Int)",
+        "ReclamationWatchdog.swift: cycleCouldNotSee(fanAt: Int, heldUnder: UUID, "
+            + "detail: String)",
+        "ReclamationWatchdog.swift: diverged(_: ReclamationDivergence, fanAt: Int, "
+            + "heldUnder: UUID)",
         "ReclamationWatchdog.swift: examine(fanAt: Int)",
-        "ReclamationWatchdog.swift: finaliseRelease(fanAt: Int, because: FanRestoreCause)",
+        "ReclamationWatchdog.swift: finaliseRelease(fanAt: Int, heldUnder: UUID, "
+            + "because: FanRestoreCause)",
         "ReclamationWatchdog.swift: manualControlReleased(fanAt: Int)",
-        "ReclamationWatchdog.swift: reassert(_: CommandedTarget, fanAt: Int, attempt: Int, "
-            + "reengaging: Bool)",
-        "ReclamationWatchdog.swift: restoreAndForget(fanAt: Int)",
+        "ReclamationWatchdog.swift: reassert(_: CommandedTarget, fanAt: Int, heldUnder: UUID, "
+            + "attempt: Int, reengaging: Bool)",
+        "ReclamationWatchdog.swift: restoreAndForget(fanAt: Int, heldUnder: UUID)",
         "SMCFanControlPlane.swift: readControlState(ofFan: Int)",
         "SMCFanControlPlane.swift: readCriticalTemperatures(_: [SMCKey])",
         "SMCFanControlPlane.swift: readEnvelope(ofFan: Int)",
@@ -637,6 +673,16 @@ struct WriteVerbAllowlistTests {
         // permit-bearing verb written that way fail this guard with **no entry a maintainer
         // could add** — the list is keyed, so it can never hold the second one.
         let bearingKeys = Set(bearing.map(\.key))
+        for key in Self.keyedCompanions.keys.sorted() {
+            let carriers = bearing.filter { $0.key == key }
+            #expect(
+                carriers.count == 1,
+                """
+                \(carriers.count) declarations carry the keyed exemption `\(key)`. It is for one \
+                registration verb; a second declaration with the same signature in that file \
+                would travel a `UUID` beside a permit under its exemption.
+                """)
+        }
         #expect(
             bearingKeys == Self.permitBearingVerbs,
             "this scan is looking at \(bearingKeys.count) verbs, not the acknowledged list")
@@ -650,9 +696,10 @@ struct WriteVerbAllowlistTests {
                 permits are two fans that can disagree — ADR 0008.
                 """
             )
+            let keyed = Self.keyedCompanions[verb.key] ?? []
             for type in verb.parameterTypes where !Self.permits.contains(type) {
                 #expect(
-                    Self.clampedCompanions.contains(type),
+                    Self.clampedCompanions.contains(type) || keyed.contains(type),
                     """
                     \(verb.file) declares `\(verb.text)`, passing a `\(type)` beside a \
                     permit. Only \(Self.clampedCompanions) may travel with one: they name \

@@ -113,11 +113,11 @@ struct CycleOverlapTests {
 
 /// A supervisor that has stopped does not acquire a fan on its way out.
 ///
-/// [#144](https://github.com/blamechris/Aeolus/issues/144)'s second side effect, and the
-/// same `stop()` shape as the overlap above: `ReclamationSupervisor.stop()` cancels without
-/// awaiting, so a sweep suspended inside a read resumes inside a supervisor that has already
-/// stopped. `reassert(_:fanAt:attempt:)`'s first write is the only one in § 5 that moves a
-/// fan in the unsafe direction — off Apple's thermal management and onto a target with
+/// [#144](https://github.com/blamechris/Aeolus/issues/144)'s second side effect, and the same
+/// `stop()` shape as the overlap above: `ReclamationSupervisor.stop()` cancels without awaiting, so
+/// a sweep suspended inside a read resumes inside a supervisor that has already stopped.
+/// `reassert(_:fanAt:heldUnder:attempt:reengaging:)`'s first write is the only one in § 5 that
+/// moves a fan in the unsafe direction — off Apple's thermal management and onto a target with
 /// nothing watching it, because the loop that would have watched it is the one that was just
 /// cancelled.
 ///
@@ -135,9 +135,10 @@ struct CycleOverlapTests {
 @Suite("A cancelled sweep does not acquire a fan")
 struct CancelledSweepTests {
 
-    /// **Kills:** deleting `guard !Task.isCancelled` from `reassert(_:fanAt:attempt:)`. The
-    /// outgoing sweep then re-engages manual control on fan 0 from a supervisor that has
-    /// stopped, and `attempts` contains `.engageManualControl(fan: 0)`.
+    /// **Kills:** deleting `guard !Task.isCancelled` from
+    /// `reassert(_:fanAt:heldUnder:attempt:reengaging:)`. The outgoing sweep then re-engages manual
+    /// control on fan 0 from a supervisor that has stopped, and `attempts` contains
+    /// `.engageManualControl(fan: 0)`.
     @Test("A sweep cancelled inside its read never re-engages manual control")
     func aCancelledSweepDoesNotReEngage() async throws {
         let plane = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)])
@@ -234,17 +235,17 @@ struct CancelledSweepTests {
     }
 
     /// **Kills:** deleting the refund from the cancellation guard in
-    /// `reassert(_:fanAt:attempt:)`. The fourth sweep then finds `reassertAttempts` at the
-    /// budget, skips the re-assert entirely and restores fan 0, so neither
-    /// `.engageManualControl(fan: 0)` nor a commanded target ever appears.
+    /// `reassert(_:fanAt:heldUnder:attempt:reengaging:)`. The fourth sweep then finds
+    /// `reassertAttempts` at the budget, skips the re-assert entirely and restores fan 0, so
+    /// neither `.engageManualControl(fan: 0)` nor a commanded target ever appears.
     ///
-    /// `diverged(_:fanAt:)` books the attempt before the envelope read that suspends, so an
-    /// exit taken in between spends budget on a write that never reached the firmware. A
-    /// sleep/wake pair is `stop()` then `start()`, and `stop()` cancels without awaiting —
-    /// so three of them catching one diverged fan mid-sweep used to exhaust
-    /// `reassertAttemptBudget` with zero writes attempted, after which the next real sweep
-    /// gave the fan up and revoked its lease citing `.systemReclaimed`. Safe direction,
-    /// false account: the system is blamed for taking a fan Aeolus never tried to take back.
+    /// `diverged(_:fanAt:heldUnder:)` books the attempt before the envelope read that suspends, so
+    /// an exit taken in between spends budget on a write that never reached the firmware. A
+    /// sleep/wake pair is `stop()` then `start()`, and `stop()` cancels without awaiting — so three
+    /// of them catching one diverged fan mid-sweep used to exhaust `reassertAttemptBudget` with
+    /// zero writes attempted, after which the next real sweep gave the fan up and revoked its lease
+    /// citing `.systemReclaimed`. Safe direction, false account: the system is blamed for taking a
+    /// fan Aeolus never tried to take back.
     ///
     /// Cancelled before the sweep starts rather than gated mid-read, because the interleaving
     /// itself is already established by the two tests above and what this one needs is the

@@ -61,11 +61,12 @@ struct ReclamationEmergencyRegistrationTests {
         #expect(await machine.emergency.fansUnderManualControl.isEmpty)
     }
 
-    /// **#181's deregistration on `restoreAndForget(fanAt:)`.** A fan the driver registered
-    /// with § 3, handed back by § 5 because its lease lapsed, is marked owed § 3's read-back by
-    /// the accepted restore — not left registered as though it were still held, and not dropped.
+    /// **#181's deregistration on `restoreAndForget(fanAt:heldUnder:)`.** A fan the driver
+    /// registered with § 3, handed back by § 5 because its lease lapsed, is marked owed § 3's
+    /// read-back by the accepted restore — not left registered as though it were still held, and
+    /// not dropped.
     ///
-    /// **Mutation:** in `restoreAndForget(fanAt:)`, restore through
+    /// **Mutation:** in `restoreAndForget(fanAt:heldUnder:)`, restore through
     /// `writer.restoreToAutomatic(.fan(index))` instead of `engagement.handBack(fanAt:)`. Run:
     /// red on the owed assertion.
     @Test("A lapsed lease's hand-back deregisters the fan from § 3")
@@ -80,7 +81,7 @@ struct ReclamationEmergencyRegistrationTests {
         machine.lapseLease()
         await machine.watchdog.cycle()
 
-        #expect(machine.safetyLog.lines(containing: "no live lease covers it").count == 1)
+        #expect(machine.safetyLog.lines(containing: leaseLapsedNotice).count == 1)
         #expect(await machine.emergency.fansOwedHandbackReadBack == [0])
     }
 
@@ -120,7 +121,7 @@ struct ReclamationEmergencyRegistrationTests {
         await machine.watchdog.cycle()
 
         #expect(await machine.watchdog.fansUnderManualControl == [0], "§ 5 gave the fan up")
-        #expect(machine.safetyLog.lines(containing: "no live lease covers it").isEmpty)
+        #expect(machine.safetyLog.lines(containing: leaseLapsedNotice).isEmpty)
         #expect(machine.safetyLog.lines(containing: "re-assert of fan 0 was refused").isEmpty)
     }
 }

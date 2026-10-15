@@ -37,14 +37,14 @@ import Foundation
 /// forever. This contract used to say the opposite, and what that costs was the whole of
 /// #110: `LeaseAuthority` awaits this from every teardown path, and since
 /// [#136](https://github.com/blamechris/Aeolus/issues/136) one of those paths is
-/// `ReclamationWatchdog.cycle()` by way of `revokeEveryLease(because:)`. A conformer parked
+/// `ReclamationWatchdog.cycle()` by way of `revokeLease(id:because:)`. A conformer parked
 /// inside a retry loop therefore parks `ReclamationSupervisor`'s loop for the life of the
 /// process — silently, and for every other fan, not only the one that would not go back.
 /// A guarantee of return is what makes awaiting this from a safety actor's cycle legal at
 /// all.
 ///
 /// `docs/SAFETY.md` § 5 already settled the same question the same way for the mechanism
-/// next door: `ReclamationWatchdog.finaliseRelease(fanAt:because:)` attempts the restore,
+/// next door: `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` attempts the restore,
 /// logs a fault if it throws, and drops the fan from its registry **regardless** — bounded,
 /// then report, never "keep trying". Two mechanisms in one subsystem must not disagree
 /// about what a failed restore means.

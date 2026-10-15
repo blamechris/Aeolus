@@ -41,9 +41,9 @@ struct ReclamationWatchdogStalenessTests {
     /// be written to.
     ///
     /// The interference fires inside `readEnvelope(ofFan:)` — the suspension
-    /// `reassert(_:fanAt:attempt:)` resumes from — and releases the fan the way the lease
-    /// core does when a TTL lapses or a connection dies. The watchdog resumes holding a
-    /// `permit` for a fan it is no longer watching.
+    /// `reassert(_:fanAt:heldUnder:attempt:reengaging:)` resumes from — and releases the fan the
+    /// way the lease core does when a TTL lapses or a connection dies. The watchdog resumes holding
+    /// a `permit` for a fan it is no longer watching.
     ///
     /// It used to write `F<n>Md` and `F<n>Tg` anyway: manual control with no lease behind
     /// it, no registry entry to notice it, and nothing left to restore it. `CLAUDE.md`
@@ -107,7 +107,7 @@ struct ReclamationWatchdogStalenessTests {
         // could not fail for the guard it is named after. Mutation-checked: deleting the
         // re-fetch after the read in `examine(fanAt:)` left every assertion above green,
         // because the next re-fetch — after the lease check since #180, in
-        // `diverged(_:fanAt:)` before that — catches the same release one hop later and
+        // `diverged(_:fanAt:heldUnder:)` before that — catches the same release one hop later and
         // returns before the ledger, the restore or the revocation is touched. The one
         // observable that changes is *where* the abandonment happened, so that is what is
         // asserted. Two guards that are each safe in combination are not two guards that
@@ -120,10 +120,10 @@ struct ReclamationWatchdogStalenessTests {
     /// The stale copy carries a stale **commanded target**, and that is the hazard the
     /// earliest re-fetch actually exists for.
     ///
-    /// A release followed by a fresh engagement inside the same read leaves `held[index]`
-    /// non-`nil` — so `diverged(_:fanAt:)`'s re-fetch, which catches the plain-release case,
-    /// finds an entry and carries on. What it finds is a **new episode**: a new permit, and
-    /// no commanded target, because nothing has written to this fan yet.
+    /// A release followed by a fresh engagement inside the same read leaves `held[index]` non-`nil`
+    /// — so `diverged(_:fanAt:heldUnder:)`'s re-fetch, which catches the plain-release case, finds
+    /// an entry and carries on. What it finds is a **new episode**: a new permit, and no commanded
+    /// target, because nothing has written to this fan yet.
     ///
     /// Judging that episode against the previous one's 2,400 RPM is a divergence report
     /// about a fan a client has only just been granted, and it is exactly what the pre-read
@@ -161,9 +161,9 @@ struct ReclamationWatchdogStalenessTests {
     ///
     /// Until #181 this case was `itUndoesAReassertWhenTheEmergencyLatchesMidWrite`'s, which
     /// asserted both writes landing above the ceiling and then being undone: the window between
-    /// `diverged(_:fanAt:)`'s ruling and the first write was one whole `.supervisor` turn. The
-    /// ruling is now asked again at the write — by the `EngagementDriver` before the mode write
-    /// of a reclaimed fan, and through the driver's `requireEntitlement(for:)` before the
+    /// `diverged(_:fanAt:heldUnder:)`'s ruling and the first write was one whole `.supervisor`
+    /// turn. The ruling is now asked again at the write — by the `EngagementDriver` before the mode
+    /// write of a reclaimed fan, and through the driver's `requireEntitlement(for:)` before the
     /// command of a fan still in manual — so the latch is seen and the fan is handed back.
     ///
     /// **Mutation (driver):** delete the `try await requireEntitlement(for: fan)` that opens
@@ -375,7 +375,7 @@ struct ReclamationWatchdogStalenessTests {
             "a fan re-asserted under a lease that lapsed mid-write was never handed back")
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
         #expect(await machine.commandedRPMs == [2_400], "the lapsed fan was re-asserted again")
-        #expect(machine.safetyLog.lines(containing: "no live lease covers it").count == 1)
+        #expect(machine.safetyLog.lines(containing: leaseLapsedNotice).count == 1)
     }
 
     /// Fans are examined **one at a time**, which is #126's answer to

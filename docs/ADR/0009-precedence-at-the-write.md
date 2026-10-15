@@ -294,6 +294,73 @@ The entry for `FanRestoring`'s "must log it and keep trying" contract is gone: #
 2026-09-05, and `Sources/AeolusHelper/Lease/FanRestoring.swift` now says a conformer gives up
 and reports, never keeps trying.
 
+## Amendment (2026-10-15, [#353](https://github.com/blamechris/Aeolus/issues/353), [#357](https://github.com/blamechris/Aeolus/issues/357)) — D2 asks about the lease the fan was registered under
+
+**The defect.** D2 as built asks `hasLiveLease(coveringFan:)`: does *some* live lease cover the
+fan? That was sound while nothing could re-grant a fan within an episode. It is not once a lease
+can end and another be granted over the same fan inside one § 5 cycle, which `acquireLease`
+allows as soon as the first lease's restore returns. Both defects below are unreachable on
+`.notBuilt`, and both are A6 preconditions.
+
+- **#357.** An `apply` whose lease ends between the driver's after-check and its § 5
+  registration leaves a record no release notice cleared. If another client is granted the fan
+  before § 5's next cycle, D2 judges that record under the newer lease. § 5 re-asserts the old
+  target for a holder that never applied, or spends the budget, gives the fan up and revokes the
+  newer lease, blaming the operating system.
+- **#353.** `reassert`'s catch after a failed command write re-checked nothing, and
+  `finaliseRelease` revoked every lease. A release and a re-grant during the write revoked the
+  new lease and blamed the system for Aeolus's own release.
+
+The same shape reaches five more places. Every re-fetch after an `await` checks presence, so a
+record registered under a newer lease during the `await` passes as § 5's own. `restoreAndForget`
+and `finaliseRelease` forget whatever record is there. Registration kept whatever record was
+there. `commandedTarget(_:)` wrote into it. The engagement driver asks the coverage question
+too (ADR 0014, amended alongside).
+
+**Decision: identity, not coverage.**
+
+- `HeldFan` records the lease it was registered under. `manualControlEngaged(_:under:)` asks
+  the lease core about that lease and decides in one straight-line region: a lease that is not
+  live is refused and records nothing; a live one keeps its own record and replaces one an
+  ended lease left. At most one live lease covers a fan, so the replaced record is always stale.
+  A fan released or registered while the question was out is refused too, because the answer
+  no longer describes it (a per-fan generation, captured before the hop, which the terminal
+  action also moves as it begins), and so is a registration under the lease the terminal action
+  is giving the fan up for, while it does. Only an accepted registration clears the fan's
+  ledger entry.
+- `examine(fanAt:)` asks `hasLiveLease(id:coveringFan:)` about the record's own lease, in the
+  same place. `.leaseLapsed`'s action is unchanged: restore-and-forget, whatever covers the fan
+  now.
+- The re-fetch rule becomes: *re-fetch after every `await`, and treat an absent record, or one
+  under another lease, as an instruction to stop.* An absent record after a write is restored
+  before stopping, as before. A record under another lease is left untouched: that lease's
+  engagement holds the fan, and its own record watches it.
+- `finaliseRelease` ends only the lease it was holding the fan for, through
+  `LeaseAuthority.revokeLease(id:because:)`: revoked if it is live, ended as `.leaseExpired`
+  inside the call if it has lapsed and is still unswept, so its release notice lands while the
+  terminal action still keeps its ledger entry. A lease a sweep or teardown removes between the
+  hand-back and the revocation is not covered: its notice can still clear the entry
+  ([#368](https://github.com/blamechris/Aeolus/issues/368), an A6 precondition `main` shares). It
+  drops only that lease's records. If the lease has already ended, the hand-back still runs and
+  nothing is revoked.
+- `hasLiveLease(coveringFan:)` is deleted, so nothing can ask the coverage question.
+
+**What does not change.** D2's order. Restore-and-forget as `.leaseLapsed`'s only action. The
+keystone, which gains no input: identity decides *whether* § 5 hands a fan back, as coverage did,
+and every fan coverage handed back is still handed back. § 3's exemption. No `AeolusXPCVersion`
+bump: the lease's identity is the wire `Lease.id`, and nothing new crosses the boundary.
+
+**Alternatives considered.** *`apply` re-asks its lease after registering*: a re-grant can land
+after the re-ask, and § 5 still asks the coverage question. *Forget a stale record without
+restoring it when another lease covers the fan*: it leaves a fan off automatic under a lease that
+never applied. *An episode token minted by § 5*: it fixes the re-fetches but not D2, which has
+to name a lease to the lease core. *The lease core clears § 5's records at grant*: this ADR
+already rejects the reference to the registry it needs, and a late stale registration defeats it.
+
+**Revisit if** leases that can overlap on a fan are proposed (the registration's arbitration then
+needs records keyed per fan and lease), or a lease-core restore path that bypasses `releasing` is
+added (the index-keyed release notice could then erase a newer lease's record).
+
 ## Alternatives considered
 
 **The lease core gains references to the safety registries**, deregistering each fan as it
@@ -362,13 +429,14 @@ mechanism exists: the correction belongs to the actor that performed the write.
 | A restore refused once may still succeed later | ADR 0007's keystone — the restore depends on no trusted data | The undo path's residual becomes unbounded, and D1's registration half stops being optional |
 | The lease table is cheap to interrogate per fan per cycle | `LeaseAuthority` is an actor over an in-memory table capped at one entry today | D2's liveness query needs a cache with its own staleness story, which is the problem it was written to remove — escalate rather than caching |
 | Restore-and-forget is the right action for `.leaseLapsed` | ADR 0007: the terminal action is the one that depends on nothing | Unchanged — there is no weaker action available, and no stronger one is legitimate for a fan nobody holds |
-| Every lease-core teardown removes its table entry before it awaits the restore | `LeaseAuthority`'s six paths each remove first: `releaseLease(id:from:)`, `expireLapsedLeases()`, `connectionDidInvalidate(_:)`, `revokeLeases(coveringFan:because:)`, `revokeEveryLease(because:)` and `releaseEveryLease()` | §5's check after the read can find a lease still live whose restore has already landed, and reads that restore as `.modeReclaimed` and re-asserts — the hazard asking after the read exists to remove. The path that restores first has to be put back, or the check moved |
+| Every lease-core teardown removes its table entry before it awaits the restore | `LeaseAuthority`'s seven paths each remove first: `releaseLease(id:from:)`, `expireLapsedLeases()`, `connectionDidInvalidate(_:)`, `revokeLeases(coveringFan:because:)`, `revokeLease(id:because:)`, `revokeEveryLease(because:)` and `releaseEveryLease()` | §5's check after the read can find a lease still live whose restore has already landed, and reads that restore as `.modeReclaimed` and re-asserts — the hazard asking after the read exists to remove. The path that restores first has to be put back, or the check moved |
 
 Every hardware observation this rests on is `Mac16,5` on macOS 26.6.2. No write has ever been
 performed on this machine, so the timing of a real reclamation — and therefore the true width
 of the window this decision bounds — is unobserved. Intel and M1/M2 ship `untested`.
 
 **Revisit when:** #191 lands (this ADR's "did not land" section retires — D2's entries in it
-retired with #342, and D1's with #181); concurrent leases ship, since D2's liveness question becomes
-per-fan-per-lease rather than per-fan; or a fourth safety actor is added that writes away from
-the safe state, which is the case this ADR's rules were generalised for.
+retired with #342, and D1's with #181); concurrent leases ship — D2's liveness question has been
+per fan and per lease since the 2026-10-15 amendment, so what they would re-decide is the
+registration's arbitration, whose records are keyed per fan; or a fourth safety actor is added
+that writes away from the safe state, which is the case this ADR's rules were generalised for.
