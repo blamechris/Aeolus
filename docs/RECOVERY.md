@@ -148,9 +148,10 @@ lease. It becomes available again once that lease ends or is released.
 **`selfRenewalNotBuilt`** — A self-renewing (always-alive) lease was requested and this
 build does not implement one. Ask for a lease without self-renewal instead.
 
-**`releaseInProgress`** — This fan is mid-handback: a previous lease just ended and the
-write that returns it to automatic control has not completed yet. Retry in a moment; this
-normally clears in milliseconds.
+**`releaseInProgress`** — This fan is mid-handback: a previous lease just ended and the write
+that returns it to automatic control has not completed yet, or a request to return every fan at
+once (`fanctl reset --all`, `fanctl auto`) is still running. Retry in a moment; this normally
+clears in milliseconds.
 
 **`handbackUnconfirmed`** — Aeolus asked for this fan back and stopped waiting for an answer
 before one arrived, so it does not yet know what mode the fan is in. The outstanding restore

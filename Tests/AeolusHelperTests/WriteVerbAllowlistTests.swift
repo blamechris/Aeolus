@@ -391,6 +391,11 @@ struct WriteVerbAllowlistTests {
         // And the lease core's caller of it, which § 7 alone invokes: a read and two set
         // subtractions, no restorer and no plane in its body.
         "LeaseAuthority.swift: confirmAcceptedHandbacks()",
+        // #350's grant seal, filed here on `withExclusiveAccess`'s rule below: it runs a body the
+        // caller supplies, so what that body may do is the caller's classification, and its one
+        // caller is `SupervisedFanAuthority.restoreAllToAutomatic` on the restore list. Its own
+        // body is a counter and the call; it names no permit, restorer or plane.
+        "LeaseAuthority.swift: sealingGrants(during: @Sendable () async -> Outcome)",
         // #295's three. `handbackReadings(of:)` is § 3's non-logging read-back seam and its
         // one conformer, which `fansReadingAutomatic(among:)` is now built on: a read per fan
         // and no writer in reach. `readBackAcceptedHandbacks()` is § 3's caller of it — a read

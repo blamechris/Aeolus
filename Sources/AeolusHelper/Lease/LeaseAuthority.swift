@@ -66,9 +66,9 @@ import Foundation
 /// `private` state `LeaseAuthorityAccessTests` holds — and #128 had already taken the one
 /// seam available without widening it.
 ///
-/// Relocating prose cannot relieve `type_body_length`, which counts this body's code: about 85
-/// lines of headroom remain before its error at 350. New behaviour belongs in value types and
-/// the `EngagementDriver` (ADR 0014), not in this actor.
+/// Relocating prose cannot relieve `type_body_length`, which counts this body's code: 278 lines
+/// since #350's grant seal, so 72 of headroom remain before its error at 350. New behaviour
+/// belongs in value types and the `EngagementDriver` (ADR 0014), not in this actor.
 actor LeaseAuthority {
 
     private let clock: any MonotonicClock
@@ -243,6 +243,12 @@ actor LeaseAuthority {
     /// clears the seal only when it is newer than the seal standing.
     private var sealGeneration: UInt64 = 0
 
+    /// How many § 7 panic verbs are inside `sealingGrants(during:)` right now; while it is not
+    /// zero no lease is granted (#350). A count rather than a flag because panics overlap, and
+    /// the first to return must not reopen the gate under the next.
+    /// handback-ledger.md § *"The machine-wide restore seal"*.
+    private var machineWideRestoresInFlight = 0
+
     init(
         enumeration: some FanEnumerating,
         restorer: some FanRestoring,
@@ -319,14 +325,14 @@ actor LeaseAuthority {
         try AeolusXPCValidation.validateFanIndices(
             request.fanIndices, enumeratedFanIndices: enumerated)
         try refuseIfInvalidated(connection)
-        // The five refusals in this straight-line region are ordered by how long they last,
+        // The six refusals in this straight-line region are ordered by how long they last,
         // most durable first: a client told a transient refusal retries, and if it retries
         // into a durable one in the end, the first answer wasted the round trip and told it
         // something less true than what was available. handback-ledger.md § "The grant gate's
-        // ordering" argues each of the four positions, including why the two refusals above
-        // the marker are transient and above it anyway.
+        // ordering" argues each position, including why the two refusals above the marker are
+        // transient and above it anyway.
         //
-        // This one is the most durable of the four: a fan whose handback was given up on is
+        // This one is the most durable of them: a fan whose handback was given up on is
         // not coming back on its own, so a client told any of the others retries — past the
         // other client's release, past the handback window — into this refusal in the end.
         let abandoned = request.fanIndices.filter { restoreAbandoned.contains($0) }
@@ -351,6 +357,14 @@ actor LeaseAuthority {
         guard !sleepSeal else {
             log.refusedSystemSleeping(connection)
             throw AeolusXPCFault.manualControlUnavailable(reason: .systemSleeping)
+        }
+        // § 7's seal (#350), below the marker so a grant parked above it when § 7 begins meets
+        // it, and above the lease table because no lease is added while it is open: a lease
+        // the table still shows is one this panic's sweep is about to drop. handback-ledger.md
+        // § "The grant gate's ordering", item 6.
+        guard machineWideRestoresInFlight == 0 else {
+            log.refusedDuringMachineWideRestore(connection)
+            throw AeolusXPCFault.manualControlUnavailable(reason: .releaseInProgress)
         }
         // The durable refusal is checked first, deliberately. Both can apply at once — a
         // dying holder's fan is mid-handback while a second client legitimately holds
@@ -656,6 +670,24 @@ actor LeaseAuthority {
         return outstanding
     }
 
+    // MARK: - The panic verb's grant seal
+
+    /// Runs `acts` with every grant refused `.releaseInProgress`, and reopens the gate when they
+    /// return (#350).
+    ///
+    /// `docs/SAFETY.md` § 7's three acts run inside it, so it opens before the sweep empties the
+    /// table and closes after the read-back. Scoped rather than a seal/unseal pair: the decrement
+    /// is a `defer` in the frame that increments, so nothing an edit puts between them can leak
+    /// it. It gates grants only — no restore reads it. handback-ledger.md § *"The machine-wide
+    /// restore seal"*.
+    func sealingGrants<Outcome: Sendable>(
+        during acts: @Sendable () async -> Outcome
+    ) async -> Outcome {
+        machineWideRestoresInFlight += 1
+        defer { machineWideRestoresInFlight -= 1 }
+        return await acts()
+    }
+
     // MARK: - State, for the control plane and for tests
 
     /// The lease a snapshot reports, sweeping anything lapsed first so a snapshot never
@@ -685,7 +717,8 @@ actor LeaseAuthority {
             abandonedHandbacks: restoreAbandoned,
             unconfirmedHandbacks: handbackUnconfirmed,
             handbacksInFlight: Set(releasing.keys),
-            restoresAwaitingConfirmation: awaiting
+            restoresAwaitingConfirmation: awaiting,
+            machineWideRestoreInFlight: machineWideRestoresInFlight > 0
         )
     }
 

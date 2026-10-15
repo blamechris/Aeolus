@@ -136,7 +136,9 @@ lifting a refusal nobody is waiting on. The #291 review caught the first draft d
 So the read runs in `confirmAcceptedHandbacks()`, which only § 7's panic verb calls — the one
 caller with nothing queued behind it, and the recovery verb a user reaches for when a fan is stuck.
 Since #104 § 7 issues its own machine-wide keystone on a plane that can write, and issues it
-*before* this read, so the read still holds nothing behind it (ADR 0014 D5).
+*before* this read, so the read still holds no restore behind it (ADR 0014 D5). Since #350 it
+runs inside § 7's grant seal, so while it is out every grant is refused; that queues nothing, and
+is the safe direction ([The machine-wide restore seal](#the-machine-wide-restore-seal)).
 A sleep that hands such a fan back therefore lifts nothing; the next § 7 pass does.
 
 **A fan that reads manual, or will not read, keeps the refusal it already had**, and stays owed.
@@ -346,12 +348,12 @@ on every ordinary teardown.
 ## The grant gate's ordering
 
 `acquireLease`'s straight-line region — everything below the
-`// ---- No await below this line ----` marker — holds five refusals, and they are **ordered
+`// ---- No await below this line ----` marker — holds six refusals, and they are **ordered
 by how long they last, most durable first.** A client told a transient refusal retries; if it
 retries into a durable one in the end, the first answer wasted the round trip and told it
 something less true than what was available.
 
-1. **`restoreAbandoned` → `.restoreToAutomaticFailed`.** The most durable of the four: a fan
+1. **`restoreAbandoned` → `.restoreToAutomaticFailed`.** The most durable of them: a fan
    whose handback was given up on is not coming back on its own, so a client told any of the
    others retries — past the other client's release, past the handback window — into this
    refusal in the end.
@@ -390,7 +392,8 @@ something less true than what was available.
    apply at once — a dying holder's fan is mid-handback while a second client legitimately
    holds another — and `.releaseInProgress` documents itself as *"retry in a moment"*. A client
    told that, when the real answer is *"somebody else holds the fans and will for as long as
-   they live"*, retries into a different refusal forever.
+   they live"*, retries into a different refusal forever. § 7's seal, item 6, is checked before
+   both.
 
 5. **An exemption that lapsed → `.releaseInProgress`**
    ([#311](https://github.com/blamechris/Aeolus/issues/311)). The foreign-control step above
@@ -400,8 +403,34 @@ something less true than what was available.
    The fan's `releasing` entry clears, item 4 no longer sees it, and until #311 nothing refused
    it however it read: a lease over a fan in manual that nothing had read since its restore.
    `refuseIfExemptionLapsed(_:exempted:)` refuses a requested fan that was exempted and is no
-   longer in the set. Least durable of the five, so last: the retry reads the fan fresh.
+   longer in the set. Least durable of the six, so last: the retry reads the fan fresh.
    `GrantExemptionLapseTests` scripts the interleaving.
+
+6. **§ 7's grant seal → `.releaseInProgress`**
+   ([#350](https://github.com/blamechris/Aeolus/issues/350)). Numbered last because it was added
+   last; it is **checked between items 3 and 4**, after `sleepSeal` and before `table.isEmpty`.
+   [The machine-wide restore seal](#the-machine-wide-restore-seal) is the mechanism.
+
+   - **Before the lease table**, and that is not an exception to the durability order. No lease
+     is added while the seal is open, so a lease the table shows then is one this panic's sweep is
+     about to drop: it outlasts the seal by nothing. One can be seen only between the seal
+     opening and the sweep's `removeAll` — the verb's closure leaves the lease core in between —
+     and a grant there was told `.leaseHeldByAnotherClient`, which stops being true within
+     moments, while the snapshot said `.releaseInProgress`. The review of
+     [#363](https://github.com/blamechris/Aeolus/pull/363) found that; the guard sat after the
+     table, on the argument that a lease outlasts the seal, which it cannot here.
+     `PanicGrantSealTests.aGrantBetweenTheSealAndTheSweepIsRefusedByTheSeal` holds the order.
+   - **After `sleepSeal`**, which lifts on the next `.didWake` and so outlasts the panic verb.
+   - **Before `releasing`**, and the two give the same reason, so the order changes only the log
+     line: a fan the panic sweep is handing back is refused under the line that names the panic
+     verb, which is the cause, rather than under the ordinary handback's.
+   - **In the straight-line region, and nowhere above the marker.** A grant parked on a
+     suspension point when the panic begins has already passed anything checked above it, so the
+     only check that can meet it is one below the last `await` — #95's argument. A duplicate above
+     the marker would be worse than none: a test could stay green on the early refusal while the
+     real check was deleted. `PanicGrantSealTests.aGrantInFlightWhenThePanicBeginsIsRefused` is
+     red with the guard moved above the foreign-control read, while the test of a grant that
+     arrives during the panic stays green.
 
 ## One restore call per sweep
 
@@ -517,6 +546,93 @@ took — so the emergency can bridge it to maximum RPM. Sweeping it there would 
 back, on the way into an emergency, the one fan it may need to command hardest.
 `PanicPathScopeTripwireTests` holds the two verbs apart.
 
+## The machine-wide restore seal
+
+*Added by [#350](https://github.com/blamechris/Aeolus/issues/350); not relocated from a doc
+comment. [ADR 0014](../ADR/0014-apple-silicon-unlock.md)'s 2026-10-15 amendment is the decision.*
+
+`machineWideRestoresInFlight` counts the § 7 panic verbs inside
+`LeaseAuthority.sealingGrants(during:)`. While it is not zero, `acquireLease` refuses every grant
+`.releaseInProgress` under `LeaseLog.refusedDuringMachineWideRestore`. Its one caller is
+`SupervisedFanAuthority.restoreAllToAutomatic`, and all three of § 7's acts run inside it: the
+sweep, the `.built`-gated `.everyFan`, and the read-back.
+
+**The defect it closes.** The panic verb ran `releaseEveryLease()`, then `.everyFan`, then
+`confirmAcceptedHandbacks()`, and nothing refused a grant in between. From the moment the sweep
+emptied the table, a grant over a fan the sweep did not cover went through; while `.everyFan` was
+awaited, any grant did. After A6 a lease granted and applied there is undone by the restore and
+survives it, so § 5 reads `.modeReclaimed` under a live lease, and either re-asserts — level 3
+undoing level 1 — or gives the fan up blaming the operating system. ADR 0014 D4's epoch covers
+the forward writes of an engagement already under way; it does not cover a lease granted into a
+restore that will undo it. Unreachable on every build on `main`, where no lease is granted.
+
+**It opens before the sweep empties the table**, which is § 4's rule for `sleepSeal`: no instant
+at which the table is empty and the gate is open. Opened after the sweep, the sweep's own await —
+its per-fan restores — would be a window for every fan the sweep does not cover.
+
+**It closes after the read-back**, not after `.everyFan`, so the seal's extent is the verb rather
+than one call in it. An edit that reorders the acts then cannot move one of them out from under
+it without moving it out of the closure, which `PanicPathScopeTripwireTests` sees. The read-back
+writes nothing, so holding grants across it costs one read's worth of `.releaseInProgress`. The
+reply is sent after the seal closes, so a client polling after its own panic reply — `fanctl
+auto`, `fanctl reset --all` — sees the seal only when another panic verb overlaps its own, or when
+its 10 s `panicVerb` deadline expired before the reply arrived.
+
+**Scoped, not a seal/unseal pair.** An explicit pair, like § 4's `sealForSleep`, is correct the
+day it is written and leaks the first time an edit puts a `throw` between the two calls — and a
+leaked seal refuses every grant for the life of the process under a reason that says
+*milliseconds*. Here the decrement is a `defer` in the frame that increments, so the only way to
+hold the seal open is a call that never returns. A hardware round trip that never returns ends
+the helper ([ADR 0012](../ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)), and
+until it does the failure is grants refused, the safe side.
+
+**A count, not a flag.** Panic verbs are unsequenced — `HelperConnectionSession` dispatches the
+message on arrival, from one connection or several — so two can overlap, and the first to
+return must not reopen the gate under the second. Increment and decrement are paired in one
+frame, so the count cannot underflow.
+
+**What it does not change.** The keystone gains no input and waits on nothing: no restore reads
+the seal, and no read is queued ahead of `.everyFan` (ADR 0007, 2026-09-20). The reply is v1's
+*accepted*, and the refusal is a reason `acquireLease` already threw, so `AeolusXPCVersion` does
+not move. § 4 keeps `sleepSeal`, § 6 its gate and second keystone, and reconciliation runs
+before the listener resumes. That puts § 7 and bring-up behind an airtight interlock, and § 4 and
+§ 6 behind narrower ones: § 4's `.everyFan` runs with the grant gate open whenever the episode's
+wake is answered before that restore returns — a declined seal, or a handback wedged across the
+sleep ([#364](https://github.com/blamechris/Aeolus/issues/364)) — and § 6's gate refuses a grant on
+arrival but not in flight, with `apply` refused by the same gate (docs/SAFETY.md § 1).
+
+**What the snapshot says.** `activeLeaseView()` reads the count in the same hop as the registers,
+as `LeaseAccountability.machineWideRestoreInFlight`, and the availability ladder's step 10 —
+`ReadOnlyFanReport.reportingMachineWideRestore(of:given:)`, last before `.available` — re-states a
+fan that would otherwise read `.available` as `.unavailable(.releaseInProgress)`. **It re-states
+`.available` and nothing else.** Every refusal the ladder ranks above it that the grant shares,
+the grant gives ahead of the seal, except step 3's, which is the same reason; so a fan another
+rung refuses keeps the answer that is still true once the panic returns. A rung that overwrote
+any fan would replace `.foreignManualControl` with "retry in a moment" about a fan another
+program holds, and would erase the refusal [#360](https://github.com/blamechris/Aeolus/issues/360)'s
+fix adds.
+
+**Where the guard sits** is item 6 of [The grant gate's ordering](#the-grant-gates-ordering).
+
+**What remains.**
+
+- **The seal does not tie a § 5 registration to the lease that made it.** An `apply` whose lease
+  ends between the driver's after-check and its § 5 registration leaves an entry that ADR 0009 D2
+  judges under whichever lease covers the fan next. That is
+  [#357](https://github.com/blamechris/Aeolus/issues/357)'s, and an A6 precondition.
+- **§ 7's round trip on hardware is unmeasured** (row 18 of the hardware checklist; ADR 0014 D8).
+  "Retry in a moment" rests on it, and a long one would make that sentence untrue.
+
+**Tested by** `PanicGrantSealTests`: a grant during the machine-wide restore, a grant parked
+above the marker when the panic begins, a grant between the seal opening and the sweep, a grant
+over a fan the sweep does not cover, overlapping panics, and a refusal the seal must not
+overwrite — each with the mutation it kills recorded on it. `PanicPathScopeTripwireTests` holds
+the three acts inside the closure, and today it alone holds the read-back's place:
+`ControlStateGatePlane` parks every mode read, so a grant asked while the read-back is parked
+parks on its own foreign-control read too. A per-fan mode park could hold it behaviourally. The
+same suite holds that each runtime machine-wide restore is issued after its interlock is called —
+the order, not the gaps above.
+
 ## Pairing a sleep with its own wake
 
 `docs/SAFETY.md` § 4's seal is set on `.willSleep` and cleared on `.didWake`, and until #202
@@ -604,7 +720,8 @@ was attached to neither); it is unchanged and sits under that declaration again.
 
 `type_body_length` counts **code** lines only. At the time of the relocation this actor's body
 spans 265 of them against a warning at 250 and an **error at 350**: about 85 lines of headroom,
-and relocating prose cannot make more. `file_length` has not gone away either. At this file's
+and relocating prose cannot make more. [#350](https://github.com/blamechris/Aeolus/issues/350)'s
+grant seal took it to 278, leaving 72, and the file to 885 lines of its 1000. `file_length` has not gone away either. At this file's
 present density, 3.1 lines per code line, it would error after roughly 48 new code lines, so
 which of the two limits is reached first depends on how much comment the new code carries.
 

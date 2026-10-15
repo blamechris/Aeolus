@@ -1,9 +1,10 @@
 import FanKit
 
-// The two re-statements `SupervisedFanAuthority.snapshot()` makes over the read path's
-// answer, lifted out of `ReadOnlyFanReport.swift` by
+// The re-statements `SupervisedFanAuthority.snapshot()` makes over the read path's answer,
+// lifted out of `ReadOnlyFanReport.swift` by
 // [#187](https://github.com/blamechris/Aeolus/issues/187) — which added one of them and put
-// that file over the 400-line threshold #128 split it out to hold.
+// that file over the 400-line threshold #128 split it out to hold. There were two until
+// [#350](https://github.com/blamechris/Aeolus/issues/350) added § 7's grant seal as a third.
 //
 // Same trade as `LeaseAuthorityRefusals.swift`, and cheaper: `ReadOnlyFanReport` is a
 // namespace of pure functions with no state, so nothing widens with the move. The one member
@@ -41,11 +42,21 @@ import FanKit
 // |   | … or `.restoreToAutomaticUnconfirmed`, for a fan § 3 keeps (#303) | § 3's kept set |
 // | 6 | `.writePathNotBuilt` | `availability(writeCapabilityIs:bounds:)` — the seam |
 // | 8 | `.boundsImplausible` | `availability(writeCapabilityIs:bounds:)` — § 2's gate |
+// | 10 | `.releaseInProgress` | `reportingMachineWideRestore` — § 7's grant seal (#350) |
 // | 9 | `.available` | nothing refused |
 //
 // **Steps 4 and 7 were § 5's ledger** — `.supervisorBlind` and `.reclaimedBySystem` — until
 // #355 removed them. The numbers are kept so that every reference to steps 5, 6 and 8 still
-// names the same rung.
+// names the same rung, and neither is reused: step 10 is the next unused number, which is why
+// it is listed above step 9, `.available`, whose number predates it.
+//
+// **Step 10 re-states `.available` and nothing else.** Every refusal ranked above it that the
+// grant shares, the grant gives ahead of the seal — above the marker, or ahead of the seal's
+// guard in the straight-line region — except step 3's, which is the same `.releaseInProgress`.
+// So a fan another rung refuses keeps that rung's answer, which is also the one still true once
+// the panic returns. Step 8 is the one the grant does not share yet (#270): there the snapshot
+// keeps the bounds and the grant answers with the seal. Never widen this rung to overwrite a
+// refusal: #360's fix, for a fan the grant refuses and this ladder reports available, rests on it.
 //
 // **Steps 1–3 and step 5 cannot both apply, so their relative order is not load-bearing and
 // is not relied on.** Every fan in one of the three handback registers is in
@@ -99,20 +110,37 @@ extension ReadOnlyFanReport {
     /// re-states one field of it, and the ordering that makes a lapsing lease honest is
     /// preserved.
     ///
-    /// The two halves are separate functions because they answer to different mechanisms —
+    /// The first two are separate functions because they answer to different mechanisms —
     /// § 6's post-reconciliation baseline and the lease core's handback ledgers — and they
     /// compose in either order for the reason this file's header gives: the fans they speak
-    /// about are disjoint by construction.
+    /// about are disjoint by construction. The third, § 7's seal, is applied last and only to
+    /// what the other two left `.available`.
     static func restatingAvailability(
         of fan: FanState, given leases: LeaseAccountability,
         reconciliation baseline: ReconciliationBaseline
     ) -> FanState {
-        reportingHandbackState(
-            of: reportingForeignControl(
-                of: fan, heldByAeolus: leases.accountableFans,
-                awaitingConfirmation: leases.restoresAwaitingConfirmation,
-                reconciliation: baseline),
+        reportingMachineWideRestore(
+            of: reportingHandbackState(
+                of: reportingForeignControl(
+                    of: fan, heldByAeolus: leases.accountableFans,
+                    awaitingConfirmation: leases.restoresAwaitingConfirmation,
+                    reconciliation: baseline),
+                given: leases),
             given: leases)
+    }
+
+    /// Step 10 of the ladder: § 7's grant seal
+    /// ([#350](https://github.com/blamechris/Aeolus/issues/350)), as one fan's availability.
+    ///
+    /// While the panic verb runs, a fan that would otherwise read `.available` reads
+    /// `.unavailable(.releaseInProgress)`, the reason `acquireLease` throws for it. Every other
+    /// answer passes through untouched; see this file's header for why that is the whole rule.
+    static func reportingMachineWideRestore(
+        of fan: FanState, given leases: LeaseAccountability
+    ) -> FanState {
+        guard leases.machineWideRestoreInFlight, fan.manualControlAvailability == .available
+        else { return fan }
+        return restating(fan, as: .unavailable(.releaseInProgress))
     }
 
     /// Steps 1–3 of the ladder: what the lease core would refuse a grant over this fan for.
@@ -175,7 +203,7 @@ extension ReadOnlyFanReport {
     ///
     /// `FanState.manualControlAvailability` is a `let` with no default — deliberately, so no
     /// producer can forget to state it — so a re-statement is a re-assembly. Written once here
-    /// rather than at each of the two call sites: two copies of this initialiser call are two
+    /// rather than at each call site: two copies of this initialiser call are two
     /// places a field can be dropped or transposed, and a transposed `minimumRPM`/`maximumRPM`
     /// would be a silent change to what the bounds gate judges.
     private static func restating(
