@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import ImageIO
 import Testing
@@ -86,26 +87,64 @@ struct AppIconCatalogTests {
         #expect(CGImageSourceGetType(source) as String? == "public.png", "\(name) is not a PNG")
         #expect(properties[kCGImagePropertyPixelWidth] as? Int == slot.pixels, "\(name) width")
         #expect(properties[kCGImagePropertyPixelHeight] as? Int == slot.pixels, "\(name) height")
-        // The tile's corners and its shadow are transparent. An opaque icon would render as
-        // a hard square in the Dock.
+        // The tile's corners are transparent. An opaque icon would render as a hard square in
+        // the Dock — and an alpha channel alone does not rule that out, since every pixel in
+        // it could be opaque, so the corner itself is read.
         #expect(properties[kCGImagePropertyHasAlpha] as? Bool == true, "\(name) has no alpha")
+        let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(try Self.bottomLeftAlpha(of: image) == 0, "\(name)'s corner is not transparent")
+    }
+
+    /// The alpha of `image`'s bottom-left pixel, read by drawing the image into a one-pixel
+    /// RGBA context at its own size, so whatever pixel format the PNG decodes to, the byte
+    /// read is that corner's coverage.
+    static func bottomLeftAlpha(of image: CGImage) throws -> UInt8 {
+        let space = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+        var pixel: [UInt8] = [0, 0, 0, 0]
+        let drawn = pixel.withUnsafeMutableBytes { buffer -> Bool in
+            guard
+                let context = CGContext(
+                    data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                    bytesPerRow: 4, space: space,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return false }
+            context.interpolationQuality = .none
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            return true
+        }
+        try #require(drawn, "could not create a one-pixel bitmap context")
+        return pixel[3]
     }
 
     /// `project.yml` is read as text, with comment lines dropped so a sentence about the
-    /// setting cannot stand in for the setting itself.
+    /// setting cannot stand in for the setting itself, and only the `Aeolus` target's block
+    /// is searched: the catalog listed under `fanctl` or the helper would leave the app with
+    /// no icon while the file as a whole still mentioned it.
+    ///
+    /// Xcode 27 already defaults `ASSETCATALOG_COMPILER_APPICON_NAME` to `AppIcon` for an
+    /// application target — measured: the icon is built with the line deleted — so the
+    /// catalog source is the line this test actually rests on. The setting is kept explicit
+    /// for toolchains that do not default it, and checked so it is not dropped by accident.
     @Test("project.yml points the app target at the catalog and names the icon")
     func projectWiresTheCatalog() throws {
         let manifest = try String(
             contentsOf: Self.repositoryRoot.appendingPathComponent("project.yml"),
             encoding: .utf8)
-        let configuration =
-            manifest
-            .split(separator: "\n", omittingEmptySubsequences: false)
+        let lines = manifest.split(separator: "\n", omittingEmptySubsequences: false)
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }
-            .joined(separator: "\n")
+        let start = try #require(
+            lines.firstIndex(of: "  Aeolus:"), "project.yml has no Aeolus target")
+        // The block ends at the next non-blank line indented less than its body: the next
+        // target (two spaces) or the next top-level key (none).
+        let end =
+            lines[(start + 1)...].firstIndex { line in
+                !line.trimmingCharacters(in: .whitespaces).isEmpty
+                    && line.prefix { $0 == " " }.count < 4
+            } ?? lines.endIndex
+        let appTarget = lines[start..<end].joined(separator: "\n")
 
-        #expect(configuration.contains("- path: Resources/Assets.xcassets"))
-        #expect(configuration.contains("ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon"))
+        #expect(appTarget.contains("- path: Resources/Assets.xcassets"))
+        #expect(appTarget.contains("ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon"))
     }
 
     /// `Sources/Aeolus` is also the `AeolusUI` SwiftPM target's directory, and SwiftPM treats

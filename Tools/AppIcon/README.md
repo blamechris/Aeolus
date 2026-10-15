@@ -6,8 +6,9 @@ a slightly darker hub. Nothing is traced, sampled or downloaded, it uses no SF S
 (Apple's SF Symbols licence forbids them in app icons), and it borrows nothing from any other
 fan-control tool — see the clean-room rules in [CLAUDE.md](../../CLAUDE.md).
 
-Like the other tools in this directory it is a maintainer tool: not part of `Package.swift`,
-not built by `project.yml`, never shipped. What ships is the PNGs it produces, committed in
+It is a maintainer tool, never shipped. Unlike `power-observer` and `smc-sampler`, it is a
+script with no `Package.swift` target of its own — only its tests are in `Package.swift` — and
+like them it is not built by `project.yml`. What ships is the PNGs it produces, committed in
 [`Resources/Assets.xcassets/AppIcon.appiconset`](../../Resources/Assets.xcassets/AppIcon.appiconset).
 
 ## Regenerating
