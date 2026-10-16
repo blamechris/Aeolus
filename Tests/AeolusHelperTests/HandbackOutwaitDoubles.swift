@@ -9,8 +9,8 @@ import Testing
 
 /// How long a test waits for something the fix might park before it calls it a hang.
 ///
-/// **Failure-only.** A correct revocation, sweep or § 5 cycle here settles within one actor hop
-/// of being let go, so nothing that passes comes near this; it exists so a mutant that never
+/// **Failure-only.** A correct revocation, sweep or § 5 cycle here settles within a few actor
+/// hops of being let go, so nothing that passes comes near this; it exists so a mutant that never
 /// resumes a waiter fails red, naming what never finished, instead of wedging the run behind a
 /// continuation nothing resumes — `CeilingedRefusal`'s purpose, measured in seconds rather than
 /// in attempts because what it bounds is a wait, not a retry loop.
