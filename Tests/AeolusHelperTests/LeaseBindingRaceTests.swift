@@ -166,6 +166,86 @@ struct LeaseBindingRaceTests {
         #expect(await restorer.causes == [.connectionInvalidated])
     }
 
+    /// The in-flight ordering again, parked on § 2's bounds read rather than the enumeration
+    /// ([#270](https://github.com/blamechris/Aeolus/issues/270)): the last suspension point above
+    /// the marker. The primary test parks on the first, so it cannot see where a later one sits.
+    /// A bounds read below the liveness check binds the lease to the connection that died while it
+    /// was parked, and every other client is refused `.leaseHeldByAnotherClient` until the TTL.
+    ///
+    /// **Mutation:** in `LeaseAuthority.acquireLease`, move `try await
+    /// refuseIfBoundsImplausible(connection, wanting: wanting.subtracting(exempted))` to just after
+    /// `try refuseIfInvalidated(connection)`. Run: red — a lease bound to a dead connection.
+    @Test("A lease is not bound to a connection invalidated during the grant's bounds read")
+    func invalidationDuringTheBoundsReadRefusesTheBinding() async throws {
+        let envelopes = ParkableEnvelopeReading()
+        await envelopes.park()
+        let restorer = RecordingFanRestorer()
+        let authority = LeaseFixture.authority(restorer: restorer, envelopes: envelopes)
+        let connection = ConnectionID()
+
+        let acquiring = observing {
+            try await authority.acquireLease(LeaseFixture.request(fans: [0]), from: connection)
+        }
+        await yieldUntil("the grant to park on fan 0's bounds read") { await envelopes.parked == 1 }
+        await authority.connectionDidInvalidate(connection)
+        await envelopes.release()
+
+        var refusal: AeolusXPCFault?
+        do { _ = try await finished("the parked grant to return", acquiring) } catch {
+            refusal = error as? AeolusXPCFault
+        }
+        #expect(await authority.leaseCount == 0, "a lease was bound to a dead connection")
+        #expect(refusal == Self.inFlight)
+        #expect(await authority.holdsTombstone(for: connection))
+        #expect(await restorer.restores.isEmpty, "nothing was ever held, so nothing was put back")
+    }
+
+    /// `acquireLease`'s straight-line marker, as `LeaseAuthority.swift` writes it.
+    private static let marker = "// ---- No `await` below this line. Adding one reopens #95. ----"
+
+    /// Nothing in `acquireLease` suspends below its marker: the tests above drive two suspension
+    /// points, and this holds every one, the next included.
+    ///
+    /// The region is the text from the marker to the end of `acquireLease`, comments stripped and
+    /// string literals kept, since an interpolation is code. Its whitespace is collapsed and
+    /// `await` is matched as a word, so neither `await(` nor `await  x` evades it. It must contain
+    /// the liveness check and the insert, so a marker moved below them fails rather than passes.
+    ///
+    /// **Mutation:** add `await Task.yield()` on the line below the marker. Run: red here.
+    @Test("acquireLease does not suspend below its no-await marker")
+    func nothingSuspendsBelowTheMarker() throws {
+        let files = try SeamScanner.swiftFiles(under: "AeolusHelper")
+            .filter { $0.lastPathComponent == "LeaseAuthority.swift" }
+        let url = try #require(files.count == 1 ? files.first : nil, "\(files) is not one file")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let pieces = source.components(separatedBy: Self.marker)
+        try #require(pieces.count == 2, "LeaseAuthority.swift has \(pieces.count - 1) markers")
+
+        // The comment stripper would remove the marker, so it becomes a token first.
+        let token = "NO_AWAIT_BELOW_THIS_LINE"
+        let body = try #require(
+            try SeamScanner.functionBody(
+                named: "acquireLease", inSource: pieces.joined(separator: token)))
+        let halves = body.components(separatedBy: token)
+        try #require(halves.count == 2, "the marker is not inside acquireLease")
+        let below = SeamScanner.strippingAllComments(halves[1])
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+
+        for guarded in [#"\brefuseIfInvalidated\s*\("#, #"\btable\s*\.\s*insert\s*\("#] {
+            #expect(
+                try !AuthorityRoleTripwireTests.matches(of: guarded, in: below).isEmpty,
+                "\(guarded) is not below the marker, so this region is not #95's")
+        }
+        let awaits = try AuthorityRoleTripwireTests.matches(of: #"\bawait\b.{0,40}"#, in: below)
+        #expect(
+            awaits.isEmpty,
+            """
+            acquireLease suspends below its marker, at \(awaits). A suspension between the \
+            liveness check and the insert lets connectionDidInvalidate run, and the lease binds \
+            to the connection it just tombstoned (#95). Move the await above the marker.
+            """)
+    }
+
     /// The gate `HelperConnectionSession` already had is unchanged and still fires, so the
     /// arrival ordering is refused before the authority is reached at all. Defence in depth,
     /// per #95: *"Do not remove it as redundant once the authority-side check exists."*
