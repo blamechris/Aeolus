@@ -45,6 +45,16 @@ Three escapes were available and all three were refused.
   is inaccessible due to 'private' protection level`, and the same for `log`. D36 is that
   stored state stays `private`, and `held` is exactly what makes `examine(fanAt:)`'s
   read-then-mutate reasoning checkable.
+
+  *That was the whole of the actor when it was written, and it is now true only of what the
+  actor does.* [#128](https://github.com/blamechris/Aeolus/issues/128)'s third pass moved `held`
+  itself — with `finalising`, `registrations` and every synchronous decision over them — into a
+  value type the actor holds `private`, and `reportShortfall(_:fanAt:)` into `HeldFan.judge(_:)`
+  ([the limit below](#the-limit-prose-cannot-relieve-the-type-body)). That widened nothing,
+  because the state moved *inside* a value rather than being reached from another file. What is
+  left in the actor awaits, re-fetches after an `await`, or acts, over `registry`, `log`,
+  `ledger`, `writer`, `sensing`, `leases` or `latch`; moving any of it to another file would
+  still widen that state, and moving it into a helper would add a suspension point.
 - **Shaving the overage.** `main` sat eight lines under a hard CI error, so a fix that landed
   just under it would fail the next unrelated PR to touch the file.
 
@@ -82,6 +92,32 @@ New behaviour for #9's A4 and A6 belongs in the `EngagementDriver` that
 [ADR 0014](../ADR/0014-apple-silicon-unlock.md) specifies, and in value types beside `HeldFan`
 — `HeldFan` is the pattern, a type that holds no state of the actor's and so can live in its
 own file — and not in this actor's body, which should keep only what has to touch `held`.
+
+**#128's third pass moved `held`, `finalising` and `registrations` themselves into
+`ReclamationWatchdog.Registry`, a value type held `private`: 301 code lines, file 867**
+(SwiftLint 0.65.1), from 346 and 977. #365, #366 and #368 each need § 5 code, and four lines
+were not room for any of them. The registry's transitions are synchronous, named and
+closure-free, and `HeldFan.judge(_:)` moves one record's counters for one readable cycle; the
+actor keeps every `await`, every re-fetch after one and every act, in the order it had.
+`ReclamationWatchdogAccessTests` holds the trade, and `ReclamationRegistryTests` tests the
+registry as a value.
+
+About 49 lines of headroom is the honest floor rather than a step towards the 250 warning. What
+is left is the reentrancy-sensitive orchestration — each `await`, the re-fetch after it, and the
+act it guards — and none of it can leave the actor without widening its state to the module or
+adding a suspension point between a check and its act, which is the defect class this file's
+re-fetch rule exists to prevent. The gain is where the next state goes: #366's episode mark, and
+#368's token if it lands here, go into `Registry` as pure state tested as a value, at a cost to
+the actor of a few lines each. Three other routes were weighed and refused:
+
+- **Extensions in the same file.** SwiftLint since 0.57 excludes `extension` from
+  `type_body_length` by default (`excluded_types: [extension, protocol]`), and CI installs it
+  unpinned, so code moved into an extension is not bounded at all — the rule is retired rather
+  than met — and `file_length` is untouched.
+- **A helper holding the ledger, the log and the driver.** Every call into it becomes a hop of
+  its own, so scheduling moves and the suites that stagger work by suspension could flip.
+- **Pushing the re-fetches out through callbacks.** Adds a suspension point between each check
+  and the act it guards.
 
 ## Every act is for the lease the fan was registered under
 
@@ -378,6 +414,30 @@ make them worse.
   checkable, and [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest of
   this space — including what to do when the next paragraph pushes this over again.
 
+*Added by #128's third pass; not relocated from a doc comment.* Two more were taken after that
+note was written, and the first is the only split of this file to move state:
+
+- **`Registry`, in `ReclamationRegistry.swift`**: `held`, `finalising` and `registrations`, each
+  `private` to it, and every synchronous decision over them as a named transition — `register`,
+  `release`, `forget`, `beginFinalising`, `endFinalising`, `dropLease`, and the per-record
+  `command`, `recordReassertedTarget`, `resetReadFailures`, `recordReadFailure`, `judge`,
+  `spendReassertAttempt` and `refundReassertAttempt`. The actor holds one, `private`, and
+  reaches it only through those members. It widens no state, because the state moved inside a
+  value rather than being reached from another file: a `Registry` constructed anywhere else
+  governs nothing.
+- **`HeldFan.judge(_:)`**, in `ReclamationHeldFan.swift`: what were `gracedBeforeItsFirstCommand`
+  and `reportShortfall`, and the converged branch's reset, as one mutating method on the record.
+  The actor acts on its answer.
+
+What keeps that safe is held by `ReclamationWatchdogAccessTests` rather than by this paragraph:
+the actor's state stays private and its internal surface is exactly what it was; the registry's
+stores stay private and are exactly three; nothing in `ReclamationRegistry.swift` is `async` or
+`await`s, because the compiler refuses a mutating `async` call on an actor's stored struct and
+not a non-mutating one, which would answer from a stale copy; no registry method takes a
+closure, because one that reaches the actor's `registry` while a transition is mutating it traps
+at run time; and the actor never uses `registry` as a whole value, because a copy taken before an
+`await` and written back after it loses every transition in between.
+
 ## The ordering is normative: call this **after** the `F<n>Md` write has landed
 
 *From the doc comment of `manualControlEngaged(_:)`.*
@@ -446,7 +506,8 @@ reason.
 
 ## The window this closes
 
-*From the doc comment of `gracedBeforeItsFirstCommand(_:of:fanAt:)`.*
+*From the doc comment of `gracedBeforeItsFirstCommand(_:of:fanAt:)`, which is
+`HeldFan.judge(_:)`'s since #128's third pass.*
 
 `manualControlEngaged(_:)` mandates registration **after** the `F<n>Md` write lands,
 and an earlier version of that comment claimed the far side of the write was
@@ -475,7 +536,8 @@ names, arrived at from the ordering it mandates rather than from the one it forb
 
 ## Why the failure asymmetry inverts here, and only here
 
-*From the doc comment of `gracedBeforeItsFirstCommand(_:of:fanAt:)`.*
+*From the doc comment of `gracedBeforeItsFirstCommand(_:of:fanAt:)`, which is
+`HeldFan.judge(_:)`'s since #128's third pass.*
 
 This file's rule is that over-firing is the safe direction: handing a fan back to
 Apple's thermal management costs cooling nobody chose, while under-firing leaves a
@@ -492,7 +554,8 @@ is judged exactly as strictly as before — including on the very next cycle.
 
 ## Bounded by `blindCyclesBeforeDivergence`, and not by a fourth constant
 
-*From the doc comment of `gracedBeforeItsFirstCommand(_:of:fanAt:)`.*
+*From the doc comment of `gracedBeforeItsFirstCommand(_:of:fanAt:)`, which is
+`HeldFan.judge(_:)`'s since #128's third pass.*
 
 The same number, because it is the same question: how many 1 Hz cycles may pass
 without this mechanism being able to confirm a fan is ours before that becomes
@@ -504,7 +567,8 @@ under a literal ceiling, so this window cannot be widened into minutes either.
 
 ## Why this no longer reaches the terminal action
 
-*From the doc comment of `reportShortfall(_:fanAt:)`.*
+*From the doc comment of `reportShortfall(_:fanAt:)`, which is `HeldFan.judge(_:)`'s since
+#128's third pass.*
 
 It used to, and that was the most consequential defect in this file. The secondary
 signal is only ever *evaluated* when the primary has converged — `examine` returns
