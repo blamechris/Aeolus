@@ -52,8 +52,9 @@ extension ManualControlAvailability.Reason {
                 + "implement one."
         case .releaseInProgress:
             return "This fan is mid-handback: a previous lease just ended and the write that "
-                + "returns it to automatic control has not completed yet, or a request to return "
-                + "every fan at once (`fanctl reset --all`, `fanctl auto`) is still running."
+                + "returns it to automatic control has not completed yet, or a restore of every "
+                + "fan at once is still running — `fanctl reset --all`, `fanctl auto`, or the "
+                + "handback before the Mac sleeps."
         case .handbackUnconfirmed:
             return "Aeolus asked for this fan back and stopped waiting for an answer before "
                 + "one arrived, so it does not yet know what mode the fan is in."
@@ -103,7 +104,8 @@ extension ManualControlAvailability.Reason {
         case .selfRenewalNotBuilt:
             return "Ask for a lease without self-renewal instead."
         case .releaseInProgress:
-            return "Retry in a moment; this normally clears in milliseconds."
+            return "Retry in a moment; this normally clears in milliseconds. If it does not "
+                + "clear within a few seconds, a restore has not returned; see docs/RECOVERY.md."
         case .handbackUnconfirmed:
             return "The outstanding restore is still running; retry shortly, or watch "
                 + "connection health. A helper restart is not the first action — only reach "

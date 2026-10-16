@@ -114,17 +114,16 @@ are § 4's sleep handback (`Lifecycle/SystemPowerResponder.swift`), § 6's order
 which issues it only on a plane that can write. **That count and that list are asserted, not
 merely stated** — `PanicPathScopeTripwireTests` scans the tree for them, so a fifth site cannot
 arrive while this sentence goes on saying there are four (#228). **Each is issued behind a grant
-interlock, and two of the four interlocks have a gap.** § 7 runs inside
-`LeaseAuthority.sealingGrants(during:)` ([#350](https://github.com/blamechris/Aeolus/issues/350))
-and bring-up reconciles before the listener is resumed, so neither can undo a lease. § 4 seals the
-table before its teardown, but its `.everyFan` runs with the grant gate open whenever the
-episode's wake is answered before that restore returns — a declined seal, or a handback wedged
-across the sleep — and a grant in that window outlives the restore
-([#364](https://github.com/blamechris/Aeolus/issues/364), an A6 precondition). § 6's teardown closes
-the control gate first, but the gate refuses a grant on arrival, not one already in flight; such a
-grant can land, and `apply` is refused by the same gate before the process exits.
-`PanicPathScopeTripwireTests` holds the three runtime orderings and `HelperCompositionTests`
-bring-up's.
+interlock, and one of the four has a gap.** § 7's panic verb and § 4's sleep handback run inside
+`LeaseAuthority.sealingGrants(during:)` ([#350](https://github.com/blamechris/Aeolus/issues/350),
+[#364](https://github.com/blamechris/Aeolus/issues/364)), open from before the sweep empties the
+table until the machine-wide restore returns — for § 4 whether its sleep seal was set, declined
+because its wake was already answered, or lifted by a wake the teardown outlived — and bring-up
+reconciles before the listener is resumed, so none of the three can undo a lease. § 6's teardown
+closes the control gate first, but the gate refuses a grant on arrival, not one already in flight;
+such a grant can land, and `apply` is refused by the same gate before the process exits.
+`PanicPathScopeTripwireTests` holds the three runtime orderings, and § 7's and § 4's restores
+inside the seal, and `HelperCompositionTests` bring-up's.
 
 **§ 7's panic path is among them, and on this build it still issues nothing.** This paragraph
 listed it until the review of #104, while the shipped verb issued no machine-wide restore; the
@@ -640,9 +639,12 @@ notification ever arrives.
 - Before sleep, in this order: **seal acquisition** so no new lease can be granted until the
   machine wakes, **release every lease**, **restore `.everyFan`** through the keystone verb
   (which also clears the Apple Silicon force key), and only **then** acknowledge the power
-  change.
+  change. The release and the restore run inside the machine-wide restore seal
+  (`LeaseAuthority.sealingGrants(during:)`), so no grant succeeds while either is in flight,
+  before the wake or after it ([#364](https://github.com/blamechris/Aeolus/issues/364)).
 - After wake: **nothing** written. The helper does not re-assert, and does not reconcile
-  either. It clears the seal, which touches no fan.
+  either. It clears the sleep seal, which touches no fan, and leaves the machine-wide restore
+  seal to any teardown still running.
 
 **The seal is what closes the door the other three leave open.** Without it, a request
 already parked on the helper's 34-key telemetry read when `.willSleep` arrived resumes after
@@ -653,6 +655,23 @@ in the window is refused `ManualControlAvailability.Reason.systemSleeping` and t
 again after the wake. A helper that hears a sleep and never hears the wake refuses manual
 control for the rest of its life, which is the fail-safe direction and is deliberately not
 guarded against.
+
+**Two seals, because they are two facts** (#364, [#347](https://github.com/blamechris/Aeolus/issues/347)).
+`sleepSeal` is the episode's: the machine is going to sleep. It is set before the teardown and
+cleared by a wake newer than every sleep that met it, so a stale wake cannot reopen a seal a newer
+sleep set or found standing (#347). The machine-wide restore seal is the teardown's: a restore that
+would undo a grant is in flight. The two coincide only when the teardown starts after the sleep
+seal and ends before the wake, and neither is guaranteed — the seal is declined when its wake was
+already answered, and a teardown whose restore outlasts the budget is still running after the
+wake. So the teardown holds the second seal for its whole extent. A grant during a sealed
+teardown is refused `systemSleeping`; one during a declined teardown, or one still running after
+the wake, is refused `releaseInProgress`. The declined teardown still runs, because the later wake
+proves the sleep is over and not what it left behind: it is the only act that ends a lease which
+crossed the sleep, and the episode's only `.everyFan`. A teardown that never returns refuses every
+grant until it returns or the helper is ended
+([ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)), which is the safe
+side. [handback-ledger.md](records/handback-ledger.md) § *"§ 4's handback runs inside it (#364)"*
+has the argument.
 
 **Release-before-sleep is the load-bearing half**; the continuous-clock TTL is the backstop,
 for a sleep that arrives without a completed notification round trip. Whether
@@ -853,7 +872,11 @@ nothing pinned. That the seal is paired with *its own* episode: a `.willSleep` w
 starved until after its wake does not close the table, a wake older than the seal standing
 does not reopen it, and — the sequence that matters most — `.didWake`, `.willSleep`,
 `.didWake`, `.willSleep` still seals on the second ordinary sleep, so one unpaired wake cannot
-disable the seal for the life of the process. That the keystone is **observed** in each of its
+disable the seal for the life of the process. Since #347 it holds two more sequences: a wake
+older than a sleep that *met* the standing seal, rather than set it, does not reopen it; and a
+starved older sleep that runs after a newer one sealed does not lower the seal below a stale
+wake, which pins the larger generation rather than plain assignment. That the keystone is
+**observed** in each of its
 four states rather than inferred from an empty register: never issued, issued and outstanding,
 landed, refused. And that a wedge on the first fan still records every fan the sweep covered,
 on a two-fan machine, which is the smallest that can tell "every fan" from "the first fan".
@@ -867,6 +890,14 @@ stayed green. It is a claim about the seal, the acknowledgement count and the cy
 those it holds; it is not a claim about either register, and it is recorded here as a
 correction rather than deleted, because a *Tested by:* line that retires a question is the
 failure mode this section's own reading note warns about.
+
+**`SleepGrantSealTests`** (#364) holds the machine-wide restore seal across the whole teardown on
+the three routes the sleep seal does not cover: a grant during a declined seal's teardown, with the
+keystone or the sweep parked, is refused `releaseInProgress` and the snapshot says the same; a
+keystone parked across its wake refuses a grant `systemSleeping` before the wake and
+`releaseInProgress` after it; and a sweep parked across its wake refuses a grant over a fan it
+does not cover, with the keystone issued only once the sweep returns. Every one grants once the
+teardown returns.
 
 The register half is **`SleepCycleAccumulationTests`** (#209) and its sibling
 **`SleepCycleSurvivalTests`**, which split decision D33's endings between them. The first
@@ -1454,7 +1485,8 @@ only report of it. The reply now follows one more restore call, which the client
 **No lease is granted while the panic verb runs** (#350). Its three acts run inside
 `LeaseAuthority.sealingGrants(during:)`, open from before the sweep empties the table until after
 the read-back. `acquireLease` refuses `.releaseInProgress` while it is open. The seal gates grants
-only: no restore reads it, the restore waits on nothing new, and the reply is unchanged.
+only: no restore reads it, the restore waits on nothing new, and the reply is unchanged. § 4's
+sleep handback runs inside the same seal (#364).
 
 **One fan under no live lease *is* touched, and it is the fan this path exists for**
 ([#189](https://github.com/blamechris/Aeolus/issues/189)). `releaseEveryLease()` sweeps

@@ -178,6 +178,56 @@ struct SleepOrderingTests {
         }
     }
 
+    /// A stale wake does not reopen a seal a newer sleep **met** rather than set
+    /// ([#347](https://github.com/blamechris/Aeolus/issues/347)).
+    ///
+    /// Episode 1's sleep seals; episode 3's arrives with that seal still standing, because
+    /// episode 1's wake is starved. Until #347 `sealForSleep(generation:)` returned at
+    /// `guard !sleepSeal` without recording episode 3's generation, so the late wake — newer than
+    /// episode 1's seal, older than episode 3's sleep — reopened the table while episode 3's
+    /// machine was going to sleep. A fresh wake still opens it: nothing latches.
+    ///
+    /// **Mutation:** move `sealGeneration = max(sealGeneration, generation)` in `sealForSleep`
+    /// back below `guard !sleepSeal`. Run: red — the lease is granted.
+    @Test("A wake older than a sleep that met the seal does not reopen the table")
+    func aStaleWakeDoesNotReopenASealANewerSleepMet() async throws {
+        let (helper, observer) = Self.helper()
+        await helper.bindSafetyRegistries()
+        helper.observeSystemPower()
+
+        try await observer.deliver(.willSleep)
+        let staleWake = observer.mint(.didWake)
+        try await observer.deliver(.willSleep)
+        await observer.deliver(staleWake)
+
+        try await Self.expectSealedThenReopenedByAFreshWake(helper, observer)
+    }
+
+    /// An older starved sleep that runs after a newer one sealed does not lower the seal below a
+    /// stale wake.
+    ///
+    /// Green before #347 as well, because the old code recorded nothing on a standing seal. It
+    /// pins the *form* of #347's fix: the starved sleep is not declined — no wake has been seen —
+    /// so a plain `sealGeneration = generation` would lower the generation to its own, and the
+    /// wake minted between the two would then clear episode 3's seal.
+    ///
+    /// **Mutation:** replace `max(sealGeneration, generation)` with `generation`. Run: red here,
+    /// and green in the test above, which is what makes this one necessary.
+    @Test("A starved older sleep does not lower the seal below a stale wake")
+    func aStarvedOlderSleepDoesNotLowerTheSeal() async throws {
+        let (helper, observer) = Self.helper()
+        await helper.bindSafetyRegistries()
+        helper.observeSystemPower()
+
+        let starvedSleep = observer.mint(.willSleep)
+        let staleWake = observer.mint(.didWake)
+        try await observer.deliver(.willSleep)
+        await observer.deliver(starvedSleep)
+        await observer.deliver(staleWake)
+
+        try await Self.expectSealedThenReopenedByAFreshWake(helper, observer)
+    }
+
     // MARK: - Item 2: the keystone is observed, in all four of its states
 
     /// The #68 wedge, with a lease held: the keystone is **never issued**.
@@ -375,5 +425,35 @@ struct SleepOrderingTests {
 
         await plane.release()
         await delivery.value
+    }
+}
+
+// #347's two sequences end the same way; out of the struct body for SwiftLint's type-body limit.
+extension SleepOrderingTests {
+
+    /// The table is sealed now, and a wake newer than every sleep so far reopens it.
+    private static func expectSealedThenReopenedByAFreshWake(
+        _ helper: HelperComposition<ScriptedControlPlane>, _ observer: ScriptedPowerObserver,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws {
+        await #expect(
+            throws: AeolusXPCFault.manualControlUnavailable(reason: .systemSleeping),
+            """
+            a wake from an earlier episode reopened the table while a newer sleep was under way. \
+            The machine is going to sleep and a lease granted now pins its fan across it.
+            """,
+            sourceLocation: sourceLocation
+        ) {
+            _ = try await helper.leases.acquireLease(
+                LeaseFixture.request(fans: [0]), from: ConnectionID())
+        }
+        try await observer.deliver(.didWake)
+        await #expect(
+            throws: Never.self, "a fresh wake did not reopen the table: the seal latched",
+            sourceLocation: sourceLocation
+        ) {
+            _ = try await helper.leases.acquireLease(
+                LeaseFixture.request(fans: [0]), from: ConnectionID())
+        }
     }
 }
