@@ -4,21 +4,40 @@ import Testing
 
 @testable import AeolusHelper
 
-/// The two registrations the generation lets through, and what
-/// `docs/records/reclamation-watchdog.md` relies on for both (#365, from the panel on #361): each
-/// is **handed back as `.leaseLapsed` on the next examination**.
+/// Registrations that arrive late, across the generation (#365, from the panel on #361), and
+/// what `docs/records/reclamation-watchdog.md` relies on for them.
 ///
-/// The generation refuses a registration whose answer is stale because the fan moved on: a
-/// release notice, another registration, or the terminal action's entry. It does not refuse one
-/// whose lease simply ended with nobody told, so such a registration is accepted and records the
-/// fan under a lease the lease core no longer holds. Nothing is overwritten, because any other
-/// lease's registration would have moved the generation. These tests pin what makes that safe:
-/// the next examination asks the record's own lease, finds it not live, and restores the fan.
+/// The generation refuses a registration whose lease answer no longer describes the fan: a
+/// release notice, another registration, or the terminal action's entry moved it. It does not
+/// refuse one whose lease simply ended with nothing moving it, so that registration is accepted
+/// and records the fan under a lease the lease core no longer holds. Nothing is overwritten,
+/// because any other lease's registration would have moved the generation. What makes that safe
+/// is the next examination, which asks the record's own lease, finds it not live, and restores
+/// the fan as `.leaseLapsed`.
 ///
-/// Both pin a residual, as `ReclamationWatchdogStalenessTests`' test of a lease lapsing during
-/// the re-assert does: the acceptance is asserted too, so closing the residual turns them red,
-/// and the record is updated rather than left claiming something that is no longer true.
+/// ## Two of these tests are models, and the model is named
+///
+/// A release notice is a hint (ADR 0009 D2), and the shipping composition sends one for every
+/// fan before every lease-core restore, including the one inside the terminal action's
+/// revocation (`HelperFanRestorer`). `RecordingFanRestorer` sends none. So a test that ends a
+/// lease through it, or lets the terminal action revoke through it, models a **lost** notice, and
+/// says so. The shipping composition is the test that delivers the notice.
+///
+/// The lost-notice tests assert the acceptance as well, as
+/// `ReclamationWatchdogStalenessTests.aLeaseLapsingDuringTheReassertIsHandedBackNextCycle` does:
+/// closing the residual turns them red, and the record is updated rather than left claiming
+/// something that is no longer true.
 extension ReclamationLeaseIdentityTests {
+
+    /// How the lease behind a parked registration ends with nothing moving the generation.
+    enum UnannouncedEnd: Sendable, CaseIterable {
+        /// Its deadline passes and nothing has swept it yet, which is the shipping route: the
+        /// sweep, not a notice, ends a lease that lapses.
+        case lapsed
+        /// It ends through a restorer that sends § 5 no notice: a connection teardown whose
+        /// notice was lost. The model of the other route, since the shipping teardown sends one.
+        case noticeLost
+    }
 
     /// **An unannounced end.** L1's registration is told L1 is live and parked. L1 then ends with
     /// no release notice and no re-grant, so nothing moves the generation and the stale `true` is
@@ -28,8 +47,12 @@ extension ReclamationLeaseIdentityTests {
     /// **Mutation:** delete the `guard entitled` block from `examine(fanAt:)`. Run: red on the
     /// second cycle's restore, registry and log assertions — nothing else revisits a fan that
     /// reads converged.
-    @Test("A registration accepted after an unannounced lease end is handed back as lapsed")
-    func aRegistrationAcceptedAfterAnUnannouncedLeaseEndIsHandedBack() async throws {
+    @Test(
+        "A registration accepted after an unannounced lease end is handed back as lapsed",
+        arguments: UnannouncedEnd.allCases)
+    func aRegistrationAcceptedAfterAnUnannouncedLeaseEndIsHandedBack(
+        end: UnannouncedEnd
+    ) async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 2_000)], parkingLeaseHops: true)
         let hops = try #require(machine.leaseHops)
         let ended = try await machine.lease()
@@ -40,7 +63,10 @@ extension ReclamationLeaseIdentityTests {
         }
         #expect(await yieldUntil("the registration's lease answer to park") { await hops.isParked })
 
-        await machine.endLease()
+        switch end {
+        case .lapsed: machine.lapseLease()
+        case .noticeLost: await machine.endLease()
+        }
         await hops.release()
         try await finished("the late registration", late)
 
@@ -61,21 +87,21 @@ extension ReclamationLeaseIdentityTests {
         #expect(await machine.ledger.causes.isEmpty)
     }
 
-    /// **An acceptance after the terminal action returned.** Fan 0 is held under L1 and reads
-    /// automatic with nothing commanded, so its third cycle is the terminal action. Inside the
-    /// hand-back a re-apply under L1 begins: it reads the generation after the entry moved it,
-    /// is told L1 is live — it still is, the revocation is a step away — and parks. The terminal
-    /// action finishes and revokes L1, `finalising` closes, and the re-apply resumes: nothing
-    /// refuses it any more, so it is accepted, and fan 0 is recorded under a lease that was
-    /// revoked. The next cycle hands it back, as `.leaseLapsed`.
-    ///
-    /// The case `aRegistrationInFlightAtTheTerminalActionClearsNothing` does not reach: that one's
-    /// answer was read *before* the entry, so the entry's bump refuses it.
-    ///
-    /// **Mutation:** delete the `guard entitled` block from `examine(fanAt:)`. Run: red on the
-    /// second restore, the registry and the lapsed line.
-    @Test("A registration accepted after the terminal action returned is handed back as lapsed")
-    func aRegistrationAcceptedAfterTheTerminalActionIsHandedBack() async throws {
+    // MARK: - A registration that begins during the terminal action's hand-back
+
+    /// Fan 0 is held under L1 and reads automatic with nothing commanded, so its third cycle is
+    /// the terminal action. Inside the hand-back a re-apply under L1 begins: it reads the
+    /// generation after the entry moved it, is told L1 is live — it still is, the revocation is a
+    /// step away — and parks. `beforeNextRevocation` is not armed here; each test arms what its
+    /// composition does.
+    struct ReapplyInTheHandBack {
+        let machine: ReclamationMachine<InterferingFanStateSensing>
+        let hops: ParkableHeldLeases
+        let sensing: InterferingFanStateSensing
+        let reapply: ReapplyBox
+    }
+
+    static func reapplyParkedInTheHandBack() async throws -> ReapplyInTheHandBack {
         let plane = ScriptedControlPlane(fans: [0: .automatic(at: 2_400)])
         let sensing = InterferingFanStateSensing(plane, during: .restoreWrite)
         let machine = ReclamationMachine(
@@ -83,29 +109,87 @@ extension ReclamationLeaseIdentityTests {
             parkingLeaseHops: true)
         let hops = try #require(machine.leaseHops)
         try await machine.holdWithoutCommanding(fan: 0)
-        let held = try await Self.activeLease(machine)
-        let permit = try Self.permit(machine)
+        let held = try await activeLease(machine)
+        let fan = try permit(machine)
         let reapply = ReapplyBox()
         await sensing.interfere {
             await hops.parkNextAnswer()
             await reapply.keep(
-                observing { try await machine.watchdog.manualControlEngaged(permit, under: held) })
+                observing { try await machine.watchdog.manualControlEngaged(fan, under: held) })
             await yieldUntil("the re-apply's lease answer to park") { await hops.isParked }
         }
+        return ReapplyInTheHandBack(
+            machine: machine, hops: hops, sensing: sensing, reapply: reapply)
+    }
 
+    /// Runs the three cycles that end in the terminal action, and checks it ran.
+    static func expectTheTerminalActionRan(_ scene: ReapplyInTheHandBack) async {
         for _ in 1...ReclamationLimits.blindCyclesBeforeDivergence {
-            await machine.watchdog.cycle()
+            await scene.machine.watchdog.cycle()
+        }
+        #expect(await scene.sensing.didFire, "the hand-back never reached the seam")
+        #expect(scene.machine.safetyLog.lines(containing: "no speed to re-assert").count == 1)
+        #expect(await scene.machine.restorer.causes.contains(.systemReclaimed), "L1 not revoked")
+        #expect(await scene.machine.leases.leaseCount == 0)
+    }
+
+    /// **The shipping composition.** The revocation's restore sends § 5 the release notice before
+    /// it restores (`HelperFanRestorer`), and `Registry.release(fanAt:)` always moves the
+    /// generation. So a re-apply under L1 that began in the hand-back and resumes after the
+    /// terminal action returned is refused, and the mark the terminal action keeps (#346) stays.
+    /// Before the revocation `finalising` refuses it
+    /// (`aRegistrationInFlightAtTheTerminalActionClearsNothing`); this is the other side.
+    ///
+    /// `beforeNextRevocation` delivers the notice inside the revocation, as the restorer does.
+    ///
+    /// **Mutation:** delete the `registrations[index, default: 0] &+= 1` in
+    /// `Registry.release(fanAt:)`. Run: red on the refusal, the mark and the registry — the
+    /// re-apply is accepted and clears the mark the terminal action kept.
+    @Test("A re-apply that began in the hand-back is refused once the revocation's notice is sent")
+    func aReapplyThatBeganInTheHandBackIsRefusedAfterTheRevocationsNotice() async throws {
+        let scene = try await Self.reapplyParkedInTheHandBack()
+        let machine = scene.machine
+        await scene.hops.beforeNextRevocation {
+            await machine.watchdog.manualControlReleased(fanAt: 0)
         }
 
-        #expect(await sensing.didFire, "the terminal action's hand-back never reached the seam")
-        #expect(machine.safetyLog.lines(containing: "no speed to re-assert").count == 1)
-        #expect(await machine.restorer.causes == [.systemReclaimed], "L1 was not revoked")
-        #expect(await machine.leases.leaseCount == 0)
+        await Self.expectTheTerminalActionRan(scene)
+        let work = try #require(await scene.reapply.work, "the re-apply never began")
+        await scene.hops.release()
+
+        await #expect(throws: EngagementRefusal.leaseNotLive(fan: 0)) {
+            try await finished("the re-apply's registration", work)
+        }
+        #expect(
+            await machine.ledger.isReclaimed(fanAt: 0),
+            "a re-apply resuming after the terminal action erased the mark it keeps")
+        #expect(machine.safetyLog.lines(containing: "is no longer reported as taken").isEmpty)
+        #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
+        #expect(await machine.restorer.causes.filter { $0 == .systemReclaimed }.count == 1)
+    }
+
+    /// **The lost-notice model.** The same re-apply with the notice never sent, as
+    /// `RecordingFanRestorer` never sends one. Nothing moved the generation after the re-apply
+    /// read it and `finalising` has closed, so the registration is accepted and records fan 0
+    /// under a lease the terminal action revoked. Acceptance needs a lost release notice, and a
+    /// notice is a hint (ADR 0009 D2); with it delivered the re-apply is refused, which
+    /// `aReapplyThatBeganInTheHandBackIsRefusedAfterTheRevocationsNotice` holds. The next cycle
+    /// hands the fan back, as `.leaseLapsed`. #366 owns the mark's handling around an episode.
+    ///
+    /// **Mutation:** delete the `guard entitled` block from `examine(fanAt:)`. Run: red on the
+    /// second restore, the registry and the lapsed line.
+    @Test("A registration accepted after the terminal action, its notice lost, is handed back")
+    func aRegistrationAcceptedAfterTheTerminalActionWithItsNoticeLostIsHandedBack() async throws {
+        let scene = try await Self.reapplyParkedInTheHandBack()
+        let machine = scene.machine
+
+        await Self.expectTheTerminalActionRan(scene)
+        #expect(await machine.restorer.causes.filter { $0 == .systemReclaimed }.count == 1)
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
         let restoresBefore = await machine.restoreCount(fan: 0)
-        let work = try #require(await reapply.work, "the re-apply never began")
+        let work = try #require(await scene.reapply.work, "the re-apply never began")
 
-        await hops.release()
+        await scene.hops.release()
         try await finished("the re-apply's registration", work)
 
         #expect(
@@ -119,7 +203,7 @@ extension ReclamationLeaseIdentityTests {
             "a fan registered after the terminal action returned was never handed back")
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
         #expect(machine.safetyLog.lines(containing: leaseLapsedNotice).count == 1)
-        #expect(await machine.restorer.causes == [.systemReclaimed], "a lease was revoked again")
+        #expect(await machine.restorer.causes.filter { $0 == .systemReclaimed }.count == 1)
     }
 }
 
