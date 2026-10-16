@@ -81,6 +81,11 @@ struct ReclamationSupervisorTests {
     /// commanded — must be re-asserted **through the loop**, with the test never calling
     /// `cycle()` by hand. This is the difference between "the supervisor invokes something"
     /// and "the supervisor runs § 5".
+    ///
+    /// The detection line is the evidence, not the ledger. The loop runs two cycles, and the
+    /// second reads the re-asserted target held while the fan is still turning at 1,800, which
+    /// clears the mark: the mark follows the primary signal (#366). Until #366 the ledger
+    /// assertion passed only because a `.short` cycle left the mark standing.
     @Test("A divergence present before the loop starts is acted on by it")
     func theLoopDrivesTheWatchdog() async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 1_800)])
@@ -90,7 +95,7 @@ struct ReclamationSupervisorTests {
         await ReclamationSupervisor.run(
             watchdog: machine.watchdog, clock: clock, interval: .seconds(1))
 
-        #expect(await machine.ledger.isReclaimed(fanAt: 0))
+        #expect(machine.safetyLog.lines(containing: "Reclamation detected on fan 0").count == 1)
         #expect(await machine.commandedRPMs.contains(2_400))
     }
 

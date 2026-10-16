@@ -258,10 +258,11 @@ struct ReclamationWatchdogTests {
     ///
     /// The re-assert is to 2,000 RPM against a fan turning at 1,800, so the recovered state
     /// converges on **both** signals: the target reads back exactly, and the 200 RPM lag is
-    /// inside `actualToleranceFraction`. A scenario whose fan could never satisfy the
-    /// secondary signal would leave the ledger legitimately marked and would be asserting
-    /// the wrong thing — the flag follows what the mechanism believes, and a sustained
-    /// shortfall is still a belief that something is wrong.
+    /// inside `actualToleranceFraction`. The secondary signal does not decide the clear: the mark
+    /// follows the primary, so a re-asserted fan still short of its target is cleared on the same
+    /// cycle (#366), which `ReclamationEpisodeMarkTests` holds. A sustained shortfall is a fan the
+    /// firmware is holding for Aeolus that is not reaching its speed, and reporting it as
+    /// reclaimed would be a false statement about who holds it.
     @Test("A fan that converges again stops being reported as reclaimed")
     func convergenceClearsTheLedger() async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 1_800)])

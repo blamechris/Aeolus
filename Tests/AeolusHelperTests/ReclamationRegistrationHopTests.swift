@@ -97,8 +97,10 @@ extension ReclamationLeaseIdentityTests {
     /// **Mutation:** delete the `registrations[index, default: 0] &+= 1` in
     /// `Registry.beginFinalising(fanAt:for:)`, the terminal action's entry in
     /// `finaliseRelease(fanAt:heldUnder:because:)`, **and** drop `givenUp[index] != lease` from
-    /// `Registry.register`'s refusal. Run: red on both resumptions: the refusal, the ledger and
-    /// the "resolved" line. Either alone leaves this green, because the other refuses.
+    /// `Registry.register`'s refusal. Run: red on both resumptions' refusal, and after the terminal
+    /// action on the ledger, the "resolved" line and the registry too. Inside the hand-back the
+    /// registration lands mid-episode, so the episode still leaves the mark kept (#366). Either
+    /// mutation alone leaves this green, because the other refuses.
     @Test(
         "A registration in flight when the terminal action begins clears nothing",
         arguments: [true, false])
