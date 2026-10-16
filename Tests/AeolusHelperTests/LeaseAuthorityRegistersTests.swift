@@ -13,7 +13,9 @@ import Testing
 /// through the lease core with every interleaving they script; this suite says which half of a
 /// failure is the bookkeeping and which the orchestration.
 ///
-/// Every assertion names the mutation it kills, and each was run.
+/// Every test names the mutations it was written against, and each was run: red on an assertion
+/// in that test. The assertions beside those state the rest of the transition's contract, and no
+/// mutation is claimed for them.
 @Suite("The lease core's handback registers and sleep seal, as values")
 struct LeaseAuthorityRegistersTests {
 
@@ -54,7 +56,7 @@ struct LeaseAuthorityRegistersTests {
     /// **Mutation:** `guard let outstanding = releasing[fan] else { return true }` in
     /// `endHandback(ofFan:)`. Run: red — the actor would resume a fan's waiters for a restore it
     /// never issued.
-    @Test("Counting back a fan with nothing outstanding says it was not the last, and records it")
+    @Test("Counting back a fan with nothing outstanding is not its last, and changes nothing")
     func countingBackAnIdleFanIsNotItsLast() {
         var registers = Registers()
 
@@ -101,9 +103,11 @@ struct LeaseAuthorityRegistersTests {
         _ = registers.endHandback(ofFan: 0)
         _ = registers.endHandback(ofFan: 1)
         #expect(registers.unconfirmedHandbacks == [0], "fan 0 left before its last restore")
+        #expect(
+            registers.unconfirmedHandbacks.isSubset(of: registers.fansMidHandback),
+            "a fan stayed unconfirmed after its last restore came back")
         _ = registers.endHandback(ofFan: 0)
         #expect(registers.unconfirmedHandbacks.isEmpty)
-        #expect(registers.unconfirmedHandbacks.isSubset(of: registers.fansMidHandback))
     }
 
     // MARK: - restoreAbandoned and the read-back
@@ -200,6 +204,25 @@ struct LeaseAuthorityRegistersTests {
         #expect(pairing.isSealed == false)
         let newer = pairing.seal(generation: 6)
         #expect(newer == .sealed)
+    }
+
+    /// `seal(generation:)`'s doc: declining "leaves any newer seal standing". A starved
+    /// `.willSleep` older than the wake already heard is declined, and the seal a newer sleep set
+    /// is still closing the table — the machine is at that moment going to sleep.
+    ///
+    /// **Mutation:** `sleepSeal = false` before `return .declined` in `seal(generation:)`'s first
+    /// guard. Run: red on `isSealed`.
+    @Test("Declining a stale seal leaves a newer seal standing")
+    func decliningAStaleSealLeavesTheNewerOneStanding() {
+        var pairing = Pairing()
+
+        let newest = pairing.seal(generation: 5)
+        let olderWake = pairing.wake(generation: 4)
+        let stale = pairing.seal(generation: 3)
+        #expect(newest == .sealed)
+        #expect(olderWake == false, "a wake older than the seal cleared it")
+        #expect(stale == .declined, "the latest wake heard is 4")
+        #expect(pairing.isSealed, "declining a stale seal cleared the newer seal standing")
     }
 
     /// #347: a sleep that meets the seal standing records the larger generation, so neither a

@@ -19,12 +19,15 @@ import Testing
 ///   trap is the root daemon dying.
 /// - **The actor never uses either as a whole value.** `let before = sleep`, an `await`, and a
 ///   write back loses every transition that ran during the suspension.
-/// - **Every internal property is a view, and no accessor in either file writes.**
+/// - **Every internal property is a computed, get-only view, and no accessor in either file
+///   writes.** An internal stored `var isSealed` is a second seal the actor could clear outside
+///   `wake(generation:)`, and a `mutating get` is a read that writes.
 /// - **Nothing reaches either type around the file set**, by a `typealias` or a dotted extension.
 ///
 /// `LeaseAuthorityAccessTests` holds the actor's half — its file set read off the tree, the two
 /// properties `private`, its internal surface exact. The parse is `MemberAccessScan` and
-/// `SeamScanner`'s, as for § 5's registry; nothing here is a second scanner.
+/// `SeamScanner`'s, as for § 5's registry, `accessorBlock(of:in:)` included; nothing here is a
+/// second scanner.
 @Suite("The lease core's registers and sleep seal are values the actor reaches only by member")
 struct LeaseAuthorityRegistersAccessTests {
 
@@ -74,6 +77,14 @@ struct LeaseAuthorityRegistersAccessTests {
     private static let leaseCoreTypes: Set<String> = [
         "LeaseAuthority", "HandbackRegisters", "SleepSealPairing", "SealOutcome",
     ]
+
+    /// An accessor that can write, or a read accessor that can mutate: `set`, `_modify`, an
+    /// observer, `unsafeMutableAddress`, `_read` — whose coroutine can be declared `mutating` —
+    /// and a `mutating get`, whose body may assign any store. § 5's view check reads the other
+    /// five; these two are added here, where a `mutating get` writing `latestWakeGeneration`
+    /// passed the whole helper suite in #388's review.
+    private static let writingAccessor =
+        #"\b(set|_modify|_read|willSet|didSet|unsafeMutableAddress)\b|\bmutating\s+get\b"#
 
     /// **Mutations:** declare `HandbackRegisters`' `var releasing` without `private`; add
     /// `private var extra = 0` to `SleepSealPairing`. Run: red on each.
@@ -152,11 +163,19 @@ struct LeaseAuthorityRegistersAccessTests {
     /// formatter writes chains that way, and `.self` is refused, because it is the whole value
     /// spelled as a member.
     ///
+    /// Every comment is stripped first, a trailing one included, through `strippingAllComments`:
+    /// `sleep` is an English word, and `// the sleep seal` after a statement is prose, not a use.
+    /// A member of another value spelled the same way — `clock.sleep(until:)` — still reads as
+    /// one, and fails loudly rather than quietly; none is written in the actor, and telling it
+    /// from `self.sleep` or `\.sleep` needs a receiver this scan does not parse.
+    ///
     /// **Mutations:** add `let before = sleep` (and `_ = before`) to `sealForSleep(generation:)`;
     /// add `registers = HandbackRegisters()` to `releaseEveryLease()`. Run: red on each.
+    /// **Probe:** `let note = 1  // the sleep seal` above `sealForSleep`'s `switch`. Run: green.
     @Test("The actor reaches each value type only through its members")
     func theActorReachesEachOnlyThroughItsMembers() throws {
-        let code = try MemberAccessScan.strippedSource(of: Self.actorFile)
+        let code = SeamScanner.strippingAllComments(
+            try MemberAccessScan.strippedSource(of: Self.actorFile))
         for type in Self.valueTypes {
             let uses = try NSRegularExpression(pattern: #"\b\#(type.property)\b"#)
             var wholeValueUses: [String] = []
@@ -182,19 +201,59 @@ struct LeaseAuthorityRegistersAccessTests {
     }
 
     /// No accessor in either file can write: a view with a `set` or a `_modify` is a route to
-    /// the store it views, and a stored property with an observer is not a view.
+    /// the store it views, a stored property with an observer is not a view, and a `mutating
+    /// get` is a read that writes. Read over the whole file, so an accessor on a private store
+    /// is seen as well as one on a view.
     ///
-    /// **Mutation:** give `SleepSealPairing.isSealed` a `set { sleepSeal = newValue }` beside a
-    /// `get`. Run: red.
+    /// **Mutations:** give `SleepSealPairing.isSealed` a `set { sleepSeal = newValue }` beside a
+    /// `get`; make it `mutating get { latestWakeGeneration = latestWakeGeneration &+ 0; return
+    /// sleepSeal }`. Run: red on each.
     @Test("No accessor in either value type's file writes")
     func noAccessorInEitherValueTypeWrites() throws {
-        let writers = try NSRegularExpression(
-            pattern: #"\b(set|_modify|willSet|didSet|unsafeMutableAddress)\b"#)
+        let writers = try NSRegularExpression(pattern: Self.writingAccessor)
         for type in Self.valueTypes {
             let code = try MemberAccessScan.strippedSource(of: type.file)
             let found = writers.matches(in: code, range: NSRange(code.startIndex..., in: code))
                 .compactMap { Range($0.range, in: code).map { String(code[$0]) } }
             #expect(found.isEmpty, "\(type.file) declares \(found) in an accessor")
+        }
+    }
+
+    /// Every internal property of either type is computed: a `var` with a type annotation and an
+    /// accessor block straight after it, with no `=` before the block and no writing accessor in
+    /// it. `theStoresArePrivateAndExactlyTheListedOnes` checks the names, and a name is all an
+    /// internal store needs to pass it.
+    ///
+    /// The precedent is § 5's `ReclamationWatchdogAccessTests.everyInternalPropertyIsAGetOnlyView`,
+    /// on the same `MemberAccessScan.accessorBlock(of:in:)`.
+    ///
+    /// **Mutations:** declare `SleepSealPairing.isSealed` as an internal stored `var isSealed =
+    /// false`, set beside `sleepSeal` in `seal(generation:)` and `wake(generation:)`; give it a
+    /// `mutating get` that writes `latestWakeGeneration`. Run: red on each.
+    @Test("Every internal property of either value type is a computed, get-only view")
+    func everyInternalPropertyIsAGetOnlyView() throws {
+        let writers = try NSRegularExpression(pattern: Self.writingAccessor)
+        for type in Self.valueTypes {
+            let code = try Self.membersSource(of: type)
+            for name in type.queries.sorted() {
+                let block = try #require(
+                    try MemberAccessScan.accessorBlock(of: name, in: code),
+                    """
+                    `\(name)` in \(type.name) has no accessor block straight after its type, so \
+                    it has storage: the actor could write `\(type.property).\(name)` past every \
+                    named transition, and these must be views.
+                    """)
+                let found =
+                    writers
+                    .matches(in: block, range: NSRange(block.startIndex..., in: block))
+                    .compactMap { Range($0.range, in: block).map { String(block[$0]) } }
+                #expect(
+                    found.isEmpty,
+                    """
+                    `\(name)` in \(type.name) declares \(found) in its accessor block. A view \
+                    that can write is a route to the store it views.
+                    """)
+            }
         }
     }
 
