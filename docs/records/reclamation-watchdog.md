@@ -144,6 +144,11 @@ binding the registry's answer and one private helper, `logRefusal(of:from:unless
 refusal at `.fault`. The helper keeps `reassert`'s cyclomatic complexity at 10, where an `if` of
 its own would have made it 11.
 
+**#380 spent none: 328 code lines, and still about 22 left; `examine(fanAt:)` 50; file 959**
+(SwiftLint 0.65.1). The latch and the ledger became roles by changing two stored properties' types
+and two initialiser parameters' types in place; every call site, and so every `await`, is
+unchanged. A6's first two PRs need about ten of the 22.
+
 ## Every act is for the lease the fan was registered under
 
 *Added by [#353](https://github.com/blamechris/Aeolus/issues/353) and
@@ -314,9 +319,12 @@ value's, in `ReclamationRegistryEpisodeTests.swift`. What stays open:
    order by priority, which Swift's actors do not promise against. The window is one latch hop
    plus one ledger hop, and `main` had it unchanged.
 3. The blind path opens no episode. A same-lease registration inside `cycleCouldNotSee`'s
-   `markSupervisorBlind` hop clears the `.supervisorBlind` entry: one ledger hop with no seam to
-   test it, and the entry is not on the wire (#355). Closing it costs an actor line no
-   deterministic test can kill.
+   `markSupervisorBlind` hop clears the `.supervisorBlind` entry: one ledger hop, and the entry is
+   not on the wire (#355). `ParkableReclamationLedger` can hold that hop open since #380, so a test
+   could now kill a fix; the fix still costs an actor line. A newer lease's registration in the
+   same hop is left alone by `finaliseRelease`'s entry guard, but only after § 5 has logged at
+   `.fault` that it restored the fan and is revoking its lease
+   ([#400](https://github.com/blamechris/Aeolus/issues/400)).
 4. A client write issued during § 5's own command write can land first: one cycle, one more
    attempt ([#381](https://github.com/blamechris/Aeolus/issues/381)).
 5. A same-lease re-apply that registers without engaging a fan the system has taken back to
@@ -387,15 +395,16 @@ converged on both signals cleared it, so it stood while the fan ramped, and inde
 fan could not reach the target. Blind cycles clear nothing, and after
 `blindCyclesBeforeDivergence` of them blindness takes over.
 
-**What the re-fetch rule has a test for, and what it does not (#365, #344).** Every re-fetch
-after an `await` has a test that lands a registration under a newer lease in that suspension
-and goes red when the re-fetch asks about presence rather than identity, except two. The
-header of `ReclamationRefetchIdentityTests.swift` lists each re-fetch against its test: the
-read, the lease hop (#344, held open by `ParkableHeldLeases`), the envelope read, the first
-write, the command write, a refused command write and the reconnect. The terminal action's
-envelope-failure branch has no re-fetch of its own and needs none: `finaliseRelease`'s entry
-guard covers it, and `aTerminalActionEnteredForAnEndedLeaseLeavesTheNewerLeasesFanAlone` holds
-that guard.
+**What the re-fetch rule has a test for (#365, #344, #380).** Every re-fetch after an `await`
+has a test that lands a registration under a newer lease in that suspension and goes red when
+the re-fetch asks about presence rather than identity. The header of
+`ReclamationRefetchIdentityTests.swift` lists each re-fetch against its test: the read, the
+lease hop (#344, held open by `ParkableHeldLeases`), the precedence check and the reclamation
+report (#380, held open by `ParkableThermalLatch` and `ParkableReclamationLedger`), the envelope
+read, the first write, the command write, a refused command write and the reconnect. The
+terminal action's envelope-failure branch has no re-fetch of its own and needs none:
+`finaliseRelease`'s entry guard covers it, and
+`aTerminalActionEnteredForAnEndedLeaseLeavesTheNewerLeasesFanAlone` holds that guard.
 
 The first write is built rather than found, and the difference is stated where it is. The
 engagement driver asks the real lease core about the old lease after its mode write, so a lease
@@ -411,18 +420,34 @@ presence-only re-fetch lets the stale examination judge the newer lease's record
 registration grace, which the third case of
 `aRecordChangedDuringTheLeaseCheckStopsTheExamination` catches on behaviour.
 
-**The two without a test: the precedence check and the ledger hop in `diverged`.** They are
-suspensions on `ThermalEmergencyLatch` and `ReclamationLedger`, which the actor holds as
-concrete actors, so there is no double to park their answers in and a registration cannot be
-landed in either by a suspending seam. Racing one in is #109's flakiness, and blocking a pool
-thread to hold the hop open is what a CI runner stall fails. No earlier re-fetch can stand in
-for them: a registration that lands before the latch hop is stopped by the lease hop's
-re-fetch, and one in the latch or ledger hop is stopped only by these two. They are kept by the
-rule alone until a role over each exists, as `HeldLeaseRole` is over the lease core. Presence
-only at the first would let `markReclaimed` put a `.systemReclaimed` mark on a newer lease's fan;
-at the second, the old lease's copy of the record would go on to book its attempt count onto the
-newer lease's record, which can send that lease's first real divergence straight to the terminal
-action. The re-assert itself is stopped before any write, by the envelope read's re-fetch.
+**The two that needed a role: the precedence check and the reclamation report in `diverged`.**
+They follow hops on `ThermalEmergencyLatch` and `ReclamationLedger`, which the actor held as
+concrete actors until #380, with no double to park their answers in. Racing a registration in is
+#109's flakiness, and blocking a pool thread to hold the hop open is what a CI runner stall fails.
+No earlier re-fetch can stand in for them: a registration that lands before the latch hop is
+stopped by the lease hop's re-fetch, and one in the latch or ledger hop is stopped only by these
+two. So the actor holds both through roles, `ThermalLatchRole` (the one read `currentRuling()`
+makes) and `ReclamationLedgerRole` (the two marks and the clear), as it holds the lease core
+through `HeldLeaseRole`; the actors are the roles' only conformers in `Sources/`, the composition
+passes them unchanged, and every method's awaits are the same callees in the same order.
+`ReclamationRoleTripwireTests` holds each role's exact requirements, its one conformer, and the
+actor reaching each only through its members. Presence only at the first lets `markReclaimed`
+put a `.systemReclaimed` mark on a newer lease's fan; at the second, the old lease's copy of the
+record books its attempt count onto the newer lease's record, which can send that lease's first
+real divergence straight to the terminal action: it does when the copy had spent all but one. The
+re-assert itself is stopped before any write, by the envelope read's re-fetch.
+`ReclamationSafetyHopIdentityTests.swift` asserts both.
+
+**What `diverged` still reads from its copy (#365's C1 note).** The record is copied at the
+precedence check and the copy is read after the ledger hop, where the re-fetch asks only about
+identity. A report under the same lease that lands in the hop reaches the record, not the copy.
+The re-assert's target is the record's as it stands after the envelope read (#381), so a newer
+target reported in the hop is the one written. The nothing-commanded check reads the copy, so a
+holder's *first* command reported in the hop is not seen: § 5 finds no speed to re-assert, hands
+the fan back and revokes the lease as `.systemReclaimed`. That fails safe and gives a false
+account. The attempt count is the copy's too, and cannot move under the same lease during the hop,
+because only the sweep in flight judges, spends or refunds it. `ReclamationLedgerHopTests` pins
+both cases as they stand; A6 decides on the live record and turns the first red on purpose.
 
 ## Built once per registration, per lease
 

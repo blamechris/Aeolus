@@ -1267,12 +1267,15 @@ re-assert writing the fan as it stands: a same-lease re-apply landed in each of 
 before its first step and once the control-state read has sampled included, a first step refused
 after its mode write or after a release, and the stamp, the re-fetch and the record as values,
 #381),
-`ReclamationRefetchIdentityTests.swift` and `ReclamationLateRegistrationTests.swift` (the
-identity half of each reachable re-fetch, and the registrations the generation lets through:
-accepted after a lapse or a lost release notice, and refused under the lease the terminal action
-gave the fan up for, whatever notice was sent, #365, #366)
+`ReclamationRefetchIdentityTests.swift`, `ReclamationSafetyHopIdentityTests.swift` and
+`ReclamationLateRegistrationTests.swift` (the identity half of every re-fetch, and the
+registrations the generation lets through: accepted after a lapse or a lost release notice, and
+refused under the lease the terminal action gave the fan up for, whatever notice was sent, #365,
+#366, #380), `ReclamationLedgerHopTests` (what `diverged` reads from the record it copied before
+its ledger hop, pinned as it stands, #365's C1 note)
 and `ReclamationWatchdogAccessTests.swift` with `ReclamationRegistryAccessTests.swift` (their
-access), with the
+access) and `ReclamationRoleTripwireTests.swift` (what the three roles over the lease core, the
+latch and the ledger carry, #380), with the
 engagement driver the re-assert engages through in `EngagementDriverTests.swift` and
 `EngagementEpochTests.swift` — mostly through `ScriptedControlPlane`, with five bespoke
 seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express: a refused
@@ -1282,7 +1285,10 @@ side effect while it is suspended, a control-state read answered from a scripted
 continuation (`ParkableHeldLeases`) so a release, a re-grant or the terminal action can land
 between the lease core answering and § 5 resuming — the same seam lands #368's teardown between
 § 5's hand-back and its revocation, held inside its handback by `ParkingFanRestorer`, a
-`FanRestoring` decorator in `HandbackOutwaitDoubles.swift`. § 1's line makes the same distinction
+`FanRestoring` decorator in `HandbackOutwaitDoubles.swift`. Two more in
+`ParkableSafetyHops.swift` hold the latch's answer and any of the ledger's three calls open the
+same way (`ParkableThermalLatch`, `ParkableReclamationLedger`, #380), on the one parking
+primitive all three share. § 1's line makes the same distinction
 for the same reason, and it is drawn rather than rounded off because "entirely through the
 scripted plane" is a claim about how much of the mechanism one shared double can reach. The
 registration grace above is the fourth suite, one test per answer the primary signal can give
@@ -1303,15 +1309,15 @@ bug that needs work to **arrive**. Three more, from #180, script a lease ending 
 the re-assert's *writes* — the same seam, now a write seam too, because the re-fetch missing
 after the command write was invisible to a seam that could only interfere with reads.
 
-The identity half of each reachable re-fetch is pinned the same way: a registration under a newer lease is
+The identity half of every re-fetch is pinned the same way: a registration under a newer lease is
 landed in that one suspension, and the test goes red when the re-fetch asks about presence
 instead (#365). `ReclamationRefetchIdentityTests.swift` lists each re-fetch against its test.
-**Two are not tested: the precedence check and the ledger hop in `diverged`.** They are
-suspensions on concrete actors, `ThermalEmergencyLatch` and `ReclamationLedger`, with no double
-to park an answer in, so nothing can land a registration there without racing or blocking a
-thread. They are kept by the rule alone until a role over each exists, as `HeldLeaseRole` is over
-the lease core; [the watchdog's records](records/reclamation-watchdog.md) say what a presence
-check there would cost.
+The last two, the precedence check and the reclamation report in `diverged`, follow hops on
+`ThermalEmergencyLatch` and `ReclamationLedger`, which § 5 now holds through roles,
+`ThermalLatchRole` and `ReclamationLedgerRole`, as it holds the lease core through
+`HeldLeaseRole` (#380); the parkable doubles above hold each hop open, so nothing is raced and no
+thread is blocked. [The watchdog's records](records/reclamation-watchdog.md) say what a presence
+check at either would cost, which is what each test asserts.
 
 The re-assert budget and the blind-cycle threshold are **driven to exhaustion** by their
 tests rather than compared against their constants, so changing a constant changes what the
