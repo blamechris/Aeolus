@@ -5,45 +5,27 @@ import Testing
 @testable import AeolusHelper
 
 /// What `diverged(_:fanAt:heldUnder:)` makes of a target reported under the record's own lease
-/// during its `markReclaimed` hop, pinned as the code stands
-/// ([#365](https://github.com/blamechris/Aeolus/issues/365)'s C1 note, through #380's seam).
+/// during its `markReclaimed` hop ([#365](https://github.com/blamechris/Aeolus/issues/365)'s C1
+/// note, through #380's seam, and #383's ledger-hop window).
 ///
-/// `diverged` copies the record at the precedence check and reads the copy after the ledger hop.
-/// The re-fetch after the hop asks only whether the record is still the same lease's, so a report
-/// that lands in the hop reaches the record and not the copy. Two reads of the copy follow: whether
-/// anything was ever commanded, and the attempt count. The second cannot move under the same lease
-/// during the hop, since only the one sweep in flight judges, spends or refunds it (#144); a newer
-/// lease's record is the identity guard's, in `ReclamationSafetyHopIdentityTests.swift`. The
-/// re-assert's target is not read from the copy at all: since #381 it is the record's as it
-/// stands after the envelope read.
-///
-/// **These pin today's behaviour, not the contract A6 wants.** The first case is a pinned defect,
-/// [#383](https://github.com/blamechris/Aeolus/issues/383): the window A6's plan calls a false
-/// terminal action. A holder's first command reported during the hop is not seen, so the fan is
-/// given up and the lease revoked as `.systemReclaimed` though its holder had just commanded it.
-/// It fails safe, since the fan goes back to automatic control, and the account it gives is false.
-/// Closing #383 is what turns the first case red on purpose; A6 decides on the live record there,
-/// and this suite is updated with it.
-@Suite("§ 5 reads a report made during its ledger hop as the code stands", .timeLimit(.minutes(1)))
+/// `diverged` judges the record it re-fetched at the precedence check, and decides on the record
+/// it re-fetches after the ledger hop: whether anything was ever commanded, and the attempt count.
+/// Until A6's gate it decided on the copy taken before the hop, so a holder's first command
+/// reported in the hop was not seen, and the fan was given up and the lease revoked as
+/// `.systemReclaimed` though its holder had just commanded it — the first case below pinned that
+/// as a defect (#383). Now the hop cannot hold a step at all while § 5 holds the gate: level 6's
+/// step waits for it. Past the gate's bound one can land there, and the live record sees it. The
+/// re-assert's target is not read from either: since #381 it is the record's as it stands after
+/// the envelope read. A newer lease's record is the identity guard's, in
+/// `ReclamationSafetyHopIdentityTests.swift`.
+@Suite("§ 5 decides on the record as it stands after its ledger hop", .timeLimit(.minutes(1)))
 struct ReclamationLedgerHopTests {
 
-    /// **A first command, unseen.** Fan 0 is registered under L1 with nothing commanded and reads
-    /// automatic, so the cycle after the registration grace diverges. Its `markReclaimed` hop is
-    /// held, and L1's holder reports its first command, 2,400 RPM. The record takes it and the copy
-    /// does not, so § 5 finds no speed to re-assert and gives the fan up: hand-back, the mark kept,
-    /// and L1 revoked as `.systemReclaimed`.
-    ///
-    /// **Mutation (the pin is live):** read the nothing-commanded check from the record instead of
-    /// the copy — `guard registry.record(ofFan: index)?.commanded != nil`. Run: red on the
-    /// no-speed line, the revocation and the lease count: the fan is re-engaged and commanded.
-    @Test(
-        """
-        A first command reported during the ledger hop is not seen, and the fan is given up \
-        (pinned defect, #383)
-        """)
-    func aFirstCommandReportedDuringTheLedgerHopIsNotSeen() async throws {
-        let machine = ReclamationMachine(fans: [0: .automatic(at: 2_400)], parkingSafetyHops: true)
-        let ledgerHops = try #require(machine.ledgerHops)
+    /// Fan 0 registered under its lease with nothing commanded, reading automatic, and cycled to
+    /// the last cycle of its registration grace: the next one diverges into the ledger hop.
+    static func atTheEndOfTheGrace(
+        _ machine: ReclamationMachine<ScriptedControlPlane>
+    ) async throws -> UUID {
         try await machine.holdWithoutCommanding(fan: 0)
         let lease = try #require(await machine.leases.activeLease()).id
         for _ in 1..<ReclamationLimits.blindCyclesBeforeDivergence {
@@ -52,6 +34,26 @@ struct ReclamationLedgerHopTests {
         #expect(
             machine.safetyLog.lines(containing: "no speed to re-assert").isEmpty,
             "the registration grace ran out before the cycle this test holds")
+        return lease
+    }
+
+    /// **A first command waits for the gate** (#383's ledger-hop window, flipped from its pin).
+    /// Fan 0 is at the end of its registration grace, reading automatic, and the diverged cycle's
+    /// `markReclaimed` hop is held. Level 6 steps to 2,400 then: it waits for the gate, so nothing
+    /// is reported in the hop and § 5 decides on a record that has, truly, nothing commanded — the
+    /// grace's own outcome, not one decided on a copy the step had overtaken. Granted once § 5
+    /// leaves, the step finds its lease revoked and writes nothing.
+    ///
+    /// **Mutation:** drop the gate — `cycle()` calls `examine(fanAt: index, gated: true)` and
+    /// enters nothing. Run: red on the wait, the record during the hop and the no-speed line: the
+    /// step lands in the hop and § 5 re-asserts it.
+    @Test("A first command attempted during the ledger hop waits for the gate")
+    func aFirstCommandDuringTheLedgerHopWaitsForTheGate() async throws {
+        let machine = ReclamationMachine(fans: [0: .automatic(at: 2_400)], parkingSafetyHops: true)
+        let ledgerHops = try #require(machine.ledgerHops)
+        let standIn = LevelSixStandIn(machine)
+        let lease = try await Self.atTheEndOfTheGrace(machine)
+        let permit = try standIn.permit()
         await ledgerHops.parkNext(.markReclaimed)
         let sweep = observing { await machine.watchdog.cycle() }
         #expect(
@@ -59,34 +61,89 @@ struct ReclamationLedgerHopTests {
                 await ledgerHops.isParked
             })
 
-        await machine.watchdog.commandedTarget(
-            CommandedTarget(fanIndex: 0, rpm: 2_400), under: lease)
+        let step = observing { try await standIn.step(to: 2_400, of: permit, under: lease) }
         #expect(
-            await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_400,
-            "the report did not reach the record, so this is not the copy's window")
+            await yieldUntil("the step to wait for the gate") {
+                machine.gate.waiting(onFan: 0) == 1
+            })
+        #expect(
+            await machine.watchdog.lastCommanded(ofFan: 0) == nil,
+            "a step was reported inside the examination's ledger hop")
+        await ledgerHops.release()
+        try await finished("the examination", sweep)
+        let written = try await finished("the step", step)
+
+        #expect(
+            machine.safetyLog.lines(containing: "no speed to re-assert").count == 1,
+            "§ 5 did not decide on the record nothing had been reported to")
+        #expect(await machine.didRestore(fan: 0))
+        #expect(await machine.restorer.causes.contains(.systemReclaimed))
+        #expect(await machine.leases.leaseCount == 0)
+        #expect(await machine.ledger.isReclaimed(fanAt: 0), "the terminal action keeps the mark")
+        #expect(written == .some(nil), "the step wrote under a lease the terminal action revoked")
+        #expect(await machine.commandedRPMs.isEmpty)
+        #expect(await machine.attempts.contains(.engageManualControl(fan: 0)) == false)
+        #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
+        #expect(machine.gate.isIdle)
+    }
+
+    /// **Past the bound, no terminal action from a stale copy.** As above, but level 6 holds the
+    /// gate and never leaves, so § 5 examines without it, and level 6 reports its first command,
+    /// 2,400, in the hop. § 5 decides on the live record: a speed was commanded, so it re-asserts
+    /// rather than giving the fan up, and the ungated re-assert stands down, attempt spent. No
+    /// restore, no revocation, and § 5 writes nothing.
+    ///
+    /// **Mutation (a):** decide on the copy taken before the hop — `guard judged.commanded != nil`
+    /// in `diverged`. Run: red on the no-speed line, the restore, the revocation and the record.
+    /// **(b):** ignore the stamp — drop `record.examinedGated` from `reassertTarget(ofFan:under:)`.
+    /// Run: red on the re-engage and the stand-down line.
+    @Test("Past the gate's bound, a first command reported in the hop is decided on, not given up")
+    func pastTheBoundAFirstCommandInTheHopIsSeen() async throws {
+        let machine = ReclamationMachine(fans: [0: .automatic(at: 2_400)], parkingSafetyHops: true)
+        let ledgerHops = try #require(machine.ledgerHops)
+        let standIn = LevelSixStandIn(machine)
+        let lease = try await Self.atTheEndOfTheGrace(machine)
+        let permit = try standIn.permit()
+        let stuck = try #require(await standIn.enter())
+        await ledgerHops.parkNext(.markReclaimed)
+        let sweep = observing { await machine.watchdog.cycle() }
+        #expect(await yieldUntil("the examination's timer") { machine.gateClock.sleepers == 1 })
+        machine.gateClock.advance(by: FanExaminationGate.examinationWait)
+        #expect(
+            await yieldUntil("the ungated cycle's ledger hop to park") {
+                await ledgerHops.isParked
+            })
+
+        await standIn.report(try await standIn.write(2_400, of: permit), under: lease)
         await ledgerHops.release()
         try await finished("the examination", sweep)
 
         #expect(
-            machine.safetyLog.lines(containing: "no speed to re-assert").count == 1,
-            "the copy saw the first command: update this pin and the records with it")
-        #expect(await machine.didRestore(fan: 0))
+            machine.safetyLog.lines(containing: "no speed to re-assert").isEmpty,
+            "§ 5 gave the fan up on the copy taken before the hop")
+        #expect(await machine.didRestore(fan: 0) == false)
+        #expect(await machine.restorer.causes.isEmpty, "a lease was revoked")
+        #expect(await machine.leases.leaseCount == 1)
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_400)
+        #expect(
+            machine.safetyLog.lines(
+                containing: ReclamationExaminationGateTests.ungatedStandDown
+            ).count == 1)
         #expect(await machine.attempts.contains(.engageManualControl(fan: 0)) == false)
-        #expect(await machine.commandedRPMs.isEmpty)
-        #expect(await machine.restorer.causes.contains(.systemReclaimed))
-        #expect(await machine.leases.leaseCount == 0)
-        #expect(await machine.ledger.isReclaimed(fanAt: 0), "the terminal action keeps the mark")
-        #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
+        #expect(await machine.commandedRPMs == [2_400], "§ 5 wrote without the gate")
+        #expect(await machine.watchdog.fansUnderManualControl == [0])
+        standIn.leave(stuck)
     }
 
     /// **A newer target, written.** Fan 0 is held under L1 at 2,400 RPM while the firmware holds
-    /// 1,800, so the cycle diverges. During its `markReclaimed` hop the holder reports 2,600. The
-    /// copy still says 2,400, and the re-assert writes 2,600: the record's target as it stands
-    /// after the envelope read (#381), not the copy's.
+    /// 1,800, so the cycle diverges. During its `markReclaimed` hop the holder reports 2,600,
+    /// without the gate: a write that bypasses it, which the gate cannot stop and the re-fetches
+    /// still answer. The copy still says 2,400, and the re-assert writes 2,600: the record's
+    /// target as it stands after the envelope read (#381), not the copy's.
     ///
     /// **Mutation:** decide the re-assert's target on the copy taken before the hop — store
-    /// `fan.commanded` in `diverged` before `ledger.markReclaimed`, and have `reassert` write that
-    /// in place of `target.rpm`. Run: red on the commanded RPMs and the re-asserted line.
+    /// `judged.commanded` in `diverged` before `ledger.markReclaimed`, and have `reassert` write
+    /// that in place of `target.rpm`. Run: red on the commanded RPMs and the re-asserted line.
     @Test("A target reported during the ledger hop is the one the re-assert writes")
     func aTargetReportedDuringTheLedgerHopIsTheOneTheReassertWrites() async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 1_800)], parkingSafetyHops: true)

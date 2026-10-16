@@ -115,6 +115,12 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     let thermalEmergency: ThermalEmergency<Plane>
     let reclamationWatchdog: ReclamationWatchdog<Plane>
 
+    /// The fans' examination gate: **one instance**, held by § 5 and, in A6's next change, by
+    /// level 6 (ADR 0014's A6 amendment). Two gates would be two exclusions that exclude nothing
+    /// from each other. Stored so that level 6 can be handed this same one, and so a composed test
+    /// can hold a pass on it; `ExaminationGateRouteTests` holds where it may be named and entered.
+    let examinationGate: FanExaminationGate
+
     /// Where the write path's preparation step reports what it found (ADR 0014 D5).
     let safetyLog: SafetyLog
 
@@ -356,6 +362,10 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             // uses, through the seam that does not log each throw — § 3 asks at 1 Hz.
             handbackReadBack: reconciliation,
             log: safetyLog)
+        // The one examination gate, on the lease core's clock. § 5 takes it before each
+        // examination; nothing on a restore path, § 3, the driver or the plane is handed it.
+        let examinationGate = FanExaminationGate(clock: clock, log: safetyLog)
+        self.examinationGate = examinationGate
         // § 5's writer, shared with the driver it engages through: the driver's step verb and
         // its undo are this writer's, and so is the level the arbiter is asked about. The driver
         // registers every fan it engages with § 3 (#181), so it is built after § 3.
@@ -369,6 +379,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             leases: leases,
             latch: latch,
             ledger: ledger,
+            gate: examinationGate,
             log: safetyLog)
         self.thermalEmergency = thermalEmergency
         self.reclamationWatchdog = reclamationWatchdog

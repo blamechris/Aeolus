@@ -67,10 +67,14 @@ extension ReclamationWatchdog {
         /// a same-lease record.
         var episodeInFlight = false
         /// The fan's registration generation when the examination now in flight began, stamped
-        /// by `beginExamination(atGeneration:)` before the control-state read (#381). Kept by
+        /// by `beginExamination(atGeneration:gated:)` before the control-state read (#381). Kept by
         /// `registering(_:over:)` with the rest of a same-lease record, so a registration under
         /// this lease since then shows as a generation past it. `nil` until the first examination.
         var examinedAtGeneration: UInt64?
+        /// Whether the examination now in flight runs under its gate, stamped beside
+        /// `examinedAtGeneration`: `false` only past the gate's bound, when the re-assert stands
+        /// down and writes nothing away from automatic control (ADR 0014's A6 amendment).
+        var examinedGated = false
 
         /// Gives back an attempt booked for a write that never reached the firmware —
         /// `reassert`'s cancellation exit. Decremented rather than assigned, and floored at
@@ -102,11 +106,13 @@ extension ReclamationWatchdog {
         }
 
         /// Stamps this record as the examination of it begins, with the fan's registration
-        /// `generation` (#381): `Registry.beginExamination(ofFan:)`. A method on the record rather
-        /// than an assignment through `Registry.held`, so a stamp that reads the record's own
-        /// fields as well is one exclusive access to it.
-        mutating func beginExamination(atGeneration generation: UInt64) {
+        /// `generation` (#381) and whether its wait for the gate stayed inside the bound (A6):
+        /// `Registry.beginExamination(ofFan:gated:)`. A method on the record rather than an
+        /// assignment through `Registry.held`, so a stamp that reads the record's own fields as
+        /// well is one exclusive access to it.
+        mutating func beginExamination(atGeneration generation: UInt64, gated: Bool) {
             examinedAtGeneration = generation
+            examinedGated = gated
         }
 
         /// Records `target` as the step last put on the wire: the one write of `commanded`, which
@@ -261,7 +267,7 @@ extension ReclamationWatchdog {
     }
 
     /// What one readable cycle said about a held fan, with its counters already moved as that
-    /// cycle moves them: `HeldFan.judge(_:)`'s answer, which `examine(fanAt:)` acts on.
+    /// cycle moves them: `HeldFan.judge(_:)`'s answer, which `examine(fanAt:gated:)` acts on.
     ///
     /// A sibling of `HeldFan` rather than nested in it, because SwiftLint's `nesting` rule
     /// allows one level and `HeldFan` is already that level.

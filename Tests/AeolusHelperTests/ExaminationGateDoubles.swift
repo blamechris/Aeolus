@@ -1,4 +1,6 @@
+import FanKit
 import Foundation
+import Testing
 import os
 
 @testable import AeolusHelper
@@ -87,5 +89,70 @@ final class ManualClock: MonotonicClock, Sendable {
             let parked = state.withLock { $0.sleepers.removeValue(forKey: id) }
             parked?.continuation.resume(throwing: CancellationError())
         }
+    }
+}
+
+/// Level 6's step as A6's contract has it, before level 6 exists: the fan's examination gate taken
+/// as a step, the target written through level 6's `GovernedFanWriter` straight to the plane, the
+/// `CommandedTarget` that write returned reported under the lease after it returned, and the gate
+/// left (ADR 0014's #383 and A6 amendments, item 3). The suite's one entrant at `.step` until A6's
+/// next change builds the real one.
+///
+/// A fresh writer for each write, so each target is written whole: a `GovernedFanWriter` with no
+/// target behind it goes straight to its goal, which is what A6's `hold(_:of:)` does. § 8's ramp
+/// is E8a's. Each phase is its own call, so a scenario can hold the gate between a write and its
+/// report — the reverse order, which § 5 must never read inside — or never leave it at all.
+struct LevelSixStandIn<Writes: FanControlPlane>: Sendable {
+    let machine: ReclamationMachine<Writes>
+
+    init(_ machine: ReclamationMachine<Writes>) {
+        self.machine = machine
+    }
+
+    /// Fan `index`'s permit, minted from its declared condition as the fixture mints one.
+    func permit(_ index: Int = 0) throws -> CommandableFan {
+        try commandableFan(index, declaring: try #require(machine.fanConditions[index]))
+    }
+
+    /// Takes the fan's gate as a step, waiting at most `FanExaminationGate.stepWait`.
+    func enter(fanAt index: Int = 0) async -> FanExaminationGate.Pass? {
+        await machine.gate.enterForStep(fanAt: index)
+    }
+
+    /// Registers the fan under `lease` with § 5, as A6's item 2 does under the same gate.
+    func register(_ permit: CommandableFan, under lease: UUID) async throws {
+        try await machine.watchdog.manualControlEngaged(permit, under: lease)
+    }
+
+    /// Writes `rpm` to the fan through level 6's writer, straight to the plane.
+    func write(_ rpm: Double, of permit: CommandableFan) async throws -> CommandedTarget {
+        try await GovernedFanWriter(plane: machine.plane)
+            .command(towards: rpm, of: permit, since: .zero)
+    }
+
+    /// Reports what a write returned, under `lease`.
+    func report(_ written: CommandedTarget, under lease: UUID) async {
+        await machine.watchdog.commandedTarget(written, under: lease)
+    }
+
+    func leave(_ pass: FanExaminationGate.Pass) {
+        machine.gate.leave(pass)
+    }
+
+    /// One whole step: take the gate, ask whether `lease` is still live and covers the fan, as
+    /// level 6 does before it writes, write `rpm`, report it, and leave.
+    ///
+    /// - Returns: what was written, or `nil` when the gate was refused or the lease had ended.
+    func step(
+        to rpm: Double, of permit: CommandableFan, under lease: UUID
+    ) async throws -> CommandedTarget? {
+        guard let pass = await enter(fanAt: permit.index) else { return nil }
+        defer { leave(pass) }
+        guard await machine.leases.hasLiveLease(id: lease, coveringFan: permit.index) else {
+            return nil
+        }
+        let written = try await write(rpm, of: permit)
+        await report(written, under: lease)
+        return written
     }
 }

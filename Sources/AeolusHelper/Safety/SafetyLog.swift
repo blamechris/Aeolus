@@ -1782,6 +1782,22 @@ extension SafetyLog {
             """
         )
     }
+
+    /// A re-assert stood down at `moment`, writing nothing more: `ungated` when the examination
+    /// ran past the gate's bound, and otherwise for a registration under the same lease since the
+    /// examination began, which `reclamationReassertLeftToItsEngagement(fan:at:)` says (#381).
+    func reclamationReassertStoodDown(fan: Int, at moment: String, ungated: Bool) {
+        guard ungated else { return reclamationReassertLeftToItsEngagement(fan: fan, at: moment) }
+        emit(
+            .notice,
+            """
+            § 5 examined fan \(fan) without its examination gate, past the gate's bound, and \
+            found that at \(moment), so it wrote nothing that would take the fan away from \
+            automatic control. The attempt stays spent; the next cycle's read-back decides \
+            whether the fan is held.
+            """
+        )
+    }
 }
 
 /// `FanControlPlaneValue.wholeRPM(_:)`, the one total RPM-to-text conversion every line here uses:

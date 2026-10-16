@@ -65,6 +65,14 @@ struct ReclamationMachine<Writes: FanControlPlane> {
     let latchHops: ParkableThermalLatch?
     let ledgerHops: ParkableReclamationLedger?
 
+    /// The fans' examination gate § 5 takes before each examination, and the clock it bounds the
+    /// wait on (ADR 0014's A6 amendment). Its own `ManualClock` rather than `leaseClock`:
+    /// `TestClock`'s sleep jumps to its deadline, so every contended wait would run out the moment
+    /// it began. The composition hands the gate the lease core's clock; no scenario here depends on
+    /// the two being one, and one about the bound moves this clock alone.
+    let gateClock = ManualClock()
+    let gate: FanExaminationGate
+
     /// § 3, on the same plane and latch, so that the registration the driver owes it (#181) is
     /// observable and its latched cycle can bridge what § 5 left registered. No test cycles it
     /// unless it is about that: its stages read no temperature, so a cycle is blind, and a
@@ -94,6 +102,7 @@ struct ReclamationMachine<Writes: FanControlPlane> {
         latchHops = parkingSafetyHops ? ParkableThermalLatch(latch) : nil
         ledgerHops = parkingSafetyHops ? ParkableReclamationLedger(ledger) : nil
         let log = SafetyLog(recording: { [safetyLog] in safetyLog.append($0, $1) })
+        gate = FanExaminationGate(clock: gateClock, log: log)
         let telemetry = CuratedCriticalTemperatures(plane: writes, set: .mac16x5)
         emergency = ThermalEmergency(
             telemetry: telemetry,
@@ -113,6 +122,7 @@ struct ReclamationMachine<Writes: FanControlPlane> {
             leases: leaseHops ?? leases,
             latch: latchHops ?? latch,
             ledger: ledgerHops ?? ledger,
+            gate: gate,
             log: log
         )
     }

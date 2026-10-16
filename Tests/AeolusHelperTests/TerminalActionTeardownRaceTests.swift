@@ -174,6 +174,7 @@ struct TeardownRaceGraph: Sendable {
             leases: hops,
             latch: latch,
             ledger: ledger,
+            gate: FanExaminationGate(clock: clock, log: log),
             log: log)
         await restorer.bind(thermalEmergency: emergency, reclamationWatchdog: watchdog)
         await leases.bind(emergencyRestores: emergency)
