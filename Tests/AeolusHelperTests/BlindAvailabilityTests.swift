@@ -240,14 +240,15 @@ struct BlindAvailabilityTests {
 
     /// A snapshot and a grant on a cold, blind machine cost one curated-set read between them: the
     /// snapshot's check is the cache the lease core proves against, so its failure is the grant's
-    /// evidence.
+    /// evidence. The clock is frozen, so the snapshot's sighting cannot expire before the grant
+    /// asks under a stalled runner, which would make the grant read again (CI run 38906841239).
     ///
     /// **Mutation:** in `HelperComposition`, hand the authority a cache of its own —
     /// `telemetry: CriticalTemperatureCache(source: telemetry, clock: clock)`. Run: red here on
     /// the read count, and in `HelperCompositionTests.onlyOneSightingCacheIsEverBuilt`.
     @Test("A snapshot and a grant on a cold, blind machine read the curated set once")
     func theSnapshotAndTheGrantShareOneSighting() async throws {
-        let helper = Fixture.composed(afterwards: [Fixture.sightless()])
+        let helper = Fixture.composed(clock: TestClock(), afterwards: [Fixture.sightless()])
         await helper.bindSafetyRegistries()
         await helper.plane.advance()
         let before = await Self.curatedReads(on: helper.plane)
