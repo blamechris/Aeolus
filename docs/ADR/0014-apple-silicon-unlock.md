@@ -1012,8 +1012,9 @@ point it is the daemon.
 That is, `engageManualControl(of:while:)`, with the plane looping internally. It is rejected:
 
 - **It contradicts ADR 0008's sole-parameter rule and its two tripwires.**
-  `expectPermitIsTheOnlyParameter` requires exactly one parameter, and `SeamScanner`'s `\([^)]*\)`
-  cannot span a closure's `()`.
+  `expectPermitIsTheOnlyParameter` requires exactly one parameter. Since #362, `SeamScanner`
+  finds a parameter list by balanced parentheses, so a closure parameter is listed and refused
+  there; before it, the `\([^)]*\)` match could not span a closure's `()`.
 - **A closure that is not handed the index can check a different fan's lease than the permit
   names.** That is the disagreement ADR 0008 exists to make unrepresentable.
 
