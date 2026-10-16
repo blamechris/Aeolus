@@ -863,9 +863,9 @@ and relocating prose cannot make more. [#350](https://github.com/blamechris/Aeol
 grant seal took it to 278, leaving 72, and the file to 885 lines of its 1000.
 [#357](https://github.com/blamechris/Aeolus/issues/357)'s identity query and
 `revokeLease` took it to 290, leaving 60, and the file to 912.
-[#368](https://github.com/blamechris/Aeolus/issues/368)'s outwait took it to 302, leaving 48, and
-the file to 944. `file_length` has not gone away either. At this file's present density, about
-3.1 lines per code line, it would error after roughly 18 new code lines, so which of the two
+[#368](https://github.com/blamechris/Aeolus/issues/368)'s outwait took it to 304, leaving 46, and
+the file to 948. `file_length` has not gone away either. At this file's present density, about
+3.1 lines per code line, it would error after roughly 17 new code lines, so which of the two
 limits is reached first depends on how much comment the new code carries.
 
 New behaviour for #9's A4 and A6 belongs in the `EngagementDriver` that
@@ -1064,9 +1064,11 @@ notice cleared the mark. So `.gone` now waits, once, for the fan the caller name
 `releasing`: `outwaitHandback(of:)` parks a continuation in `handbackWaiters`, in the
 straight-line region that found the lease gone, and `restore(_:because:)`'s `defer` resumes it.
 
-- **The drain is that teardown's notice, and no other's.** Three facts the ledger already rests
-  on. Every lease-core teardown takes its entries out of the table and counts their fans into
-  `releasing` with no suspension between (ADR 0009's assumption table). `HelperFanRestorer`
+- **While the ending's handback is under way, the drain is that teardown's notice.** Three
+  facts the ledger already rests on. Every lease-core teardown takes its entries out of the table
+  and counts their fans into `releasing` with no suspension between (ADR 0009's assumption table,
+  which `TeardownSweepTripwireTests.noTeardownSuspendsBetweenItsRemovalAndItsRestore` holds).
+  `HelperFanRestorer`
   awaits each § 5 notice before its write, and `releasing` drops only in the `defer`, after the
   restorer returns. And while `releasing[fan]` is held `acquireLease` refuses the fan — and a
   fan in `restoreAbandoned` before that, which a fan under a granted lease cannot be in — so no
@@ -1074,12 +1076,25 @@ straight-line region that found the lease gone, and `restore(_:because:)`'s `def
   first returns. When the count reaches zero, the notice has reached § 5 and found `finalising`
   holding the fan. `.revoked` and `.expired` need no wait: by the same facts their own restore is
   the fan's only handback.
+- **Not always the ending's, though** ([#377](https://github.com/blamechris/Aeolus/issues/377),
+  found by #375's review). § 5's hand-back is the driver's write, which `releasing` does not
+  count, so the ending's handback can return during it; once the hand-back lands, a newer lease
+  can be granted over the fan and released, and a revocation arriving while that release's
+  handback is in flight outwaits the newer lease's instead. `finalising` absorbs the newer
+  lease's notice. One more bounded wait, and a mark that survives the release of a lease which
+  never engaged the fan — the direction that keeps a mark, not one that loses it. Keying the
+  wait on the lease as well as the fan is the exact fix; #377 tracks it.
 - **Once, not in a loop.** A handback begun after the drain is a newer lease's, and its notice
   must clear the mark: a fan a client took and released after § 5 gave it up is not a fan the
   system took. Re-checking — `while releasing[fan] != nil` — would absorb that notice too.
   **Nothing in the suite tells the two apart**: no test lands a grant in the one resumption
-  between the drain and the waiter running, so the loop survives every test (M7 in #368's
-  mutation table). This paragraph is what stands against that edit.
+  between the drain and the waiter running, so replacing the single wait with that loop survives
+  every test (M7 in [#375](https://github.com/blamechris/Aeolus/pull/375)'s mutation table). This
+  paragraph is what stands against that edit.
+- **Checked inside the continuation.** `releasing[fan]` is read in `withCheckedContinuation`'s
+  synchronous body, which parks the waiter or resumes it at once, so no `await` can be written
+  between the check and the park. One there would let the count drain unseen, orphan the waiter,
+  and leave § 5 parked, watching nothing, for the life of the process (#375's review).
 - **Resumed in the `defer`**, in the branch that sets `releasing[fan] = nil`, beside
   `handbackUnconfirmed`'s clear. Not in the body: it returns early through
   `guard !accepted.isEmpty else { return }` whenever no abandoned refusal is being lifted, which
@@ -1087,11 +1102,14 @@ straight-line region that found the lease gone, and `restore(_:because:)`'s `def
 - **Not cancellable**, because the restore it outwaits is not (#110). A revocation that gave up
   its wait on cancellation would answer before the notice it exists to wait for, so no
   cancellation handler is installed.
-- **No longer than `.revoked`.** The wait is one bounded handback — `RestoreLimits.attemptBudget`
-  attempts per fan of the ended lease, each bounded by `FanRestoreAttempting`'s contract (#168)
-  and, failing that, by ADR 0012 — which is what `.revoked` has always cost § 5's cycle while it
-  awaits its own restore, and a handback that never returns parks § 5 no longer than it parks
-  `.revoked`. It cannot deadlock: § 5's actor can be re-entered while it is parked, so the
+- **Bounded, and usually no longer than `.revoked`.** The wait is one restore call —
+  `RestoreLimits.attemptBudget` attempts for each fan that call hands back, each bounded by
+  `FanRestoreAttempting`'s contract (#168) and, failing that, by ADR 0012. For most teardowns
+  those are the ended lease's fans, which is what `.revoked` has always cost § 5's cycle while it
+  awaits its own restore. When the ending is § 7's `releaseEveryLease()`, the call also sweeps
+  `restoreAbandoned`, so the wait spans every abandoned fan's attempt budget as well: longer than
+  `.revoked`, and still bounded. A handback that never returns parks § 5 no longer than it would
+  park `.revoked`. It cannot deadlock: § 5's actor can be re-entered while it is parked, so the
   teardown's notice still runs on it, and no teardown waits on § 5. No restore waits on anything.
   It waits on the named fan alone, so a client granting and releasing another fan cannot hold
   § 5 parked.
@@ -1101,12 +1119,17 @@ straight-line region that found the lease gone, and `restore(_:because:)`'s `def
   resume, so the instant a fan's count reaches zero and the instant its waiters are released stay
   one instant.
 
-**What remains.** Between the drain and § 5 resuming, a lease granted and released over the fan
-without an engagement would send a notice `finalising` still absorbs. The window is one
-continuation's resumption against a grant's five suspensions, and the guard had one like it
-before; it is neither widened nor removed. A notice that reaches § 5 before the terminal action
-begins still clears the mark, by design: § 5 learns that a lease ended when its notice arrives,
-and one that arrives first is a release that came first.
+**What remains.** Two notices can still be absorbed in the one continuation resumption between
+the drain and § 5 resuming. One is a newer lease's, granted over the fan and ended with no
+engagement between. The other comes when the ended lease's restore was refused for the fan, which
+put it in `restoreAbandoned`, and a `releaseEveryLease()` starting in that window hands it back
+again. Either needs a second lease-core handback to begin inside the resumption and its notice to
+cross `HelperFanRestorer` before § 5 resumes — a grant through five suspensions and then the
+lease's ending, or § 7's sweep. The guard had a window of the same shape before; it is neither
+widened nor removed, and either notice absorbed keeps a mark rather than losing one. A notice
+that reaches § 5 before the terminal action begins still clears the mark, by design: § 5 learns
+that a lease ended when its notice arrives, and one that arrives first is a release that came
+first.
 
 `fansARevocationAwaits` reads the waiters' keys and none of their continuations, under the
 read-only rule above, so a test can wait for a parked revocation as a state rather than a yield

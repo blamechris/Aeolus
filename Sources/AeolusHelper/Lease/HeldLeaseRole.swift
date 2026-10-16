@@ -30,8 +30,11 @@ enum LeaseRevocation: Sendable, Hashable {
     /// It had lapsed and not yet been swept: ended now, and its fans restored as
     /// `.leaseExpired`, so nobody is told the system took control the lease had already lost.
     case expired
-    /// The table no longer held it: another path had already removed it. Answered only once
-    /// that path's handback of the fan the caller named has returned, so its release notice has
-    /// reached § 5 by then (#368).
+    /// The table no longer held it: another path had already removed it. Answered only once the
+    /// fan the caller named has no handback in flight, so a path still handing it back has sent
+    /// § 5 its release notice by then (#368). Not exactly that path's: if its handback already
+    /// returned and a newer lease's is under way, the answer waits for that one instead, and
+    /// § 5 absorbs the newer lease's notice — one more bounded wait, and a mark kept through an
+    /// unengaged lease's release ([#377](https://github.com/blamechris/Aeolus/issues/377)).
     case gone
 }

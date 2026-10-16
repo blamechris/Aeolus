@@ -1512,7 +1512,8 @@ This amendment corrects clauses of a Proposed ADR rather than the decisions they
 ## Amendment (2026-10-15, [#368](https://github.com/blamechris/Aeolus/issues/368)) — a revocation that finds its lease already ended returns only once that ending's handback has
 
 An A6 precondition, found by the delta review of #361 and reproduced under load with the real
-`LeaseAuthority`, `HelperFanRestorer` and § 5 (5–15 marks lost per 1,000 runs, the issue's probe).
+`LeaseAuthority`, `HelperFanRestorer` and § 5 — the issue's probe lost 4–6 marks in 1,200 runs, 5–9
+in 2,000 and 15 in 1,200, about 2.5–12.5 per 1,000, and none in 1,200 run alone.
 Unreachable on every build on `main`, where a `.notBuilt` plane grants no lease. A reporting error,
 `CLAUDE.md` rule 6 in the direction that hides a loss: the fan is handed back on every route.
 
@@ -1531,7 +1532,8 @@ at the instant the fan's count reaches zero. It waits once and does not re-check
 after the drain is a newer lease's, whose notice must clear the mark. It is not cancellable, because
 the restore it outwaits is not.
 
-The drain is that ending's notice and nothing else, by three facts the design already rests on:
+While the ending's handback is still under way, the drain is that ending's notice, by three facts
+the design already rests on:
 
 1. Every lease-core teardown takes its entries out of the table and counts their fans into
    `releasing` with no suspension between (ADR 0009's assumption table).
@@ -1545,19 +1547,36 @@ So when `releasing[fan]` drains, the notice the defect is about has reached § 5
 `finalising` holding the fan. `.revoked` and `.expired` need no wait: by the same three facts their
 own restore is the fan's only handback.
 
-**What it costs.** `.gone` now takes as long as `.revoked` always has: one bounded handback,
-`RestoreLimits.attemptBudget` attempts per fan of the ended lease, each bounded by
-`FanRestoreAttempting`'s contract (#168) and, failing that, by ADR 0012. § 5's cycle is parked for
-that long, as it already is for its own revocation, and a handback that never returns parks it no
-longer than it parks `.revoked`. No restore waits on anything: the hand-back has been issued, the
-ending's restore is untouched, and the keystone gains no input and no read ahead of it.
+**The drain is not always the ending's** ([#377](https://github.com/blamechris/Aeolus/issues/377),
+found by #375's review). § 5's hand-back is the driver's write, and `releasing` does not count it.
+The ending teardown's handback can therefore return during the hand-back, and once the hand-back
+lands a newer lease can be granted over the fan and released. A revocation that arrives while that
+release's handback is in flight outwaits the newer lease's handback instead, and `finalising`
+absorbs the newer lease's notice. The cost is bounded and in the safe direction: one more bounded
+handback wait, and a mark that survives the release of a lease which never engaged the fan, rather
+than a mark lost. The exact fix keys the wait on the lease as well as the fan, and #377 tracks it;
+the mechanism here is unchanged.
 
-**What remains.** Between the drain and § 5 resuming, a lease granted and released over the fan
-without an engagement would send a notice `finalising` still absorbs. The window is one
-continuation's resumption against a grant's five suspensions; the guard has always had one after its
-last suspension, and this neither widens nor removes it. A notice that reaches § 5 before the
-terminal action begins still clears the mark: § 5 learns a lease has ended when its notice arrives,
-and one that arrives first is a release that came first.
+**What it costs.** `.gone` now waits for one bounded restore call: the ending teardown's, or by the
+route above a newer lease's. That is `RestoreLimits.attemptBudget` attempts for each fan the call
+hands back, each bounded by `FanRestoreAttempting`'s contract (#168) and, failing that, by
+ADR 0012. For most teardowns those are the ended lease's fans, as `.revoked`'s are. When the ending
+is § 7's `releaseEveryLease()`, the call also sweeps `restoreAbandoned`, so the wait spans every
+abandoned fan's attempt budget too: longer than `.revoked`, and still bounded. § 5's cycle is parked
+for that long, as it already is for its own revocation, and a handback that never returns parks it
+no longer than it would park `.revoked`. No restore waits on anything: the hand-back has been
+issued, the ending's restore is untouched, and the keystone gains no input and no read ahead of it.
+
+**What remains.** Two notices can still be absorbed in the one continuation resumption between the
+drain and § 5 resuming. One is a newer lease's, granted over the fan and ended with no engagement
+between. The other comes when the ended lease's restore was refused for the fan, which put it in
+`restoreAbandoned`, and a `releaseEveryLease()` that starts in the window hands it back again.
+Either needs a second lease-core handback to begin inside that resumption and its notice to cross
+`HelperFanRestorer` before § 5 resumes: a grant through its five suspensions and then the lease's
+ending, or § 7's sweep. The guard has always had a window of that shape after its last suspension,
+and this neither widens nor removes it. Absorbed, either keeps a mark rather than losing one. A
+notice that reaches § 5 before the terminal action begins still clears the mark: § 5 learns a lease
+has ended when its notice arrives, and one that arrives first is a release that came first.
 
 **What does not change.** § 5's body: one argument at one call site and no new line, which is why
 this lands before #128's split. `LeaseRevocation`'s cases. The hand-back's place before the
@@ -1583,8 +1602,11 @@ and nothing crosses the boundary.
 
 **Revisit if** a lease-core restore path bypasses `releasing`, or `HelperFanRestorer` stops awaiting
 its § 5 notices before it returns — the wait then ends before the notice it exists for, and the
-notice must carry the lease; leases that can overlap on a fan are proposed; or D8's measured write
-round trip makes a teardown's handback long against § 5's cadence. The ruling is the architect's
+notice must carry the lease; a `restore(_:because:)` call outside lease teardown makes the
+`releasing` overlap reachable, so two handbacks can hold one fan's count and the wait spans both;
+leases that can overlap on a fan are proposed; #377 keys the wait on the lease and the fan, which
+changes what the wait is for; or D8's measured write round trip makes a teardown's handback long
+against § 5's cadence. The ruling is the architect's
 #368/#343 consult, run on Opus.
 
 This amendment corrects a clause of a Proposed ADR rather than the decision it sits under.

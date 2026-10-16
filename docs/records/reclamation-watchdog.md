@@ -630,13 +630,15 @@ guard is opened around the revocation alone.
 holder's connection dying — that reaches `LeaseAuthority` after the hand-back has returned but
 before `revokeLease` runs takes the table entry itself, so the revocation finds nothing. Until #368
 it returned at once, the `defer` closed the window, and the teardown's own notice, still on its way
-through `HelperFanRestorer`, cleared the mark: reproduced under load at 5–15 marks per 1,000 runs.
+through `HelperFanRestorer`, cleared the mark: reproduced under load at 4–6 marks in 1,200 runs, 5–9
+in 2,000 and 15 in 1,200, about 2.5–12.5 per 1,000, and never in 1,200 run alone.
 `revokeLease(id:forFan:because:)` now answers `.gone` only once `releasing` no longer holds the fan,
 and the restorer delivers its notices before it returns, so the notice lands while `finalising`
 holds the fan and skips its clear. `TerminalActionTeardownRaceTests` parks the teardown between the
 lease core and the restorer and lands it between the hand-back and the revocation;
-handback-ledger.md § *"Outwaiting another path's handback"* has why the drain is that teardown's and
-no other's.
+handback-ledger.md § *"Outwaiting another path's handback"* has why the drain is that teardown's
+while its handback is under way, and the one route by which it is a newer lease's instead, with a
+mark kept rather than lost ([#377](https://github.com/blamechris/Aeolus/issues/377)).
 
 **A lease that ended before the revocation, since #353.** `revokeLease(id:forFan:because:)` then
 revokes nothing and sends no release notice of its own, so the mark is kept with nothing to clear it
