@@ -34,7 +34,7 @@ import Testing
 /// one is a failure a maintainer has to answer for here, in the file that says why the
 /// existing ones were acceptable.
 ///
-/// That the two files below are every file is itself asserted, by
+/// That the files below are every file is itself asserted, by
 /// `theScannedFilesAreEveryFileTheActorIsIn`. The list was hand-written until
 /// [#236](https://github.com/blamechris/Aeolus/issues/236), which is the same gap #236
 /// reproduced on `HelperConnectionSessionAccessTests`: a *third* file declaring
@@ -63,17 +63,21 @@ struct LeaseAuthorityAccessTests {
     private static let authorityType = "LeaseAuthority"
     private static let helperTarget = "AeolusHelper"
 
-    /// Both files `LeaseAuthority`'s members are written in, **sorted**, and checked against
+    /// Every file `LeaseAuthority`'s members are written in, **sorted**, and checked against
     /// the tree by `theScannedFilesAreEveryFileTheActorIsIn` rather than trusted.
     ///
     /// The extension's members sit at the same indent and are members of the same actor, so
     /// scanning only the main file would let the next split widen a member simply by putting
-    /// it in the second one — which is the move that made this suite necessary. Adding a third
-    /// file is a decision about what it may widen, so it is written here rather than derived
+    /// it in the second one — which is the move that made this suite necessary. Adding a file
+    /// is a decision about what it may widen, so it is written here rather than derived
     /// silently at the point of use.
+    /// #128's lease-core pass added two, each declaring a value type inside `extension
+    /// LeaseAuthority` and no member of the actor: `LeaseAuthorityRegistersAccessTests` holds them.
     private static let authorityFiles = [
         "LeaseAuthority.swift",
+        "LeaseAuthorityHandbackRegisters.swift",
         "LeaseAuthorityRefusals.swift",
+        "LeaseAuthoritySleepSealPairing.swift",
     ]
 
     /// Every member of `LeaseAuthority` whose privacy is load-bearing, spelled as declared.
@@ -374,12 +378,12 @@ struct LeaseAuthorityAccessTests {
     // MARK: - The member parse
 
     /// Every member of the requested kind declared at the actor's own member indent, across
-    /// both files it is written in.
+    /// every file it is written in.
     ///
     /// The parse itself is `MemberAccessScan`, shared with
-    /// `HelperConnectionSessionAccessTests` since #98 rather than copied into it. Neither
-    /// file here declares a nested type, so nothing but a member of the actor sits at that
-    /// depth — which is the precondition that scan states and its callers have to keep.
+    /// `HelperConnectionSessionAccessTests` since #98 rather than copied into it. Two files
+    /// here declare nested types, whose members sit eight spaces in, so nothing but a member of
+    /// the actor sits at that depth — the precondition that scan states and its callers keep.
     /// Computed properties are counted alongside stored ones deliberately —
     /// `fansAeolusIsAccountableFor` is computed, and it is the widening most worth watching.
     private static func members(
