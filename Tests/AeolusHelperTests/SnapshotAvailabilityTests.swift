@@ -114,18 +114,16 @@ struct SnapshotAvailabilityTests {
     /// #194's third acceptance criterion, and the reason the capability could not simply be
     /// mapped to `.available`: a fan whose declared maximum is ~1e14 — the shape of a
     /// byte-swapped `flt` — has no envelope to clamp into, so no target could ever be minted
-    /// for it however capable the build is.
+    /// for it however capable the build is. The firmware scripts `F0Mx`, and the snapshot reads
+    /// it through `PlaneBackedProvider`, from the value the plane's `readEnvelope(ofFan:)` reads.
     ///
     /// **Mutation:** in `availability(writeCapabilityIs:bounds:)`, delete the `bounds` arm so a
     /// `.built` seam falls straight through to `.available`. Run: red.
     @Test("A bounds-implausible fan is refused for its bounds even on a seam that can write")
     func aBoundsImplausibleFanIsStillRefusedOnABuiltSeam() async throws {
         let helper = Fixture.composed(
-            fanCount: 1,
-            extraKeys: [
-                SMCFanEnumeration.maximumKey(forFan: 0): .reading(
-                    SMCFanEnumeration.maximumKey(forFan: 0), 1e14)
-            ])
+            afterwards: [Fixture.fanZeroMaximum(Fixture.byteSwappedMaximum)])
+        await helper.plane.advance()
 
         let snapshot = try await helper.authority.snapshot()
 

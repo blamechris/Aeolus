@@ -57,6 +57,24 @@ enum AvailabilityFixture {
         try #require(snapshot.fans.first { $0.index == index }).manualControlAvailability
     }
 
+    /// `F0Mx`'s value in the bounds scenarios: the shape of a byte-swapped `flt`, which § 2's
+    /// gate refuses as `.maximumAboveCeiling`.
+    static let byteSwappedMaximum = ScriptedControlPlane.BoundRead.reads(1e14)
+
+    /// A stage on which the SMC answers, the temperatures are nominal, and fan 0's `F0Mx` reads
+    /// `maximum` — to the snapshot's provider and to the grant's `readEnvelope(ofFan:)` alike
+    /// (#270). `unreadableModes` and `writes` are the stage's own, for a scenario that needs a
+    /// mode that does not read or a write the firmware refuses beside the bounds.
+    static func fanZeroMaximum(
+        _ maximum: ScriptedControlPlane.BoundRead,
+        writes: ScriptedControlPlane.WriteBehaviour = .honoured,
+        unreadableModes: Set<Int> = []
+    ) -> ScriptedControlPlane.Stage {
+        ScriptedControlPlane.Stage(
+            temperatures: LeaseFixture.nominalDieTemperatures, writes: writes,
+            unreadableModes: unreadableModes, maximumReads: [0: maximum])
+    }
+
     // MARK: - The graphs
 
     /// The daemon's own wiring over scripted firmware that can write.
@@ -68,20 +86,19 @@ enum AvailabilityFixture {
     /// gate would have to report as blindness. `LeaseFixture.automaticFans()` records the same
     /// hazard.
     ///
-    /// The snapshot reads each fan's `F<n>Md` from that same firmware, through
-    /// `PlaneBackedProvider` (#360), so the two sides judge one machine. `afterwards` follows the
-    /// nominal stage, for a scenario whose fan stops answering once something is set up.
+    /// The snapshot reads each fan's `F<n>Md`, `F<n>Mn` and `F<n>Mx` from that same firmware,
+    /// through `PlaneBackedProvider` (#360, #270), so the two sides judge one machine.
+    /// `afterwards` follows the nominal stage, for a scenario whose fan stops answering, or
+    /// starts reading implausible bounds, once something is set up.
     static func composed(
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
         fanCount: Int = 1,
-        extraKeys: [String: Result<SensorReading, SensorReadFailure>] = [:],
         afterwards: [ScriptedControlPlane.Stage] = []
     ) -> HelperComposition<ScriptedControlPlane> {
         let firmware = Self.firmware(fanCount: fanCount, writes: writes, afterwards: afterwards)
         return HelperComposition(
             plane: firmware,
-            snapshotProvider: PlaneBackedProvider(
-                over: firmware, fanCount: fanCount, extraKeys: extraKeys),
+            snapshotProvider: PlaneBackedProvider(over: firmware, fanCount: fanCount),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: Self.helperLog,

@@ -223,17 +223,10 @@ struct UnreadModeAvailabilityTests {
 
     // MARK: - Over the bounds gate
 
-    /// `F0Mx`'s value in the scenarios below: a byte-swapped `flt`'s shape, which § 2's gate
-    /// refuses as implausible.
-    private static let implausibleMaximum: [String: Result<SensorReading, SensorReadFailure>] = [
-        SMCFanEnumeration.maximumKey(forFan: 0): .reading(
-            SMCFanEnumeration.maximumKey(forFan: 0), 1e14)
-    ]
-
     /// A fan whose bounds are implausible and whose mode will not read reads `.supervisorBlind`,
     /// the grant's answer: the grant has no bounds gate yet (#270), so its fresh read refuses
     /// first, and step 5 restates the read path's `.boundsImplausible` as it restates
-    /// `.available`.
+    /// `.available`. The firmware scripts `F0Mx`, a byte-swapped `flt`'s shape, for both sides.
     ///
     /// `.boundsImplausible` is silent to `fanctl auto`, so a snapshot that kept it would exit 0
     /// about a fan the grant refuses as blind: #360's defect, for such a fan.
@@ -244,8 +237,12 @@ struct UnreadModeAvailabilityTests {
     @Test("A fan with implausible bounds whose mode will not read reads the grant's own refusal")
     func implausibleBoundsDoNotHideAnUnreadMode() async throws {
         let helper = Fixture.composed(
-            extraKeys: Self.implausibleMaximum, afterwards: [Self.modesUnread([0])])
+            afterwards: [
+                Fixture.fanZeroMaximum(Fixture.byteSwappedMaximum),
+                Fixture.fanZeroMaximum(Fixture.byteSwappedMaximum, unreadableModes: [0]),
+            ])
         await helper.bindSafetyRegistries()
+        await helper.plane.advance()
         #expect(
             try Fixture.availability(ofFanAt: 0, in: try await helper.authority.snapshot())
                 == .unavailable(.boundsImplausible),
@@ -272,7 +269,10 @@ struct UnreadModeAvailabilityTests {
     @Test("A durable reconciliation refusal is stated over implausible bounds")
     func aDurableRefusalOutranksImplausibleBounds() async throws {
         let refused = Fixture.firmwareRefusesTheModeWrite
-        let helper = Fixture.composed(writes: refused, extraKeys: Self.implausibleMaximum)
+        let helper = Fixture.composed(
+            writes: refused,
+            afterwards: [Fixture.fanZeroMaximum(Fixture.byteSwappedMaximum, writes: refused)])
+        await helper.plane.advance()
         await helper.plane.setMode(.manual, ofFan: 0)
         await helper.reconciliation.reconcile()
         #expect(
