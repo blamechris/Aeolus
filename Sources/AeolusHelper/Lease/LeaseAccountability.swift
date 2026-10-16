@@ -56,8 +56,8 @@ struct LeaseAccountability: Sendable {
     /// Fans whose restore was issued, stopped being waited for, and has not come back.
     ///
     /// A subset of `handbacksInFlight` by the lease core's own invariant — see
-    /// `LeaseAuthority.handbackUnconfirmed` — which is why the two are reported together
-    /// rather than one being inferred from the other.
+    /// `LeaseAuthority.HandbackRegisters.handbackUnconfirmed` — which is why the two are
+    /// reported together rather than one being inferred from the other.
     let unconfirmedHandbacks: Set<Int>
 
     /// Fans with a restore-to-automatic on the wire right now: `releasing`'s keys.

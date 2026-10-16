@@ -48,6 +48,52 @@ the rationale that had outgrown a doc comment moved into this document, and each
 kept a summary and a pointer to the section here. No reasoning was deleted, and none of it was
 shortened into a claim a reader has to take on trust.
 
+## Where the registers live: two value types the actor holds (#128)
+
+[#128](https://github.com/blamechris/Aeolus/issues/128)'s lease-core pass moved the registers out
+of the actor's own stored properties, before [#269](https://github.com/blamechris/Aeolus/issues/269)
+would have taken its body past the 320 code lines that change was gated on. `releasing`,
+`restoreAbandoned`, `handbackAcceptedUnconfirmed` and `handbackUnconfirmed` are the private stores
+of `LeaseAuthority.HandbackRegisters` (`LeaseAuthorityHandbackRegisters.swift`), and `sleepSeal`,
+`latestWakeGeneration` and `sealGeneration` those of `LeaseAuthority.SleepSealPairing`
+(`LeaseAuthoritySleepSealPairing.swift`). The actor holds one of each, as `private var registers`
+and `private var sleep`, and an instance anywhere else governs nothing. It is § 5's
+`ReclamationWatchdog.Registry` move ([reclamation-watchdog.md](reclamation-watchdog.md)), applied
+to the lease core, and like that one it widens nothing.
+
+**Every synchronous decision moved with its store; every `await`, every re-read after one and
+every act stayed in the actor, in the order it had.** The acts are the log lines, the restore, and
+resuming a `.gone` revocation's waiter. One statement for one transition:
+
+| Before, in `LeaseAuthority` | Since #128's lease-core pass |
+|---|---|
+| `restore(_:because:)`'s `releasing[fan, default: 0] += 1` | `registers.beginHandback(ofFan:)`, per fan, in the same loop before the restorer's `await` |
+| its `defer`: the decrement, and at zero `releasing[fan] = nil` and `handbackUnconfirmed.remove(fan)` | `registers.endHandback(ofFan:)`, per fan; when it answers `true` the actor resumes that fan's waiters, in the same iteration as before |
+| its union into `restoreAbandoned`, the two `handbackAcceptedUnconfirmed` updates and the `accepted` intersection | `registers.recordRestore(of:abandoned:)`, after the `await`; it returns `accepted` for the actor to log |
+| `recordUnconfirmedHandbacks()`'s body | `registers.recordUnconfirmedHandbacks()` |
+| `confirmAcceptedHandbacks()`'s re-read and its two subtractions | `registers.liftRefusals(readingAutomatic:)`, after the `await`, after the still-unconfirmed log line |
+| the three per-fan filters in `acquireLease` | `abandoned(among:)`, `unconfirmed(among:)` and `midHandback(among:)`, below the marker |
+| `outwaitHandback(of:)`'s `releasing[fan] != nil` | `registers.isMidHandback(_:)`, still inside the continuation's synchronous body |
+| `sealForSleep(generation:)`'s body | `sleep.seal(generation:)`, which answers `.declined`, `.metStanding` or `.sealed` for the actor to log |
+| `unsealAfterWake(generation:)`'s body | `sleep.wake(generation:)`, which answers whether the seal cleared |
+| `acquireLease`'s `!sleepSeal` | `!sleep.isSealed` |
+
+`handbackWaiters` stays on the actor. A continuation is not a value, and the check-and-park is
+atomic only because it runs in `withCheckedContinuation`'s synchronous body on the actor; resuming
+from the `defer` keeps the resumption in the same synchronous region as the drain.
+
+Three rules make the move safe, and `LeaseAuthorityRegistersAccessTests` holds each, since the
+compiler holds only part of the first. **No `async` member**: a mutating `async` call on an actor's
+stored struct is refused, a non-mutating one is not and would answer from a stale copy. **No
+function-typed parameter**: a closure that reaches the actor's property while a transition is
+mutating it traps at run time. **No whole-value use on the actor's side**: a copy taken before an
+`await` and written back after it loses every transition in between. The same suite holds the
+stores `private` and exactly listed, every internal property a view, and no alias or dotted
+extension reaching either type; `LeaseAuthorityRegistersTests` asserts each decision as a value.
+
+Measured under SwiftLint 0.65.1: the actor's body went from 308 code lines to 287, and
+`LeaseAuthority.swift` from 956 lines to 851.
+
 ## The three registers
 
 Three sets, and each is a **distinct fact about one fan**. They are not three views of the
@@ -77,11 +123,18 @@ it checks — so a client could take a lease over a fan whose handback is still 
 **That overlap is unreachable in this build, and the count is therefore not load-bearing
 today.** `guard table.isEmpty` holds the table to a single entry, and every teardown path
 removes its entry synchronously before restoring, so whichever path removes first is the only
-one that restores. Replacing the count with set membership passes the whole suite. It is
-written this way because the overlap becomes reachable the moment either of those two facts
-changes — E5.3's control plane issuing a restore outside lease teardown, or the table holding
-more than one lease — and both are cheaper to be already correct for than to retrofit.
-Recorded rather than implied, so nobody simplifies it believing a test is watching.
+one that restores. It is written this way because the overlap becomes reachable the moment
+either of those two facts changes — E5.3's control plane issuing a restore outside lease
+teardown, or the table holding more than one lease — and both are cheaper to be already correct
+for than to retrofit.
+
+**Which form is watched.** Since #128's lease-core pass the count is a value's, and the value is
+watched: `releasing[fan] = 1` in place of `+= 1` in `HandbackRegisters.beginHandback(ofFan:)`
+fails `LeaseAuthorityRegistersTests.aFanLeavesOnlyWithItsLastRestore`. The **wiring** is not:
+`restore(_:because:)` counting a fan only when it is not already mid-handback — `for fan in fans
+where !registers.isMidHandback(fan)` — is set membership spelled at the call site, and passes the
+whole suite, because no reachable sequence restores one fan twice at once. Recorded rather than
+implied, so nobody simplifies the call site believing a test is watching it.
 
 ### `restoreAbandoned` — the durable half
 
@@ -877,6 +930,11 @@ the file to 948. [#270](https://github.com/blamechris/Aeolus/issues/270)'s bound
 density, about 3.1 lines per code line, it would error after roughly 14 new code lines, so which
 of the two limits is reached first depends on how much comment the new code carries.
 
+#128's lease-core pass relieved both without relocating anything: the registers and § 4's seal,
+with every decision made over them, moved into the two value types
+[above](#where-the-registers-live-two-value-types-the-actor-holds-128), which the actor holds
+`private`. That took the body to 287, leaving 63, and the file to 851.
+
 New behaviour for #9's A4 and A6 belongs in the `EngagementDriver` that
 [ADR 0014](../ADR/0014-apple-silicon-unlock.md) specifies, and in value types beside
 `LeaseTable` and `ConnectionTombstones` — which hold the table and the tombstones as values, so
@@ -1114,12 +1172,14 @@ straight-line region that found the lease gone, and `restore(_:because:)`'s `def
   between the drain and the waiter running, so replacing the single wait with that loop survives
   every test (M7 in [#375](https://github.com/blamechris/Aeolus/pull/375)'s mutation table). This
   paragraph is what stands against that edit.
-- **Checked inside the continuation.** `releasing[fan]` is read in `withCheckedContinuation`'s
+- **Checked inside the continuation.** `releasing[fan]` is read — through
+  `registers.isMidHandback(_:)` since #128's lease-core pass — in `withCheckedContinuation`'s
   synchronous body, which parks the waiter or resumes it at once, so no `await` can be written
   between the check and the park. One there would let the count drain unseen, orphan the waiter,
   and leave § 5 parked, watching nothing, for the life of the process (#375's review).
 - **Resumed in the `defer`**, in the branch that sets `releasing[fan] = nil`, beside
-  `handbackUnconfirmed`'s clear. Not in the body: it returns early through
+  `handbackUnconfirmed`'s clear — the branch `registers.endHandback(ofFan:)` answers `true` from
+  since #128's lease-core pass. Not in the body: it returns early through
   `guard !accepted.isEmpty else { return }` whenever no abandoned refusal is being lifted, which
   is the ordinary handback, so a resumption there is skipped and the revocation never returns.
 - **Not cancellable**, because the restore it outwaits is not (#110). A revocation that gave up

@@ -32,7 +32,7 @@ import Testing
 ///
 /// The fan is re-recorded on the second sleep as well, and the doc comment says so rather than
 /// letting a reader infer otherwise: a restore that never returns keeps its fan in
-/// `LeaseAuthority.releasing`, so every later budget expiry records the same fan again. So the
+/// the lease core's `releasing`, so every later budget expiry records the same fan again. So the
 /// load-bearing assertion is the one after the **first** wake, with a second sleep and wake
 /// stacked on top of it to show that neither the seal closing again nor a second expiry
 /// disturbs the answer. What the second cycle does pin on its own is decision D33's boundary:
@@ -80,42 +80,46 @@ struct SleepCycleSurvivalTests {
     /// the composition `aWedgedHandbackDropsTheLeaseFirstAndLeavesTheFanUnconfirmed` already
     /// uses for a wedge of this shape.
     ///
-    /// **Mutation A — the wake clearing the register.** Add `handbackUnconfirmed.removeAll()` to
-    /// `LeaseAuthority.unsealAfterWake()`, the plausible "helpful" edit since that method already
-    /// reopens acquisition on wake. Run: red here, 4 issues, two at each wake —
+    /// **Mutation A — the wake clearing the register.** Give `HandbackRegisters` a transition
+    /// running `handbackUnconfirmed.removeAll()` and call it from the top of
+    /// `LeaseAuthority.unsealAfterWake(generation:)`, the plausible "helpful" edit since that
+    /// method already reopens acquisition on wake. Run: red here, 4 issues, two at each wake —
     /// `refusal → .releaseInProgress` where `.handbackUnconfirmed` was expected, and
     /// `fansWithUnconfirmedHandbacks → []`. **The measured harm is a misreported reason, not a
-    /// granted lease**, and that is worth recording rather than rounding up to #209's headline:
-    /// the fan is still mid-`releasing`, and since #364 its teardown still holds the machine-wide
+    /// granted lease**, and that is worth recording rather than rounding up to #209's headline: the
+    /// fan is still mid-`releasing`, and since #364 its teardown still holds the machine-wide
     /// restore seal, so a downstream guard answers instead — with *"retry in a moment"* about a
     /// restore that has already outlived the budget, which is the one thing that region's own doc
     /// comment says a client must not be told. A downstream guard masking an upstream one is why
-    /// the register is asserted beside the refusal rather than behind it. Across the repository:
-    /// 7 issues, 2 in the pre-existing single-sleep
+    /// the register is asserted beside the refusal rather than behind it. Across the repository: 7
+    /// issues, 2 in the pre-existing single-sleep
     /// `aWedgedHandbackDropsTheLeaseFirstAndLeavesTheFanUnconfirmed`, which was the only test that
     /// saw this before — the multi-cycle suite named for accumulation could not — and, since #364,
     /// 1 in `SleepGrantSealTests`' sweep test, on fan 0's reason after the wake.
     ///
     /// **Mutation B — a second expiry promoted to the durable register.** In
-    /// `recordUnconfirmedHandbacks()`, union `outstanding.intersection(handbackUnconfirmed)` into
-    /// `restoreAbandoned` — the "it has now missed two whole sleeps, it has clearly failed" edit,
-    /// which is decision D17 creeping back one cycle later than before. **The union goes *above*
+    /// `HandbackRegisters.recordUnconfirmedHandbacks()`, union
+    /// `outstanding.intersection(handbackUnconfirmed)` into `restoreAbandoned` — the "it has now
+    /// missed two whole sleeps, it has clearly failed" edit, which is decision D17 creeping back
+    /// one cycle later than before. **The union goes *above*
     /// `handbackUnconfirmed.formUnion(outstanding)`, and that placement is the whole mutation:**
     /// above it the intersection is empty on the first expiry and names fan 0 only on the second,
     /// which is the "one cycle later" this is testing; below it the intersection is just
     /// `outstanding`, which is plain D17 and reddens 23 issues across three suites — a much weaker
-    /// mutation that the accumulation suite's own B already covers. Run: red **only here**, 2
-    /// issues, both after the second wake — fan 0's refusal coming back
-    /// `.restoreToAutomaticFailed` and `fansWithAbandonedHandbacks.isEmpty` — against `1431 tests
-    /// in 220 suites`, with those two issues and nothing else on a run quiet enough to carry no
-    /// wall-clock-deadline flake, and with `threeSleepCyclesEachSealReopenAndAcknowledgeOnce`
-    /// passing on the same run. Nothing else in the repository sleeps twice on one outstanding fan,
-    /// so nothing else can see it. Several runs rather than one, and the discarded ones are worth a
-    /// line: each went over 50 s on a machine with other agents building and so also carried one or
-    /// more of the wall-clock-deadline flakes #227 (`HelperHardwareTests`,
-    /// `SMCSensorProviderTests`) and #256 (`HelperClientTests`, `MessageOrderingTests`) track.
-    /// Those varied run to run; these two did not. Under 50 s is the threshold this repository
-    /// already uses for believing a red run.
+    /// mutation that the accumulation suite's own B already covers. Run: red here, 2 issues, both
+    /// after the second wake — fan 0's refusal coming back `.restoreToAutomaticFailed` and
+    /// `fansWithAbandonedHandbacks.isEmpty` — and, since #128's lease-core pass, once in
+    /// `LeaseAuthorityRegistersTests.anUnconfirmedHandbackLeavesWithItsLastRestore`, which records
+    /// twice over one outstanding fan as a value. Three issues and nothing else, on a run of about
+    /// 20 s, 2317 tests in 337 suites across the repository's bundles with `HelperHardwareTests`
+    /// skipped, and with `threeSleepCyclesEachSealReopenAndAcknowledgeOnce` passing on the same
+    /// run. Nothing else in the repository sleeps twice on one outstanding fan, so no other actor
+    /// suite can see it. The first measurement, against `1431 tests in 220 suites`, took several
+    /// runs rather than one, and the discarded ones are worth a line:
+    /// each went over 50 s on a machine with other agents building and so also carried one or more
+    /// of the wall-clock-deadline flakes #227 (`HelperHardwareTests`, `SMCSensorProviderTests`) and
+    /// #256 (`HelperClientTests`, `MessageOrderingTests`) track. Those varied run to run; these two
+    /// did not. Under 50 s is the threshold this repository already uses for believing a red run.
     ///
     /// **Mutation C — the seal reopening once.** A `hasUnsealed` latch on `unsealAfterWake()`.
     /// Run: red on fan 1's reason after the second wake (`.systemSleeping` where

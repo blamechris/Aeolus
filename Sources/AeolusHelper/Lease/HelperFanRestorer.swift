@@ -6,10 +6,11 @@
 /// that decision, and it is `.fan(index)`.
 ///
 /// **Per fan, never `.everyFan`.** `FanRestoring` reports *which* fans could not be handed
-/// back, and `LeaseAuthority.restoreAbandoned` turns that set into a per-fan refusal a
-/// client is told about. A conformer that restored `.everyFan` once could not produce that
-/// set: one throw would have to be reported as every fan abandoned (refusing leases over
-/// fans that are demonstrably fine) or as none (the inversion `FanRestoring` calls out —
+/// back, and the lease core's `restoreAbandoned` (in `LeaseAuthority.HandbackRegisters`)
+/// turns that set into a per-fan refusal a client is told about. A conformer that restored
+/// `.everyFan` once could not produce that set: one throw would have to be reported as every
+/// fan abandoned (refusing leases over fans that are demonstrably fine) or as none (the
+/// inversion `FanRestoring` calls out —
 /// *"it converts 'the write was refused' into 'the teardown completed'"*). `.everyFan` also
 /// clears the Apple Silicon force key, which is a machine-wide act and not this path's to
 /// perform: § 7's panic verb owns it, and E5.4d wires it to the signal handlers. That a

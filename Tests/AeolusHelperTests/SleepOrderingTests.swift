@@ -42,7 +42,8 @@ struct SleepOrderingTests {
     /// user until the next sleep and wake.
     ///
     /// **Mutation:** drop the `generation > latestWakeGeneration` guard from
-    /// `LeaseAuthority.sealForSleep(generation:)`. Run: red — `.systemSleeping` below.
+    /// `SleepSealPairing.seal(generation:)`, which `sealForSleep(generation:)` calls. Run: red —
+    /// `.systemSleeping` below.
     @Test("A seal whose wake was already answered does not close the table")
     func aSealArrivingAfterItsOwnWakeDoesNotRefuseEveryLease() async throws {
         let (helper, observer) = Self.helper()
@@ -82,8 +83,10 @@ struct SleepOrderingTests {
     ///
     /// Generations cannot latch, because they are compared and never spent.
     ///
-    /// **Mutation:** restore the counter — `wakesAheadOfTheirSeal`, `+= 1` in the no-seal
-    /// branch of `unsealAfterWake`, `-= 1` and `return` in `sealForSleep`. Run: red here,
+    /// **Mutation:** restore the counter, as a `private var wakesAheadOfTheirSeal = 0` in
+    /// `SleepSealPairing` — `+= 1` in `wake(generation:)`'s no-seal branch, and in
+    /// `seal(generation:)`, in place of the generation guard, `-= 1` and `return .declined`
+    /// while it is positive. Run: red here and in `theSealKeepsArmingAcrossRepeatedCycles` below,
     /// green on every other test in this file, which is precisely how it shipped.
     @Test("didWake, willSleep, didWake, willSleep — the second ordinary sleep still seals")
     func anUnpairedWakeDoesNotDisableTheSealForever() async throws {
@@ -153,7 +156,7 @@ struct SleepOrderingTests {
     /// all would open the table exactly when § 4 needs it shut.
     ///
     /// **Mutation:** drop `generation > sealGeneration` from
-    /// `LeaseAuthority.unsealAfterWake(generation:)`. Run: red — the lease is granted.
+    /// `SleepSealPairing.wake(generation:)`'s guard. Run: red — the lease is granted.
     @Test("A wake older than the seal standing does not reopen the table")
     func aStaleWakeDoesNotReopenANewerSeal() async throws {
         let (helper, observer) = Self.helper()
@@ -187,8 +190,9 @@ struct SleepOrderingTests {
     /// episode 1's seal, older than episode 3's sleep — reopened the table while episode 3's
     /// machine was going to sleep. A fresh wake still opens it: nothing latches.
     ///
-    /// **Mutation:** move `sealGeneration = max(sealGeneration, generation)` in `sealForSleep`
-    /// back below `guard !sleepSeal`. Run: red — the lease is granted.
+    /// **Mutation:** move `sealGeneration = max(sealGeneration, generation)` in
+    /// `SleepSealPairing.seal(generation:)` back below `guard !sleepSeal`. Run: red — the lease is
+    /// granted.
     @Test("A wake older than a sleep that met the seal does not reopen the table")
     func aStaleWakeDoesNotReopenASealANewerSleepMet() async throws {
         let (helper, observer) = Self.helper()
@@ -211,8 +215,9 @@ struct SleepOrderingTests {
     /// so a plain `sealGeneration = generation` would lower the generation to its own, and the
     /// wake minted between the two would then clear episode 3's seal.
     ///
-    /// **Mutation:** replace `max(sealGeneration, generation)` with `generation`. Run: red here,
-    /// and green in the test above, which is what makes this one necessary.
+    /// **Mutation:** replace `max(sealGeneration, generation)` with `generation` in
+    /// `SleepSealPairing.seal(generation:)`. Run: red here, and green in the test above, which is
+    /// what makes this one necessary.
     @Test("A starved older sleep does not lower the seal below a stale wake")
     func aStarvedOlderSleepDoesNotLowerTheSeal() async throws {
         let (helper, observer) = Self.helper()

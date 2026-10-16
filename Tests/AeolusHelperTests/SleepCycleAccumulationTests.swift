@@ -103,8 +103,8 @@ struct SleepCycleAccumulationTests {
     /// `perCycle → [Set([0])]`, the acknowledgement list, the fault-line count at 1 rather than 3,
     /// and `restoreScopes` at one cycle's pair. Said three until round 2 re-ran it on this tree.
     ///
-    /// **Mutation B — decision D17 restored.** In `LeaseAuthority.recordUnconfirmedHandbacks()`,
-    /// `restoreAbandoned.formUnion(outstanding)` in place of `handbackUnconfirmed`. Run: red —
+    /// **Mutation B — decision D17 restored.** `restoreAbandoned.formUnion(outstanding)` in place
+    /// of `handbackUnconfirmed` in `HandbackRegisters.recordUnconfirmedHandbacks()`. Run: red —
     /// `fansWithAbandonedHandbacks.isEmpty` fails inside cycle 1 and fan 0's refusal comes back
     /// `.restoreToAutomaticFailed` rather than `.handbackUnconfirmed`. **This is the mutation
     /// `threeSleepCyclesEachSealReopenAndAcknowledgeOnce` cannot see**: measured, it stays green
@@ -112,9 +112,9 @@ struct SleepCycleAccumulationTests {
     /// written. That gap is why this test exists.
     ///
     /// **Mutation C — the clearing path.** Delete `handbackUnconfirmed.remove(fan)` from
-    /// `LeaseAuthority.restore`'s `defer`. Run: red on cycle 1's clearing assertion.
-    /// `aLateHandbackClearsTheUnconfirmedRefusal` also catches this for a single sleep, so C is
-    /// corroboration rather than new cover — recorded as such rather than claimed.
+    /// `HandbackRegisters.endHandback(ofFan:)`, called from `restore`'s `defer`. Run: red on cycle
+    /// 1's clearing assertion. `aLateHandbackClearsTheUnconfirmedRefusal` also catches this for a
+    /// single sleep, so C is corroboration rather than new cover — recorded as such, not claimed.
     ///
     /// **Mutation D — the seal reopening once.** Give `unsealAfterWake()` a `hasUnsealed` guard.
     /// Run: red on **cycle 3's** grant, not cycle 2's, and the arithmetic is worth having written

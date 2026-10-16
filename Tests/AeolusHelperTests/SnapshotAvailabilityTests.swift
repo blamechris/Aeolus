@@ -209,7 +209,7 @@ struct SnapshotAvailabilityTests {
     /// A fan whose restore is on the wire reads the reason the grant path throws for it.
     ///
     /// The transient half. `CycleWedgingRestorePlane` parks the restore, so the window
-    /// `LeaseAuthority.releasing` exists to describe is held open for as long as the assertions
+    /// the lease core's `releasing` exists to describe is held open for as long as the assertions
     /// need — which is the only way to observe a state that is otherwise milliseconds wide.
     ///
     /// **Mutation:** delete the `handbacksInFlight` arm from

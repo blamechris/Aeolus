@@ -66,8 +66,8 @@ struct UnconfirmedHandbackTests {
     /// `do { try await writer.restoreToAutomatic(.everyFan) … }` block. Run: red on lease count.
     /// **Mutation B:** delete the `guard unconfirmed.isEmpty` block from
     /// `LeaseAuthority.acquireLease`. Run: red.
-    /// **Mutation C:** in `LeaseAuthority.recordUnconfirmedHandbacks()`, union every
-    /// enumerated fan rather than `releasing.keys`. Run: red on fan 1.
+    /// **Mutation C:** in `HandbackRegisters.recordUnconfirmedHandbacks()`, union every fan the
+    /// plane has, `Set(releasing.keys).union(0..<2)`, not `releasing.keys`. Run: red on fan 1.
     @Test("A wedged handback drops the lease first and leaves the fan unconfirmed")
     func aWedgedHandbackDropsTheLeaseFirstAndLeavesTheFanUnconfirmed() async throws {
         let plane = WedgedRestorePlane(SystemPowerTests.machine(fanCount: 2))
@@ -143,8 +143,8 @@ struct UnconfirmedHandbackTests {
     /// the fan left `handbackUnconfirmed`; it does not prove it was ever in it, and it does
     /// not prove it stayed out of `restoreAbandoned`.
     ///
-    /// **Mutation:** delete `handbackUnconfirmed.remove(fan)` from `LeaseAuthority.restore`'s
-    /// `defer`. Run: red.
+    /// **Mutation:** delete `handbackUnconfirmed.remove(fan)` from
+    /// `HandbackRegisters.endHandback(ofFan:)`, which `restore`'s `defer` calls. Run: red.
     @Test("A handback that lands after the budget makes the fan grantable again")
     func aLateHandbackClearsTheUnconfirmedRefusal() async throws {
         let plane = WedgedRestorePlane(SystemPowerTests.machine())
@@ -202,9 +202,9 @@ struct UnconfirmedHandbackTests {
     /// a refusal. `BoundedFanRestorer` then spends `RestoreLimits.attemptBudget` on it — three
     /// attempts, no inter-attempt wait by design — before reporting the fan abandoned.
     ///
-    /// **Mutation:** delete `restoreAbandoned.formUnion(await restorer.restoreToAutomatic(…))`
-    /// from `LeaseAuthority.restore`, awaiting the restorer without recording its answer.
-    /// Run: red.
+    /// **Mutation:** delete `restoreAbandoned.formUnion(abandoned)` from
+    /// `HandbackRegisters.recordRestore(of:abandoned:)`, so `LeaseAuthority.restore` awaits the
+    /// restorer without recording its answer. Run: red.
     @Test("A handback the firmware refuses after the budget is refused durably")
     func aLateRefusalConvertsTheUnconfirmedStateToTheDurableOne() async throws {
         let plane = WedgedThenRefusingRestorePlane(SystemPowerTests.machine())
@@ -255,9 +255,9 @@ struct UnconfirmedHandbackTests {
 
     /// The subset `fansAeolusIsAccountableFor` rests on — it omits the unconfirmed register
     /// because every fan in it is mid-handback — asserted rather than trusted. **Mutation:**
-    /// `releasing.removeAll()` at the end of `recordUnconfirmedHandbacks()`. Run: red here in
-    /// the parked test, whose other assertions pass; the two late-outcome tests go red too,
-    /// because a fan with no `releasing` entry is never cleared when its restore returns.
+    /// `releasing.removeAll()` at the end of `HandbackRegisters.recordUnconfirmedHandbacks()`.
+    /// Run: red here in the parked test, whose other assertions pass; the two late-outcome tests
+    /// go red too: a fan with no `releasing` entry is never cleared when its restore returns.
     private static func expectUnconfirmedIsMidHandback(_ leases: LeaseAuthority) async {
         let unconfirmed = await leases.fansWithUnconfirmedHandbacks
         let midHandback = await leases.fansMidHandback

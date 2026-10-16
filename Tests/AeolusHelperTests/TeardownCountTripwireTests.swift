@@ -2,18 +2,20 @@ import Foundation
 import Testing
 
 /// [#368](https://github.com/blamechris/Aeolus/issues/368): no lease-core teardown suspends
-/// between taking its lease out of the table and counting its fans into `releasing`.
+/// between taking its lease out of the table and counting its fans into `releasing`, and no
+/// `.gone` revocation suspends between asking for that count and waiting on it.
 ///
 /// `revokeLease(id:forFan:because:)` answers `.gone` once the fan it names has left
 /// `releasing`, so the premise its wait rests on is that no revocation can find the lease gone
 /// while the count is still zero. That interval runs from the teardown's table removal, through
 /// its call to `restore(_:because:)` and that call's arguments, to the counting loop at the head
-/// of `restore`'s body. The two tests here hold it: one up to the call, its arguments included,
-/// one from the call to the count.
+/// of `restore`'s body. Two tests here hold it: one up to the call, its arguments included,
+/// one from the call to the last fan's count. The third holds the wait itself: the check and
+/// the park in `outwaitHandback(of:)` are one synchronous region.
 ///
 /// Source tripwires over the same `LeaseAuthority.swift` `TeardownSweepTripwireTests` reads,
 /// beside that suite rather than in it so neither file outgrows SwiftLint's `file_length`.
-@Suite("No teardown suspends between taking its lease out of the table and counting its fans")
+@Suite("No teardown suspends before its fans are counted, nor a revocation before it parks")
 struct TeardownCountTripwireTests {
 
     /// The seven lease-core teardown paths: each takes its entries out of the table and hands
@@ -30,8 +32,13 @@ struct TeardownCountTripwireTests {
     /// The restore that counts the fans, awaited, with or without `self.`.
     private static let countingRestore = #"\bawait (self\.)?restore\("#
 
-    /// The count itself, inside `restore(_:because:)`: `releasing[fan, default: 0] += 1`.
-    private static let releasingCount = #"\breleasing\[[^\]]*\] ?\+= ?1"#
+    /// The count itself, inside `restore(_:because:)`: `registers.beginHandback(ofFan: fan)`,
+    /// the transition that runs `releasing[fan, default: 0] += 1` since #128's lease-core pass
+    /// moved `releasing` into `LeaseAuthority.HandbackRegisters`. A call rather than the
+    /// statement, and still the count: nothing in that type can suspend
+    /// (`LeaseAuthorityRegistersAccessTests`), and an `await` written before the call is in the
+    /// prologue this suite reads.
+    private static let releasingCount = #"\bregisters\.beginHandback\(ofFan:"#
 
     /// The one member read an argument to the counting restore may make: the removed entry's fans.
     private static let readableMembers: Set<String> = ["entry.fanIndices"]
@@ -114,32 +121,87 @@ struct TeardownCountTripwireTests {
             """)
     }
 
-    /// The other half of the premise: `restore(_:because:)` counts its fans into `releasing`
-    /// before its first suspension, so the count is in the same straight-line region as the
-    /// caller's removal.
+    /// The other half of the premise: `restore(_:because:)` counts **every** fan into
+    /// `releasing` before its first suspension, so the whole count is in the same straight-line
+    /// region as the caller's removal.
+    ///
+    /// The region read runs from the top of the body to the **last** count, and, when that count
+    /// is inside a block — the `for fan in fans { … }` loop — to that block's closing brace. A
+    /// suspension between one fan's count and the next leaves the second fan uncounted across
+    /// it, which the first count alone would not show.
     ///
     /// **Mutation (P2):** add `await Task.yield()` to `restore(_:because:)` between
     /// `log.restored(fans:because:)` and the counting loop. Run: red, naming the prologue.
+    /// **Mutation:** `await Task.yield()` inside the counting loop, after
+    /// `registers.beginHandback(ofFan: fan)`. Run: red. **Mutation:** the count moved below
+    /// `await restorer.restoreToAutomatic(…)`. Run: red.
     /// **Mutation (this suite's own):** replace `releasingCount` with a pattern nothing matches.
     /// Run: red on the `#require` rather than green over a count it never found.
-    @Test("restore(_:because:) counts its fans into releasing before it first suspends")
+    @Test("restore(_:because:) counts every fan into releasing before it first suspends")
     func theRestoreCountsBeforeItSuspends() throws {
         let code = Self.normalised(try Self.leaseCoreWithoutAnyComment())
         let restore = try #require(
             Self.function(named: "restore", in: code),
             "the lease core declares no `func restore(`, so the count was not read")
         let count = try #require(
-            restore.body.range(of: Self.releasingCount, options: .regularExpression),
-            "restore(_:because:) has no `releasing[…] += 1` this scan can find")
+            Self.lastMatch(of: Self.releasingCount, in: restore.body),
+            "restore(_:because:) has no `registers.beginHandback(ofFan:)` this scan can find")
 
-        let prologue = restore.body[..<count.lowerBound]
+        let prologue = restore.body[..<Self.endOfStatement(at: count, in: code, of: restore.body)]
         #expect(
             prologue.range(of: #"\bawait\b"#, options: .regularExpression) == nil,
             """
-            restore(_:because:) suspends before it counts its fans into `releasing`: \
+            restore(_:because:) suspends before it has counted every fan into `releasing`: \
             \(prologue). A caller's lease is already out of the table by then, so a revocation \
-            landing in that suspension finds nothing to outwait and the teardown's notice can \
-            erase § 5's mark (#368). Count first; the restorer's await comes after.
+            landing in that suspension finds a fan with nothing to outwait and the teardown's \
+            notice can erase § 5's mark (#368). Count first; the restorer's await comes after.
+            """)
+    }
+
+    /// The revocation's own half of #368's premise: `outwaitHandback(of:)` asks whether the fan
+    /// has a restore on the wire, and parks, in one synchronous region — the body of
+    /// `withCheckedContinuation`'s closure, which cannot suspend. A suspension between the check
+    /// and the park lets the count drain unseen, and the waiter is parked on a fan nothing will
+    /// ever resume, which leaves § 5 parked for the life of the process (#375's review).
+    ///
+    /// Two things, both read off the normalised body: it holds **exactly one** `await`, and it
+    /// is `await withCheckedContinuation`; and `registers.isMidHandback(` is inside that
+    /// closure. `await` is matched as a word after comments are stripped and whitespace
+    /// collapsed, so `await(…)`, a doubled space and an `await` on a line of its own all count.
+    ///
+    /// **Mutation (X13):** move the check out of the continuation — `guard
+    /// registers.isMidHandback(fan) else { return }` and `await Task.yield()` above `await
+    /// withCheckedContinuation`, the closure only parking. Run: red on both. **Mutation:** add
+    /// `await Task.yield()` above `await withCheckedContinuation`, the check left inside. Run:
+    /// red on the count. **Mutation:** `let busy = registers.isMidHandback(fan)` above the
+    /// continuation and `guard busy` inside it. Run: red on the check.
+    @Test("A .gone revocation checks for a handback and parks without suspending between")
+    func theOutwaitChecksAndParksInOneRegion() throws {
+        let code = Self.normalised(try Self.leaseCoreWithoutAnyComment())
+        let outwait = try #require(
+            Self.function(named: "outwaitHandback", in: code),
+            "the lease core declares no `func outwaitHandback(`, so the park was not read")
+
+        let awaits = Self.matches(of: #"\bawait\b"#, in: outwait.body)
+        let park = outwait.body.range(
+            of: #"\bawait withCheckedContinuation\s*\{"#, options: .regularExpression)
+        #expect(
+            awaits.count == 1 && park?.lowerBound == awaits.first?.lowerBound,
+            """
+            outwaitHandback(of:) awaits \(awaits.count) time(s), and its one await must be the \
+            park: \(outwait.body). A suspension before `withCheckedContinuation` lets the fan's \
+            count drain while the revocation is not yet a waiter, and nothing resumes it after.
+            """)
+
+        let closure = try #require(
+            park.flatMap { TeardownSweepTripwireTests.bracedBody(in: code, after: $0.lowerBound) },
+            "outwaitHandback(of:) has no `await withCheckedContinuation { … }` this scan can read")
+        #expect(
+            code[closure].contains("registers.isMidHandback("),
+            """
+            outwaitHandback(of:) does not ask `registers.isMidHandback(_:)` inside the \
+            continuation's closure: \(code[closure]). A check made before the closure is a \
+            check made before the park, and the count can drain between them.
             """)
     }
 
@@ -173,6 +235,41 @@ struct TeardownCountTripwireTests {
             let body = TeardownSweepTripwireTests.bracedBody(in: code, after: close)
         else { return nil }
         return (code[declaration.upperBound..<close], code[body])
+    }
+
+    /// Every match of `pattern` in `text`, in order.
+    private static func matches(of pattern: String, in text: Substring) -> [Range<String.Index>] {
+        var found: [Range<String.Index>] = []
+        var rest = text[...]
+        while let match = rest.range(of: pattern, options: .regularExpression) {
+            found.append(match)
+            rest = text[match.upperBound...]
+        }
+        return found
+    }
+
+    /// The last match of `pattern` in `text`, or `nil` when there is none.
+    private static func lastMatch(of pattern: String, in text: Substring) -> Range<String.Index>? {
+        matches(of: pattern, in: text).last
+    }
+
+    /// Where the statement holding `match` ends in `body`, a slice of `code`: the closing brace
+    /// of the outermost block of `body` that is open at `match` — the counting loop's — or the
+    /// end of `match` itself when it is written at the top level of `body`.
+    private static func endOfStatement(
+        at match: Range<String.Index>, in code: String, of body: Substring
+    ) -> String.Index {
+        var open: [String.Index] = []
+        var cursor = body.startIndex
+        while cursor < match.lowerBound {
+            if body[cursor] == "{" { open.append(cursor) }
+            if body[cursor] == "}" { _ = open.popLast() }
+            cursor = body.index(after: cursor)
+        }
+        guard let outermost = open.first,
+            let block = TeardownSweepTripwireTests.bracedBody(in: code, after: outermost)
+        else { return match.upperBound }
+        return block.upperBound
     }
 
     /// The `)` closing the `(` that ends just before `index`, by depth count.

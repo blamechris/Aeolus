@@ -284,6 +284,47 @@ enum MemberAccessScan {
             "`\(member)` has to be declared on exactly one line of \(file), and \(reason).")
     }
 
+    /// The accessor block of the member-indent `var name:` in `code`, braces included — or `nil`
+    /// when the declaration reaches a `=` or a newline before any `{`, which is a stored one, or
+    /// is not a `var` with a type annotation at all.
+    ///
+    /// The block is read whole, brace-matched from the declaration, so a `get { … } set { … }`
+    /// pair or a `_modify` split across lines is seen by a caller scanning it. String literals
+    /// are stepped over, so a `}` written inside one cannot close the block early and leave a
+    /// `set` after it unread. `ReclamationWatchdogAccessTests` and
+    /// `LeaseAuthorityRegistersAccessTests` both hold their views to it, so it lives here rather
+    /// than in either.
+    static func accessorBlock(of name: String, in code: String) throws -> String? {
+        let declaration = try NSRegularExpression(
+            pattern: #"(?m)^    (?:[^\s]+ )*var \#(name)\s*:"#)
+        guard
+            let match = declaration.firstMatch(
+                in: code, range: NSRange(code.startIndex..., in: code)),
+            let found = Range(match.range, in: code),
+            let open = code[found.upperBound...].firstIndex(where: { "{=\n".contains($0) }),
+            code[open] == "{"
+        else { return nil }
+
+        var depth = 0
+        var index = open
+        var skipped = ""
+        while index < code.endIndex {
+            if code[index] == "\"" {
+                let delimiter = code[index...].hasPrefix("\"\"\"") ? "\"\"\"" : "\""
+                index = SeamScanner.copyDelimited(
+                    code, from: index, delimiter: delimiter, into: &skipped)
+                continue
+            }
+            if code[index] == "{" { depth += 1 }
+            if code[index] == "}" {
+                depth -= 1
+                if depth == 0 { return String(code[open...index]) }
+            }
+            index = code.index(after: index)
+        }
+        return nil
+    }
+
     // MARK: - Parsing
 
     /// Drops one attribute from the head of the modifier run, counting parentheses rather than
