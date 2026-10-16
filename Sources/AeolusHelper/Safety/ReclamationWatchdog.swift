@@ -78,7 +78,7 @@ import Foundation
 ///   out of this file's doc comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
 ///   The body is 306 code lines against `type_body_length`'s error at 350, `examine(fanAt:)` 50
-///   against `function_body_length`'s warning at 50, and the file 881 lines against
+///   against `function_body_length`'s warning at 50, and the file 883 lines against
 ///   `file_length`'s at 1000. New § 5 state belongs in `Registry`, tested as a
 ///   value, and new behaviour in the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
@@ -190,10 +190,12 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// An accepted registration clears any reclamation recorded against this fan: something has
     /// just taken it off automatic control, so the ledger's claim that the system holds it is
     /// false. **Except a registration under the record's own lease while § 5's episode for the
-    /// fan is in flight** (#366): that is the holder re-applying while § 5 contests the fan, the
-    /// mark is the episode's to decide, and it goes on the next cycle that reads the target held
-    /// or stays through the terminal action. A refused one clears nothing — it is evidence of no
-    /// engagement — so a mark the terminal action kept stands.
+    /// fan is in flight** (#366): that is the holder re-applying while § 5 contests the fan, and
+    /// the mark is the episode's. It goes on the next cycle that reads the target held, stays
+    /// through the terminal action, or goes with a record dropped or replaced first:
+    /// `restoreAndForget` (§ 3's yield, `.leaseLapsed`, a re-assert that yields), `release`, or a
+    /// newer lease's registration. A refused one clears nothing — it is evidence of no engagement
+    /// — so a mark the terminal action kept stands.
     func manualControlEngaged(_ fan: CommandableFan, under lease: UUID) async throws {
         let index = fan.index
         let generation = registry.generation(ofFan: index)
@@ -404,7 +406,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // during it gets no second restore and no false "may still be pinned". **Tested** (#344,
         // #365): `HeldLeaseRole` is the seam that holds the hop open without blocking a pool
         // thread (the lease-clock route failed on CI, run 37940001373), and
-        // `ReclamationRefetchIdentityTests.aRecordChangedDuringTheLeaseCheckStopsTheExamination`.
+        // `ReclamationLeaseIdentityTests.aRecordChangedDuringTheLeaseCheckStopsTheExamination`.
         guard isHeld(index, under: lease), let fan = registry.record(ofFan: index) else {
             log.reclamationFanReleasedMidExamination(fan: index, during: "the lease check")
             return

@@ -107,7 +107,8 @@ extension ReclamationWatchdog {
         /// One under the record's own lease while its episode is in flight
         /// (`HeldFan.episodeInFlight`) is accepted and may not clear the ledger's mark: the
         /// episode decides it, on the next cycle whose primary converges or at the terminal
-        /// action, so a re-apply can neither erase the mark nor postpone the terminal action.
+        /// action, or the record goes first (`HeldFan.episodeInFlight` lists what drops or replaces
+        /// it), so a re-apply can neither erase the mark nor postpone the terminal action.
         /// One under any other lease may: one live lease covers a fan, so a newer engagement
         /// holds it.
         ///

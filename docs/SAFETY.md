@@ -1141,13 +1141,17 @@ it lands ([#366](https://github.com/blamechris/Aeolus/issues/366)):
 | From that judgement to the terminal action's entry | Accepted, and it clears nothing: the episode decides the mark |
 | From the entry on, while the terminal action runs and after | Refused |
 
-Mid-episode it is the holder re-applying while § 5 contests the fan. The next cycle that reads the
-target held clears the mark, and the terminal action keeps it; § 5's own flow does not change, so
-a re-apply can neither postpone the terminal action nor rearm the budget. It is accepted rather
-than refused because a refusal makes the caller hand the fan back, and that restore would supersede
-§ 5's own re-assert. From the entry on it is refused because the same call ends that lease, and an
-ended lease is never live again, so any answer about it is stale whenever the registration began.
-None of this relies on a release notice. The terminal action also moves the registration's
+The second row holds only while the episode is open: once a cycle that reads the target held has
+closed it, a registration behaves as in the first. Mid-episode it is the holder re-applying while
+§ 5 contests the fan. The next cycle that reads the target held clears the mark, and the terminal
+action keeps it; § 5's own flow does not change, so a re-apply can neither postpone the terminal
+action nor rearm the budget. It is accepted rather than refused because a refusal makes the caller
+hand the fan back, and that restore would supersede § 5's own re-assert. From the entry on it is
+refused because the same call ends that lease, and an ended lease is never live again, so any
+answer about it is stale whenever the registration began. That refusal is per fan: a re-apply of a
+sibling fan under the same lease is refused by the revocation's release notice in the shipping
+composition, and with that notice lost it is accepted and handed back as `.leaseLapsed` on the next
+cycle. None of this relies on a release notice for the fan given up. The terminal action also moves the registration's
 generation as it begins, for another lease's registration in flight across the entry. A refused
 registration clears nothing; one under a live lease replaces whatever an ended lease left. The
 engagement driver asks the same question, about the lease the engagement runs under, before and

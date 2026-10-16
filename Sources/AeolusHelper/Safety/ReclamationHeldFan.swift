@@ -58,9 +58,12 @@ extension ReclamationWatchdog {
         var reassertAttempts = 0
         /// Whether a reclamation episode is in flight for this record: from a readable cycle whose
         /// primary signal diverged outside the registration grace to the next readable cycle whose
-        /// primary converges, or to the terminal action, which drops the record (#366). While it
-        /// is set, a registration under this record's lease leaves the ledger's mark to the
-        /// episode. Kept by `registering(_:over:)` with the rest of a same-lease record.
+        /// primary converges, or until the record is dropped or replaced (#366). The terminal
+        /// action drops it, and so do `restoreAndForget` (§ 3's yield, `.leaseLapsed`, a re-assert
+        /// that yields) and `release`; a newer lease's registration replaces it. A cycle that
+        /// cannot read ends nothing. While it is set, a registration under this record's lease
+        /// leaves the ledger's mark to the episode. Kept by `registering(_:over:)` with the rest of
+        /// a same-lease record.
         var episodeInFlight = false
 
         /// Gives back an attempt booked for a write that never reached the firmware —
@@ -120,7 +123,9 @@ extension ReclamationWatchdog {
         /// Opened by every `.diverged`, the grace's included once it runs out, and never by
         /// `.graced`; closed by the next cycle whose primary converges, `.short` as well as
         /// `.converged`, because that cycle is the one the actor clears the ledger's mark on
-        /// (#366). The terminal action ends the episode by dropping the record.
+        /// (#366). The terminal action ends the episode by dropping the record, as does anything
+        /// else that drops or replaces it (`episodeInFlight`); a cycle that cannot read ends
+        /// nothing.
         ///
         /// It absorbs what were `ReclamationWatchdog`'s `gracedBeforeItsFirstCommand(_:of:fanAt:)`
         /// and `reportShortfall(_:fanAt:)`, with their reasons, below. Both were synchronous so
@@ -196,7 +201,8 @@ extension ReclamationWatchdog {
                     }
                 }
                 // Before the actor's `diverged` reaches the ledger, so a registration landing in
-                // any of its hops finds the episode open (#366).
+                // any of its hops finds the episode open (#366). Only the re-assert's envelope read
+                // is exercised by a test; the latch and ledger hops have no seam to land one in.
                 episodeInFlight = true
                 return .diverged(primary)
             }

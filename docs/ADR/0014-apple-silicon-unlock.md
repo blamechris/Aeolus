@@ -1309,8 +1309,8 @@ lease is judged against the permit's own fan at every examination. No write verb
    refused, and the hand-back would then contest § 5's record of the first. A registration
    under the lease § 5's terminal action gave the fan up for is refused, while the terminal
    action runs or after: the revocation in the same call undoes that engagement. One accepted
-   mid-episode leaves the fan reported as reclaimed until § 5 reads its target held or gives the
-   fan up (#366).
+   mid-episode leaves the fan reported as reclaimed until § 5 reads its target held, or gives the
+   fan up and keeps the mark (#366).
 3. Report each commanded target with `commandedTarget(_:under:)`.
 4. Ask `heldLease(id:from:)` again before replying, so the reply never says *applied* under a
    lease that has ended.
@@ -1742,8 +1742,8 @@ build on `main`, where a `.notBuilt` plane grants no lease, and all three are re
 
 - **The mark follows the primary signal.** Every readable cycle whose primary signal converges
   clears the mark, `.short` included, because reaching the secondary signal means the firmware is
-  holding Aeolus's target (#119). This makes the identity amendment's "one cycle" true again. The
-  re-assert budget is unchanged and still refills only on a cycle converged on both signals: the
+  holding Aeolus's target (#119). This makes the identity amendment's "one cycle" true again, as
+  the next readable cycle: cycles that cannot read clear nothing. The re-assert budget is unchanged and still refills only on a cycle converged on both signals: the
   budget bounds a contest, and the mark says who holds the fan.
 - **A re-apply mid-episode leaves the mark to the episode.** `judge(_:)` sets
   `HeldFan.episodeInFlight` on every `.diverged`, before `diverged(_:fanAt:heldUnder:)` reaches the
@@ -1752,7 +1752,7 @@ build on `main`, where a `.notBuilt` plane grants no lease, and all three are re
   generation, but clears nothing (`.accepted(replacedEndedLease:mayClearTheMark:)`). § 5's flow is
   untouched, so a re-apply can neither postpone the terminal action nor rearm the budget (#180).
 - **A lease given up stays refused.** `beginFinalising(fanAt:for:)` records the lease in
-  `Registry.givenUp`, and nothing clears it. `register` refuses that lease in place of
+  `Registry.givenUp` for that fan, and nothing clears it. `register` refuses that lease in place of
   `finalising[index] != lease`. The same call ends that lease, and an ended lease is never live
   again, so every answer about it is stale whenever the registration began. `finalising` keeps
   release's skip (#346).
@@ -1767,7 +1767,10 @@ build on `main`, where a `.notBuilt` plane grants no lease, and all three are re
 | From that judgement to the terminal action's entry | Accepted, and it clears nothing |
 | From the entry onwards | Refused |
 
-The entry's generation bump stays, for another lease's registration in flight across the entry.
+The second row holds only while the episode is open: once a cycle that reads the target held has
+closed it, a registration behaves as in the first. The refusal is per fan: a sibling fan's re-apply
+under the same lease is refused by the revocation's release notice, and with that notice lost falls
+to `.leaseLapsed` on the next cycle. The entry's generation bump stays, for another lease's registration in flight across the entry.
 Mid-episode the registration is accepted rather than refused, because a refusal makes A6 hand the
 fan back, and that restore supersedes § 5's own re-assert (D4).
 
@@ -1775,7 +1778,7 @@ fan back, and that restore supersedes § 5's own re-assert (D4).
 
 - Item 2 gains two sentences. A registration under the lease a terminal action gave the fan up for
   is refused, while the terminal action runs or after. One accepted mid-episode leaves the fan
-  reported as reclaimed until § 5 reads its target held or gives the fan up.
+  reported as reclaimed until § 5 reads its target held, or gives the fan up and keeps the mark.
 - Item 5 is unchanged. After the terminal action the lease is gone, so `.leaseNotLive` maps to the
   lease fault.
 

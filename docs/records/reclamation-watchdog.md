@@ -120,7 +120,7 @@ the actor of a few lines each. Three other routes were weighed and refused:
 - **Pushing the re-fetches out through callbacks.** Adds a suspension point between each check
   and the act it guards.
 
-**#366 spent five: 306 code lines, and about 44 left; file 881** (SwiftLint 0.65.1). It added a
+**#366 spent five: 306 code lines, and about 44 left; file 883** (SwiftLint 0.65.1). It added a
 fourth store to `Registry`, `givenUp`, and put the reclamation episode on the record
 (`HeldFan.episodeInFlight`) rather than in a store keyed by fan: five transitions end a record,
 and each would have had to remember to end the episode too. The actor's share is the binding of
@@ -210,7 +210,9 @@ revocation's notice refuses it too: the restorer (`HelperFanRestorer`) sends § 
 `manualControlReleased(fanAt:)` for every fan before every lease-core restore, which moves the
 generation (`aReapplyThatBeganInTheHandBackIsRefusedAfterTheRevocationsNotice`, which delivers the
 notice inside the revocation as the restorer does). The mark the terminal action keeps (#346)
-stays.
+stays. `givenUp` is per fan: a re-apply of a sibling fan under the same lease is refused by that
+notice, and with the notice lost it is accepted and handed back as `.leaseLapsed` on the next
+cycle.
 
 **Without the notice it was accepted, and cleared the mark — closed by #366.** A notice is a hint
 (ADR 0009 D2), and `RecordingFanRestorer` sends none. With it lost, a registration that began
@@ -277,7 +279,8 @@ lease the cases split cleanly:
 | From that judgement to the terminal action's entry | Accepted, and it clears nothing |
 | From the entry onwards | Refused (`givenUp`) |
 
-None of it relies on a release notice. A registration under any other lease still clears: one
+The second row holds only while the episode is open: once a cycle that reads the target held has
+closed it, a registration behaves as in the first. None of it relies on a release notice. A registration under any other lease still clears: one
 live lease covers a fan, so it means a newer engagement holds the fan. Three alternatives were
 refused. Stopping § 5 whenever the generation moves lets a client that re-applies every cycle
 postpone the terminal action indefinitely, the contest the budget bounds. Refusing a same-lease
@@ -285,8 +288,8 @@ registration for the whole episode makes A6 hand the refused engagement back, wh
 § 5's own re-assert (ADR 0014 D4), and § 5 then reads its own client's hand-back as a reclamation.
 A rule in the ledger learns of the episode after a hop that nothing orders against the
 registration's clear, and gives the snapshot a second definition of "reclaimed".
-`ReclamationEpisodeMarkTests` holds the actor's half and `ReclamationRegistryEpisodeTests` the
-value's. What stays open:
+`ReclamationEpisodeMarkTests` holds the actor's half and `ReclamationRegistryTests` the value's,
+in `ReclamationRegistryEpisodeTests.swift`. What stays open:
 
 1. A same-lease re-apply that engages the fan mid-episode leaves `isReclaimedBySystem` true until
    the next readable cycle: one cycle, or at most `blindCyclesBeforeDivergence` if reads fail,

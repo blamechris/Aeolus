@@ -1677,7 +1677,7 @@ extension SafetyLog {
             """
             Fan \(fan) was registered with § 5 again under the lease it is held for, while § 5 \
             is contesting a reclamation of it. It stays reported as reclaimed until § 5 reads its \
-            target held, or gives the fan up.
+            target held, or gives the fan up and keeps it.
             """
         )
     }
