@@ -209,12 +209,16 @@ this document:
   deliberately distinct from the transient `.releaseInProgress`, so a client can tell
   *retrying* from *gave up*. `CLAUDE.md` rule 6 is the whole of it: the helper asked for
   automatic, was refused, and stopped asking, so it does not know what mode the fan is in.
-- **Only § 3 watches it.** Every path that reaches this state has already cleared § 5's
-  registry, so § 5 has no entry left to cycle over — not even for ADR 0009 D2's
-  `.leaseLapsed`, which judges only fans still registered. What remains is § 3 keeping a fan
-  whose handback was refused registered, so an emergency still bridges it; below the ceiling,
-  nothing retries its restore short of § 7's panic verb.
-  [#343](https://github.com/blamechris/Aeolus/issues/343) owns that gap.
+- **What watches it, decided in [#343](https://github.com/blamechris/Aeolus/issues/343).** Every
+  path that reaches this state has already cleared § 5's registry — `HelperFanRestorer` tells § 5
+  before it writes — so ADR 0009 D2's `.leaseLapsed`, which judges only fans still registered, never
+  sees it. § 3 keeps it registered, because the restorer marks only fans the firmware accepted, so an
+  emergency bridges it to maximum and restores it. Below the ceiling nothing retries it on its own:
+  § 7's panic verb, § 4's sleep handback and SIGTERM's teardown each sweep this register through
+  `releaseEveryLease()` and then issue `.everyFan`, and the next process reconciles it (§ 6). A retry
+  of its own was declined until a run on hardware shows what a refused keystone is — ADR 0009,
+  amendment 2026-10-15. That every fan Aeolus engages is in § 3's registry at all is ADR 0014's A6
+  contract, held by a source tripwire. The grant refusal and the snapshot are what tell the user.
 - **A later restore the firmware accepts clears it, and nothing else does**
   ([#189](https://github.com/blamechris/Aeolus/issues/189)). The ledger was append-only for
   the life of the helper process until then, which made this the one state in this document

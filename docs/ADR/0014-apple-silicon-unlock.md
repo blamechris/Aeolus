@@ -1509,6 +1509,19 @@ teardown taking seconds. The ruling is the architect's #364/#347 consult, run on
 This amendment corrects clauses of a Proposed ADR rather than the decisions they sit under.
 **Status stays Proposed.**
 
+## Amendment (2026-10-15, [#343](https://github.com/blamechris/Aeolus/issues/343)) — a lease-end handback the firmware refuses needs no watcher of its own
+
+An A6 precondition decided, with no change to behaviour. [ADR 0009](0009-precedence-at-the-write.md)'s
+#343 amendment records it: such a fan is reported by the grant refusal and the snapshot, bridged by
+§ 3 above the ceiling, retried by § 7's panic verb, § 4's sleep handback and SIGTERM's teardown, and
+reconciled by the next process, and gets no retry of its own until a run shows what a refused keystone
+is. For this ADR it adds one consequence to A6's contract (the identity amendment, item 1): engaging
+through the driver is also what puts every fan level 6 engages into § 3's registry, the only mechanism
+that acts unprompted on such a fan, so level 6 reaches a writer's `engageManualControl(of:)` through
+the driver or not at all, and a source tripwire holds that. U5 and U5b gain a consequence: a refused
+keystone in any run goes to the architect with #343's decision before the next run. **No
+`AeolusXPCVersion` bump. Status stays Proposed.**
+
 ## Assumptions and what would invalidate them
 
 | # | Assumption | Basis | If it fails |
