@@ -12,6 +12,11 @@
 /// `FanStateSensing` refines this, so every plane answers it and no separate production type
 /// is needed — the split is about what a consumer can be given, not about what the hardware
 /// offers. `Sendable`, because the lease core holds one across an actor boundary.
+///
+/// **An envelope is not a permit.** What the lease core does with the answer is judge it, with
+/// `FanState.controlEnvelope(declaredMinimum:declaredMaximum:)`; turning a `FanEnvelope` into
+/// the value a write verb takes is `apply`'s and § 5's, and `LeaseAuthorityAccessTests` holds the
+/// lease core's files to naming neither that value nor the property that mints it.
 protocol FanEnvelopeReading: Sendable {
 
     /// Reads one fan's firmware-declared envelope, `F<n>Mn` and `F<n>Mx`.

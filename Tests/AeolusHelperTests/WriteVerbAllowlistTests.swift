@@ -492,6 +492,11 @@ struct WriteVerbAllowlistTests {
         "LeaseAuthorityRefusals.swift: refuseIfBlind(_: ConnectionID)",
         "LeaseAuthorityRefusals.swift: refuseIfForeignManualControl(_: ConnectionID, "
             + "wanting: Set<Int>)",
+        // #270's bounds gate: a read through `FanEnvelopeReading` and a refusal. It names no
+        // permit, restorer or plane, and `LeaseAuthorityAccessTests.theLeaseCoreMintsNoPermit`
+        // holds that it never turns what it reads into one.
+        "LeaseAuthorityRefusals.swift: refuseIfBoundsImplausible(_: ConnectionID, "
+            + "wanting: Set<Int>)",
         "LeaseClock.swift: sleep(until: ContinuousClock.Instant)",
         "LeaseExpirySupervisor.swift: run(authority: LeaseAuthority, "
             + "clock: some MonotonicClock, idleInterval: Duration, log: LeaseLog)",

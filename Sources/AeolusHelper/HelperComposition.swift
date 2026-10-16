@@ -339,6 +339,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             writeCapability: plane,
             telemetry: sightings,
             foreignControl: reconciliation,
+            envelopes: plane,
             thermalEmergency: latch,
             clock: clock,
             log: leaseLog)

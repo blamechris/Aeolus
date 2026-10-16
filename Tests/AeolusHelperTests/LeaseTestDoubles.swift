@@ -325,12 +325,17 @@ enum LeaseFixture {
     /// the ordinary case, and the state a completed startup reconciliation leaves behind.
     /// A test about the gate itself supplies its own; `StartupReconciliationTests` drives
     /// the real one over scripted firmware.
+    ///
+    /// `envelopes` defaults to that same machine's declared bounds — plausible, through the real
+    /// scripted firmware (`plausibleEnvelopes()`). The lease core's own parameter has no default
+    /// (#270): a defaulted envelope reader would be one nothing configured.
     static func authority(
         enumeration: ScriptedFanEnumeration = ScriptedFanEnumeration(),
         restorer: any FanRestoring = RecordingFanRestorer(),
         writeCapability: any FanWriteCapabilityReporting = writePathBuilt(),
         telemetry: any SightednessProving = sightedTelemetry(),
         foreignControl: any ForeignManualControlSensing = automaticFans(),
+        envelopes: any FanEnvelopeReading = plausibleEnvelopes(),
         thermalEmergency: ThermalEmergencyLatch = ThermalEmergencyLatch(),
         clock: TestClock = TestClock(),
         wallClock: TestWallClock = TestWallClock(),
@@ -342,6 +347,7 @@ enum LeaseFixture {
             writeCapability: writeCapability,
             telemetry: telemetry,
             foreignControl: foreignControl,
+            envelopes: envelopes,
             thermalEmergency: thermalEmergency,
             clock: clock,
             wallClock: wallClock.provider,
@@ -365,6 +371,16 @@ enum LeaseFixture {
                     uniqueKeysWithValues: (0..<8).map { ($0, ScriptedControlPlane.FanCondition()) }
                 ),
                 stages: [.nominal(temperatures: nominalDieTemperatures)]))
+    }
+
+    /// Eight fans' firmware-declared bounds, every one plausible — the **real** scripted
+    /// firmware's `readEnvelope(ofFan:)`, for `automaticFans()`'s reason: a fan it had never heard
+    /// of would throw `.fanNotAddressable`, which § 2's grant-time gate must refuse as unread.
+    static func plausibleEnvelopes() -> any FanEnvelopeReading {
+        ScriptedControlPlane(
+            fans: Dictionary(
+                uniqueKeysWithValues: (0..<8).map { ($0, ScriptedControlPlane.FanCondition()) }),
+            stages: [.nominal()])
     }
 
     /// The real `StartupReconciliation` over `plane`, wired exactly as the composition root

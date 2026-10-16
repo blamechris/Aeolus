@@ -66,10 +66,10 @@ import Foundation
 /// `private` state `LeaseAuthorityAccessTests` holds — and #128 had already taken the one
 /// seam available without widening it.
 ///
-/// Relocating prose cannot relieve `type_body_length`, which counts this body's code: 304 lines
-/// since #368's outwait in `revokeLease(id:forFan:because:)`, so 46 of headroom remain before
-/// its error at 350; the file is 948 lines against its error at 1000. New behaviour belongs in
-/// value types and the `EngagementDriver` (ADR 0014), not in this actor.
+/// Relocating prose cannot relieve `type_body_length`, which counts this body's code: 308 lines
+/// since #270's bounds gate in `acquireLease`, so 42 of headroom remain before its error at
+/// 350; the file is 956 lines against its error at 1000. New behaviour belongs in value types
+/// and the `EngagementDriver` (ADR 0014), not in this actor.
 actor LeaseAuthority: HeldLeaseRole {
 
     private let clock: any MonotonicClock
@@ -88,9 +88,9 @@ actor LeaseAuthority: HeldLeaseRole {
     /// `LeaseAuthorityRefusals.swift`. A get-only property on a `Sendable` role: the module
     /// can ask the same question, and no answer it gets changes anything here.
     let writeCapability: any FanWriteCapabilityReporting
-    /// The third — and, by design, last — thing this type needs of the machine. See
-    /// `SightednessProving` for why it is its own role rather than a method on either of the
-    /// two above, and why it is deliberately **not** the role § 3's own cycle holds.
+    /// The third thing this type needs of the machine, and not the last: `foreignControl` and
+    /// `envelopes` came after it. See `SightednessProving` for why it is its own role rather
+    /// than a method on either of the two above, and why it is **not** the role § 3's cycle holds.
     ///
     /// `internal` since #128 moved `refuseIfBlind` to `LeaseAuthorityRefusals.swift`. One
     /// read verb, `sighting()`, on a role that holds no writer and no plane.
@@ -108,6 +108,11 @@ actor LeaseAuthority: HeldLeaseRole {
     /// heldByAeolus:awaitingConfirmation:)`, which answers with a
     /// `ManualControlAvailability.Reason` and touches no fan.
     let foreignControl: any ForeignManualControlSensing
+
+    /// `docs/SAFETY.md` § 2's bounds, read afresh at grant time for every requested fan Aeolus is
+    /// not accountable for (#270): one read verb, held as the role and never as the plane.
+    /// `internal` for `refuseIfBoundsImplausible(_:wanting:)` in `LeaseAuthorityRefusals.swift`.
+    let envelopes: any FanEnvelopeReading
 
     /// § 3's fans awaiting confirmation of a restore Aeolus issued (#303), as a role and never the
     /// actor. `nil` until bound, which answers `.foreignManualControl` — still a refusal.
@@ -265,6 +270,7 @@ actor LeaseAuthority: HeldLeaseRole {
         writeCapability: some FanWriteCapabilityReporting,
         telemetry: some SightednessProving,
         foreignControl: some ForeignManualControlSensing,
+        envelopes: some FanEnvelopeReading,
         thermalEmergency: ThermalEmergencyLatch,
         clock: some MonotonicClock = SystemMonotonicClock(),
         wallClock: @escaping @Sendable () -> Date = Date.init,
@@ -276,6 +282,7 @@ actor LeaseAuthority: HeldLeaseRole {
         self.writeCapability = writeCapability
         self.telemetry = telemetry
         self.foreignControl = foreignControl
+        self.envelopes = envelopes
         self.thermalEmergency = thermalEmergency
         self.clock = clock
         self.wallClock = wallClock
@@ -296,7 +303,7 @@ actor LeaseAuthority: HeldLeaseRole {
     ///
     /// 0. – 3. In this order: the build's own write capability, self-renewal, TTL and holder
     ///    re-validation, then the suspension points (enumerate, sweep lapsed leases, § 3's
-    ///    latch, sightedness, foreign control). Why each sits where it does:
+    ///    latch, sightedness, foreign control, bounds). Why each sits where it does:
     ///    handback-ledger.md § *"The order of `acquireLease`'s steps"*.
     /// 4. **The liveness check, after the last suspension point and immediately before
     ///    registering.** Everything from there to the `insert` is straight-line: the actor
@@ -328,8 +335,9 @@ actor LeaseAuthority: HeldLeaseRole {
         await expireLapsedLeases()
         try await refuseIfThermalEmergencyActive(connection)
         try await refuseIfBlind(connection)
-        let exempted = try await refuseIfForeignManualControl(
-            connection, wanting: Set(request.fanIndices).intersection(enumerated))
+        let wanting = Set(request.fanIndices).intersection(enumerated)
+        let exempted = try await refuseIfForeignManualControl(connection, wanting: wanting)
+        try await refuseIfBoundsImplausible(connection, wanting: wanting.subtracting(exempted))
 
         // ---- No `await` below this line. Adding one reopens #95. ----
         try AeolusXPCValidation.validateFanIndices(
@@ -339,8 +347,8 @@ actor LeaseAuthority: HeldLeaseRole {
         // most durable first: a client told a transient refusal retries, and if it retries
         // into a durable one in the end, the first answer wasted the round trip and told it
         // something less true than what was available. handback-ledger.md § "The grant gate's
-        // ordering" argues each position, including why the two refusals above the marker are
-        // transient and above it anyway.
+        // ordering" argues each position, including why the refusals above the marker sit there
+        // whatever their durability.
         //
         // This one is the most durable of them: a fan whose handback was given up on is
         // not coming back on its own, so a client told any of the others retries — past the
@@ -797,10 +805,10 @@ actor LeaseAuthority: HeldLeaseRole {
 
     // MARK: - Guards
     //
-    // The three refusals that consult a stateless query role rather than this actor's own
-    // state — the build's write capability, the sightedness proof, and § 6's foreign-control
-    // baseline — live in `LeaseAuthorityRefusals.swift`, which explains the split. What is
-    // left here is what reads state this actor owns.
+    // The four refusals that consult a stateless query role rather than this actor's own
+    // state — the build's write capability, the sightedness proof, § 6's foreign-control
+    // baseline and § 2's bounds — live in `LeaseAuthorityRefusals.swift`, which explains the
+    // split. What is left here is what reads state this actor owns.
 
     /// The refusal a message gets when its own connection died while it was in flight.
     ///
