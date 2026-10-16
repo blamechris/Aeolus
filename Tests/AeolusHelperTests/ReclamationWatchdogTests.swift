@@ -316,4 +316,33 @@ struct ReclamationWatchdogTests {
 
         #expect(await machine.attempts.isEmpty)
     }
+
+    /// Blind and readable cycles alternating never add up to persistent blindness: each
+    /// readable cycle zeroes the count, so the reconnect-and-restore in
+    /// `ReclamationWatchdogRecoveryTests` needs `blindCyclesBeforeDivergence` blind cycles **in a
+    /// row**. Nothing asserted that until #128's review deleted the reset with the suite green.
+    ///
+    /// **Mutation:** delete `registry.resetReadFailures(ofFan: index)` from `examine(fanAt:)`.
+    /// Run: red.
+    @Test("Alternating blind and readable cycles never add up to persistent blindness")
+    func alternatingBlindnessNeverEscalates() async throws {
+        let rounds = ReclamationLimits.blindCyclesBeforeDivergence + 1
+        let alternating: [ScriptedControlPlane.Stage] = [.blind(), .nominal()]
+        let machine = ReclamationMachine(
+            stages: Array(repeating: alternating, count: rounds).flatMap { $0 },
+            fans: [0: .held(at: 2_400)])
+        try await machine.lease(fans: [0])
+        try await machine.hold(fan: 0, commanding: 2_400)
+
+        for _ in 0..<(2 * rounds) {
+            await machine.watchdog.cycle()
+            await machine.plane.advance()
+        }
+
+        #expect(
+            await machine.didRestore(fan: 0) == false,
+            "blind cycles separated by readable ones were counted as one blind episode")
+        #expect(await machine.watchdog.fansUnderManualControl == [0])
+        #expect(machine.safetyLog.lines(containing: "can read fan 0 again").count == rounds)
+    }
 }

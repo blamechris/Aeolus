@@ -262,4 +262,88 @@ struct ReclamationRegistryTests {
         #expect(second == .short(actual: 1_000, commanded: 2_400, dwell: 2))
         #expect(afterTheCommand == .short(actual: 1_000, commanded: 2_400, dwell: 1))
     }
+
+    /// **Mutation:** delete `actualDwellCycles = 0` at the top of `HeldFan.judge(_:)`'s primary
+    /// branch. Run: red.
+    @Test("A primary divergence restarts the secondary signal's dwell")
+    func aPrimaryDivergenceRestartsTheDwell() {
+        var fan = Watchdog.HeldFan(lease: lease)
+        fan.command(target)
+
+        _ = fan.judge(short)
+        _ = fan.judge(short)
+        let diverged = fan.judge(unreadable)
+        let afterwards = fan.judge(short)
+        #expect(diverged == .diverged(.targetUnreadable(reason: "F0Tg: no answer")))
+        #expect(afterwards == .short(actual: 1_000, commanded: 2_400, dwell: 1))
+    }
+
+    // MARK: - Behaviour `main` never asserted
+
+    /// The other half of `cycleCouldNotSee`'s count: without it, blind cycles that are not
+    /// consecutive add up to the escalation. `ReclamationWatchdogTests`'
+    /// `alternatingBlindnessNeverEscalates` drives the same rule through the actor.
+    ///
+    /// **Mutation:** make `Registry.resetReadFailures(ofFan:)` do nothing. Run: red.
+    @Test("A readable cycle after blind ones zeroes the read-failure count")
+    func resettingReadFailuresZeroesTheCount() throws {
+        var registry = holding(under: lease)
+        _ = registry.recordReadFailure(ofFan: 0)
+        let failures = registry.recordReadFailure(ofFan: 0)
+        registry.resetReadFailures(ofFan: 0)
+        let record = try #require(registry.record(ofFan: 0))
+
+        #expect(failures == 2)
+        #expect(record.consecutiveReadFailures == 0)
+    }
+
+    /// `commanded` only. The re-assert's write never reset the dwell, before #128 or since: the
+    /// primary branch that reaches the re-assert has already zeroed it. Resetting it here as well
+    /// would be a behaviour change, so the test pins the dwell where it stood.
+    ///
+    /// **Mutation (a):** make `Registry.recordReassertedTarget(_:ofFan:)` do nothing. **(b):**
+    /// make it `held[index]?.command(target)`, which resets the dwell too. Run: red on each.
+    @Test("A re-asserted target is recorded, and leaves the dwell where it stands")
+    func aReassertedTargetIsRecordedAndLeavesTheDwell() throws {
+        var registry = holding(under: lease)
+        registry.command(target, ofFan: 0)
+        _ = registry.judge(short, ofFan: 0)
+        _ = registry.judge(short, ofFan: 0)
+        let written = CommandedTarget(fanIndex: 0, rpm: 2_200)
+
+        registry.recordReassertedTarget(written, ofFan: 0)
+        let record = try #require(registry.record(ofFan: 0))
+        #expect(record.commanded == written)
+        #expect(record.actualDwellCycles == 2)
+    }
+
+    /// **Mutation:** in `HeldFan.refundReassertAttempt()`, replace `max(0, reassertAttempts - 1)`
+    /// with `reassertAttempts - 1`. Run: red.
+    @Test("A refund gives back one attempt, and never goes below zero")
+    func aRefundFloorsAtZero() throws {
+        var registry = holding(under: lease)
+        registry.spendReassertAttempt(1, ofFan: 0)
+
+        registry.refundReassertAttempt(ofFan: 0)
+        let afterOne = try #require(registry.record(ofFan: 0)).reassertAttempts
+        registry.refundReassertAttempt(ofFan: 0)
+        let afterTwo = try #require(registry.record(ofFan: 0)).reassertAttempts
+        #expect(afterOne == 0)
+        #expect(afterTwo == 0, "a refund below zero hands the fan an extra attempt")
+    }
+
+    /// Twelve fans registered out of order. The assertion holds for a sorted answer whatever
+    /// order the dictionary's keys come out in, and that order is seeded per process — so an
+    /// unsorted answer matches with probability 1 in 12!, and fails in practice on every run.
+    /// With two or three fans it could pass by chance.
+    ///
+    /// **Mutation:** make `fansInOrder` return `Array(held.keys)`. Run: red.
+    @Test("The fans are examined in index order, whatever order they were registered in")
+    func theFansAreInIndexOrder() {
+        let registrationOrder = [7, 2, 11, 0, 9, 4, 1, 10, 5, 3, 8, 6]
+        let registry = holding(registrationOrder, under: lease)
+
+        #expect(registry.fansInOrder == Array(0...11))
+        #expect(registry.fans == Set(registrationOrder))
+    }
 }
