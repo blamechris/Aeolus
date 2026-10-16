@@ -6,16 +6,19 @@ import Testing
 /// what § 5 can do to that actor. That is a claim about what a protocol declares and how a file
 /// reaches what it holds, which no behavioural test observes: a role widened to the whole actor
 /// passes every scenario, because the scenarios call only what § 5 calls. So it is asserted
-/// against the source, four ways:
+/// against the source, three ways:
 ///
 /// - **Each role declares exactly the calls § 5 makes**, refines nothing but `Sendable`, and so
 ///   carries no write verb. `ThermalLatchRole` reads one bit; `ReclamationLedgerRole` records
 ///   and clears a fan's cause; `HeldLeaseRole` asks and revokes one lease.
-/// - **No role is extended, refined or renamed** anywhere under `Sources/`. An extension is a
-///   member every existential gets, and one written there could convert the role back to the
-///   actor and reach `release()` or `causes` through it.
-/// - **Each role has its one conformer**, the actor it was cut from, so what § 5 talks to in
-///   production is that actor (#380's acceptance).
+/// - **Each role is named only where it is listed** (`RoleCensus`): its declaration, its one
+///   conformer's conformance (the actor it was cut from, so what § 5 talks to in production is
+///   that actor, #380's acceptance), and the watchdog's stored property and init parameter. An
+///   extension is a member every existential gets, and one written there could convert the role
+///   back to the actor and reach `release()` or `causes` through it; a refinement, a second
+///   conformer and an alias do the same. Every one of them has to write the role's name, so none
+///   can be spelled past a census as each could past a list of shapes: backticks, a module
+///   qualifier and a line break after `=` were each green.
 /// - **The watchdog reaches each role only through its members.** `latch as?
 ///   ThermalEmergencyLatch`, or `let held = latch` and then a conversion, is the route back to
 ///   the actor's whole surface, and neither is a member access.
@@ -24,21 +27,41 @@ import Testing
 @Suite("§ 5's roles over the lease core, the latch and the ledger carry what it calls")
 struct ReclamationRoleTripwireTests {
 
-    /// One role: the file it is declared in, its one conformer in `Sources/`, the property the
-    /// watchdog holds it as, and its body, whitespace-collapsed, exactly as declared.
+    /// One role: the path it is declared at under `Sources/`, its one conformer and the path that
+    /// is declared at, the property the watchdog holds it as, and its body, whitespace-collapsed,
+    /// exactly as declared.
     struct Role: Sendable, CustomStringConvertible {
         let name: String
-        let file: String
+        let path: String
         let conformer: String
+        let conformerPath: String
         let property: String
         let body: String
 
         var description: String { name }
+        var file: String { URL(fileURLWithPath: path).lastPathComponent }
+
+        /// Every statement under `Sources/` that may write `name`: the declaration, the
+        /// conformance, and the watchdog's stored property and init parameter (the second drops
+        /// its modifier, as a parameter has none).
+        var listings: [RoleCensus.Listing] {
+            [
+                RoleCensus.Listing(path: path, statement: "protocol \(name): Sendable"),
+                RoleCensus.Listing(path: conformerPath, statement: "actor \(conformer): \(name)"),
+                RoleCensus.Listing(
+                    path: ReclamationRoleTripwireTests.watchdogPath,
+                    statement: "let \(property): any \(name)"),
+                RoleCensus.Listing(
+                    path: ReclamationRoleTripwireTests.watchdogPath,
+                    statement: "\(property): any \(name)"),
+            ]
+        }
     }
 
     static let roles: [Role] = [
         Role(
-            name: "HeldLeaseRole", file: "HeldLeaseRole.swift", conformer: "LeaseAuthority",
+            name: "HeldLeaseRole", path: "AeolusHelper/Lease/HeldLeaseRole.swift",
+            conformer: "LeaseAuthority", conformerPath: "AeolusHelper/Lease/LeaseAuthority.swift",
             property: "leases",
             body: """
                 func hasLiveLease(id: UUID, coveringFan fan: Int) async -> Bool \
@@ -46,12 +69,15 @@ struct ReclamationRoleTripwireTests {
                 async -> LeaseRevocation
                 """),
         Role(
-            name: "ThermalLatchRole", file: "ThermalLatchRole.swift",
-            conformer: "ThermalEmergencyLatch", property: "latch",
+            name: "ThermalLatchRole", path: "AeolusHelper/Safety/ThermalLatchRole.swift",
+            conformer: "ThermalEmergencyLatch",
+            conformerPath: "AeolusHelper/Safety/ThermalEmergencyLatch.swift", property: "latch",
             body: "var isActive: Bool { get async }"),
         Role(
-            name: "ReclamationLedgerRole", file: "ReclamationLedgerRole.swift",
-            conformer: "ReclamationLedger", property: "ledger",
+            name: "ReclamationLedgerRole",
+            path: "AeolusHelper/Safety/ReclamationLedgerRole.swift",
+            conformer: "ReclamationLedger",
+            conformerPath: "AeolusHelper/Safety/ReclamationLedger.swift", property: "ledger",
             body: """
                 func markReclaimed(fanAt index: Int) async -> Bool \
                 @discardableResult func markSupervisorBlind(fanAt index: Int) async -> Bool \
@@ -59,6 +85,7 @@ struct ReclamationRoleTripwireTests {
                 """),
     ]
 
+    private static let watchdogPath = "AeolusHelper/Safety/ReclamationWatchdog.swift"
     private static let watchdogFile = "ReclamationWatchdog.swift"
 
     /// **Mutation:** add `var engagedBy: CriticalTemperature? { get async }` to `ThermalLatchRole`,
@@ -95,54 +122,41 @@ struct ReclamationRoleTripwireTests {
             """)
     }
 
-    /// **Mutation:** add `extension ReclamationLedgerRole { func probe() {} }` to
-    /// `ReclamationLedgerRole.swift`. Run: red here.
-    @Test("No role is extended, refined or renamed under Sources")
-    func noRoleIsExtendedRefinedOrRenamed() throws {
-        let names = Self.roles.map(\.name).joined(separator: "|")
-        let patterns = [
-            #"\bextension\s+(\#(names))\b"#,
-            #"\bprotocol\s+\w+[^{:]*:[^{]*\b(\#(names))\b"#,
-            #"\btypealias\s+\w+[^=\n]*=[^\n]*\b(\#(names))\b"#,
-        ]
-        var offences: [String] = []
-        for file in try SeamScanner.swiftFiles() {
-            let code = SeamScanner.strippingAllComments(
-                try String(contentsOf: file, encoding: .utf8))
-            for pattern in patterns {
-                offences += try AuthorityRoleTripwireTests.matches(of: pattern, in: code)
-                    .map { "\(file.lastPathComponent): \($0)" }
-            }
-        }
-        #expect(
-            offences.isEmpty,
-            "\(offences) widen or rename one of § 5's roles, which is a way past their exact bodies"
-        )
-    }
+    /// Every spelling of a role's name under `Sources/` is one of the listed statements, and every
+    /// listed one is found. Comments and backticks are removed and newlines are whitespace, so
+    /// `` extension `ReclamationLedgerRole` ``, `extension AeolusHelper.ReclamationLedgerRole` and
+    /// a `typealias` broken after its `=` are the statements they look like.
+    ///
+    /// **Mutations (ten new files under `Sources/AeolusHelper/Safety/`, one per probe, built
+    /// together):** a conformer ``struct `ProbeLatch`: ThermalLatchRole``; `extension
+    /// AeolusHelper.ReclamationLedgerRole`; a backticked extension; `typealias LedgerView =` and
+    /// then `ReclamationLedgerRole` on the next line, with `extension LedgerView {}`; a backticked
+    /// alias and an actor conforming through it; and `typealias LatchView =`, then
+    /// `ThermalLatchRole`, with `extension LatchView { var whole: ThermalEmergencyLatch? { self as?
+    /// ThermalEmergencyLatch } }`; and the four plain spellings the earlier pattern list caught: an
+    /// `extension`, a refinement, a `typealias` and a conformer. Run: red here with exactly those
+    /// ten and nothing else, each at its own file and line (the name's: line 2 where an `=` ends
+    /// line 1), and `Listed and not found` passing. The earlier pattern list, run against the same
+    /// ten, caught the four plain ones and none of the six others.
+    @Test("Each role is named under Sources only where it is listed")
+    func eachRoleIsNamedOnlyWhereListed() throws {
+        let found = try RoleCensus.occurrences(roles: Self.roles.map(\.name))
+        let verdict = RoleCensus.reconcile(found, with: Self.roles.flatMap(\.listings))
 
-    /// **Mutation:** add `struct ProbeLatch: ThermalLatchRole { var isActive: Bool { false } }` to
-    /// `ThermalLatchRole.swift`. Run: red here.
-    @Test("Each role has one conformer under Sources: the actor it narrows", arguments: roles)
-    func eachRoleHasItsOneConformer(role: Role) throws {
-        let conforming = try NSRegularExpression(
-            pattern:
-                #"\b(?:actor|class|struct|enum|extension)\s+(\w+)[^{]*?:[^{]*\b\#(role.name)\b"#)
-        var conformers: [String] = []
-        for file in try SeamScanner.swiftFiles() {
-            let code = SeamScanner.strippingAllComments(
-                try String(contentsOf: file, encoding: .utf8))
-            let whole = NSRange(code.startIndex..., in: code)
-            for match in conforming.matches(in: code, range: whole) {
-                if let name = Range(match.range(at: 1), in: code) {
-                    conformers.append(String(code[name]))
-                }
-            }
-        }
         #expect(
-            conformers == [role.conformer],
+            verdict.unlisted.isEmpty,
             """
-            \(role.name) is conformed to by \(conformers) under Sources, and its one conformer \
-            is \(role.conformer). What § 5 holds through the role in production is that actor.
+            A role is named where it is not listed:\(Self.lines(verdict.unlisted))
+            An extension, a refinement, a conformer, an alias or a cast has to write the name, and \
+            each one widens what § 5 can do to the actor behind it. Say why here and in the \
+            role's documentation.
+            """)
+        #expect(
+            verdict.missing.isEmpty,
+            """
+            Listed and not found:\(Self.lines(verdict.missing))
+            Either the role is no longer what § 5 holds there, or the statement is spelled \
+            another way; the list is this test's to be told about.
             """)
     }
 
@@ -184,6 +198,10 @@ struct ReclamationRoleTripwireTests {
             converted is the route back to \(role.conformer)'s whole surface; reach it through \
             a member.
             """)
+    }
+
+    private static func lines(_ items: [some CustomStringConvertible]) -> String {
+        items.map { "\n  \($0)" }.joined()
     }
 
     private static func collapsed(_ text: String) -> String {

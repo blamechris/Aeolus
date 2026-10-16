@@ -430,8 +430,11 @@ two. So the actor holds both through roles, `ThermalLatchRole` (the one read `cu
 makes) and `ReclamationLedgerRole` (the two marks and the clear), as it holds the lease core
 through `HeldLeaseRole`; the actors are the roles' only conformers in `Sources/`, the composition
 passes them unchanged, and every method's awaits are the same callees in the same order.
-`ReclamationRoleTripwireTests` holds each role's exact requirements, its one conformer, and the
-actor reaching each only through its members. Presence only at the first lets `markReclaimed`
+`ReclamationRoleTripwireTests` holds each role's exact requirements, a census of every place the
+three names are written under `Sources/` (each declaration, each role's one conformer, and the
+watchdog's property and init parameter, so an extension, a refinement, an alias or a second
+conformer fails by name, however it is spelled), and the actor reaching each only through its
+members. Presence only at the first lets `markReclaimed`
 put a `.systemReclaimed` mark on a newer lease's fan; at the second, the old lease's copy of the
 record books its attempt count onto the newer lease's record, which can send that lease's first
 real divergence straight to the terminal action: it does when the copy had spent all but one. The
