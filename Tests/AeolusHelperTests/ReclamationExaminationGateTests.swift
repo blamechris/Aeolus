@@ -12,9 +12,9 @@ import Testing
 /// `GovernedFanWriter`, its return reported, and the gate left. The waits are on the machine's own
 /// `ManualClock`, so past the bound happens when a test moves it and at no other time.
 ///
-/// Each test names the mutation it kills. **Red first:** run with § 5 as it is on `main` — the
-/// gate never entered, the copy deciding after the ledger hop, the stamp ignored — the two
-/// orders, the past-the-bound divergence and the cancelled wait here, and both cases in
+/// Each test names the mutation it kills. **Red first:** run with § 5 as it is on `main` — the gate
+/// never entered, the copy deciding after the ledger hop, the stamp ignored — the two orders, each
+/// fan's own gate, the past-the-bound divergence and the cancelled wait here, and both cases in
 /// `ReclamationLedgerHopTests` that need the gate, go red on their claims. The step under way and
 /// the gate before the stamp pin orderings only a gate has: without one they go red only on the
 /// wait they observe, and taking the gate after the read, or stamping first, is what turns their
@@ -83,7 +83,7 @@ struct ReclamationExaminationGateTests {
         await Self.expectNotJudgedAReclamation(machine)
         #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_000)
 
-        await machine.watchdog.cycle()
+        try await finished("the next cycle", observing { await machine.watchdog.cycle() })
         await Self.expectNotJudgedAReclamation(machine)
         #expect(await machine.commandedRPMs == [2_000], "§ 5 wrote over the step")
         #expect(machine.gate.isIdle)
@@ -161,6 +161,48 @@ struct ReclamationExaminationGateTests {
         #expect(machine.gate.isIdle)
     }
 
+    // MARK: - Each fan's own gate
+
+    /// **§ 5 waits on the gate of the fan it examines.** Fans 0 and 1 are held at 2,400, and
+    /// level 6 holds fan 1's gate. § 5's sweep examines fan 0, whose gate is free, then waits on
+    /// fan 1's: not on fan 0's, and without reading fan 1 until the step leaves. Keyed to another
+    /// fan, § 5 would examine fan 1 inside fan 1's own step: #383's false reclamation, on every fan
+    /// but the one it keyed to.
+    ///
+    /// **Mutation:** `cycle()` enters `gate.enterForExamination(fanAt: 0)` whatever the fan. Run:
+    /// red on the wait for fan 1's gate, and on the read of fan 1 inside the step.
+    @Test("§ 5 waits on the gate of the fan it examines, and on no other fan's")
+    func eachExaminationWaitsOnItsOwnFansGate() async throws {
+        let machine = ReclamationMachine(fans: [0: .held(at: 2_400), 1: .held(at: 2_400)])
+        let standIn = LevelSixStandIn(machine)
+        try await machine.hold(fan: 0, commanding: 2_400)
+        try await machine.hold(fan: 1, commanding: 2_400)
+        let stepOnFanOne = try #require(await standIn.enter(fanAt: 1))
+        let beforeTheSweep = await machine.attempts.count
+
+        let sweep = observing { await machine.watchdog.cycle() }
+        #expect(
+            await yieldUntil("§ 5 to wait on fan 1's gate") { machine.gate.waiting(onFan: 1) == 1 },
+            "§ 5 did not wait on the gate of the fan it was examining")
+        #expect(machine.gate.waiting(onFan: 0) == 0, "§ 5 waited on fan 0's gate")
+        #expect(machine.gate.isHeld(fanAt: 0) == false, "§ 5 kept fan 0's gate after examining it")
+        let duringTheStep = await machine.attempts.dropFirst(beforeTheSweep)
+        #expect(duringTheStep.contains(.readControlState(fan: 0)), "fan 0 was not examined first")
+        #expect(
+            duringTheStep.contains(.readControlState(fan: 1)) == false,
+            "§ 5 read fan 1 inside the step that held fan 1's gate")
+
+        standIn.leave(stepOnFanOne)
+        try await finished("the sweep", sweep)
+        #expect(
+            await machine.attempts.dropFirst(beforeTheSweep).contains(.readControlState(fan: 1)),
+            "fan 1 was never examined, so nothing here was judged")
+        #expect(await machine.ledger.isReclaimed(fanAt: 0) == false)
+        #expect(await machine.ledger.isReclaimed(fanAt: 1) == false)
+        #expect(await machine.commandedRPMs.isEmpty, "§ 5 wrote to a fan holding its target")
+        #expect(machine.gate.isIdle)
+    }
+
     // MARK: - The gate before the stamp
 
     /// **The gate, then the stamp.** Fan 0 is held under L at 2,400 and the system has taken it
@@ -229,8 +271,9 @@ struct ReclamationExaminationGateTests {
         #expect(
             machine.safetyLog.levels(containing: "examination gate, and its holder") == [.fault])
 
-        for _ in 1..<ReclamationLimits.reassertAttemptBudget {
-            await machine.watchdog.cycle()
+        for cycle in 1..<ReclamationLimits.reassertAttemptBudget {
+            try await finished(
+                "cycle \(cycle) after the expiry", observing { await machine.watchdog.cycle() })
         }
         #expect(
             machine.safetyLog.lines(containing: Self.ungatedStandDown).count
@@ -238,7 +281,7 @@ struct ReclamationExaminationGateTests {
             "a later cycle waited on the outwaited holder, or wrote")
         #expect(await machine.didRestore(fan: 0) == false)
 
-        await machine.watchdog.cycle()
+        try await finished("the terminal cycle", observing { await machine.watchdog.cycle() })
         #expect(
             await machine.didRestore(fan: 0), "the terminal action did not restore past the bound")
         #expect(await machine.restorer.causes.contains(.systemReclaimed))
@@ -281,7 +324,7 @@ struct ReclamationExaminationGateTests {
         #expect(await machine.attempts.contains(.engageManualControl(fan: 0)) == false)
 
         standIn.leave(holder)
-        await machine.watchdog.cycle()
+        try await finished("the first real sweep", observing { await machine.watchdog.cycle() })
         #expect(
             await machine.attempts.contains(.engageManualControl(fan: 0)),
             "the budget went on waits that wrote nothing, so § 5 gave fan 0 up")

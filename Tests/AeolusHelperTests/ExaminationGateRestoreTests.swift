@@ -27,6 +27,18 @@ import Testing
 /// § 3's fire, § 4's handback, § 7, the release, the expiry, the terminal action and
 /// reconciliation — each never finishes — and green on `restoreAndForget` and the undo, which do
 /// not reach the lease core's restorer.
+///
+/// **What pins `restoreAndForget` and the driver's undo is this suite, not the census.** The census
+/// counts statements that name the gate, and § 5's file is listed for two of them, so a wrapper
+/// there around one listed entry is a statement it cannot tell apart. Each of these is red here,
+/// on the scenario that hands the fan back through the path it changes:
+///
+/// - `restoreAndForget(fanAt:heldUnder:)` entering the fan's gate before its hand-back: red on
+///   `leaseLapsedHandback`, where § 5 waits on the gate it already holds. The census is red too.
+/// - The same entry inside a private wrapper in `ReclamationWatchdog.swift`, around both the
+///   hand-back and the examination, which the census does not see: red on `leaseLapsedHandback`.
+/// - `EngagementDriver.handBack(fanAt:)` entering the composition's gate: red on `engagementUndo`,
+///   `leaseLapsedHandback` and `terminalAction`. The census is red too.
 @Suite("No restore waits for the examination gate, composed", .timeLimit(.minutes(1)))
 struct ExaminationGateRestoreTests {
 
