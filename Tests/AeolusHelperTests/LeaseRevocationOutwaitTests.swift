@@ -71,8 +71,9 @@ struct LeaseRevocationOutwaitTests {
     /// answers `.gone` without parking. `revokeLeaseRevokesOnlyTheNamedLiveLeaseWhole` asks the
     /// same of an ID the table never held.
     ///
-    /// **Mutation (M4):** drop `guard releasing[fan] != nil else { return }` from
-    /// `outwaitHandback(of:)`. Run: red on `.finished`, and on the revocation's ceiling.
+    /// **Mutation (M4):** drop `guard releasing[fan] != nil else { return waiter.resume() }` from
+    /// the continuation's body in `outwaitHandback(of:)`, so every `.gone` parks. Run: red on
+    /// `.finished`, and on the revocation's ceiling.
     @Test("A revocation with no handback under way returns at once")
     func aGoneRevocationWithNoHandbackUnderWayReturnsAtOnce() async throws {
         let restorer = RecordingFanRestorer()
@@ -98,9 +99,9 @@ struct LeaseRevocationOutwaitTests {
     /// does not wait for it. Waiting on every handback would let a client granting and releasing
     /// another fan keep § 5 parked while the fan it is giving up goes unwatched.
     ///
-    /// **Mutation (M5):** replace `releasing[fan] != nil` with `!releasing.isEmpty` in
-    /// `outwaitHandback(of:)`. Run: red on `.finished`, and on the revocation's ceiling — fan 1's
-    /// drain resumes only fan 1's waiters.
+    /// **Mutation (M5):** replace `releasing[fan] != nil` with `!releasing.isEmpty` in the guard
+    /// inside `outwaitHandback(of:)`'s continuation. Run: red on `.finished`, and on the
+    /// revocation's ceiling — fan 1's drain resumes only fan 1's waiters.
     @Test("A revocation outwaits only the handback of the fan it names")
     func aGoneRevocationOutwaitsOnlyItsOwnFan() async throws {
         let clock = TestClock()
