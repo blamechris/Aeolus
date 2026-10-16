@@ -57,9 +57,22 @@ enum AvailabilityFixture {
         try #require(snapshot.fans.first { $0.index == index }).manualControlAvailability
     }
 
-    /// `F0Mx`'s value in the bounds scenarios: the shape of a byte-swapped `flt`, which § 2's
-    /// gate refuses as `.maximumAboveCeiling`.
-    static let byteSwappedMaximum = ScriptedControlPlane.BoundRead.reads(1e14)
+    /// The shape of a byte-swapped `flt`. A test that stages it asserts the firmware reads it back,
+    /// so the scenario cannot pass vacuously over plausible bounds.
+    static let byteSwappedBound = 1e14
+
+    /// `F0Mx`'s value in the bounds scenarios, which § 2's gate refuses as `.maximumAboveCeiling`.
+    static let byteSwappedMaximum = ScriptedControlPlane.BoundRead.reads(byteSwappedBound)
+
+    /// A stage like `fanZeroMaximum(_:)`'s, with `F0Mn` reading `minimum` and `F0Mx` the declared
+    /// maximum. A byte-swapped `F0Mn` sits above `F0Mx`: § 2's gate refuses it as `.notAscending`.
+    static func fanZeroMinimum(
+        _ minimum: ScriptedControlPlane.BoundRead
+    ) -> ScriptedControlPlane.Stage {
+        var stage = ScriptedControlPlane.Stage(temperatures: LeaseFixture.nominalDieTemperatures)
+        stage.minimumReads = [0: minimum]
+        return stage
+    }
 
     /// A stage on which the SMC answers, the temperatures are nominal, and fan 0's `F0Mx` reads
     /// `maximum` — to the snapshot's provider and to the grant's `readEnvelope(ofFan:)` alike

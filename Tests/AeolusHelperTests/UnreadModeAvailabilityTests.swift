@@ -268,7 +268,8 @@ struct UnreadModeAvailabilityTests {
 
     /// A fan reconciliation could not hand back reads that durable refusal over implausible
     /// bounds, as the grant does: the grant asks the baseline before anything about the fan,
-    /// its bounds included (#270).
+    /// its bounds included (#270). The refusal hides the bounds from the snapshot, so `F0Mx` is
+    /// read back first: a stage that stopped applying would leave this green over plausible bounds.
     ///
     /// **Mutation:** either of the two above. Run: red — with the first the snapshot says
     /// `.foreignManualControl`, with the second the grant says `.boundsImplausible`.
@@ -279,6 +280,9 @@ struct UnreadModeAvailabilityTests {
             writes: refused,
             afterwards: [Fixture.fanZeroMaximum(Fixture.byteSwappedMaximum, writes: refused)])
         await helper.plane.advance()
+        #expect(
+            try await helper.plane.firmwareBound(.maximum, ofFan: 0) == Fixture.byteSwappedBound,
+            "fan 0's maximum reads plausible, so the bounds have nothing to be outranked by")
         await helper.plane.setMode(.manual, ofFan: 0)
         await helper.reconciliation.reconcile()
         #expect(

@@ -115,6 +115,13 @@ actor ScriptedControlPlane: FanControlPlane {
         /// two scripts do. And a stage, so a fan can be leased under plausible bounds and read
         /// implausible ones afterwards, which is how a fan in a handback register is scripted.
         var maximumReads: [Int: BoundRead]
+        /// `maximumReads`' counterpart for `F<n>Mn`, so the grant's judgement of the minimum is
+        /// scripted too: without it, a gate that judged a constant minimum stayed green.
+        ///
+        /// Defaulted rather than an `init` parameter, and set on a built stage
+        /// (`AvailabilityFixture.fanZeroMinimum(_:)`), so the actor's own body stays inside
+        /// `type_body_length`'s warning.
+        var minimumReads: [Int: BoundRead] = [:]
 
         init(
             temperatures: [String: Double] = [:],
@@ -635,8 +642,8 @@ extension ScriptedControlPlane {
     }
 
     /// What one bound key reads on a stage, when it is not the fan's declaration — see
-    /// `Stage.maximumReads`. Declared here rather than beside `Stage`, so the actor's own body
-    /// stays inside `type_body_length`.
+    /// `Stage.maximumReads` and `Stage.minimumReads`. Declared here rather than beside `Stage`, so
+    /// the actor's own body stays inside `type_body_length`.
     enum BoundRead: Sendable, Hashable {
         /// The key answers this value — `1e14` is the shape of a byte-swapped `flt`.
         case reads(Double)
@@ -648,28 +655,34 @@ extension ScriptedControlPlane {
     /// snapshot's own read of the key, which `PlaneBackedProvider` serves from here, for
     /// `firmwareMode(ofFan:)`'s reason.
     ///
-    /// Raw, as the snapshot's provider decodes it: the finiteness check is the seam's, in
-    /// `readEnvelope(ofFan:)`, and the snapshot's path has none of its own — `SMCValue.scalar()`
-    /// applies no finiteness guard, which is why § 2's gate checks for one.
+    /// Raw, as the provider hands it on. Each side checks finiteness on its own path: the seam's
+    /// in `readEnvelope(ofFan:)`, and the snapshot's in `SMCFanEnumeration`, which turns a
+    /// non-finite read into `.notDecodable` and so a `.notMeasured` bound. Two checks, one
+    /// outcome: § 2's gate answers `.boundsImplausible` on both sides.
     func firmwareBound(_ bound: Bound, ofFan index: Int) throws -> Double {
         try boundReadable(bound, ofFan: index)
     }
 
     /// The one rule every read of a bound key answers by — `readEnvelope(ofFan:)` and
     /// `firmwareBound(_:ofFan:)`: the SMC answers this stage, the fan exists, and the stage's
-    /// `maximumReads` overrides the declared maximum.
+    /// `minimumReads` and `maximumReads` override the declared bounds.
     fileprivate func boundReadable(_ bound: Bound, ofFan index: Int) throws -> Double {
         try requireReadable(context: "fan \(index) envelope")
         let fan = try condition(ofFan: index)
-        guard bound == .maximum, let read = stage.maximumReads[index] else {
-            return bound == .minimum ? fan.minimumRPM : fan.maximumRPM
+        let isMinimum = bound == .minimum
+        guard let read = (isMinimum ? stage.minimumReads : stage.maximumReads)[index] else {
+            return isMinimum ? fan.minimumRPM : fan.maximumRPM
         }
         switch read {
         case .reads(let value):
             return value
         case .fails:
+            let key =
+                isMinimum
+                ? SMCFanEnumeration.minimumKey(forFan: index)
+                : SMCFanEnumeration.maximumKey(forFan: index)
             throw FanControlPlaneError.readFailed(
-                detail: "fan \(index) envelope: F\(index)Mx did not answer")
+                detail: "fan \(index) envelope: \(key) did not answer")
         }
     }
 }

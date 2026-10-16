@@ -15,13 +15,15 @@ import Testing
 /// beside implausible bounds and requires the snapshot's reason to equal the thrown one; each
 /// names the misplacement that makes them part.
 ///
-/// **One firmware value per scenario.** `F0Mx` is scripted on the firmware's stage
-/// (`ScriptedControlPlane.Stage.maximumReads`), and the snapshot's provider
+/// **One firmware value per scenario.** `F0Mx` or `F0Mn` is scripted on the firmware's stage
+/// (`ScriptedControlPlane.Stage.maximumReads`, `.minimumReads`), and the snapshot's provider
 /// (`PlaneBackedProvider`) and the grant's `readEnvelope(ofFan:)` both read it, so an agreement
-/// here is two reads agreeing rather than two scripts. The `.unavailable(.boundsImplausible)`
-/// precondition in each is read off the snapshot before the second refusal is set up, so a
-/// stage that stopped applying would fail it rather than leave the scenario asserting about
-/// plausible bounds. `UnreadModeAvailabilityTests` has the unread-mode scenario, and
+/// here is two reads agreeing rather than two scripts. Every scenario first proves its stage
+/// applied, so a stage that stopped applying fails a precondition rather than leaving the
+/// scenario asserting about plausible bounds. Where nothing outranks the bounds yet, the snapshot
+/// must read `.unavailable(.boundsImplausible)` before the second refusal is set up. Where a
+/// register already answers for the fan, the firmware's own bound must read the staged value.
+/// `UnreadModeAvailabilityTests` has the unread-mode scenario, and
 /// `SnapshotAvailabilityTests.aBoundsImplausibleFanIsStillRefusedOnABuiltSeam` the bare one.
 /// The supervisors are not started, for `SnapshotAvailabilityTests`' reason.
 @Suite("The grant's bounds gate answers what the snapshot states", .timeLimit(.minutes(1)))
@@ -89,6 +91,42 @@ struct GrantBoundsAgreementTests {
             """)
     }
 
+    /// A fan with implausible bounds is refused `.boundsImplausible` while § 4's sleep seal holds,
+    /// as the snapshot states. The ladder has no `.systemSleeping` rung yet (#269), so the grant
+    /// must answer the bounds ahead of the sleep seal's guard, which sits below the marker.
+    ///
+    /// The seal is set as `SystemPowerResponder` sets it, through `sealForSleep(generation:)`.
+    /// Fan 1's bounds are plausible, so its grant shows the seal holds.
+    ///
+    /// **Mutation:** in `LeaseAuthority.acquireLease`, move `try await
+    /// refuseIfBoundsImplausible(connection, wanting: wanting.subtracting(exempted))` below the
+    /// marker, between the `sleepSeal` guard and the `machineWideRestoresInFlight` guard. Run:
+    /// red — the grant says `.systemSleeping`.
+    @Test("Implausible bounds are the grant's answer while the sleep seal holds")
+    func theBoundsAnswerAheadOfTheSleepSeal() async throws {
+        let helper = Fixture.composed(
+            fanCount: 2, afterwards: [Fixture.fanZeroMaximum(Fixture.byteSwappedMaximum)])
+        await helper.bindSafetyRegistries()
+        await helper.plane.advance()
+        #expect(try await Self.shownReason(ofFanAt: 0, in: helper) == .boundsImplausible)
+
+        await helper.leases.sealForSleep(generation: 1)
+        #expect(
+            await Fixture.refusalForGrant(over: 1, from: helper.leases) == .systemSleeping,
+            "the sleep seal is not holding, so nothing here is about it")
+
+        let refused = await Fixture.refusalForGrant(over: 0, from: helper.leases)
+        let shown = try await Self.shownReason(ofFanAt: 0, in: helper)
+
+        #expect(refused == .boundsImplausible)
+        #expect(
+            shown == refused,
+            """
+            the snapshot says \(shown) while a grant over the same fan is refused \(refused) \
+            under the sleep seal: the bounds gate is below the sleep seal's guard.
+            """)
+    }
+
     // MARK: - After the foreign-control read
 
     /// A fan something else holds in manual, with implausible bounds, reads
@@ -126,7 +164,7 @@ struct GrantBoundsAgreementTests {
     ///
     /// The bounds are plausible while the lease is taken and released — the firmware refuses
     /// every restore, so the fan lands in `restoreAbandoned` — and implausible from the next
-    /// stage on.
+    /// stage on. The register hides the bounds from the snapshot, so `F0Mx` is read back first.
     ///
     /// **Mutation:** in `LeaseAuthority.acquireLease`, pass `wanting` to
     /// `refuseIfBoundsImplausible(_:wanting:)` without `.subtracting(exempted)`. Run: red — the
@@ -142,6 +180,9 @@ struct GrantBoundsAgreementTests {
             await helper.leases.fansWithAbandonedHandbacks == [0],
             "fan 0's handback was not abandoned, so no register answers for it")
         await helper.plane.advance()
+        #expect(
+            try await helper.plane.firmwareBound(.maximum, ofFan: 0) == Fixture.byteSwappedBound,
+            "fan 0's maximum reads plausible, so the bounds have nothing to outrank")
 
         let shown = try await Self.shownReason(ofFanAt: 0, in: helper)
         let thrown = await Fixture.refusalForGrant(over: 0, from: helper.leases)
@@ -178,5 +219,35 @@ struct GrantBoundsAgreementTests {
         #expect(
             shown == refused,
             "the snapshot says \(shown) while the grant refuses \(refused) for an unread bound")
+    }
+
+    // MARK: - The minimum half
+
+    /// A fan whose `F0Mn` reads byte-swapped, above its declared `F0Mx`, reads `.boundsImplausible`
+    /// on both sides: the grant judges the minimum it read, as the snapshot does.
+    ///
+    /// **Mutation:** in `refuseIfBoundsImplausible(_:wanting:)`, judge `declaredMinimum:
+    /// .measured(0)` in place of `.measured(declared.minimumRPM)`. Run: red — "the grant path
+    /// granted a lease over fan 0".
+    @Test("An implausible minimum is refused on both sides")
+    func anImplausibleMinimumIsRefused() async throws {
+        let helper = Fixture.composed(
+            afterwards: [Fixture.fanZeroMinimum(.reads(Fixture.byteSwappedBound))])
+        await helper.bindSafetyRegistries()
+        await helper.plane.advance()
+        #expect(
+            try await helper.plane.firmwareBound(.minimum, ofFan: 0) == Fixture.byteSwappedBound,
+            "fan 0's minimum does not read the staged value")
+        #expect(
+            try await helper.plane.firmwareBound(.maximum, ofFan: 0) < Fixture.byteSwappedBound,
+            "fan 0's maximum is staged too, so this is not about the minimum alone")
+
+        let shown = try await Self.shownReason(ofFanAt: 0, in: helper)
+        let refused = await Fixture.refusalForGrant(over: 0, from: helper.leases)
+
+        #expect(refused == .boundsImplausible)
+        #expect(
+            shown == refused,
+            "the snapshot says \(shown) while the grant refuses \(refused) for an inverted range")
     }
 }
