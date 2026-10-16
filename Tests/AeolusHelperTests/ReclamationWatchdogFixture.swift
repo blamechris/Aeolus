@@ -562,6 +562,11 @@ actor InterferingFanStateSensing: FanControlPlane {
     enum Moment: Sendable {
         /// Inside `readControlState(ofFan:)` — the suspension `examine(fanAt:)` resumes from.
         case controlStateRead
+        /// Inside `readControlState(ofFan:)`, once the plane has answered and before the answer is
+        /// returned: the reading § 5 resumes with predates the effect, as a production read's
+        /// sample predates whatever lands while the reply is in flight (#381's stamp, which must
+        /// be taken before the read and not after it).
+        case controlStateSampled
         /// Inside `readEnvelope(ofFan:)` — the suspension
         /// `reassert(fanAt:heldUnder:attempt:reengaging:)` resumes from, and the one whose
         /// missing re-check wrote `F<n>Md` to an unleased fan.
@@ -623,7 +628,9 @@ actor InterferingFanStateSensing: FanControlPlane {
 
     func readControlState(ofFan index: Int) async throws -> FanControlState {
         if moment == .controlStateRead { await fireOnce() }
-        return try await plane.readControlState(ofFan: index)
+        let state = try await plane.readControlState(ofFan: index)
+        if moment == .controlStateSampled { await fireOnce() }
+        return state
     }
 
     func readEnvelope(ofFan index: Int) async throws -> FanEnvelope {

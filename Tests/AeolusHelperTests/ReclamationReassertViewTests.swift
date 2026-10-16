@@ -15,36 +15,43 @@ import Testing
 /// What each pins, against the mutation it kills:
 ///
 /// - **M1**, the envelope read's re-fetch asking identity only (`isHeld(_:under:)`): A, through its
-///   stand-down line, since the first-step re-fetch masks it otherwise; B; H.
-/// - **M2**, the first-step re-fetch asking identity only and reading the record's target: G.
+///   stand-down line, since the re-fetch before commanding masks it otherwise; B; H; L; N.
+/// - **M2**, the first-step re-fetch asking identity only and reading the record's target: G, K.
 /// - **M3**, commanding the target `diverged` read: C.
 /// - **M4**, recording § 5's write over any report: D, and the value suite.
-/// - **M5**, refunding the attempt on a stand-down: E.
-/// - **M7**, stamping the examination at the judgement rather than before the read: H.
+/// - **M5**, refunding the attempt at the envelope read's stand-down: E.
+/// - **M7**, stamping the examination at the judgement rather than before the read: H, N.
 /// - **M8**, dropping the generation comparison from `Registry.reassertTarget(ofFan:under:)`: A,
-///   B, G and H, and the value suite.
+///   B, E, G, H, I, K, L and N, and the value suite. L is the overwrite: in A the report has
+///   landed, so § 5 re-asserts the client's own 2,000, and its overwrite assertions stay green.
 /// - **M9**, every refused re-engage the `.fault`, as `reassert`'s catch was before
 ///   `reengageRefused(fanAt:heldUnder:error:)`: I.
 /// - **M10**, `reengageRefused` standing down on any `.notAutomatic`, without asking
 ///   `reassertTarget(ofFan:under:)`: J.
+/// - **M11**, the target taken at the envelope re-fetch and commanded after the mode write: F.
+/// - **M12**, refunding the attempt at the stand-down before commanding: K.
+/// - **M13**, stamping the examination just after the control-state read: N.
+/// - **M14**, the stand-down line at `.fault`: A and I.
 ///
-/// A, B, C, D, G and H were red at `main` before #381, and I at `b07477b`. E and J were green
-/// there by design: they pin the accounting and the fault the fix must keep. The registry half, as
-/// values, is `ReclamationReassertTargetValueTests`.
+/// A, B, C, D, G and H were red at `main` before #381, and I with `reassert`'s catch as it was at
+/// `b07477b` (M9). E and J were green there by design: they pin the accounting and the fault the
+/// fix must keep. F, I, J, K, L and N, added by #381's review, are this suite's extension in
+/// `ReclamationReassertSuspensionTests.swift`. The registry half, as values, is
+/// `ReclamationReassertTargetValueTests`.
 @Suite(
     "§ 5's re-assert does not overwrite a re-apply under the same lease", .timeLimit(.minutes(1)))
 struct ReclamationReassertViewTests {
 
     /// What `reclamationReassertLeftToItsEngagement(fan:at:)` says, by where § 5 found the
     /// registration, and in any case.
-    private static let leftAtTheEnvelopeRead =
+    static let leftAtTheEnvelopeRead =
         "since this examination began; § 5 found it at its envelope read"
-    private static let leftBeforeCommanding = "§ 5 found it at its check before commanding"
-    private static let leftAtItsFirstStep = "§ 5 found it at its first step"
-    private static let leftToItsEngagement = "left this re-assert to that engagement"
+    static let leftBeforeCommanding = "§ 5 found it at its check before commanding"
+    static let leftAtItsFirstStep = "§ 5 found it at its first step"
+    static let leftToItsEngagement = "left this re-assert to that engagement"
 
     /// What a re-engage the driver refused says.
-    private static let failedReengage = "re-engage manual control of"
+    static let failedReengage = "re-engage manual control of"
 
     /// Fan 0's permit, minted from its declared condition as the fixture mints one.
     static func permit<Writes>(_ machine: ReclamationMachine<Writes>) throws -> CommandableFan {
@@ -52,17 +59,18 @@ struct ReclamationReassertViewTests {
     }
 
     /// A re-apply under `lease`: optionally engage, optionally register, then command `rpm`
-    /// through level 6's writer straight to the plane, and report what was put on the wire.
+    /// through level 6's writer straight to the plane, and report what was put on the wire unless
+    /// `reporting` is `false`, which leaves the report still to come.
     static func reapply<Writes>(
         _ machine: ReclamationMachine<Writes>, under lease: UUID, permit: CommandableFan,
-        rpm: Double, engaging: Bool = false, registering: Bool = true
+        rpm: Double, engaging: Bool = false, registering: Bool = true, reporting: Bool = true
     ) async {
         do {
             if engaging { _ = try await machine.plane.engageManualControl(of: permit) }
             if registering { try await machine.watchdog.manualControlEngaged(permit, under: lease) }
             let written = try await GovernedFanWriter(plane: machine.plane)
                 .command(towards: rpm, of: permit, since: .zero)
-            await machine.watchdog.commandedTarget(written, under: lease)
+            if reporting { await machine.watchdog.commandedTarget(written, under: lease) }
         } catch {
             Issue.record("the same-lease re-apply failed: \(error)")
         }
@@ -85,7 +93,9 @@ struct ReclamationReassertViewTests {
     /// envelope. § 5 must not command 2,400 over it, and it leaves the mark to the episode: the
     /// next readable cycle reads 2,000 held and clears it.
     ///
-    /// **Mutations:** M1, red on the stand-down line only; M8, red on every write assertion.
+    /// **Mutations:** M1, red on the stand-down line and its level. M8, red on the write count, the
+    /// stand-down line and its level, and the second cycle's write count; its overwrite is L's.
+    /// M14, red on the stand-down line's level.
     @Test("A re-apply during the envelope read is not overwritten (target diverged)")
     func aReapplyDuringTheEnvelopeReadIsNotOverwritten() async throws {
         let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
@@ -112,6 +122,9 @@ struct ReclamationReassertViewTests {
         #expect(
             machine.safetyLog.lines(containing: Self.leftAtTheEnvelopeRead).count == 1,
             "the envelope read's re-fetch did not stand the re-assert down")
+        #expect(
+            machine.safetyLog.levels(containing: Self.leftAtTheEnvelopeRead) == [.notice],
+            "a stand-down, which is nothing failing, was logged as a failure")
         #expect(await machine.ledger.isReclaimed(fanAt: 0), "the stand-down decided the mark")
 
         await machine.watchdog.cycle()
@@ -126,7 +139,8 @@ struct ReclamationReassertViewTests {
     /// it under the same lease and commands 2,000 while § 5 reads the envelope. § 5 must not try
     /// to engage it a second time, report a failed write, or command over it.
     ///
-    /// **Mutations:** M1 and M8, red on the failed re-engage line and the engagement count.
+    /// **Mutations:** M1, red on the engagement count and the stand-down line. M8, on those and on
+    /// the failed re-engage line, because `reengageRefused` asks the re-fetch M8 weakens.
     @Test("A re-engagement during the envelope read is not re-engaged again (mode reclaimed)")
     func aReengagementDuringTheEnvelopeReadIsLeftToIt() async throws {
         let plane = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)])
@@ -217,7 +231,7 @@ struct ReclamationReassertViewTests {
     /// re-assert is the second, and the terminal action comes on the cycle it would have.
     ///
     /// **Mutation:** M5, `registry.refundReassertAttempt(ofFan:)` in the envelope read's
-    /// stand-down. Run: red on the terminal action's cycle.
+    /// stand-down. Run: red on the first attempt's re-assert line and the terminal action's cycle.
     @Test("A re-assert left to a re-apply keeps its attempt spent")
     func aReassertLeftToAReapplyKeepsItsAttemptSpent() async throws {
         let plane = ScriptedControlPlane(
@@ -237,8 +251,9 @@ struct ReclamationReassertViewTests {
         }
         #expect(await sensing.didFire, "the scenario never arranged the interleaving")
         #expect(
-            machine.safetyLog.lines(containing: "attempt 2 of").count == 1,
-            "the attempt the re-apply stood in for was given back")
+            machine.safetyLog.lines(containing: "RPM, attempt 1 of").isEmpty,
+            "the attempt the re-apply stood in for was given back and spent again")
+        #expect(machine.safetyLog.lines(containing: "RPM, attempt 2 of").count == 1)
         #expect(await machine.restorer.causes.contains(.systemReclaimed) == false)
 
         await machine.watchdog.cycle()
@@ -280,7 +295,8 @@ struct ReclamationReassertViewTests {
     /// The reading predates the re-engagement, so § 5 judges the mode reclaimed; the re-assert it
     /// decides on must still stand down, because the stamp was taken before the read.
     ///
-    /// **Mutations:** M7, M1 and M8. Run: red on the failed re-engage line and the stand-down line.
+    /// **Mutations:** M7 and M8. Run: red on the failed re-engage line and the stand-down line. M1,
+    /// red on the stand-down line: the refused first step then stands § 5 down instead (I).
     @Test("A re-engagement during the examination's lease check stands the re-assert down")
     func aReengagementDuringTheLeaseCheckStandsTheReassertDown() async throws {
         let machine = ReclamationMachine(
@@ -302,68 +318,5 @@ struct ReclamationReassertViewTests {
             "a failed re-engage was reported for a fan its own lease had re-engaged")
         #expect(await machine.commandedRPMs == [2_000])
         #expect(machine.safetyLog.lines(containing: Self.leftAtTheEnvelopeRead).count == 1)
-    }
-
-    /// **I, before the first step.** The client re-engages the fan under the same lease, registers
-    /// it and commands 2,000 after § 5's envelope re-fetch and before its first engagement step's
-    /// turn, where the double's engage-step effect runs (`.reconnect` is never reached here). That
-    /// step finds the fan already in manual and is refused `.notAutomatic` with nothing written: it
-    /// is the client's engagement, not a failure, so § 5 stands down as at the re-fetches.
-    ///
-    /// **Mutation:** M9. Run: red on the failed re-engage line and the stand-down line's level. Red
-    /// at `b07477b`, before `reengageRefused(fanAt:heldUnder:error:)` existed.
-    @Test("A re-engagement before the re-assert's first step stands it down, with no fault")
-    func aReengagementBeforeTheFirstStepStandsTheReassertDown() async throws {
-        let plane = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)])
-        let sensing = InterferingFanStateSensing(plane, during: .reconnect)
-        let machine = ReclamationMachine(
-            plane: plane, fans: [0: .automatic(at: 1_800)], interfering: sensing)
-        try await machine.hold(fan: 0, commanding: 2_400)
-        let lease = try await Self.lease(machine)
-        let permit = try Self.permit(machine)
-        await sensing.interfere(beforeEngageStep: 1) { [machine] in
-            await Self.reapply(machine, under: lease, permit: permit, rpm: 2_000, engaging: true)
-        }
-
-        await machine.watchdog.cycle()
-
-        #expect(await sensing.didFire, "the scenario never arranged the interleaving")
-        #expect(
-            machine.safetyLog.lines(containing: Self.failedReengage).isEmpty,
-            "a failed re-engage was reported for a fan its own lease had re-engaged")
-        #expect(machine.safetyLog.levels(containing: Self.leftAtItsFirstStep) == [.notice])
-        #expect(await machine.commandedRPMs == [2_000])
-        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_000)
-        #expect(await machine.didRestore(fan: 0) == false, "§ 5 handed back its own lease's fan")
-        #expect(await machine.watchdog.fansUnderManualControl == [0])
-    }
-
-    /// **J, the refusal that stays a fault.** As I, but the fan comes off automatic control with
-    /// no registration since the stamp: an engagement that has not registered yet. The step is
-    /// refused `.notAutomatic` as in I, and nothing has given the fan to an engagement § 5 knows
-    /// of, so it is the `.fault` it always was.
-    ///
-    /// **Mutation:** M10. Run: red on the failed re-engage line and the stand-down line.
-    @Test("A first step refused with no registration since the stamp is still a fault")
-    func aFirstStepRefusedWithNoRegistrationIsStillAFault() async throws {
-        let plane = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)])
-        let sensing = InterferingFanStateSensing(plane, during: .reconnect)
-        let machine = ReclamationMachine(
-            plane: plane, fans: [0: .automatic(at: 1_800)], interfering: sensing)
-        try await machine.hold(fan: 0, commanding: 2_400)
-        let permit = try Self.permit(machine)
-        await sensing.interfere(beforeEngageStep: 1) { [machine] in
-            do {
-                _ = try await machine.plane.engageManualControl(of: permit)
-            } catch {
-                Issue.record("the unregistered engagement failed: \(error)")
-            }
-        }
-
-        await machine.watchdog.cycle()
-
-        #expect(await sensing.didFire, "the scenario never arranged the interleaving")
-        #expect(machine.safetyLog.levels(containing: Self.failedReengage) == [.fault])
-        #expect(machine.safetyLog.lines(containing: Self.leftToItsEngagement).isEmpty)
     }
 }
