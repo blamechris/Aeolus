@@ -29,8 +29,8 @@ import Testing
 ///   `aRecordRegisteredUnderANewLeaseDuringTheFirstWriteIsLeftToIt`.
 /// - **The command write**, in `reassert`:
 ///   `aRecordRegisteredUnderANewLeaseDuringTheCommandWriteIsLeftToIt`.
-/// - **A refused command write**, in `commandWriteFailed`:
-///   `ReclamationWatchdogStalenessTests.aRegrantedRecordDuringAFailedCommandWriteIsLeftAlone`.
+/// - **A refused command write**, in `commandWriteFailed`: `ReclamationRefusedCommandWriteTests`'s
+///   `aRegrantedRecordDuringAFailedCommandWriteIsLeftAlone`.
 /// - **The reconnect**, in `cycleCouldNotSee`:
 ///   `aRecordRegisteredUnderANewLeaseDuringTheReconnectIsLeftToIt`.
 /// - **The envelope-failure branch**, which has no re-fetch of its own: `finaliseRelease`'s entry
@@ -68,10 +68,11 @@ extension ReclamationLeaseIdentityTests {
     }
 
     /// The newer lease's whole arrival: it holds fan 0, registers it, and commands 2,000 RPM
-    /// of its own, which is what tells its record from the old lease's 2,400.
+    /// of its own, which is what tells its record from the old lease's 2,400. `commanding: false`
+    /// leaves it registered with nothing commanded yet, inside its registration grace.
     static func arrive<Writes>(
         _ how: NewerLease, machine: ReclamationMachine<Writes>, permit: CommandableFan,
-        granted: GrantedLeases
+        granted: GrantedLeases, commanding: Bool = true
     ) async {
         do {
             let next: UUID
@@ -88,8 +89,10 @@ extension ReclamationLeaseIdentityTests {
             }
             await granted.record(next)
             try await machine.watchdog.manualControlEngaged(permit, under: next)
-            await machine.watchdog.commandedTarget(
-                CommandedTarget(fanIndex: 0, rpm: 2_000), under: next)
+            if commanding {
+                await machine.watchdog.commandedTarget(
+                    CommandedTarget(fanIndex: 0, rpm: 2_000), under: next)
+            }
         } catch {
             Issue.record("the newer lease's arrival failed: \(error)")
         }
@@ -122,24 +125,36 @@ extension ReclamationLeaseIdentityTests {
 
     /// How the record changes while the lease answer is held open.
     enum DuringTheLeaseCheck: Sendable, CaseIterable {
-        /// A late release notice drops it.
+        /// The lease had ended, so the answer is `false`; a late release notice drops the record.
         case released
-        /// A newer lease registers the fan.
+        /// The lease had ended, so the answer is `false`; a newer lease registers the fan.
         case regranted
+        /// The lease is live when asked, so the answer is `true`; it ends while the answer is
+        /// held, and a newer lease registers the fan with nothing commanded yet.
+        case regrantedAfterATrueAnswer
     }
 
-    /// **#344.** The fan's lease ended and § 5 was never told, so the lease core's answer is a
-    /// true `false`; it is held open, and the record changes before § 5 resumes. Acting on that
-    /// answer would restore a fan a second time (released) or restore and forget on behalf of a
-    /// lease whose record is no longer there (regranted); § 5 stops instead, at the lease check.
+    /// **#344.** The lease core's answer is held open and the record changes before § 5 resumes;
+    /// § 5 stops at the lease check.
     ///
-    /// Behaviourally the identity half is masked: a presence-only re-fetch lets the examination
-    /// on, and `restoreAndForget`'s own identity check then declines to touch the newer record. So
-    /// the log is what discriminates, as it does for the read.
+    /// Two of the three cases hold a `false` answer: the fan's lease ended and § 5 was never told.
+    /// Acting on it would restore the fan a second time (released) or restore and forget on
+    /// behalf of a lease whose record is no longer there (regranted). For those the identity half
+    /// is behaviourally masked: a presence-only re-fetch lets the examination on, and
+    /// `restoreAndForget`'s own identity check then declines to touch the newer record, so the log
+    /// is what discriminates.
+    ///
+    /// The third holds a `true` answer, and nothing masks it. The old lease is live when asked,
+    /// ends while the answer is held, and the newer lease registers the fan with nothing commanded.
+    /// A presence-only re-fetch lets `registry.judge` run on the *newer* lease's record, which
+    /// spends its registration grace on the old lease's reading, so the newer lease reaches the
+    /// terminal action a cycle early: revoked as `.systemReclaimed`, with a false "no speed to
+    /// re-assert" notice.
     ///
     /// **Mutation (identity):** make the re-fetch after `leases.hasLiveLease` in
     /// `examine(fanAt:)` check presence only — `guard registry.record(ofFan: index) != nil, let
-    /// fan = registry.record(ofFan: index)`. Run: red on the regranted case's log assertions.
+    /// fan = registry.record(ofFan: index)`. Run: red on the regranted case's log assertions, and
+    /// on the true-answer case's behaviour: the newer lease's grace is spent.
     /// **Mutation (absence):** replace the whole guard with `let fan = registry.record(ofFan:
     /// index) ?? HeldFan.registering(lease, over: nil)`. Run: red on the released case, which
     /// restores the fan a second time.
@@ -149,11 +164,14 @@ extension ReclamationLeaseIdentityTests {
     func aRecordChangedDuringTheLeaseCheckStopsTheExamination(
         arrival: DuringTheLeaseCheck
     ) async throws {
-        let machine = ReclamationMachine(fans: [0: .held(at: 1_800)], parkingLeaseHops: true)
+        let answerIsTrue = arrival == .regrantedAfterATrueAnswer
+        let firmware: ScriptedControlPlane.FanCondition =
+            answerIsTrue ? .automatic(at: 2_400) : .held(at: 1_800)
+        let machine = ReclamationMachine(fans: [0: firmware], parkingLeaseHops: true)
         let hops = try #require(machine.leaseHops)
         try await machine.hold(fan: 0, commanding: 2_400)
         let permit = try Self.permit(machine)
-        await machine.endLease()
+        if !answerIsTrue { await machine.endLease() }
         let answered = await hops.answers.count
         await hops.parkNextAnswer()
         let sweep = observing { await machine.watchdog.cycle() }
@@ -165,27 +183,63 @@ extension ReclamationLeaseIdentityTests {
             await machine.watchdog.manualControlReleased(fanAt: 0)
         case .regranted:
             await Self.arrive(.granted, machine: machine, permit: permit, granted: granted)
+        case .regrantedAfterATrueAnswer:
+            await Self.arrive(
+                .granted, machine: machine, permit: permit, granted: granted, commanding: false)
         }
         await hops.release()
         try await finished("the examination", sweep)
 
         let answers = await hops.answers
         #expect(
-            answers.indices.contains(answered) && answers[answered] == false,
-            "the parked answer was not the false one")
+            answers.indices.contains(answered) && answers[answered] == answerIsTrue,
+            "the parked answer was not the one this case holds")
         #expect(machine.safetyLog.lines(containing: "during the lease check").count == 1)
         #expect(
             machine.safetyLog.lines(containing: leaseLapsedNotice).isEmpty,
             "the examination went on to hand back a fan on the strength of the parked answer")
         #expect(await machine.didRestore(fan: 0) == false, "the fan was restored a second time")
         #expect(await machine.restorer.causes.contains(.systemReclaimed) == false)
-        if arrival == .regranted {
+        switch arrival {
+        case .released:
+            #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
+        case .regranted:
             let next = try #require(await granted.ids.first)
             await Self.expectNewerLeaseUntouched(machine)
             #expect(await machine.leases.activeLease()?.id == next, "the newer lease was revoked")
-        } else {
-            #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
+        case .regrantedAfterATrueAnswer:
+            try await Self.expectGraceUntouched(machine, granted: granted)
         }
+    }
+
+    /// The newer lease's registration grace is whole: the stale examination spent none of it, so
+    /// the newer lease's own cycles one and two are graced and only its third is the terminal
+    /// action. The last cycle proves the scenario live rather than vacuous.
+    static func expectGraceUntouched<Writes>(
+        _ machine: ReclamationMachine<Writes>, granted: GrantedLeases,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws {
+        let next = try #require(await granted.ids.first, sourceLocation: sourceLocation)
+        for _ in 1..<ReclamationLimits.blindCyclesBeforeDivergence {
+            await machine.watchdog.cycle()
+        }
+        #expect(
+            machine.safetyLog.lines(containing: "no speed to re-assert").isEmpty,
+            "the stale examination spent the newer lease's registration grace",
+            sourceLocation: sourceLocation)
+        #expect(
+            await machine.leases.activeLease()?.id == next, "the newer lease was revoked early",
+            sourceLocation: sourceLocation)
+        #expect(
+            await machine.restorer.causes.contains(.systemReclaimed) == false,
+            "a lease was revoked blaming the system", sourceLocation: sourceLocation)
+
+        await machine.watchdog.cycle()
+
+        #expect(
+            machine.safetyLog.lines(containing: "no speed to re-assert").count == 1,
+            "the newer lease's own third cycle was not the terminal action",
+            sourceLocation: sourceLocation)
     }
 
     // MARK: - The re-assert's suspensions
