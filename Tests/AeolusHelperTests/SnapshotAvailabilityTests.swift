@@ -59,6 +59,12 @@ struct SnapshotAvailabilityTests {
     ///
     /// **Mutation:** in `ReadOnlyFanReport.availability(writeCapabilityIs:bounds:)`, replace the
     /// body with `.unavailable(.writePathNotBuilt)` — the literal #194 removed. Run: red.
+    ///
+    /// **And it is the readable half of #360's rung.** The snapshot reads fan 0's `F0Md` from the
+    /// firmware (`PlaneBackedProvider`), automatic, so step 5 leaves it alone. **Mutation:** in
+    /// `SupervisedFanAuthority.snapshot()`, pass `observedMode: nil`. Run: red. **Mutation:** in
+    /// `reportingForeignControl`, fold the `.automatic` arm into the `nil` arm, as
+    /// `case .automatic, nil:`. Run: red.
     @Test("A fan on a seam that can write, with nothing else against it, reads available")
     func aFanThatClearsEveryGateOnABuiltSeamReadsAvailable() async throws {
         let helper = Fixture.composed()
@@ -276,11 +282,11 @@ struct SnapshotAvailabilityTests {
     ///
     /// The invariant that lets `ReadOnlyFanReport`'s two re-statements compose in either order,
     /// asserted rather than described.
-    /// `reportingForeignControl(of:heldByAeolus:awaitingConfirmation:reconciliation:)` returns an
-    /// accountable fan untouched, so while this holds the foreign-control rule and the handback
-    /// rule can never speak about the same fan — and the day it stops holding, the composition
-    /// order in `restatingAvailability(of:given:reconciliation:)` starts deciding which reason a user sees,
-    /// silently.
+    /// `reportingForeignControl(of:observedMode:heldByAeolus:awaitingConfirmation:reconciliation:)`
+    /// returns an accountable fan untouched, so while this holds the foreign-control rule and the
+    /// handback rule can never speak about the same fan — and the day it stops holding, the
+    /// composition order in `restatingAvailability(of:observedMode:given:reconciliation:)` starts
+    /// deciding which reason a user sees, silently.
     ///
     /// **Mutation:** drop `.union(restoreAbandoned)` from
     /// `LeaseAuthority.fansAeolusIsAccountableFor`. Run: red.

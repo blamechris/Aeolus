@@ -502,6 +502,8 @@ struct WriteVerbAllowlistTests {
         "ReadOnlyFanAuthority.swift: connectionDidInvalidate(_: ConnectionID)",
         "ReadOnlyFanAuthority.swift: discoverSensorKeys()",
         "ReadOnlyFanAuthority.swift: enumeratedFanIndices()",
+        // #360's: the snapshot's body, returning the mode answers beside it. Reads only.
+        "ReadOnlyFanAuthority.swift: observe()",
         "ReadOnlyFanAuthority.swift: readSensors()",
         "ReadOnlyFanAuthority.swift: releaseLease(id: UUID, from: ConnectionID)",
         "ReadOnlyFanAuthority.swift: renewLease(id: UUID, from: ConnectionID)",

@@ -193,6 +193,17 @@ actor ReadOnlyFanAuthority: FanAuthority {
     // MARK: - Reporting
 
     func snapshot() async throws -> SystemSnapshot {
+        try await observe().snapshot
+    }
+
+    /// The snapshot, and the `F<n>Md` answers it was built from: one read, one dictionary, two
+    /// uses ([#360](https://github.com/blamechris/Aeolus/issues/360)).
+    ///
+    /// `FanState.mode` folds a mode that did not read into `.automatic` (#178), so the snapshot
+    /// alone cannot say which fans answered. `SupervisedFanAuthority.snapshot()` needs to, for
+    /// step 5 of the availability ladder, and it is handed the same dictionary the fans were
+    /// built from rather than a second read of the key, which could answer differently.
+    func observe() async throws -> MachineObservation {
         let fans = try await SMCFanEnumeration.enumerate(provider: provider)
         let modes = await fanModes.modes(ofFans: fans.fanIndices)
         let sensors = await readSensors()
@@ -206,7 +217,7 @@ actor ReadOnlyFanAuthority: FanAuthority {
         // Once per snapshot for the ledger's reason, and free: the role is synchronous.
         let capability = writeCapability.writeCapability
 
-        return SystemSnapshot(
+        let snapshot = SystemSnapshot(
             fans: fans.fans.map {
                 ReadOnlyFanReport.fanState(
                     for: $0,
@@ -220,6 +231,7 @@ actor ReadOnlyFanAuthority: FanAuthority {
             isThermalEmergencyActive: isThermalEmergencyActive,
             capturedAt: now()
         )
+        return MachineObservation(snapshot: snapshot, modes: modes)
     }
 
     /// The fans this authority enumerated, for the fan-index check that decides which fans

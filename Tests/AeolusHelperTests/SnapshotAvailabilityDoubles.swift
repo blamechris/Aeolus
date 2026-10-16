@@ -67,14 +67,21 @@ enum AvailabilityFixture {
     /// the scripted firmware has never heard of throws `.fanNotAddressable`, which the grant
     /// gate would have to report as blindness. `LeaseFixture.automaticFans()` records the same
     /// hazard.
+    ///
+    /// The snapshot reads each fan's `F<n>Md` from that same firmware, through
+    /// `PlaneBackedProvider` (#360), so the two sides judge one machine. `afterwards` follows the
+    /// nominal stage, for a scenario whose fan stops answering once something is set up.
     static func composed(
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
         fanCount: Int = 1,
-        extraKeys: [String: Result<SensorReading, SensorReadFailure>] = [:]
+        extraKeys: [String: Result<SensorReading, SensorReadFailure>] = [:],
+        afterwards: [ScriptedControlPlane.Stage] = []
     ) -> HelperComposition<ScriptedControlPlane> {
-        HelperComposition(
-            plane: Self.firmware(fanCount: fanCount, writes: writes),
-            snapshotProvider: fanProvider(fanCount: fanCount, extraKeys: extraKeys),
+        let firmware = Self.firmware(fanCount: fanCount, writes: writes, afterwards: afterwards)
+        return HelperComposition(
+            plane: firmware,
+            snapshotProvider: PlaneBackedProvider(
+                over: firmware, fanCount: fanCount, extraKeys: extraKeys),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: Self.helperLog,
@@ -83,11 +90,15 @@ enum AvailabilityFixture {
             teardown: TeardownSeams(sources: RecordingSignalSources()))
     }
 
-    /// The same wiring over firmware whose restore can be parked on demand.
-    static func wedging() -> HelperComposition<CycleWedgingRestorePlane> {
+    /// The same wiring over firmware whose restore can be parked on demand. `firmware` is a
+    /// parameter so a scenario can keep it and advance its stages beneath the parking plane.
+    static func wedging(
+        firmware: ScriptedControlPlane = AvailabilityFixture.firmware(
+            fanCount: 1, writes: .honoured)
+    ) -> HelperComposition<CycleWedgingRestorePlane> {
         HelperComposition(
-            plane: CycleWedgingRestorePlane(Self.firmware(fanCount: 1, writes: .honoured)),
-            snapshotProvider: fanProvider(fanCount: 1),
+            plane: CycleWedgingRestorePlane(firmware),
+            snapshotProvider: PlaneBackedProvider(over: firmware, fanCount: 1),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: Self.helperLog,
@@ -97,14 +108,15 @@ enum AvailabilityFixture {
     }
 
     static func firmware(
-        fanCount: Int, writes: ScriptedControlPlane.WriteBehaviour
+        fanCount: Int, writes: ScriptedControlPlane.WriteBehaviour,
+        afterwards: [ScriptedControlPlane.Stage] = []
     ) -> ScriptedControlPlane {
         ScriptedControlPlane(
             fans: Dictionary(
                 uniqueKeysWithValues: (0..<fanCount).map { ($0, .automatic(at: 2_400)) }),
             stages: [
                 .nominal(temperatures: LeaseFixture.nominalDieTemperatures, writes: writes)
-            ])
+            ] + afterwards)
     }
 
     /// Takes a lease over `fan` and releases it, which is the ordinary teardown path.

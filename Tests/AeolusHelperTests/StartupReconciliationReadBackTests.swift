@@ -343,16 +343,21 @@ struct StartupReconciliationReadBackTests {
 
     /// #204's item 2: the snapshot names the refusal the grant path would throw.
     ///
-    /// Fan 0 reads automatic and is clean. Fan 1's mode never reads, so it stays
-    /// `unreconciled`. Fan 2 is left in manual by a keystone the firmware accepted, and the
+    /// Fan 0 reads automatic and is clean. Fan 1's mode does not read *at reconciliation* —
+    /// `ReadBackScriptedPlane` fails it there — so it stays `unreconciled`; the snapshot reads it
+    /// automatic since, through `PlaneBackedProvider`, which reads the firmware past that
+    /// wrapper. **The split is deliberate**: it is the only check that a durable refusal outlives a
+    /// mode that reads automatic again, so fan 1 must not move onto an `unreadableModes` stage,
+    /// where #360's rung would answer `.supervisorBlind` in the durable refusal's place. Fan 2 is
+    /// left in manual by a keystone the firmware accepted, and the
     /// snapshot's own `F2Md` read says manual too — the sequence a real machine produces —
     /// so the durable refusal has to outrank foreign control, not merely replace
     /// `.available`. On a seam that can write, before #204 the snapshot offered fan 1 as
     /// `.available` and blamed another program for fan 2.
     ///
-    /// **Mutation A:** in `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:
-    /// reconciliation:)`, delete the `if … let durable = …` block. Run: red — fan 1 reads
-    /// `.available`, fan 2 `.foreignManualControl`.
+    /// **Mutation A:** in `ReadOnlyFanReport.reportingForeignControl(of:observedMode:heldByAeolus:
+    /// awaitingConfirmation:reconciliation:)`, delete the `if … let durable = …` block. Run: red —
+    /// fan 1 reads `.available`, fan 2 `.foreignManualControl`.
     /// **Mutation B:** insert `if fan.mode != .automatic { return restating(fan, as:
     /// .unavailable(.foreignManualControl)) }` above that block. Run: red — fan 2.
     @Test("The snapshot reports reconciliation's refusal with the reason a grant throws")
@@ -365,8 +370,7 @@ struct StartupReconciliationReadBackTests {
         let helper = HelperComposition(
             plane: ReadBackScriptedPlane(
                 wrapping: scripted, unreadableModes: [1], keystoneMisses: [2]),
-            snapshotProvider: fanProvider(
-                fanCount: 3, extraKeys: ["F2Md": .reading("F2Md", 1)]),
+            snapshotProvider: PlaneBackedProvider(over: scripted, fanCount: 3),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: HelperRestorerTests.helperLog,
@@ -409,11 +413,11 @@ struct StartupReconciliationReadBackTests {
     /// which `HelperHardwareTests.expectHonestAvailability` holds this machine to. Fan 2's
     /// mode never reads, so it is unreconciled.
     ///
-    /// **Mutation A:** delete `fan.manualControlAvailability != .unavailable(.writePathNotBuilt),`
-    /// from `reportingForeignControl`. Run: red — fan 1 reads `.restoreToAutomaticFailed` and
+    /// **Mutation A:** delete `canWrite, ` from the durable refusal's `if` in
+    /// `reportingForeignControl`. Run: red — fan 1 reads `.restoreToAutomaticFailed` and
     /// fan 2 `.supervisorBlind`.
     /// **Mutation B:** append `|| baseline.refusedHandbacks.contains(fan.index)` to that
-    /// condition — the refused-handback half alone. Run: red — fan 1.
+    /// `canWrite` — the refused-handback half alone. Run: red — fan 1.
     @Test("On a seam that cannot write, the snapshot names no reconciliation refusal")
     func aSeamThatCannotWriteShowsNoDurableRefusal() async throws {
         let scripted = ScriptedControlPlane(
