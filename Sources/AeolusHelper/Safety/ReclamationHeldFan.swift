@@ -67,8 +67,9 @@ extension ReclamationWatchdog {
         /// the registration grace, see `judge(_:)`.
         ///
         /// **Spent, never reset.** A fan cannot be graced indefinitely by alternating
-        /// between divergence and convergence — `examine(fanAt:)`'s converged branch resets
-        /// the two counters below it and deliberately not this one — and it cannot be graced
+        /// between divergence and convergence — `judge(_:)`'s converged branch resets
+        /// `actualDwellCycles` and `reassertAttempts`, declared above, and deliberately not this
+        /// one — and it cannot be graced
         /// indefinitely by being registered again either: the budget belongs to one
         /// registration, and the only thing that refills it is a fresh `HeldFan`, which
         /// `registering(_:over:)` builds only for a fan not already held under that lease.

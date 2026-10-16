@@ -142,10 +142,10 @@ struct ReclamationLeaseIdentityTests {
     /// At most one live lease covers a fan, so the lease core is the only arbiter between the
     /// two.
     ///
-    /// **Mutation:** in `ReclamationWatchdog.manualControlEngaged(_:under:)`, drop `live` from the
-    /// refusal — `guard registrations[index, default: 0] == generation, finalising[index] !=
-    /// lease else {` — so a lease that is not live records. Run: red on the refusal,
-    /// `lastCommanded` and the cycle's restore.
+    /// **Mutation:** in `ReclamationWatchdog.Registry.register(_:fanAt:live:since:)`, drop `live`
+    /// from the refusal — `guard registrations[index, default: 0] == generation, finalising[index]
+    /// != lease` — so a lease that is not live records. Run: red on the refusal, `lastCommanded`
+    /// and the cycle's restore.
     @Test("A late registration under an ended lease is refused and evicts nothing")
     func aLateRegistrationUnderAnEndedLeaseIsRefusedAndEvictsNothing() async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 2_000)])
@@ -173,7 +173,7 @@ struct ReclamationLeaseIdentityTests {
     /// A target reported under an ended lease does not reach the live lease's record.
     ///
     /// **Mutation:** in `ReclamationWatchdog.commandedTarget(_:under:)`, guard on presence —
-    /// `guard held[commanded.fanIndex] != nil`. Run: red.
+    /// `guard registry.record(ofFan: commanded.fanIndex) != nil`. Run: red.
     @Test("A stale target does not reach the new lease's record")
     func aStaleTargetDoesNotReachTheNewRecord() async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 2_000)])
@@ -203,7 +203,8 @@ struct ReclamationLeaseIdentityTests {
     /// `aFanReleasedDuringTheControlStateReadIsAbandoned` records for the presence half.
     ///
     /// **Mutation:** make the re-fetch after `readControlState(ofFan:)` in `examine(fanAt:)`
-    /// check presence only — `guard held[index] != nil`. Run: red on the log assertion.
+    /// check presence only — `guard registry.record(ofFan: index) != nil`. Run: red on the log
+    /// assertion.
     @Test("A record registered under a new lease during the read stops the examination there")
     func aRecordRegisteredUnderANewLeaseDuringTheReadStopsTheExamination() async throws {
         let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
@@ -240,10 +241,11 @@ struct ReclamationLeaseIdentityTests {
     /// forgets it nor hands the fan back.
     ///
     /// **Mutation (a):** make the re-fetch after the command write check presence only —
-    /// `guard held[index] != nil, var fan = held[index]`. Run: red on `lastCommanded` and the
+    /// `guard registry.record(ofFan: index) != nil`. Run: red on `lastCommanded` and the
     /// "re-asserted" line.
-    /// **Mutation (b):** delete the other-lease guard at the top of
-    /// `restoreAndForget(fanAt:heldUnder:)`. Run: red on the registry and the restore.
+    /// **Mutation (b):** drop the other-lease check in `ReclamationWatchdog.Registry.forget(fanAt:
+    /// ifUnder:)`, which `restoreAndForget(fanAt:heldUnder:)` guards on. Run: red on the registry
+    /// and the restore.
     @Test("A record registered under a new lease during the command write is left to it")
     func aRecordRegisteredUnderANewLeaseDuringTheCommandWriteIsLeftToIt() async throws {
         let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
@@ -285,8 +287,9 @@ struct ReclamationLeaseIdentityTests {
     /// granted and registers fan 0. The hand-back still lands — L1's episode may have written
     /// after its own release's restore — and then L2's record is kept and L2 is not revoked.
     ///
-    /// **Mutation (a):** add `held[index] = nil` after the hand-back in
-    /// `finaliseRelease(fanAt:heldUnder:because:)`. Run: red on the registry.
+    /// **Mutation (a):** make `ReclamationWatchdog.Registry.dropLease(_:sparing:)`, which
+    /// `finaliseRelease(fanAt:heldUnder:because:)` calls after the hand-back, also drop `index`
+    /// whatever lease holds it — `held[index] = nil`. Run: red on the registry.
     /// **Mutation (b):** replace the `revokeLease(id:because:)` guard with
     /// `await leases.revokeEveryLease(because: cause)`. Run: red on L2 and the restorer.
     @Test("A terminal action leaves a newer lease's record and lease alone")

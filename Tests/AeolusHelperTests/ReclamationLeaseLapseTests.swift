@@ -259,8 +259,9 @@ struct ReclamationLeaseLapseTests {
     ///
     /// **Mutation:** delete `log.reclamationFanMayStillBePinned(fan:)` from
     /// `restoreAndForget(fanAt:heldUnder:)`. Run: red on the "may still be under manual control"
-    /// assertion. **Mutation:** move `held[index] = nil` inside the `do`, after the restore, so a
-    /// refused restore skips the forget. Run: red on the registry assertion, and on
+    /// assertion. **Mutation:** make the forget conditional on the restore landing — inline
+    /// `handBack(fanAt:)` and move `registry.forget(fanAt:ifUnder:)` inside its `do`, after the
+    /// restore — so a refused restore skips the forget. Run: red on the registry assertion, and on
     /// `aFanRegisteredDuringItsHandBackStaysWatched`, which any late forget breaks. **Mutation
     /// (M2):** add `return` after `log.reclamationFanMayStillBePinned(fan: index)` in
     /// `restoreAndForget(fanAt:heldUnder:)`'s `catch`. The forget has already run, but the ledger
@@ -299,9 +300,9 @@ struct ReclamationLeaseLapseTests {
     /// the fresh registration — which found the old entry still there and kept it — went with it: a
     /// fan off automatic control under a live lease, with nothing watching it.
     ///
-    /// **Mutation:** move `held[index] = nil` in `restoreAndForget(fanAt:heldUnder:)` back below
-    /// the `do`/`catch` around the restore. Run: red on the registry and commanded-target
-    /// assertions.
+    /// **Mutation:** move the `registry.forget(fanAt:ifUnder:)` guard in
+    /// `restoreAndForget(fanAt:heldUnder:)` back below `await handBack(fanAt: index)`. Run: red
+    /// on the registry and commanded-target assertions.
     @Test("A fan registered again while its hand-back is in flight stays watched")
     func aFanRegisteredDuringItsHandBackStaysWatched() async throws {
         let plane = ScriptedControlPlane(fans: [0: .held(at: 2_400)])

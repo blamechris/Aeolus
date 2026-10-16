@@ -67,7 +67,8 @@ extension ReclamationWatchdogStalenessTests {
     /// test of its own — the log line is what tells the two apart.
     ///
     /// **Mutation:** make `commandWriteFailed(fanAt:heldUnder:detail:)`'s re-fetch check
-    /// presence only — `guard held[index] != nil`. Run: red on the half-landed assertion.
+    /// presence only — `guard registry.record(ofFan: index) != nil`. Run: red on the half-landed
+    /// assertion.
     @Test("A record re-granted during a failed command write is left alone")
     func aRegrantedRecordDuringAFailedCommandWriteIsLeftAlone() async throws {
         let firmware = ScriptedControlPlane.FanCondition.held(at: 1_800)

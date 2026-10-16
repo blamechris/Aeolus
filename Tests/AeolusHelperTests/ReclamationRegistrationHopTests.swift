@@ -22,12 +22,14 @@ extension ReclamationLeaseIdentityTests {
     /// ended with § 5 never told, D2's premise), and both, the shipping order. `ParkableHeldLeases`
     /// holds the answer open on a continuation.
     ///
-    /// **Mutation:** drop the generation half of the refusal in `manualControlEngaged(_:under:)`,
-    /// leaving `guard live, finalising[index] != lease else {`. Run: red in all three.
-    /// **Mutation:** delete the `registrations[index, default: 0] &+= 1` after the
-    /// registration's record is written. Run: red when L2 registers unannounced.
-    /// **Mutation:** delete the same line from `manualControlReleased(fanAt:)`. Run: red on the
-    /// notice alone.
+    /// **Mutation:** drop the generation half of the refusal in
+    /// `ReclamationWatchdog.Registry.register(_:fanAt:live:since:)`, leaving `guard live,
+    /// finalising[index] != lease`. Run: red in all three.
+    /// **Mutation:** delete the `registrations[index, default: 0] &+= 1` in
+    /// `Registry.register(_:fanAt:live:since:)`, after `held[index] = HeldFan.registering(…)`.
+    /// Run: red when L2 registers unannounced.
+    /// **Mutation:** delete the one in `Registry.release(fanAt:)`, after `held[index] = nil`.
+    /// Run: red on the notice alone.
     @Test(
         "A registration whose lease ends during its lease hop records nothing, evicts nothing",
         arguments: [
@@ -92,9 +94,11 @@ extension ReclamationLeaseIdentityTests {
     /// reads; the composed helper has no lease-hop seam, so this asserts the ledger itself.
     ///
     /// **Mutation:** delete the `registrations[index, default: 0] &+= 1` beside
-    /// `finalising[index] = lease` in `finaliseRelease(fanAt:heldUnder:because:)`. Run: red on
-    /// the resumption after the terminal action: the refusal, the ledger and the "resolved"
-    /// line. With `finalising[index] != lease` dropped from the refusal as well: red on both.
+    /// `finalising[index] = lease` in `Registry.beginFinalising(fanAt:for:)`, the terminal
+    /// action's entry in `finaliseRelease(fanAt:heldUnder:because:)`. Run: red on the resumption
+    /// after the terminal action: the refusal, the ledger and the "resolved" line. With
+    /// `finalising[index] != lease` dropped from `Registry.register`'s refusal as well: red on
+    /// both.
     @Test(
         "A registration in flight when the terminal action begins clears nothing",
         arguments: [true, false])

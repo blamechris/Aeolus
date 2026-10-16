@@ -41,8 +41,8 @@ struct ReclamationWatchdogRecoveryTests {
     /// to the fan's declared maximum, so the two differ and a stale record is visible: the
     /// next cycle would judge a correctly held 5,777 RPM as a divergence from 99,000.
     ///
-    /// **Mutation:** replace `held[index] = fan` after the command write in
-    /// `reassert(_:fanAt:heldUnder:attempt:reengaging:)` with `_ = fan`. Run: red on the
+    /// **Mutation:** delete `registry.recordReassertedTarget(recommanded, ofFan: index)` after the
+    /// command write in `reassert(_:fanAt:heldUnder:attempt:reengaging:)`. Run: red on the
     /// recorded-target assertion.
     @Test("A re-assert records the target it wrote, not the one it was asked for")
     func aReassertRecordsTheTargetItWrote() async throws {
@@ -142,8 +142,8 @@ struct ReclamationWatchdogRecoveryTests {
     /// `F<n>Md` write has landed but is not yet reflected in a read looks identical here to
     /// one the system genuinely took —  and acting on the first cycle revoked every lease on
     /// the machine inside the write-to-read-back lag.
-    /// `ReclamationWatchdog.gracedBeforeItsFirstCommand(_:of:fanAt:)` separates them by
-    /// waiting: a lag resolves, and a reclamation does not.
+    /// `ReclamationWatchdog.HeldFan.judge(_:)`'s registration grace separates them by waiting: a
+    /// lag resolves, and a reclamation does not.
     ///
     /// The loop runs `1...N` and derives its expectation per cycle rather than asserting the
     /// threshold separately after a `1..<N` loop, which is empty at `N == 1`.

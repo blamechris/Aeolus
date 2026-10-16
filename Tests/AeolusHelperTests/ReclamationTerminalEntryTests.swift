@@ -23,9 +23,9 @@ extension ReclamationLeaseIdentityTests {
     /// L2's engagement and L2's record watches it, so the terminal action leaves it alone: no
     /// hand-back, no drop and no revocation. Both ways the envelope can fail reach it.
     ///
-    /// **Mutation:** delete the other-lease guard at the top of
-    /// `finaliseRelease(fanAt:heldUnder:because:)`. Run: red on the restore and the log line in
-    /// both cases.
+    /// **Mutation:** drop the other-lease check from `ReclamationWatchdog.Registry.beginFinalising(
+    /// fanAt:for:)`, which the guard at the top of `finaliseRelease(fanAt:heldUnder:because:)`
+    /// asks. Run: red on the restore and the log line in both cases.
     @Test(
         "A terminal action entered for an ended lease leaves the newer lease's fan alone",
         arguments: EnvelopeFailure.allCases)
