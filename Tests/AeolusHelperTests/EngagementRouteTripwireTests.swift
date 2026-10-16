@@ -50,8 +50,8 @@ struct EngagementRouteTripwireTests {
     /// source nobody read.
     ///
     /// **Mutation:** in `ReclamationWatchdog.reassert`, before the driver's call, add `_ = try
-    /// await [writer][0].engageManualControl(of: permit)`. Run: red here, and `onlyTheDriverEngages`
-    /// stays green, which is why this test exists.
+    /// await [writer][0].engageManualControl(of: permit)`. Run: red here, and
+    /// `onlyTheDriverEngages` stays green, which is why this test exists.
     /// **Mutation:** in `SafetyActorWriter`, add `func sneaky(_ fan: CommandableFan) async throws
     /// { _ = try await engageManualControl(of: fan) }`. Run: red here, and green there.
     /// **Mutation (the floor's own):** scan `"AeolusXPC"` instead of `"AeolusHelper"`. Run: red on
@@ -214,5 +214,113 @@ struct EngagementRouteTripwireTests {
                 // let driver = writer
                 """)
         #expect(elsewhere.introduced == 2 && elsewhere.toTheBoundDriver == 0)
+    }
+
+    // MARK: - The comment stripper's string literals
+
+    /// A comment marker inside a string literal opens no comment, in a multi-line literal and
+    /// in a single-line one with an escaped quote.
+    ///
+    /// Both are the shapes `strippingAllComments(_:)` walks literals for, and both put a `//`
+    /// where dropping it would drop a use after it: the first holds a lone `"` and a use inside
+    /// the literal, the second an escaped `\"` followed by a use on the same line. Fixtures, for
+    /// the first test's reason: nothing in `Sources` is written these ways.
+    ///
+    /// **Mutation:** delete the `"""` branch from `strippingAllComments(_:)`. Run: red on the
+    /// multi-line fixture — the lone `"` pairs with a delimiter quote, the `//` after it is read as
+    /// a comment, and the use inside the literal is dropped.
+    /// **Mutation:** in `SeamScanner.copyDelimited`, replace the escape branch's condition
+    /// `source[index] == "\\"` with `false`. Run: red on the escaped-quote fixture — the literal
+    /// ends at the escaped quote, and the use after it is dropped as a comment.
+    @Test("A comment marker inside a string literal opens no comment")
+    func aCommentMarkerInsideAStringLiteralOpensNoComment() throws {
+        let multiline = #"""
+            let text = """
+                say "hi // not a comment, but a use: writer.engageManualControl(of: fan)
+                """
+            _ = try await after.engageManualControl(of: fan)
+            """#
+        #expect(SeamScanner.strippingAllComments(multiline).contains("// not a comment"))
+        #expect(try SeamScanner.mentions(of: Self.verb, inSource: multiline) == 2)
+
+        let escaped = #"""
+            let text = "a\"// still a string"; _ = try await after.engageManualControl(of: fan)
+            """#
+        #expect(SeamScanner.strippingAllComments(escaped).contains("// still a string"))
+        #expect(try SeamScanner.mentions(of: Self.verb, inSource: escaped) == 1)
+        #expect(try SeamScanner.receivers(of: Self.verb, inSource: escaped) == ["after"])
+    }
+
+    /// No raw string literal in `Sources/AeolusHelper` holds both a `"` and a `//`.
+    ///
+    /// The one blind spot `strippingAllComments(_:)` states: it counts quotes and does not lex,
+    /// and a raw string `#"say "hi" // x"#` puts the count out of step, so the `//` is read as a
+    /// comment and the rest of its line is dropped. Nothing in the tree is written that way, and
+    /// this is what keeps that true. In the style of `noBlockCommentIsWrittenInSources`.
+    ///
+    /// **Mutation:** add `private let probe = #"say "hi" // x"#` at file scope in
+    /// `SafetyWriters.swift`. Run: red here, naming the file.
+    @Test("No raw string in the helper holds a quote and a comment marker")
+    func noRawStringHoldsAQuoteAndACommentMarker() throws {
+        var offenders: [String] = []
+        for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            for literal in try Self.rawStringsHoldingAQuoteAndACommentMarker(in: source) {
+                offenders.append("\(file.lastPathComponent): \(literal)")
+            }
+        }
+
+        #expect(
+            offenders.isEmpty,
+            """
+            a raw string literal holds a `"` and a `//`: \(offenders). \
+            `SeamScanner.strippingAllComments` counts quotes and does not lex, so it reads the \
+            `//` as a comment and drops the rest of the line, which can hide a use of the \
+            step verb from every scan in this suite.
+            """)
+    }
+
+    /// The scan behind that test, on literals it must and must not report.
+    ///
+    /// **Mutation (this suite's own):** make `rawStringsHoldingAQuoteAndACommentMarker(in:)`
+    /// return nothing. Run: red here — the tree holds no raw string, so the tree test alone
+    /// cannot tell a working scan from a dead one.
+    @Test("The raw string scan reports a quote with a comment marker, and nothing else")
+    func theRawStringScanReportsOnlyTheRiskyLiterals() throws {
+        let reported = try Self.rawStringsHoldingAQuoteAndACommentMarker(
+            in: ###"""
+                let a = #"say "hi" // x"#
+                let b = #"https://example.com"#
+                let c = #"say "hi""#
+                let d = ##"""
+                    "quoted" and // marker
+                    """##
+                let e = "an ordinary \"string\" // is the walker's"
+                // let f = #"a "b" // c"#
+                """###)
+
+        #expect(reported.count == 2, "reported \(reported)")
+        #expect(reported.first?.contains("say \"hi\" // x") == true)
+        #expect(reported.last?.contains("// marker") == true)
+    }
+
+    /// Every raw string literal in `source`, comments stripped first, that holds both a `"` and
+    /// a `//`: single-line (`#"…"#`) and multi-line (`#"""…"""#`), with any number of `#`.
+    private static func rawStringsHoldingAQuoteAndACommentMarker(
+        in source: String
+    ) throws -> [String] {
+        let code = SeamScanner.strippingComments(source)
+        let literal = try NSRegularExpression(
+            pattern: ##"(#+)(?:"""([\s\S]*?)"""|"([^\n]*?)")\1"##)
+        return literal.matches(in: code, range: NSRange(code.startIndex..., in: code))
+            .compactMap { match in
+                let content = [2, 3]
+                    .compactMap { Range(match.range(at: $0), in: code).map { String(code[$0]) } }
+                    .first
+                guard let content, content.contains("\""), content.contains("//") else {
+                    return nil
+                }
+                return Range(match.range, in: code).map { String(code[$0]) }
+            }
     }
 }

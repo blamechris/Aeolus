@@ -16,8 +16,9 @@ extension SeamScanner {
     /// Built on `strippingComments`, so block comments and whole-line comments are gone before
     /// this looks, and on `copyDelimited` for string literals, so the `//` in `"https://…"`
     /// opens no comment. The limits are that walker's, stated at `strippingBlockComments`: a
-    /// quote counter and not a lexer, so a raw string with a `"` inside it can put it out of
-    /// step. None is written in `Sources/AeolusHelper` that way today.
+    /// quote counter and not a lexer, so a raw string with a `"` and a `//` inside it can put it
+    /// out of step. None is written in `Sources/AeolusHelper` that way, and
+    /// `EngagementRouteTripwireTests.noRawStringHoldsAQuoteAndACommentMarker` fails the day one is.
     static func strippingAllComments(_ source: String) -> String {
         let code = strippingComments(source)
         var output = ""
