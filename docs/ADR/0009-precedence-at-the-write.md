@@ -259,8 +259,8 @@ lease end — is **not reachable there**. `HelperFanRestorer` deregisters §5 *b
 so a refused restore leaves the fan out of `held` altogether. The lease core's `restoreAbandoned`
 refusal stops a new lease over it, but what watches the fan itself is only §3, which keeps a fan
 whose handback was refused registered. Both are `HelperFanRestorer`'s.
-[#343](https://github.com/blamechris/Aeolus/issues/343) owns that gap. The bonus holds only for a
-restorer that does not deregister first, which is the fixture's.
+The 2026-10-15 #343 amendment below decides that it needs no watcher of its own. The bonus holds
+only for a restorer that does not deregister first, which is the fixture's.
 
 **The residual D2 leaves, as built.** Since #181 the lease is asked inside `reassert` too: by the
 driver before and after every step of the mode write, and before the command of a fan that
@@ -360,6 +360,64 @@ already rejects the reference to the registry it needs, and a late stale registr
 **Revisit if** leases that can overlap on a fan are proposed (the registration's arbitration then
 needs records keyed per fan and lease), or a lease-core restore path that bypasses `releasing` is
 added (the index-keyed release notice could then erase a newer lease's record).
+
+## Amendment (2026-10-15, [#343](https://github.com/blamechris/Aeolus/issues/343)) — a lease-end handback the firmware refuses gets no watcher of its own, and D2 stands without its bonus
+
+**The finding.** D2's bonus — § 5's `.leaseLapsed` as the backstop for a restore that failed at lease
+end — is unreachable in the shipped composition, because `HelperFanRestorer` tells § 5 before it
+writes (*"Two findings from building it"*, above). A fan whose lease-end handback the firmware refused
+`RestoreLimits.attemptBudget` times is in no § 5 record.
+
+**Decision: no new watcher.** Such a fan is
+
+- **reported**, durably: `restoreAbandoned` refuses every grant over it `.restoreToAutomaticFailed`,
+  and the snapshot says the same;
+- **bridged above the ceiling**: the restorer marks only accepted fans, so it stays in § 3's
+  registry, and § 3's next firing bridges it to maximum and restores it;
+- **retried by every machine-wide restore**: § 7's panic verb, § 4's sleep handback and SIGTERM's
+  teardown each run `releaseEveryLease()`, which sweeps the register (#189), then `.everyFan` on a
+  plane that can write; § 7 reads the fan back and lifts the refusal (#291);
+- **reconciled by the next process** (§ 6).
+
+What the bonus would add is one more attempt about a cycle later, then forget: `.leaseLapsed` is
+restore-and-forget, not a watch. No way of getting it back is worth its cost.
+
+- *Tell § 5 only after an accepted write*, so a refused fan stays registered. It reverses
+  `HelperFanRestorer`'s deliberate order, turns every ordinary teardown that overlaps a § 5 cycle into
+  a redundant hand-back logged as a lapse, and buys one attempt.
+- *Re-register the refused fan with § 5.* A record under no live lease is what the identity amendment
+  above refuses.
+- *More attempts, or a pause, in `BoundedFanRestorer`.* Every teardown awaits it — § 4 inside a
+  five-second budget, SIGTERM ahead of its keystone, and § 5's cycle through the terminal action's
+  revocation, on `.gone` too once #368 lands — so each attempt is added to all of them, against a
+  firmware that has refused three immediate ones.
+- *A slow retry of `restoreAbandoned`, owned by the lease core.* The right owner if refusals prove
+  transient. Until a run shows that, it is a write loop in a root daemon against a failure nobody has
+  observed: no write has been performed on `Mac16,5`, and whether a refused `F<n>Md = 0` is a busy
+  firmware, a stale connection (#68) or a hard refusal is unknown (ADR 0014 U5, U5b). Each wants a
+  different retry.
+
+**D2 stands without the bonus.** The bonus broke a tie when nothing covered a failed restore at lease
+end short of a restart. The four mechanisms above now do, none of them § 5, and the alternatives D2
+was preferred to were each rejected on grounds of their own: the first for its decoupling and
+reversal cost, the second because its deregistration misses `revokeEveryLease` over an empty table.
+
+**What it rests on.** Every fan Aeolus engages is in § 3's registry, from the moment its engagement
+returns, or at its undo if it is refused. That holds while the engagement driver is the only caller
+of a writer's `engageManualControl(of:)` — ADR 0014's A6 contract, item 1 — and a source tripwire
+holds it. It is not true during the engagement: a lease released while the driver waits for the
+firmware to yield can have its hand-back refused, and the fan abandoned, while § 3 holds nothing.
+The driver's next entitlement check, within `UnlockLimits.pollInterval` (100 ms), then throws,
+registers the fan and undoes it, so the end state is the one above after a bounded window. A fan a
+lease covered but never engaged can also be abandoned, as in the tests that pin the retries above;
+nothing is owed there, because nothing took it off automatic control.
+
+**No `AeolusXPCVersion` bump.** Nothing changes.
+
+**Revisit if** any run records a refused keystone (ADR 0014 U5, U5b): one a later attempt cures
+without a reconnect justifies the lease core's slow retry, read back by `confirmAcceptedHandbacks()`;
+one a reconnect cures puts the retry on #168's reconnect. Revisit too if an engagement path that does
+not register with § 3 is proposed. The ruling is the architect's #368/#343 consult, run on Opus.
 
 ## Alternatives considered
 
