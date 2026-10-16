@@ -17,12 +17,13 @@ import Testing
 /// re-assert's target is not read from the copy at all: since #381 it is the record's as it
 /// stands after the envelope read.
 ///
-/// **These pin today's behaviour, not the contract A6 wants.** The first case is the window A6's
-/// plan calls a false terminal action: a holder's first command reported during the hop is not
-/// seen, so the fan is given up and the lease revoked as `.systemReclaimed` though its holder had
-/// just commanded it. It fails safe, since the fan goes back to automatic control, and the
-/// account it gives is false. A6's first PR decides on the live record there and turns the first
-/// case red on purpose; this suite is updated with it.
+/// **These pin today's behaviour, not the contract A6 wants.** The first case is a pinned defect,
+/// [#383](https://github.com/blamechris/Aeolus/issues/383): the window A6's plan calls a false
+/// terminal action. A holder's first command reported during the hop is not seen, so the fan is
+/// given up and the lease revoked as `.systemReclaimed` though its holder had just commanded it.
+/// It fails safe, since the fan goes back to automatic control, and the account it gives is false.
+/// Closing #383 is what turns the first case red on purpose; A6 decides on the live record there,
+/// and this suite is updated with it.
 @Suite("§ 5 reads a report made during its ledger hop as the code stands", .timeLimit(.minutes(1)))
 struct ReclamationLedgerHopTests {
 
@@ -35,7 +36,11 @@ struct ReclamationLedgerHopTests {
     /// **Mutation (the pin is live):** read the nothing-commanded check from the record instead of
     /// the copy — `guard registry.record(ofFan: index)?.commanded != nil`. Run: red on the
     /// no-speed line, the revocation and the lease count: the fan is re-engaged and commanded.
-    @Test("A first command reported during the ledger hop is not seen, and the fan is given up")
+    @Test(
+        """
+        A first command reported during the ledger hop is not seen, and the fan is given up \
+        (pinned defect, #383)
+        """)
     func aFirstCommandReportedDuringTheLedgerHopIsNotSeen() async throws {
         let machine = ReclamationMachine(fans: [0: .automatic(at: 2_400)], parkingSafetyHops: true)
         let ledgerHops = try #require(machine.ledgerHops)

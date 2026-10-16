@@ -450,7 +450,9 @@ holder's *first* command reported in the hop is not seen: § 5 finds no speed to
 the fan back and revokes the lease as `.systemReclaimed`. That fails safe and gives a false
 account. The attempt count is the copy's too, and cannot move under the same lease during the hop,
 because only the sweep in flight judges, spends or refunds it. `ReclamationLedgerHopTests` pins
-both cases as they stand; A6 decides on the live record and turns the first red on purpose.
+both cases as they stand. The first is a pinned defect,
+[#383](https://github.com/blamechris/Aeolus/issues/383): closing it turns that case red on
+purpose, and A6 decides on the live record.
 
 ## Built once per registration, per lease
 
