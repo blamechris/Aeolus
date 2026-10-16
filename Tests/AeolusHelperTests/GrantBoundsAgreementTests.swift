@@ -100,8 +100,8 @@ struct GrantBoundsAgreementTests {
     ///
     /// **Mutation:** in `LeaseAuthority.acquireLease`, move `try await
     /// refuseIfBoundsImplausible(connection, wanting: wanting.subtracting(exempted))` below the
-    /// marker, between the `sleepSeal` guard and the `machineWideRestoresInFlight` guard. Run:
-    /// red — the grant says `.systemSleeping`.
+    /// marker, between the `sleep.isSealed` guard and the `machineWideRestoresInFlight` guard.
+    /// Run: red — the grant says `.systemSleeping`.
     @Test("Implausible bounds are the grant's answer while the sleep seal holds")
     func theBoundsAnswerAheadOfTheSleepSeal() async throws {
         let helper = Fixture.composed(

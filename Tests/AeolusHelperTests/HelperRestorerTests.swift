@@ -315,10 +315,10 @@ struct HelperRestorerTests {
 
     /// The refusal is durable, which is what makes the abandoned set worth returning.
     ///
-    /// `LeaseAuthority.restoreAbandoned` is append-only, so the next `acquireLease` over that
-    /// fan is refused `.restoreToAutomaticFailed` rather than being told to retry a window
-    /// that has closed. Asserted here rather than in the lease suite because this is the
-    /// first composition in `Sources/` that can actually produce an abandoned fan.
+    /// The lease core's `restoreAbandoned` is durable, so the next `acquireLease` over that fan is
+    /// refused `.restoreToAutomaticFailed` rather than being told to retry a window that has
+    /// closed. Asserted here rather than in the lease suite because this is the first composition
+    /// in `Sources/` that can actually produce an abandoned fan.
     ///
     /// **Mutation:** return `[]` from `HelperFanRestorer.restoreToAutomatic(fans:because:)`.
     /// Run: red.

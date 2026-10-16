@@ -372,7 +372,7 @@ struct SystemPowerResponder<Plane: FanControlPlane>: Sendable {
             // Clearing the seal is not a write and does not make this branch one. It touches
             // no fan, issues no read, and reaches no plane — it lifts the sleep seal, which is
             // the only thing about a wake this helper acts on. A teardown still running keeps
-            // the machine-wide restore seal it holds (#364). See `LeaseAuthority.sleepSeal`.
+            // the machine-wide restore seal it holds (#364). See `LeaseAuthority.SleepSealPairing`.
             await leases.unsealAfterWake(generation: notification.generation)
             log.wokeWithoutWriting()
         }

@@ -38,9 +38,10 @@ import FanKit
 //   it would hand every file in the module a route to engage or release `docs/SAFETY.md`
 //   § 3's latch through the lease core. The refusal is a read; the reference is not, and
 //   the reference is what a widening exposes.
-// - The refusals inside `acquireLease`'s straight-line region read `restoreAbandoned`,
-//   `handbackUnconfirmed`, `sleepSeal`, `table` and `releasing` directly, and stay inside it
-//   for the reason that region exists at all.
+// - The refusals inside `acquireLease`'s straight-line region read `table` directly, and
+//   `restoreAbandoned`, `handbackUnconfirmed`, `sleepSeal` and `releasing` through `registers`
+//   and `sleep` — the value types #128's lease-core pass moved them into, held `private` in
+//   that file — and stay inside it for the reason that region exists at all.
 //
 // **One addition reads this actor's state, and only through a view already on the seam.**
 // `refuseIfExemptionLapsed(_:exempted:)` ([#311](https://github.com/blamechris/Aeolus/issues/311))
@@ -60,7 +61,9 @@ import FanKit
 // acquisition, renewal/release, teardown — every one of them mutates `table` or calls
 // `restore(_:because:)`, and those are precisely the members that decide who may hold a fan
 // and who may hand one back. #128's own later comments declined `SMCReadScheduler` and
-// `ReclamationWatchdog` on that exact trade; this file does not take it.
+// `ReclamationWatchdog` on that exact trade; this file does not take it. The cut #128's
+// lease-core pass took instead pays no such price: it moved state into value types the actor
+// holds `private`, as § 5's registry did, and widened nothing.
 
 extension LeaseAuthority {
 

@@ -224,7 +224,7 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// out.
         ///
         /// Hearing the two *out of order* used to produce the same symptom and is no longer
-        /// this case — see `LeaseAuthority.wakesAheadOfTheirSeal`
+        /// this case — see `LeaseAuthority.SleepSealPairing.seal(generation:)`
         /// ([#202](https://github.com/blamechris/Aeolus/issues/202) item 1).
         case systemSleeping
         /// The helper cannot currently see any critical temperature, so the mechanism

@@ -1677,6 +1677,18 @@ where it was. A helper holding the ledger and driver: every call becomes a hop, 
 consult, run on Opus. This amendment corrects a clause of a Proposed ADR rather than the decision it
 sits under. **Status stays Proposed.**
 
+**The lease core's extraction, named by the same ruling, is taken.** It was set to land before any
+change took `LeaseAuthority`'s body past 320 code lines or its file past 960, and #269 would have.
+`releasing`, `restoreAbandoned`, `handbackAcceptedUnconfirmed` and `handbackUnconfirmed` move into
+`LeaseAuthority.HandbackRegisters`, and `sleepSeal`, `latestWakeGeneration` and `sealGeneration`
+into `LeaseAuthority.SleepSealPairing`, with every synchronous decision made over them; the actor
+holds `private var registers` and `private var sleep` and keeps every `await`, every re-read and
+every act, in the same order. `handbackWaiters` stays on the actor, because a continuation is not a
+value. The rules and guards are § 5's: no `async` member, no function-typed parameter, no
+whole-value use, the stores `private` and exactly listed, held by
+`LeaseAuthorityRegistersAccessTests`. Measured under SwiftLint 0.65.1: body 308 to 287 code lines,
+file 956 to 851. No behaviour changes and nothing on the wire moves; **Status stays Proposed.**
+
 ### #270 — the grant reads the bounds, after the foreign-control read
 
 **Decision.** `acquireLease` reads `F<n>Mn` and `F<n>Mx` afresh through `FanEnvelopeReading`

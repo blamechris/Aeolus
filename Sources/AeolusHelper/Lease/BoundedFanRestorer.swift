@@ -80,7 +80,8 @@ enum RestoreLimits {
 /// abandoned — a lie in the safe direction, which is still a lie a client acts on.
 ///
 /// **Giving up here is durable, and exactly one thing takes it back.** The set this returns
-/// lands in `LeaseAuthority.restoreAbandoned`, which was append-only until
+/// lands in the lease core's `restoreAbandoned`, in `LeaseAuthority.HandbackRegisters`, which
+/// was append-only until
 /// [#189](https://github.com/blamechris/Aeolus/issues/189): a later restore the firmware *did*
 /// accept left the refusal standing, which #110 decided on the argument that no code path
 /// restored a fan outside lease teardown. #189 is what made one, because the register had made

@@ -248,9 +248,10 @@ struct ReclamationWatchdogAccessTests {
     }
 
     /// Every internal property of the actor and of `Registry` is computed, and nothing in its
-    /// accessor block writes. The block is read whole, brace-matched from the declaration, so a
-    /// `get { … } set { … }` pair or a `_modify` split across lines is seen; a declaration with
-    /// an `=` before its block, or with no block at all, has storage.
+    /// accessor block writes. The block is `MemberAccessScan.accessorBlock(of:in:)`'s, read whole
+    /// and brace-matched from the declaration, so a `get { … } set { … }` pair or a `_modify`
+    /// split across lines is seen; a declaration with an `=` before its block, or with no block
+    /// at all, has storage.
     ///
     /// **Mutations:** declare `var fans: Set<Int> = []` as a stored property; give `Registry.fans`
     /// a `set`; give `Registry.isEmpty` a `_modify`; give the actor's `fansUnderManualControl` a
@@ -268,7 +269,7 @@ struct ReclamationWatchdogAccessTests {
         for (owner, name) in views {
             let code = owner == Self.watchdogFile ? watchdog : registry
             let block = try #require(
-                try Self.accessorBlock(of: name, in: code),
+                try MemberAccessScan.accessorBlock(of: name, in: code),
                 """
                 `\(name)` in \(owner) has no accessor block straight after its type, so it has \
                 storage: an internal store is writable state, and these must be views.
@@ -351,43 +352,5 @@ struct ReclamationWatchdogAccessTests {
             first, so the rest are members nothing here acknowledges. Write one per line.
             """
         )
-    }
-
-    // MARK: - Parsing
-
-    /// The accessor block of the member-indent `var name:` in `code`, braces included — or `nil`
-    /// when the declaration reaches a `=` or a newline before any `{`, which is a stored one.
-    ///
-    /// String literals are stepped over, so a `}` written inside one cannot close the block
-    /// early and leave a `set` after it unread.
-    private static func accessorBlock(of name: String, in code: String) throws -> String? {
-        let declaration = try NSRegularExpression(
-            pattern: #"(?m)^    (?:[^\s]+ )*var \#(name)\s*:"#)
-        guard
-            let match = declaration.firstMatch(
-                in: code, range: NSRange(code.startIndex..., in: code)),
-            let found = Range(match.range, in: code),
-            let open = code[found.upperBound...].firstIndex(where: { "{=\n".contains($0) }),
-            code[open] == "{"
-        else { return nil }
-
-        var depth = 0
-        var index = open
-        var skipped = ""
-        while index < code.endIndex {
-            if code[index] == "\"" {
-                let delimiter = code[index...].hasPrefix("\"\"\"") ? "\"\"\"" : "\""
-                index = SeamScanner.copyDelimited(
-                    code, from: index, delimiter: delimiter, into: &skipped)
-                continue
-            }
-            if code[index] == "{" { depth += 1 }
-            if code[index] == "}" {
-                depth -= 1
-                if depth == 0 { return String(code[open...index]) }
-            }
-            index = code.index(after: index)
-        }
-        return nil
     }
 }
