@@ -1365,7 +1365,9 @@ snapshot it was read for, from the same read. `FanState.mode` is unchanged.
   fan it cannot read; a rung keyed
   on § 3's set mirrors a subset of that rule.
 - **Above #350's seal**, which re-states only a fan nothing else refused: the grant's fresh read is
-  above its straight-line region, and the seal check is inside it.
+  above its straight-line region, and the seal check is inside it. *(Superseded in form by the
+  #128/#270/#269 amendment below: the seal is step 10 of one first-match ladder and states
+  `.releaseInProgress` over every fan no higher rung refuses. Step 5 is still above it.)*
 - **Disjoint from steps 1–3**, by the argument they already rest on: a fan in a handback register
   is in `fansAeolusIsAccountableFor`, and step 5 returns it untouched.
 
@@ -1385,8 +1387,9 @@ unreadable fan reads `.supervisorBlind`, a refusal the grant makes once those cl
 has no `.noThermalTelemetry` rung yet (#269). The sleep seal is checked *after* the fresh read, so
 while it holds the grant also answers `.supervisorBlind` for such a fan and the two agree; #269's
 `.systemSleeping` rung therefore goes below step 5 and above step 10. #270 places its bounds gate
-relative to the fresh read and moves steps 5 and 8 together. *(Taken by the #128/#270 amendment
-below, which also moves #269's rung below step 8.)*
+relative to the fresh read and moves steps 5 and 8 together. *(Taken by the #128/#270/#269
+amendment below, which also moves #269's rung below step 8, and states `.noThermalTelemetry` last:
+over a fan nothing else refuses, never over this `.supervisorBlind`.)*
 
 **No `AeolusXPCVersion` bump.** No field, case or method changes. `.supervisorBlind` is on the wire
 and already published for the reconciliation producer, and "cannot read this fan's control state" is
@@ -1457,12 +1460,14 @@ raised on the lease actor before the sweep, no restore reads it, and no read is 
 The order — seal, release, keystone, acknowledge — and the budget are unchanged, and § 4 still writes
 nothing on wake.
 
-**The snapshot.** Step 10 re-states `.available` while the count is above zero, so after a declined
-seal or a wake the teardown outlived, the snapshot and the grant both say `.releaseInProgress`. During a
-sealed teardown the grant says `.systemSleeping` about a fan nothing else refuses, and the snapshot
-`.releaseInProgress` where it said `.available`: [#269](https://github.com/blamechris/Aeolus/issues/269)'s
-gap, narrower in availability. The grant checks the sleep seal after its fresh read and before this
-seal, so #269's rung goes below step 5 and above step 10, where the #360 amendment above places it.
+**The snapshot.** Step 10 states `.releaseInProgress` while the count is above zero, over every fan
+no higher rung refuses, so after a declined seal or a wake the teardown outlived, the snapshot and
+the grant both say `.releaseInProgress`. During a sealed teardown the grant says `.systemSleeping`
+about a fan nothing else refuses, and the snapshot said `.releaseInProgress`:
+[#269](https://github.com/blamechris/Aeolus/issues/269)'s gap, narrower in availability. The grant
+checks the sleep seal after its fresh read and, since #270, its bounds read, and before this seal and
+`releasing`, so #269's rung goes below steps 5 and 8 and above step 10 and step 3. *(Built so by the
+#128/#270/#269 amendment below.)*
 
 **What it costs.** A teardown that never returns refuses every grant, after the wake as before it —
 `.systemSleeping` while the sleep seal stands, `.releaseInProgress` once the wake lifts it — until it
@@ -1647,10 +1652,10 @@ against § 5's cadence. The ruling is the architect's
 This amendment corrects a clause of a Proposed ADR rather than the decision it sits under.
 **Status stays Proposed.**
 
-## Amendment (2026-10-15, [#128](https://github.com/blamechris/Aeolus/issues/128), [#270](https://github.com/blamechris/Aeolus/issues/270)) — § 5's registry is a value type, and the grant reads the bounds
+## Amendment (2026-10-15, [#128](https://github.com/blamechris/Aeolus/issues/128), [#270](https://github.com/blamechris/Aeolus/issues/270), [#269](https://github.com/blamechris/Aeolus/issues/269)) — § 5's registry is a value type, the grant reads the bounds, and the snapshot states the sleep seal and § 3's blindness
 
-Two A6 enablers. The first changes no behaviour; the second is unreachable on every build on
-`main`, where a `.notBuilt` seam answers `.writePathNotBuilt` before it.
+Three A6 enablers. The first changes no behaviour; the other two are unreachable on every build on
+`main`, where a `.notBuilt` seam answers `.writePathNotBuilt` before either.
 
 ### #128 — § 5's registry leaves the actor as a value type it holds privately
 
@@ -1730,6 +1735,69 @@ in the same change. It is a row of the table below.
 precedent). The ruling is the architect's #128/#270/#269 consult, run on Opus. This amendment
 corrects clauses of a Proposed ADR rather than the decisions they sit under. **Status stays
 Proposed.**
+
+### #269 — the sleep seal and § 3's blindness, placed by what `fanctl auto` reads them as
+
+**Decision.** The ladder is evaluated in `acquireLease`'s order — 6, 5, 8, 1, 2, 11, 10, 3, then 9 —
+with two new rungs, as **one first-match function**, `ReadOnlyFanReport.firstRefusal`, in place of
+re-statements layered over one another: a rung keyed on what the one above it left breaks silently
+once that one starts producing it. **Step 11, `.systemSleeping`**, from
+`LeaseAccountability.sleepSealed`, read in the registers' hop, where the grant checks the seal; step 3
+moves below it and below step 10, so a fan mid-handback during a sealed teardown reads what the grant
+throws. **Step 12, `.noThermalTelemetry`**, from one `sighting()` per snapshot on a `.built` seam,
+re-states `.available` and `.boundsImplausible` and nothing else. Steps 4 and 7 stay retired.
+
+**Step 12 is the exception, and it refines the rule.** The grant asks blindness before every per-fan
+step because it suspends. In that order the rung would overwrite `.supervisorBlind`, the registers and
+the seals — reasons `SafeState` classes pending or durable — with one it classes silent, and `fanctl
+auto` would exit 0 about a fan whose mode did not read, on a machine that cannot read: #360's defect.
+So: **the snapshot agrees with the grant on whether a grant is refused, for every refusal a
+snapshot states per fan, and on the reason, except that a machine-wide refusal `fanctl auto` reads
+as silent is never stated over a fan's own durable or pending reason.** Two refusals are not stated
+per fan, so a fan nothing else refuses reads `.available` beside them: another client's lease,
+which a snapshot cannot attribute, and § 3's latch, stated machine-wide. Step 5's manual arm over
+step 6 was the first instance; step 12 is the second. Where they part, both refuse. Step 11 is
+pending, so it follows the grant's order exactly; if ADR 0013 classes it silent, it drops below
+steps 3 and 10 in the same change.
+
+**Plumbing.** `SupervisedFanAuthority` holds the cache the lease core proves grants against, the same
+instance, as a required `private let telemetry: any SightednessProving`. `snapshot()` asks it first,
+only when the seam is `.built`; the check rethrows `CancellationError` and logs nothing of its own.
+`restatingAvailability(…, blind:)` takes the answer with no default. On every shipped `.notBuilt`
+build nothing observable changes: step 6 masks steps 11 and 12, and `sighting()` is never called.
+
+**What it costs.** A `.built` snapshot asks the cache once: an actor hop warm, one coalesced curated
+read cold. Measured on `Mac16,5`, macOS 27.0.1 (26A434), by
+`HelperHardwareTests.theSnapshotsSightingIsCheapAndCoalesced`, in four runs with no other build or
+test on the machine: warm, the check took 0.79–0.96 µs at p50 and at most 1.7 µs, with no curated
+read in 160 snapshots; cold, one curated-set read per snapshot, 40 of 40, at 48–115 ms p50; and with
+§ 3 stopped, twelve bursts of 16 concurrent snapshots on an expired cache issued one read each and
+never held more than one `.supervisor` turn, parked or in flight. The test was then cut to ten warm
+rounds, three cold snapshots and one burst, for its cost on every local `swift test`, 126 s to 39 s;
+run once alone at that size, it met all three again: warm p50 0.96 µs and no curated read, one read
+per cold snapshot, and one read and one `.supervisor` turn for the burst. A snapshot-path failure
+is remembered as a grant-path one is, so the snapshot can produce the blindness a grant is refused
+on — the same read. On a `.built` seam, during a sealed sleep after the teardown returns, `fanctl
+auto` exits 8 where it exited 0: `systemSleeping` is pending (ADR 0013). § 3's latch stays
+machine-wide only.
+
+**No `AeolusXPCVersion` bump.** No field, case or method changes: `.systemSleeping` and
+`.noThermalTelemetry` are on the wire and already thrown.
+
+**Assumption added.** The cache keeps the snapshot's sighting to one curated read per period. It is a
+row of the table below, which also says why, with § 3 running, that read is spent on every cycle
+rather than in an edge case ([#393](https://github.com/blamechris/Aeolus/issues/393)).
+
+**Alternatives considered.** *A machine-wide field for either rung*: a bump. *Rung 12 in grant
+order*: #360's exit 0. *Reclassify `noThermalTelemetry` as pending*: `auto` never exits 0 on a blind
+machine whose fans read automatic, and durable 9s become 8s. *A cache peek that does not read*: a
+second definition of sighted. *Move the grant's blindness check below the foreign read*: costs reads
+when blind, and the registers still part.
+
+**Revisit if** ADR 0013 reclassifies `noThermalTelemetry` or `systemSleeping`; the `Mac16,5`
+measurement exceeds one curated read per period; or concurrent grants across connections contend with
+§ 3. The ruling is the architect's #128/#270/#269 consult, run on Opus. This amendment corrects
+clauses of a Proposed ADR rather than the decisions they sit under. **Status stays Proposed.**
 
 ## Amendment (2026-10-15, [#366](https://github.com/blamechris/Aeolus/issues/366)) — § 5's mark follows the primary signal, a re-apply mid-episode leaves it to the episode, and a lease given up stays refused
 
@@ -2112,6 +2180,7 @@ This amendment corrects clauses of a Proposed ADR rather than the decisions they
 | — | At most one live lease covers a fan | One lease at a time (`.leaseHeldByAnotherClient`) | Overlapping leases: § 5's records keyed per (fan, lease), and registration's arbitration re-decided |
 | — | Every lease-core restore notice for a fan precedes any grant over it, and precedes the fan leaving `releasing` | `releasing` is held from before the restorer's notices until it returns; `HelperFanRestorer` awaits each notice before its write | A restore path bypassing `releasing` lets the index-keyed `manualControlReleased(fanAt:)` erase a newer lease's record, and a notice delivered after the restorer returns ends #368's wait before it arrives; either way the notice must then carry the lease |
 | — | The snapshot's `F<n>Mn`/`F<n>Mx` read and the grant's `readEnvelope(ofFan:)` fail together and reach one plausibility gate (#270) | Code: one scheduler and connection, the same two keys. Each path checks finiteness before the gate: the plane at its seam, and the snapshot's in `SMCFanEnumeration`, which turns a non-finite read into `.notDecodable`. A non-finite bound is therefore `.notMeasured` on both, and both end at that gate as `.boundsImplausible`. Unverified on Intel and M1/M2 | The grant refuses leases the snapshot offers, or the reverse. Fix the read in the same change; do not debounce |
+| — | The cache keeps the snapshot's sighting to one curated read per period (#269) | Measured on `Mac16,5` (27.0.1, 26A434) with § 3 stopped, in four runs: one curated read per cold snapshot, 40 of 40, and one per burst of 16 concurrent snapshots, 12 of 12, never more than one `.supervisor` turn held; none warm. With § 3 running, the shared cache expires for part of every § 3 cycle by construction: § 3 sleeps its interval after each cycle, the cache's age bound is that interval, and § 3 records when its read finishes, so the entry is expired for the whole of § 3's next read and any gap before it. So a snapshot can add one curated read per period, a duplicate whose result the cache drops, or queue its read ahead of § 3's and delay that cycle by one read. ADR 0010's bound still holds — at most one other read in flight — so that is a cost on every cycle, not a safety failure. Unmeasured with § 3 running ([#393](https://github.com/blamechris/Aeolus/issues/393), before E3 makes `.built` reachable), and on Intel or M1/M2 | The cost question reopens: a `.built` snapshot's check would queue `.supervisor` turns ahead of § 3. Fix the cache's coalescing; do not move the check off the snapshot |
 | — | The snapshot's `F<n>Md` read and the grant's fresh read fail together | Code: one scheduler and connection, the same key and `FirmwareFanMode(declaredByFirmware:)` decode behind the same finiteness rule; a `.snapshot` read waits and never fails for its priority. They differ only in priority and instant. Every recorded `F<n>Md` read on `Mac16,5` answered, and none was taken while reads were failing | The #360 rung refuses leases the helper grants. Fix the read, and re-decide here. The same holds for a platform whose mode is not `F<n>Md` (Intel, `FS! `): the snapshot's read must take the plane's branch, or share its decode, in the same change |
 
 Every observation above is `Mac16,5`; the write-path rows are hypotheses until D8 runs. Intel and

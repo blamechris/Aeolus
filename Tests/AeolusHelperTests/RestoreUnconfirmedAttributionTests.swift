@@ -232,10 +232,11 @@ struct RestoreUnconfirmedAttributionTests {
     ///
     /// **Mutation:** in `StartupReconciliation.refusalForGrant`, stop `held` from exempting a
     /// fan § 3 is keeping — `let candidates = fans.subtracting(held.subtracting(awaiting))`.
-    /// Run: red on `thrown`. The snapshot stays `.restoreToAutomaticFailed` under the same
-    /// mutation applied there, because `reportingHandbackState` composes after it and
-    /// overwrites; that is why the named mutation is on the grant path, and why the agreement
-    /// assertion is the one that catches it.
+    /// Run: red on `thrown`. **Mutation:** the same on the snapshot side, in
+    /// `ReadOnlyFanReport.reportingForeignControl` — `guard !held.subtracting(awaiting)
+    /// .contains(fan.index) else { return fan }`. Run: red on `shown`, which says
+    /// `.restoreToAutomaticUnconfirmed`: step 5 is above the registers in the ladder, as the
+    /// grant's foreign read is above its straight-line region (#269).
     @Test("Where § 3's set meets an abandoned handback, the durable refusal wins")
     func theDurableRefusalStillWinsWhereTheSetsMeet() async throws {
         let helper = Self.composed(writes: AvailabilityFixture.firmwareRefusesTheModeWrite)

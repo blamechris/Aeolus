@@ -28,8 +28,8 @@ import Foundation
 ///
 /// ## It holds no plane, and the one write it can name is the keystone
 ///
-/// It holds the read path, the lease core, and two narrow roles of the plane:
-/// `KeystoneRestoring`, whose one verb is `restoreToAutomatic(_:)`, and
+/// It holds the read path, the lease core, § 3's sightedness cache (#269), and two narrow roles
+/// of the plane: `KeystoneRestoring`, whose one verb is `restoreToAutomatic(_:)`, and
 /// `FanWriteCapabilityReporting` ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)
 /// D5). Not a `FanControlPlane`: that would put `commandTarget(_:)` one `await` from a decoded
 /// client message, which is the shape E2 froze this seam to prevent — see `FanControlPlane`
@@ -99,6 +99,11 @@ struct SupervisedFanAuthority: FanAuthority {
     /// automatic control.
     private let writeCapability: any FanWriteCapabilityReporting
 
+    /// § 3's sightedness, for the ladder's step 12 (#269): the `CriticalTemperatureCache` the lease
+    /// core proves a grant against, the same instance, so the snapshot's blindness is the grant's.
+    /// Asked once per snapshot and only on a `.built` seam; see `isBlind()`.
+    private let telemetry: any SightednessProving
+
     /// E5.4d's teardown gate, closed by `SignalTeardown` before it hands the fans back.
     ///
     /// **Owned here and exposed, rather than injected**, which is the opposite of the rule
@@ -117,13 +122,15 @@ struct SupervisedFanAuthority: FanAuthority {
 
     private let log: HelperLog
 
-    /// `keystone` and `writeCapability` are required, for `reconciliation`'s reason: a default
-    /// would compile and build a panic verb that never restores, or one that never asks.
+    /// `keystone`, `writeCapability` and `telemetry` are required, for `reconciliation`'s reason:
+    /// a default would compile and build a panic verb that never restores, one that never asks, or
+    /// a snapshot that offers control on a machine the grant refuses as blind.
     init(
         reading: ReadOnlyFanAuthority, leases: LeaseAuthority,
         reconciliation: some ReconciliationBaselineReporting,
         keystone: some KeystoneRestoring,
         writeCapability: some FanWriteCapabilityReporting,
+        telemetry: some SightednessProving,
         log: HelperLog
     ) {
         self.reading = reading
@@ -131,6 +138,7 @@ struct SupervisedFanAuthority: FanAuthority {
         self.reconciliation = reconciliation
         self.keystone = keystone
         self.writeCapability = writeCapability
+        self.telemetry = telemetry
         self.log = log
     }
 
@@ -180,8 +188,8 @@ struct SupervisedFanAuthority: FanAuthority {
     ///
     /// **The re-statement touches one field of one fan and nothing else.** The whole ordering
     /// is in `ReadOnlyFanReport` — see `AvailabilityRestatement.swift` for the ladder and
-    /// `restatingAvailability(of:observedMode:given:reconciliation:)` for the entry point. Since
-    /// [#355](https://github.com/blamechris/Aeolus/issues/355) neither half exempts a fan § 5
+    /// `restatingAvailability(of:observedMode:given:reconciliation:blind:)` for the entry point.
+    /// Since [#355](https://github.com/blamechris/Aeolus/issues/355) no rung exempts a fan § 5
     /// gave up: its ledger is reported on `isReclaimedBySystem`, never as an availability. The
     /// other three snapshot fields are the read path's own and are passed through untouched:
     /// this re-assembles the value rather than producing a second opinion about any of them.
@@ -191,6 +199,7 @@ struct SupervisedFanAuthority: FanAuthority {
     /// `F<n>Md` answer beside the snapshot built from it, because step 5 refuses a fan whose
     /// mode did not read and `FanState.mode` reports such a fan automatic.
     func snapshot() async throws -> SystemSnapshot {
+        let blind = try await isBlind()
         let machine = try await reading.observe()
         let view = await leases.activeLeaseView()
         // Its own hop, and that is safe for a reason the lease view does not share: the
@@ -200,13 +209,30 @@ struct SupervisedFanAuthority: FanAuthority {
             fans: machine.snapshot.fans.map {
                 ReadOnlyFanReport.restatingAvailability(
                     of: $0, observedMode: machine.modes[$0.index], given: view,
-                    reconciliation: baseline)
+                    reconciliation: baseline, blind: blind)
             },
             sensors: machine.snapshot.sensors,
             activeLease: view.lease,
             isThermalEmergencyActive: machine.snapshot.isThermalEmergencyActive,
             capturedAt: machine.snapshot.capturedAt
         )
+    }
+
+    /// Whether § 3 is blind, for the ladder's step 12 (#269): one `sighting()`, asked first, as the
+    /// grant asks it ahead of every per-fan step. Only on `.built`: on `.notBuilt`, every build on
+    /// `main`, step 6 answers every fan first. Warm, an actor hop; cold, at most one coalesced
+    /// curated read, which the cache remembers for the grant (ADR 0010). Every failure is
+    /// blindness, `refuseIfBlind`'s rule, but `CancellationError`, rethrown: the caller went away.
+    /// **It logs nothing**: a blind machine polled at 1 Hz would add a line per snapshot.
+    private func isBlind() async throws -> Bool {
+        guard writeCapability.writeCapability == .built else { return false }
+        do {
+            _ = try await telemetry.sighting()
+            return false
+        } catch {
+            if error is CancellationError { throw error }
+            return true
+        }
     }
 
     // MARK: - Control

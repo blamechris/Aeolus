@@ -569,6 +569,9 @@ struct WriteVerbAllowlistTests {
         "SupervisedFanAuthority.swift: apply(_: [FanSetting], leaseID: UUID, "
             + "from: ConnectionID)",
         "SupervisedFanAuthority.swift: connectionDidInvalidate(_: ConnectionID)",
+        // #269's step-12 check: one `sighting()` of the cache, on a `.built` seam only, and a
+        // `Bool` back. The authority's `telemetry` is a `SightednessProving`, whose one verb reads.
+        "SupervisedFanAuthority.swift: isBlind()",
         "SupervisedFanAuthority.swift: releaseLease(id: UUID, from: ConnectionID)",
         "SupervisedFanAuthority.swift: refuseIfShuttingDown(_: ConnectionID, message: String)",
         "SupervisedFanAuthority.swift: renewLease(id: UUID, from: ConnectionID)",

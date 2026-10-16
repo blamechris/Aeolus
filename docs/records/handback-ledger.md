@@ -317,6 +317,13 @@ Two would disagree the moment either moved — and the way they disagreed before
 naming a fan Aeolus could not hand back as another program's, while the gate refused it
 correctly.
 
+**The view carries both seals as well**: the machine-wide restore seal since #350, and § 4's sleep
+seal since [#269](https://github.com/blamechris/Aeolus/issues/269), as
+`LeaseAccountability.sleepSealed` — `SleepSealPairing.isSealed`, read in the same straight-line
+region as the registers, where `acquireLease` asks it. Neither has a per-fan meaning of its own; each
+is carried because while it stands the grant refuses every fan nothing ranked above it refuses, so
+the ladder states it per fan at the grant's own place.
+
 ### Why the view is one hop
 
 `activeLeaseView()` returns the lease **and** the fan sets together because the fan set is not
@@ -498,6 +505,16 @@ something less true than what was available.
      red with the guard moved above the foreign-control read, while the test of a grant that
      arrives during the panic stays green.
 
+**The snapshot evaluates the same order**
+([#269](https://github.com/blamechris/Aeolus/issues/269)). `ReadOnlyFanReport.firstRefusal` is one
+first-match function, statement for statement against this region and the refusals above it:
+steps 6, 5 and 8 for the build, the foreign-control read and the bounds read; then steps 1, 2, 11,
+10 and 3 for items 1, 2, 3, 6 and the second half of 4, in the order they are checked here. Item
+4's first half, `.leaseHeldByAnotherClient`, is the one it cannot state, since a snapshot has no
+`ConnectionID`, and item 5 is a race inside one request that no snapshot meets. `refuseIfBlind`,
+above the marker, is the one refusal the ladder states out of order — last, over a fan nothing else
+refuses — for the reason `AvailabilityRestatement.swift` gives: `fanctl auto` reads it as silent.
+
 ## One restore call per sweep
 
 Every teardown path removes its entries **synchronously**, then hands the whole sweep back in
@@ -678,13 +695,13 @@ this seal: its `.everyFan` ran with the gate open whenever the episode's wake wa
 that restore returned.
 
 **What the snapshot says.** `activeLeaseView()` reads the count in the same hop as the registers,
-as `LeaseAccountability.machineWideRestoreInFlight`, and the availability ladder's step 10 —
-`ReadOnlyFanReport.reportingMachineWideRestore(of:given:)`, last before `.available` — re-states a
-fan that would otherwise read `.available` as `.unavailable(.releaseInProgress)`. **It re-states
-`.available` and nothing else.** Every refusal the ladder ranks above it that the grant shares,
-the grant gives ahead of the seal, except step 3's, which is the same reason; so a fan another
-rung refuses keeps the answer that is still true once the panic returns. A rung that overwrote
-any fan would replace `.foreignManualControl` with "retry in a moment" about a fan another
+as `LeaseAccountability.machineWideRestoreInFlight`, and the availability ladder's step 10 states
+`.unavailable(.releaseInProgress)` for every fan no rung above it refuses. Since
+[#269](https://github.com/blamechris/Aeolus/issues/269) the ladder is one first-match function in
+the grant's order, so **step 10 sits where this guard sits**: below step 5, step 8, the abandoned
+and unconfirmed registers and § 4's sleep seal, which the grant gives ahead of it, and above step
+3. A fan another rung refuses keeps the answer that is still true once the panic returns. A rung
+above them would replace `.foreignManualControl` with "retry in a moment" about a fan another
 program holds, and would erase the `.supervisorBlind`
 [#360](https://github.com/blamechris/Aeolus/issues/360) states for a fan whose mode did not read.
 
@@ -781,15 +798,16 @@ producer, which #202 item 2 refused — so `.releaseInProgress`'s recovery advic
 escalation instead: if it does not clear within a few seconds, a restore has not returned, and
 `docs/RECOVERY.md` sends the user to step 5.
 
-**What the snapshot says.** Step 10 re-states `.available` while the count is above zero. After a
-declined seal, and after a wake the teardown outlived, the snapshot and the grant both say
-`.releaseInProgress`. During a sealed teardown before the wake the grant says `.systemSleeping` and
-the snapshot `.releaseInProgress`, where it said `.available`:
-[#269](https://github.com/blamechris/Aeolus/issues/269)'s gap, narrower in availability and
-different in reason. When #269 gives `.systemSleeping` a rung, it goes below step 8, and so below
-step 5, and above step 10, in the grant's order: `acquireLease` checks the sleep seal after its
-fresh read, which step 5 mirrors, after its bounds read since #270, which step 8 mirrors, and
-before this seal.
+**What the snapshot says.** Step 10 states `.releaseInProgress` while the count is above zero.
+After a declined seal, and after a wake the teardown outlived, the snapshot and the grant both say
+`.releaseInProgress`. During a sealed teardown before the wake both say `.systemSleeping`, since
+[#269](https://github.com/blamechris/Aeolus/issues/269) gave the sleep seal its rung, step 11, in
+the grant's order: below step 8, and so below step 5, because `acquireLease` checks the sleep seal
+after its fresh read, which step 5 mirrors, and after its bounds read since #270, which step 8
+mirrors; and above step 10 and step 3, because it checks the sleep seal before this seal and
+before `releasing`. Until #269 the snapshot said `.releaseInProgress` there, and `.available` once
+the teardown had returned and the seal still stood. A fan the sweep covered reads
+`.handbackUnconfirmed` once the budget has expired, above both seals, as the grant refuses it.
 
 **Why two tests were inverted.** `UnconfirmedHandbackTests.aWedgedHandbackDropsTheLeaseFirstAndLeavesTheFanUnconfirmed`
 and `SleepCycleSurvivalTests.aHandbackThatNeverReturnsIsStillRefusedAfterASecondWake` granted fan 1
@@ -934,6 +952,8 @@ of the two limits is reached first depends on how much comment the new code carr
 with every decision made over them, moved into the two value types
 [above](#where-the-registers-live-two-value-types-the-actor-holds-128), which the actor holds
 `private`. That took the body to 287, leaving 63, and the file to 851.
+[#269](https://github.com/blamechris/Aeolus/issues/269)'s one line, the sleep seal carried in
+`activeLeaseView()`, took it to 288, leaving 62, and the file to 853.
 
 New behaviour for #9's A4 and A6 belongs in the `EngagementDriver` that
 [ADR 0014](../ADR/0014-apple-silicon-unlock.md) specifies, and in value types beside

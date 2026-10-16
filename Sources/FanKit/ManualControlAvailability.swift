@@ -68,9 +68,9 @@ public enum ManualControlAvailability: Sendable, Hashable {
         case selfRenewalNotBuilt
         /// The fan is mid-handback: a previous lease has ended and its restore-to-automatic write
         /// has not completed yet, or a restore of every fan is still running — `docs/SAFETY.md`
-        /// § 7's panic verb (`fanctl reset --all`, `fanctl auto`), or § 4's handback before the Mac
-        /// sleeps. While one runs, every fan nothing else refuses reads this, so its machine-wide
-        /// restore cannot undo a lease granted under it ([#350](https://github.com/blamechris/Aeolus/issues/350)).
+        /// § 7's panic verb (`fanctl reset --all`, `fanctl auto`), or § 4's handback with no sleep
+        /// seal over it (under one, `systemSleeping`: #269). While one runs, every fan nothing else
+        /// refuses reads this, so its restore cannot undo a lease granted under it ([#350](https://github.com/blamechris/Aeolus/issues/350)).
         ///
         /// Transient, and normally the shortest-lived reason here — milliseconds; `systemSleeping`
         /// is the other transient one, and lasts until the machine wakes. Not always milliseconds:
