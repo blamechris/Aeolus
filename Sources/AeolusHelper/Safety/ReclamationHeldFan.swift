@@ -66,7 +66,7 @@ extension ReclamationWatchdog {
         /// a same-lease record.
         var episodeInFlight = false
         /// The fan's registration generation when the examination now in flight began, stamped
-        /// by `Registry.beginExamination(ofFan:)` before the control-state read (#381). Kept by
+        /// by `beginExamination(atGeneration:)` before the control-state read (#381). Kept by
         /// `registering(_:over:)` with the rest of a same-lease record, so a registration under
         /// this lease since then shows as a generation past it. `nil` until the first examination.
         var examinedAtGeneration: UInt64?
@@ -98,6 +98,14 @@ extension ReclamationWatchdog {
         static func registering(_ lease: UUID, over existing: HeldFan?) -> HeldFan {
             if let existing, existing.lease == lease { return existing }
             return HeldFan(lease: lease)
+        }
+
+        /// Stamps this record as the examination of it begins, with the fan's registration
+        /// `generation` (#381): `Registry.beginExamination(ofFan:)`. A method on the record rather
+        /// than an assignment through `Registry.held`, so a stamp that reads the record's own
+        /// fields as well is one exclusive access to it.
+        mutating func beginExamination(atGeneration generation: UInt64) {
+            examinedAtGeneration = generation
         }
 
         /// Records the step just put on the wire for this fan.

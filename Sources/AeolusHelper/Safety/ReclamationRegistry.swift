@@ -95,13 +95,15 @@ extension ReclamationWatchdog {
         // MARK: - One examination
 
         /// Begins one examination of `index`: stamps its record with the fan's generation, before
-        /// the control-state read, so a registration under the same lease during the examination
-        /// is visible to its re-assert (#381). A same-lease registration keeps the record and
-        /// moves the generation, so the two then differ.
+        /// the control-state read, through `HeldFan.beginExamination(atGeneration:)`, so a
+        /// registration under the same lease during the examination is visible to its re-assert
+        /// (#381). A same-lease registration keeps the record and moves the generation, so the two
+        /// then differ.
         ///
         /// - Returns: the lease the record was registered under, or `nil` when it is not held.
         mutating func beginExamination(ofFan index: Int) -> UUID? {
-            held[index]?.examinedAtGeneration = registrations[index, default: 0]
+            let generation = registrations[index, default: 0]
+            held[index]?.beginExamination(atGeneration: generation)
             return held[index]?.lease
         }
 

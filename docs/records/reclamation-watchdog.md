@@ -129,11 +129,12 @@ to end the episode too. The actor's share is the binding of `mayClearTheMark` an
 code lines, `function_body_length`'s warning, so the next line it needs takes a split first.
 
 **#381 spent eleven: 317 code lines, and about 33 left; file 921** (SwiftLint 0.65.1). The stamp,
-the re-fetch of the target and the comparison before recording are three `Registry` members and a
-field on `HeldFan`, tested as values. The actor's share is the stamp in `examine`'s first line,
-which replaced the line that read the lease, so `examine` stays at 50 with no split; the two
-re-fetches before the command write; and two private helpers for where they stop, which keep
-`reassert`'s cyclomatic complexity at 10 where inline guards would have made it 12.
+the re-fetch of the target and the comparison before recording are three `Registry` members, and a
+field on `HeldFan` stamped by its own method so that #383 can add to the stamp, all tested as
+values. The actor's share is the stamp in `examine`'s first line, which replaced the line that read
+the lease, so `examine` stays at 50 with no split; the two re-fetches before the command write; and
+two private helpers for where they stop, which keep `reassert`'s cyclomatic complexity at 10 where
+inline guards would have made it 12.
 
 ## Every act is for the lease the fan was registered under
 

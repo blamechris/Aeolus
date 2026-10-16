@@ -1909,7 +1909,7 @@ Then:
   It costs one cycle and one attempt, in the direction of giving the fan up sooner.
 - *The judgement's own view is not covered.* A target reported between § 5's read and its judgement
   is compared against a reading that predates it; tracked as
-  [#383](https://github.com/blamechris/Aeolus/issues/383).
+  [#383](https://github.com/blamechris/Aeolus/issues/383), an A6 precondition.
 
 **Alternatives considered.**
 

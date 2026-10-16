@@ -102,36 +102,41 @@ struct ReclamationEpisodeMarkTests {
     }
 
     /// **The one-cycle bound, both ways.** The same re-apply, landing during the re-assert's
-    /// command write so that the re-assert lands: the firmware holds the re-commanded 2,400 RPM,
-    /// and the fan still turns at 1,800. The re-apply does not clear the mark early, and the next
-    /// readable cycle, whose primary converges while the fan is short, clears it rather than
-    /// leaving it for the ramp. A re-apply during the envelope read stands the re-assert down
-    /// instead (#381), and `ReclamationReassertViewTests` holds the same bound for that.
+    /// envelope read as level 6's `apply` will: it registers fan 0 under L1 and commands 2,400 RPM
+    /// itself. Since #381 the registration stands § 5's re-assert down, so the firmware holds the
+    /// client's 2,400 RPM, not § 5's, and the fan still turns at 1,800. The re-apply does not clear
+    /// the mark early, and the next readable cycle, whose primary converges while the fan is
+    /// short, clears it rather than leaving it for the ramp. The attempt the stand-down booked
+    /// stays spent and the `.short` cycle does not refill it, so when the system takes the fan
+    /// again the re-assert is the second of the budget.
     ///
     /// **Mutations:** (a) the actor always clears, as in demo A: red on the first cycle's mark.
     /// (b) Take `.short` out of the clearing case in `examine(fanAt:)`: red on the second cycle's
-    /// mark and its "resolved" line.
+    /// mark and its "resolved" line. (c) `registry.refundReassertAttempt(ofFan:)` in the envelope
+    /// read's stand-down: red on the third cycle's attempt. (d) The envelope read's re-fetch back
+    /// to `isHeld(_:under:)`, which lets the re-assert land: red on the stand-down line.
     @Test("A re-apply mid-episode leaves the mark for exactly one readable cycle")
     func aReapplyMidEpisodeLeavesTheMarkForOneCycle() async throws {
         let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
-        let sensing = InterferingFanStateSensing(plane, during: .commandWrite)
+        let sensing = InterferingFanStateSensing(plane, during: .envelopeRead)
         let machine = ReclamationMachine(
             plane: plane, fans: [0: .held(at: 1_800)], interfering: sensing)
         try await machine.hold(fan: 0, commanding: 2_400)
         let lease = try #require(await machine.leases.activeLease()).id
         let permit = try commandableFan(0, declaring: .held(at: 1_800))
         await sensing.interfere { [machine] in
-            do {
-                try await machine.watchdog.manualControlEngaged(permit, under: lease)
-            } catch {
-                Issue.record("the re-apply under the live lease was refused: \(error)")
-            }
+            await ReclamationReassertViewTests.reapply(
+                machine, under: lease, permit: permit, rpm: 2_400)
         }
 
         await machine.watchdog.cycle()
 
         #expect(await sensing.didFire, "the scenario never arranged the interleaving")
-        #expect(await machine.commandedRPMs == [2_400], "the re-assert did not land")
+        #expect(
+            machine.safetyLog.lines(containing: "held for, during its envelope read").count == 1,
+            "the re-apply did not stand the re-assert down")
+        #expect(await machine.commandedRPMs == [2_400], "the re-assert wrote over the re-apply")
+        #expect(machine.safetyLog.lines(containing: "re-asserted").isEmpty)
         #expect(
             await machine.ledger.isReclaimed(fanAt: 0),
             "a re-apply mid-episode cleared the mark before § 5 read the target held")
@@ -144,6 +149,14 @@ struct ReclamationEpisodeMarkTests {
             "a fan whose target the firmware holds was still reported reclaimed")
         #expect(machine.safetyLog.lines(containing: Self.resolved).count == 1)
         #expect(await machine.leases.activeLease()?.id == lease)
+
+        await machine.plane.setMode(.automatic, ofFan: 0)
+        await machine.watchdog.cycle()
+
+        #expect(
+            machine.safetyLog.lines(containing: "re-asserted 2400 RPM, attempt 2 of").count == 1,
+            "the attempt the stand-down spent was given back, or the short cycle refilled it")
+        #expect(await machine.commandedRPMs == [2_400, 2_400])
     }
 
     /// **A blind cycle does not close the episode.** Fan 0 is commanded 2,400 RPM and the

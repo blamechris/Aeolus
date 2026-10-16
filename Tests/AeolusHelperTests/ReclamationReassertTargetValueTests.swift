@@ -32,10 +32,12 @@ struct ReclamationReassertTargetValueTests {
     /// lease keeps the record and moves the generation, so the re-fetch withholds the target until
     /// the next examination stamps the record again.
     ///
-    /// **Mutation (a):** delete the stamp in `Registry.beginExamination(ofFan:)`. **(b):** drop
-    /// the generation comparison from `Registry.reassertTarget(ofFan:under:)`. **(c):** make
+    /// **Mutation (a):** delete the stamp in `HeldFan.beginExamination(atGeneration:)`. **(b):**
+    /// drop the generation comparison from `Registry.reassertTarget(ofFan:under:)`. **(c):** make
     /// `Registry.register` restamp the record it keeps with the generation it moves to. **(d):**
-    /// drop `record.lease == lease` from `reassertTarget(ofFan:under:)`. Run: red on each.
+    /// drop `record.lease == lease` from `reassertTarget(ofFan:under:)`. **(e):** delete the call
+    /// to `HeldFan.beginExamination(atGeneration:)` from `Registry.beginExamination(ofFan:)`. Run:
+    /// red on each.
     @Test("The re-assert target follows reports, and is withheld after a same-lease registration")
     func theTargetFollowsReportsAndIsWithheldAfterARegistration() {
         var registry = holding(under: lease)
