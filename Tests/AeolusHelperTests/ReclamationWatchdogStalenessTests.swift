@@ -41,7 +41,7 @@ struct ReclamationWatchdogStalenessTests {
     /// be written to.
     ///
     /// The interference fires inside `readEnvelope(ofFan:)` — the suspension
-    /// `reassert(_:fanAt:heldUnder:attempt:reengaging:)` resumes from — and releases the fan the
+    /// `reassert(fanAt:heldUnder:attempt:reengaging:)` resumes from — and releases the fan the
     /// way the lease core does when a TTL lapses or a connection dies. The watchdog resumes holding
     /// a `permit` for a fan it is no longer watching.
     ///
@@ -49,8 +49,11 @@ struct ReclamationWatchdogStalenessTests {
     /// it, no registry entry to notice it, and nothing left to restore it. `CLAUDE.md`
     /// rule 2 — *manual control is a lease, never a setting* — with the lease gone.
     ///
-    /// Delete the `guard isHeld(index, under: lease)` re-fetch after the envelope read in
-    /// `reassert` and this goes red on the first two assertions.
+    /// Delete the re-fetch after the envelope read in `reassert` — the guard on
+    /// `registry.reassertTarget(ofFan:under:)` since #381 — and this goes red on the first two
+    /// assertions. Since #381's review the line is asserted too: `reassertStopped`'s released
+    /// branch removed, so every stop there logs the stand-down's "registered again" line, is red
+    /// on the last two.
     @Test("A fan released during its envelope read is never written to")
     func aFanReleasedDuringTheEnvelopeReadIsNotWritten() async throws {
         let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
@@ -70,6 +73,11 @@ struct ReclamationWatchdogStalenessTests {
         #expect(
             await machine.commandedRPMs.isEmpty, "§ 5 commanded a fan it was not watching")
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
+        #expect(
+            machine.safetyLog.lines(containing: "was released during its envelope read").count == 1)
+        #expect(
+            machine.safetyLog.lines(containing: "left this re-assert").isEmpty,
+            "a release was reported as a registration under the same lease")
     }
 
     /// The same rule one suspension earlier: a fan released during its control-state read is
@@ -248,9 +256,9 @@ struct ReclamationWatchdogStalenessTests {
     /// landed *before* this write did, so § 5 is the only thing that can put it back.
     ///
     /// **Mutation:** replace the `guard isHeld(index, under: lease)` after the command write with
-    /// an unconditional `registry.recordReassertedTarget(recommanded, ofFan: index)`, which does
-    /// nothing to a released fan, as `held[index]?.commanded = recommanded` did. Run: red on the
-    /// restore, the re-assert log and the release log.
+    /// an unconditional `registry.recordReassertedTarget(recommanded, decidedOn: target, ofFan:
+    /// index)`, which does nothing to a released fan, as `held[index]?.commanded = recommanded`
+    /// did. Run: red on the restore, the re-assert log and the release log.
     @Test("A fan released during the re-assert's command write is restored, not re-asserted")
     func aFanReleasedDuringTheCommandWriteIsRestored() async throws {
         let plane = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)])

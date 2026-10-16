@@ -24,9 +24,13 @@ import Testing
 /// - **The lease hop**, in `examine`: `aRecordChangedDuringTheLeaseCheckStopsTheExamination`.
 /// - **The precedence check** and **the ledger hop**, in `diverged`: untested, below.
 /// - **The envelope read**, in `reassert`:
-///   `aRecordRegisteredUnderANewLeaseDuringTheEnvelopeReadIsLeftToIt`.
+///   `aRecordRegisteredUnderANewLeaseDuringTheEnvelopeReadIsLeftToIt`. Since #381 it also stops
+///   for a registration under the record's own lease since the examination began, and that half
+///   is `ReclamationReassertViewTests.aReapplyDuringTheEnvelopeReadIsNotOverwritten` and
+///   `.aReengagementDuringTheEnvelopeReadIsLeftToIt`.
 /// - **The first write**, in `reassert`:
-///   `aRecordRegisteredUnderANewLeaseDuringTheFirstWriteIsLeftToIt`.
+///   `aRecordRegisteredUnderANewLeaseDuringTheFirstWriteIsLeftToIt`. Its same-lease half (#381) is
+///   `ReclamationReassertViewTests.aRegistrationDuringTheModeWriteIsLeftToIt`.
 /// - **The command write**, in `reassert`:
 ///   `aRecordRegisteredUnderANewLeaseDuringTheCommandWriteIsLeftToIt`.
 /// - **A refused command write**, in `commandWriteFailed`: `ReclamationRefusedCommandWriteTests`'s

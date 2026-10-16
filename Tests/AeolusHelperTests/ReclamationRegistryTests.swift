@@ -302,8 +302,9 @@ struct ReclamationRegistryTests {
     /// primary branch that reaches the re-assert has already zeroed it. Resetting it here as well
     /// would be a behaviour change, so the test pins the dwell where it stood.
     ///
-    /// **Mutation (a):** make `Registry.recordReassertedTarget(_:ofFan:)` do nothing. **(b):**
-    /// make it `held[index]?.command(target)`, which resets the dwell too. Run: red on each.
+    /// **Mutation (a):** make `Registry.recordReassertedTarget(_:decidedOn:ofFan:)` do nothing.
+    /// **(b):** make it `held[index]?.command(target)`, which resets the dwell too. Run: red on
+    /// each. Recorded over the target it was decided on, as `reassert` records it (#381).
     @Test("A re-asserted target is recorded, and leaves the dwell where it stands")
     func aReassertedTargetIsRecordedAndLeavesTheDwell() throws {
         var registry = holding(under: lease)
@@ -312,7 +313,7 @@ struct ReclamationRegistryTests {
         _ = registry.judge(short, ofFan: 0)
         let written = CommandedTarget(fanIndex: 0, rpm: 2_200)
 
-        registry.recordReassertedTarget(written, ofFan: 0)
+        registry.recordReassertedTarget(written, decidedOn: target, ofFan: 0)
         let record = try #require(registry.record(ofFan: 0))
         #expect(record.commanded == written)
         #expect(record.actualDwellCycles == 2)

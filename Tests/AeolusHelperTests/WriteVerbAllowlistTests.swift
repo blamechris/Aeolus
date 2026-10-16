@@ -538,8 +538,11 @@ struct WriteVerbAllowlistTests {
         "ReclamationWatchdog.swift: finaliseRelease(fanAt: Int, heldUnder: UUID, "
             + "because: FanRestoreCause)",
         "ReclamationWatchdog.swift: manualControlReleased(fanAt: Int)",
-        "ReclamationWatchdog.swift: reassert(_: CommandedTarget, fanAt: Int, heldUnder: UUID, "
-            + "attempt: Int, reengaging: Bool)",
+        "ReclamationWatchdog.swift: reassert(fanAt: Int, heldUnder: UUID, attempt: Int, "
+            + "reengaging: Bool)",
+        // #381's: the re-fetch after the re-assert's first step, out of `reassert` for its
+        // complexity budget. It reaches a write only through `restoreAndForget`, beside it here.
+        "ReclamationWatchdog.swift: reassertStoppedAfterItsFirstStep(fanAt: Int, heldUnder: UUID)",
         "ReclamationWatchdog.swift: restoreAndForget(fanAt: Int, heldUnder: UUID)",
         // #128's two, the blocks `restoreAndForget` and `finaliseRelease` shared, lifted into
         // private methods on the same actor. `handBack(fanAt:)` takes an index and reaches a

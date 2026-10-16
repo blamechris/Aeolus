@@ -154,7 +154,7 @@ enum ReclamationLimits {
     /// at the point it decides to re-assert, which is before the envelope read that suspends, so an
     /// exit taken between the two has to give it back or the budget starts measuring something
     /// else. The cancellation guard in
-    /// `ReclamationWatchdog.reassert(_:fanAt:heldUnder:attempt:reengaging:)` is the only such exit
+    /// `ReclamationWatchdog.reassert(fanAt:heldUnder:attempt:reengaging:)` is the only such exit
     /// and it refunds; every other early return there has either already written or has resolved
     /// the fan. The distinction is what stops repeated sleep/wake stop-starts exhausting a budget
     /// without a single `F<n>Md` reaching the firmware.
