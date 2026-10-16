@@ -13,7 +13,8 @@ import Testing
 /// and records the fan under a lease the lease core no longer holds. Nothing is overwritten,
 /// because any other lease's registration would have moved the generation. What makes that safe
 /// is the next examination, which asks the record's own lease, finds it not live, and restores
-/// the fan as `.leaseLapsed`.
+/// the fan as `.leaseLapsed`. One under the lease § 5's terminal action gave the fan up for is
+/// refused whatever moved, by `givenUp` (#366).
 ///
 /// ## Two of these tests are models, and the model is named
 ///
@@ -23,10 +24,12 @@ import Testing
 /// lease through it, or lets the terminal action revoke through it, models a **lost** notice, and
 /// says so. The shipping composition is the test that delivers the notice.
 ///
-/// The lost-notice tests assert the acceptance as well, as
+/// The unannounced-end test asserts the acceptance as well, as
 /// `ReclamationWatchdogStalenessTests.aLeaseLapsingDuringTheReassertIsHandedBackNextCycle` does:
-/// closing the residual turns them red, and the record is updated rather than left claiming
-/// something that is no longer true.
+/// closing the residual turns it red, and the record is updated rather than left claiming
+/// something that is no longer true. The terminal action's lost-notice model asserted it too
+/// until #366 closed that residual, which turned it red as it was meant to; it now asserts the
+/// refusal.
 extension ReclamationLeaseIdentityTests {
 
     /// How the lease behind a parked registration ends with nothing moving the generation.
@@ -137,14 +140,17 @@ extension ReclamationLeaseIdentityTests {
     /// it restores (`HelperFanRestorer`), and `Registry.release(fanAt:)` always moves the
     /// generation. So a re-apply under L1 that began in the hand-back and resumes after the
     /// terminal action returned is refused, and the mark the terminal action keeps (#346) stays.
-    /// Before the revocation `finalising` refuses it
-    /// (`aRegistrationInFlightAtTheTerminalActionClearsNothing`); this is the other side.
+    /// Since #366 it is refused twice over: by the generation the notice moved, and by `givenUp`,
+    /// which refuses L1 at this fan whatever notice was sent. The lost-notice model below is the
+    /// case only `givenUp` refuses.
     ///
     /// `beforeNextRevocation` delivers the notice inside the revocation, as the restorer does.
     ///
     /// **Mutation:** delete the `registrations[index, default: 0] &+= 1` in
-    /// `Registry.release(fanAt:)`. Run: red on the refusal, the mark and the registry — the
-    /// re-apply is accepted and clears the mark the terminal action kept.
+    /// `Registry.release(fanAt:)`, **and** drop `givenUp[index] != lease` from
+    /// `Registry.register`'s refusal. Run: red on the refusal, the mark and the registry — the
+    /// re-apply is accepted and clears the mark the terminal action kept. Either alone leaves this
+    /// green, because the other refuses.
     @Test("A re-apply that began in the hand-back is refused once the revocation's notice is sent")
     func aReapplyThatBeganInTheHandBackIsRefusedAfterTheRevocationsNotice() async throws {
         let scene = try await Self.reapplyParkedInTheHandBack()
@@ -170,16 +176,19 @@ extension ReclamationLeaseIdentityTests {
 
     /// **The lost-notice model.** The same re-apply with the notice never sent, as
     /// `RecordingFanRestorer` never sends one. Nothing moved the generation after the re-apply
-    /// read it and `finalising` has closed, so the registration is accepted and records fan 0
-    /// under a lease the terminal action revoked. Acceptance needs a lost release notice, and a
-    /// notice is a hint (ADR 0009 D2); with it delivered the re-apply is refused, which
-    /// `aReapplyThatBeganInTheHandBackIsRefusedAfterTheRevocationsNotice` holds. The next cycle
-    /// hands the fan back, as `.leaseLapsed`. #366 owns the mark's handling around an episode.
+    /// read it and `finalising` has closed, and until #366 the registration was accepted: it
+    /// recorded fan 0 under the lease the terminal action had revoked and erased the mark the
+    /// terminal action keeps, and the next cycle handed the fan back as `.leaseLapsed`. The
+    /// terminal action's entry now records the lease in `givenUp`, which nothing clears, so the
+    /// registration is refused whenever it resumes and whatever notice was sent or lost. The mark
+    /// stays, and there is no record left to hand back.
     ///
-    /// **Mutation:** delete the `guard entitled` block from `examine(fanAt:)`. Run: red on the
-    /// second restore, the registry and the lapsed line.
-    @Test("A registration accepted after the terminal action, its notice lost, is handed back")
-    func aRegistrationAcceptedAfterTheTerminalActionWithItsNoticeLostIsHandedBack() async throws {
+    /// **Mutations:** (a) clear `givenUp[index]` in `Registry.endFinalising(fanAt:)`; (b) put
+    /// `finalising[index] != lease` back in place of `givenUp[index] != lease` in
+    /// `Registry.register`'s guard. Run: red on the refusal, the mark, the "resolved" line and the
+    /// registry, on each.
+    @Test("A registration resuming after the terminal action, its notice lost, keeps the mark")
+    func aRegistrationResumingAfterTheTerminalActionIsRefusedAndKeepsTheMark() async throws {
         let scene = try await Self.reapplyParkedInTheHandBack()
         let machine = scene.machine
 
@@ -190,19 +199,24 @@ extension ReclamationLeaseIdentityTests {
         let work = try #require(await scene.reapply.work, "the re-apply never began")
 
         await scene.hops.release()
-        try await finished("the re-apply's registration", work)
+        await #expect(throws: EngagementRefusal.leaseNotLive(fan: 0)) {
+            try await finished("the re-apply's registration", work)
+        }
 
         #expect(
-            await machine.watchdog.fansUnderManualControl == [0],
-            "the residual this test bounds is gone: update the record, then this test")
+            await machine.ledger.isReclaimed(fanAt: 0),
+            "a registration under the lease the terminal action gave up erased the mark it keeps")
+        #expect(machine.safetyLog.lines(containing: "is no longer reported as taken").isEmpty)
+        #expect(machine.safetyLog.lines(containing: "refused to register fan 0").count == 1)
+        #expect(
+            await machine.watchdog.fansUnderManualControl.isEmpty,
+            "a registration under a revoked lease recorded the fan")
 
         await machine.watchdog.cycle()
 
-        #expect(
-            await machine.restoreCount(fan: 0) == restoresBefore + 1,
-            "a fan registered after the terminal action returned was never handed back")
-        #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
-        #expect(machine.safetyLog.lines(containing: leaseLapsedNotice).count == 1)
+        #expect(await machine.restoreCount(fan: 0) == restoresBefore)
+        #expect(machine.safetyLog.lines(containing: leaseLapsedNotice).isEmpty)
+        #expect(await machine.ledger.isReclaimed(fanAt: 0))
         #expect(await machine.restorer.causes.filter { $0 == .systemReclaimed }.count == 1)
     }
 }

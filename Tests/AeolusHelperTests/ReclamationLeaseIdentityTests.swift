@@ -143,8 +143,8 @@ struct ReclamationLeaseIdentityTests {
     /// two.
     ///
     /// **Mutation:** in `ReclamationWatchdog.Registry.register(_:fanAt:live:since:)`, drop `live`
-    /// from the refusal — `guard registrations[index, default: 0] == generation, finalising[index]
-    /// != lease` — so a lease that is not live records. Run: red on the refusal, `lastCommanded`
+    /// from the refusal — `guard registrations[index, default: 0] == generation, givenUp[index] !=
+    /// lease` — so a lease that is not live records. Run: red on the refusal, `lastCommanded`
     /// and the cycle's restore.
     @Test("A late registration under an ended lease is refused and evicts nothing")
     func aLateRegistrationUnderAnEndedLeaseIsRefusedAndEvictsNothing() async throws {

@@ -349,7 +349,7 @@ struct FinaliseReleaseLedgerTests {
     /// and this test is the same rule. The refusal is A6's engagement failure, so `apply` hands
     /// the fan back too, which matches the revocation.
     ///
-    /// **Mutation:** drop `finalising[index] != lease` from the refusal in
+    /// **Mutation:** drop `givenUp[index] != lease` from the refusal in
     /// `ReclamationWatchdog.Registry.register(_:fanAt:live:since:)`. Run: red on the refusal, the
     /// ledger, the snapshot and the "resolved" line.
     @Test("A registration under the lease being given up is refused, and the mark is kept")

@@ -193,7 +193,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         let generation = registry.generation(ofFan: index)
         let live = await leases.hasLiveLease(id: lease, coveringFan: index)
         let registration = registry.register(lease, fanAt: index, live: live, since: generation)
-        guard case .accepted(let replacedEndedLease) = registration else {
+        guard case .accepted(let replacedEndedLease, _) = registration else {
             log.reclamationRegistrationRefused(fan: index, whileReleasedOrRegistered: live)
             throw EngagementRefusal.leaseNotLive(fan: index)
         }

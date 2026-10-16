@@ -1,8 +1,8 @@
 import Foundation
 import Testing
 
-/// `ReclamationWatchdog.Registry`'s own shape, asserted rather than described: its three stores
-/// are `private` and exactly three, nothing in its file can suspend, and nothing in it takes a
+/// `ReclamationWatchdog.Registry`'s own shape, asserted rather than described: its four stores
+/// are `private` and exactly four, nothing in its file can suspend, and nothing in it takes a
 /// closure.
 ///
 /// Split from `ReclamationWatchdogAccessTests`, which says why each rule exists and holds the
@@ -17,8 +17,11 @@ struct ReclamationRegistryAccessTests {
     static let registryFile = "ReclamationRegistry.swift"
 
     /// `Registry`'s stored properties, every one `private`. A new one is § 5 state, which is
-    /// what this type is for — and adding it is a decision this list records.
-    private static let registryStores: Set<String> = ["held", "finalising", "registrations"]
+    /// what this type is for — and adding it is a decision this list records: `givenUp` is #366's,
+    /// the lease the terminal action last gave each fan up for.
+    private static let registryStores: Set<String> = [
+        "held", "finalising", "givenUp", "registrations",
+    ]
 
     /// `Registry`'s internal properties: computed, get-only views of `held`.
     static let registryQueries: Set<String> = ["isEmpty", "fans", "fansInOrder"]
@@ -32,8 +35,8 @@ struct ReclamationRegistryAccessTests {
 
     /// **Mutations:** declare `var held` without `private`; add `private var extra = 0`. Run: red
     /// on each.
-    @Test("The registry's three stores are private, and its internal properties are its views")
-    func theRegistrysStoresArePrivateAndExactlyThree() throws {
+    @Test("The registry's four stores are private, and its internal properties are its views")
+    func theRegistrysStoresArePrivateAndExactlyFour() throws {
         let code = try Self.registryMembersSource()
         let properties = MemberAccessScan.members(inSource: code, keyword: .property)
         let stores = Set(properties.filter(\.isPrivate).map(\.key))
