@@ -92,6 +92,35 @@ extension ReclamationWatchdog {
         /// compared after it.
         func generation(ofFan index: Int) -> UInt64 { registrations[index, default: 0] }
 
+        // MARK: - One examination
+
+        /// Begins one examination of `index`: stamps its record with the fan's generation, before
+        /// the control-state read, through `HeldFan.beginExamination(atGeneration:)`, so a
+        /// registration under the same lease during the examination is visible to its re-assert
+        /// (#381). A same-lease registration keeps the record and moves the generation, so the two
+        /// then differ.
+        ///
+        /// - Returns: the lease the record was registered under, or `nil` when it is not held.
+        mutating func beginExamination(ofFan index: Int) -> UUID? {
+            let generation = registrations[index, default: 0]
+            held[index]?.beginExamination(atGeneration: generation)
+            return held[index]?.lease
+        }
+
+        /// What a re-assert of `index` for `lease` commands now: the record's own target as it
+        /// stands, not the one the re-assert was decided on (#381). A report alone moves no
+        /// generation, so it is followed.
+        ///
+        /// - Returns: `nil` when the record is gone or another lease's, or when the fan has been
+        ///   registered again under `lease` since its examination began: that engagement is
+        ///   commanding it.
+        func reassertTarget(ofFan index: Int, under lease: UUID) -> CommandedTarget? {
+            guard let record = held[index], record.lease == lease,
+                record.examinedAtGeneration == registrations[index, default: 0]
+            else { return nil }
+            return record.commanded
+        }
+
         // MARK: - Registration, release and the terminal action
 
         /// Records a registration of `index` under `lease`, given what the lease core answered
@@ -183,9 +212,14 @@ extension ReclamationWatchdog {
             held[index]?.command(target)
         }
 
-        /// Records the target a re-assert put on the wire. `commanded` only: the dwell is left
-        /// as it stands, as it always was on this path.
-        mutating func recordReassertedTarget(_ target: CommandedTarget, ofFan index: Int) {
+        /// Records the target a re-assert put on the wire, unless another was reported for the
+        /// fan while that write was in flight (#381): the report is newer than the decision, so
+        /// the next cycle judges the fan against it. `commanded` only: the dwell is left as it
+        /// stands, as it always was on this path.
+        mutating func recordReassertedTarget(
+            _ target: CommandedTarget, decidedOn decided: CommandedTarget, ofFan index: Int
+        ) {
+            guard held[index]?.commanded == decided else { return }
             held[index]?.commanded = target
         }
 

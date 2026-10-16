@@ -549,7 +549,7 @@ actor GatedFanStateSensing: FanStateSensing {
 /// ## The write seam too, since #180
 ///
 /// It is a `FanControlPlane` as well as a read seam, because the write-side defect #180 names could
-/// not be reached from a read: `reassert(_:fanAt:heldUnder:attempt:reengaging:)` assigned what its
+/// not be reached from a read: `reassert(fanAt:heldUnder:attempt:reengaging:)` assigned what its
 /// command write returned through `held[index]?.commanded`, and a lease released *during that
 /// write* made the assignment vanish while § 5 logged a successful re-assert. With only the two
 /// read moments, nothing could release a lease there — which is why it survived #136's review. A
@@ -562,8 +562,13 @@ actor InterferingFanStateSensing: FanControlPlane {
     enum Moment: Sendable {
         /// Inside `readControlState(ofFan:)` — the suspension `examine(fanAt:)` resumes from.
         case controlStateRead
+        /// Inside `readControlState(ofFan:)`, once the plane has answered and before the answer is
+        /// returned: the reading § 5 resumes with predates the effect, as a production read's
+        /// sample predates whatever lands while the reply is in flight (#381's stamp, which must
+        /// be taken before the read and not after it).
+        case controlStateSampled
         /// Inside `readEnvelope(ofFan:)` — the suspension
-        /// `reassert(_:fanAt:heldUnder:attempt:reengaging:)` resumes from, and the one whose
+        /// `reassert(fanAt:heldUnder:attempt:reengaging:)` resumes from, and the one whose
         /// missing re-check wrote `F<n>Md` to an unleased fan.
         case envelopeRead
         /// Inside `engageManualControl(of:)`, once `F<n>Md` has landed: between the re-assert's
@@ -623,7 +628,9 @@ actor InterferingFanStateSensing: FanControlPlane {
 
     func readControlState(ofFan index: Int) async throws -> FanControlState {
         if moment == .controlStateRead { await fireOnce() }
-        return try await plane.readControlState(ofFan: index)
+        let state = try await plane.readControlState(ofFan: index)
+        if moment == .controlStateSampled { await fireOnce() }
+        return state
     }
 
     func readEnvelope(ofFan index: Int) async throws -> FanEnvelope {

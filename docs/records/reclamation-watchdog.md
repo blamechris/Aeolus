@@ -122,11 +122,20 @@ the actor of a few lines each. Three other routes were weighed and refused:
 
 **#366 spent five: 306 code lines, and about 44 left; file 883** (SwiftLint 0.65.1). It added a
 fourth store to `Registry`, `givenUp`, and put the reclamation episode on the record
-(`HeldFan.episodeInFlight`) rather than in a store keyed by fan: five transitions end a record,
-and each would have had to remember to end the episode too. The actor's share is the binding of
-`mayClearTheMark` and its guard in `manualControlEngaged`, and the `.short` clears in `examine`.
-`examine(fanAt:)` is now exactly 50 code lines, `function_body_length`'s warning, so the next line
-it needs takes a split first.
+(`HeldFan.episodeInFlight`) rather than in a store keyed by fan: four transitions end a record
+(`register` replacing it, `release`, `forget` and `dropLease`), and each would have had to remember
+to end the episode too. The actor's share is the binding of `mayClearTheMark` and its guard in
+`manualControlEngaged`, and the `.short` clears in `examine`. `examine(fanAt:)` is now exactly 50
+code lines, `function_body_length`'s warning, so the next line it needs takes a split first.
+
+**#381 spent seventeen: 323 code lines, and about 27 left; file 947** (SwiftLint 0.65.1). The
+stamp, the re-fetch of the target and the comparison before recording are three `Registry` members,
+and a field on `HeldFan` stamped by its own method so that #383 can add to the stamp, all tested as
+values. The actor's share is the stamp in `examine`'s first line, which replaced the line that read
+the lease, so `examine` stays at 50 with no split; the two re-fetches before the command write; and
+three private helpers for where they stop — `reassertStopped`, `reassertStoppedAfterItsFirstStep`,
+and `reengageRefused` for a first step refused because a same-lease engagement took the fan first
+— which keep `reassert`'s cyclomatic complexity at 10 where inline guards would have made it 13.
 
 ## Every act is for the lease the fan was registered under
 
@@ -280,16 +289,16 @@ lease the cases split cleanly:
 | From the entry onwards | Refused (`givenUp`) |
 
 The second row holds only while the episode is open: once a cycle that reads the target held has
-closed it, a registration behaves as in the first. None of it relies on a release notice. A registration under any other lease still clears: one
-live lease covers a fan, so it means a newer engagement holds the fan. Three alternatives were
-refused. Stopping § 5 whenever the generation moves lets a client that re-applies every cycle
-postpone the terminal action indefinitely, the contest the budget bounds. Refusing a same-lease
-registration for the whole episode makes A6 hand the refused engagement back, which supersedes
-§ 5's own re-assert (ADR 0014 D4), and § 5 then reads its own client's hand-back as a reclamation.
-A rule in the ledger learns of the episode after a hop that nothing orders against the
-registration's clear, and gives the snapshot a second definition of "reclaimed".
-`ReclamationEpisodeMarkTests` holds the actor's half and `ReclamationRegistryTests` the value's,
-in `ReclamationRegistryEpisodeTests.swift`. What stays open:
+closed it, a registration behaves as in the first. None of it relies on a release notice. A
+registration under any other lease still clears: one live lease covers a fan, so it means a newer
+engagement holds the fan. Three alternatives were refused. Stopping § 5 whenever the generation
+moves lets a client that re-applies every cycle postpone the terminal action indefinitely, the
+contest the budget bounds. Refusing a same-lease registration for the whole episode makes A6 hand
+the refused engagement back, which supersedes § 5's own re-assert (ADR 0014 D4), and § 5 then reads
+its own client's hand-back as a reclamation. A rule in the ledger learns of the episode after a hop
+that nothing orders against the registration's clear, and gives the snapshot a second definition of
+"reclaimed". `ReclamationEpisodeMarkTests` holds the actor's half and `ReclamationRegistryTests` the
+value's, in `ReclamationRegistryEpisodeTests.swift`. What stays open:
 
 1. A same-lease re-apply that engages the fan mid-episode leaves `isReclaimedBySystem` true until
    the next readable cycle: one cycle, or at most `blindCyclesBeforeDivergence` if reads fail,
@@ -301,10 +310,27 @@ in `ReclamationRegistryEpisodeTests.swift`. What stays open:
    `markSupervisorBlind` hop clears the `.supervisorBlind` entry: one ledger hop with no seam to
    test it, and the entry is not on the wire (#355). Closing it costs an actor line no
    deterministic test can kill.
-4. The re-assert acts on the target and mode it judged before its envelope read, so a re-apply
-   inside that read is overwritten — for a diverged target the old number is re-commanded over
-   the client's, and for a reclaimed mode the re-assert logs a failed re-engage and spends an
-   attempt. That is [#381](https://github.com/blamechris/Aeolus/issues/381), an A6 precondition.
+4. A client write issued during § 5's own command write can land first: one cycle, one more
+   attempt ([#381](https://github.com/blamechris/Aeolus/issues/381)).
+5. A same-lease re-apply that registers without engaging a fan the system has taken back to
+   automatic stands that cycle's re-assert down, as does one landing just before a genuine
+   re-reclamation. The fan stays on automatic until the next cycle re-engages it: one cycle and
+   one attempt, in the direction of giving the fan up sooner (#381).
+6. Two engagements of one fan under one lease can overlap. One that completes during § 5's yield
+   wait re-admits § 5's next step as a first step, which is refused `.notAutomatic` after § 5's
+   driver has written; the driver hands the fan back, and `reengageRefused`, which routes on the
+   error type, logs the stand-down, whose line says nothing was written. The fan ends on automatic
+   control and the mark is kept, so the snapshot is truthful and the log line is not. An A6
+   precondition, tracked as [#389](https://github.com/blamechris/Aeolus/issues/389).
+
+Until #381 the re-assert acted on the target and mode it judged before its envelope read, so a
+re-apply inside that read was overwritten — for a diverged target the old number was re-commanded
+over the client's, and for a reclaimed mode the re-assert logged a failed re-engage and spent an
+attempt. #381 closed it: the examination stamps the record, a same-lease registration since the
+stamp stands the re-assert down with its attempt spent, at either re-fetch or, while one engagement
+of a fan runs at a time, at a first step refused because that engagement took the fan first, the
+target is re-fetched before the write,
+and the write is recorded only over the target it was decided on (ADR 0014's #381 amendment).
 
 **Why a refusal never leaves a fan off automatic control with nothing watching it.** A
 registration follows its engagement, and the driver returned only after its after-check found
@@ -536,9 +562,10 @@ note was written, and the first is the only split of this file to move state:
   `givenUp` since #366, each `private` to it, and every synchronous decision over them as a named
   transition — `register`,
   `release`, `forget`, `beginFinalising`, `endFinalising`, `dropLease`, and the per-record
-  `command`, `recordReassertedTarget`, `resetReadFailures`, `recordReadFailure`, `judge`,
-  `spendReassertAttempt` and `refundReassertAttempt`. The actor holds one, `private`, and
-  reaches it only through those members. It widens no state, because the state moved inside a
+  `beginExamination` (#381's stamp), `command`, `recordReassertedTarget`, `resetReadFailures`,
+  `recordReadFailure`, `judge`, `spendReassertAttempt` and `refundReassertAttempt` — and the
+  queries over them, among them #381's re-fetch `reassertTarget`. The actor holds one, `private`,
+  and reaches it only through those members. It widens no state, because the state moved inside a
   value rather than being reached from another file: a `Registry` constructed anywhere else
   governs nothing.
 - **`HeldFan.judge(_:)`**, in `ReclamationHeldFan.swift`: what were `gracedBeforeItsFirstCommand`

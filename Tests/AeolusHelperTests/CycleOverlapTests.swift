@@ -116,7 +116,7 @@ struct CycleOverlapTests {
 /// [#144](https://github.com/blamechris/Aeolus/issues/144)'s second side effect, and the same
 /// `stop()` shape as the overlap above: `ReclamationSupervisor.stop()` cancels without awaiting, so
 /// a sweep suspended inside a read resumes inside a supervisor that has already stopped.
-/// `reassert(_:fanAt:heldUnder:attempt:reengaging:)`'s first write is the only one in § 5 that
+/// `reassert(fanAt:heldUnder:attempt:reengaging:)`'s first write is the only one in § 5 that
 /// moves a fan in the unsafe direction — off Apple's thermal management and onto a target with
 /// nothing watching it, because the loop that would have watched it is the one that was just
 /// cancelled.
@@ -136,7 +136,7 @@ struct CycleOverlapTests {
 struct CancelledSweepTests {
 
     /// **Kills:** deleting `guard !Task.isCancelled` from
-    /// `reassert(_:fanAt:heldUnder:attempt:reengaging:)`. The outgoing sweep then re-engages manual
+    /// `reassert(fanAt:heldUnder:attempt:reengaging:)`. The outgoing sweep then re-engages manual
     /// control on fan 0 from a supervisor that has stopped, and `attempts` contains
     /// `.engageManualControl(fan: 0)`.
     @Test("A sweep cancelled inside its read never re-engages manual control")
@@ -235,7 +235,7 @@ struct CancelledSweepTests {
     }
 
     /// **Kills:** deleting the refund from the cancellation guard in
-    /// `reassert(_:fanAt:heldUnder:attempt:reengaging:)`. The fourth sweep then finds
+    /// `reassert(fanAt:heldUnder:attempt:reengaging:)`. The fourth sweep then finds
     /// `reassertAttempts` at the budget, skips the re-assert entirely and restores fan 0, so
     /// neither `.engageManualControl(fan: 0)` nor a commanded target ever appears.
     ///
