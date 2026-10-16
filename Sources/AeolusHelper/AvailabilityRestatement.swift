@@ -14,10 +14,13 @@ import FanKit
 //
 // `FanState.manualControlAvailability` is the field a UI turns into an enabled or disabled
 // control, so *which* refusal it states when several apply is a decision rather than a
-// detail. The whole order lives here, and its rule is: **the snapshot answers with the same
-// reason `LeaseAuthority.acquireLease` would throw for the same fan in the same instant.**
-// Anything else is `CLAUDE.md` rule 6 — a screen offering control that the click cannot get,
-// or refusing control the helper would in fact grant.
+// detail. The whole order lives here, and its rule is: **the snapshot agrees with
+// `LeaseAuthority.acquireLease` on whether a grant over the fan is refused, always; and on the
+// reason, except that a machine-wide refusal `fanctl auto` reads as silent is never stated over
+// a fan's own durable or pending reason**
+// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s #128/#270/#269 amendment). Anything
+// else is `CLAUDE.md` rule 6 — a screen offering control that the click cannot get, or refusing
+// control the helper would in fact grant.
 //
 // **The rule has a corollary, and it binds both sides** (ADR 0014's 2026-10-15 amendment): a
 // grant refusal, and the availability that mirrors it, is computed from **current evidence the
@@ -42,14 +45,15 @@ import FanKit
 // | 8 | `.boundsImplausible`, for a fan Aeolus is not accountable for | the bounds read |
 // | 1 | `.restoreToAutomaticFailed`, from `abandonedHandbacks` | the region's first guard |
 // | 2 | `.handbackUnconfirmed`, from `unconfirmedHandbacks` | its second |
+// | 11 | `.systemSleeping`, from `sleepSealed` | its third |
 // | 10 | `.releaseInProgress`, from `machineWideRestoreInFlight` | its fourth |
 // | 3 | `.releaseInProgress`, from `handbacksInFlight` | `releasing`, after the table |
 // | 9 | `.available`, or step 8's answer for a fan under lease | the grant |
+// | 12 | `.noThermalTelemetry`, over `.available` and `.boundsImplausible` | `refuseIfBlind` |
 //
 // **Step numbers are names, not places.** Steps 4 and 7 were § 5's ledger — `.supervisorBlind`
 // and `.reclaimedBySystem` — until #355 removed them, and stay retired so that every reference to
-// a step still names the same rung; 10 is the next unused number, which is why it is not
-// listed after 9.
+// a step still names the same rung; 10, 11 and 12 are numbered in the order they were added.
 //
 // **Step 8 speaks only for fans Aeolus is not accountable for**, the fans the grant's bounds read
 // covers: it subtracts what the foreign-control read exempted. An accountable fan is answered by
@@ -57,9 +61,26 @@ import FanKit
 // answer, step 8's if the bounds are bad: the grant answers that fan `.leaseHeldByAnotherClient`,
 // which a snapshot cannot state (below), and both refuse.
 //
-// **Steps 1, 2, 10 and 3 are the straight-line region's guards in its order**, most durable
-// first; § 4's sleep seal sits between 2 and 10 there, and the lease table between 10 and 3.
-// Steps 10 and 3 give one reason, so their order changes nothing a client reads.
+// **Steps 1, 2, 11, 10 and 3 are the straight-line region's guards in its order**, most durable
+// first; the lease table sits between 10 and 3 there. Step 3 is below steps 11 and 10, so during
+// a sealed teardown a fan mid-handback reads `.systemSleeping`, as the grant refuses it, and one
+// whose handback outlived § 4's budget reads `.handbackUnconfirmed`, above both.
+//
+// **Step 11 follows the grant's order exactly**, because `SafeState` classes `.systemSleeping`
+// pending, so the rule's exception does not reach it. If ADR 0013 ever classes it silent, it must
+// drop below steps 3 and 10 in the same change: it would then be a silent machine-wide refusal
+// stated over a fan's own pending reason, which is step 12's case.
+//
+// **Step 12 is the one rung out of the grant's order, and it is what the rule's exception is
+// for.** The grant asks blindness before every per-fan step, because that check suspends. In
+// that order the rung would state `.noThermalTelemetry` — silent: "the mode decides" — over
+// step 5's answers, the registers and the seals, which `SafeState` classes pending or durable,
+// and `fanctl auto` would exit 0 about a fan whose mode did not read, on a machine that cannot
+// read: #360's defect, on the machine likeliest to produce it. So it re-states `.available` and
+// `.boundsImplausible` and nothing else; where it does not, both sides refuse and the snapshot
+// keeps the fan's own reason. Step 5's manual arm over step 6 is the exception's first instance.
+// `blind` is one `sighting()` per snapshot, of the cache the grant asks, on a `.built` seam only
+// (`SupervisedFanAuthority`): on `.notBuilt` step 6 masks steps 11 and 12 and nothing is asked.
 //
 // **Steps 1–3 and step 5 cannot both apply.** Every fan in one of the three handback registers is
 // in `LeaseAuthority.fansAeolusIsAccountableFor`, and `reportingForeignControl` returns such a fan
@@ -111,9 +132,6 @@ import FanKit
 // **`.leaseHeldByAnotherClient` is absent from the ladder and cannot be added.** See
 // `LeaseAccountability`: a snapshot has no `ConnectionID`, so the helper cannot know whether
 // the reader is the holder. `SystemSnapshot.activeLease` is how a client learns it.
-// `.systemSleeping` and `.noThermalTelemetry` are absent for a weaker reason, and are
-// [#269](https://github.com/blamechris/Aeolus/issues/269)'s: the snapshot reads neither § 4's seal
-// nor § 3's sightedness yet.
 
 extension ReadOnlyFanReport {
 
@@ -126,21 +144,26 @@ extension ReadOnlyFanReport {
     /// re-states one field of it, and the ordering that makes a lapsing lease honest is
     /// preserved.
     ///
-    /// The ladder is `firstRefusal(of:observedMode:given:reconciliation:)`; this file's header
-    /// gives the order and why. `observedMode` is `F<n>Md`'s answer for this fan on the read it
-    /// was built from, `nil` when it did not answer — `MachineObservation.modes`, never a second
-    /// read (#360).
+    /// The ladder is `firstRefusal(of:observedMode:given:reconciliation:)`, then step 12 over
+    /// what it answered; this file's header gives the order and why. `observedMode` is `F<n>Md`'s
+    /// answer for this fan on the read it was built from, `nil` when it did not answer —
+    /// `MachineObservation.modes`, never a second read (#360). `blind` is whether this snapshot's
+    /// one `sighting()` failed, and is **required, with no default**, for `observedMode`'s reason:
+    /// `false` would hide § 3's blindness and `true` would state it over every fan. It is `false`
+    /// on a seam that cannot write, where nothing was asked.
     static func restatingAvailability(
         of fan: FanState, observedMode: FirmwareFanMode?, given leases: LeaseAccountability,
-        reconciliation baseline: ReconciliationBaseline
+        reconciliation baseline: ReconciliationBaseline, blind: Bool
     ) -> FanState {
-        restating(
-            fan,
-            as: firstRefusal(
-                of: fan, observedMode: observedMode, given: leases, reconciliation: baseline))
+        let answer = firstRefusal(
+            of: fan, observedMode: observedMode, given: leases, reconciliation: baseline)
+        // Step 12, `refuseIfBlind`: first in the grant and last here, over a fan nothing else
+        // refuses or one whose only refusal is step 8's, which `fanctl auto` reads as silent too.
+        let silent = answer == .available || answer == .unavailable(.boundsImplausible)
+        return restating(fan, as: blind && silent ? .unavailable(.noThermalTelemetry) : answer)
     }
 
-    /// Every rung, first match, in `acquireLease`'s order.
+    /// Every rung but step 12, first match, in `acquireLease`'s order.
     ///
     /// ## What [#187](https://github.com/blamechris/Aeolus/issues/187) was
     ///
@@ -183,11 +206,12 @@ extension ReadOnlyFanReport {
         // Step 8: `refuseIfBoundsImplausible`, over the fans step 5 did not exempt.
         let accountable = leases.accountableFans.contains(index)
         if !accountable, readPath == .unavailable(.boundsImplausible) { return readPath }
-        // Steps 1, 2, 10 and 3: the straight-line region's guards, in its order.
+        // Steps 1, 2, 11, 10 and 3: the straight-line region's guards, in its order.
         if leases.abandonedHandbacks.contains(index) {
             return .unavailable(.restoreToAutomaticFailed)
         }
         if leases.unconfirmedHandbacks.contains(index) { return .unavailable(.handbackUnconfirmed) }
+        if leases.sleepSealed { return .unavailable(.systemSleeping) }
         if leases.machineWideRestoreInFlight { return .unavailable(.releaseInProgress) }
         if leases.handbacksInFlight.contains(index) { return .unavailable(.releaseInProgress) }
         // Step 9: `.available`, or step 8's answer for a fan under lease.

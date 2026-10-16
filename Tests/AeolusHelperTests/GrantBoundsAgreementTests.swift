@@ -92,8 +92,12 @@ struct GrantBoundsAgreementTests {
     }
 
     /// A fan with implausible bounds is refused `.boundsImplausible` while § 4's sleep seal holds,
-    /// as the snapshot states. The ladder has no `.systemSleeping` rung yet (#269), so the grant
-    /// must answer the bounds ahead of the sleep seal's guard, which sits below the marker.
+    /// as the snapshot states. The ladder ranks step 8 above the sleep seal's rung, step 11
+    /// (#269), so the grant must answer the bounds ahead of the sleep seal's guard, which sits
+    /// below the marker. **Mutation:** in `ReadOnlyFanReport.firstRefusal`, move the
+    /// `sleepSealed` rung up to just above `let accountable`, between steps 6 and 8. Run: red —
+    /// the snapshot says `.systemSleeping` — while
+    /// `SleepSealAvailabilityTests.stepFiveOutranksTheSeal` stays green.
     ///
     /// The seal is set as `SystemPowerResponder` sets it, through `sealForSleep(generation:)`.
     /// Fan 1's bounds are plausible, so its grant shows the seal holds.

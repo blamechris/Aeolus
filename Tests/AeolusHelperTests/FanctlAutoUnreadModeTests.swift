@@ -74,4 +74,43 @@ struct FanctlAutoUnreadModeTests {
             run.output.standardError.contains("fan 0 (supervisorBlind)"),
             "the diagnosis does not name the fan or the reason: \(run.output.standardError)")
     }
+
+    /// The same fan on a machine § 3 cannot see: `auto` still exits 8, because the snapshot keeps
+    /// step 5's `.supervisorBlind` where the grant refuses `.noThermalTelemetry` first
+    /// ([#269](https://github.com/blamechris/Aeolus/issues/269)).
+    ///
+    /// This is what step 12's place is for. `SafeState` reads `.noThermalTelemetry` as silent, so
+    /// a snapshot that followed the grant's order and stated it over this fan would leave the
+    /// fan's mode to decide — `automatic`, by #178's fold — and `auto` would exit 0 about a fan
+    /// whose mode did not read, on the machine that cannot read: #360's defect.
+    ///
+    /// **Mutation:** in `ReadOnlyFanReport.restatingAvailability(of:observedMode:given:
+    /// reconciliation:blind:)`, make `silent` `answer != .unavailable(.writePathNotBuilt)` — the
+    /// rung in strict grant order. Run: red twice — the exit is 0, not 8, and the diagnosis names
+    /// no fan.
+    @Test("fanctl auto exits 8 about a fan whose mode will not read on a machine that is blind")
+    func autoExitsEightAboutAnUnreadFanOnABlindMachine() async throws {
+        let helper = AvailabilityFixture.composed(
+            afterwards: [AvailabilityFixture.sightless(unreadableModes: [0])])
+        await helper.bindSafetyRegistries()
+        await helper.plane.advance()
+        #expect(
+            await AvailabilityFixture.refusalForGrant(over: 0, from: helper.leases)
+                == .noThermalTelemetry,
+            "§ 3 can see, so the grant reaches its read of fan 0 and this is not about blindness"
+        )
+        let harness = ClientListenerHarness(authority: helper.authority)
+
+        let run = try await FanctlAutoTests.run(over: harness)
+
+        #expect(
+            run.code == FanctlExitCode.safeStateNotConfirmed.rawValue,
+            """
+            fanctl auto exited \(String(describing: run.code)) about a fan whose mode the helper \
+            cannot read, on a machine it cannot see: exit 0 claims a safe state nothing confirmed.
+            """)
+        #expect(
+            run.output.standardError.contains("fan 0 (supervisorBlind)"),
+            "the diagnosis does not name the fan or the reason: \(run.output.standardError)")
+    }
 }

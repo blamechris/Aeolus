@@ -29,12 +29,12 @@ import FanKit
 ///
 /// ## What is missing, and why
 ///
-/// `sleepSeal` and "is the table non-empty" are lease-core facts with no per-fan expression
-/// in a snapshot. The machine-wide restore seal is machine-wide too, and is carried anyway
-/// ([#350](https://github.com/blamechris/Aeolus/issues/350)): while it is open the grant refuses
-/// `.releaseInProgress` over every fan nothing else refuses, so the ladder can state it per fan by
-/// re-stating `.available` and nothing else. `sleepSeal` is not carried yet; that is #269's.
-/// `ManualControlAvailability.Reason.leaseHeldByAnotherClient` cannot be stated
+/// "Is the table non-empty" is a lease-core fact with no per-fan expression in a snapshot. The
+/// two seals are machine-wide too, and are carried anyway — the machine-wide restore seal since
+/// [#350](https://github.com/blamechris/Aeolus/issues/350), § 4's sleep seal since
+/// [#269](https://github.com/blamechris/Aeolus/issues/269) — because while either stands the grant
+/// refuses every fan nothing ranked above it refuses, so the ladder can state each per fan at the
+/// grant's own place. `ManualControlAvailability.Reason.leaseHeldByAnotherClient` cannot be stated
 /// at all from here: `FanAuthority.snapshot()` takes no `ConnectionID`, so the helper does not
 /// know whether the reader is the holder, and *"another client"* would be a false claim to the
 /// one client it is false for — `CLAUDE.md` rule 6 through the door it is easiest to walk
@@ -85,6 +85,11 @@ struct LeaseAccountability: Sendable {
 
     /// Whether § 7's panic verb or § 4's handback is inside
     /// `LeaseAuthority.sealingGrants(during:)`, so every grant is refused `.releaseInProgress`
-    /// (#350, #364). The ladder's last rung states it per fan.
+    /// (#350, #364). The ladder's step 10 states it per fan.
     let machineWideRestoreInFlight: Bool
+
+    /// Whether § 4 has sealed the table for a sleep, so every grant that reaches the guard is
+    /// refused `.systemSleeping` (#269). `SleepSealPairing.isSealed`, read in the same
+    /// straight-line region as the registers, where `acquireLease` asks it. The ladder's step 11.
+    let sleepSealed: Bool
 }

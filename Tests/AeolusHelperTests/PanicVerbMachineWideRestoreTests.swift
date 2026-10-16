@@ -136,7 +136,8 @@ struct PanicVerbMachineWideRestoreTests {
         let authority = SupervisedFanAuthority(
             reading: helper.reading, leases: helper.leases,
             reconciliation: helper.reconciliation,
-            keystone: helper.plane, writeCapability: capability, log: Self.log(into: lines))
+            keystone: helper.plane, writeCapability: capability, telemetry: helper.sightings,
+            log: Self.log(into: lines))
 
         try await authority.restoreAllToAutomatic(from: ConnectionID())
         #expect(
@@ -256,7 +257,7 @@ struct PanicVerbMachineWideRestoreTests {
             reading: helper.reading, leases: helper.leases,
             reconciliation: helper.reconciliation,
             keystone: ThrowingKeystone(error: error), writeCapability: helper.plane,
-            log: Self.log(into: lines))
+            telemetry: helper.sightings, log: Self.log(into: lines))
         let session = HelperConnectionSession(
             id: ConnectionID(), authority: authority, helperBuild: "test",
             log: Self.log(into: lines))
