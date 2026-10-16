@@ -454,7 +454,10 @@ struct WriteVerbAllowlistTests {
         "FanAuthority.swift: snapshot()",
         "FanControlPlane.swift: readControlState(ofFan: Int)",
         "FanControlPlane.swift: readCriticalTemperatures(_: [SMCKey])",
-        "FanControlPlane.swift: readEnvelope(ofFan: Int)",
+        // #270 moved this requirement into a role of its own, refined by `FanStateSensing`
+        // unchanged, so the lease core can hold the one read verb. Re-pinned, not relaxed: it
+        // returns the declared bounds and writes nothing.
+        "FanEnvelopeReading.swift: readEnvelope(ofFan: Int)",
         "FanControlPlane.swift: reconnect()",
         "FanModeSensing.swift: modes(ofFans: [Int])",
         "FanModeSensing.swift: readMode(ofFan: Int)",

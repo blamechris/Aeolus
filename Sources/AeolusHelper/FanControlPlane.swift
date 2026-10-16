@@ -70,24 +70,11 @@ import SMCCore
 /// `FanControlPlane` refines this, so every conformer answers both and no separate
 /// production type is needed — the split is about what a *consumer* can be given, not
 /// about what the hardware offers.
-protocol FanStateSensing: FanModeSensing, SMCConnectionRecovering {
-
-    /// Reads one fan's firmware-declared envelope, `F<n>Mn` and `F<n>Mx`.
-    ///
-    /// Reported exactly as declared. Whether an envelope is *plausible* is
-    /// `FanControlEnvelope.validating(...)`'s judgement, not this seam's, and this seam must
-    /// not pre-empt it by rounding, flooring or omitting a declaration it dislikes.
-    ///
-    /// - Important: **A declared minimum of zero is accepted, not refused.** Some firmware
-    ///   really does say it — `docs/RECOVERY.md` records that fans stopping at idle is
-    ///   normal on many Macs — so refusing to lease such a fan would deny manual control on
-    ///   legitimate hardware. What keeps `CLAUDE.md` rule 3 true there is the *floor*:
-    ///   targets clamp to `[max(F0Mn, minimumManualRPM), F0Mx]`, so zero is uncommandable
-    ///   whatever the firmware declares. The plausibility gate binds the **maximum**
-    ///   instead. This paragraph exists because an earlier draft of this comment said the
-    ///   opposite, and an implementer honouring it would have added a `> 0` refusal and
-    ///   regressed every Mac whose fans idle at rest.
-    func readEnvelope(ofFan index: Int) async throws -> FanEnvelope
+///
+/// The envelope read is `FanEnvelopeReading`'s since
+/// [#270](https://github.com/blamechris/Aeolus/issues/270), refined here unchanged, so the lease
+/// core can be handed that one verb and nothing else this seam answers.
+protocol FanStateSensing: FanModeSensing, FanEnvelopeReading, SMCConnectionRecovering {
 
     /// Reads one fan's control state: `F<n>Md`, the `F<n>Tg` read-back, and `F<n>Ac`.
     ///
