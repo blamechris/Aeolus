@@ -326,8 +326,9 @@ too (ADR 0014, amended alongside).
   A fan released or registered while the question was out is refused too, because the answer
   no longer describes it (a per-fan generation, captured before the hop, which the terminal
   action also moves as it begins), and so is a registration under the lease the terminal action
-  is giving the fan up for, while it does. Only an accepted registration clears the fan's
-  ledger entry.
+  gave the fan up for, while it runs or after (#366, ADR 0014's amendment of that issue). Only an
+  accepted registration clears the fan's ledger entry, and one under the record's own lease while
+  § 5's reclamation episode for the fan is in flight does not.
 - `examine(fanAt:)` asks `hasLiveLease(id:coveringFan:)` about the record's own lease, in the
   same place. `.leaseLapsed`'s action is unchanged: restore-and-forget, whatever covers the fan
   now.

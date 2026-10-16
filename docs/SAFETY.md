@@ -960,8 +960,12 @@ A fan that cannot reach a target the firmware **is** holding has not been reclai
 obstructed, or failing, or declaring a maximum it cannot achieve. Re-asserting rewrites a
 number that is already correct, restoring hands the fan to Apple's thermal management against
 the same obstruction, and reporting it as reclaimed is a false statement about who holds it.
-So the secondary signal tells the user and changes nothing else. Only the primary signal
-reaches the re-assert and the fallback below.
+So the secondary signal tells the user and changes nothing else. The cycle it fires on still
+clears a reclamation mark an earlier cycle left, because that cycle's primary converged and the
+mark follows the primary signal; it does not refill the re-assert budget, which only a cycle
+converged on both signals does ([#366](https://github.com/blamechris/Aeolus/issues/366)). The
+budget bounds a contest with the system, and the mark says who holds the fan. Only the primary
+signal reaches the re-assert and the fallback below.
 
 **A fan at rest reads exactly 0, and that is the shortfall case hardware has actually
 demonstrated** (#212). On the read-only lid close recorded in [SMC-RESEARCH.md](SMC-RESEARCH.md),
@@ -1121,22 +1125,39 @@ teardown that removes the lease after the hand-back and before the revocation is
 revocation answers only once that teardown's handback of the fan has returned, so its notice
 finds the mark kept ([#368](https://github.com/blamechris/Aeolus/issues/368)). A registration
 under a lease that is no longer live is refused, as is one whose fan was released or registered
-while it asked, and one under the lease the terminal action is giving the fan up for, while it
-does: the terminal action moves the registration's generation as it begins, and that lease's
-engagement is about to be undone by the revocation in the same call. A refused registration
-clears nothing; one under a live lease replaces whatever an ended lease left. The engagement
-driver asks the same question, about the lease the engagement runs under, before and after every
-step.
+while it asked. A registration under the lease the fan is held under has three answers, by when
+it lands ([#366](https://github.com/blamechris/Aeolus/issues/366)):
+
+| When it lands | What happens to it |
+|---|---|
+| Before the cycle that judges the fan diverged | Accepted, and it clears the mark |
+| From that judgement to the terminal action's entry | Accepted, and it clears nothing: the episode decides the mark |
+| From the entry on, while the terminal action runs and after | Refused |
+
+Mid-episode it is the holder re-applying while § 5 contests the fan. The next cycle that reads the
+target held clears the mark, and the terminal action keeps it; § 5's own flow does not change, so
+a re-apply can neither postpone the terminal action nor rearm the budget. It is accepted rather
+than refused because a refusal makes the caller hand the fan back, and that restore would supersede
+§ 5's own re-assert. From the entry on it is refused because the same call ends that lease, and an
+ended lease is never live again, so any answer about it is stale whenever the registration began.
+None of this relies on a release notice. The terminal action also moves the registration's
+generation as it begins, for another lease's registration in flight across the entry. A refused
+registration clears nothing; one under a live lease replaces whatever an ended lease left. The
+engagement driver asks the same question, about the lease the engagement runs under, before and
+after every step.
 
 **What identity does not close.** A hand-back owed to an ended lease's record, or the undo of an
 engagement that outlived its lease, can land after a newer lease's engagement and before that
 lease registers the fan. Nothing sees it until the newer record's first examination, which reads
 the fan as reclaimed and re-asserts that lease's own target, in the safe direction, with a
-reclamation reported that the system did not cause. The false mark lasts longer than the cycle
-that sets it: it is cleared only by a cycle that finds the fan converged on both signals, and a
-fan still short of its new target takes the shortfall branch, which returns before that clear —
-so it stands for as long as the fan ramps, and indefinitely if it cannot reach the target
-([#366](https://github.com/blamechris/Aeolus/issues/366)).
+reclamation reported that the system did not cause. The false mark lasts one cycle: the next
+readable cycle reads the re-asserted target held and clears it, whether or not the fan has reached
+its speed yet, because the mark follows the primary signal
+([#366](https://github.com/blamechris/Aeolus/issues/366)). Until #366 only a cycle converged on
+both signals cleared it, so it stood for as long as the fan ramped. Cycles that cannot read clear
+nothing, and after `blindCyclesBeforeDivergence` of them blindness takes over. A same-lease
+re-apply that engages the fan mid-episode is held to the same bound: the mark stands until the
+next readable cycle.
 
 The order is deliberate. The fan's own lease is asked *after* the read because every teardown
 drops its lease before it restores, so a read that saw that restore land is followed by a
@@ -1161,11 +1182,14 @@ worse than a UI that reports an error, because the user acts on it.
 `TerminalActionTeardownRaceTests.swift`, `LeaseRevocationTests.swift`,
 `LeaseRevocationOutwaitTests.swift`, `ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
 `ReclamationSupervisorTests.swift`, `ReclamationEmergencyRegistrationTests.swift`,
-`ReclamationRegistryTests.swift` (the registry and the per-reading judgement as values, #128),
+`ReclamationRegistryTests.swift` (the registry and the per-reading judgement as values, #128)
+with `ReclamationRegistryEpisodeTests.swift` (#366's episode and given-up lease as values),
+`ReclamationEpisodeMarkTests.swift` (the mark following the primary signal, and a re-apply
+mid-episode leaving it to the episode, #366),
 `ReclamationRefetchIdentityTests.swift` and `ReclamationLateRegistrationTests.swift` (the
 identity half of each reachable re-fetch, and the registrations the generation lets through:
-accepted after a lapse or a lost release notice, and refused once the revocation's notice is
-sent, #365)
+accepted after a lapse or a lost release notice, and refused under the lease the terminal action
+gave the fan up for, whatever notice was sent, #365, #366)
 and `ReclamationWatchdogAccessTests.swift` with `ReclamationRegistryAccessTests.swift` (their
 access), with the
 engagement driver the re-assert engages through in `EngagementDriverTests.swift` and
