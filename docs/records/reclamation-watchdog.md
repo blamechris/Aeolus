@@ -137,7 +137,12 @@ three private helpers for where they stop — `reassertStopped`, `reassertStoppe
 and `reengageRefused` for a first step refused because a same-lease engagement took the fan first
 — which keep `reassert`'s cyclomatic complexity at 10 where inline guards would have made it 13.
 
-**#390's subset spent none: 323 code lines; `examine(fanAt:)` 50** (SwiftLint 0.65.1).
+**#395 spent five: 328 code lines, and about 22 left; `examine(fanAt:)` 50; file 957** (SwiftLint
+0.65.1). The record's check is `HeldFan.record(_:)`, the one write of `commanded`, which is
+`private(set)` so that both of its writers pass through it; the actor's share is the two writers
+binding the registry's answer and one private helper, `logRefusal(of:from:unless:)`, that logs a
+refusal at `.fault`. The helper keeps `reassert`'s cyclomatic complexity at 10, where an `if` of
+its own would have made it 11.
 
 ## Every act is for the lease the fan was registered under
 

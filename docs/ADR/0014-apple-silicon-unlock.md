@@ -1314,11 +1314,14 @@ lease is judged against the permit's own fan at every examination. No write verb
    `.supervisorBlind` instead (#366). Register each fan before this `apply`'s first command write
    to it, a fan already engaged under the lease included. A registration accepted while § 5 is
    examining the fan leaves that examination's re-assert to this engagement (#381).
-3. Take the fan's examination gate for each step: issue the command write, report it with
+3. In `apply`, take the fan's examination gate for each step: issue the command write, report the
+   `CommandedTarget` that write returned, never one built from the request, with
    `commandedTarget(_:under:)` after the write returns and never before, and release the gate after
    the report, or after the write has thrown. Hold one fan's gate at a time, and nothing under it
-   but that write and its report. Engage under the same gate. § 5 re-asserts the target last
-   reported, and judges every reading against it (#383).
+   but that write and its report. Engage under the same gate, taken by `apply` around the driver:
+   `EngagementDriver` and `SafetyActorWriter` never take it. § 5 re-asserts the target last
+   reported, and a report that arrives during its own command write wins the record (#381). § 5
+   judges every reading against the record (#383).
 4. Ask `heldLease(id:from:)` again before replying, so the reply never says *applied* under a
    lease that has ended.
 5. Map a superseded step to `.releaseInProgress`, unless the lease itself has gone. Map a
@@ -1988,7 +1991,10 @@ Then:
 - *A client write issued during § 5's command write can land first.* The fan then holds § 5's
   re-fetched target, which is older than the client's, until the next readable cycle reads it as
   diverged and re-asserts the client's: one cycle, one more attempt, and the mark kept for that
-  cycle. Only mutual exclusion over the write closes it.
+  cycle. Only mutual exclusion over the write closes it, and the
+  [#383](https://github.com/blamechris/Aeolus/issues/383) amendment below adds it: under the fan's
+  examination gate a client write waits out § 5's re-assert, so the case remains only past § 5's
+  bound, when § 5 examines without the gate, or for a write that bypasses the gate.
 - *Two engagements of one fan under one lease remain an A6 precondition.* The plane's in-progress
   record is still per fan. A same-lease engagement that completes during § 5's own mode write now
   stands § 5 down rather than being commanded over, and one that completes before § 5's first step
@@ -2011,8 +2017,8 @@ Then:
   would close it; it is listed rather than required, because the direction is safe and the next
   cycle bounds it.
 - *The judgement's own view is not covered.* A target reported between § 5's read and its judgement
-  is compared against a reading that predates it; resolved by ordering, not by excuse: see the
-  [#383](https://github.com/blamechris/Aeolus/issues/383) amendment below.
+  is compared against a reading that predates it; to be resolved by A6's ordering, not by excuse:
+  see the [#383](https://github.com/blamechris/Aeolus/issues/383) amendment below.
 
 **Alternatives considered.**
 
@@ -2034,7 +2040,8 @@ Then:
 
 **Revisit if:**
 
-- A6 adds a per-fan forward-write turn: § 5's re-assert then takes it from the stamp to the record;
+- A6 adds a per-fan forward-write turn: § 5's re-assert then takes it from the stamp to the record
+  (fired: the #383 amendment below adds the fan's examination gate);
 - A6 or #17 reports a target before writing it;
 - leases that can overlap on a fan are proposed;
 - a hardware run shows the write race landing.
@@ -2043,7 +2050,7 @@ The ruling is the architect's #381 consult, run on Opus. **No `AeolusXPCVersion`
 crosses the boundary. This amendment corrects clauses of a Proposed ADR rather than the decisions
 they sit under. **Status stays Proposed.**
 
-## Amendment (2026-10-16, [#383](https://github.com/blamechris/Aeolus/issues/383), [#390](https://github.com/blamechris/Aeolus/pull/390)) — § 5 judges every reading against the record, and level 6 keeps its steps out of § 5's examinations
+## Amendment (2026-10-16, [#383](https://github.com/blamechris/Aeolus/issues/383), [#395](https://github.com/blamechris/Aeolus/pull/395)) — § 5 judges every reading against the record, and level 6 keeps its steps out of § 5's examinations
 
 An A6 precondition, found by the architect's #381 consult. Unreachable on every build on `main`,
 where a `.notBuilt` plane grants no lease.
@@ -2066,15 +2073,21 @@ to § 5's sweep does this on consecutive cycles and reaches the terminal action 
   fan at a time, under an exclusion A6 adds, the fan's examination gate. § 5 holds it from the
   examination's stamp to its last act, re-assert included. Level 6 holds it for each step, from the
   command write until the step is reported or its write has thrown, and A6's engagement holds it
-  across its engage steps. Under it, the record at the read is exactly level 6's last write that
-  returned, so the comparison is exact in both orders. The same gate keeps a client step out of
-  § 5's re-assert (#381) and keeps two engagements of one fan apart (#389).
+  across its engage steps. Level 6's `apply` takes it; `EngagementDriver` and `SafetyActorWriter`
+  never do, because § 5's re-engage runs through the same driver while § 5 holds the gate, and a
+  driver or writer that took it would have § 5 wait on a gate it already holds. Under it, the
+  record at the read is exactly level 6's last write that returned, so the comparison is exact in
+  both orders. The same gate keeps a client step out of § 5's re-assert (#381) and keeps two
+  engagements of one fan apart (#389).
 - **§ 5 never waits long on level 6.** Its wait for the gate is bounded; past the bound it examines
   without the gate, and because it excuses nothing, the cost is a false fault at most. § 3's writes,
   the terminal action's restore and every other restore never take the gate.
-- **A report no plane can write is not recorded, a target that is not a number diverges, and every
-  RPM a log line states is written out by one conversion that cannot trap** (#390). These stand
-  however the steps are ordered.
+- **The record refuses a target that is not a number or is below the floor every permit is clamped
+  to, a target that is not a number diverges, and every RPM a log line states is written out by one
+  conversion that cannot trap** (#395). Both writers of the record, a report and a re-assert's
+  return, pass the one check, and a refusal is logged at `.fault`. The check is a floor and no
+  ceiling: the record holds no envelope, so a target above a fan's maximum is not caught there.
+  These stand however the steps are ordered.
 
 | The step | When it runs | § 5 judges the fan |
 |---|---|---|
@@ -2086,16 +2099,29 @@ to § 5's sweep does this on consecutive cycles and reaches the terminal action 
 
 **A6's contract.**
 
-- Item 3 becomes: *Take the fan's examination gate for each step: issue the command write, report it
-  with `commandedTarget(_:under:)` after the write returns and never before, and release the gate
-  after the report, or after the write has thrown. Hold one fan's gate at a time, and nothing under
-  it but that write and its report. Engage under the same gate. § 5 re-asserts the target last
-  reported, and judges every reading against it (#383).*
+- Item 3 becomes: *In `apply`, take the fan's examination gate for each step: issue the command
+  write, report the `CommandedTarget` that write returned, never one built from the request, with
+  `commandedTarget(_:under:)` after the write returns and never before, and release the gate after
+  the report, or after the write has thrown. Hold one fan's gate at a time, and nothing under it
+  but that write and its report. Engage under the same gate, taken by `apply` around the driver:
+  `EngagementDriver` and `SafetyActorWriter` never take it. § 5 re-asserts the target last
+  reported, and a report that arrives during its own command write wins the record (#381). § 5
+  judges every reading against the record (#383).* The #381 clause stays because
+  `recordReassertedTarget(_:decidedOn:ofFan:)`'s decided-on check still implements it, and it
+  still decides the record past § 5's bound, when § 5 writes without the gate.
 - `GovernedFanWriter` needs no change: the step it computes is written and reported under the gate.
 - Items 2, 4 and 5 are unchanged.
 
-**#381's amendment.** Its last "What remains" bullet, the judgement's own view, is resolved by
-ordering, not by excuse, in this amendment.
+**#381's amendment.** The gate adopts what #381's *Alternatives considered* rejected, "A6 serialises
+a fan's engagements across § 5's whole re-assert", widened from engagements to every step, and it
+answers both of that alternative's objections. It gates each step, the command write and its report
+as well as the engage steps, so a target-only re-assert no longer races a client's command, and
+§ 5 takes it at the stamp, before the read, so the judgement is under it too. And § 5's wait for it
+is bounded, so a holder that never releases costs one examination its bound and does not park the
+sweep. #381's first *Revisit if*, "A6 adds a per-fan forward-write turn", has fired: this gate is
+that turn, and § 5 holds it from the stamp past the record. #381's first "What remains" bullet now
+names the gate as the exclusion that closes it, and its last, the judgement's own view, is to be
+resolved by A6's ordering, not by excuse, under this amendment.
 
 **What remains.**
 
@@ -2103,6 +2129,11 @@ ordering, not by excuse, in this amendment.
   in the safe direction.
 - *A step that lands and then throws* leaves the fan at a target nothing reports: a false fault, and
   the re-assert restores the record.
+- *A report no plane can write, below the floor or not a number, is treated as no report.* The fan
+  is judged against the step before it, so a write that landed and returned such a target reads as
+  diverged, and the step before is re-asserted: bounded, inside the lease, and logged at `.fault` as
+  a defect on the write path. A report above a fan's maximum is recorded, because the record holds
+  no envelope; every permit clamps to it, so only a defective plane returns one.
 - *A system target equal to the record* is read as Aeolus's, as it always was (#119).
 - *Until A6*, nothing takes the gate, and nothing steps.
 
