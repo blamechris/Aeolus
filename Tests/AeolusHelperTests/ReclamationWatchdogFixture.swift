@@ -264,12 +264,14 @@ let leaseLapsedNotice = "the lease it was registered under is no longer live"
 /// held answer is a true one about the instant it was asked; holding it is what lands a release,
 /// a re-grant and a registration between the lease core answering and § 5 resuming, which is the
 /// suspension a reentrant actor is exposed to. It suspends on a continuation and blocks nothing,
-/// and cancellation resumes it. Every other call passes straight through.
+/// and cancellation resumes it. Every other call passes straight through, a revocation after the
+/// effect `beforeNextRevocation(_:)` was given, if any (#368).
 actor ParkableHeldLeases: HeldLeaseRole {
     private let leases: LeaseAuthority
     private var armed = false
     private var parked: CheckedContinuation<Void, Never>?
     private var cancelled = false
+    private var revocationEffect: (@Sendable () async -> Void)?
 
     /// The answers given, in order, parked or not.
     private(set) var answers: [Bool] = []
@@ -305,8 +307,20 @@ actor ParkableHeldLeases: HeldLeaseRole {
         return answer
     }
 
-    func revokeLease(id: UUID, because cause: FanRestoreCause) async -> LeaseRevocation {
-        await leases.revokeLease(id: id, because: cause)
+    /// Runs `effect` once, inside the next revocation and before it reaches the lease core: after
+    /// § 5's hand-back has returned, which is where #368's teardown lands.
+    func beforeNextRevocation(_ effect: @escaping @Sendable () async -> Void) {
+        revocationEffect = effect
+    }
+
+    func revokeLease(
+        id: UUID, forFan fan: Int, because cause: FanRestoreCause
+    ) async -> LeaseRevocation {
+        if let effect = revocationEffect {
+            revocationEffect = nil
+            await effect()
+        }
+        return await leases.revokeLease(id: id, forFan: fan, because: cause)
     }
 
     private func cancel() {

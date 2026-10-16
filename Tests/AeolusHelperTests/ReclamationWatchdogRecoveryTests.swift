@@ -324,8 +324,8 @@ struct ReclamationWatchdogRecoveryTests {
 
     /// Falling back drops **every** fan of the lease, because the revocation it performs is.
     ///
-    /// `revokeLease(id:because:)` drops the lease whole and the lease core restores the fans it
-    /// covered, so a sibling left in the registry is a fan that is now unleased and on
+    /// `revokeLease(id:forFan:because:)` drops the lease whole and the lease core restores the
+    /// fans it covered, so a sibling left in the registry is a fan that is now unleased and on
     /// automatic. Keeping it produced the worst possible follow-up: the next cycle read
     /// `.modeReclaimed` on that sibling and **re-engaged manual control on a fan with no
     /// lease behind it**.

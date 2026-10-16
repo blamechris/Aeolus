@@ -418,6 +418,10 @@ struct WriteVerbAllowlistTests {
         // `SystemPowerResponder.allowSleepAfterHandback` (#364), below. Its own body is a counter
         // and the call; it names no permit, restorer or plane.
         "LeaseAuthority.swift: sealingGrants(during: @Sendable () async -> Outcome)",
+        // #368's outwait: a `releasing` lookup and a continuation parked until `restore`'s
+        // `defer` resumes it. Private, and it names no permit, restorer or plane: it waits for a
+        // write somebody else issued and issues none.
+        "LeaseAuthority.swift: outwaitHandback(of: Int)",
         // #295's three. `handbackReadings(of:)` is § 3's non-logging read-back seam and its
         // one conformer, which `fansReadingAutomatic(among:)` is now built on: a read per fan
         // and no writer in reach. `readBackAcceptedHandbacks()` is § 3's caller of it — a read
@@ -475,12 +479,12 @@ struct WriteVerbAllowlistTests {
         "LeaseAuthority.swift: revokeEveryLease(because: FanRestoreCause)",
         // #353's: § 5's terminal revocation, scoped to the lease it held the fan for. It
         // reaches a write only through `restore(_:because:)`, as the two beside it do.
-        "LeaseAuthority.swift: revokeLease(id: UUID, because: FanRestoreCause)",
+        "LeaseAuthority.swift: revokeLease(id: UUID, forFan: Int, because: FanRestoreCause)",
         // § 5's role over the lease core (#357's review): the same two calls, as requirements
         // `LeaseAuthority` witnesses. Asking writes nothing; revoking reaches a write only
         // through the conformer's `restore(_:because:)`.
         "HeldLeaseRole.swift: hasLiveLease(id: UUID, coveringFan: Int)",
-        "HeldLeaseRole.swift: revokeLease(id: UUID, because: FanRestoreCause)",
+        "HeldLeaseRole.swift: revokeLease(id: UUID, forFan: Int, because: FanRestoreCause)",
         "LeaseAuthority.swift: revokeLeases(coveringFan: Int, because: FanRestoreCause)",
         "LeaseAuthorityRefusals.swift: refuseIfBlind(_: ConnectionID)",
         "LeaseAuthorityRefusals.swift: refuseIfForeignManualControl(_: ConnectionID, "

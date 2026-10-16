@@ -336,13 +336,14 @@ too (ADR 0014, amended alongside).
   before stopping, as before. A record under another lease is left untouched: that lease's
   engagement holds the fan, and its own record watches it.
 - `finaliseRelease` ends only the lease it was holding the fan for, through
-  `LeaseAuthority.revokeLease(id:because:)`: revoked if it is live, ended as `.leaseExpired`
-  inside the call if it has lapsed and is still unswept, so its release notice lands while the
-  terminal action still keeps its ledger entry. A lease a sweep or teardown removes between the
-  hand-back and the revocation is not covered: its notice can still clear the entry
-  ([#368](https://github.com/blamechris/Aeolus/issues/368), an A6 precondition `main` shares). It
-  drops only that lease's records. If the lease has already ended, the hand-back still runs and
-  nothing is revoked.
+  `LeaseAuthority.revokeLease(id:forFan:because:)`: revoked if it is live, ended as
+  `.leaseExpired` inside the call if it has lapsed and is still unswept, so its release notice
+  lands while the terminal action still keeps its ledger entry. A lease a sweep or teardown
+  removes between the hand-back and the revocation answers `.gone`, and since
+  [#368](https://github.com/blamechris/Aeolus/issues/368) only once that teardown's handback of
+  the fan has returned, so its notice too lands while the terminal action keeps its entry
+  (ADR 0014, #368 amendment). It drops only that lease's records. If the lease has already
+  ended, the hand-back still runs and nothing is revoked.
 - `hasLiveLease(coveringFan:)` is deleted, so nothing can ask the coverage question.
 
 **What does not change.** D2's order. Restore-and-forget as `.leaseLapsed`'s only action. The
@@ -359,7 +360,8 @@ already rejects the reference to the registry it needs, and a late stale registr
 
 **Revisit if** leases that can overlap on a fan are proposed (the registration's arbitration then
 needs records keyed per fan and lease), or a lease-core restore path that bypasses `releasing` is
-added (the index-keyed release notice could then erase a newer lease's record).
+added (the index-keyed release notice could then erase a newer lease's record, and `revokeLease`'s
+`.gone` would no longer outwait its notice).
 
 ## Amendment (2026-10-15, [#343](https://github.com/blamechris/Aeolus/issues/343)) — a lease-end handback the firmware refuses gets no watcher of its own, and D2 stands without its bonus
 
@@ -388,9 +390,9 @@ restore-and-forget, not a watch. No way of getting it back is worth its cost.
 - *Re-register the refused fan with § 5.* A record under no live lease is what the identity amendment
   above refuses.
 - *More attempts, or a pause, in `BoundedFanRestorer`.* Every teardown awaits it — § 4 inside a
-  five-second budget, SIGTERM ahead of its keystone, and § 5's cycle through the terminal action's
-  revocation, on `.gone` too once #368 lands — so each attempt is added to all of them, against a
-  firmware that has refused three immediate ones.
+  five-second budget, SIGTERM ahead of its keystone, and § 5's cycle through
+  `revokeLease(id:forFan:because:)`, on `.gone` too since #368 — so each attempt is added to all of
+  them, against a firmware that has refused three immediate ones.
 - *A slow retry of `restoreAbandoned`, owned by the lease core.* The right owner if refusals prove
   transient. Until a run shows that, it is a write loop in a root daemon against a failure nobody has
   observed: no write has been performed on `Mac16,5`, and whether a refused `F<n>Md = 0` is a busy
@@ -487,7 +489,7 @@ mechanism exists: the correction belongs to the actor that performed the write.
 | A restore refused once may still succeed later | ADR 0007's keystone — the restore depends on no trusted data | The undo path's residual becomes unbounded, and D1's registration half stops being optional |
 | The lease table is cheap to interrogate per fan per cycle | `LeaseAuthority` is an actor over an in-memory table capped at one entry today | D2's liveness query needs a cache with its own staleness story, which is the problem it was written to remove — escalate rather than caching |
 | Restore-and-forget is the right action for `.leaseLapsed` | ADR 0007: the terminal action is the one that depends on nothing | Unchanged — there is no weaker action available, and no stronger one is legitimate for a fan nobody holds |
-| Every lease-core teardown removes its table entry before it awaits the restore | `LeaseAuthority`'s seven paths each remove first: `releaseLease(id:from:)`, `expireLapsedLeases()`, `connectionDidInvalidate(_:)`, `revokeLeases(coveringFan:because:)`, `revokeLease(id:because:)`, `revokeEveryLease(because:)` and `releaseEveryLease()` | §5's check after the read can find a lease still live whose restore has already landed, and reads that restore as `.modeReclaimed` and re-asserts — the hazard asking after the read exists to remove. The path that restores first has to be put back, or the check moved |
+| Every lease-core teardown removes its table entry before it awaits the restore, with no suspension between the removal and counting its fans into `releasing` | `LeaseAuthority`'s seven paths each remove first, and `TeardownCountTripwireTests` fails on a suspension anywhere from the removal to the count: an `await` before the `restore(_:because:)` call, an argument that is not a value the function already holds, or an `await` in `restore`'s body before its counting loop: `releaseLease(id:from:)`, `expireLapsedLeases()`, `connectionDidInvalidate(_:)`, `revokeLeases(coveringFan:because:)`, `revokeLease(id:forFan:because:)`, `revokeEveryLease(because:)` and `releaseEveryLease()` | §5's check after the read can find a lease still live whose restore has already landed, and reads that restore as `.modeReclaimed` and re-asserts — the hazard asking after the read exists to remove. The path that restores first has to be put back, or the check moved. A suspension after the removal lets a `.gone` revocation find nothing to outwait, which reopens [#368](https://github.com/blamechris/Aeolus/issues/368) |
 
 Every hardware observation this rests on is `Mac16,5` on macOS 26.6.2. No write has ever been
 performed on this machine, so the timing of a real reclamation — and therefore the true width

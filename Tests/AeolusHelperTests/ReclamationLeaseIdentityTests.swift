@@ -287,7 +287,7 @@ struct ReclamationLeaseIdentityTests {
     ///
     /// **Mutation (a):** add `held[index] = nil` after the hand-back in
     /// `finaliseRelease(fanAt:heldUnder:because:)`. Run: red on the registry.
-    /// **Mutation (b):** replace the `revokeLease(id:because:)` guard with
+    /// **Mutation (b):** replace the `revokeLease(id:forFan:because:)` guard with
     /// `await leases.revokeEveryLease(because: cause)`. Run: red on L2 and the restorer.
     @Test("A terminal action leaves a newer lease's record and lease alone")
     func aTerminalActionLeavesANewerLeasesRecordAlone() async throws {
@@ -310,9 +310,7 @@ struct ReclamationLeaseIdentityTests {
             }
         }
 
-        for _ in 1...ReclamationLimits.blindCyclesBeforeDivergence {
-            await machine.watchdog.cycle()
-        }
+        try await cycledToTheTerminalAction(machine.watchdog)
 
         #expect(await sensing.didFire, "the terminal action's hand-back never reached the seam")
         #expect(machine.safetyLog.lines(containing: "no speed to re-assert").count == 1)
