@@ -802,7 +802,8 @@ every hold in run 1 aims there.
     heartbeat (#325);
   - beyond about 4 s at all → asynchronous engagement before E4 may merge.
 - **U5b:** if 1b′ refused a mode write on a fan already in automatic, the restore path's refusal
-  accounting is re-decided before run 2.
+  accounting is re-decided before run 2. A refused keystone in any run (U5 or U5b) also goes to the
+  architect with #343's decision (ADR 0009, 2026-10-15 amendment) before the next run.
 - **Hypotheses:** any contradiction of U0–U7, U5b, U13 or U14 → `docs/SMC-RESEARCH.md` first, then
   the architect, per `CLAUDE.md`.
 
@@ -929,7 +930,9 @@ Each run's findings are recorded, and the branch revised, before the next.
 - **If U5b fails,** a refused `F<n>Md = 0` on a fan already in automatic must not count as a failed
   restore. Otherwise `BoundedFanRestorer` mints durable refusals, and § 6's exit code reads a
   healthy teardown as failed. The remedy is a read after the refusal, which decides only whether
-  the refusal is recorded (ADR 0007's 2026-09-20 rule). It is decided before run 2.
+  the refusal is recorded (ADR 0007's 2026-09-20 rule). It is decided before run 2. A refused
+  keystone, from U5 or U5b, also goes to the architect with #343's decision (ADR 0009, 2026-10-15
+  amendment) before the next run.
 - **Six texts are restated** (maintainer question 3 on #9):
   - E4's "post-wake re-assertion" bullet.
   - Row 10, "`Ftst` semantics: whether sleep resets the Apple Silicon force key, and where the
@@ -1509,6 +1512,22 @@ teardown taking seconds. The ruling is the architect's #364/#347 consult, run on
 This amendment corrects clauses of a Proposed ADR rather than the decisions they sit under.
 **Status stays Proposed.**
 
+## Amendment (2026-10-15, [#343](https://github.com/blamechris/Aeolus/issues/343)) — a lease-end handback the firmware refuses needs no watcher of its own
+
+An A6 precondition decided, with no change to behaviour. [ADR 0009](0009-precedence-at-the-write.md)'s
+#343 amendment records it: such a fan is reported by the grant refusal and the snapshot, bridged by
+§ 3 above the ceiling, retried by § 7's panic verb, § 4's sleep handback and SIGTERM's teardown, and
+reconciled by the next process, and gets no retry of its own until a run shows what a refused keystone
+is. For this ADR it adds one consequence to A6's contract (the identity amendment, item 1): engaging
+through the driver is also what puts every fan level 6 engages into § 3's registry, the only mechanism
+that acts unprompted on such a fan, so level 6 reaches a writer's `engageManualControl(of:)` through
+the driver or not at all, and a source tripwire holds that. The driver registers a fan once the
+engagement returns, or at its undo, so a lease released during the yield wait leaves § 3 holding
+nothing for up to one `UnlockLimits.pollInterval` (100 ms), until the driver's next entitlement check
+throws, registers and undoes. U5 and U5b gain a consequence: a refused keystone in any run goes to the
+architect with #343's decision before the next run. **No `AeolusXPCVersion` bump. Status stays
+Proposed.**
+
 ## Amendment (2026-10-15, [#368](https://github.com/blamechris/Aeolus/issues/368)) — a revocation that finds its lease already ended returns only once that ending's handback has
 
 An A6 precondition, found by the delta review of #361 and reproduced under load with the real
@@ -1622,8 +1641,8 @@ This amendment corrects a clause of a Proposed ADR rather than the decision it s
 | U2 | `Ftst = 1` is accepted, and the mode write after it | Reported | No unlock by this route. E4 stops, the snapshot says manual control is unavailable and why, the matrix says so, and it goes back to the architect. Never coded around |
 | U3 | The yield arrives within 3.5 s | Reported at about 3 s; budgets of about 30 s suggest a tail | Raise the budget and give `apply` its own client deadline. Beyond about 4 s, asynchronous engagement before merge |
 | U4 | An accepted `F<n>Md` reads back raw `1`, and `F<n>Tg` reads back within `ReclamationLimits.targetToleranceRPM` (1 RPM) of what was written | Unobserved. § 5's primary signal rests on the second half | **Mode:** D3 refuses, which is correct. **Target:** re-derive the 1 RPM tolerance from the observed quantum before merge — a safety-limit change — or every § 5 cycle reports a reclamation |
-| U5 | The reverse-order restore is accepted for a fan the plane engaged | Unobserved | The retry already runs the other order. If only that one lands, D5's order flips, in one place |
-| U5b | `F<n>Md = 0` written to a fan already in automatic is accepted, with or without the force key, whatever the thermal manager is doing | Unobserved. Tested by 1b′ and by every `.everyFan` | Refusal accounting changes before run 2 (Consequences) |
+| U5 | The reverse-order restore is accepted for a fan the plane engaged | Unobserved | The retry already runs the other order. If only that one lands, D5's order flips, in one place. A refused keystone in any run goes to the architect with #343's decision (ADR 0009, 2026-10-15) before the next run |
+| U5b | `F<n>Md = 0` written to a fan already in automatic is accepted, with or without the force key, whatever the thermal manager is doing | Unobserved. Tested by 1b′ and by every `.everyFan` | Refusal accounting changes before run 2 (Consequences). A refused keystone in any run goes to the architect with #343's decision (ADR 0009, 2026-10-15) before the next run |
 | U6 | With `Ftst = 1` and every raw `F<n>Md = 0`, Apple's management drives the fans | Unknown | D5's gate goes: every restore clears the key, and every engagement re-sets it. § 4's never-issued keystone becomes a priority residual |
 | U7 | `Ftst = 1` does not change the behaviour of a fan Aeolus did not engage | Unknown | A one-fan lease would take the others off Apple's management while the snapshot calls them automatic (rule 6). Engagement becomes all-fans-or-nothing on such firmware, and the lease shape is the maintainer's call |
 | U8 | Every write round trip stays under 50 ms (D/100), the teardown restore's and 1b′'s included | Reads: 11.45 ms worst. Writes: unmeasured | D8's decision rule |

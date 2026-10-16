@@ -215,6 +215,58 @@ struct SignalTeardownTests {
             "the exit code was not derived from the write that actually ended the teardown")
     }
 
+    /// A fan whose lease-end handback the firmware refused is asked for again by the teardown
+    /// ([#343](https://github.com/blamechris/Aeolus/issues/343)).
+    ///
+    /// ADR 0009's #343 amendment rests in part on every machine-wide restore retrying such a
+    /// fan. This is SIGTERM's, composed, beside § 4's in `SystemPowerTests`: the lease release
+    /// spends `RestoreLimits.attemptBudget` refused attempts on fan 0 and records it in
+    /// `restoreAbandoned`, and the teardown's `releaseEveryLease()` sweeps that register, so the
+    /// plane is asked for fan 0 again with the gate already closed. No lease is held at that
+    /// point, so nothing but the register names it.
+    ///
+    /// Counted on `.fan(0)` and not on `.everyFan`, which the teardown issues twice whether or
+    /// not the sweep reached the fan. The journal is read before and after, so the setup's own
+    /// attempts are not the ones counted.
+    ///
+    /// **Mutation:** in `SignalTeardown.run(stoppingSupervisorsWith:)`, replace
+    /// `leases.releaseEveryLease()` with `leases.revokeEveryLease(because: .allLeasesDropped)`.
+    /// Run: red on the attempt count — that sweep restores the table's fans, and it is empty.
+    @Test("The teardown asks again for a fan whose lease-end handback the firmware refused")
+    func theTeardownRetriesAFanWhoseLeaseEndHandbackWasRefused() async throws {
+        let journal = TeardownJournal()
+        let helper = await Self.composed(
+            journal: journal, writes: .refused(reason: "the firmware refused the mode write"))
+        let connection = ConnectionID()
+        let lease = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: connection)
+        try await helper.leases.releaseLease(id: lease.id, from: connection)
+        #expect(
+            await helper.leases.fansWithAbandonedHandbacks == [0],
+            "the setup did not abandon fan 0, so the teardown has nothing to retry")
+        #expect(await helper.leases.leaseCount == 0, "the retry must not come from a live lease")
+        let spentAtRelease = await journal.restoreScopes
+        #expect(spentAtRelease == Array(repeating: .fan(0), count: RestoreLimits.attemptBudget))
+
+        await helper.signalTeardown.run(stoppingSupervisorsWith: Self.stopRecorder(journal))
+
+        let atTeardown = await journal.restoreScopes.dropFirst(spentAtRelease.count)
+        #expect(
+            atTeardown.filter { $0 == .fan(0) }.count == RestoreLimits.attemptBudget,
+            """
+            the teardown made \(atTeardown.filter { $0 == .fan(0) }.count) attempts on a fan \
+            whose lease-end restore the firmware refused. Nothing watches such a fan on its own \
+            (ADR 0009, amendment 2026-10-15), so a teardown that does not sweep \
+            `restoreAbandoned` hands the next process a fan still in manual.
+            """)
+        #expect(
+            atTeardown.contains(.everyFan),
+            "the teardown never reached its keystone, so the count above describes another path")
+        #expect(
+            await helper.leases.fansWithAbandonedHandbacks == [0],
+            "the plane refused every attempt, and the durable refusal was lifted anyway")
+    }
+
     // MARK: - The exit code
 
     /// A refused mode write exits non-zero, which is what makes launchd restart the helper.

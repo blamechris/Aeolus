@@ -666,11 +666,17 @@ extension SeamScanner {
     /// method reference (`writer.member`), an optional-chained or force-unwrapped receiver
     /// (`writer?.member`, `writer!.member`) and a parenthesised one (`(writer).member`) alike.
     ///
-    /// Comments are stripped and whitespace around each `.`, `?.` and `!.` removed first, so
-    /// the spelling of a use cannot hide it: a scan anchored on `receiver.member(` missed every
-    /// one of these shapes. A declaration (`func member(`) has no receiver and is not a use.
+    /// Comments are stripped — trailing ones too — and whitespace around each `.`, `?.` and
+    /// `!.` removed first, so the spelling of a use cannot hide it: a scan anchored on
+    /// `receiver.member(` missed every one of these shapes. A declaration (`func member(`) has
+    /// no receiver and is not a use.
+    ///
+    /// **A use whose receiver is not a word is not attributed**: a call result
+    /// (`makeWriter().member`), a subscript (`writers[0].member`), and a bare `member(of:)` inside
+    /// the type that declares it have no `word.` in front. `mentions(of:inSource:)` counts those,
+    /// and a caller that must not miss one compares the two.
     static func receivers(of member: String, inSource source: String) throws -> [String] {
-        let stripped = strippingComments(source)
+        let stripped = strippingAllComments(source)
         let code = try NSRegularExpression(pattern: #"\s*([?!]?)\s*\.\s*"#)
             .stringByReplacingMatches(
                 in: stripped, range: NSRange(stripped.startIndex..., in: stripped),
@@ -680,5 +686,27 @@ extension SeamScanner {
         return use.matches(in: code, range: NSRange(code.startIndex..., in: code)).compactMap {
             Range($0.range(at: 1), in: code).map { String(code[$0]) }
         }
+    }
+
+    /// How many times `member` is named in one file's code other than in a declaration,
+    /// whatever stands in front of it.
+    ///
+    /// The receiver-agnostic count behind `receivers(of:inSource:)`. That scan needs a word and
+    /// a `.`; this one needs the identifier. A use on a call result, on a subscript, or with no
+    /// receiver at all is counted here and attributed there to nothing, so `mentions` minus
+    /// `receivers.count` is the number of uses a receiver scan cannot see. Comments are stripped
+    /// first, trailing ones included, and `func member` is a declaration and not a use.
+    ///
+    /// A mention inside a string literal counts, which errs loud: it can only add a failure
+    /// that names the file.
+    static func mentions(of member: String, inSource source: String) throws -> Int {
+        let code = strippingAllComments(source)
+        let range = NSRange(code.startIndex..., in: code)
+        let named = try NSRegularExpression(
+            pattern: #"(?<![A-Za-z0-9_])"# + member + #"(?![A-Za-z0-9_])"#)
+        let declared = try NSRegularExpression(
+            pattern: #"\bfunc\s+"# + member + #"(?![A-Za-z0-9_])"#)
+        return named.numberOfMatches(in: code, range: range)
+            - declared.numberOfMatches(in: code, range: range)
     }
 }

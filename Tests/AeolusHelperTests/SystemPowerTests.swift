@@ -325,6 +325,70 @@ struct SystemPowerTests {
             """)
     }
 
+    // MARK: - A handback the firmware refused at lease end
+
+    /// A fan whose lease-end handback the firmware refused is asked for again when the machine
+    /// sleeps ([#343](https://github.com/blamechris/Aeolus/issues/343)).
+    ///
+    /// ADR 0009's #343 amendment declines a watcher of its own for such a fan, and rests that in
+    /// part on every machine-wide restore retrying it. This is § 4's, composed: the lease release
+    /// spends `RestoreLimits.attemptBudget` refused attempts on fan 0 and records it in
+    /// `restoreAbandoned`; the sleep handback sweeps that register through `releaseEveryLease()`,
+    /// so the plane is asked for fan 0 again, `RestoreLimits.attemptBudget` times, before the
+    /// keystone. The table is empty at that point, so nothing else in the sweep names the fan.
+    ///
+    /// The count is taken on `.restoreToAutomatic(.fan(0))` and not on the keystone, which is
+    /// issued whether or not the sweep reached the fan. The refusal is asserted to stand
+    /// afterwards because the plane still refuses: a retry that landed would lift it, and this
+    /// one must not claim to.
+    ///
+    /// **Mutation:** in `SystemPowerResponder.handBackEveryFan`, replace `releaseEveryLease()`
+    /// with `revokeEveryLease(because: .allLeasesDropped)`. Run: red on the attempt count — that
+    /// sweep restores the table's fans, and the table is empty.
+    @Test("Sleep asks again for a fan whose lease-end handback the firmware refused")
+    func sleepRetriesAFanWhoseLeaseEndHandbackWasRefused() async throws {
+        let plane = Self.machine(writes: .refused(reason: "the firmware refused the mode write"))
+        let observer = ScriptedPowerObserver()
+        let helper = Self.composed(plane: plane, observer: observer, safetyLog: RecordedLog())
+        await helper.bindSafetyRegistries()
+        helper.observeSystemPower()
+
+        let connection = ConnectionID()
+        let lease = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: connection)
+        try await helper.leases.releaseLease(id: lease.id, from: connection)
+        #expect(
+            await helper.leases.fansWithAbandonedHandbacks == [0],
+            "the setup did not abandon fan 0, so the sleep has nothing to retry")
+        #expect(await helper.leases.leaseCount == 0, "the retry must not come from a live lease")
+        let spentAtRelease = await Self.fanZeroRestores(on: plane)
+        #expect(spentAtRelease == RestoreLimits.attemptBudget)
+
+        try await observer.deliver(.willSleep)
+
+        let spentAtSleep = await Self.fanZeroRestores(on: plane) - spentAtRelease
+        #expect(
+            spentAtSleep == RestoreLimits.attemptBudget,
+            """
+            the sleep handback made \(spentAtSleep) attempts on a fan whose lease-end restore \
+            the firmware refused. Nothing watches such a fan on its own (ADR 0009, amendment \
+            2026-10-15), so a sleep that does not sweep `restoreAbandoned` leaves it to § 3's \
+            next emergency and the next process.
+            """)
+        #expect(
+            await plane.attempts.contains(.restoreToAutomatic(.everyFan)),
+            "the sleep never reached its keystone, so the count above describes a different path")
+        #expect(
+            await helper.leases.fansWithAbandonedHandbacks == [0],
+            "the plane refused every attempt, and the durable refusal was lifted anyway")
+        #expect(observer.acknowledgements == [.willSleep])
+    }
+
+    /// How many times the scripted firmware was asked to hand fan 0 back, refused or not.
+    private static func fanZeroRestores(on plane: ScriptedControlPlane) async -> Int {
+        await plane.attempts.filter { $0 == .restoreToAutomatic(.fan(0)) }.count
+    }
+
     // MARK: - The sleep window
 
     /// A lease request already in flight when the sleep arrives is refused, not granted.
