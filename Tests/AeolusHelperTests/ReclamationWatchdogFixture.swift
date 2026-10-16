@@ -59,6 +59,11 @@ struct ReclamationMachine<Writes: FanControlPlane> {
     /// What § 5 asks the lease core through, when a scenario parks its answers (#357): `nil`,
     /// and § 5 asks `leases` directly, unless the machine was built `parkingLeaseHops`.
     let leaseHops: ParkableHeldLeases?
+    /// What § 5 asks `latch` and tells `ledger` through, when a scenario parks those hops (#380):
+    /// `nil`, and § 5 holds the real actors, unless the machine was built `parkingSafetyHops`.
+    /// The driver and § 3 hold the real latch either way, and the snapshot's view is `ledger`.
+    let latchHops: ParkableThermalLatch?
+    let ledgerHops: ParkableReclamationLedger?
 
     /// § 3, on the same plane and latch, so that the registration the driver owes it (#181) is
     /// observable and its latched cycle can bridge what § 5 left registered. No test cycles it
@@ -75,7 +80,8 @@ struct ReclamationMachine<Writes: FanControlPlane> {
         fans: [Int: ScriptedControlPlane.FanCondition],
         sensing: any FanStateSensing,
         writes: Writes,
-        parkingLeaseHops: Bool = false
+        parkingLeaseHops: Bool = false,
+        parkingSafetyHops: Bool = false
     ) {
         self.plane = plane
         fanConditions = fans
@@ -85,6 +91,8 @@ struct ReclamationMachine<Writes: FanControlPlane> {
         leases = LeaseFixture.authority(
             restorer: restorer, thermalEmergency: latch, clock: leaseClock)
         leaseHops = parkingLeaseHops ? ParkableHeldLeases(leases) : nil
+        latchHops = parkingSafetyHops ? ParkableThermalLatch(latch) : nil
+        ledgerHops = parkingSafetyHops ? ParkableReclamationLedger(ledger) : nil
         let log = SafetyLog(recording: { [safetyLog] in safetyLog.append($0, $1) })
         let telemetry = CuratedCriticalTemperatures(plane: writes, set: .mac16x5)
         emergency = ThermalEmergency(
@@ -103,8 +111,8 @@ struct ReclamationMachine<Writes: FanControlPlane> {
                 writer: writer, leases: leases, latch: latch, emergency: emergency,
                 clock: leaseClock, log: log),
             leases: leaseHops ?? leases,
-            latch: latch,
-            ledger: ledger,
+            latch: latchHops ?? latch,
+            ledger: ledgerHops ?? ledger,
             log: log
         )
     }
@@ -120,16 +128,19 @@ extension ReclamationMachine where Writes == ScriptedControlPlane {
     ///     while control state still answers, or a read held open to observe concurrency.
     ///   - parkingLeaseHops: whether § 5 asks the lease core through `leaseHops`, so a scenario
     ///     can hold a liveness answer open while the world moves.
+    ///   - parkingSafetyHops: whether § 5 asks the latch through `latchHops` and tells the ledger
+    ///     through `ledgerHops`, so a scenario can hold either hop open (#380).
     init(
         stages: [ScriptedControlPlane.Stage] = [.nominal()],
         fans: [Int: ScriptedControlPlane.FanCondition] = [0: .held(at: 2_400)],
         sensing: (any FanStateSensing)? = nil,
-        parkingLeaseHops: Bool = false
+        parkingLeaseHops: Bool = false,
+        parkingSafetyHops: Bool = false
     ) {
         let plane = ScriptedControlPlane(fans: fans, stages: stages)
         self.init(
             plane: plane, fans: fans, sensing: sensing ?? plane, writes: plane,
-            parkingLeaseHops: parkingLeaseHops)
+            parkingLeaseHops: parkingLeaseHops, parkingSafetyHops: parkingSafetyHops)
     }
 
     /// Wires a machine around a plane the test already built.
@@ -166,11 +177,12 @@ extension ReclamationMachine where Writes == InterferingFanStateSensing {
         plane: ScriptedControlPlane,
         fans: [Int: ScriptedControlPlane.FanCondition] = [0: .held(at: 2_400)],
         interfering: InterferingFanStateSensing,
-        parkingLeaseHops: Bool = false
+        parkingLeaseHops: Bool = false,
+        parkingSafetyHops: Bool = false
     ) {
         self.init(
             plane: plane, fans: fans, sensing: interfering, writes: interfering,
-            parkingLeaseHops: parkingLeaseHops)
+            parkingLeaseHops: parkingLeaseHops, parkingSafetyHops: parkingSafetyHops)
     }
 }
 
@@ -263,14 +275,14 @@ let leaseLapsedNotice = "the lease it was registered under is no longer live"
 /// The seam #344 asked for. The question is answered by the real `LeaseAuthority` first, so the
 /// held answer is a true one about the instant it was asked; holding it is what lands a release,
 /// a re-grant and a registration between the lease core answering and § 5 resuming, which is the
-/// suspension a reentrant actor is exposed to. It suspends on a continuation and blocks nothing,
-/// and cancellation resumes it. Every other call passes straight through, a revocation after the
-/// effect `beforeNextRevocation(_:)` was given, if any (#368).
+/// suspension a reentrant actor is exposed to. It parks on `HopParking`, which blocks nothing and
+/// which cancellation resumes, as the latch's and the ledger's doubles do (#380). Every other call
+/// passes straight through, a revocation after the effect `beforeNextRevocation(_:)` was given, if
+/// any (#368).
 actor ParkableHeldLeases: HeldLeaseRole {
     private let leases: LeaseAuthority
+    private let parking = HopParking()
     private var armed = false
-    private var parked: CheckedContinuation<Void, Never>?
-    private var cancelled = false
     private var revocationEffect: (@Sendable () async -> Void)?
     private var vouchedFor: Set<UUID> = []
 
@@ -295,13 +307,12 @@ actor ParkableHeldLeases: HeldLeaseRole {
     func parkNextAnswer() { armed = true }
 
     /// Whether an answer is being held open now.
-    var isParked: Bool { parked != nil }
+    var isParked: Bool {
+        get async { await parking.isParked }
+    }
 
     /// Lets the held answer go.
-    func release() {
-        parked?.resume()
-        parked = nil
-    }
+    func release() async { await parking.release() }
 
     func hasLiveLease(id: UUID, coveringFan fan: Int) async -> Bool {
         let answer: Bool
@@ -313,13 +324,7 @@ actor ParkableHeldLeases: HeldLeaseRole {
         answers.append(answer)
         guard armed else { return answer }
         armed = false
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                if cancelled { continuation.resume() } else { parked = continuation }
-            }
-        } onCancel: {
-            Task { await self.cancel() }
-        }
+        await parking.park()
         return answer
     }
 
@@ -337,11 +342,6 @@ actor ParkableHeldLeases: HeldLeaseRole {
             await effect()
         }
         return await leases.revokeLease(id: id, forFan: fan, because: cause)
-    }
-
-    private func cancel() {
-        cancelled = true
-        release()
     }
 }
 
