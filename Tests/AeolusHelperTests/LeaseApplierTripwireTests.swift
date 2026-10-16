@@ -21,7 +21,7 @@ import Testing
 /// `EngagementRouteTripwireTests` and `EngagementDriverTests.onlyTheDriverEngages`; level 6's
 /// verbs are in
 /// `WriteVerbAllowlistTests`.
-@Suite("What level 6's file names, and how it reaches it")
+@Suite("What level 6's file names, and how it reaches it", .timeLimit(.minutes(1)))
 struct LeaseApplierTripwireTests {
 
     static let levelSixPath = "AeolusHelper/Control/LeaseApplier.swift"
