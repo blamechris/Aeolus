@@ -4,9 +4,15 @@ import Testing
 @testable import AeolusHelper
 
 /// The examination gate through its waits: exclusion, the per-fan lanes, the order waiters are
-/// served in, both bounds to the nanosecond, § 5's bound outlasting a step queued ahead of it, a
-/// grant and an expiry at the same instant, a cancelled waiter, a clock that fails, a pass that
-/// does not hold, the outwaited holder, and the timers it leaves.
+/// served in, both bounds to the nanosecond, § 5's bound outlasting a step queued ahead of it and
+/// one granted at the instant its own wait ran out, a grant and an expiry at the same instant, a
+/// cancelled waiter, a clock that fails, a pass that does not hold, the outwaited holder, and the
+/// timers it leaves.
+///
+/// **Not claimed:** the two cancellation guards in the wait's timer, in its `catch` and after its
+/// sleep. Each is an equivalent mutant: the timer is cancelled only once its wait is decided, so a
+/// timer that ignored its cancellation would find the ticket decided and do nothing, and every
+/// test here stays green without either.
 ///
 /// On `ManualClock`, so a wait ends only when the test moves the hands, grants or cancels, and a
 /// bound is checked exactly. Each test ends by asserting the gate is idle and no timer is left
@@ -305,18 +311,23 @@ struct FanExaminationGateTests {
 
     // MARK: - The bounds' derivation
 
-    /// `examinationWait` is `UnlockLimits.yieldBudget`, two `WatchdogLimits.roundTrip` and
-    /// `stepWait`: the longest hold a step may make, after the longest wait a step queued ahead of
-    /// § 5 has for its grant. `stepWait` plus the yield budget stays under the client's 5 s
-    /// gated-verb deadline. Literals beside the constants, for `ReclamationLimitsTests`' reason: a
-    /// bound derived from the constant it checks moves with it.
+    /// `examinationWait` is `UnlockLimits.yieldBudget`, two `WatchdogLimits.roundTrip`,
+    /// `stepWait` and `examinationMargin`: the longest hold a step may make, after the longest wait
+    /// a step queued ahead of § 5 has for its grant, with a margin for what no SMC deadline bounds.
+    /// `stepWait` plus the yield budget stays under the client's 5 s gated-verb deadline. Literals
+    /// beside the constants, for `ReclamationLimitsTests`' reason: a bound derived from the
+    /// constant it checks moves with it.
+    ///
+    /// **Mutation:** set `examinationMargin` to `.zero`. Run: red here on both literals, and in
+    /// `theBoundCoversAStepGrantedAtTheEndOfItsWait`.
     @Test("The gate's bounds are derived, and fit the client's deadline")
     func theBoundsAreDerived() {
         #expect(
             FanExaminationGate.examinationWait
                 == UnlockLimits.yieldBudget + WatchdogLimits.roundTrip * 2
-                + FanExaminationGate.stepWait)
-        #expect(FanExaminationGate.examinationWait == .milliseconds(14_500))
+                + FanExaminationGate.stepWait + FanExaminationGate.examinationMargin)
+        #expect(FanExaminationGate.examinationWait == .milliseconds(15_500))
+        #expect(FanExaminationGate.examinationMargin == .seconds(1))
         #expect(FanExaminationGate.stepWait == .seconds(1))
         #expect(UnlockLimits.yieldBudget + FanExaminationGate.stepWait < .seconds(5))
         #expect(

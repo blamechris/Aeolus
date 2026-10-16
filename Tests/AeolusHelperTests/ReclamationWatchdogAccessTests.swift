@@ -114,11 +114,12 @@ struct ReclamationWatchdogAccessTests {
     /// The actor's seam, unchanged by #128: the three notices the lease core and the engagement
     /// path send, the supervisor's cycle, and the diagnostic read — plus the two static, pure
     /// classifiers in `ReclamationSignals.swift`, which reach no state because there is none
-    /// there to reach.
+    /// there to reach — and level 6's hand-back notice, A6's fourth, a forwarder into `Registry`.
     private static let acknowledgedInternalMethods: Set<String> = [
         "manualControlEngaged(_: CommandableFan, under: UUID)",
         "commandedTarget(_: CommandedTarget, under: UUID)",
         "manualControlReleased(fanAt: Int)",
+        "manualControlHandedBack(fanAt: Int, under: UUID)",
         "lastCommanded(ofFan: Int)",
         "cycle()",
         "primaryDivergence(of: FanControlState, against: CommandedTarget?)",

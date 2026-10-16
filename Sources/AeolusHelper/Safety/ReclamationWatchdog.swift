@@ -264,6 +264,14 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         await clearReclamationMark(fanAt: index)
     }
 
+    /// Level 6's undo, before its hand-back: forgets `index` only if `lease` holds it, and clears
+    /// the mark as a release does (`Registry.handBack(fanAt:under:)`). Permit-free.
+    /// reclamation-watchdog.md § *"Level 6's hand-back notice"*.
+    func manualControlHandedBack(fanAt index: Int, under lease: UUID) async {
+        guard registry.handBack(fanAt: index, under: lease) else { return }
+        await clearReclamationMark(fanAt: index)
+    }
+
     /// The fans this instance is watching, for tests and diagnostics.
     var fansUnderManualControl: Set<Int> { registry.fans }
 

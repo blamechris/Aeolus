@@ -557,6 +557,9 @@ struct WriteVerbAllowlistTests {
         "ReclamationWatchdog.swift: finaliseRelease(fanAt: Int, heldUnder: UUID, "
             + "because: FanRestoreCause)",
         "ReclamationWatchdog.swift: manualControlReleased(fanAt: Int)",
+        // A6's hand-back notice: a registry transition and the ledger's clear, as the release
+        // notice beside it is. It takes an index and a lease and reaches no writer.
+        "ReclamationWatchdog.swift: manualControlHandedBack(fanAt: Int, under: UUID)",
         "ReclamationWatchdog.swift: reassert(fanAt: Int, heldUnder: UUID, attempt: Int, "
             + "reengaging: Bool)",
         // #381's: the re-fetch after the re-assert's first step, out of `reassert` for its

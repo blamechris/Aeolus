@@ -170,6 +170,18 @@ extension ReclamationWatchdog {
             return finalising[index] == nil
         }
 
+        /// Forgets a fan level 6 has handed back under `lease`, its undo's first act, before the
+        /// driver restores it (ADR 0014's A6 PR-2 amendment): `release(fanAt:)`, for `lease`'s own
+        /// record only.
+        ///
+        /// - Returns: whether its ledger entry may be cleared: `false`, having touched nothing,
+        ///   when the fan is not held under `lease`, and `false` while the terminal action is
+        ///   giving it up, as `release(fanAt:)` answers.
+        mutating func handBack(fanAt index: Int, under lease: UUID) -> Bool {
+            guard isHeld(index, under: lease) else { return false }
+            return release(fanAt: index)
+        }
+
         /// Forgets a fan § 5 is handing back for `lease`.
         ///
         /// - Returns: `false`, having touched nothing, when the fan's record now belongs to

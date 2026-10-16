@@ -210,6 +210,36 @@ struct ReclamationRegistryTests {
         #expect(registry.fans.isEmpty)
     }
 
+    /// Level 6's hand-back notice drops its own lease's record and moves the generation, as a
+    /// release does, and leaves another lease's record, and an absent one, untouched. While the
+    /// terminal action gives the fan up, the record still goes and the mark is kept (#346).
+    ///
+    /// **Mutation (a):** drop the identity guard from `handBack(fanAt:under:)`. Run: red on the
+    /// other lease's record. **(b):** replace `release(fanAt:)` there with `held[index] = nil` and
+    /// `return true`. Run: red on the generation and on the kept mark.
+    @Test("A hand-back notice forgets only its own lease's record, and moves the generation")
+    func aHandBackForgetsOnlyItsOwnLeasesRecord() {
+        var registry = holding(under: other)
+        let generation = registry.generation(ofFan: 0)
+        let forAnotherLease = registry.handBack(fanAt: 0, under: lease)
+        #expect(forAnotherLease == false)
+        #expect(registry.isHeld(0, under: other), "a hand-back dropped another lease's record")
+        #expect(registry.generation(ofFan: 0) == generation)
+
+        let forItsOwn = registry.handBack(fanAt: 0, under: other)
+        #expect(forItsOwn)
+        #expect(registry.fans.isEmpty)
+        #expect(registry.generation(ofFan: 0) == generation + 1, "the generation did not move")
+        let absent = registry.handBack(fanAt: 0, under: other)
+        #expect(absent == false && registry.generation(ofFan: 0) == generation + 1)
+
+        registry = holding(under: lease)
+        _ = registry.beginFinalising(fanAt: 0, for: lease)
+        let duringTheTerminalAction = registry.handBack(fanAt: 0, under: lease)
+        #expect(duringTheTerminalAction == false, "a hand-back erased the kept mark")
+        #expect(registry.fans.isEmpty)
+    }
+
     // MARK: - One readable cycle
 
     /// **Mutation:** add `uncommandedDivergentCycles = 0` to `HeldFan.judge(_:)`'s converged
