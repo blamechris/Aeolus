@@ -76,8 +76,17 @@ extension ReclamationWatchdog {
         var examinedCommanded: CommandedTarget?
         /// The step a writer announced it is about to put on the wire and has not yet reported
         /// (#383): a target the fan may hold before that step's report arrives. Replaced by the
-        /// next announcement, closed by the next report, and gone with the record.
+        /// next announcement, closed by the next report, and gone with the record. It holds a
+        /// reading only while `announcementSpent` is clear (#390).
         var announced: CommandedTarget?
+        /// Whether a reading has been held at an announced step since a report last confirmed one
+        /// (#390). An announcement holds one examination's reading on credit, and the credit
+        /// comes back only with a report of the step it announced (`command(_:)`), never with a
+        /// fresh announcement. So a step whose write never lands, because it threw or was never
+        /// issued, holds a target the system chose for one examination at most, however often it
+        /// is announced again. Kept with the rest of a same-lease record, so registering again
+        /// cannot renew it.
+        var announcementSpent = false
 
         /// Gives back an attempt booked for a write that never reached the firmware —
         /// `reassert`'s cancellation exit. Decremented rather than assigned, and floored at
@@ -125,24 +134,42 @@ extension ReclamationWatchdog {
         /// new, and cycles spent short of the *previous* target say nothing about this one. It
         /// also closes any announced step (#383): the report is the newer word on that fan.
         mutating func command(_ target: CommandedTarget) {
+            // A report of the step announced confirms it, and gives back its credit (#390).
+            let tolerance = ReclamationLimits.targetToleranceRPM
+            if let announced, abs(announced.rpm - target.rpm) <= tolerance {
+                announcementSpent = false
+            }
             commanded = target
             announced = nil
             actualDwellCycles = 0
         }
 
-        /// Whether the target `state` read back is one this fan could have been holding while
-        /// the examination was suspended (#383): the target reported when it began, or a step
-        /// announced and not yet reported, each compared by `primaryDivergence(of:against:)`, so
-        /// there is no second tolerance rule. An examination that began with nothing commanded
-        /// judges no target, as a cycle with nothing commanded judges none. `judge(_:)` asks it
-        /// of a `.targetDiverged` only, so a reclaimed mode and an unreadable target are never
-        /// excused.
-        func couldHaveBeenHolding(_ state: FanControlState) -> Bool {
-            if examinedAtGeneration != nil, examinedCommanded == nil { return true }
-            return [examinedCommanded, announced].contains { candidate in
-                candidate != nil
-                    && ReclamationWatchdog.primaryDivergence(of: state, against: candidate) == nil
+        /// Whether `primary` is a `.targetDiverged` reading of a target this fan could have been
+        /// holding while the examination was suspended (#383): the target reported when it began,
+        /// or a step announced and not yet reported, each compared by
+        /// `primaryDivergence(of:against:)`, so there is no second tolerance rule. An examination
+        /// that began with nothing commanded judges no target, as a cycle with nothing commanded
+        /// judges none; a judgement with no examination's stamp holds nothing.
+        ///
+        /// The opening target was reported, so its write returned, and it is asked first and
+        /// spends nothing. The announced step is asked only while `announcementSpent` is clear,
+        /// and holding a reading spends it (#390).
+        private mutating func holds(
+            _ primary: ReclamationDivergence?, readFrom state: FanControlState
+        ) -> Bool {
+            guard case .targetDiverged = primary, examinedAtGeneration != nil else { return false }
+            guard let opening = examinedCommanded else { return true }
+            if Self.reads(state, opening) { return true }
+            guard !announcementSpent, let announced, Self.reads(state, announced) else {
+                return false
             }
+            announcementSpent = true
+            return true
+        }
+
+        /// Whether `state` reads `candidate` back, by the primary signal's own rule.
+        private static func reads(_ state: FanControlState, _ candidate: CommandedTarget) -> Bool {
+            ReclamationWatchdog.primaryDivergence(of: state, against: candidate) == nil
         }
 
         /// Counts one more cycle that could not read this fan.
@@ -202,12 +229,13 @@ extension ReclamationWatchdog {
         ///
         /// The reading predates the examination's suspensions, and a report can land in any of
         /// them, so `commanded` can be newer than the reading. A step can also land before the
-        /// read with its report still to come, so the reading can be newer than `commanded`. A
-        /// `.targetDiverged` reading that `couldHaveBeenHolding(_:)` is therefore no divergence:
-        /// its primary converges, with everything #366 gives such a cycle, and the secondary is
-        /// judged against `commanded` as on any other. Nothing else is excused. Every target that
-        /// can excuse a reading is one the lease holder chose, so no number of reports excuses a
-        /// target the system chose, and the budget still bounds the contest.
+        /// read with its report still to come, so the reading can be newer than `commanded`.
+        ///
+        /// A `.targetDiverged` reading that `holds(_:readFrom:)` is `.held`, and a held cycle
+        /// concludes nothing: no counter moves, no episode opens or closes, and the actor leaves
+        /// the ledger's mark as it stands. An announced step holds once per report of that step
+        /// (`announcementSpent`), because an announcement is not a landed write: one whose write
+        /// threw can coincide with a target the system chose. Nothing else is held (#390).
         /// reclamation-watchdog.md § *"Judged against what the fan could have been holding"*.
         ///
         /// ## The secondary signal reports, and does nothing else: `.short`
@@ -243,9 +271,9 @@ extension ReclamationWatchdog {
         /// and stay off automatic control for as long as the flapping lasted, which is
         /// `ReclamationRegistrationWindowTests.aConvergedCycleDoesNotRefillTheGrace`.
         mutating func judge(_ state: FanControlState) -> Judgement {
-            var primary = ReclamationWatchdog.primaryDivergence(of: state, against: commanded)
-            // A target the fan could have been holding at the read is no divergence (#383).
-            if case .targetDiverged = primary, couldHaveBeenHolding(state) { primary = nil }
+            let primary = ReclamationWatchdog.primaryDivergence(of: state, against: commanded)
+            // A target the fan could have been holding at the read is held: nothing moves (#390).
+            if holds(primary, readFrom: state) { return .held }
             if let primary {
                 actualDwellCycles = 0
                 if commanded == nil {
@@ -297,5 +325,10 @@ extension ReclamationWatchdog {
         case short(actual: Double, commanded: Double, dwell: Int)
         /// Converged on both signals.
         case converged
+        /// The primary signal diverged from the record at a target the fan could have been
+        /// holding while the examination was suspended (#383). Nothing is concluded from the
+        /// cycle: no counter moves, no episode opens or closes, and the ledger's mark is left as
+        /// it stands (#390).
+        case held
     }
 }

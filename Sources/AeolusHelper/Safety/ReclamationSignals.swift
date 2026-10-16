@@ -49,9 +49,11 @@ extension ReclamationWatchdog {
             // Nothing has been commanded on this fan yet — it came off automatic control
             // and no target followed. The mode check above is the whole of what can be said.
             guard let commanded else { return nil }
-            guard abs(readBack - commanded.rpm) > ReclamationLimits.targetToleranceRPM
-            else { return nil }
-            return .targetDiverged(commanded: commanded.rpm, readBack: readBack)
+            // `<=` and not `>`, so a target that is not a number diverges rather than converges.
+            guard abs(readBack - commanded.rpm) <= ReclamationLimits.targetToleranceRPM else {
+                return .targetDiverged(commanded: commanded.rpm, readBack: readBack)
+            }
+            return nil
         }
     }
 

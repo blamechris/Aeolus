@@ -240,7 +240,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// for a fan this actor is not watching under `lease`, as a report is.
     func commandAnnounced(_ target: CommandedTarget, under lease: UUID) {
         guard isHeld(target.fanIndex, under: lease) else { return }
-        registry.announce(target, ofFan: target.fanIndex)
+        registry.announce(target)
     }
 
     /// Forgets a fan that has gone back to Apple's thermal management on purpose.
@@ -471,9 +471,9 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             await clearReclamationMark(fanAt: index)
         case .short, .converged:
             await clearReclamationMark(fanAt: index)
-        case .graced, nil:
-            // A graced cycle after the first says nothing. `nil` is unreachable: the record was
-            // fetched above, nothing suspended.
+        case .graced, .held, nil:
+            // A graced cycle after the first says nothing, and a held one concludes nothing
+            // (#390). `nil` is unreachable: the record was fetched above, nothing suspended.
             return
         }
     }

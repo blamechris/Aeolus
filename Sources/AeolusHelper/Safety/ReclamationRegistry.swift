@@ -214,9 +214,11 @@ extension ReclamationWatchdog {
         }
 
         /// Records a step announced before its write: `HeldFan.announced` (#383). It moves no
-        /// generation, unlike a registration, so it stands no re-assert down.
-        mutating func announce(_ target: CommandedTarget, ofFan index: Int) {
-            held[index]?.announced = target
+        /// generation, unlike a registration, so it stands no re-assert down, and it renews no
+        /// credit (`HeldFan.announcementSpent`, #390). The actor's verb takes the step as a permit
+        /// and this its observation, so the index is the permit's own.
+        mutating func announce(_ target: CommandedTarget) {
+            held[target.fanIndex]?.announced = target
         }
 
         /// Records the target a re-assert put on the wire, unless another was reported for the
