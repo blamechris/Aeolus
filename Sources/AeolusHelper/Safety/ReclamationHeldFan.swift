@@ -65,6 +65,11 @@ extension ReclamationWatchdog {
         /// leaves the ledger's mark to the episode. Kept by `registering(_:over:)` with the rest of
         /// a same-lease record.
         var episodeInFlight = false
+        /// The fan's registration generation when the examination now in flight began, stamped
+        /// by `Registry.beginExamination(ofFan:)` before the control-state read (#381). Kept by
+        /// `registering(_:over:)` with the rest of a same-lease record, so a registration under
+        /// this lease since then shows as a generation past it. `nil` until the first examination.
+        var examinedAtGeneration: UInt64?
 
         /// Gives back an attempt booked for a write that never reached the firmware —
         /// `reassert`'s cancellation exit. Decremented rather than assigned, and floored at

@@ -673,7 +673,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             await restoreAndForget(fanAt: index, heldUnder: lease)
             return
         }
-        registry.recordReassertedTarget(recommanded, ofFan: index)
+        registry.recordReassertedTarget(recommanded, decidedOn: commanded, ofFan: index)
         log.reclamationReasserted(
             fan: index,
             rpm: recommanded.rpm,
