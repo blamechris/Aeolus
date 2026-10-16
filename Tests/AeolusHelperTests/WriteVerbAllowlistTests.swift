@@ -40,7 +40,7 @@ import Testing
 ///
 /// - **A synchronous function that spawns an unstructured `Task` and writes inside it.**
 ///   That is the one route around "a synchronous function cannot `await`".
-///   `Sources/AeolusHelper` has **seventeen** such spawn sites today, and an earlier draft of
+///   `Sources/AeolusHelper` has **eighteen** such spawn sites today, and an earlier draft of
 ///   this bullet said five and called them all supervisors — which was both the wrong number
 ///   and the wrong description, so the containment argument it offered was not the one the
 ///   tree supports. The count then said fourteen for one wave after
@@ -458,6 +458,13 @@ struct WriteVerbAllowlistTests {
         // unchanged, so the lease core can hold the one read verb. Re-pinned, not relaxed: it
         // returns the declared bounds and writes nothing.
         "FanEnvelopeReading.swift: readEnvelope(ofFan: Int)",
+        // ADR 0014's A6 amendment: the examination gate's entries and its wait. Each touches the
+        // gate's own lock and continuations, and a timer that sleeps on the composition's clock;
+        // none reaches a plane, a writer or a fan, and nothing on a write path names the gate.
+        "FanExaminationGate.swift: enter(fanAt: Int, as: Party, within: Duration)",
+        "FanExaminationGate.swift: enterForExamination(fanAt: Int)",
+        "FanExaminationGate.swift: enterForStep(fanAt: Int)",
+        "FanExaminationGate.swift: wait(_: UInt64, fanAt: Int, within: Duration)",
         "FanControlPlane.swift: reconnect()",
         "FanModeSensing.swift: modes(ofFans: [Int])",
         "FanModeSensing.swift: readMode(ofFan: Int)",
@@ -785,9 +792,9 @@ struct WriteVerbAllowlistTests {
     ///
     /// An unstructured `Task` lets a synchronous function reach an `async` write, so every
     /// spawn site is a hole in the population — unless what it spawns is itself acknowledged.
-    /// That is what holds here: none of the seventeen bodies writes, and each — bar #205's
-    /// overrun alarm, below, which awaits a synchronous counter — hands off to an `async`
-    /// method in the population. (The three supervisors also await a synchronous
+    /// That is what holds here: none of the eighteen bodies writes, and each — bar #205's
+    /// overrun alarm and A6's gate timer, below, which make a synchronous call — hands off to an
+    /// `async` method in the population. (The three supervisors also await a synchronous
     /// `loopEnded(generation:)` that only clears a task handle; `BoundedFanRestorer`'s and
     /// `CriticalTemperatureCache`'s spawners are themselves `async`, so their `Task`s shield
     /// cancellation and share one read rather than bridging from synchronous code;
@@ -839,7 +846,14 @@ struct WriteVerbAllowlistTests {
     /// added to `LivenessWatchdog.swift` is therefore not a number to update here but the
     /// hand-off that ADR 0012's amendment rejects.
     ///
-    /// The count is asserted per file so it cannot drift silently. An eighteenth spawn site
+    /// **Re-pinned by ADR 0014's A6 amendment:** one more, in `FanExaminationGate.swift`. It is
+    /// a contended wait's timer, spawned inside `wait(_:fanAt:within:)`, which is already
+    /// `async`: it runs beside the wait, as #205's alarm runs beside a walk. Its body sleeps on
+    /// the injected clock and then makes one synchronous call, `decide(_:fanAt:_:)`, which takes
+    /// the gate's lock, may resume a waiter and logs. It writes nothing, and it is cancelled
+    /// however the wait ends.
+    ///
+    /// The count is asserted per file so it cannot drift silently. A nineteenth spawn site
     /// fails this with the file it was added to, and the maintainer either shows it hands off
     /// the same way and updates the number, or has found the hole.
     ///
@@ -860,6 +874,7 @@ struct WriteVerbAllowlistTests {
             "BoundedFanRestorer.swift": 1,
             "ConnectionHealth.swift": 1,
             "CriticalTemperatureCache.swift": 1,
+            "FanExaminationGate.swift": 1,
             "HelperListenerDelegate.swift": 1,
             "HelperXPCService.swift": 3,
             "LeaseExpirySupervisor.swift": 1,

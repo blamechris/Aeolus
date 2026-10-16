@@ -1763,6 +1763,27 @@ extension SafetyLog {
     }
 }
 
+// MARK: - docs/SAFETY.md § 5 — the examination gate (ADR 0014's A6 amendment)
+
+extension SafetyLog {
+
+    /// § 5 waited `bound` for a fan's examination gate and its holder never left: a contract
+    /// breach, since the bound is the longest hold a step may make. `.fault`, once per holder:
+    /// later examinations against the same holder do not wait and say nothing more. They examine
+    /// without the gate, judging, marking and restoring, and writing nothing away from automatic
+    /// control.
+    func examinationGateOutwaited(fan: Int, after bound: Duration) {
+        emit(
+            .fault,
+            """
+            § 5 waited \(bound) for fan \(fan)'s examination gate, and its holder has not left. \
+            § 5 examines the fan without the gate until that holder leaves: it judges, marks and \
+            restores as before, and writes nothing that takes the fan away from automatic control.
+            """
+        )
+    }
+}
+
 /// `FanControlPlaneValue.wholeRPM(_:)`, the one total RPM-to-text conversion every line here uses:
 /// `Int(_:)` traps on a value that is not a number, and a log line may never kill the helper.
 private func wholeRPM(_ value: Double) -> String { FanControlPlaneValue.wholeRPM(value) }
