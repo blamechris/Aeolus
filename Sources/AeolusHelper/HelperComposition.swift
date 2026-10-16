@@ -367,15 +367,17 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         let examinationGate = FanExaminationGate(clock: clock, log: safetyLog)
         self.examinationGate = examinationGate
         // § 5's writer, shared with the driver it engages through: the driver's step verb and
-        // its undo are this writer's, and so is the level the arbiter is asked about. The driver
-        // registers every fan it engages with § 3 (#181), so it is built after § 3.
+        // its undo are this writer's. The level the arbiter is asked about is the driver's own,
+        // § 5's. The driver registers every fan it engages with § 3 (#181), so it is built after
+        // § 3.
         let reclamationWriter = SafetyActorWriter(plane: plane, level: .reclamationWatchdog)
         let reclamationWatchdog = ReclamationWatchdog(
             sensing: plane,
             writer: reclamationWriter,
             engagement: EngagementDriver(
                 writer: reclamationWriter, leases: leases, latch: latch,
-                emergency: thermalEmergency, clock: clock, log: safetyLog),
+                emergency: thermalEmergency, clock: clock, level: .reclamationWatchdog,
+                log: safetyLog),
             leases: leases,
             latch: latch,
             ledger: ledger,

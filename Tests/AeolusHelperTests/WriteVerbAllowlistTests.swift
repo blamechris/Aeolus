@@ -201,9 +201,10 @@ struct WriteVerbAllowlistTests {
     ///   production conformer.
     /// - `SafetyWriters`: `commandMaximum(of:)` is § 3's emergency write; `command(_:of:)`
     ///   is § 5's bounded re-assert, which needs the number it last commanded rather than
-    ///   the loudest one; `engageManualControl(of:)` is § 5's precondition, because a fan
-    ///   the system reclaimed must come off automatic before its target means anything;
-    ///   `command(towards:of:since:)` is the control loop's governed step.
+    ///   the loudest one; `engageManualControl(of:)` is the step an engagement driver takes,
+    ///   § 5's and level 6's; `command(towards:of:since:)` is the control loop's governed step,
+    ///   and `hold(_:of:)` its one whole write of a fixed setting (ADR 0014's A6 amendments),
+    ///   clamped through the permit like every other.
     /// - `FanWriteAuthorisation.target(for:)` is the *producer*: it clamps into the permit's
     ///   own envelope and stamps the permit's own index. It writes nothing.
     /// - `ThermalEmergency.manualControlEngaged(_:)` stores a permit minted elsewhere, so the
@@ -230,6 +231,7 @@ struct WriteVerbAllowlistTests {
         "SMCFanControlPlane.swift: engageManualControl(of: CommandableFan)",
         "SafetyWriters.swift: command(_: Double, of: CommandableFan)",
         "SafetyWriters.swift: command(towards: Double, of: CommandableFan, since: Duration)",
+        "SafetyWriters.swift: hold(_: Double, of: CommandableFan)",
         "SafetyWriters.swift: commandMaximum(of: CommandableFan)",
         "SafetyWriters.swift: engageManualControl(of: CommandableFan)",
         "FanWriteAuthorisation.swift: target(for: Double)",

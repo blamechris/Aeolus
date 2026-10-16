@@ -46,7 +46,17 @@ import FanKit
 /// Every write goes straight to the firmware. There is no rate limit, no dwell, no budget
 /// and nothing between this and `FanControlPlane` — which is the point, and is why the
 /// level it carries is a `SafetyActorLevel.Ungoverned` rather than a `SafetyActorLevel`:
-/// the control loop cannot be given one of these at all.
+/// none of these carries the control loop's level.
+///
+/// ## Level 6's engagement driver holds one, and commands no target through it
+///
+/// Level 6 engages through an `EngagementDriver` of its own, and a driver steps through one of
+/// these (ADR 0014's A6 amendments). That driver uses it for `engageManualControl(of:)` and
+/// `restoreToAutomatic(_:)` and nothing else, is asked about `.controlLoop` whatever this
+/// writer's level says, and exposes no target verb; the file that holds level 6's driver never
+/// names this type. So the control loop holds no writer it can command a target through but
+/// `GovernedFanWriter`, and § 8's exclusion below is about target writes, which is where it
+/// was always about.
 ///
 /// ## What it still cannot do
 ///
@@ -123,12 +133,12 @@ struct SafetyActorWriter<Plane: FanControlPlane>: KeystoneRestoring {
 
     /// One step of taking a fan back off the system's thermal management.
     ///
-    /// The one verb here that a safety actor uses to move a fan *away* from the safe state,
-    /// and it exists for exactly one caller: the `EngagementDriver` § 5's bounded re-assert
-    /// engages through, which asks the entitlement around every step and owns the cadence
-    /// between them ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md) D2). A fan the
-    /// system has reclaimed is on automatic control, so re-commanding its target without this
-    /// first writes a number nothing honours.
+    /// The one verb here that moves a fan *away* from the safe state, and it exists for one
+    /// caller: an `EngagementDriver`, which asks the entitlement around every step and owns the
+    /// cadence between them ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md) D2). § 5's
+    /// bounded re-assert engages through one, because a fan the system has reclaimed is on
+    /// automatic control and re-commanding its target without this first writes a number nothing
+    /// honours; level 6's `apply` engages through its own (ADR 0014's A6 amendments).
     ///
     /// It is on this writer rather than reached through the plane directly because neither the
     /// driver nor `ReclamationWatchdog` holds a plane — see `FanStateSensing`. Like every verb
@@ -167,8 +177,9 @@ actor GovernedFanWriter<Plane: FanControlPlane> {
     private let plane: Plane
     private let governor: RampGovernor
 
-    /// The last target written per fan. Cleared when a fan goes back to automatic, because
-    /// a remembered target would then ramp from a speed nothing is holding.
+    /// The last target written per fan. Cleared at every engagement and every hand-back, because
+    /// a remembered target would then ramp from a speed nothing is holding: see
+    /// `fanReturnedToAutomatic(index:)`.
     private var lastCommandedRPM: [Int: Double] = [:]
 
     init(plane: Plane, governor: RampGovernor = RampGovernor()) {
@@ -207,7 +218,35 @@ actor GovernedFanWriter<Plane: FanControlPlane> {
         return commanded
     }
 
-    /// Forgets a fan's ramp state, because it went back to Apple's thermal management.
+    /// Writes this fan's target as `goal`, whole: **one** write of the clamped goal, with no ramp.
+    ///
+    /// How level 6 writes a `.fixed(rpm:)` setting (ADR 0014's A6 amendments). A fixed setting is
+    /// a speed the client asked for, and a single governed step towards it is not that speed: from
+    /// a remembered 3,564 RPM, a one-second step towards a fan's 5,777 maximum writes 3,764 and the
+    /// reply still says applied, which is `CLAUDE.md` rule 6. § 8 shapes the steps a control loop
+    /// takes (E8a's loop, which will call `command(towards:of:since:)`), not a client's setpoint.
+    ///
+    /// Still clamped: `goal` goes through `CommandableFan.target(for:)`, so § 2's bounds and the
+    /// 0 RPM floor bind it exactly as they bind every other write.
+    ///
+    /// - Returns: the target the plane put on the wire, which is what the caller reports and what
+    ///   the next `command(towards:of:since:)` ramps from.
+    /// - Throws: whatever the plane's `commandTarget(_:)` throws, leaving the remembered target
+    ///   where it was, as `command(towards:of:since:)` does.
+    @discardableResult
+    func hold(_ goal: Double, of fan: CommandableFan) async throws -> CommandedTarget {
+        let commanded = try await plane.commandTarget(fan.target(for: goal))
+        lastCommandedRPM[fan.index] = commanded.rpm
+        return commanded
+    }
+
+    /// Forgets a fan's ramp state: the fan was on Apple's thermal management until an engagement
+    /// took it off, or has just been handed back to it.
+    ///
+    /// Level 6 calls this at every engagement it makes and every fan its undo hands back (ADR
+    /// 0014's A6 amendments), so a target remembered from before a fan went back to automatic is
+    /// never the origin of a later ramp. A hand-back the lease core makes is covered by the next
+    /// engagement, which comes before any write under a newer lease.
     func fanReturnedToAutomatic(index: Int) {
         lastCommandedRPM[index] = nil
     }

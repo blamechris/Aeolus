@@ -104,10 +104,11 @@ struct ReclamationWatchdogAccessTests {
         "func clearReclamationMark(fanAt index: Int) async {",
     ]
 
-    /// The one internal property of the actor: the registry's fan set, for tests and
-    /// diagnostics. A copy of the keys, and nothing reached through it can change who is held.
+    /// The two internal properties of the actor, both for tests and diagnostics: the registry's
+    /// fan set, a copy of the keys, and the level its driver asks the arbiter about, a value.
+    /// Nothing reached through either can change who is held.
     private static let acknowledgedInternalProperties: Set<String> = [
-        "fansUnderManualControl"
+        "fansUnderManualControl", "engagementLevel",
     ]
 
     /// The actor's seam, unchanged by #128: the three notices the lease core and the engagement

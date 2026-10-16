@@ -272,6 +272,10 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         registry.record(ofFan: index)?.commanded
     }
 
+    /// The level `engagement` asks the arbiter about, `.reclamationWatchdog`, for the test that
+    /// pins the composition's (ADR 0014's A6 amendments).
+    nonisolated var engagementLevel: SafetyActorLevel { engagement.level }
+
     /// Whether `index` is still held under `lease`: the re-fetch this file makes after an `await`.
     /// An absent record, or one under another lease, is `false`. The re-assert's two before its
     /// command write ask `Registry.reassertTarget(ofFan:under:)` instead, which is the same
