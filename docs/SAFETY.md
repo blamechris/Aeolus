@@ -1112,9 +1112,9 @@ a newer lease means that lease's engagement holds the fan and its own record is 
 holding the fan for: revoked if it is live, ended as expired if it has lapsed and is still
 unswept — inside the call, so its release notice cannot erase the mark the terminal action keeps
 — and not touched if it has already ended; the fan is handed back in every case. A sweep or a
-teardown that removes the lease after the hand-back and before the revocation can still erase
-that mark with its own notice, a gap `main` shares
-([#368](https://github.com/blamechris/Aeolus/issues/368), an A6 precondition). A registration
+teardown that removes the lease after the hand-back and before the revocation is outwaited: the
+revocation answers only once that teardown's handback of the fan has returned, so its notice
+finds the mark kept ([#368](https://github.com/blamechris/Aeolus/issues/368)). A registration
 under a lease that is no longer live is refused, as is one whose fan was released or registered
 while it asked, and one under the lease the terminal action is giving the fan up for, while it
 does: the terminal action moves the registration's generation as it begins, and that lease's
@@ -1153,7 +1153,8 @@ worse than a UI that reports an error, because the user acts on it.
 `ReclamationLeaseIdentityTests.swift`, `ReclamationRegistrationHopTests.swift`,
 `ReclamationTerminalEntryTests.swift`, `ReclamationRefusedCommandWriteTests.swift`,
 `FinaliseReleaseLedgerTests.swift`, `FinaliseReleaseRevocationTests.swift`,
-`LeaseRevocationTests.swift`, `ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
+`TerminalActionTeardownRaceTests.swift`, `LeaseRevocationTests.swift`,
+`LeaseRevocationOutwaitTests.swift`, `ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
 `ReclamationSupervisorTests.swift` and `ReclamationEmergencyRegistrationTests.swift`, with the
 engagement driver the re-assert engages through in `EngagementDriverTests.swift` and
 `EngagementEpochTests.swift` — mostly through `ScriptedControlPlane`, with five bespoke
@@ -1162,7 +1163,9 @@ envelope, a read held open so overlapping reads would be visible, a read or writ
 side effect while it is suspended, a control-state read answered from a scripted sequence so a
 `F<n>Tg` can be readable on one cycle and not the next, and a lease answer held open on a
 continuation (`ParkableHeldLeases`) so a release, a re-grant or the terminal action can land
-between the lease core answering and § 5 resuming. § 1's line makes the same distinction
+between the lease core answering and § 5 resuming — the same seam lands #368's teardown between
+§ 5's hand-back and its revocation, held inside its handback by `ParkingFanRestorer`, a
+`FanRestoring` decorator in `HandbackOutwaitDoubles.swift`. § 1's line makes the same distinction
 for the same reason, and it is drawn rather than rounded off because "entirely through the
 scripted plane" is a claim about how much of the mechanism one shared double can reach. The
 registration grace above is the fourth suite, one test per answer the primary signal can give

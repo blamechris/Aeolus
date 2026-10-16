@@ -1509,6 +1509,87 @@ teardown taking seconds. The ruling is the architect's #364/#347 consult, run on
 This amendment corrects clauses of a Proposed ADR rather than the decisions they sit under.
 **Status stays Proposed.**
 
+## Amendment (2026-10-15, [#368](https://github.com/blamechris/Aeolus/issues/368)) — a revocation that finds its lease already ended returns only once that ending's handback has
+
+An A6 precondition, found by the delta review of #361 and reproduced under load with the real
+`LeaseAuthority`, `HelperFanRestorer` and § 5 (5–15 marks lost per 1,000 runs, the issue's probe).
+Unreachable on every build on `main`, where a `.notBuilt` plane grants no lease. A reporting error,
+`CLAUDE.md` rule 6 in the direction that hides a loss: the fan is handed back on every route.
+
+**The defect.** § 5's terminal action keeps a fan's ledger entry by holding `finalising` from before
+its hand-back until `revokeLease` returns (#346, #361). A lease-core teardown — the TTL sweep, a
+connection death, any of the seven — that takes the lease out of the table first makes `revokeLease`
+answer `.gone` at once. That teardown's release notice is still on its way through
+`HelperFanRestorer`, an actor hop or two behind; it can reach § 5 after `finalising` has closed, and
+clears `.systemReclaimed`. The window is set by the notice's delivery, not by the removal, so no
+reordering of § 5's own statements closes it.
+
+**Decision.** `revokeLease(id:forFan:because:)` takes the fan § 5 is giving up, and answers `.gone`
+only once `releasing[fan]` is empty. The waiter is a continuation on the lease actor, registered in
+the straight-line region that found the lease gone, and resumed in `restore(_:because:)`'s `defer`
+at the instant the fan's count reaches zero. It waits once and does not re-check: a handback begun
+after the drain is a newer lease's, whose notice must clear the mark. It is not cancellable, because
+the restore it outwaits is not.
+
+The drain is that ending's notice and nothing else, by three facts the design already rests on:
+
+1. Every lease-core teardown takes its entries out of the table and counts their fans into
+   `releasing` with no suspension between (ADR 0009's assumption table).
+2. `HelperFanRestorer` awaits each § 5 notice before its write, and `releasing` drops only when it
+   returns.
+3. While `releasing[fan]` is held, `acquireLease` refuses the fan, and a fan in `restoreAbandoned`
+   before that, so neither a newer lease nor a panic sweep of the register can begin a second
+   handback of it until the first returns.
+
+So when `releasing[fan]` drains, the notice the defect is about has reached § 5 and found
+`finalising` holding the fan. `.revoked` and `.expired` need no wait: by the same three facts their
+own restore is the fan's only handback.
+
+**What it costs.** `.gone` now takes as long as `.revoked` always has: one bounded handback,
+`RestoreLimits.attemptBudget` attempts per fan of the ended lease, each bounded by
+`FanRestoreAttempting`'s contract (#168) and, failing that, by ADR 0012. § 5's cycle is parked for
+that long, as it already is for its own revocation, and a handback that never returns parks it no
+longer than it parks `.revoked`. No restore waits on anything: the hand-back has been issued, the
+ending's restore is untouched, and the keystone gains no input and no read ahead of it.
+
+**What remains.** Between the drain and § 5 resuming, a lease granted and released over the fan
+without an engagement would send a notice `finalising` still absorbs. The window is one
+continuation's resumption against a grant's five suspensions; the guard has always had one after its
+last suspension, and this neither widens nor removes it. A notice that reaches § 5 before the
+terminal action begins still clears the mark: § 5 learns a lease has ended when its notice arrives,
+and one that arrives first is a release that came first.
+
+**What does not change.** § 5's body: one argument at one call site and no new line, which is why
+this lands before #128's split. `LeaseRevocation`'s cases. The hand-back's place before the
+revocation. § 3. **No `AeolusXPCVersion` bump**: `HeldLeaseRole` and `LeaseRevocation` are internal,
+and nothing crosses the boundary.
+
+**Alternatives considered.**
+
+- *A token in § 5 that absorbs the next notice after a `.gone`.* It decides which notice is the
+  ended lease's by counting, and miscounts whenever that notice already arrived — inside the
+  hand-back, as #346's test lands it — and then swallows a later lease's release: rule 6 the other
+  way. Exact only by asking `releasing`, and it spends lines § 5's body does not have.
+- *Wait until every handback has drained.* No signature change, but another fan's handback extends
+  the wait, and a client granting and releasing elsewhere could hold § 5 parked while it should be
+  watching that client's fan.
+- *Carry the lease in the release notice.* Exact, and what this ADR's table names for a restore path
+  that bypasses `releasing`; it changes `FanRestoring`, the keystone's seam, and every conformer,
+  for a fact the lease core already holds.
+- *A second `HeldLeaseRole` verb § 5 calls after `.gone`.* A test sees the wait for free, and a
+  future caller can forget the call — ADR 0009's "forgettable call" — in a body with four lines left.
+- *Re-mark after the revocation returns.* Rejected in #346: a clear and a "resolved" line between,
+  and an act after a suspension on a judgement made before it.
+
+**Revisit if** a lease-core restore path bypasses `releasing`, or `HelperFanRestorer` stops awaiting
+its § 5 notices before it returns — the wait then ends before the notice it exists for, and the
+notice must carry the lease; leases that can overlap on a fan are proposed; or D8's measured write
+round trip makes a teardown's handback long against § 5's cadence. The ruling is the architect's
+#368/#343 consult, run on Opus.
+
+This amendment corrects a clause of a Proposed ADR rather than the decision it sits under.
+**Status stays Proposed.**
+
 ## Assumptions and what would invalidate them
 
 | # | Assumption | Basis | If it fails |
@@ -1534,7 +1615,7 @@ This amendment corrects clauses of a Proposed ADR rather than the decisions they
 | — | One lease-table entry, one production plane | True today | Concurrent leases or a second plane: re-check D4's epoch scope and D5's gate. Since the 2026-10-15 amendment, no lease is granted while § 7's panic verb or § 4's handback runs (`sealingGrants(during:)`). The seal is machine-wide, so concurrent leases or a second plane re-check that it still covers every restore that can undo a grant. |
 | — | A re-grant after § 5's terminal action is a client's request | `AeolusXPCClient` and ADR 0013 D1 never re-acquire; the app has no control UI yet | A self-re-acquiring client makes the contest with the system unbounded: a measured, time-limited ledger refusal, mirrored in the snapshot |
 | — | At most one live lease covers a fan | One lease at a time (`.leaseHeldByAnotherClient`) | Overlapping leases: § 5's records keyed per (fan, lease), and registration's arbitration re-decided |
-| — | Every lease-core restore notice for a fan precedes any grant over it | `releasing` is held from before the restorer's notices until it returns | A restore path bypassing `releasing` lets the index-keyed `manualControlReleased(fanAt:)` erase a newer lease's record; the notice must then carry the lease |
+| — | Every lease-core restore notice for a fan precedes any grant over it, and precedes the fan leaving `releasing` | `releasing` is held from before the restorer's notices until it returns; `HelperFanRestorer` awaits each notice before its write | A restore path bypassing `releasing` lets the index-keyed `manualControlReleased(fanAt:)` erase a newer lease's record, and a notice delivered after the restorer returns ends #368's wait before it arrives; either way the notice must then carry the lease |
 | — | The snapshot's `F<n>Md` read and the grant's fresh read fail together | Code: one scheduler and connection, the same key and `FirmwareFanMode(declaredByFirmware:)` decode behind the same finiteness rule; a `.snapshot` read waits and never fails for its priority. They differ only in priority and instant. Every recorded `F<n>Md` read on `Mac16,5` answered, and none was taken while reads were failing | The #360 rung refuses leases the helper grants. Fix the read, and re-decide here. The same holds for a platform whose mode is not `F<n>Md` (Intel, `FS! `): the snapshot's read must take the plane's branch, or share its decode, in the same change |
 
 Every observation above is `Mac16,5`; the write-path rows are hypotheses until D8 runs. Intel and
