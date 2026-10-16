@@ -1805,6 +1805,36 @@ extension SafetyLog {
     }
 }
 
+// MARK: - Level 6's apply (ADR 0014's A6 PR-2 amendment)
+
+extension SafetyLog {
+
+    /// An `apply` was refused inside its per-fan loop, after it handed back every fan it had
+    /// engaged. `.notice`: a refusal is an ordinary answer, and what it handed back is the part
+    /// worth finding afterwards. A hand-back the firmware refused has a `.fault` line of its own.
+    func controlLoopApplyRefused(handingBack fans: [Int], detail: String) {
+        let undone =
+            fans.isEmpty
+            ? "It had engaged no fan."
+            : "The fans it had engaged, \(fans), were handed back to automatic control."
+        emit(.notice, "Level 6's apply was refused: \(detail). \(undone)")
+    }
+
+    /// The undo of a refused `apply` could not hand a fan back. `.fault`: the fan may be off
+    /// automatic control with nothing holding it. The driver registered it with § 3 when it
+    /// engaged it, and § 3 keeps it until a read confirms it automatic (#181).
+    func controlLoopHandBackRefused(fan: Int, detail: String) {
+        emit(
+            .fault,
+            """
+            Could not hand fan \(fan) back after level 6's apply was refused: \(detail). The fan \
+            may still be off automatic control. It is registered with § 3, which bridges it in the \
+            next thermal emergency.
+            """
+        )
+    }
+}
+
 /// `FanControlPlaneValue.wholeRPM(_:)`, the one total RPM-to-text conversion every line here uses:
 /// `Int(_:)` traps on a value that is not a number, and a log line may never kill the helper.
 private func wholeRPM(_ value: Double) -> String { FanControlPlaneValue.wholeRPM(value) }

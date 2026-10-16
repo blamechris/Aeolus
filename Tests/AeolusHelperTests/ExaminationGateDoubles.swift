@@ -95,8 +95,9 @@ final class ManualClock: MonotonicClock, Sendable {
 /// Level 6's step as A6's contract has it, before level 6 exists: the fan's examination gate taken
 /// as a step, the target written through level 6's `GovernedFanWriter` straight to the plane, the
 /// `CommandedTarget` that write returned reported under the lease after it returned, and the gate
-/// left (ADR 0014's #383 and A6 amendments, item 3). The suite's one entrant at `.step` until A6's
-/// next change builds the real one.
+/// left (ADR 0014's #383 and A6 amendments, item 3). PR-1's entrant at `.step`, kept for its tests:
+/// `LeaseApplier` is the real one, and `LeaseApplierExaminationTests` holds the same orderings
+/// with it.
 ///
 /// A fresh writer for each write, so each target is written whole: a `GovernedFanWriter` with no
 /// target behind it goes straight to its goal, which is what A6's `hold(_:of:)` does. § 8's ramp

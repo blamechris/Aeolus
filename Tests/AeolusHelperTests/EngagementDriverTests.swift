@@ -279,7 +279,9 @@ struct EngagementDriverTests {
     /// The plane's step verb is used from exactly two places in `Sources/`: the writer's
     /// one-step pass-through, and the driver. § 5 engages through the driver, never the writer:
     /// through `driver`, the copy `engagement.under(lease:)` binds to the record's lease (#357).
-    /// The composed `engagement` is bound to none and would refuse every step.
+    /// Level 6 does the same through its own driver, bound to the lease its `apply` authorised
+    /// (ADR 0014's A6 PR-2 amendment). The composed `engagement` is bound to none and would refuse
+    /// every step.
     /// Every use counts — a call, one split across lines or spaced before its parenthesis, and
     /// an unapplied method reference — because `SeamScanner.receivers(of:inSource:)` normalises
     /// the whitespace around each `.` before it looks.
@@ -305,6 +307,7 @@ struct EngagementDriverTests {
         #expect(
             uses == [
                 "EngagementDriver.swift: writer",
+                "LeaseApplier.swift: driver",
                 "ReclamationWatchdog.swift: driver",
                 "SafetyWriters.swift: plane",
             ],

@@ -17,7 +17,7 @@ import os
 /// ## Who takes it, and who never does
 ///
 /// § 5 takes it in `cycle()`, before the examination's stamp, and holds it to the examination's
-/// last act. Level 6 takes it for each step, in A6's next change. Nothing else names this type:
+/// last act. Level 6 takes it for each step, in `LeaseApplier`. Nothing else names this type:
 /// `EngagementDriver` and `SafetyActorWriter` never take it, because § 5's re-engage runs through
 /// them while § 5 holds it, and § 3's writes and every restore never take it, because a hand-back
 /// held up by a holder is a hand-back that does not happen. `ExaminationGateRouteTests` holds that

@@ -2,7 +2,7 @@ import Foundation
 import Testing
 
 /// `WriteVerbAllowlistTests`' spawn-site census, in a file of its own so the suite's body keeps
-/// room under `type_body_length` for the rows A6's next change adds. An extension of the same
+/// room under `type_body_length` for the rows A6's second step added. An extension of the same
 /// suite, not a second one: the same `@Suite`, run and reported as before, and nothing in it is
 /// shared with the population checks in `WriteVerbAllowlistTests.swift`.
 extension WriteVerbAllowlistTests {

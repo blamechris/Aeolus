@@ -163,10 +163,12 @@ struct SafetyActorWriter<Plane: FanControlPlane>: KeystoneRestoring {
 /// with the fan being written. That is the same cross-fan defect `commandTarget(_:)`
 /// removed its `ofFan:` parameter to make unrepresentable.
 ///
-/// ## Not built on: there is no control loop yet
+/// ## Held by level 6's `apply`, and with no control loop yet
 ///
-/// Nothing in `Sources/` calls this. Actor level 6 arrives with the write path in E3/E4,
-/// and hysteresis — § 8's other half — arrives with the curve evaluator in
+/// `LeaseApplier` holds one and writes each fixed setting through `hold(_:of:)`; it is built by
+/// tests until A6's next step composes it. `command(towards:of:since:)` has no caller at all
+/// until E8a's loop steps on its own, and hysteresis — § 8's other half — arrives with the curve
+/// evaluator in
 /// [#17](https://github.com/blamechris/Aeolus/issues/17). What exists here is the governor
 /// and the boundary it sits behind, built in #125 because ADR 0007's ruling that § 8 never
 /// delays a safety-actor write was, until now, a rule about a mechanism that did not exist

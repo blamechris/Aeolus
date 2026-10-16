@@ -11,9 +11,9 @@ import Testing
 /// a stored property, a parameter, an extension, a conformance that would let a protocol carry
 /// its verbs, an alias, a cast — has to write `FanExaminationGate`, and anything that enters it has
 /// to write its entry's name. Each statement found is matched against the listed ones and uses one
-/// up, so a second construction is unlisted as surely as a new file is. A6's next change adds the
-/// level-6 file to the first list and the second entry; until then `enterForStep` is called from
-/// nowhere in `Sources/`.
+/// up, so a second construction is unlisted as surely as a new file is. Level 6's file, where
+/// `LeaseApplier` holds the gate and enters it for each step, is on both lists since A6's second
+/// step (ADR 0014's A6 PR-2 amendment); the composition does not hand it the gate until the next.
 ///
 /// What a restore path naming the gate would do is `ExaminationGateRestoreTests`': it would wait on
 /// a holder, and a hand-back held up by a holder is a hand-back that does not happen.
@@ -25,15 +25,18 @@ struct ExaminationGateRouteTests {
     private static let gatePath = "AeolusHelper/Safety/FanExaminationGate.swift"
     private static let watchdogPath = "AeolusHelper/Safety/ReclamationWatchdog.swift"
     private static let compositionPath = "AeolusHelper/HelperComposition.swift"
+    private static let levelSixPath = "AeolusHelper/Control/LeaseApplier.swift"
 
     /// Every statement under `Sources/` that may write the gate's type: its declaration and the
-    /// extension in its own file; § 5's stored property and init parameter; and the composition's
-    /// stored property and its one construction.
+    /// extension in its own file; § 5's stored property and init parameter; level 6's stored
+    /// property and init parameter; and the composition's stored property and its one construction.
     static let typeListings = [
         RoleCensus.Listing(path: gatePath, statement: "class FanExaminationGate: Sendable"),
         RoleCensus.Listing(path: gatePath, statement: "extension FanExaminationGate"),
         RoleCensus.Listing(path: watchdogPath, statement: "let gate: FanExaminationGate"),
         RoleCensus.Listing(path: watchdogPath, statement: "gate: FanExaminationGate"),
+        RoleCensus.Listing(path: levelSixPath, statement: "let gate: FanExaminationGate"),
+        RoleCensus.Listing(path: levelSixPath, statement: "gate: FanExaminationGate"),
         RoleCensus.Listing(
             path: compositionPath, statement: "let examinationGate: FanExaminationGate"),
         RoleCensus.Listing(
@@ -47,9 +50,10 @@ struct ExaminationGateRouteTests {
             path: watchdogPath, statement: "let pass = await gate.enterForExamination"),
     ]
 
-    /// Level 6's entry: declared, and called from nowhere until level 6 exists.
+    /// Level 6's entry: declared, and called once, from `LeaseApplier.step`.
     static let stepEntryListings = [
-        RoleCensus.Listing(path: gatePath, statement: "func enterForStep")
+        RoleCensus.Listing(path: gatePath, statement: "func enterForStep"),
+        RoleCensus.Listing(path: levelSixPath, statement: "let pass = await gate.enterForStep"),
     ]
 
     private static func expectOnlyListed(
@@ -80,7 +84,7 @@ struct ExaminationGateRouteTests {
     /// red on the second construction, and in `theComposedWatchdogWaitsOnTheComposedGate`.
     /// **(c):** `typealias ExaminationGate = FanExaminationGate` in `SafetyWriters.swift`. Run:
     /// red.
-    @Test("The gate's type is named only in its own file, § 5's and the composition's")
+    @Test("The gate's type is named only in its own file, § 5's, level 6's and the composition's")
     func theGateIsNamedOnlyWhereListed() throws {
         try Self.expectOnlyListed(
             "FanExaminationGate", Self.typeListings,
@@ -93,15 +97,20 @@ struct ExaminationGateRouteTests {
 
     /// **Mutation:** add `func probe(_ gate: FanExaminationGate) async {
     /// gate.leave(await gate.enterForExamination(fanAt: 0)) }` to `ThermalEmergency`. Run: red at
-    /// `ThermalEmergency.swift`, here and in `theGateIsNamedOnlyWhereListed`.
-    @Test("Only § 5's cycle enters the gate as an examination, and nothing enters it as a step yet")
+    /// `ThermalEmergency.swift`, here and in `theGateIsNamedOnlyWhereListed`. **Mutation:** in
+    /// `LeaseApplier.undo`, enter the fan's gate around the hand-back (`guard let pass = await
+    /// gate.enterForStep(fanAt: index)`). Run: red here, on the second `enterForStep`.
+    @Test("Only § 5's cycle enters the gate as an examination, and only level 6's step as a step")
     func onlySectionFiveEntersTheGate() throws {
         try Self.expectOnlyListed(
             "enterForExamination", Self.examinationEntryListings,
             what: "Only § 5's cycle examines; a second examiner is a second § 5.")
         try Self.expectOnlyListed(
             "enterForStep", Self.stepEntryListings,
-            what: "Level 6 is the only party that steps, and it is A6's next change.")
+            what: """
+                Level 6's step is the only party that steps: its undo, like every restore, never \
+                takes the gate.
+                """)
     }
 
     /// The composition's one gate is the one § 5 waits on: a step pass held on

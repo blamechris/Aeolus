@@ -115,10 +115,11 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     let thermalEmergency: ThermalEmergency<Plane>
     let reclamationWatchdog: ReclamationWatchdog<Plane>
 
-    /// The fans' examination gate: **one instance**, held by § 5 and, in A6's next change, by
-    /// level 6 (ADR 0014's A6 amendment). Two gates would be two exclusions that exclude nothing
-    /// from each other. Stored so that level 6 can be handed this same one, and so a composed test
-    /// can hold a pass on it; `ExaminationGateRouteTests` holds where it may be named and entered.
+    /// The fans' examination gate: **one instance**, held by § 5 and, once A6's next step composes
+    /// `LeaseApplier`, by level 6 (ADR 0014's A6 amendments). Two gates would be two exclusions
+    /// that exclude nothing from each other. Stored so that level 6 can be handed this same one,
+    /// and so a composed test can hold a pass on it; `ExaminationGateRouteTests` holds where it
+    /// may be named and entered.
     let examinationGate: FanExaminationGate
 
     /// Where the write path's preparation step reports what it found (ADR 0014 D5).

@@ -72,19 +72,20 @@ import Foundation
 /// - Note: since [#128](https://github.com/blamechris/Aeolus/issues/128)'s third pass `held`,
 ///   `finalising` and `registrations` are `Registry`'s, a value type this actor holds
 ///   `private`, and the per-reading judgement is `HeldFan.judge(_:)`'s; #366 added `givenUp` there
-///   and the episode to the record, #381 the examination's stamp, and A6 the gate
-///   (`FanExaminationGate`) and the stamp's `inBound`. What is left below
+///   and the episode to the record, #381 the examination's stamp, A6 the gate
+///   (`FanExaminationGate`) and the stamp's `inBound`, and A6's second step level 6's hand-back
+///   notice, a forwarder into `Registry`, and the role it reaches § 5 through. What is left below
 ///   awaits, re-fetches after an `await` or acts, over `registry`, `log`, `ledger`, `writer`,
 ///   `sensing`, `leases`, `latch` or `gate`, so none of it can move to another file without
 ///   widening that state or adding a suspension point. The splits taken, and the rationale
 ///   relocated out of this file's doc comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
-///   The body is 334 code lines against `type_body_length`'s error at 350,
+///   The body is 339 code lines against `type_body_length`'s error at 350,
 ///   `examine(fanAt:inBound:)` 50 against `function_body_length`'s warning at 50, and the file
-///   980 lines against `file_length`'s at 1000. New § 5 state belongs in `Registry`, tested as a
+///   994 lines against `file_length`'s at 1000. New § 5 state belongs in `Registry`, tested as a
 ///   value, and new behaviour in the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
-actor ReclamationWatchdog<Plane: FanControlPlane> {
+actor ReclamationWatchdog<Plane: FanControlPlane>: ReclamationRegistrationRole {
 
     /// The read half of the seam. **Not a `FanControlPlane`**, so this actor cannot
     /// command a fan except through `writer` — see `FanStateSensing` for why that is a
@@ -161,7 +162,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// Registers a fan that has just been taken off automatic control.
     ///
     /// Called by whoever engages a fan, once `EngagementDriver.engageManualControl(of:)` has
-    /// returned — level 6's `apply`, once it exists. The driver has already registered the fan
+    /// returned — level 6's `apply` (`LeaseApplier`). The driver has already registered the fan
     /// with § 3 (`ThermalEmergency.manualControlEngaged(_:)`) by then.
     ///
     /// ## The ordering is normative: call this **after** the `F<n>Md` write has landed

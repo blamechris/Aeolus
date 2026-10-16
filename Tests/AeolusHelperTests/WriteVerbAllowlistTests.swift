@@ -187,8 +187,16 @@ struct WriteVerbAllowlistTests {
     /// same signature in the same file — an extension on a writer, say — would share the
     /// exemption. `aPermitTravelsBesideNothingThatNamesAFan` therefore requires exactly one
     /// declaration per keyed key (#361's panel).
+    ///
+    /// The second entry is the same registration as a requirement of
+    /// `ReclamationRegistrationRole`, the role level 6 tells § 5 through (ADR 0014's A6 PR-2
+    /// amendment). The watchdog's method is its one witness, so it carries nothing the first
+    /// entry does not.
     private static let keyedCompanions: [String: Set<String>] = [
-        "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan, under: UUID)": ["UUID"]
+        "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan, under: UUID)": ["UUID"],
+        "ReclamationRegistrationRole.swift: manualControlEngaged(_: CommandableFan, under: UUID)": [
+            "UUID"
+        ],
     ]
 
     /// The verbs that carry a permit: they command a fan, take one off automatic control,
@@ -211,7 +219,8 @@ struct WriteVerbAllowlistTests {
     ///   emergency's maximum write needs no read while the machine is above ceiling.
     ///   `bridgeToMaximumThenRelease(_:)` is what spends it.
     ///   `ReclamationWatchdog.manualControlEngaged(_:under:)` reads only the permit's index and
-    ///   writes nothing; its `UUID` is `keyedCompanions`' one entry.
+    ///   writes nothing; its `UUID` is `keyedCompanions`' first entry, and the same requirement
+    ///   on `ReclamationRegistrationRole`, which it witnesses, the second.
     ///   `ThermalEmergency.restoredByEmergency(_:)` keeps a permit § 3 already held, for a
     ///   fan whose own restore is unconfirmed, so the next emergency can spend it (#300). It
     ///   writes nothing. `bridgeThenFileRestored(_:)` passes the same permit to those two in
@@ -240,6 +249,7 @@ struct WriteVerbAllowlistTests {
         "ThermalEmergency.swift: restoredByEmergency(_: CommandableFan)",
         "ThermalEmergency.swift: bridgeThenFileRestored(_: CommandableFan)",
         "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan, under: UUID)",
+        "ReclamationRegistrationRole.swift: manualControlEngaged(_: CommandableFan, under: UUID)",
         "EngagementDriver.swift: engageManualControl(of: CommandableFan)",
         "EngagementDriver.swift: requireEntitlement(for: CommandableFan)",
         "EngagementDriver.swift: firstStep(of: CommandableFan)",
@@ -560,6 +570,16 @@ struct WriteVerbAllowlistTests {
         // A6's hand-back notice: a registry transition and the ledger's clear, as the release
         // notice beside it is. It takes an index and a lease and reaches no writer.
         "ReclamationWatchdog.swift: manualControlHandedBack(fanAt: Int, under: UUID)",
+        "ReclamationRegistrationRole.swift: manualControlHandedBack(fanAt: Int, under: UUID)",
+        // Level 6's `apply` (ADR 0014's A6 PR-2 amendment). None takes a permit: `step` mints one
+        // from the envelope it reads and hands it only to the driver, § 5's registration and
+        // `GovernedFanWriter.hold(_:of:)`, all acknowledged, so a fan is written only through
+        // them. `undo` reaches a write only through the driver's `handBack(fanAt:)`, and
+        // `refusal` asks the lease core and writes nothing.
+        "LeaseApplier.swift: apply(_: [FanSetting], leaseID: UUID, from: ConnectionID)",
+        "LeaseApplier.swift: step(_: Double, toFanAt: Int, under: UUID, engaging: inout [Int])",
+        "LeaseApplier.swift: undo(_: [Int], under: UUID)",
+        "LeaseApplier.swift: refusal(for: any Error, leaseID: UUID, from: ConnectionID)",
         "ReclamationWatchdog.swift: reassert(fanAt: Int, heldUnder: UUID, attempt: Int, "
             + "reengaging: Bool)",
         // #381's: the re-fetch after the re-assert's first step, out of `reassert` for its
