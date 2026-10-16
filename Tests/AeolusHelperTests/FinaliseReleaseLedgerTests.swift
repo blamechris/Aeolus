@@ -222,7 +222,8 @@ struct FinaliseReleaseLedgerTests {
     ///
     /// **Mutation:** move `finalising[index] = lease` and its `defer` in
     /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` to just above
-    /// `leases.revokeLease(id:because:)`. Run: red on the ledger and the "resolved" assertions.
+    /// `leases.revokeLease(id:forFan:because:)`. Run: red on the ledger and the "resolved"
+    /// assertions.
     @Test("A lease ending during the terminal action's hand-back does not erase its entry")
     func aTeardownDuringTheHandBackKeepsTheEntry() async throws {
         let held = try await Self.holdingThroughInterference()

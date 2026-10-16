@@ -66,10 +66,10 @@ import Foundation
 /// `private` state `LeaseAuthorityAccessTests` holds — and #128 had already taken the one
 /// seam available without widening it.
 ///
-/// Relocating prose cannot relieve `type_body_length`, which counts this body's code: 290 lines
-/// since #350's grant seal and #357's identity query and `revokeLease(id:because:)`, so 60 of
-/// headroom remain before its error at 350; the file is 912 lines against its error at 1000. New
-/// behaviour belongs in value types and the `EngagementDriver` (ADR 0014), not in this actor.
+/// Relocating prose cannot relieve `type_body_length`, which counts this body's code: 302 lines
+/// since #368's outwait in `revokeLease(id:forFan:because:)`, so 48 of headroom remain before
+/// its error at 350; the file is 944 lines against its error at 1000. New behaviour belongs in
+/// value types and the `EngagementDriver` (ADR 0014), not in this actor.
 actor LeaseAuthority: HeldLeaseRole {
 
     private let clock: any MonotonicClock
@@ -149,6 +149,12 @@ actor LeaseAuthority: HeldLeaseRole {
     /// the *condition* it checks — so a client could take a lease over a fan whose handback
     /// is still on the wire.
     private var releasing: [Int: Int] = [:]
+
+    /// The `.gone` revocations waiting for a fan's `releasing` count to reach zero, resumed in
+    /// `restore(_:because:)`'s `defer` at that instant (#368). It lives with `releasing` and is
+    /// resolved in the same synchronous region: handback-ledger.md § *"Outwaiting another path's
+    /// handback"*.
+    private var handbackWaiters: [Int: [CheckedContinuation<Void, Never>]] = [:]
 
     /// Fans a restorer gave up on: the attempts are spent and the firmware never took the
     /// write. The durable half of the same ledger `releasing` holds the transient half of —
@@ -567,13 +573,18 @@ actor LeaseAuthority: HeldLeaseRole {
     /// A lapsed lease is ended **here**, inside the caller's call, rather than left to the TTL
     /// sweep (#361's panel): the sweep's release notice would otherwise arrive after the caller
     /// had finished and erase the ledger entry it keeps. It is recorded as `.leaseExpired`, so no
-    /// client is told the system took control it had already lost. This closes only a lease still
-    /// in the table when the call arrives; one a sweep or teardown removed first is `.gone`, with
-    /// its notice possibly still in flight (#368). Removed synchronously before
+    /// client is told the system took control it had already lost. A lease a sweep or teardown
+    /// removed first is `.gone`, answered only once `fan` has left `releasing`, so that
+    /// teardown's release notice has reached § 5 by then (#368). Removed synchronously before
     /// the one restore call, as every teardown here is (#188). handback-ledger.md
-    /// § *"`revokeLease(id:because:)`: the one lease § 5 held the fan for"*.
-    func revokeLease(id: UUID, because cause: FanRestoreCause) async -> LeaseRevocation {
-        guard let entry = table.entry(id: id) else { return .gone }
+    /// § *"`revokeLease(id:forFan:because:)`: the one lease § 5 held the fan for"*.
+    func revokeLease(
+        id: UUID, forFan fan: Int, because cause: FanRestoreCause
+    ) async -> LeaseRevocation {
+        guard let entry = table.entry(id: id) else {
+            await outwaitHandback(of: fan)
+            return .gone
+        }
         table.remove(id: id)
         let outcome: LeaseRevocation = entry.hasLapsed(asOf: clock.now) ? .expired : .revoked
         if outcome == .revoked {
@@ -775,6 +786,10 @@ actor LeaseAuthority: HeldLeaseRole {
     /// `handbackUnconfirmed ⊆ releasing.keys` a fact a test asserts rather than a sentence.
     var fansMidHandback: Set<Int> { Set(releasing.keys) }
 
+    /// The fans a `.gone` revocation is parked on until their handback returns (#368): the
+    /// waiters' keys and no continuation, under the same read-only rule.
+    var fansARevocationAwaits: Set<Int> { Set(handbackWaiters.keys) }
+
     func holdsTombstone(for connection: ConnectionID) -> Bool {
         tombstones.contains(connection)
     }
@@ -853,7 +868,8 @@ actor LeaseAuthority: HeldLeaseRole {
     /// makes a refused fan land in `restoreAbandoned` through the union below — D33. It clears
     /// nothing from `restoreAbandoned` since #291; `confirmAcceptedHandbacks()` does.
     /// Why, and why a restore that never returns leaves a fan unconfirmed for the life of the
-    /// process: handback-ledger.md § *"Where each register ends"*.
+    /// process: handback-ledger.md § *"Where each register ends"*. The same branch resumes the
+    /// revocations outwaiting the fan (#368), in the `defer` because the body returns early.
     ///
     /// - Note: **The overlap the count exists for is unreachable in this build, and the count
     ///   is therefore not load-bearing today.** Replacing it with set membership passes the
@@ -870,6 +886,7 @@ actor LeaseAuthority: HeldLeaseRole {
                 guard outstanding > 1 else {
                     releasing[fan] = nil
                     handbackUnconfirmed.remove(fan)
+                    handbackWaiters.removeValue(forKey: fan)?.forEach { $0.resume() }
                     continue
                 }
                 releasing[fan] = outstanding - 1
@@ -893,6 +910,15 @@ actor LeaseAuthority: HeldLeaseRole {
         guard !accepted.isEmpty else { return }
         handbackAcceptedUnconfirmed.formUnion(accepted)
         log.abandonedHandbackAcceptedUnconfirmed(fans: accepted, because: cause)
+    }
+
+    /// Returns once `fan` has no restore in flight: at once if it has none, else when the
+    /// `defer` above takes its count to zero. It waits once, because a handback begun after that
+    /// instant is a newer lease's, and it is not cancellable, because the restore it outwaits is
+    /// not (#368).
+    private func outwaitHandback(of fan: Int) async {
+        guard releasing[fan] != nil else { return }
+        await withCheckedContinuation { handbackWaiters[fan, default: []].append($0) }
     }
 
     /// Reads back every fan owed one and lifts the refusal over each that reads automatic.

@@ -16,19 +16,22 @@ protocol HeldLeaseRole: Sendable {
     /// `LeaseAuthority.hasLiveLease(id:coveringFan:)`.
     func hasLiveLease(id: UUID, coveringFan fan: Int) async -> Bool
 
-    /// `LeaseAuthority.revokeLease(id:because:)`.
-    func revokeLease(id: UUID, because cause: FanRestoreCause) async -> LeaseRevocation
+    /// `LeaseAuthority.revokeLease(id:forFan:because:)`. `fan` is the one the caller is giving
+    /// up, and only a `.gone` answer reads it.
+    func revokeLease(
+        id: UUID, forFan fan: Int, because cause: FanRestoreCause
+    ) async -> LeaseRevocation
 }
 
-/// What `revokeLease(id:because:)` did with the lease it was asked to end (#361's panel).
+/// What `revokeLease(id:forFan:because:)` did with the lease it was asked to end (#361's panel).
 enum LeaseRevocation: Sendable, Hashable {
     /// It was live: revoked whole, and its fans restored under the cause given.
     case revoked
     /// It had lapsed and not yet been swept: ended now, and its fans restored as
     /// `.leaseExpired`, so nobody is told the system took control the lease had already lost.
     case expired
-    /// The table no longer held it: another path had already removed it. That path's restore,
-    /// and its release notice, may still be in flight — a sweep or teardown landing after the
-    /// terminal action's hand-back and before this call can clear the mark it keeps (#368).
+    /// The table no longer held it: another path had already removed it. Answered only once
+    /// that path's handback of the fan the caller named has returned, so its release notice has
+    /// reached § 5 by then (#368).
     case gone
 }

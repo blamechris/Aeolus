@@ -287,7 +287,7 @@ struct ReclamationLeaseIdentityTests {
     ///
     /// **Mutation (a):** add `held[index] = nil` after the hand-back in
     /// `finaliseRelease(fanAt:heldUnder:because:)`. Run: red on the registry.
-    /// **Mutation (b):** replace the `revokeLease(id:because:)` guard with
+    /// **Mutation (b):** replace the `revokeLease(id:forFan:because:)` guard with
     /// `await leases.revokeEveryLease(because: cause)`. Run: red on L2 and the restorer.
     @Test("A terminal action leaves a newer lease's record and lease alone")
     func aTerminalActionLeavesANewerLeasesRecordAlone() async throws {

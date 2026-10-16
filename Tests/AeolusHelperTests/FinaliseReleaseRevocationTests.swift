@@ -20,7 +20,7 @@ extension FinaliseReleaseLedgerTests {
     /// `LeaseLog` has no recording sink, so the revocation that must not happen is observed
     /// where it would land: the table, and a third restore of fan 0 through the restorer.
     ///
-    /// **Mutation:** replace the `revokeLease(id:because:)` guard in
+    /// **Mutation:** replace the `revokeLease(id:forFan:because:)` guard in
     /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` with
     /// `await leases.revokeEveryLease(because: cause)`. Run: red on the new lease, the count,
     /// the restores and the notice.
@@ -99,7 +99,7 @@ extension FinaliseReleaseLedgerTests {
     /// now ended inside the call, as `.leaseExpired`, so the notice lands while `finalising`
     /// holds the fan; `LeaseRevocationTests.revokeLeaseEndsALapsedLeaseAsExpired` holds the cause.
     ///
-    /// **Mutation:** decline a lapsed lease in `revokeLease(id:because:)` again — `guard let
+    /// **Mutation:** decline a lapsed lease in `revokeLease(id:forFan:because:)` again — `guard let
     /// entry = table.entry(id: id), !entry.hasLapsed(asOf: clock.now) else { return .gone }`.
     /// Run: red on the ledger and the snapshot after the sweep.
     @Test(

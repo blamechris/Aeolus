@@ -92,6 +92,9 @@ struct LeaseAuthorityAccessTests {
         "var table = LeaseTable()",
         "var tombstones: ConnectionTombstones",
         "var releasing: [Int: Int] = [:]",
+        // #368's waiters. A reference to one is a continuation anybody could resume, ending a
+        // `.gone` revocation before the handback it outwaits — the wait gone, with no error.
+        "var handbackWaiters: [Int: [CheckedContinuation<Void, Never>]] = [:]",
         "var restoreAbandoned: Set<Int> = []",
         "var handbackUnconfirmed: Set<Int> = []",
         "var sleepSeal = false",
@@ -107,6 +110,7 @@ struct LeaseAuthorityAccessTests {
         "var machineWideRestoresInFlight = 0",
         "static let invalidatedInFlight",
         "func restore(_ fans: Set<Int>, because cause: FanRestoreCause) async {",
+        "func outwaitHandback(of fan: Int) async {",
         "func refuseIfInvalidated(_ connection: ConnectionID) throws {",
         "func refuseIfThermalEmergencyActive(_ connection: ConnectionID) async throws {",
     ]
@@ -135,7 +139,9 @@ struct LeaseAuthorityAccessTests {
     /// tell "cleared" from "never recorded", so a test asserting only the thrown fault would
     /// pass against a helper that recorded nothing at all. `fansMidHandback` is the third of
     /// the same kind — `releasing`'s keys — and exists so the subset invariant the first two
-    /// rest on is asserted by a test rather than stated by a comment.
+    /// rest on is asserted by a test rather than stated by a comment. `fansARevocationAwaits` is
+    /// the fourth (#368): `handbackWaiters`' keys and none of its continuations, so a test can
+    /// wait for a parked revocation as a state rather than counting yields.
     ///
     /// `emergencyRestores` is #303's: § 3's `EmergencyRestoreConfirming` role, readable from
     /// `LeaseAuthorityRefusals.swift` for the same reason `foreignControl` is, and `private(set)`
@@ -152,6 +158,7 @@ struct LeaseAuthorityAccessTests {
         "fansWithUnconfirmedHandbacks",
         "fansWithAbandonedHandbacks",
         "fansMidHandback",
+        "fansARevocationAwaits",
         "emergencyRestores",
     ]
 
@@ -203,8 +210,9 @@ struct LeaseAuthorityAccessTests {
         "revokeLeases(coveringFan: Int, because: FanRestoreCause)",
         // #353's, § 5's terminal revocation. Strictly narrower than `revokeEveryLease` below,
         // which is already internal: one named lease, whole — revoked if live, ended as expired
-        // if lapsed (#361's panel).
-        "revokeLease(id: UUID, because: FanRestoreCause)",
+        // if lapsed (#361's panel). The fan only chooses which handback a `.gone` outwaits
+        // (#368): a caller can park itself, and it resumes nothing and restores nothing.
+        "revokeLease(id: UUID, forFan: Int, because: FanRestoreCause)",
         "revokeEveryLease(because: FanRestoreCause)",
         "releaseEveryLease()",
         "confirmAcceptedHandbacks()",

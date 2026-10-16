@@ -77,8 +77,8 @@ struct LeaseRevocationTests {
     /// lease and no other: a different ID revokes nothing, and the named one goes whole, in one
     /// restore carrying the cause.
     ///
-    /// **Mutation:** make `revokeLease(id:because:)` select the table's lease rather than the
-    /// named one — `table.all.first` in place of `table.entry(id: id)`. Run: red on the
+    /// **Mutation:** make `revokeLease(id:forFan:because:)` select the table's lease rather than
+    /// the named one — `table.all.first` in place of `table.entry(id: id)`. Run: red on the
     /// unnamed ID's refusal and the restores it made.
     @Test("Revoking a lease by ID revokes only that lease, whole")
     func revokeLeaseRevokesOnlyTheNamedLiveLeaseWhole() async throws {
@@ -87,13 +87,18 @@ struct LeaseRevocationTests {
         let lease = try await authority.acquireLease(
             LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
 
+        let unnamed = observing {
+            await authority.revokeLease(id: UUID(), forFan: 0, because: .systemReclaimed)
+        }
         #expect(
-            await authority.revokeLease(id: UUID(), because: .systemReclaimed) == .gone,
+            try await finishedBeforeCeiling("the unnamed revocation", unnamed) == .gone,
             "a lease was revoked under an ID it was never granted")
         #expect(await authority.leaseCount == 1)
         #expect(await restorer.restores.isEmpty, "an unnamed lease's fans were handed back")
 
-        #expect(await authority.revokeLease(id: lease.id, because: .systemReclaimed) == .revoked)
+        #expect(
+            await authority.revokeLease(id: lease.id, forFan: 0, because: .systemReclaimed)
+                == .revoked)
         #expect(await authority.leaseCount == 0)
         #expect(await restorer.restoredFans == [Set([0, 1])], "the lease was not revoked whole")
         #expect(await restorer.causes == [.systemReclaimed])
@@ -120,7 +125,9 @@ struct LeaseRevocationTests {
             LeaseFixture.request(fans: [0]), from: ConnectionID())
         clock.advance(by: .seconds(Lease.defaultTimeToLive))
 
-        #expect(await authority.revokeLease(id: lease.id, because: .systemReclaimed) == .expired)
+        #expect(
+            await authority.revokeLease(id: lease.id, forFan: 0, because: .systemReclaimed)
+                == .expired)
         #expect(await authority.leaseCount == 0, "the lapsed lease was left for the sweep")
         #expect(
             await restorer.causes == [.leaseExpired], "a lapsed lease was blamed on § 5's cause")
@@ -132,7 +139,7 @@ struct LeaseRevocationTests {
     /// The restore is held open by `RecordingFanRestorer`, which suspends on a continuation.
     ///
     /// **Mutation:** move `table.remove(id: id)` below `await restore(…)` in
-    /// `revokeLease(id:because:)`. Run: red on liveness, the count and the grant's refusal.
+    /// `revokeLease(id:forFan:because:)`. Run: red on liveness, the count and the grant's refusal.
     @Test("A revoked lease is gone before its restore is awaited")
     func revokeLeaseRemovesTheEntryBeforeItsRestore() async throws {
         let entered = AsyncSignal()
@@ -142,7 +149,7 @@ struct LeaseRevocationTests {
         let lease = try await authority.acquireLease(
             LeaseFixture.request(fans: [0]), from: ConnectionID())
         let revocation = observing {
-            await authority.revokeLease(id: lease.id, because: .systemReclaimed)
+            await authority.revokeLease(id: lease.id, forFan: 0, because: .systemReclaimed)
         }
         try await entered.wait()
 

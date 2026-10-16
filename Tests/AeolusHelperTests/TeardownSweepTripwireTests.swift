@@ -82,11 +82,11 @@ struct TeardownSweepTripwireTests {
         // that fell over would leave `offenders` empty over source nobody read — which is exactly
         // how a tripwire passes for the life of a defect. Both numbers are floors set AT what the
         // file holds — four loops, and seven restore call sites since #357's
-        // `revokeLease(id:because:)`, whose per-fan `self.restore(` rewrite a floor of six let
-        // through (#361's panel) — so a change that ADDS either need not come back here, while one
-        // that stops a currently-detected site from matching does. A floor one below the true count
-        // is the same hole, one notch smaller: a whole expected site can go undetected and still
-        // read as coverage.
+        // `revokeLease(id:forFan:because:)`, whose per-fan `self.restore(` rewrite a floor of six
+        // let through (#361's panel) — so a change that ADDS either need not come back here, while
+        // one that stops a currently-detected site from matching does. A floor one below the true
+        // count is the same hole, one notch smaller: a whole expected site can go undetected and
+        // still read as coverage.
         #expect(
             loops >= 4,
             """
