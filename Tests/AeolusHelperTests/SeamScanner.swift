@@ -222,15 +222,6 @@ enum SeamScanner {
         return found
     }
 
-    /// Every `async` write verb whose name matches `namePattern`.
-    ///
-    /// `throws` is optional and the effects clause is required: it is what distinguishes a
-    /// verb that reaches the firmware from a pure producer of the value it carries. See
-    /// `everyTargetWriteVerbTakesAnAuthorisation` for what that buys and what it costs.
-    static func writeVerbs(named namePattern: String) throws -> [Declaration] {
-        try declarations(matching: #"func\s+"# + namePattern + #"\s*\([^)]*\)\s*async(\s+throws)?"#)
-    }
-
     /// The body of a `struct` declaration, for asserting access levels the compiler will not
     /// report and no runtime test can observe.
     static func structBody(of type: String, in file: String) throws -> String {
@@ -493,6 +484,13 @@ enum SeamScanner {
     /// scan does not match such a declaration **at all** — it goes silently uncounted rather
     /// than failing. `docs/ADR/0008` calls that out and
     /// [#120](https://github.com/blamechris/Aeolus/issues/120) asks for it to be parsed.
+    ///
+    /// A parenthesis inside a string literal is not counted, and a `\` inside one escapes the
+    /// character after it — as `copyDelimited` does for the comment stripper, so the two
+    /// agree on where a literal ends. Without that, a default of `"\")"` ended its literal at
+    /// the escaped quote, took the `)` after it for the list's close, and the verb dropped out
+    /// of the population ([#362](https://github.com/blamechris/Aeolus/issues/362)). A quote
+    /// counter and not a lexer: a `"` inside an interpolation still ends the literal early.
     static func closingParenthesis(
         in code: String, openingAt open: String.Index
     ) -> String.Index? {
@@ -503,7 +501,11 @@ enum SeamScanner {
         while index < code.endIndex {
             let character = code[index]
             if inStringLiteral {
-                if character == "\"" { inStringLiteral = false }
+                if character == "\\", code.index(after: index) < code.endIndex {
+                    index = code.index(after: index)
+                } else if character == "\"" {
+                    inStringLiteral = false
+                }
             } else {
                 switch character {
                 case "\"": inStringLiteral = true
