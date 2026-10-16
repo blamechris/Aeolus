@@ -66,9 +66,9 @@ import Foundation
 /// `private` state `LeaseAuthorityAccessTests` holds — and #128 had already taken the one
 /// seam available without widening it.
 ///
-/// Relocating prose cannot relieve `type_body_length`, which counts this body's code: 302 lines
-/// since #368's outwait in `revokeLease(id:forFan:because:)`, so 48 of headroom remain before
-/// its error at 350; the file is 944 lines against its error at 1000. New behaviour belongs in
+/// Relocating prose cannot relieve `type_body_length`, which counts this body's code: 304 lines
+/// since #368's outwait in `revokeLease(id:forFan:because:)`, so 46 of headroom remain before
+/// its error at 350; the file is 948 lines against its error at 1000. New behaviour belongs in
 /// value types and the `EngagementDriver` (ADR 0014), not in this actor.
 actor LeaseAuthority: HeldLeaseRole {
 
@@ -574,10 +574,11 @@ actor LeaseAuthority: HeldLeaseRole {
     /// sweep (#361's panel): the sweep's release notice would otherwise arrive after the caller
     /// had finished and erase the ledger entry it keeps. It is recorded as `.leaseExpired`, so no
     /// client is told the system took control it had already lost. A lease a sweep or teardown
-    /// removed first is `.gone`, answered only once `fan` has left `releasing`, so that
-    /// teardown's release notice has reached § 5 by then (#368). Removed synchronously before
-    /// the one restore call, as every teardown here is (#188). handback-ledger.md
-    /// § *"`revokeLease(id:forFan:because:)`: the one lease § 5 held the fan for"*.
+    /// removed first is `.gone`, answered only once `fan` has left `releasing`, so a teardown
+    /// still handing it back has sent § 5 its notice by then (#368, and #377). Removed
+    /// synchronously before the one restore call, as every teardown here is (#188).
+    /// handback-ledger.md § *"`revokeLease(id:forFan:because:)`: the one lease § 5 held the fan
+    /// for"*.
     func revokeLease(
         id: UUID, forFan fan: Int, because cause: FanRestoreCause
     ) async -> LeaseRevocation {
@@ -915,10 +916,13 @@ actor LeaseAuthority: HeldLeaseRole {
     /// Returns once `fan` has no restore in flight: at once if it has none, else when the
     /// `defer` above takes its count to zero. It waits once, because a handback begun after that
     /// instant is a newer lease's, and it is not cancellable, because the restore it outwaits is
-    /// not (#368).
+    /// not (#368). The check is in the continuation's synchronous body, so no suspension can be
+    /// written between it and the park: one there would let the count drain first.
     private func outwaitHandback(of fan: Int) async {
-        guard releasing[fan] != nil else { return }
-        await withCheckedContinuation { handbackWaiters[fan, default: []].append($0) }
+        await withCheckedContinuation { waiter in
+            guard releasing[fan] != nil else { return waiter.resume() }
+            handbackWaiters[fan, default: []].append(waiter)
+        }
     }
 
     /// Reads back every fan owed one and lifts the refusal over each that reads automatic.
