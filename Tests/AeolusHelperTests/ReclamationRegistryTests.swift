@@ -119,7 +119,7 @@ struct ReclamationRegistryTests {
         let judged = registry.judge(unreadable, ofFan: 0)
         let failures = registry.recordReadFailure(ofFan: 0)
         registry.spendReassertAttempt(2, ofFan: 0)
-        registry.command(target, ofFan: 0)
+        _ = registry.command(target, ofFan: 0)
 
         let generation = registry.generation(ofFan: 0)
         let accepted = registry.register(lease, fanAt: 0, live: true, since: generation)
@@ -253,11 +253,11 @@ struct ReclamationRegistryTests {
     @Test("The secondary signal counts its dwell, and a fresh command starts it again")
     func aFreshCommandRestartsTheDwell() {
         var fan = Watchdog.HeldFan(lease: lease)
-        fan.command(target)
+        _ = fan.command(target)
 
         let first = fan.judge(short)
         let second = fan.judge(short)
-        fan.command(target)
+        _ = fan.command(target)
         let afterTheCommand = fan.judge(short)
         #expect(first == .short(actual: 1_000, commanded: 2_400, dwell: 1))
         #expect(second == .short(actual: 1_000, commanded: 2_400, dwell: 2))
@@ -269,7 +269,7 @@ struct ReclamationRegistryTests {
     @Test("A primary divergence restarts the secondary signal's dwell")
     func aPrimaryDivergenceRestartsTheDwell() {
         var fan = Watchdog.HeldFan(lease: lease)
-        fan.command(target)
+        _ = fan.command(target)
 
         _ = fan.judge(short)
         _ = fan.judge(short)
@@ -302,18 +302,19 @@ struct ReclamationRegistryTests {
     /// primary branch that reaches the re-assert has already zeroed it. Resetting it here as well
     /// would be a behaviour change, so the test pins the dwell where it stood.
     ///
-    /// **Mutation (a):** make `Registry.recordReassertedTarget(_:decidedOn:ofFan:)` do nothing.
-    /// **(b):** make it `held[index]?.command(target)`, which resets the dwell too. Run: red on
-    /// each. Recorded over the target it was decided on, as `reassert` records it (#381).
+    /// **Mutation (a):** make `Registry.recordReassertedTarget(_:decidedOn:ofFan:)` return `true`
+    /// having recorded nothing. **(b):** make it `return held[index]?.command(target) ?? true`,
+    /// which resets the dwell too. Run: red on each. Recorded over the target it was decided on,
+    /// as `reassert` records it (#381).
     @Test("A re-asserted target is recorded, and leaves the dwell where it stands")
     func aReassertedTargetIsRecordedAndLeavesTheDwell() throws {
         var registry = holding(under: lease)
-        registry.command(target, ofFan: 0)
+        _ = registry.command(target, ofFan: 0)
         _ = registry.judge(short, ofFan: 0)
         _ = registry.judge(short, ofFan: 0)
         let written = CommandedTarget(fanIndex: 0, rpm: 2_200)
 
-        registry.recordReassertedTarget(written, decidedOn: target, ofFan: 0)
+        _ = registry.recordReassertedTarget(written, decidedOn: target, ofFan: 0)
         let record = try #require(registry.record(ofFan: 0))
         #expect(record.commanded == written)
         #expect(record.actualDwellCycles == 2)

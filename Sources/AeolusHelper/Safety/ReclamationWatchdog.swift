@@ -227,8 +227,9 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// target the newer lease's record may be judged against (#357).
     func commandedTarget(_ commanded: CommandedTarget, under lease: UUID) {
         guard isHeld(commanded.fanIndex, under: lease) else { return }
-        // And resets the secondary dwell — see `HeldFan.command(_:)`.
-        registry.command(commanded, ofFan: commanded.fanIndex)
+        // And resets the secondary dwell — see `HeldFan.command(_:)` — unless it is refused.
+        let recorded = registry.command(commanded, ofFan: commanded.fanIndex)
+        logRefusal(of: commanded, from: "the target reported for it", unless: recorded)
     }
 
     /// Forgets a fan that has gone back to Apple's thermal management on purpose.
@@ -267,6 +268,14 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// identity and also stops on a registration under that lease since the examination (#381).
     private func isHeld(_ index: Int, under lease: UUID) -> Bool {
         registry.isHeld(index, under: lease)
+    }
+
+    /// Says at `.fault` that the record refused `target`, unless it was `taken`: no plane can
+    /// write it, so the write that returned it has a defect (#395). Both writers of the record
+    /// call this rather than an `if` of their own, which would take `reassert`'s cyclomatic
+    /// complexity past 10.
+    private func logRefusal(of target: CommandedTarget, from source: String, unless taken: Bool) {
+        if !taken { log.reclamationTargetRefused(target, from: source) }
     }
 
     // MARK: - One cycle
@@ -690,7 +699,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             await restoreAndForget(fanAt: index, heldUnder: lease)
             return
         }
-        registry.recordReassertedTarget(recommanded, decidedOn: target, ofFan: index)
+        let recorded = registry.recordReassertedTarget(recommanded, decidedOn: target, ofFan: index)
+        logRefusal(of: recommanded, from: "the target its re-assert returned", unless: recorded)
         log.reclamationReasserted(
             fan: index,
             rpm: recommanded.rpm,

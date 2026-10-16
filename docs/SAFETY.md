@@ -1202,10 +1202,13 @@ next readable cycle.
 A client write issued during § 5's own command write can still land first (#381). The fan then
 holds § 5's re-fetched target, which is older than the client's, until the next readable cycle
 reads it as diverged and re-asserts the client's: one cycle, one more attempt, and the mark kept
-for that cycle. Only mutual exclusion over the write closes it. A same-lease re-apply just before a
-genuine re-reclamation stands that cycle's re-assert down, and so does one that registers without
-engaging a fan the system has taken back to automatic, which A6's contract allows for a fan it
-believes already engaged; the fan stays on automatic until the next cycle re-engages it. Each costs
+for that cycle. Only mutual exclusion over the write closes it, and A6's examination gate is that
+exclusion (ADR 0014's #383 amendment): a client write then waits out § 5's re-assert, so the case
+remains only past § 5's bound, when § 5 examines without the gate, or for a write that bypasses the
+gate. A same-lease re-apply just before a genuine re-reclamation stands that cycle's re-assert down,
+and so does one that registers without engaging a fan the system has taken back to automatic, which
+A6's contract allows for a fan it believes already engaged; the fan stays on automatic until the
+next cycle re-engages it. Each costs
 one cycle and one attempt, in the direction of giving the fan up sooner. Two engagements of one fan
 under one lease can still overlap, an A6 precondition tracked as
 [#389](https://github.com/blamechris/Aeolus/issues/389). A same-lease engagement that completes
@@ -1213,9 +1216,17 @@ during § 5's yield wait re-admits § 5's next step as a first step, which is re
 after § 5's driver has written. The driver hands the fan back, and § 5 logs the stand-down, whose
 line says nothing was written. The fan ends on automatic control and the mark is kept, so the
 snapshot is truthful; the log line is not, and the client's engagement believes it holds a fan it
-does not. A target reported between
-§ 5's read and its judgement is compared against a reading that predates it, so an ordinary step
-can read as diverged; that is [#383](https://github.com/blamechris/Aeolus/issues/383).
+does not. A level-6 step that lands between § 5's read and its judgement is judged against a
+record that predates or postdates the reading, so an ordinary step can read as diverged. § 5
+excuses no reading for it, because any excuse built on what the lease holder reports can be met by
+a lease holder that reports a target the system holds; instead A6 keeps each step out of § 5's
+examination of the fan (ADR 0014's #383 amendment,
+[#383](https://github.com/blamechris/Aeolus/issues/383)). Until A6, nothing steps. A target that
+is not a number, or is below the floor every permit is clamped to, is not recorded, whether a report
+or a re-assert's write returned it, and the refusal is logged at `.fault`; the record then keeps the
+step before. The check is a floor and no ceiling. A target that is not a number diverges, and every
+RPM a § 5 or § 3 line states is written out by a conversion that cannot trap
+([#395](https://github.com/blamechris/Aeolus/pull/395)).
 
 The order is deliberate. The fan's own lease is asked *after* the read because every teardown
 drops its lease before it restores, so a read that saw that restore land is followed by a
@@ -1239,6 +1250,9 @@ worse than a UI that reports an error, because the user acts on it.
 `FinaliseReleaseLedgerTests.swift`, `FinaliseReleaseRevocationTests.swift`,
 `TerminalActionTeardownRaceTests.swift`, `LeaseRevocationTests.swift`,
 `LeaseRevocationOutwaitTests.swift`, `ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
+`ReclamationRecordIntegrityTests.swift` (a report or a re-assert's return below the floor or not a
+number, refused and logged at `.fault`; a report matching a system target below the floor; a target
+that is not a number; and every RPM a log line states, #395),
 `ReclamationSupervisorTests.swift`, `ReclamationEmergencyRegistrationTests.swift`,
 the `ReclamationRegistryTests` suite (the registry and the per-reading judgement as values, #128,
 and #366's episode and given-up lease as values, in its extension in

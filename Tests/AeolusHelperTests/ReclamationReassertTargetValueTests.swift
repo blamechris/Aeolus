@@ -24,7 +24,7 @@ struct ReclamationReassertTargetValueTests {
     private func holding(under lease: UUID) -> Registry {
         var registry = Registry()
         _ = registry.register(lease, fanAt: 0, live: true, since: registry.generation(ofFan: 0))
-        registry.command(decided, ofFan: 0)
+        _ = registry.command(decided, ofFan: 0)
         return registry
     }
 
@@ -46,7 +46,7 @@ struct ReclamationReassertTargetValueTests {
         #expect(registry.reassertTarget(ofFan: 0, under: lease) == decided)
         #expect(registry.reassertTarget(ofFan: 0, under: other) == nil, "presence for identity")
 
-        registry.command(reported, ofFan: 0)
+        _ = registry.command(reported, ofFan: 0)
         #expect(registry.reassertTarget(ofFan: 0, under: lease) == reported, "a report withheld")
 
         let generation = registry.generation(ofFan: 0)
@@ -62,18 +62,18 @@ struct ReclamationReassertTargetValueTests {
     /// What the write returned is recorded over the target it was decided on, which it need not
     /// equal: the writer clamps. A report that arrived during the write is newer, and is kept.
     ///
-    /// **Mutation (a):** make `recordReassertedTarget(_:decidedOn:ofFan:)` assign unconditionally.
-    /// **(b):** make it do nothing. Run: red on each.
+    /// **Mutation (a):** make `recordReassertedTarget(_:decidedOn:ofFan:)` record unconditionally.
+    /// **(b):** make it return `true` having recorded nothing. Run: red on each.
     @Test("A re-asserted target is recorded only over the target it was decided on")
     func aReassertedTargetIsRecordedOnlyOverItsDecision() throws {
         var registry = holding(under: lease)
         let written = CommandedTarget(fanIndex: 0, rpm: 2_350)
 
-        registry.recordReassertedTarget(written, decidedOn: decided, ofFan: 0)
+        _ = registry.recordReassertedTarget(written, decidedOn: decided, ofFan: 0)
         #expect(try #require(registry.record(ofFan: 0)).commanded == written)
 
-        registry.command(reported, ofFan: 0)
-        registry.recordReassertedTarget(written, decidedOn: decided, ofFan: 0)
+        _ = registry.command(reported, ofFan: 0)
+        _ = registry.recordReassertedTarget(written, decidedOn: decided, ofFan: 0)
         #expect(
             try #require(registry.record(ofFan: 0)).commanded == reported,
             "the re-assert's write replaced a report newer than its decision")

@@ -156,7 +156,7 @@ struct SafetyLog: Sendable {
         emit(
             .notice,
             """
-            Thermal emergency commanded fan \(fan) to \(Int(rpm.rounded())) RPM in a \
+            Thermal emergency commanded fan \(fan) to \(wholeRPM(rpm)) RPM in a \
             single write, bypassing the ramp governor (docs/SAFETY.md § 8, ADR 0007).
             """
         )
@@ -464,7 +464,7 @@ extension SafetyLog {
         let consequence =
             if let commanded {
                 """
-                Aeolus asked for \(Int(commanded.rpm.rounded())) RPM and the firmware is not \
+                Aeolus asked for \(wholeRPM(commanded.rpm)) RPM and the firmware is not \
                 holding it
                 """
             } else {
@@ -521,8 +521,8 @@ extension SafetyLog {
         emit(
             .notice,
             """
-            Fan \(fan) has turned at \(Int(actual.rounded())) RPM against a commanded \
-            \(Int(commanded.rounded())) RPM for \(dwellCycles) consecutive cycles. Its \
+            Fan \(fan) has turned at \(wholeRPM(actual)) RPM against a commanded \
+            \(wholeRPM(commanded)) RPM for \(dwellCycles) consecutive cycles. Its \
             target reads back correctly, so Aeolus still holds the fan and the firmware is \
             honouring the request — the fan is not reaching it. Nothing is being taken back.
             """
@@ -691,8 +691,28 @@ extension SafetyLog {
         emit(
             .notice,
             """
-            Reclamation on fan \(fan): re-asserted \(Int(rpm.rounded())) RPM, attempt \
+            Reclamation on fan \(fan): re-asserted \(wholeRPM(rpm)) RPM, attempt \
             \(attempt) of \(budget). The next cycle's read-back decides whether it held.
+            """
+        )
+    }
+
+    /// § 5's record refused a target, a report's or a re-assert's (#395): not a number, or below
+    /// the floor every permit is clamped to, so no plane can have written it. The record keeps
+    /// the target it last took, and the next cycle judges the fan against that, exactly as if
+    /// nothing had been reported.
+    ///
+    /// `.fault`, because every writer reports the `CommandedTarget` its write returned: one no
+    /// plane can write is a defect on the write path, and treating it as no report is the safe
+    /// direction only while somebody knows it happened.
+    func reclamationTargetRefused(_ target: CommandedTarget, from source: String) {
+        emit(
+            .fault,
+            """
+            Fan \(target.fanIndex): \(source) was \(wholeRPM(target.rpm)) RPM, not a number or \
+            below the floor every permit is clamped to, so no plane can have written it. § 5 \
+            keeps the target it last recorded and judges the fan against that, as if nothing \
+            had been reported. The write path that returned it has a defect.
             """
         )
     }
@@ -1742,3 +1762,7 @@ extension SafetyLog {
         )
     }
 }
+
+/// `FanControlPlaneValue.wholeRPM(_:)`, the one total RPM-to-text conversion every line here uses:
+/// `Int(_:)` traps on a value that is not a number, and a log line may never kill the helper.
+private func wholeRPM(_ value: Double) -> String { FanControlPlaneValue.wholeRPM(value) }

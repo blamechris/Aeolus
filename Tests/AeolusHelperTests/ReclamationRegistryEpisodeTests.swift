@@ -25,7 +25,7 @@ extension ReclamationRegistryTests {
     @Test("A same-lease registration mid-episode may not clear the mark, and a newer lease's may")
     func aSameLeaseRegistrationMidEpisodeMayNotClearTheMark() throws {
         var registry = holding(under: lease)
-        registry.command(target, ofFan: 0)
+        _ = registry.command(target, ofFan: 0)
         let judged = registry.judge(unreadable, ofFan: 0)
 
         let reapply = registry.register(
@@ -85,7 +85,7 @@ extension ReclamationRegistryTests {
     @Test("Every divergence outside the grace opens the episode, and the grace does not")
     func everyDivergenceOutsideTheGraceOpensTheEpisode() {
         var commanded = Watchdog.HeldFan(lease: lease)
-        commanded.command(target)
+        _ = commanded.command(target)
         let diverged = commanded.judge(unreadable)
         #expect(diverged == .diverged(.targetUnreadable(reason: "F0Tg: no answer")))
         #expect(commanded.episodeInFlight, "a commanded fan's divergence opened no episode")
@@ -110,7 +110,7 @@ extension ReclamationRegistryTests {
     func aConvergedPrimaryClosesTheEpisode() {
         for reading in [short, converged] {
             var fan = Watchdog.HeldFan(lease: lease)
-            fan.command(target)
+            _ = fan.command(target)
             _ = fan.judge(unreadable)
             let opened = fan.episodeInFlight
 

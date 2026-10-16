@@ -600,6 +600,10 @@ actor InterferingFanStateSensing: FanControlPlane {
     private var beforeEngageStep: (ordinal: Int, effect: @Sendable () async -> Void)?
     private var engageSteps = 0
 
+    /// What `commandTarget(_:)` returns in place of the plane's answer once set, after the plane
+    /// has taken the write: a write path returning a target no plane can write (#395).
+    private var misreportedRPM: Double?
+
     /// Whether the effect actually ran.
     ///
     /// Asserted by every test using this type. A double whose interference silently never
@@ -625,6 +629,10 @@ actor InterferingFanStateSensing: FanControlPlane {
     ) {
         beforeEngageStep = (ordinal, effect)
     }
+
+    /// Makes every later `commandTarget(_:)` return `rpm` for the fan it wrote. Independent of
+    /// `moment`, and fires no effect.
+    func misreport(commandedRPM rpm: Double) { misreportedRPM = rpm }
 
     func readControlState(ofFan index: Int) async throws -> FanControlState {
         if moment == .controlStateRead { await fireOnce() }
@@ -684,7 +692,8 @@ actor InterferingFanStateSensing: FanControlPlane {
             throw error
         }
         if moment == .commandWrite { await fireOnce() }
-        return commanded
+        guard let misreportedRPM else { return commanded }
+        return CommandedTarget(fanIndex: commanded.fanIndex, rpm: misreportedRPM)
     }
 
     private func fireOnce() async {

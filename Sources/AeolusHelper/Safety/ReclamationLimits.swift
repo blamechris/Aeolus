@@ -59,8 +59,8 @@ enum ReclamationDivergence: Sendable, Hashable {
             return "its target could not be read (\(reason))"
         case .targetDiverged(let commanded, let readBack):
             return """
-                its target reads back \(Int(readBack.rounded())) RPM against the \
-                \(Int(commanded.rounded())) RPM last commanded
+                its target reads back \(FanControlPlaneValue.wholeRPM(readBack)) RPM against the \
+                \(FanControlPlaneValue.wholeRPM(commanded)) RPM last commanded
                 """
         }
     }
