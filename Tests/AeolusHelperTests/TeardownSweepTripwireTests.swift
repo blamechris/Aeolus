@@ -117,7 +117,100 @@ struct TeardownSweepTripwireTests {
             """)
     }
 
+    // MARK: - No suspension between the removal and the count (#368)
+
+    /// The seven lease-core teardown paths: each takes its entries out of the table and hands
+    /// their fans to `restore(_:because:)`, which counts them into `releasing` before it awaits.
+    private static let teardownPaths = [
+        "releaseLease", "expireLapsedLeases", "connectionDidInvalidate", "revokeLeases",
+        "revokeLease", "revokeEveryLease", "releaseEveryLease",
+    ]
+
+    /// A table removal, in normalised code: `table.remove(`, `table.removeLapsed(`,
+    /// `table.removeAll(`.
+    private static let tableRemoval = #"\btable\.remove\w*\("#
+
+    /// The restore that counts the fans, awaited, with or without `self.`.
+    private static let countingRestore = #"\bawait (self\.)?restore\("#
+
+    /// [#368](https://github.com/blamechris/Aeolus/issues/368): no teardown suspends between
+    /// taking its entries out of the table and calling `restore(_:because:)`.
+    ///
+    /// `revokeLease(id:forFan:because:)` answers `.gone` once the fan has left `releasing`. A
+    /// teardown that suspended after its removal and before its restore would leave the lease
+    /// gone and the count still zero, so a revocation landing there answers at once and the
+    /// teardown's notice can erase § 5's mark again. ADR 0009's assumption table states the
+    /// premise; this is what fails when it stops being true.
+    ///
+    /// The code is normalised first — comments stripped, whitespace and line breaks collapsed,
+    /// and the space around `.` and before `(` removed — so `table . removeAll ( )`, a removal
+    /// split over lines and an `await` on a line of its own read as what they compile to.
+    ///
+    /// **Mutation (P1):** add `await Task.yield()` to `expireLapsedLeases()` between the
+    /// `reduce` and `await restore(…)`. Run: red, naming it. **Mutation:** the same in
+    /// `connectionDidInvalidate(_:)`, after `guard !released.isEmpty`. Run: red.
+    /// **Mutation (this suite's own):** replace `tableRemoval` with a pattern nothing matches.
+    /// Run: red on coverage rather than green over paths it never read.
+    @Test("No teardown path suspends between its table removal and its restore")
+    func noTeardownSuspendsBetweenItsRemovalAndItsRestore() throws {
+        let code = Self.normalised(try Self.strippedLeaseCore())
+
+        var checked: [String] = []
+        var offenders: [String] = []
+        for path in Self.teardownPaths {
+            guard let body = Self.functionBody(named: path, in: code),
+                let removal = body.range(of: Self.tableRemoval, options: .regularExpression),
+                let restore = body.range(
+                    of: Self.countingRestore, options: .regularExpression,
+                    range: removal.upperBound..<body.endIndex)
+            else { continue }
+            checked.append(path)
+            let between = body[removal.lowerBound..<restore.lowerBound]
+            if between.range(of: #"\bawait\b"#, options: .regularExpression) != nil {
+                offenders.append("\(path): \(between)")
+            }
+        }
+
+        #expect(
+            checked == Self.teardownPaths,
+            """
+            the scan found a table removal followed by an awaited restore in \(checked), and \
+            expected all of \(Self.teardownPaths). A path it cannot read is one it cannot judge, \
+            so either a teardown was renamed or restructured, or the patterns stopped matching.
+            """)
+        #expect(
+            offenders.isEmpty,
+            """
+            a teardown suspends between taking its entries out of the table and counting their \
+            fans into `releasing`: \(offenders). A revocation landing in that suspension finds \
+            the lease gone and nothing to outwait, and the teardown's release notice can then \
+            erase § 5's mark (#368). Keep the removal and the `restore(_:because:)` call in one \
+            straight-line region.
+            """)
+    }
+
     // MARK: - Parsing
+
+    /// `code` with whitespace and line breaks collapsed to single spaces, then the space around
+    /// each `.` and before each `(` removed, after any trailing `//` comment is dropped.
+    private static func normalised(_ code: String) -> String {
+        let uncommented = code.replacingOccurrences(
+            of: #"//[^\n]*"#, with: "", options: .regularExpression)
+        return SeamScanner.collapsingWhitespace(uncommented)
+            .replacingOccurrences(of: #"\s*\.\s*"#, with: ".", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+\("#, with: "(", options: .regularExpression)
+    }
+
+    /// The body of `func name(` in normalised `code`, or `nil` when it is not declared there.
+    /// `(` is part of the match, so `revokeLease` does not find `revokeLeases`.
+    private static func functionBody(named name: String, in code: String) -> Substring? {
+        guard
+            let declaration = code.range(
+                of: #"\bfunc "# + name + #"\("#, options: .regularExpression),
+            let body = Self.bracedBody(in: code, after: declaration.upperBound)
+        else { return nil }
+        return code[body]
+    }
 
     /// `LeaseAuthority.swift` with its comments stripped.
     ///
