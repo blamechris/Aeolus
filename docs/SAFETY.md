@@ -186,7 +186,11 @@ never mentioned it until #104: `acquireLease` runs a sightedness check that is a
 own most recent reading — **the usual case and not the guarantee**, exactly as § 3's own
 paragraph below now says — and a failure to obtain one is refused
 `.noThermalTelemetry` rather than granted and watched
-([ADR 0010](ADR/0010-coalesced-supervisor-reads.md)). The reading answering the check can also be
+([ADR 0010](ADR/0010-coalesced-supervisor-reads.md)). On a seam that can write, the snapshot states
+it too, from the same proof ([#269](https://github.com/blamechris/Aeolus/issues/269)), over a fan
+nothing else refuses or only § 2's bounds do — never over a reason that says the fan's own mode is
+not yet established or will not come back, which `fanctl auto` reads as a fact about the fan. The
+reading answering the check can also be
 a grant-path flight's, and after #280 it can be a flight's *blindness* that displaced a § 3
 sighting taken later: the cache prefers refusal on every tie it can see, so the check is
 conservative rather than exact, and a grant can be refused on a machine that is currently
@@ -665,7 +669,10 @@ the table has been emptied and every fan restored, finds no lease and no fan mid
 and engages manual control on a machine that is about to stop running the helper — a fan
 pinned across a sleep by the one path the ordering above does not cover. A client that asks
 in the window is refused `ManualControlAvailability.Reason.systemSleeping` and told to ask
-again after the wake. A helper that hears a sleep and never hears the wake refuses manual
+again after the wake, and the snapshot says so before it asks
+([#269](https://github.com/blamechris/Aeolus/issues/269)): every fan nothing ranked above the seal
+refuses — the build, § 6's answer for the fan, § 2's bounds, an abandoned or unconfirmed handback —
+reads `systemSleeping` while the seal stands, so `fanctl auto` there exits 8 rather than 0. A helper that hears a sleep and never hears the wake refuses manual
 control for the rest of its life, which is the fail-safe direction and is deliberately not
 guarded against.
 
@@ -910,7 +917,13 @@ keystone or the sweep parked, is refused `releaseInProgress` and the snapshot sa
 keystone parked across its wake refuses a grant `systemSleeping` before the wake and
 `releaseInProgress` after it; and a sweep parked across its wake refuses a grant over a fan it
 does not cover, with the keystone issued only once the sweep returns. Every one grants once the
-teardown returns.
+teardown returns. **`SleepSealAvailabilityTests`** (#269) holds the snapshot to the grant while the
+seal stands: a fan nothing else refuses and a fan mid-handback read `systemSleeping` on both sides; a
+handback register, a fan held elsewhere and one whose mode will not read keep their own reason above
+the seal; and a seam that cannot write reads the build. **`BlindAvailabilityTests`** holds § 3's
+blindness the same way: stated over a fan nothing else refuses and over implausible bounds, never over
+a fan's own pending or durable reason, asked once per snapshot of the grant's own cache, never on a
+seam that cannot write, and never logged per snapshot.
 
 The register half is **`SleepCycleAccumulationTests`** (#209) and its sibling
 **`SleepCycleSurvivalTests`**, which split decision D33's endings between them. The first
