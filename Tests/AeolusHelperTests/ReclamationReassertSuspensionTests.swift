@@ -75,6 +75,75 @@ extension ReclamationReassertViewTests {
         #expect(machine.safetyLog.lines(containing: Self.leftToItsEngagement).isEmpty)
     }
 
+    /// **O, the refusal after a write.** J's other half: here a registration *has* landed since
+    /// the stamp — a same-lease re-apply that registers and commands without engaging, before
+    /// § 5's first engagement step — and the firmware answers § 5's mode write `0x89` once it is
+    /// issued. The driver hands the fan back and throws `firmwareRefusedControl`, not
+    /// `.notAutomatic`: a step wrote, so it is the `.fault` it always was, and not the stand-down
+    /// the registration would otherwise earn.
+    ///
+    /// **Mutation:** X2. Run: red on the failed re-engage line's level and the stand-down line.
+    @Test("A first step refused after its mode write is still a fault, registration or not")
+    func aFirstStepRefusedAfterItsModeWriteIsStillAFault() async throws {
+        let plane = ScriptedControlPlane(
+            fans: [0: .automatic(at: 1_800)], unlock: .answers(code: 0x89))
+        let sensing = InterferingFanStateSensing(plane, during: .reconnect)
+        let machine = ReclamationMachine(
+            plane: plane, fans: [0: .automatic(at: 1_800)], interfering: sensing)
+        try await machine.hold(fan: 0, commanding: 2_400)
+        let lease = try await Self.lease(machine)
+        let permit = try Self.permit(machine)
+        await sensing.interfere(beforeEngageStep: 1) { [machine] in
+            await Self.reapply(machine, under: lease, permit: permit, rpm: 2_000)
+        }
+
+        await machine.watchdog.cycle()
+
+        #expect(await sensing.didFire, "the scenario never arranged the interleaving")
+        #expect(
+            await plane.keyWrites.contains(.mode(fan: 0, value: 1)),
+            "§ 5's mode write was never issued, so nothing was written to undo")
+        #expect(machine.safetyLog.levels(containing: Self.failedReengage) == [.fault])
+        #expect(machine.safetyLog.lines(containing: Self.leftToItsEngagement).isEmpty)
+    }
+
+    /// **P, the release before the first step.** I's interleaving with the fan released rather
+    /// than registered again: its release notice lands after § 5's envelope re-fetch and before
+    /// its first engagement step, and another engagement takes the fan off automatic control
+    /// meanwhile. The step is refused `.notAutomatic` with nothing written, and the record is
+    /// gone, so § 5 says the fan was released, at `.notice`: neither a failed re-engage nor the
+    /// stand-down, whose line claims a same-lease registration that never happened.
+    ///
+    /// **Mutations:** X3, red on the released line and the stand-down line. M9, red on the
+    /// released line and the failed re-engage line.
+    @Test("A fan released before the re-assert's first step is reported released, not failed")
+    func aFanReleasedBeforeTheFirstStepIsReportedReleased() async throws {
+        let plane = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)])
+        let sensing = InterferingFanStateSensing(plane, during: .reconnect)
+        let machine = ReclamationMachine(
+            plane: plane, fans: [0: .automatic(at: 1_800)], interfering: sensing)
+        try await machine.hold(fan: 0, commanding: 2_400)
+        let permit = try Self.permit(machine)
+        await sensing.interfere(beforeEngageStep: 1) { [machine] in
+            await machine.watchdog.manualControlReleased(fanAt: 0)
+            do {
+                _ = try await machine.plane.engageManualControl(of: permit)
+            } catch {
+                Issue.record("the other engagement failed: \(error)")
+            }
+        }
+
+        await machine.watchdog.cycle()
+
+        #expect(await sensing.didFire, "the scenario never arranged the interleaving")
+        #expect(
+            machine.safetyLog.levels(containing: "was released during its first step") == [.notice])
+        #expect(
+            machine.safetyLog.lines(containing: Self.failedReengage).isEmpty,
+            "a failed re-engage was reported for a released fan")
+        #expect(machine.safetyLog.lines(containing: Self.leftToItsEngagement).isEmpty)
+    }
+
     /// **F, the re-fetch after the mode write.** C, one suspension later and on the mode half: the
     /// system took fan 0, and a target reported with no registration lands while § 5's own mode
     /// write is in flight, the re-assert's longest suspension. § 5 re-engages and re-asserts, but

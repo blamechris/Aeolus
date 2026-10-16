@@ -25,19 +25,23 @@ import Testing
 ///   B, E, G, H, I, K, L and N, and the value suite. L is the overwrite: in A the report has
 ///   landed, so § 5 re-asserts the client's own 2,000, and its overwrite assertions stay green.
 /// - **M9**, every refused re-engage the `.fault`, as `reassert`'s catch was before
-///   `reengageRefused(fanAt:heldUnder:error:)`: I.
+///   `reengageRefused(fanAt:heldUnder:error:)`: I, and P's failed re-engage line.
 /// - **M10**, `reengageRefused` standing down on any `.notAutomatic`, without asking
 ///   `reassertTarget(ofFan:under:)`: J.
 /// - **M11**, the target taken at the envelope re-fetch and commanded after the mode write: F.
 /// - **M12**, refunding the attempt at the stand-down before commanding: K.
 /// - **M13**, stamping the examination just after the control-state read: N.
 /// - **M14**, the stand-down line at `.fault`: A and I.
+/// - **X2**, `reengageRefused` standing down on any refusal while `reassertTarget(ofFan:under:)`
+///   answers `nil`, without asking whether it was `.notAutomatic`: O.
+/// - **X3**, `reengageRefused` logging the stand-down itself rather than through
+///   `reassertStopped`, so a released fan is reported left to an engagement: P.
 ///
 /// A, B, C, D, G and H were red at `main` before #381, and I with `reassert`'s catch as it was at
-/// `b07477b` (M9). E and J were green there by design: they pin the accounting and the fault the
-/// fix must keep. F, I, J, K, L and N, added by #381's review, are this suite's extension in
-/// `ReclamationReassertSuspensionTests.swift`. The registry half, as values, is
-/// `ReclamationReassertTargetValueTests`.
+/// `b07477b` (M9), as is P. E, J and O were green there by design: they pin the accounting and the
+/// faults the fix must keep. F, I, J, K, L, N, O and P, added by #381's review rounds, are this
+/// suite's extension in `ReclamationReassertSuspensionTests.swift`. The registry half, as values,
+/// is `ReclamationReassertTargetValueTests`.
 @Suite(
     "§ 5's re-assert does not overwrite a re-apply under the same lease", .timeLimit(.minutes(1)))
 struct ReclamationReassertViewTests {
