@@ -153,7 +153,7 @@ struct TeardownSweepTripwireTests {
     /// Run: red on coverage rather than green over paths it never read.
     @Test("No teardown path suspends between its table removal and its restore")
     func noTeardownSuspendsBetweenItsRemovalAndItsRestore() throws {
-        let code = Self.normalised(try Self.strippedLeaseCore())
+        let code = Self.normalised(try Self.leaseCoreWithoutAnyComment())
 
         var checked: [String] = []
         var offenders: [String] = []
@@ -192,13 +192,19 @@ struct TeardownSweepTripwireTests {
     // MARK: - Parsing
 
     /// `code` with whitespace and line breaks collapsed to single spaces, then the space around
-    /// each `.` and before each `(` removed, after any trailing `//` comment is dropped.
+    /// each `.` and before each `(` removed.
     private static func normalised(_ code: String) -> String {
-        let uncommented = code.replacingOccurrences(
-            of: #"//[^\n]*"#, with: "", options: .regularExpression)
-        return SeamScanner.collapsingWhitespace(uncommented)
+        SeamScanner.collapsingWhitespace(code)
             .replacingOccurrences(of: #"\s*\.\s*"#, with: ".", options: .regularExpression)
             .replacingOccurrences(of: #"\s+\("#, with: "(", options: .regularExpression)
+    }
+
+    /// `LeaseAuthority.swift` with every comment stripped, trailing ones included, through the
+    /// scanner's `strippingAllComments`, which leaves a `//` inside a string literal alone. A
+    /// trailing `// await` would otherwise read as a suspension, and once whitespace is collapsed
+    /// a trailing comment would swallow the rest of the function.
+    private static func leaseCoreWithoutAnyComment() throws -> String {
+        SeamScanner.strippingAllComments(try Self.leaseCoreSource())
     }
 
     /// The body of `func name(` in normalised `code`, or `nil` when it is not declared there.
@@ -219,10 +225,15 @@ struct TeardownSweepTripwireTests {
     /// loops. A tripwire that fires on the prose explaining the rule is a tripwire nobody keeps
     /// — `PanicPathScopeTripwireTests` records the same finding.
     private static func strippedLeaseCore() throws -> String {
+        SeamScanner.strippingComments(try Self.leaseCoreSource())
+    }
+
+    /// `LeaseAuthority.swift` as written.
+    private static func leaseCoreSource() throws -> String {
         let url = try #require(
             try SeamScanner.swiftFiles().first { $0.lastPathComponent == Self.leaseCoreFile },
             "\(Self.leaseCoreFile) is not in the source tree")
-        return SeamScanner.strippingComments(try String(contentsOf: url, encoding: .utf8))
+        return try String(contentsOf: url, encoding: .utf8)
     }
 
     /// The next `for … in …` header at or after `from`, or `nil` when there is none.
