@@ -402,10 +402,15 @@ end short of a restart. The four mechanisms above now do, none of them § 5, and
 was preferred to were each rejected on grounds of their own: the first for its decoupling and
 reversal cost, the second because its deregistration misses `revokeEveryLease` over an empty table.
 
-**What it rests on.** Every fan a lease teardown can fail to hand back is in § 3's registry. That
-holds while the engagement driver is the only caller of a writer's `engageManualControl(of:)`,
-because the driver registers the fan with § 3 before a hand-back of it can be refused — ADR 0014's
-A6 contract, item 1 — and a source tripwire holds it.
+**What it rests on.** Every fan Aeolus engages is in § 3's registry, from the moment its engagement
+returns, or at its undo if it is refused. That holds while the engagement driver is the only caller
+of a writer's `engageManualControl(of:)` — ADR 0014's A6 contract, item 1 — and a source tripwire
+holds it. It is not true during the engagement: a lease released while the driver waits for the
+firmware to yield can have its hand-back refused, and the fan abandoned, while § 3 holds nothing.
+The driver's next entitlement check, within `UnlockLimits.pollInterval` (100 ms), then throws,
+registers the fan and undoes it, so the end state is the one above after a bounded window. A fan a
+lease covered but never engaged can also be abandoned, as in the tests that pin the retries above;
+nothing is owed there, because nothing took it off automatic control.
 
 **No `AeolusXPCVersion` bump.** Nothing changes.
 

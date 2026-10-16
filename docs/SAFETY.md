@@ -217,8 +217,9 @@ this document:
   § 7's panic verb, § 4's sleep handback and SIGTERM's teardown each sweep this register through
   `releaseEveryLease()` and then issue `.everyFan`, and the next process reconciles it (§ 6). A retry
   of its own was declined until a run on hardware shows what a refused keystone is — ADR 0009,
-  amendment 2026-10-15. That every fan Aeolus engages is in § 3's registry at all is ADR 0014's A6
-  contract, held by a source tripwire. The grant refusal and the snapshot are what tell the user.
+  amendment 2026-10-15. That every fan Aeolus engages is in § 3's registry — once its engagement
+  returns, or at its undo — is ADR 0014's A6 contract, held by a source tripwire. The grant refusal
+  and the snapshot are what tell the user.
 - **A later restore the firmware accepts clears it, and nothing else does**
   ([#189](https://github.com/blamechris/Aeolus/issues/189)). The ledger was append-only for
   the life of the helper process until then, which made this the one state in this document
