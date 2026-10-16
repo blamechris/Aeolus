@@ -2,10 +2,16 @@
 // ([#180](https://github.com/blamechris/Aeolus/issues/180)) pushed that file past SwiftLint's
 // 1000-line error, and it is the third split of the kind that file's `- Note:` allows: one that
 // widens no state. This is a type, not state. `held` — the only place a `HeldFan` means
-// anything — stays `private` to the actor, so moving the declaration from `private` to
-// module-internal lets another file construct a value that nothing will accept, and reaches
-// nothing the actor owns. [#128](https://github.com/blamechris/Aeolus/issues/128) owns the rest.
+// anything — is `private` to `ReclamationWatchdog.Registry`, whose one instance is `private` to
+// the actor, so moving the declaration from `private` to module-internal lets another file
+// construct a value that nothing will accept, and reaches nothing the actor owns.
+//
+// Since [#128](https://github.com/blamechris/Aeolus/issues/128)'s third pass the per-reading
+// judgement is here too: `judge(_:)` moves this record's counters as one readable cycle moves
+// them and says which branch the cycle took, and the actor acts on the answer. A value's
+// mutating method, so the counters are read and written with no suspension point between.
 
+import FanKit
 import Foundation
 
 extension ReclamationWatchdog {
@@ -58,7 +64,7 @@ extension ReclamationWatchdog {
             reassertAttempts = max(0, reassertAttempts - 1)
         }
         /// Divergent cycles spent on this fan before anything was ever commanded on it —
-        /// the registration grace, see `gracedBeforeItsFirstCommand(_:of:fanAt:)`.
+        /// the registration grace, see `judge(_:)`.
         ///
         /// **Spent, never reset.** A fan cannot be graced indefinitely by alternating
         /// between divergence and convergence — `examine(fanAt:)`'s converged branch resets
@@ -78,5 +84,133 @@ extension ReclamationWatchdog {
             if let existing, existing.lease == lease { return existing }
             return HeldFan(lease: lease)
         }
+
+        /// Records the step just put on the wire for this fan.
+        ///
+        /// A fresh command resets the secondary dwell: the fan is being asked for something
+        /// new, and cycles spent short of the *previous* target say nothing about this one.
+        mutating func command(_ target: CommandedTarget) {
+            commanded = target
+            actualDwellCycles = 0
+        }
+
+        /// Counts one more cycle that could not read this fan.
+        ///
+        /// - Returns: the cycles in a row that could not read it, this one included.
+        mutating func recordReadFailure() -> Int {
+            consecutiveReadFailures += 1
+            return consecutiveReadFailures
+        }
+
+        // MARK: - One readable cycle
+
+        /// Judges one readable cycle: the primary signal first, and it is the only one that can
+        /// reach the terminal action; then the secondary, which reports and stops; then
+        /// convergence.
+        ///
+        /// It absorbs what were `ReclamationWatchdog`'s `gracedBeforeItsFirstCommand(_:of:fanAt:)`
+        /// and `reportShortfall(_:fanAt:)`, with their reasons, below. Both were synchronous so
+        /// that no suspension point fell between reading a counter and writing it back, and a
+        /// value's mutating method is that by construction.
+        ///
+        /// ## The registration grace: `.graced`
+        ///
+        /// Whether this divergence is still inside the window that follows registration, and so
+        /// must not reach the terminal action yet.
+        ///
+        /// ## The window this closes
+        ///
+        /// On a fan with nothing commanded, `.modeReclaimed` (the write-to-read-back lag) and
+        /// `.targetUnreadable` are decided before `commanded` is consulted, and either would take
+        /// the terminal action: restore, revoke **the client's lease**, blame the OS (#147).
+        /// reclamation-watchdog.md § *"The window this closes"*.
+        ///
+        /// ## Why the failure asymmetry inverts here, and only here
+        ///
+        /// With no commanded target there is no pinned-fan hazard, so over-firing costs the client
+        /// a lease it still held. The tolerance is granted only while `commanded` is `nil`; the
+        /// first `commandedTarget(_:under:)` ends it.
+        /// reclamation-watchdog.md § *"Why the failure asymmetry inverts here, and only here"*.
+        ///
+        /// ## Bounded by `blindCyclesBeforeDivergence`, and not by a fourth constant
+        ///
+        /// The same constant as `cycleCouldNotSee(fanAt:heldUnder:detail:)`, because it is the
+        /// same question. reclamation-watchdog.md § *"Bounded by `blindCyclesBeforeDivergence`,
+        /// and not by a fourth constant"*.
+        ///
+        /// ## The secondary signal reports, and does nothing else: `.short`
+        ///
+        /// The fan has been short of its commanded speed for `dwell` cycles. The caller says so
+        /// when the dwell is reached, and stops.
+        ///
+        /// ## Why this no longer reaches the terminal action
+        ///
+        /// The secondary signal is only evaluated once the primary has converged, so the firmware
+        /// is holding Aeolus's target and nothing was reclaimed: a fan that cannot reach it is
+        /// reported, and neither re-asserted, restored nor marked `isReclaimedBySystem`.
+        /// reclamation-watchdog.md § *"Why this no longer reaches the terminal action"*.
+        ///
+        /// ## `==` and not `>=`
+        ///
+        /// One line per episode, which is why `.short` carries the dwell and the caller reports
+        /// only when it *equals* `ReclamationLimits.actualDwellCycles`. `>=` would emit at the
+        /// supervisor's 1 Hz for as long as the shortfall lasted, which is #124's forward
+        /// constraint exactly: *an unchanged degraded set logged every tick at 1 Hz is not a log,
+        /// it is a denial of service against the reader.* The dwell counter goes on rising and the
+        /// next transition through convergence, or a fresh `commandedTarget(_:under:)`, resets it
+        /// — so a fan that recovers and falls short again produces a second line rather than
+        /// silence.
+        ///
+        /// ## Convergence does not refill the grace: `.converged`
+        ///
+        /// `uncommandedDivergentCycles` is deliberately **not** reset alongside the dwell and the
+        /// attempts — see `uncommandedDivergentCycles`. A fan whose `F<n>Tg` is merely flaky
+        /// rather than gone would otherwise refill the registration grace on every readable cycle
+        /// and stay off automatic control for as long as the flapping lasted, which is
+        /// `ReclamationRegistrationWindowTests.aConvergedCycleDoesNotRefillTheGrace`.
+        mutating func judge(_ state: FanControlState) -> Judgement {
+            if let primary = ReclamationWatchdog.primaryDivergence(of: state, against: commanded) {
+                actualDwellCycles = 0
+                guard commanded == nil else { return .diverged(primary) }
+
+                uncommandedDivergentCycles += 1
+                guard uncommandedDivergentCycles < ReclamationLimits.blindCyclesBeforeDivergence
+                else { return .diverged(primary) }
+
+                // Log the transition, not the state — #124's forward constraint, and
+                // `cycleCouldNotSee(fanAt:heldUnder:detail:)`'s rule for the same reason.
+                return .graced(primary, firstCycle: uncommandedDivergentCycles == 1)
+            }
+
+            if let shortfall = ReclamationWatchdog.actualShortfall(of: state, against: commanded) {
+                actualDwellCycles += 1
+                return .short(
+                    actual: shortfall.actual, commanded: shortfall.commanded,
+                    dwell: actualDwellCycles)
+            }
+
+            actualDwellCycles = 0
+            reassertAttempts = 0
+            return .converged
+        }
+    }
+
+    /// What one readable cycle said about a held fan, with its counters already moved as that
+    /// cycle moves them: `HeldFan.judge(_:)`'s answer, which `examine(fanAt:)` acts on.
+    ///
+    /// A sibling of `HeldFan` rather than nested in it, because SwiftLint's `nesting` rule
+    /// allows one level and `HeldFan` is already that level.
+    enum Judgement: Sendable, Equatable {
+        /// The primary signal fired, outside the registration grace: re-assert or fall back.
+        case diverged(ReclamationDivergence)
+        /// The primary signal fired inside the registration grace, which this cycle spent part
+        /// of. `firstCycle` is whether it was the grace's first: the transition, and the only
+        /// cycle that says so.
+        case graced(ReclamationDivergence, firstCycle: Bool)
+        /// The primary signal converged and the fan is short of its commanded speed, for
+        /// `dwell` cycles in a row counting this one.
+        case short(actual: Double, commanded: Double, dwell: Int)
+        /// Converged on both signals.
+        case converged
     }
 }
