@@ -272,6 +272,7 @@ actor ParkableHeldLeases: HeldLeaseRole {
     private var parked: CheckedContinuation<Void, Never>?
     private var cancelled = false
     private var revocationEffect: (@Sendable () async -> Void)?
+    private var vouchedFor: Set<UUID> = []
 
     /// The answers given, in order, parked or not.
     private(set) var answers: [Bool] = []
@@ -279,6 +280,16 @@ actor ParkableHeldLeases: HeldLeaseRole {
     init(_ leases: LeaseAuthority) {
         self.leases = leases
     }
+
+    /// Makes § 5's question about `id` answer true, whatever the lease core says (#365).
+    ///
+    /// The lease core never holds two live leases over one fan, and the engagement driver asks
+    /// it about the lease the engagement runs under, so a newer lease's registration cannot land
+    /// while the driver still finds the older one live — except in the instant between the
+    /// driver's last answer and § 5 resuming, which no seam holds open. This builds the state
+    /// that instant leaves: the driver's check passes against the untouched lease core, and the
+    /// registry holds a record under another lease. It reaches only § 5's own questions.
+    func vouch(for id: UUID) { vouchedFor.insert(id) }
 
     /// Holds the next liveness answer open until `release()`.
     func parkNextAnswer() { armed = true }
@@ -293,7 +304,12 @@ actor ParkableHeldLeases: HeldLeaseRole {
     }
 
     func hasLiveLease(id: UUID, coveringFan fan: Int) async -> Bool {
-        let answer = await leases.hasLiveLease(id: id, coveringFan: fan)
+        let answer: Bool
+        if vouchedFor.contains(id) {
+            answer = true
+        } else {
+            answer = await leases.hasLiveLease(id: id, coveringFan: fan)
+        }
         answers.append(answer)
         guard armed else { return answer }
         armed = false
@@ -563,6 +579,9 @@ actor InterferingFanStateSensing: FanControlPlane {
         /// Inside `restoreToAutomatic(_:)`, once the restore has landed — the instant a
         /// scenario can ask what § 5 had recorded about a fan as it handed it back.
         case restoreWrite
+        /// Inside `reconnect()` — the suspension `cycleCouldNotSee` resumes from before it
+        /// marks the fan blind and gives it up (#365).
+        case reconnect
     }
 
     private let plane: ScriptedControlPlane
@@ -613,6 +632,7 @@ actor InterferingFanStateSensing: FanControlPlane {
     }
 
     func reconnect() async throws {
+        if moment == .reconnect { await fireOnce() }
         try await plane.reconnect()
     }
 

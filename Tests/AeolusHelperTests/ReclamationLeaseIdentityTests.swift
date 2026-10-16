@@ -192,7 +192,11 @@ struct ReclamationLeaseIdentityTests {
             "an ended lease's target was written into the new lease's record")
     }
 
-    // MARK: - Every re-fetch after an await asks about identity
+    // MARK: - Re-fetches after an await ask about identity
+    //
+    // All but two are held here or in `ReclamationRefetchIdentityTests.swift`, whose header lists
+    // each re-fetch against its test. The precedence check and the ledger hop in `diverged` are
+    // not: they sit on concrete actors with nothing to park an answer in (#365).
 
     /// The re-fetch after the control-state read asks about the record's lease, not its
     /// presence. A newer lease registers fan 0 inside the read; § 5 stops there, and leaves the
