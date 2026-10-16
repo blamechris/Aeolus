@@ -189,6 +189,18 @@ have moved the generation — and the next examination asks D2 about that record
 finds it not live, and hands the fan back as `.leaseLapsed`. That holds with the terminal
 action's bump below: a registration accepted after a terminal action returned finds no record
 and no live lease, and is handed back the same way.
+`ReclamationLeaseIdentityTests.aRegistrationAcceptedAfterAnUnannouncedLeaseEndIsHandedBack` and
+`aRegistrationAcceptedAfterTheTerminalActionIsHandedBack` hold both (#365). They assert the
+acceptance as well as the hand-back, so closing either residual turns them red and this record
+gets updated with it.
+
+**One consequence the hand-back does not cover.** A registration accepted after the terminal
+action returned also clears the `.systemReclaimed` mark the terminal action kept (#346), because
+an accepted registration clears unconditionally. `finalising` and the entry's bump refuse such a
+registration only while the terminal action runs or when its answer predates it; one that began
+during the hand-back and resumed afterwards is neither. The test does not assert the clear: it
+pins the hand-back this record relies on, and a pinned clear would endorse a mark erased for a
+fan the system did reclaim.
 
 **The terminal action moves it too** (the same review, its C3). The generation did not move when
 § 5 itself began giving the fan up. A registration under the same lease — a re-apply — told its
@@ -269,14 +281,37 @@ it, and a fan still short of its new target takes the shortfall branch, which re
 clear — so it stands while the fan ramps, and indefinitely if the fan cannot reach the target
 ([#366](https://github.com/blamechris/Aeolus/issues/366)).
 
-**What is untested, and kept by the rule.** The re-fetch across the lease hop in
-`examine(fanAt:)` has no test landing an event inside it (#344). `HeldLeaseRole` — § 5's role over
-the lease core, which narrows it to the two calls it makes — is now the seam that can, without
-blocking a pool thread; `ParkableHeldLeases` uses it for the registration's hop. The identity
-re-fetch after the control-state read is caught one hop later by that same lease-hop re-fetch,
-so only its log line tells it from a presence check;
-`ReclamationLeaseIdentityTests.aRecordRegisteredUnderANewLeaseDuringTheReadStopsTheExamination`
-asserts that line.
+**What the re-fetch rule has a test for, and what it does not (#365, #344).** Every re-fetch
+after an `await` has a test that lands a registration under a newer lease in that suspension
+and goes red when the re-fetch asks about presence rather than identity, except two. The
+header of `ReclamationRefetchIdentityTests.swift` lists each re-fetch against its test: the
+read, the lease hop (#344, held open by `ParkableHeldLeases`), the envelope read, the first
+write, the command write, a refused command write and the reconnect. The terminal action's
+envelope-failure branch has no re-fetch of its own and needs none: `finaliseRelease`'s entry
+guard covers it, and `aTerminalActionEnteredForAnEndedLeaseLeavesTheNewerLeasesFanAlone` holds
+that guard.
+
+The first write is built rather than found, and the difference is stated where it is. The
+engagement driver asks the real lease core about the old lease after its mode write, so a lease
+that had really ended is refused there before § 5's re-fetch is reached. That write is therefore
+tested with a newer lease that `ParkableHeldLeases.vouch(for:)` makes § 5's own role accept
+while the old lease stays live in the core: the state the instant between the driver's last
+answer and § 5 resuming leaves, which no seam holds open. The envelope read is tested both ways,
+for the same reason. The identity re-fetch after the control-state read is caught one hop later
+by the lease hop's, and the lease hop's by `restoreAndForget`'s own identity check, so only their
+log lines tell them from a presence check, and the tests assert those lines.
+
+**The two without a test: the precedence check and the ledger hop in `diverged`.** They are
+suspensions on `ThermalEmergencyLatch` and `ReclamationLedger`, which the actor holds as
+concrete actors, so there is no double to park their answers in and a registration cannot be
+landed in either by a suspending seam. Racing one in is #109's flakiness, and blocking a pool
+thread to hold the hop open is what a CI runner stall fails. No earlier re-fetch can stand in
+for them: a registration that lands before the latch hop is stopped by the lease hop's
+re-fetch, and one in the latch or ledger hop is stopped only by these two. They are kept by the
+rule alone until a role over each exists, as `HeldLeaseRole` is over the lease core. Presence
+only at the first would let `markReclaimed` put a `.systemReclaimed` mark on a newer lease's fan;
+at the second, the old lease's copy of the record would go on to spend its attempt count on the
+newer lease's record and re-assert for it.
 
 ## Built once per registration, per lease
 
