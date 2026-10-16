@@ -181,12 +181,21 @@ struct WriteVerbAllowlistTests {
     /// the parameter has a default containing parentheses, such as `= UUID()`, whose
     /// declaration its scan misses ([#362](https://github.com/blamechris/Aeolus/issues/362)).
     ///
+    /// `ReclamationWatchdog.commandAnnounced(_:under:)` carries one for the same reason (#390):
+    /// it reads the permit's index and speed, the step level 6 is about to write, records them
+    /// as an observation and writes nothing; under a lease that does not hold the permit's fan
+    /// it is ignored, as a report is. `Registry.announce(_:)` takes the observation, so the
+    /// registry stays permit-free.
+    ///
     /// A key is a file and a signature, not a declaring type, so a second declaration with the
     /// same signature in the same file — an extension on a writer, say — would share the
     /// exemption. `aPermitTravelsBesideNothingThatNamesAFan` therefore requires exactly one
     /// declaration per keyed key (#361's panel).
     private static let keyedCompanions: [String: Set<String>] = [
-        "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan, under: UUID)": ["UUID"]
+        "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan, under: UUID)": ["UUID"],
+        "ReclamationWatchdog.swift: commandAnnounced(_: AuthorisedFanTarget, under: UUID)": [
+            "UUID"
+        ],
     ]
 
     /// The verbs that carry a permit: they command a fan, take one off automatic control,
@@ -208,7 +217,9 @@ struct WriteVerbAllowlistTests {
     ///   emergency's maximum write needs no read while the machine is above ceiling.
     ///   `bridgeToMaximumThenRelease(_:)` is what spends it.
     ///   `ReclamationWatchdog.manualControlEngaged(_:under:)` reads only the permit's index and
-    ///   writes nothing; its `UUID` is `keyedCompanions`' one entry.
+    ///   writes nothing; its `UUID` is one of `keyedCompanions`' two entries.
+    ///   `ReclamationWatchdog.commandAnnounced(_:under:)` reads the permit's index and speed, the
+    ///   step level 6 is about to write, and writes nothing; its `UUID` is the other (#390).
     ///   `ThermalEmergency.restoredByEmergency(_:)` keeps a permit § 3 already held, for a
     ///   fan whose own restore is unconfirmed, so the next emergency can spend it (#300). It
     ///   writes nothing. `bridgeThenFileRestored(_:)` passes the same permit to those two in
@@ -236,6 +247,7 @@ struct WriteVerbAllowlistTests {
         "ThermalEmergency.swift: restoredByEmergency(_: CommandableFan)",
         "ThermalEmergency.swift: bridgeThenFileRestored(_: CommandableFan)",
         "ReclamationWatchdog.swift: manualControlEngaged(_: CommandableFan, under: UUID)",
+        "ReclamationWatchdog.swift: commandAnnounced(_: AuthorisedFanTarget, under: UUID)",
         "EngagementDriver.swift: engageManualControl(of: CommandableFan)",
         "EngagementDriver.swift: requireEntitlement(for: CommandableFan)",
         "EngagementDriver.swift: firstStep(of: CommandableFan)",
@@ -701,8 +713,8 @@ struct WriteVerbAllowlistTests {
                 carriers.count == 1,
                 """
                 \(carriers.count) declarations carry the keyed exemption `\(key)`. It is for one \
-                registration verb; a second declaration with the same signature in that file \
-                would travel a `UUID` beside a permit under its exemption.
+                § 5 notice verb that writes nothing; a second declaration with the same \
+                signature in that file would travel a `UUID` beside a permit under its exemption.
                 """)
         }
         #expect(

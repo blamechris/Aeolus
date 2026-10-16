@@ -235,12 +235,12 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         registry.command(commanded, ofFan: commanded.fanIndex)
     }
 
-    /// Records a step about to be put on the wire for a fan, before its write is issued (#383):
-    /// a target the fan may hold before the step's `commandedTarget(_:under:)` arrives. Ignored
-    /// for a fan this actor is not watching under `lease`, as a report is.
-    func commandAnnounced(_ target: CommandedTarget, under lease: UUID) {
-        guard isHeld(target.fanIndex, under: lease) else { return }
-        registry.announce(target)
+    /// Records the permit a step's write will carry, before that write is issued (#383, #390):
+    /// a clamped target on the permit's own fan, which may hold one reading before the step's
+    /// `commandedTarget(_:under:)`. Ignored, as a report is, for a fan not held under `lease`.
+    func commandAnnounced(_ step: AuthorisedFanTarget, under lease: UUID) {
+        guard isHeld(step.fanIndex, under: lease) else { return }
+        registry.announce(CommandedTarget(fanIndex: step.fanIndex, rpm: step.rpm))
     }
 
     /// Forgets a fan that has gone back to Apple's thermal management on purpose.

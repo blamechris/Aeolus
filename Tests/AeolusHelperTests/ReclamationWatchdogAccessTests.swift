@@ -111,11 +111,14 @@ struct ReclamationWatchdogAccessTests {
     /// path send, the supervisor's cycle, and the diagnostic read — plus the two static, pure
     /// classifiers in `ReclamationSignals.swift`, which reach no state because there is none
     /// there to reach. #383 added a fourth notice, `commandAnnounced(_:under:)`: level 6's step,
-    /// announced before its write, which records a target and moves no generation.
+    /// announced before its write, which records a target and moves no generation. #390 made it
+    /// take the `AuthorisedFanTarget` the write will carry, so an announced speed is clamped,
+    /// finite and never zero by construction, and a `CommandedTarget` overload beside it is red
+    /// here.
     private static let acknowledgedInternalMethods: Set<String> = [
         "manualControlEngaged(_: CommandableFan, under: UUID)",
         "commandedTarget(_: CommandedTarget, under: UUID)",
-        "commandAnnounced(_: CommandedTarget, under: UUID)",
+        "commandAnnounced(_: AuthorisedFanTarget, under: UUID)",
         "manualControlReleased(fanAt: Int)",
         "lastCommanded(ofFan: Int)",
         "cycle()",

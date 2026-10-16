@@ -14,14 +14,16 @@ import Testing
 /// sleeps.
 ///
 /// What each pins, against the mutation it kills. The value half is
-/// `ReclamationJudgementViewValueTests`, which kills M1–M3, M5–M11 and M13 as well.
+/// `ReclamationJudgementViewValueTests`, which kills M1–M3, M5–M11 and M13 as well. #390's
+/// announcement credit and held judgement are `ReclamationAnnouncementCreditTests`.
 ///
-/// - **M1**, the stamp's target dropped from `HeldFan.couldHaveBeenHolding(_:)`: T1, T4.
+/// - **M1**, the stamp's target dropped from `HeldFan.holds(_:readFrom:)`: T1, T4.
 /// - **M2**, the announced step dropped from it: T2.
-/// - **M3**, `Registry.announce(_:ofFan:)` recording nothing: T2.
+/// - **M3**, `Registry.announce(_:)` recording nothing: T2.
 /// - **M4**, the `isHeld(_:under:)` guard removed from `commandAnnounced(_:under:)`: T9.
 /// - **M5**, a report leaving the announcement open: the value suite only, since every actor
-///   scenario that announces reports the same target.
+///   scenario that announces either reports the same target or announces again before the next
+///   cycle.
 /// - **M6**, `examinedCommanded` stamped only once: T4.
 /// - **M7**, the "began with nothing commanded" excuse deleted: T5.
 /// - **M8**, the excuse widened past `.targetDiverged`: the value suite only, because
@@ -31,7 +33,7 @@ import Testing
 /// - **M10**, any reading between the stamp's target and the record's accepted: T2, T6.
 /// - **M11**, the issue's second option as worded: judge against the stamp's target alone: T3.
 /// - **M13**, M8 with the candidates compared on raw RPM: T7.
-/// - **M14**, `Registry.announce(_:ofFan:)` moving the registration generation, which would stand
+/// - **M14**, `Registry.announce(_:)` moving the registration generation, which would stand
 ///   every re-assert down while a step is announced: T10.
 ///
 /// T1, T2, T4 and T5 were red at `main` before #383 (`d7be074`), with the announcements removed so
@@ -48,17 +50,18 @@ struct ReclamationJudgementViewTests {
         try #require(await machine.leases.activeLease()).id
     }
 
-    /// A step as A6 takes one: announce, write through level 6's writer, then report.
+    /// A step as A6 takes one: announce the clamped step, write it through level 6's writer, then
+    /// report. A fresh writer, so the step is the clamped goal, the one `permit.target(for:)`
+    /// gives; `ReclamationAnnouncementCreditTests` covers a writer mid-ramp.
     static func step<Writes>(
         _ machine: ReclamationMachine<Writes>, to rpm: Double, under lease: UUID,
         permit: CommandableFan, announcing: Bool = true, reporting: Bool = true
     ) async throws -> CommandedTarget {
-        if announcing {
-            await machine.watchdog.commandAnnounced(
-                CommandedTarget(fanIndex: 0, rpm: rpm), under: lease)
-        }
+        let step = permit.target(for: rpm)
+        if announcing { await machine.watchdog.commandAnnounced(step, under: lease) }
         let written = try await GovernedFanWriter(plane: machine.plane)
             .command(towards: rpm, of: permit, since: .zero)
+        #expect(written.rpm == step.rpm, "the helper announced a step its writer did not write")
         if reporting { await machine.watchdog.commandedTarget(written, under: lease) }
         return written
     }
@@ -221,10 +224,10 @@ struct ReclamationJudgementViewTests {
         let machine = ReclamationMachine(fans: [0: .automatic(at: 2_400)], parkingLeaseHops: true)
         try await machine.hold(fan: 0, commanding: 2_400)
         let lease = try await Self.lease(machine)
+        let permit = try Self.permit(machine)
 
         try await Self.cycleWithLeaseCheckHeld(machine) {
-            await machine.watchdog.commandAnnounced(
-                CommandedTarget(fanIndex: 0, rpm: 2_000), under: lease)
+            await machine.watchdog.commandAnnounced(permit.target(for: 2_000), under: lease)
             await machine.watchdog.commandedTarget(
                 CommandedTarget(fanIndex: 0, rpm: 2_000), under: lease)
         }
@@ -281,10 +284,10 @@ struct ReclamationJudgementViewTests {
         let machine = ReclamationMachine(fans: [0: .held(at: 1_800)], parkingLeaseHops: true)
         try await machine.hold(fan: 0, commanding: 2_400)
         let lease = try await Self.lease(machine)
+        let permit = try Self.permit(machine)
 
         try await Self.cycleWithLeaseCheckHeld(machine) {
-            await machine.watchdog.commandAnnounced(
-                CommandedTarget(fanIndex: 0, rpm: 2_000), under: lease)
+            await machine.watchdog.commandAnnounced(permit.target(for: 2_000), under: lease)
         }
 
         #expect(
