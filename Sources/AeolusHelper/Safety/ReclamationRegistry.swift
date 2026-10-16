@@ -98,7 +98,8 @@ extension ReclamationWatchdog {
         /// the control-state read, through `HeldFan.beginExamination(atGeneration:)`, so a
         /// registration under the same lease during the examination is visible to its re-assert
         /// (#381). A same-lease registration keeps the record and moves the generation, so the two
-        /// then differ.
+        /// then differ. The same stamp records the target last reported, which the judgement may
+        /// read the fan as still holding (#383).
         ///
         /// - Returns: the lease the record was registered under, or `nil` when it is not held.
         mutating func beginExamination(ofFan index: Int) -> UUID? {
@@ -210,6 +211,12 @@ extension ReclamationWatchdog {
         /// Records a commanded target, and resets the secondary dwell: `HeldFan.command(_:)`.
         mutating func command(_ target: CommandedTarget, ofFan index: Int) {
             held[index]?.command(target)
+        }
+
+        /// Records a step announced before its write: `HeldFan.announced` (#383). It moves no
+        /// generation, unlike a registration, so it stands no re-assert down.
+        mutating func announce(_ target: CommandedTarget, ofFan index: Int) {
+            held[index]?.announced = target
         }
 
         /// Records the target a re-assert put on the wire, unless another was reported for the
