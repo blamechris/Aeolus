@@ -110,10 +110,12 @@ struct ReclamationWatchdogAccessTests {
     /// The actor's seam, unchanged by #128: the three notices the lease core and the engagement
     /// path send, the supervisor's cycle, and the diagnostic read — plus the two static, pure
     /// classifiers in `ReclamationSignals.swift`, which reach no state because there is none
-    /// there to reach.
+    /// there to reach. #383 added a fourth notice, `commandAnnounced(_:under:)`: level 6's step,
+    /// announced before its write, which records a target and moves no generation.
     private static let acknowledgedInternalMethods: Set<String> = [
         "manualControlEngaged(_: CommandableFan, under: UUID)",
         "commandedTarget(_: CommandedTarget, under: UUID)",
+        "commandAnnounced(_: CommandedTarget, under: UUID)",
         "manualControlReleased(fanAt: Int)",
         "lastCommanded(ofFan: Int)",
         "cycle()",

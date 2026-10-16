@@ -71,14 +71,15 @@ import Foundation
 /// - Note: since [#128](https://github.com/blamechris/Aeolus/issues/128)'s third pass `held`,
 ///   `finalising` and `registrations` are `Registry`'s, a value type this actor holds
 ///   `private`, and the per-reading judgement is `HeldFan.judge(_:)`'s; #366 added `givenUp` there
-///   and the episode to the record, and #381 the examination's stamp. What is left below
+///   and the episode to the record, #381 the examination's stamp, and #383 the stamp's target and
+///   the announced step. What is left below
 ///   awaits, re-fetches after an `await` or acts, over `registry`, `log`, `ledger`, `writer`,
 ///   `sensing`, `leases` or `latch`, so none of it can move to another file without widening
 ///   that state or adding a suspension point. The splits taken, and the rationale relocated
 ///   out of this file's doc comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
-///   The body is 323 code lines against `type_body_length`'s error at 350, `examine(fanAt:)` 50
-///   against `function_body_length`'s warning at 50, and the file 947 lines against
+///   The body is 327 code lines against `type_body_length`'s error at 350, `examine(fanAt:)` 50
+///   against `function_body_length`'s warning at 50, and the file 961 lines against
 ///   `file_length`'s at 1000. New § 5 state belongs in `Registry`, tested as a
 ///   value, and new behaviour in the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
@@ -225,10 +226,21 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// rather than registered: a `CommandedTarget` is an observation, and it is not evidence
     /// that anybody took the fan off automatic control — and one from an ended lease is not a
     /// target the newer lease's record may be judged against (#357).
+    ///
+    /// Sent after the write returns, never before, and it closes the step
+    /// `commandAnnounced(_:under:)` opened (#381, #383; ADR 0014 A6 item 3).
     func commandedTarget(_ commanded: CommandedTarget, under lease: UUID) {
         guard isHeld(commanded.fanIndex, under: lease) else { return }
         // And resets the secondary dwell — see `HeldFan.command(_:)`.
         registry.command(commanded, ofFan: commanded.fanIndex)
+    }
+
+    /// Records a step about to be put on the wire for a fan, before its write is issued (#383):
+    /// a target the fan may hold before the step's `commandedTarget(_:under:)` arrives. Ignored
+    /// for a fan this actor is not watching under `lease`, as a report is.
+    func commandAnnounced(_ target: CommandedTarget, under lease: UUID) {
+        guard isHeld(target.fanIndex, under: lease) else { return }
+        registry.announce(target, ofFan: target.fanIndex)
     }
 
     /// Forgets a fan that has gone back to Apple's thermal management on purpose.
@@ -284,9 +296,10 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     ///
     /// This actor is reentrant, and every `await` below — a read, a write, a ledger or latch
     /// hop — is a point at which `manualControlEngaged(_:under:)`, `commandedTarget(_:under:)`,
-    /// `manualControlReleased(fanAt:)` or a second `cycle()` can run. An adversarial review
-    /// found four distinct defects of one shape here: a value read before an `await` and
-    /// acted on after it. So the rule in this file is now uniform and stated once:
+    /// `commandAnnounced(_:under:)`, `manualControlReleased(fanAt:)` or a second `cycle()` can
+    /// run. An adversarial review found four distinct defects of one shape here: a value read
+    /// before an `await` and acted on after it. So the rule in this file is now uniform and
+    /// stated once:
     ///
     /// > **Re-fetch the fan's record after every `await`; an absent record, or one under
     /// > another lease, means stop** rather than a no-op.
@@ -375,7 +388,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// One fan: read it, ask whether the lease it was registered under is still live, decide,
     /// act. Everything after this is for that lease, captured before the read, and the record is
     /// stamped with the fan's generation then too, so a re-assert this examination decides on can
-    /// tell a registration under that lease since (#381).
+    /// tell a registration under that lease since (#381), and with the target last reported,
+    /// which the judgement may read the fan as still holding (#383).
     private func examine(fanAt index: Int) async {
         guard let lease = registry.beginExamination(ofFan: index) else { return }
 
