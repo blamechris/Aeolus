@@ -9,13 +9,18 @@ import Testing
 @Suite("§ 5's record and log lines take no value a plane cannot produce", .timeLimit(.minutes(1)))
 struct ReclamationRecordIntegrityTests {
 
+    /// What `SafetyLog.reclamationTargetRefused(_:from:)` says, and no other line.
+    static let refusalNotice = "so no plane can have written it"
+
     /// A report that is not a number, or is below the floor every permit is clamped to, leaves the
-    /// record as it was, so the next cycle reads the fan holding its target and logs nothing.
+    /// record as it was, so the next cycle reads the fan holding its target. The refusal is said
+    /// once, at `.fault`, with the value written out.
     ///
-    /// **Mutation:** delete the guard in `HeldFan.command(_:)`. Run: red on every argument; the
+    /// **Mutation (a):** delete the guard in `HeldFan.record(_:)`. Run: red on every argument; the
     /// non-finite ones through the comparison below, which then diverges on the record.
+    /// **(b):** delete the `logRefusal` call in `commandedTarget(_:under:)`. Run: red on the line.
     @Test(
-        "A report no plane can write leaves the record alone",
+        "A report no plane can write leaves the record alone, and is logged as a fault",
         arguments: [Double.nan, .infinity, -.infinity, 0, 50])
     func aReportNoPlaneCanWriteLeavesTheRecordAlone(rpm: Double) async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 2_400)])
@@ -27,6 +32,59 @@ struct ReclamationRecordIntegrityTests {
 
         #expect(await machine.ledger.isReclaimed(fanAt: 0) == false, "the report was recorded")
         #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_400)
+        let refusals = machine.safetyLog.lines(containing: Self.refusalNotice)
+        #expect(refusals.count == 1, "the refusal was not logged exactly once")
+        #expect(machine.safetyLog.faults.filter { $0.contains(Self.refusalNotice) } == refusals)
+        #expect(refusals.first?.contains("was \(FanControlPlaneValue.wholeRPM(rpm)) RPM") == true)
+    }
+
+    /// The dangerous direction. The system holds the fan at 50 RPM and leaves it in manual mode,
+    /// and a report of 50 arrives. Recorded, the reading would agree with the record, and § 5
+    /// would believe it holds the fan at a speed no permit allows. Refused, the reading diverges
+    /// from the record, and the fan is marked reclaimed and re-asserted.
+    ///
+    /// **Mutation:** delete the guard in `HeldFan.record(_:)`. Run: red on the claim.
+    @Test("A report matching a system target below the floor does not make it Aeolus's")
+    func aReportMatchingASystemTargetBelowTheFloorDoesNotMakeItAeoluss() async throws {
+        let machine = ReclamationMachine(fans: [0: .held(at: 50)])
+        try await machine.hold(fan: 0, commanding: 2_400)
+        let lease = try #require(await machine.leases.activeLease()).id
+
+        await machine.watchdog.commandedTarget(CommandedTarget(fanIndex: 0, rpm: 50), under: lease)
+        await machine.watchdog.cycle()
+
+        #expect(await machine.ledger.isReclaimed(fanAt: 0), "the system's 50 RPM read as Aeolus's")
+        #expect(await machine.commandedRPMs == [2_400], "the record's target was not re-asserted")
+    }
+
+    /// A re-assert's write is the same exposure a report is: what the record takes is what the
+    /// write returned. One that returned a target no plane can write leaves the record alone, so
+    /// the next cycle reads the re-asserted target held, and the refusal is said once at `.fault`.
+    ///
+    /// **Mutation (a):** delete the guard in `HeldFan.record(_:)`. Run: red on every argument: the
+    /// record takes the return, the next cycle diverges on it and re-asserts again.
+    /// **(b):** delete the `logRefusal` call in `reassert`. Run: red on the line.
+    @Test(
+        "A re-assert whose write returns a target no plane can write leaves the record alone",
+        arguments: [Double.nan, .infinity, 50])
+    func aReassertNoPlaneCanWriteLeavesTheRecordAlone(rpm: Double) async throws {
+        let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
+        let sensing = InterferingFanStateSensing(plane, during: .commandWrite)
+        let machine = ReclamationMachine(
+            plane: plane, fans: [0: .held(at: 1_800)], interfering: sensing)
+        try await machine.hold(fan: 0, commanding: 2_400)
+        await sensing.misreport(commandedRPM: rpm)
+
+        await machine.watchdog.cycle()
+        await machine.watchdog.cycle()
+
+        #expect(await machine.commandedRPMs == [2_400], "one re-assert, and none after it")
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_400, "return recorded")
+        #expect(await machine.ledger.isReclaimed(fanAt: 0) == false)
+        let refusals = machine.safetyLog.lines(containing: Self.refusalNotice)
+        #expect(refusals.count == 1, "the refusal was not logged exactly once")
+        #expect(machine.safetyLog.faults.filter { $0.contains(Self.refusalNotice) } == refusals)
+        #expect(refusals.first?.contains("its re-assert returned") == true)
     }
 
     /// **Mutation:** restore `guard abs(...) > tolerance else { return nil }` in

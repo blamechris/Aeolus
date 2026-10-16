@@ -697,6 +697,26 @@ extension SafetyLog {
         )
     }
 
+    /// § 5's record refused a target, a report's or a re-assert's (#395): not a number, or below
+    /// the floor every permit is clamped to, so no plane can have written it. The record keeps
+    /// the target it last took, and the next cycle judges the fan against that, exactly as if
+    /// nothing had been reported.
+    ///
+    /// `.fault`, because every writer reports the `CommandedTarget` its write returned: one no
+    /// plane can write is a defect on the write path, and treating it as no report is the safe
+    /// direction only while somebody knows it happened.
+    func reclamationTargetRefused(_ target: CommandedTarget, from source: String) {
+        emit(
+            .fault,
+            """
+            Fan \(target.fanIndex): \(source) was \(wholeRPM(target.rpm)) RPM, not a number or \
+            below the floor every permit is clamped to, so no plane can have written it. § 5 \
+            keeps the target it last recorded and judges the fan against that, as if nothing \
+            had been reported. The write path that returned it has a defect.
+            """
+        )
+    }
+
     /// The re-assert budget is spent and § 5 is falling back.
     func reclamationBudgetExhausted(
         fan: Int, attempts: Int, divergence: ReclamationDivergence

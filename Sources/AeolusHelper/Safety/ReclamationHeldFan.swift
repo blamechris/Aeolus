@@ -47,8 +47,9 @@ extension ReclamationWatchdog {
         /// The lease this fan was registered under — the one `apply` authorised. Every
         /// judgement § 5 makes about the fan asks about this lease, and no other (#357).
         let lease: UUID
-        /// The step last put on the wire, or `nil` when nothing has been commanded yet.
-        var commanded: CommandedTarget?
+        /// The step last put on the wire, or `nil` when nothing has been commanded yet. Written
+        /// only by `record(_:)`, so both of its writers pass the one check of what it may hold.
+        private(set) var commanded: CommandedTarget?
         /// Cycles in a row that could not read this fan. Reset by any successful read.
         var consecutiveReadFailures = 0
         /// Cycles in a row the actual speed has been short of the commanded target. Reset
@@ -108,16 +109,35 @@ extension ReclamationWatchdog {
             examinedAtGeneration = generation
         }
 
-        /// Records the step just put on the wire for this fan.
+        /// Records `target` as the step last put on the wire: the one write of `commanded`, which
+        /// a report (`command(_:)`) and a re-assert (`Registry.recordReassertedTarget`) both pass
+        /// through (#395).
+        ///
+        /// A target that is not finite, or is below `FanSafetyLimits.minimumManualRPM`, is one no
+        /// permit can produce, because every permit clamps to a floor at least that high. It is
+        /// no report, so the record keeps the last one, and the next cycle judges the fan against
+        /// that. The check is a floor and no ceiling: a fan's maximum is its envelope's, which
+        /// the record does not hold, so a target above it is not caught here.
+        ///
+        /// - Returns: `false`, having recorded nothing, when `target` fails that check.
+        mutating func record(_ target: CommandedTarget) -> Bool {
+            let writable = target.rpm.isFinite && target.rpm >= FanSafetyLimits.minimumManualRPM
+            guard writable else { return false }
+            commanded = target
+            return true
+        }
+
+        /// Records the step just put on the wire for this fan, through `record(_:)`.
         ///
         /// A fresh command resets the secondary dwell: the fan is being asked for something
-        /// new, and cycles spent short of the *previous* target say nothing about this one.
-        mutating func command(_ target: CommandedTarget) {
-            // A speed no plane can write is no report: the record keeps the last one.
-            let writable = target.rpm.isFinite && target.rpm >= FanSafetyLimits.minimumManualRPM
-            guard writable else { return }
-            commanded = target
+        /// new, and cycles spent short of the *previous* target say nothing about this one. A
+        /// target the record refused is no command, so it resets nothing.
+        ///
+        /// - Returns: `false`, having changed nothing, when `record(_:)` refused `target`.
+        mutating func command(_ target: CommandedTarget) -> Bool {
+            guard record(target) else { return false }
             actualDwellCycles = 0
+            return true
         }
 
         /// Counts one more cycle that could not read this fan.

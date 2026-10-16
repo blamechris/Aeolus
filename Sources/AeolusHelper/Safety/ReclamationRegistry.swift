@@ -208,19 +208,26 @@ extension ReclamationWatchdog {
         // MARK: - One record's counters
 
         /// Records a commanded target, and resets the secondary dwell: `HeldFan.command(_:)`.
-        mutating func command(_ target: CommandedTarget, ofFan index: Int) {
-            held[index]?.command(target)
+        ///
+        /// - Returns: `false` when the fan's record refused `target` (`HeldFan.record(_:)`), and
+        ///   `true` otherwise, a fan not held included: there is no record to refuse it.
+        mutating func command(_ target: CommandedTarget, ofFan index: Int) -> Bool {
+            held[index]?.command(target) ?? true
         }
 
         /// Records the target a re-assert put on the wire, unless another was reported for the
         /// fan while that write was in flight (#381): the report is newer than the decision, so
         /// the next cycle judges the fan against it. `commanded` only: the dwell is left as it
-        /// stands, as it always was on this path.
+        /// stands, as it always was on this path. Through `HeldFan.record(_:)`, so the record
+        /// refuses a target here exactly as it refuses a report (#395).
+        ///
+        /// - Returns: `false` when the record refused `target`, and `true` otherwise, including
+        ///   when a newer report kept it from being offered.
         mutating func recordReassertedTarget(
             _ target: CommandedTarget, decidedOn decided: CommandedTarget, ofFan index: Int
-        ) {
-            guard held[index]?.commanded == decided else { return }
-            held[index]?.commanded = target
+        ) -> Bool {
+            guard held[index]?.commanded == decided else { return true }
+            return held[index]?.record(target) ?? true
         }
 
         /// A cycle read the fan again after cycles that could not.
