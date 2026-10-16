@@ -89,8 +89,9 @@ struct SleepGrantSealTests {
     /// **Mutation:** keep the call bare and wrap only the `.everyFan` `do`/`catch` in
     /// `handBackEveryFan` in `leases.sealingGrants`. Run: red on the leased argument only, which
     /// is what the second argument is for. **Mutation:** delete `sealingGrants`' `defer`. Run: red
-    /// on the last grant only. **Mutation:** drop `reportingMachineWideRestore` from
-    /// `restatingAvailability`. Run: red on the agreement only.
+    /// on the last grant only. **Mutation:** delete the `machineWideRestoreInFlight` rung from
+    /// `ReadOnlyFanReport.firstRefusal(of:observedMode:given:reconciliation:)`. Run: red on the
+    /// agreement only.
     @Test(
         "A grant while a declined seal's teardown runs is refused, and the snapshot agrees",
         arguments: [false, true])
@@ -143,15 +144,18 @@ struct SleepGrantSealTests {
     /// The sleep seal was *set* here, so this is the route a seal keyed on the declined case
     /// leaves open. Whether a grant here would be undone after A6 depends on ADR 0014 D7's turn
     /// order, which is not built; it is refused either way, because a lease over a machine whose
-    /// keystone is wedged is control nothing can honour. Before the wake the snapshot says
-    /// `.releaseInProgress` where the grant says `.systemSleeping`: #269's gap, not asserted.
+    /// keystone is wedged is control nothing can honour. Before the wake both say
+    /// `.systemSleeping`: the ladder's step 11 is above step 10, as the grant checks the sleep seal
+    /// before this one ([#269](https://github.com/blamechris/Aeolus/issues/269)).
     ///
     /// **Mutation:** call `handBackEveryFan(reportingTo:)` bare. Run: red after the wake.
     /// **Mutation:** give `sealForSleep(generation:)` a discardable `Bool` result, true when it
     /// declined, and wrap the teardown only when it is true. Run: red here and in the sweep test
     /// below, green in the declined-seal test above. **Mutation:** set
     /// `machineWideRestoresInFlight = 0` in `unsealAfterWake(generation:)`. Run: red after the
-    /// wake.
+    /// wake. **Mutation:** in `ReadOnlyFanReport.firstRefusal`, move the
+    /// `machineWideRestoreInFlight` rung above the `sleepSealed` one. Run: red before the wake —
+    /// the snapshot says `.releaseInProgress`.
     @Test("A keystone parked across its wake still refuses a grant after the wake")
     func aKeystoneThatOutlivesItsWakeStillRefusesAGrant() async throws {
         let (helper, observer) = Self.composed(fanCount: 1, budget: .milliseconds(50))
@@ -166,7 +170,11 @@ struct SleepGrantSealTests {
         #expect(
             await helper.plane.restoreScopes == [.everyFan],
             "the keystone is not what is parked, so this is not the case under test")
-        #expect(await Fixture.refusalForGrant(over: 0, from: helper.leases) == .systemSleeping)
+        let sleeping = await Fixture.refusalForGrant(over: 0, from: helper.leases)
+        #expect(sleeping == .systemSleeping)
+        #expect(
+            try await Self.shownReason(ofFanAt: 0, in: helper) == sleeping,
+            "before the wake the snapshot states the restore seal over the sleep seal")
 
         try await observer.deliver(.didWake)
         let refused = await Fixture.refusalForGrant(over: 0, from: helper.leases)

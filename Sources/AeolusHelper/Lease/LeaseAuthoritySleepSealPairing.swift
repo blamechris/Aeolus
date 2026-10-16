@@ -7,7 +7,8 @@
 // file header of `LeaseAuthorityHandbackRegisters.swift` says why each exists.
 //
 // The actor keeps the acts: it logs what each decision answered, and it asks `isSealed` in
-// `acquireLease`'s straight-line region. Why the generations are compared rather than counted,
+// `acquireLease`'s straight-line region and in `activeLeaseView()`'s, for the snapshot's step 11
+// (#269). Why the generations are compared rather than counted,
 // and what the first, counting version did: handback-ledger.md § *"Pairing a sleep with its own
 // wake"*.
 

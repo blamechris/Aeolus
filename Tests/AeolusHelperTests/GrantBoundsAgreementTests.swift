@@ -45,7 +45,7 @@ struct GrantBoundsAgreementTests {
     // MARK: - Above the marker
 
     /// A fan with implausible bounds is refused `.boundsImplausible` while § 7's grant seal is
-    /// open, as the snapshot states: the seal's rung, step 10, re-states only `.available`, so
+    /// open, as the snapshot states: the ladder ranks step 8 above the seal's rung, step 10, so
     /// the grant must answer the bounds ahead of the seal's guard.
     ///
     /// The seal is held open by `sealingGrants(during:)` itself, parked on a signal, which is
@@ -92,8 +92,12 @@ struct GrantBoundsAgreementTests {
     }
 
     /// A fan with implausible bounds is refused `.boundsImplausible` while § 4's sleep seal holds,
-    /// as the snapshot states. The ladder has no `.systemSleeping` rung yet (#269), so the grant
-    /// must answer the bounds ahead of the sleep seal's guard, which sits below the marker.
+    /// as the snapshot states. The ladder ranks step 8 above the sleep seal's rung, step 11
+    /// (#269), so the grant must answer the bounds ahead of the sleep seal's guard, which sits
+    /// below the marker. **Mutation:** in `ReadOnlyFanReport.firstRefusal`, move the
+    /// `sleepSealed` rung up to just above `let accountable`, between steps 6 and 8. Run: red —
+    /// the snapshot says `.systemSleeping` — while
+    /// `SleepSealAvailabilityTests.stepFiveOutranksTheSeal` stays green.
     ///
     /// The seal is set as `SystemPowerResponder` sets it, through `sealForSleep(generation:)`.
     /// Fan 1's bounds are plausible, so its grant shows the seal holds.
@@ -124,6 +128,56 @@ struct GrantBoundsAgreementTests {
             """
             the snapshot says \(shown) while a grant over the same fan is refused \(refused) \
             under the sleep seal: the bounds gate is below the sleep seal's guard.
+            """)
+    }
+
+    /// A fan under a lease whose bounds then read implausible reads `.releaseInProgress` while the
+    /// machine-wide seal is open, as the grant refuses it: the grant exempts a fan Aeolus is
+    /// accountable for from its bounds read, so the ladder's step 8 speaks only for the fans that
+    /// read covers, and the seal's rung answers for this one
+    /// ([#269](https://github.com/blamechris/Aeolus/issues/269)). Until the ladder was one
+    /// first-match function the seal's rung re-stated only `.available`, so the snapshot kept the
+    /// bounds — silent to `fanctl auto` — while the grant refused for a reason it reads as pending.
+    ///
+    /// The seal is opened over the live lease, as § 7's verb opens it before its sweep empties the
+    /// table; the grant is another connection's.
+    ///
+    /// **Mutation:** in `ReadOnlyFanReport.firstRefusal(of:observedMode:given:reconciliation:)`,
+    /// drop `!accountable, ` from step 8's condition. Run: red — the snapshot says
+    /// `.boundsImplausible`.
+    @Test("A leased fan with implausible bounds reads the seal's reason while the seal is open")
+    func aLeasedFansBoundsDoNotOutrankTheSeal() async throws {
+        let helper = Fixture.composed(
+            afterwards: [Fixture.fanZeroMaximum(Fixture.byteSwappedMaximum)])
+        await helper.bindSafetyRegistries()
+        _ = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: ConnectionID())
+        await helper.plane.advance()
+        #expect(
+            try await helper.plane.firmwareBound(.maximum, ofFan: 0) == Fixture.byteSwappedBound,
+            "fan 0's maximum does not read the staged value, so the bounds have nothing to say")
+
+        let sealed = AsyncSignal()
+        let lift = AsyncSignal()
+        let leases = helper.leases
+        let seal = observing {
+            await leases.sealingGrants {
+                await sealed.signal()
+                try? await lift.wait()
+            }
+        }
+        try await sealed.wait()
+        let refused = await Fixture.refusalForGrant(over: 0, from: helper.leases)
+        let shown = try await Self.shownReason(ofFanAt: 0, in: helper)
+
+        await lift.signal()
+        _ = try await finished("the seal to close", seal)
+        #expect(refused == .releaseInProgress)
+        #expect(
+            shown == refused,
+            """
+            the snapshot says \(shown) about a leased fan while a grant over it is refused \
+            \(refused) under the machine-wide seal: step 8 answered for a fan the grant exempts.
             """)
     }
 
@@ -182,7 +236,7 @@ struct GrantBoundsAgreementTests {
         await helper.plane.advance()
         #expect(
             try await helper.plane.firmwareBound(.maximum, ofFan: 0) == Fixture.byteSwappedBound,
-            "fan 0's maximum reads plausible, so the bounds have nothing to outrank")
+            "fan 0's maximum does not read the staged value, so the bounds have nothing to outrank")
 
         let shown = try await Self.shownReason(ofFanAt: 0, in: helper)
         let thrown = await Fixture.refusalForGrant(over: 0, from: helper.leases)

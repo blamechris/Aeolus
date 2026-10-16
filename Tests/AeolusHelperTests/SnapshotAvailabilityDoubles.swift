@@ -88,6 +88,18 @@ enum AvailabilityFixture {
             unreadableModes: unreadableModes, maximumReads: [0: maximum])
     }
 
+    /// A stage on which the SMC answers every fan read and **no critical temperature**, so § 3 is
+    /// blind — the curated read throws `.criticalTelemetryUnavailable` — while the snapshot still
+    /// reads every fan (#269). `ScriptedControlPlane.Stage.blind` fails every read, the fans' too.
+    static func sightless(
+        writes: ScriptedControlPlane.WriteBehaviour = .honoured,
+        unreadableModes: Set<Int> = [],
+        maximumReads: [Int: ScriptedControlPlane.BoundRead] = [:]
+    ) -> ScriptedControlPlane.Stage {
+        ScriptedControlPlane.Stage(
+            writes: writes, unreadableModes: unreadableModes, maximumReads: maximumReads)
+    }
+
     // MARK: - The graphs
 
     /// The daemon's own wiring over scripted firmware that can write.
@@ -103,17 +115,33 @@ enum AvailabilityFixture {
     /// through `PlaneBackedProvider` (#360, #270), so the two sides judge one machine.
     /// `afterwards` follows the nominal stage, for a scenario whose fan stops answering, or
     /// starts reading implausible bounds, once something is set up.
+    ///
+    /// `clock` is the lease core's and the sightings cache's, for a scenario that has to age a
+    /// sighting out — a lease taken while § 3 could see, on a machine that then goes blind.
     static func composed(
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
         fanCount: Int = 1,
+        clock: some MonotonicClock = SystemMonotonicClock(),
         afterwards: [ScriptedControlPlane.Stage] = []
     ) -> HelperComposition<ScriptedControlPlane> {
         let firmware = Self.firmware(fanCount: fanCount, writes: writes, afterwards: afterwards)
-        return HelperComposition(
-            plane: firmware,
-            snapshotProvider: PlaneBackedProvider(over: firmware, fanCount: fanCount),
+        return composed(
+            plane: firmware, provider: PlaneBackedProvider(over: firmware, fanCount: fanCount),
+            clock: clock)
+    }
+
+    /// The same wiring over a plane and a provider the test chooses: a plane answering
+    /// `.notBuilt` over scripted firmware, or a provider of the test's own.
+    static func composed<Plane: FanControlPlane>(
+        plane: Plane, provider: some SensorProvider,
+        clock: some MonotonicClock = SystemMonotonicClock()
+    ) -> HelperComposition<Plane> {
+        HelperComposition(
+            plane: plane,
+            snapshotProvider: provider,
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: clock,
             log: Self.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog,
@@ -121,16 +149,19 @@ enum AvailabilityFixture {
     }
 
     /// The same wiring over firmware whose restore can be parked on demand. `firmware` is a
-    /// parameter so a scenario can keep it and advance its stages beneath the parking plane.
+    /// parameter so a scenario can keep it and advance its stages beneath the parking plane, and
+    /// `clock` so it can age a sighting out under a parked handback.
     static func wedging(
         firmware: ScriptedControlPlane = AvailabilityFixture.firmware(
-            fanCount: 1, writes: .honoured)
+            fanCount: 1, writes: .honoured),
+        clock: some MonotonicClock = SystemMonotonicClock()
     ) -> HelperComposition<CycleWedgingRestorePlane> {
         HelperComposition(
             plane: CycleWedgingRestorePlane(firmware),
             snapshotProvider: PlaneBackedProvider(over: firmware, fanCount: 1),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: clock,
             log: Self.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog,

@@ -48,21 +48,6 @@ struct UnreadModeAvailabilityTests {
         }
     }
 
-    /// `AvailabilityFixture.composed`'s wiring over a plane and a provider the test chooses.
-    private static func composed<Plane: FanControlPlane>(
-        plane: Plane, provider: some SensorProvider
-    ) -> HelperComposition<Plane> {
-        HelperComposition(
-            plane: plane,
-            snapshotProvider: provider,
-            criticalSensors: .mac16x5,
-            roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
-            log: Fixture.helperLog,
-            leaseLog: LeaseFixture.log,
-            safetyLog: Fixture.safetyLog,
-            teardown: TeardownSeams(sources: RecordingSignalSources()))
-    }
-
     // MARK: - Every fan Aeolus is not accountable for
 
     /// A fan nothing has ever leased, whose mode will not read, reads `.supervisorBlind` as the
@@ -120,7 +105,7 @@ struct UnreadModeAvailabilityTests {
     func aSeamThatCannotWriteStatesTheBuildNotTheRead() async throws {
         let firmware = ScriptedControlPlane(
             fans: [0: .automatic(at: 2_400)], stages: [Self.modesUnread([0])])
-        let helper = Self.composed(
+        let helper = Fixture.composed(
             plane: ControlStateGatePlane(firmware, capability: .notBuilt),
             provider: PlaneBackedProvider(over: firmware, fanCount: 1))
         try await Self.expectModeUnread(ofFan: 0, on: firmware)
@@ -282,7 +267,7 @@ struct UnreadModeAvailabilityTests {
         await helper.plane.advance()
         #expect(
             try await helper.plane.firmwareBound(.maximum, ofFan: 0) == Fixture.byteSwappedBound,
-            "fan 0's maximum reads plausible, so the bounds have nothing to be outranked by")
+            "fan 0's maximum does not read the staged value, so no bounds are outranked")
         await helper.plane.setMode(.manual, ofFan: 0)
         await helper.reconciliation.reconcile()
         #expect(
@@ -313,7 +298,7 @@ struct UnreadModeAvailabilityTests {
     @Test("The availability judges the mode read the snapshot was built from, read once")
     func theAvailabilityJudgesTheReadTheSnapshotWasBuiltFrom() async throws {
         let provider = FirstModeReadFailsProvider(fanCount: 1)
-        let helper = Self.composed(
+        let helper = Fixture.composed(
             plane: Fixture.firmware(fanCount: 1, writes: .honoured), provider: provider)
 
         let snapshot = try await helper.authority.snapshot()

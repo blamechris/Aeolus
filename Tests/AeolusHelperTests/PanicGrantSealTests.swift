@@ -103,9 +103,10 @@ struct PanicGrantSealTests {
     /// **Mutation:** delete the `machineWideRestoresInFlight == 0` guard from `acquireLease`. Run:
     /// red — "the grant path granted a lease over fan 0". **Mutation:** move the `.built` block and
     /// `confirmAcceptedHandbacks()` out of the `sealingGrants` closure, below it. Run: red, the
-    /// same line. **Mutation:** in `restatingAvailability`, drop the
-    /// `reportingMachineWideRestore` call. Run: red on the agreement only. **Mutation:** delete
-    /// the `defer` that decrements the count. Run: red on the last grant only.
+    /// same line. **Mutation:** delete the `machineWideRestoreInFlight` rung from
+    /// `ReadOnlyFanReport.firstRefusal(of:observedMode:given:reconciliation:)`. Run: red on the
+    /// agreement only. **Mutation:** delete the `defer` that decrements the count. Run: red on the
+    /// last grant only.
     @Test("A grant during the machine-wide restore is refused, and the snapshot agrees")
     func aGrantDuringTheMachineWideRestoreIsRefused() async throws {
         let helper = Self.composed()
@@ -273,10 +274,10 @@ struct PanicGrantSealTests {
     // MARK: - What the seal does not overwrite
 
     /// A fan another program holds keeps `.foreignManualControl` while the seal is open, in the
-    /// snapshot and at the grant: the seal's rung re-states `.available` and nothing else.
+    /// snapshot and at the grant: the seal's rung, step 10, is below step 5 on both sides.
     ///
-    /// **Mutation:** in `reportingMachineWideRestore(of:given:)`, drop
-    /// `fan.manualControlAvailability == .available` from the guard, so every fan is re-stated.
+    /// **Mutation:** in `ReadOnlyFanReport.firstRefusal(of:observedMode:given:reconciliation:)`,
+    /// move the `machineWideRestoreInFlight` rung above `let judged`, so the seal answers first.
     /// Run: red — the snapshot says `.releaseInProgress` about a fan another program holds.
     @Test("A refusal the seal must not overwrite stands while the panic verb runs")
     func aForeignFanKeepsItsRefusalWhileTheSealIsOpen() async throws {
@@ -307,12 +308,11 @@ struct PanicGrantSealTests {
     /// `.releaseInProgress` on both sides (#360).
     ///
     /// The grant's fresh read is above its straight-line region, so it refuses the unreadable fan
-    /// before it reaches the seal's guard; step 5 says the same, and the seal's rung, which
-    /// re-states only `.available`, leaves it. Both fans are unleased, so neither is mid-handback.
+    /// before it reaches the seal's guard; step 5 says the same, and the seal's rung, below it,
+    /// is never reached. Both fans are unleased, so neither is mid-handback.
     ///
-    /// **Mutation:** in `reportingMachineWideRestore(of:given:)`, drop
-    /// `fan.manualControlAvailability == .available` from the guard. Run: red — the snapshot says
-    /// `.releaseInProgress` about fan 1 while the grant refuses it `.supervisorBlind`.
+    /// **Mutation:** the one above. Run: red — the snapshot says `.releaseInProgress` about fan 1
+    /// while the grant refuses it `.supervisorBlind`.
     @Test("A fan whose mode will not read keeps its refusal while the panic verb runs")
     func anUnreadFanKeepsItsRefusalWhileTheSealIsOpen() async throws {
         let helper = Self.composed(fanCount: 2, unreadable: [1])

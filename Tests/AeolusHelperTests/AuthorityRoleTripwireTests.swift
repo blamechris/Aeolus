@@ -4,12 +4,13 @@ import Testing
 @testable import AeolusHelper
 
 /// `SupervisedFanAuthority` holds two narrow roles of the plane — `KeystoneRestoring` and
-/// `FanWriteCapabilityReporting` — and nothing that can command a fan
-/// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D5). That is a claim about what a
-/// type *holds* and what its file can *name*, which no behavioural test observes: a whole plane
-/// behind a restore-only body restores exactly as the role does. So it is asserted against the
-/// source, three ways, and each was evaded once before it took its present shape (the review
-/// and delta review of #349). `PanicPathScopeTripwireTests` holds what the panic verb *calls*.
+/// `FanWriteCapabilityReporting` — beside the sightedness cache's read role (#269), and nothing
+/// that can command a fan ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D5). That is a
+/// claim about what a type *holds* and what its file can *name*, which no behavioural test
+/// observes: a whole plane behind a restore-only body restores exactly as the role does. So it is
+/// asserted against the source, three ways, and each was evaded once before it took its present
+/// shape (the review and delta review of #349). `PanicPathScopeTripwireTests` holds what the panic
+/// verb *calls*.
 ///
 /// The conversion ban binds the lease core's files too, since `LeaseAuthority` holds `envelopes`
 /// as an existential over the plane (#270): `theLeaseCoreConvertsNoRole`.
@@ -142,6 +143,7 @@ struct AuthorityRoleTripwireTests {
             "private let reconciliation: any ReconciliationBaselineReporting",
             "private let keystone: any KeystoneRestoring",
             "private let writeCapability: any FanWriteCapabilityReporting",
+            "private let telemetry: any SightednessProving",
             "let controlGate = ControlMessageGate()",
             "private let log: HelperLog",
             "private static let shuttingDown = AeolusXPCFault.helperFailed(",

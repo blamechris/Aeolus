@@ -76,8 +76,9 @@ import Foundation
 /// the registers and the seal as value types this actor holds `private`.
 ///
 /// Relocating prose cannot relieve `type_body_length`, which counts this body's code: 308 lines
-/// after #270's bounds gate and 287 since that pass, so 63 of headroom remain before its error
-/// at 350; the file is 851 lines against its error at 1000. New behaviour belongs in value
+/// after #270's bounds gate, 287 after that pass and 288 since #269 carried the sleep seal to the
+/// snapshot, so 62 of headroom remain before its error at 350; the file is 853 lines against its
+/// error at 1000. New behaviour belongs in value
 /// types — these two, `LeaseTable`, `ConnectionTombstones` — and the `EngagementDriver`
 /// (ADR 0014), not in this actor.
 actor LeaseAuthority: HeldLeaseRole {
@@ -684,7 +685,8 @@ actor LeaseAuthority: HeldLeaseRole {
             unconfirmedHandbacks: registers.unconfirmedHandbacks,
             handbacksInFlight: registers.fansMidHandback,
             restoresAwaitingConfirmation: awaiting,
-            machineWideRestoreInFlight: machineWideRestoresInFlight > 0
+            machineWideRestoreInFlight: machineWideRestoresInFlight > 0,
+            sleepSealed: sleep.isSealed
         )
     }
 
