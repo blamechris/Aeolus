@@ -960,19 +960,24 @@ against a reading that predates it, and a step that landed before the read with 
 come was judged against a record older than the reading. Either way an ordinary control-loop step
 read as `.targetDiverged`: the fan was marked reclaimed, "Reclamation detected" was logged at
 `.fault`, an attempt was spent, and in the second order § 5 re-asserted the old target over the new
-one. Level 6 therefore announces each step before it writes it and still reports it after the write
-returns, and the examination's stamp, taken before the read, records the target last reported. A
-target that diverges from the record is held if it reads back, within the primary signal's own
-tolerance, the target reported when the examination began or a step announced and not yet reported,
-and an examination that began with nothing commanded judges no target, as a cycle with nothing
-commanded judges none. A cycle whose reading is held this way is one whose primary signal converged,
-with everything #366 gives one: the episode closes and the mark clears, and the budget refills only
-if the secondary signal converges too. **Nothing else is excused:** a reclaimed mode, an unreadable
-target and any other target diverge as before, whatever was reported during the examination. Every
-target that can excuse a reading is one the lease holder chose, so no number of reports excuses a
-target the system chose, and a client stepping inside every examination still meets the terminal
-action when the budget runs out (#180, #366). An announcement moves no registration generation, so
-it never stands a re-assert down (#381).
+one. ADR 0014's A6 contract therefore requires level 6 to announce each step before writing it, as
+the `AuthorisedFanTarget` that write will carry, and still to report it after the write returns;
+nothing announces yet, because level 6 arrives with A6. The examination's stamp, taken before the
+read, records the target last reported. A target that diverges from the record is **held** if it
+reads back, within the primary signal's own tolerance, the target reported when the examination
+began or a step announced and not yet reported, and an examination that began with nothing commanded
+judges no target. **A held cycle concludes nothing**
+([#390](https://github.com/blamechris/Aeolus/issues/390)): no counter moves, no episode opens or
+closes, nothing is spent or refilled, and the mark stays as it stands. **An announcement holds one
+reading on credit,** and only a report of that same step gives the credit back, because a step
+announced is not a step landed: one whose write threw can coincide with a target the system wrote,
+most plausibly at the envelope's bounds, and without the credit it would hold that target on every
+cycle and clear a mark the system had earned. **Nothing else is held:** a reclaimed mode, an
+unreadable target and any other target diverge as before. A coincidence with a step that never lands
+therefore postpones the terminal action by one cycle and never clears a mark, however often the step
+is announced again, and a client stepping inside every examination still meets the terminal action
+when the budget runs out (#180, #366). An announcement moves no registration generation, so it never
+stands a re-assert down (#381).
 
 **Actual RPM against target is a secondary signal, it is only read behind a dwell time, and
 it reports without acting.** This section named it the primary one until #119. As a primary
@@ -1219,16 +1224,29 @@ line says nothing was written. The fan ends on automatic control and the mark is
 snapshot is truthful; the log line is not, and the client's engagement believes it holds a fan it
 does not.
 
-Judging a reading against what the fan could have been holding leaves four cases open (#383), each
-in the safe direction or bounded by a cycle. Two steps of one fan completed inside one examination
-can leave the read sampling the first while the record holds the second and the stamp the one before
-both; that needs a client stepping faster than one examination's read and lease check, a few
-milliseconds, which a loop at the supervisor's cadence cannot, and the cost falls on that lease: a
-false mark, an attempt, and at the budget the terminal action. A write that was not announced is
-covered in the forward order and not the reverse; only level 6 commands a fan under a lease while
-§ 5 examines it, and its contract binds it. A step the firmware discards is held for the cycle its
-report lands in and diverges on the next. A system-written target within 1 RPM of the stamp's or of
-the announced step is held for that cycle, at a speed the lease holder asked for.
+Judging a reading against what the fan could have been holding leaves these cases open (#383, #390),
+each in the safe direction or bounded by one cycle. Two steps of one fan completed inside one
+examination can leave the read sampling the first while the record holds the second and the stamp
+the one before both; that needs a client stepping faster than one examination's read and lease
+check, a few milliseconds, which a loop at the supervisor's cadence cannot, and the cost falls on
+that lease: a false mark, an attempt, and at the budget the terminal action. A write that was not
+announced is covered in the forward order and not the reverse; only level 6 commands a fan under a
+lease while § 5 examines it, and its contract binds it. A step the firmware discards is held for the
+cycle its report lands in and diverges on the next. A system-written target within 1 RPM of the
+stamp's target, or of an announced step whose credit is unspent, is held for that cycle, and nothing
+is concluded from it: a mark already set stays set and the terminal action comes one cycle later;
+the announced step's case is the one a write that never lands can reach, at most once between
+confirming reports. A report delayed past a whole sweep after its step landed, or a plane whose
+report differs from the target it was handed by more than 1 RPM, leaves the credit spent, so a later
+step read before its report is marked and re-asserted over, in the safe direction; the second rests
+on E4's plane returning the target it was handed, which `ScriptedControlPlane` does and E4's write
+plane is not yet built to do. A write that lands and then throws leaves the fan at a target nothing
+reports: it is held once and then diverges, and § 5 marks the fan, blames the system and re-asserts
+the record, which restores agreement within two cycles; the fault line misattributes Aeolus's own
+write, in the safe direction, and E4's plane should throw only for a write that did not land. A held
+cycle concludes nothing, so an episode stays open and marked while every examination reads a step
+not yet reported, as a ramp phase-locked to the sweep can, until the first cycle that reads the
+record: a false fault, in the safe direction.
 
 The order is deliberate. The fan's own lease is asked *after* the read because every teardown
 drops its lease before it restores, so a read that saw that restore land is followed by a
@@ -1266,13 +1284,18 @@ re-assert writing the fan as it stands: a same-lease re-apply landed in each of 
 before its first step and once the control-state read has sampled included, a first step refused
 after its mode write or after a release, and the stamp, the re-fetch and the record as values,
 #381),
-the `ReclamationJudgementViewTests` suite and `ReclamationJudgementViewValueTests` (a reading
-judged against what the fan could have been holding: a step reported during the lease check, one
-landed before the read with its report after the judgement, one reported before the read's sample,
-one the firmware discards, and a first step; a system target, a reclaimed mode and another lease's
-announcement excused by nothing; a client stepping inside every examination still meeting the
-terminal action; an announcement standing no re-assert down; and the stamp's target and the
-announced step as values, #383),
+the `ReclamationJudgementViewTests` and `ReclamationAnnouncementCreditTests` suites and
+`ReclamationJudgementViewValueTests` (a reading judged against what the fan could have been holding:
+a step reported during the lease check, one landed before the read with its report after the
+judgement, one reported before the read's sample, one reported after the read's sample, one the
+firmware discards, and a first step; a system target, a reclaimed mode and another lease's
+announcement held by nothing; a client stepping inside every examination still meeting the terminal
+action; an announcement standing no re-assert down; a step announced and never written holding one
+reading, keeping the mark and postponing the terminal action by exactly one cycle, however often it
+is announced again or reported as another target; the next announcement replacing one whose write
+threw; a governed step held at the step and not the goal; and, as values, the stamp's target, the
+announced step, the announcement's credit, a held cycle moving nothing, an unstamped judgement and a
+target that is not a number, #383, #390),
 `ReclamationRefetchIdentityTests.swift` and `ReclamationLateRegistrationTests.swift` (the
 identity half of each reachable re-fetch, and the registrations the generation lets through:
 accepted after a lapse or a lost release notice, and refused under the lease the terminal action

@@ -1314,13 +1314,15 @@ lease is judged against the permit's own fan at every examination. No write verb
    `.supervisorBlind` instead (#366). Register each fan before this `apply`'s first command write
    to it, a fan already engaged under the lease included. A registration accepted while § 5 is
    examining the fan leaves that examination's re-assert to this engagement (#381).
-3. Announce each step with `commandAnnounced(_:under:)` before its command write is issued, with
-   the target that write will carry, the one `CommandableFan.target(for:)` produced. Report it with
+3. Announce each step with `commandAnnounced(_:under:)` before its command write is issued,
+   passing the `AuthorisedFanTarget` that write will carry: the governed step, produced once and
+   handed to `commandTarget(_:)` unchanged, never the goal it is heading for. Report it with
    `commandedTarget(_:under:)` after the write returns, never before. Keep one write in flight per
    fan: announce the next step only once the previous one is reported or its write has thrown.
    § 5 re-asserts the target last reported, a report that arrives during its own command write
-   wins the record (#381), and a fan read holding the announced step, or the target reported when
-   its examination began, is held (#383).
+   wins the record (#381), a fan read holding the target reported when its examination began is
+   held, and one read holding the announced step is held once until that step's report (#383,
+   #390).
 4. Ask `heldLease(id:from:)` again before replying, so the reply never says *applied* under a
    lease that has ended.
 5. Map a superseded step to `.releaseInProgress`, unless the lease itself has gone. Map a
@@ -2003,44 +2005,72 @@ cadence keeps its phase relative to § 5's sweep, so a window one cycle falls in
 **Decision.**
 
 - **Level 6 announces a step before writing it.** `commandAnnounced(_:under:)` records the step
-  about to be handed to `commandTarget(_:)` on the fan's record (`HeldFan.announced`). The step's
-  report closes it, the next announcement replaces it, and it goes with the record. It is ignored
-  for a fan not held under that lease, as a report is.
+  about to be handed to `commandTarget(_:)` on the fan's record (`HeldFan.announced`). It takes the
+  `AuthorisedFanTarget` about to be handed to `commandTarget(_:)`, so the announced speed is clamped
+  into that fan's envelope, finite and never zero, and names the fan it was clamped for (#390). The
+  step's report closes it, the next announcement replaces it, and it goes with the record. It is
+  ignored for a fan not held under that lease, as a report is.
 - **The examination's stamp carries the target.** The stamp #381 takes before the control-state read
   also records the target last reported (`HeldFan.examinedCommanded`).
-- **A target the fan could have been holding is no divergence.** A `.targetDiverged` reading
-  converges if it reads back, within `targetToleranceRPM`, the target reported when the examination
-  began or the step announced and not yet reported (`HeldFan.couldHaveBeenHolding(_:)`). An
-  examination that began with nothing commanded judges no target, as a cycle with nothing commanded
-  judges none. The cycle is a converged cycle in every respect #366 gives one.
-- **Nothing else is excused.** A reclaimed mode, an unreadable target and any other target diverge
-  as before, whatever was reported during the examination. The budget, the episode and every
-  terminal action are untouched. Every target that can excuse a reading is one the lease holder
-  chose, so no number of reports excuses a target the system chose. A client stepping inside every
-  examination still meets the terminal action when the budget runs out (#180, #366).
+- **A target the fan could have been holding is held, not judged.** A `.targetDiverged` reading is
+  held if it reads back, within `targetToleranceRPM`, the target reported when the examination
+  began or the step announced and not yet reported (`HeldFan.holds(_:readFrom:)`). An examination
+  that began with nothing commanded judges no target, as a cycle with nothing commanded judges
+  none, and a judgement with no examination's stamp holds nothing. **A held cycle concludes
+  nothing** (`Judgement.held`, #390): no counter moves, no episode opens or closes, nothing is
+  spent or refilled, and the ledger's mark is left as it stands.
+- **An announcement holds one reading on credit** (#390). Holding a reading at the announced step
+  spends `HeldFan.announcementSpent`, and only a report of that step, within `targetToleranceRPM`,
+  gives it back. A fresh announcement does not, and a report of another target closes the
+  announcement without giving it back. The target reported when the examination began spends
+  nothing: it was reported, so its write returned.
+- **Nothing else is held.** A reclaimed mode, an unreadable target and any other target diverge as
+  before, whatever was reported or announced during the examination. Every target that can hold a
+  reading is one the lease holder chose, but a target chosen is not a target landed: a step whose
+  write threw, or was never issued, can coincide with a target the system wrote, most plausibly at
+  the envelope's bounds. The credit bounds that to one held cycle between confirming reports,
+  however often the step is announced again, and a held cycle cannot clear a mark or refill the
+  budget, so a reclamation it coincides with is postponed by one cycle and never undone. A
+  confirming report means the write returned, and the record then names that target: the primary
+  signal's own coincidence (#119), not this amendment's. A client stepping inside every
+  examination, or announcing before every one a step that never lands, still meets the terminal
+  action when the budget runs out (#180, #366).
 
 | The step's write lands | Its report arrives | The read sees | § 5 judges it |
 |---|---|---|---|
 | Before the stamp | Before the stamp | The step | Held, against the record |
 | After the read | During the examination | The old target | Held, against the stamp's target |
 | Before the read | During the examination | The step | Held, against the record |
-| Before the read | After the judgement | The step | Held, against the announced step |
+| Before the read | After the judgement | The step | Held, against the announced step, once until its report |
 | Never: discarded | During the examination | The old target | Held this cycle; the next cycle diverges |
+| Never: the write threw | Never | A system target equal to the step | Held once; diverges on every cycle after, until an announced step is reported |
 
 **A6's contract.** Its shape is unchanged.
 
 - Item 3 becomes: *Announce each step with `commandAnnounced(_:under:)` before its command write is
-  issued, with the target that write will carry, the one `CommandableFan.target(for:)` produced.
-  Report it with `commandedTarget(_:under:)` after the write returns, never before. Keep one write
-  in flight per fan: announce the next step only once the previous one is reported or its write has
-  thrown. § 5 re-asserts the target last reported, a report that arrives during its own command
-  write wins the record (#381), and a fan read holding the announced step, or the target reported
-  when its examination began, is held (#383).*
+  issued, passing the `AuthorisedFanTarget` that write will carry: the governed step, produced once
+  and handed to `commandTarget(_:)` unchanged, never the goal it is heading for. Report it with
+  `commandedTarget(_:under:)` after the write returns, never before. Keep one write in flight per
+  fan: announce the next step only once the previous one is reported or its write has thrown. § 5
+  re-asserts the target last reported, a report that arrives during its own command write wins the
+  record (#381), a fan read holding the target reported when its examination began is held, and
+  one read holding the announced step is held once until that step's report (#383, #390).*
 - `GovernedFanWriter` computes the step inside `command(towards:of:since:)`, so A6 needs the step
-  before the write. The writer gains a way to hand over the step it will write; the shape is A6's,
-  the order is not.
-- A write that throws needs no withdrawal. Its announcement stays until the next announcement, the
-  next report or the record's end, and it admits only a target the lease holder asked for.
+  before the write. The writer gains a way to hand over the `AuthorisedFanTarget` it will write,
+  and that one value is announced and then written. The shape is A6's; the single value is not. An
+  announced goal is not refused, but it holds a reading at most once and its steps' reports never
+  confirm it, so in the reverse order the ramp's steps read as reclamations: loud, and in the safe
+  direction (#390).
+- A write that throws needs no withdrawal. Its announcement stays open until the next
+  announcement, the next report or the record's end, but it can hold one reading at most: holding
+  it spends a credit that only a report of the announced step gives back (#390). A withdrawal verb
+  was rejected: § 5's bound would rest on level 6 reaching it on every throwing and cancelled path,
+  and even reached, a loop on § 5's cadence can keep every judgement inside its write's flight.
+- `WriteVerbAllowlistTests` gains a second keyed companion:
+  `ReclamationWatchdog.commandAnnounced(_: AuthorisedFanTarget, under: UUID)` may carry a `UUID`,
+  for `manualControlEngaged(_:under:)`'s reason: it reads the permit's index and speed and writes
+  nothing. No write verb may. `Registry.announce(_:)` takes the observation, so the registry stays
+  permit-free.
 - Items 2, 4 and 5 are unchanged.
 
 **#381's amendment.** Its last "What remains" bullet, the judgement's own view, is closed by this
@@ -2058,8 +2088,22 @@ announcement is not a report, and § 5's re-assert still re-fetches the target l
   a fan under a lease while § 5 examines it, and the contract binds it.
 - *A step the firmware discards* is held for the cycle its report lands in, and diverges on the
   next.
-- *A system-written target within 1 RPM of the stamp's or the announced step* is held for that
-  cycle. The fan is at a speed its lease holder asked for.
+- *A system-written target within 1 RPM of the stamp's target, or of an announced step whose
+  credit is unspent,* is held for that cycle, and nothing is concluded from it: a mark already set
+  stays set and the terminal action comes one cycle later. The announced step's case is the one a
+  write that never lands can reach, at most once between confirming reports (#390).
+- *A report delayed past a whole sweep after its step landed, or a plane whose report differs from
+  the target it was handed by more than 1 RPM,* leaves the credit spent, so a later step read
+  before its report is marked and re-asserted over, in the safe direction. The second rests on
+  E4's plane returning the target it was handed, which `ScriptedControlPlane` does and E4's write
+  plane is not yet built to do.
+- *A write that lands and then throws* leaves the fan at a target nothing reports. It is held once
+  and then diverges: § 5 marks the fan, blames the system and re-asserts the record, which restores
+  agreement within two cycles. The fault line misattributes Aeolus's own write, in the safe
+  direction; E4's plane should throw only for a write that did not land.
+- *A held cycle concludes nothing,* so an episode stays open and marked while every examination
+  reads a step not yet reported, as a ramp phase-locked to the sweep can, until the first cycle
+  that reads the record. A false fault, in the safe direction.
 
 **Alternatives considered.**
 
@@ -2085,6 +2129,18 @@ announcement is not a report, and § 5's re-assert still re-fetches the target l
   read verb across every conformer, needs a hook inside the scheduler's read turn, moves the primary
   signal's reference out of § 5's record, and fixes a design for E4's unbuilt write plane. Kept for
   if a residual above is observed, or if A6 cannot announce.
+- *Age an announcement by one stamp* (#390's review). It bounds a single stale announcement, but
+  every fresh announcement resets it, so a loop announcing before every cycle while its writes
+  throw holds a system target indefinitely, and the cycle it holds still clears a mark that is set.
+- *A withdrawal verb,* as above: § 5's bound would rest on level 6 reaching it on every throwing
+  and cancelled path, and a loop on § 5's cadence can keep every judgement inside its write's
+  flight even when it is reached.
+- *Judge a held cycle's secondary against the target that held it.* Exact, but it keeps a refill
+  route open through whatever holds the reading, and mixes two references into one dwell counter
+  and one log line.
+- *Refuse a non-finite announcement in the predicate.* It cannot see the envelope, so 0 still
+  passes, and it drops the value silently. The permit makes both unrepresentable, and the
+  comparison now diverges on a value that is not a number.
 
 **Revisit if:**
 
@@ -2092,12 +2148,16 @@ announcement is not a report, and § 5's re-assert still re-fetches the target l
 - a writer other than level 6 commands a fan under a lease;
 - A6 cannot hand over a step before writing it;
 - U4 fails as a quantised or slewed `F<n>Tg` read-back;
-- leases that can overlap on a fan are proposed.
+- leases that can overlap on a fan are proposed;
+- E4's plane reports a target other than the `AuthorisedFanTarget` it was handed, or throws after
+  a write landed;
+- a mark is observed to persist through a ramp's held cycles.
 
-The ruling is the architect's #383 consult, run on Opus. **No `AeolusXPCVersion` bump:** nothing
-crosses the boundary, and `commandAnnounced(_:under:)` is internal to the helper. This amendment
-corrects clauses of a Proposed ADR rather than the decisions they sit under. **Status stays
-Proposed.**
+The ruling is the architect's #383 consult, run on Opus, and #390's corrections, the
+announcement's credit and the held judgement, are the architect's #390 consult, run on Opus. **No
+`AeolusXPCVersion` bump:** nothing crosses the boundary, and `commandAnnounced(_:under:)` is
+internal to the helper. This amendment corrects clauses of a Proposed ADR rather than the
+decisions they sit under. **Status stays Proposed.**
 
 
 ## Assumptions and what would invalidate them

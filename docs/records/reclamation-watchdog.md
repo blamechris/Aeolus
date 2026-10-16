@@ -145,6 +145,10 @@ complexity stays at 10. Its reasoning is in this document, under *"Judged agains
 could have been holding"*, rather than in the actor's file, which stays clear of `file_length`'s
 error.
 
+**#390 spent none: 327 code lines; `examine(fanAt:)` 50; file 961.** `commandAnnounced(_:under:)`
+changed its parameter, not its length, and `.held` joined the pattern `.graced, nil` already had.
+The credit and the held judgement live in `HeldFan` (struct body 65 → 78).
+
 ## Every act is for the lease the fan was registered under
 
 *Added by [#353](https://github.com/blamechris/Aeolus/issues/353) and
@@ -447,29 +451,40 @@ therefore announces a step before it writes it, with `commandAnnounced(_:under:)
 `HeldFan.announced`, and still reports it after the write returns, with `commandedTarget(_:under:)`,
 which closes it. The examination's stamp, `HeldFan.beginExamination(atGeneration:)`, records the
 target last reported (`HeldFan.examinedCommanded`) beside #381's generation, before the read.
-`HeldFan.couldHaveBeenHolding(_:)` asks whether a reading reads back either of the two, through
+`HeldFan.holds(_:readFrom:)` asks whether a reading reads back either of the two, through
 `primaryDivergence(of:against:)` per candidate so that there is no second tolerance rule, and
-`judge(_:)` makes a `.targetDiverged` reading that does no divergence. An examination that began
-with nothing commanded judges no target, as a cycle with nothing commanded judges none.
+`judge(_:)` answers `.held` for a `.targetDiverged` reading that does, which the actor acts on by
+doing nothing. An examination that began with nothing commanded judges no target, as a cycle with
+nothing commanded judges none, and a judgement with no examination's stamp holds nothing.
 
 | The step's write lands | Its report arrives | The read sees | § 5 judges it |
 |---|---|---|---|
 | Before the stamp | Before the stamp | The step | Held, against the record |
 | After the read | During the examination | The old target | Held, against the stamp's target |
 | Before the read | During the examination | The step | Held, against the record |
-| Before the read | After the judgement | The step | Held, against the announced step |
+| Before the read | After the judgement | The step | Held, against the announced step, once until its report |
 | Never: discarded | During the examination | The old target | Held this cycle; the next cycle diverges |
+| Never: the write threw | Never | A system target equal to the step | Held once; diverges on every cycle after, until an announced step is reported |
 
 **Why it does not reopen the contest #180 and #366 bounded.** Nothing but a `.targetDiverged` is
-excused: a reclaimed mode, an unreadable target and any other target diverge as before. Every
-target that can excuse a reading is one the lease holder chose, so no number of reports excuses a
-target the system chose, and a client stepping inside every examination while the firmware
-discards every write still meets the terminal action on the cycle after the budget is spent. An
-excused cycle is one whose primary converged: it closes the episode and clears the mark, and it
-refills the budget only through `.converged` on both signals, so only where #366 would have refilled
-it had the report been instantaneous. An announcement moves no registration generation, so it never
-stands a re-assert down; one that did would let a loop announcing every cycle stand § 5 down on
-every one.
+held: a reclaimed mode, an unreadable target and any other target diverge as before. As #383 first
+wrote it, a held cycle was a converged one, and an announced step held a reading on every
+examination until a report closed it. #390's review found what that left open: a step announced is
+not a step landed, and one whose write threw stays announced until the next report, so where the
+system held the fan at that step, most plausibly at the envelope's bounds, every cycle was excused,
+the mark cleared and the terminal action never came. Two rules close it. **A held cycle concludes
+nothing** (`Judgement.held`): no counter moves, no episode opens or closes, nothing is spent or
+refilled, and the actor leaves the ledger's mark as it stands, so a held cycle can neither clear a
+mark nor refill the budget. **An announcement holds one reading on credit**
+(`HeldFan.announcementSpent`): holding a reading at the announced step spends it, and only a report
+of that same step, within `targetToleranceRPM`, gives it back; a fresh announcement does not, and a
+report of another target closes the announcement without giving it back. The target reported when
+the examination began spends nothing: it was reported, so its write returned. A coincidence with a
+step that never lands therefore postpones the terminal action by one cycle and never clears a mark,
+however often the step is announced again, and a client stepping inside every examination while the
+firmware discards every write still meets the terminal action when the budget runs out. An
+announcement moves no registration generation, so it never stands a re-assert down; one that did
+would let a loop announcing every cycle stand § 5 down on every one.
 
 **Rejected,** each for a reason ADR 0014's #383 amendment gives in full. Reporting before the write
 makes the record lead the firmware for the write's latency, and leaves a client write § 5's own
@@ -482,7 +497,11 @@ phase-locked loop, and delays every genuine target reclamation by a cycle. A re-
 shrinks the reverse window without closing it. The plane's own last-written target, returned with
 the read in one scheduler turn, is exact, but it changes `FanControlState` and the read verb across
 every conformer and fixes a design for E4's unbuilt write plane; it is kept for if a residual below
-is observed, or A6 cannot announce.
+is observed, or A6 cannot announce. #390's review rejected three more, for reasons the same
+amendment gives: ageing an announcement by one stamp, which every fresh announcement resets; a
+withdrawal verb, which would rest § 5's bound on level 6 reaching it on every throwing and cancelled
+path; and judging a held cycle's secondary signal against the target that held it, which keeps a
+refill route open through whatever holds the reading.
 
 What stays open:
 
@@ -494,10 +513,25 @@ What stays open:
    level 6 commands a fan under a lease while § 5 examines it, and ADR 0014 A6 item 3 binds it.
 3. A step the firmware discards is held for the cycle its report lands in, and diverges on the
    next.
-4. A system-written target within 1 RPM of the stamp's or of the announced step is held for that
-   cycle, at a speed the lease holder asked for.
+4. A system-written target within 1 RPM of the stamp's target, or of an announced step whose credit
+   is unspent, is held for that cycle, and nothing is concluded from it: a mark already set stays
+   set and the terminal action comes one cycle later. The announced step's case is the one a write
+   that never lands can reach, at most once between confirming reports.
+5. A report delayed past a whole sweep after its step landed, or a plane whose report differs from
+   the target it was handed by more than 1 RPM, leaves the credit spent, so a later step read before
+   its report is marked and re-asserted over, in the safe direction. The second rests on E4's plane
+   returning the target it was handed, which `ScriptedControlPlane` does and E4's write plane is not
+   yet built to do.
+6. A write that lands and then throws leaves the fan at a target nothing reports. It is held once
+   and then diverges: § 5 marks the fan, blames the system and re-asserts the record, which restores
+   agreement within two cycles. The fault line misattributes Aeolus's own write, in the safe
+   direction; E4's plane should throw only for a write that did not land.
+7. A held cycle concludes nothing, so an episode stays open and marked while every examination reads
+   a step not yet reported, as a ramp phase-locked to the sweep can, until the first cycle that
+   reads the record. A false fault, in the safe direction.
 
-`ReclamationJudgementViewTests` holds the actor's half, each step landed around a real read, and
+`ReclamationJudgementViewTests` holds the actor's half, each step landed around a real read,
+`ReclamationAnnouncementCreditTests` the announcement's credit and the held cycle at the actor, and
 `ReclamationJudgementViewValueTests` the record's.
 
 ## Built once per registration, per lease
