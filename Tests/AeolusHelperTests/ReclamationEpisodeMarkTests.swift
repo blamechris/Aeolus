@@ -133,7 +133,7 @@ struct ReclamationEpisodeMarkTests {
 
         #expect(await sensing.didFire, "the scenario never arranged the interleaving")
         #expect(
-            machine.safetyLog.lines(containing: "held for, during its envelope read").count == 1,
+            machine.safetyLog.lines(containing: "§ 5 found it at its envelope read").count == 1,
             "the re-apply did not stand the re-assert down")
         #expect(await machine.commandedRPMs == [2_400], "the re-assert wrote over the re-apply")
         #expect(machine.safetyLog.lines(containing: "re-asserted").isEmpty)

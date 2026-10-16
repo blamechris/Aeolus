@@ -23,17 +23,25 @@ import Testing
 /// - **M7**, stamping the examination at the judgement rather than before the read: H.
 /// - **M8**, dropping the generation comparison from `Registry.reassertTarget(ofFan:under:)`: A,
 ///   B, G and H, and the value suite.
+/// - **M9**, every refused re-engage the `.fault`, as `reassert`'s catch was before
+///   `reengageRefused(fanAt:heldUnder:error:)`: I.
+/// - **M10**, `reengageRefused` standing down on any `.notAutomatic`, without asking
+///   `reassertTarget(ofFan:under:)`: J.
 ///
-/// A, B, C, D, G and H were red at `main` before #381. E was green there by design: it pins the
-/// accounting the fix must keep. The registry half, as values, is
-/// `ReclamationReassertTargetValueTests`.
+/// A, B, C, D, G and H were red at `main` before #381, and I at `b07477b`. E and J were green
+/// there by design: they pin the accounting and the fault the fix must keep. The registry half, as
+/// values, is `ReclamationReassertTargetValueTests`.
 @Suite(
     "§ 5's re-assert does not overwrite a re-apply under the same lease", .timeLimit(.minutes(1)))
 struct ReclamationReassertViewTests {
 
-    /// What `reclamationReassertLeftToItsEngagement(fan:during:)` says, by moment.
-    private static let leftAtTheEnvelopeRead = "held for, during its envelope read"
-    private static let leftAtTheFirstStep = "held for, during its first step"
+    /// What `reclamationReassertLeftToItsEngagement(fan:at:)` says, by where § 5 found the
+    /// registration, and in any case.
+    private static let leftAtTheEnvelopeRead =
+        "since this examination began; § 5 found it at its envelope read"
+    private static let leftBeforeCommanding = "§ 5 found it at its check before commanding"
+    private static let leftAtItsFirstStep = "§ 5 found it at its first step"
+    private static let leftToItsEngagement = "left this re-assert to that engagement"
 
     /// What a re-engage the driver refused says.
     private static let failedReengage = "re-engage manual control of"
@@ -263,7 +271,7 @@ struct ReclamationReassertViewTests {
         #expect(await sensing.didFire, "the scenario never arranged the interleaving")
         #expect(await machine.commandedRPMs == [2_000], "§ 5 commanded after the re-apply")
         #expect(await machine.didRestore(fan: 0) == false, "§ 5 handed back its own lease's fan")
-        #expect(machine.safetyLog.lines(containing: Self.leftAtTheFirstStep).count == 1)
+        #expect(machine.safetyLog.lines(containing: Self.leftBeforeCommanding).count == 1)
         #expect(await machine.watchdog.fansUnderManualControl == [0])
     }
 
@@ -294,5 +302,68 @@ struct ReclamationReassertViewTests {
             "a failed re-engage was reported for a fan its own lease had re-engaged")
         #expect(await machine.commandedRPMs == [2_000])
         #expect(machine.safetyLog.lines(containing: Self.leftAtTheEnvelopeRead).count == 1)
+    }
+
+    /// **I, before the first step.** The client re-engages the fan under the same lease, registers
+    /// it and commands 2,000 after § 5's envelope re-fetch and before its first engagement step's
+    /// turn, where the double's engage-step effect runs (`.reconnect` is never reached here). That
+    /// step finds the fan already in manual and is refused `.notAutomatic` with nothing written: it
+    /// is the client's engagement, not a failure, so § 5 stands down as at the re-fetches.
+    ///
+    /// **Mutation:** M9. Run: red on the failed re-engage line and the stand-down line's level. Red
+    /// at `b07477b`, before `reengageRefused(fanAt:heldUnder:error:)` existed.
+    @Test("A re-engagement before the re-assert's first step stands it down, with no fault")
+    func aReengagementBeforeTheFirstStepStandsTheReassertDown() async throws {
+        let plane = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)])
+        let sensing = InterferingFanStateSensing(plane, during: .reconnect)
+        let machine = ReclamationMachine(
+            plane: plane, fans: [0: .automatic(at: 1_800)], interfering: sensing)
+        try await machine.hold(fan: 0, commanding: 2_400)
+        let lease = try await Self.lease(machine)
+        let permit = try Self.permit(machine)
+        await sensing.interfere(beforeEngageStep: 1) { [machine] in
+            await Self.reapply(machine, under: lease, permit: permit, rpm: 2_000, engaging: true)
+        }
+
+        await machine.watchdog.cycle()
+
+        #expect(await sensing.didFire, "the scenario never arranged the interleaving")
+        #expect(
+            machine.safetyLog.lines(containing: Self.failedReengage).isEmpty,
+            "a failed re-engage was reported for a fan its own lease had re-engaged")
+        #expect(machine.safetyLog.levels(containing: Self.leftAtItsFirstStep) == [.notice])
+        #expect(await machine.commandedRPMs == [2_000])
+        #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_000)
+        #expect(await machine.didRestore(fan: 0) == false, "§ 5 handed back its own lease's fan")
+        #expect(await machine.watchdog.fansUnderManualControl == [0])
+    }
+
+    /// **J, the refusal that stays a fault.** As I, but the fan comes off automatic control with
+    /// no registration since the stamp: an engagement that has not registered yet. The step is
+    /// refused `.notAutomatic` as in I, and nothing has given the fan to an engagement § 5 knows
+    /// of, so it is the `.fault` it always was.
+    ///
+    /// **Mutation:** M10. Run: red on the failed re-engage line and the stand-down line.
+    @Test("A first step refused with no registration since the stamp is still a fault")
+    func aFirstStepRefusedWithNoRegistrationIsStillAFault() async throws {
+        let plane = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)])
+        let sensing = InterferingFanStateSensing(plane, during: .reconnect)
+        let machine = ReclamationMachine(
+            plane: plane, fans: [0: .automatic(at: 1_800)], interfering: sensing)
+        try await machine.hold(fan: 0, commanding: 2_400)
+        let permit = try Self.permit(machine)
+        await sensing.interfere(beforeEngageStep: 1) { [machine] in
+            do {
+                _ = try await machine.plane.engageManualControl(of: permit)
+            } catch {
+                Issue.record("the unregistered engagement failed: \(error)")
+            }
+        }
+
+        await machine.watchdog.cycle()
+
+        #expect(await sensing.didFire, "the scenario never arranged the interleaving")
+        #expect(machine.safetyLog.levels(containing: Self.failedReengage) == [.fault])
+        #expect(machine.safetyLog.lines(containing: Self.leftToItsEngagement).isEmpty)
     }
 }

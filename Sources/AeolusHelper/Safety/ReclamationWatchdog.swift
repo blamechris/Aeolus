@@ -77,8 +77,8 @@ import Foundation
 ///   that state or adding a suspension point. The splits taken, and the rationale relocated
 ///   out of this file's doc comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
-///   The body is 317 code lines against `type_body_length`'s error at 350, `examine(fanAt:)` 50
-///   against `function_body_length`'s warning at 50, and the file 921 lines against
+///   The body is 323 code lines against `type_body_length`'s error at 350, `examine(fanAt:)` 50
+///   against `function_body_length`'s warning at 50, and the file 936 lines against
 ///   `file_length`'s at 1000. New § 5 state belongs in `Registry`, tested as a
 ///   value, and new behaviour in the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
@@ -556,7 +556,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// The target is the record's after the last suspension before the write, never the one
     /// `diverged` read, and the write is recorded only over the target it was decided on: a report
     /// during either is newer. A registration under the same lease since the examination began
-    /// stands it down, attempt spent, because that engagement commands the fan itself (#381).
+    /// stands it down, attempt spent, because that engagement commands the fan itself (#381): at
+    /// either re-fetch, or at a first step refused because that engagement took the fan first.
     private func reassert(
         fanAt index: Int, heldUnder lease: UUID, attempt: Int, reengaging: Bool
     ) async {
@@ -654,10 +655,9 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             // The driver has handed back any step it took, so the fan is on Apple's thermal
             // management — or, if that undo was refused, registered with § 3, and the driver
             // said so at `.fault`. The attempt is spent and the budget is what bounds the trying.
-            log.reclamationWriteFailed(
-                verb: "re-engage manual control of", fan: index,
-                detail: String(describing: error))
-            return
+            // A first step refused with nothing written, for a registration since the stamp, is
+            // that engagement's fan and not a failure (#381): `reengageRefused`.
+            return reengageRefused(fanAt: index, heldUnder: lease, error: error)
         }
 
         // Past this point the fan is OFF automatic control, so every exit below has to leave
@@ -708,14 +708,29 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         }
     }
 
-    /// A re-assert's re-fetch after its envelope read found nothing to write: the fan was released
-    /// (#180) or is now another lease's (#357), or was registered again under its own lease since
-    /// the examination began (#381). Nothing has been written, so nothing is restored.
+    /// A re-assert that stopped with nothing of its own written: the fan was released (#180) or is
+    /// now another lease's (#357), or was registered again under its own lease since the
+    /// examination began (#381). Nothing has been written, so nothing is restored.
     private func reassertStopped(fanAt index: Int, heldUnder lease: UUID, during moment: String) {
         guard isHeld(index, under: lease) else {
             return log.reclamationFanReleasedMidExamination(fan: index, during: moment)
         }
-        log.reclamationReassertLeftToItsEngagement(fan: index, during: moment)
+        log.reclamationReassertLeftToItsEngagement(fan: index, at: moment)
+    }
+
+    /// The re-assert's re-engage threw. A first step refused `.notAutomatic` wrote nothing, so
+    /// when `reassertTarget(ofFan:under:)` also answers `nil` it stops as the envelope re-fetch
+    /// does: a registration since the stamp is that engagement's fan, which it had already taken
+    /// off automatic control (#381). Anything else, after a step may have written, is the `.fault`
+    /// it always was. Out of `reassert` for its complexity.
+    private func reengageRefused(fanAt index: Int, heldUnder lease: UUID, error: any Error) {
+        guard case .notAutomatic? = error as? FanControlPlaneError,
+            registry.reassertTarget(ofFan: index, under: lease) == nil
+        else {
+            return log.reclamationWriteFailed(
+                verb: "re-engage manual control of", fan: index, detail: String(describing: error))
+        }
+        reassertStopped(fanAt: index, heldUnder: lease, during: "its first step")
     }
 
     /// A re-assert's re-fetch after its first step: a fan released during it is restored, because
@@ -727,7 +742,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             log.reclamationReleasedMidReassert(fan: index, during: "its first write")
             return await restoreAndForget(fanAt: index, heldUnder: lease)
         }
-        log.reclamationReassertLeftToItsEngagement(fan: index, during: "its first step")
+        log.reclamationReassertLeftToItsEngagement(fan: index, at: "its check before commanding")
     }
 
     /// The re-assert's command write was refused. **Re-fetched before blaming the firmware**

@@ -1687,16 +1687,19 @@ extension SafetyLog {
 
     /// § 5 stood a re-assert down: the fan was registered again under the lease it is held for
     /// since the examination began, so that engagement commands the fan, after the reading the
-    /// re-assert was decided on (#381). `.notice`, not `.fault`: nothing failed. The attempt
-    /// stays spent, so a holder re-applying every cycle still meets the terminal action when the
-    /// budget runs out.
-    func reclamationReassertLeftToItsEngagement(fan: Int, during: String) {
+    /// re-assert was decided on (#381). `moment` is where § 5 found the registration — a
+    /// re-fetch, or a first step refused because that engagement had already taken the fan off
+    /// automatic control — not where it landed, which can be any suspension since the stamp.
+    /// `.notice`, not `.fault`: nothing failed. The attempt stays spent, so a holder re-applying
+    /// every cycle still meets the terminal action when the budget runs out.
+    func reclamationReassertLeftToItsEngagement(fan: Int, at moment: String) {
         emit(
             .notice,
             """
-            Fan \(fan) was registered again, under the lease it is held for, during \(during), \
-            so § 5 left this re-assert to that engagement and wrote nothing more. The attempt \
-            stays spent; the next cycle's read-back decides whether the fan is held.
+            Fan \(fan) was registered again, under the lease it is held for, since this \
+            examination began; § 5 found it at \(moment), so it left this re-assert to that \
+            engagement and wrote nothing more. The attempt stays spent; the next cycle's \
+            read-back decides whether the fan is held.
             """
         )
     }
