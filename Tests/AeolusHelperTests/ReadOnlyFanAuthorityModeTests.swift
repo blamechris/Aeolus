@@ -241,12 +241,50 @@ struct ReadOnlyFanAuthorityModeTests {
     /// `ObservedFanModes.modes(ofFans:)`. Run: red — the last level is `.debug`.
     @Test("A fan whose mode reads again is reported at error level on its next failure")
     func aRecoveredModeIsReportedAgainAtErrorLevel() async throws {
-        let recorder = RecordedHelperLines()
         let unanswered = ScriptedControlPlane.Stage(unreadableModes: [0])
+        let (provider, recorder) = try await Self.snapshots(
+            of: [0], through: [unanswered, unanswered, .nominal(), unanswered])
+
+        #expect(await provider.answeredModeReads == 1, "the read in between never answered")
+        #expect(recorder.levels(containing: "Fan 0's mode key") == [.error, .debug, .error])
+    }
+
+    /// The reset is **per fan**: one fan's read answering forgets that fan, and only that fan.
+    ///
+    /// Fan 1 recovers, as fan 0 does above; fan 0 never answers, as every fan on an Intel Mac
+    /// never does. A reset that forgot every fan, or a fixed one, would re-arm fan 0 each time
+    /// fan 1 answered: on a machine where one fan flickers, an error line a second for the fan
+    /// that never answers, which is the flood the throttle exists to stop. The recovering fan is
+    /// fan 1 so that a reset hard-coded to fan 0 is caught in both directions — fan 0 re-armed,
+    /// fan 1 not.
+    ///
+    /// **Mutation:** replace `reportedUnreadable.remove(index)` with
+    /// `reportedUnreadable.removeAll()`. Run: red on fan 0. **Mutation:** replace it with
+    /// `reportedUnreadable.remove(0)`. Run: red on both fans.
+    @Test("One fan's mode reading again does not re-arm another fan that never answers")
+    func aRecoveredModeForgetsOnlyItsOwnFan() async throws {
+        let both = ScriptedControlPlane.Stage(unreadableModes: [0, 1])
+        let onlyFanZero = ScriptedControlPlane.Stage(unreadableModes: [0])
+        let (provider, recorder) = try await Self.snapshots(
+            of: [0, 1], through: [both, both, onlyFanZero, both])
+
+        #expect(await provider.answeredModeReads == 1, "fan 1's read in between never answered")
+        #expect(
+            recorder.levels(containing: "Fan 0's mode key") == [.error, .debug, .debug, .debug],
+            "a fan that never answers was re-armed by another fan's recovery")
+        #expect(recorder.levels(containing: "Fan 1's mode key") == [.error, .debug, .error])
+    }
+
+    /// One snapshot per stage of `stages`, over the scripted firmware with `fans` in it and its
+    /// `F<n>Md` read through `PlaneBackedProvider`, recording every log line with its level.
+    private static func snapshots(
+        of fans: [Int], through stages: [ScriptedControlPlane.Stage]
+    ) async throws -> (PlaneBackedProvider, RecordedHelperLines) {
+        let recorder = RecordedHelperLines()
         let firmware = ScriptedControlPlane(
-            fans: [0: .automatic(at: 2_400)],
-            stages: [unanswered, unanswered, .nominal(), unanswered])
-        let provider = PlaneBackedProvider(over: firmware, fanCount: 1)
+            fans: Dictionary(uniqueKeysWithValues: fans.map { ($0, .automatic(at: 2_400)) }),
+            stages: stages)
+        let provider = PlaneBackedProvider(over: firmware, fanCount: fans.count)
         let authority = ReadOnlyFanAuthority(
             provider: provider,
             fanMode: SnapshotFanModeReads(provider: provider),
@@ -259,14 +297,11 @@ struct ReadOnlyFanAuthorityModeTests {
             writeCapability: LeaseFixture.writePathNotBuilt(),
             now: { Date(timeIntervalSince1970: 1_000_000) }
         )
-
-        for _ in 0..<4 {
+        for _ in stages {
             _ = try await authority.snapshot()
             await firmware.advance()
         }
-
-        #expect(await provider.answeredModeReads == 1, "the read in between never answered")
-        #expect(recorder.levels(containing: "Fan 0's mode key") == [.error, .debug, .error])
+        return (provider, recorder)
     }
 
     /// The other half of #148's title, and the one that stays a literal — deliberately.
