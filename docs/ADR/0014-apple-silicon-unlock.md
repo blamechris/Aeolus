@@ -822,7 +822,7 @@ every hold in run 1 aims there.
 - [#332](https://github.com/blamechris/Aeolus/issues/332);
 - [#270](https://github.com/blamechris/Aeolus/issues/270), the missing bounds gate on
   `acquireLease`. It is unreachable on `Mac16,5`, whose bounds are plausible, and its issue names
-  E3/E4 as its gate.
+  E3/E4 as its gate. *(Taken by the #128/#270 amendment below.)*
 
 ### D9 — Another SMC writer is excluded by the operator, gated read-only, and never detected by the helper
 
@@ -1235,7 +1235,8 @@ takes the fan; the availability beside it is correct.
 ### #270 is the same rule, moving the other side
 
 `.boundsImplausible` is current evidence, re-read on demand, and it makes a lease unusable, so the
-grant should refuse it. #270's scope and slot (D8, before the merge) are unchanged.
+grant should refuse it. #270's scope and slot (D8, before the merge) are unchanged. *(Taken by the
+#128/#270 amendment below.)*
 
 ### No `AeolusXPCVersion` bump
 
@@ -1636,9 +1637,10 @@ against § 5's cadence. The ruling is the architect's
 This amendment corrects a clause of a Proposed ADR rather than the decision it sits under.
 **Status stays Proposed.**
 
-## Amendment (2026-10-15, [#128](https://github.com/blamechris/Aeolus/issues/128)) — § 5's registry leaves the actor as a value type it holds privately
+## Amendment (2026-10-15, [#128](https://github.com/blamechris/Aeolus/issues/128), [#270](https://github.com/blamechris/Aeolus/issues/270)) — § 5's registry is a value type, and the grant reads the bounds
 
-An A6 enabler, and it changes no behaviour.
+Two A6 enablers. The first changes no behaviour; the second is unreachable on every build on
+`main`, where a `.notBuilt` seam answers `.writePathNotBuilt` before it.
 
 ### #128 — § 5's registry leaves the actor as a value type it holds privately
 
@@ -1667,6 +1669,43 @@ where it was. A helper holding the ledger and driver: every call becomes a hop, 
 consult, run on Opus. This amendment corrects a clause of a Proposed ADR rather than the decision it
 sits under. **Status stays Proposed.**
 
+### #270 — the grant reads the bounds, after the foreign-control read
+
+**Decision.** `acquireLease` reads `F<n>Mn` and `F<n>Mx` afresh through `FanEnvelopeReading`
+(`readEnvelope(ofFan:)`, which `FanStateSensing` now refines) for every requested fan the
+foreign-control step did not exempt, after that step and above the straight-line marker. It judges
+them with `FanState.controlEnvelope(declaredMinimum:declaredMaximum:)`, the snapshot's derivation; a
+failed read is `.notMeasured`, as the snapshot's is. It refuses
+`.manualControlUnavailable(reason: .boundsImplausible)`, mints no permit and caches nothing.
+
+- **After the foreign read**, so a fan whose reads fail is told `.supervisorBlind`, and the ladder's
+  step 5 already ranks above step 8: the two sides keep one order and no rung moves. Ahead of it, the
+  snapshot would state a reason `fanctl auto` reads as silent over one it reads as pending.
+- **Over the fans the foreign read exempts, never them.** A fan in a handback register is answered by
+  the register, as the snapshot answers it; `refuseIfExemptionLapsed` covers a handback landing during
+  this read as it covers one during the foreign read.
+- The seal case, recorded at step 10 as the one divergence left, closes.
+
+**What it costs.** One `.supervisor` turn per requested fan Aeolus is not accountable for, per grant,
+bounded by per-connection serialisation, as the foreign read is. `SMCReadPriority`'s "revisit when"
+note records it and is not acted on.
+
+**No `AeolusXPCVersion` bump.** No field, case or method changes: `.boundsImplausible` is on the wire
+and is thrown through the existing `manualControlUnavailable(reason:)` fault.
+
+**Assumption added.** The snapshot's `F<n>Mn`/`F<n>Mx` read and `readEnvelope` fail together and
+reach one plausibility gate (`FanControlEnvelope.validating`); if a platform splits them, fix the read
+in the same change. It is a row of the table below.
+
+**Alternatives considered.** *Bounds first, or over every fan*: silent over pending. *Bounds inside
+§ 6's role*: widens it to save one turn. *`.boundsImplausible(fanIndex:detail:)` from the grant*:
+`apply`'s form, two shapes for one refusal.
+
+**Revisit if** bounds are seen changing at run time: fix the read, do not debounce (the #360
+precedent). The ruling is the architect's #128/#270/#269 consult, run on Opus. This amendment
+corrects clauses of a Proposed ADR rather than the decisions they sit under. **Status stays
+Proposed.**
+
 ## Assumptions and what would invalidate them
 
 | # | Assumption | Basis | If it fails |
@@ -1693,6 +1732,7 @@ sits under. **Status stays Proposed.**
 | — | A re-grant after § 5's terminal action is a client's request | `AeolusXPCClient` and ADR 0013 D1 never re-acquire; the app has no control UI yet | A self-re-acquiring client makes the contest with the system unbounded: a measured, time-limited ledger refusal, mirrored in the snapshot |
 | — | At most one live lease covers a fan | One lease at a time (`.leaseHeldByAnotherClient`) | Overlapping leases: § 5's records keyed per (fan, lease), and registration's arbitration re-decided |
 | — | Every lease-core restore notice for a fan precedes any grant over it, and precedes the fan leaving `releasing` | `releasing` is held from before the restorer's notices until it returns; `HelperFanRestorer` awaits each notice before its write | A restore path bypassing `releasing` lets the index-keyed `manualControlReleased(fanAt:)` erase a newer lease's record, and a notice delivered after the restorer returns ends #368's wait before it arrives; either way the notice must then carry the lease |
+| — | The snapshot's `F<n>Mn`/`F<n>Mx` read and the grant's `readEnvelope(ofFan:)` fail together and reach one plausibility gate (#270) | Code: one scheduler and connection, the same two keys; the plane checks finiteness at its seam and the snapshot's path leaves a non-finite value to `FanControlEnvelope.validating`, so both end at that gate as `.boundsImplausible`. Unverified on Intel and M1/M2 | The grant refuses leases the snapshot offers, or the reverse. Fix the read in the same change; do not debounce |
 | — | The snapshot's `F<n>Md` read and the grant's fresh read fail together | Code: one scheduler and connection, the same key and `FirmwareFanMode(declaredByFirmware:)` decode behind the same finiteness rule; a `.snapshot` read waits and never fails for its priority. They differ only in priority and instant. Every recorded `F<n>Md` read on `Mac16,5` answered, and none was taken while reads were failing | The #360 rung refuses leases the helper grants. Fix the read, and re-decide here. The same holds for a platform whose mode is not `F<n>Md` (Intel, `FS! `): the snapshot's read must take the plane's branch, or share its decode, in the same change |
 
 Every observation above is `Mac16,5`; the write-path rows are hypotheses until D8 runs. Intel and
