@@ -637,8 +637,9 @@ and the restorer delivers its notices before it returns, so the notice lands whi
 holds the fan and skips its clear. `TerminalActionTeardownRaceTests` parks the teardown between the
 lease core and the restorer and lands it between the hand-back and the revocation;
 handback-ledger.md § *"Outwaiting another path's handback"* has why the drain is that teardown's
-while its handback is under way, and the one route by which it is a newer lease's instead, with a
-mark kept rather than lost ([#377](https://github.com/blamechris/Aeolus/issues/377)).
+while its handback is under way, and the two routes by which it is a later handback's instead — a
+newer lease's release, or a sweep of a fan whose restore was refused — with a mark kept rather than
+lost ([#377](https://github.com/blamechris/Aeolus/issues/377)).
 
 **A lease that ended before the revocation, since #353.** `revokeLease(id:forFan:because:)` then
 revokes nothing and sends no release notice of its own, so the mark is kept with nothing to clear it
