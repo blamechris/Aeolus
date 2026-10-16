@@ -25,10 +25,10 @@ import Testing
 /// - **Cold, at most one curated-set read per snapshot.** With nothing recording, each snapshot
 ///   follows an expiry of the cache's one-period bound.
 /// - **With § 3 stopped, the `.supervisor` queue never holds more than one sighting read**,
-///   however many snapshots are asked at once: bursts of concurrent snapshots on an expired cache,
+///   however many snapshots are asked at once: a burst of concurrent snapshots on an expired cache,
 ///   with every `.supervisor` turn counted as the scheduler reports it, parked or in flight.
 ///
-/// The counts are asserted, and cannot be moved by a busy machine. The durations are printed, and
+/// The counts are asserted, and are not moved by ordinary load. The durations are printed, and
 /// the warm p50 is asserted only against the ruling's 1 ms, about three orders of magnitude above
 /// what the check costs; a run under other builds measures them too (#227), so run it alone. The
 /// two snapshot medians are printed for context and are not the check's cost: a snapshot here
@@ -36,15 +36,22 @@ import Testing
 /// much as a `.built` and a `.notBuilt` one do.
 extension HelperHardwareTests {
 
-    @Test("A built seam's snapshot asks § 3's cache once: cheap warm, one read cold, one in flight")
+    /// Ten warm rounds, three cold snapshots and one burst of 16 are what the three counts need,
+    /// and no more: this runs in every local `swift test` on `Mac16,5`. At 40, 10 and three bursts
+    /// it took about 126 s; cut, 39 s run alone. The limit, about three times that, stops a wedged
+    /// scheduler holding the whole run.
+    @Test(
+        "A built seam's snapshot asks § 3's cache once: cheap warm, one read cold, one in flight",
+        .timeLimit(.minutes(2)))
     func theSnapshotsSightingIsCheapAndCoalesced() async throws {
         let rig = try SightingRig()
         // Discovery first, and one cold read with it: the claims are about the warm refresh.
         _ = try await rig.built.snapshot()
 
-        let warm = try await rig.warmRounds(40)
-        let cold = try await rig.coldSnapshots(10)
-        let bursts = try await rig.bursts(3, of: 16)
+        let rounds = 10
+        let warm = try await rig.warmRounds(rounds)
+        let cold = try await rig.coldSnapshots(3)
+        let bursts = try await rig.bursts(1, of: 16)
 
         print(
             """
@@ -62,14 +69,14 @@ extension HelperHardwareTests {
             coalesced in all
             """)
 
-        #expect(warm.checks.count == 40, "a warm snapshot did not ask the cache exactly once")
+        #expect(warm.checks.count == rounds, "a warm snapshot did not ask the cache exactly once")
         #expect(warm.reads == 0, "a warm snapshot read the curated set \(warm.reads) times")
         #expect(
             Self.percentile(0.5, of: warm.checks) < .milliseconds(1),
             "the warm check costs more than the 1 ms #269 allowed at p50")
         #expect(cold.reads.allSatisfy { $0 <= 1 }, "a cold snapshot read the set \(cold.reads)")
         #expect(cold.reads.contains(1), "no snapshot was cold, so the cold claim measured nothing")
-        #expect(bursts.reads == [1, 1, 1], "a burst read the curated set \(bursts.reads) times")
+        #expect(bursts.reads == [1], "the burst read the curated set \(bursts.reads) times")
         #expect(
             bursts.peaks.allSatisfy { $0 == 1 },
             "the .supervisor queue held \(bursts.peaks) sighting reads at once")
