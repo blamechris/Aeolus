@@ -116,13 +116,14 @@ func finishedBeforeCeiling<Value: Sendable>(
     return try await work.task.value
 }
 
-/// § 5's cycles up to the terminal action, under `outwaitCeiling`, for a test whose terminal
-/// action meets a lease another path already ended.
+/// § 5's cycles up to the terminal action, under `outwaitCeiling`.
 ///
-/// That revocation answers `.gone` only once the fan's handback has returned (#368). In these
-/// tests it has returned before the revocation runs, so nothing parks; a mutant that parks a
-/// `.gone` with no handback under way would otherwise hang the test behind a continuation nothing
-/// resumes, and `.timeLimit` cannot end a wait that is not cancellable.
+/// The terminal action's revocation can park: a `.gone` answers only once the fan's handback has
+/// returned (#368). In the tests that cycle to it, nothing is under way when it runs, so nothing
+/// parks; a regression that parked it anyway would hang the test behind a continuation nothing
+/// resumes, and `.timeLimit` cannot end a wait that is not cancellable. So every such test comes
+/// through here — `FinaliseReleaseLedgerTests.cycleToTheTerminalAction(_:sourceLocation:)`
+/// delegates to it — and a near-identical unbounded loop is not left beside it.
 func cycledToTheTerminalAction<Plane: FanControlPlane>(
     _ watchdog: ReclamationWatchdog<Plane>,
     sourceLocation: SourceLocation = #_sourceLocation

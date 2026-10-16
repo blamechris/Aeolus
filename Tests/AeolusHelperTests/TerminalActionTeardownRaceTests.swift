@@ -13,7 +13,8 @@ import Testing
 /// revocation returns, and a release notice that arrives while it does skips its clear (#346). A
 /// TTL sweep or a connection death that removes the lease first makes the revocation `.gone`;
 /// that teardown's notice is then still inside `HelperFanRestorer`, and until #368 it could
-/// arrive after `finalising` had closed and erase the mark — 5–15 times in 1,000 under load.
+/// arrive after `finalising` had closed and erase the mark: 4–6 times in 1,200 runs, 5–9 in 2,000
+/// and 15 in 1,200 under load, about 2.5–12.5 per 1,000, and never in 1,200 run alone.
 ///
 /// **Hand-built, from real types, because the composition root has no seam before the notice**,
 /// and adding one there would be a production seam that exists for a test. The graph is

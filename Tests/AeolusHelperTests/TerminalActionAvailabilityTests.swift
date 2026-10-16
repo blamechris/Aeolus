@@ -42,7 +42,7 @@ struct TerminalActionAvailabilityTests {
     @Test("A fan § 5 gave up to the system reads available, still flagged, and is granted")
     func aReclaimedFanReadsAvailableAndIsGranted() async throws {
         let (helper, log) = try await Ledger.holding()
-        await Ledger.cycleToTheTerminalAction(helper)
+        try await Ledger.cycleToTheTerminalAction(helper)
         #expect(
             log.lines(containing: "no speed to re-assert").count == 1,
             "§ 5 never reached its terminal action, so nothing here was tested")
@@ -90,7 +90,7 @@ struct TerminalActionAvailabilityTests {
             ],
             snapshotProvider: provider)
         await helper.plane.advance()
-        await Ledger.cycleToTheTerminalAction(helper)
+        try await Ledger.cycleToTheTerminalAction(helper)
         #expect(
             log.lines(containing: "because the helper cannot read its state").count == 1,
             "§ 5 never gave the blind fan up, so nothing here was tested")
@@ -134,7 +134,7 @@ struct TerminalActionAvailabilityTests {
     func aFanTakenAfterTheTerminalActionAgreesWithTheGrant() async throws {
         let provider = ModeSwitchingProvider(fanCount: 1)
         let (helper, log) = try await Ledger.holding(snapshotProvider: provider)
-        await Ledger.cycleToTheTerminalAction(helper)
+        try await Ledger.cycleToTheTerminalAction(helper)
         #expect(
             log.lines(containing: "no speed to re-assert").count == 1,
             "§ 5 never reached its terminal action, so nothing here was tested")
@@ -179,7 +179,7 @@ struct TerminalActionAvailabilityTests {
     func aKeptFanTakenAfterTheTerminalActionAgreesWithTheGrant() async throws {
         let provider = ModeSwitchingProvider(fanCount: 1)
         let (helper, log) = try await Ledger.holding(snapshotProvider: provider)
-        await Ledger.cycleToTheTerminalAction(helper)
+        try await Ledger.cycleToTheTerminalAction(helper)
         #expect(
             log.lines(containing: "no speed to re-assert").count == 1,
             "§ 5 never reached its terminal action, so nothing here was tested")
@@ -243,7 +243,7 @@ struct TerminalActionAvailabilityTests {
         #expect(held.mode == .manualFixed, "the snapshot does not read the plane's firmware")
         await helper.plane.advance()
 
-        await Ledger.cycleToTheTerminalAction(helper)
+        try await Ledger.cycleToTheTerminalAction(helper)
         #expect(
             log.lines(containing: "because the helper cannot read its state").count == 1,
             "§ 5 never gave the blind fan up, so nothing here was tested")

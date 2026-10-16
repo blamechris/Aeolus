@@ -42,7 +42,7 @@ extension FinaliseReleaseLedgerTests {
             }
         }
 
-        try await cycledToTheTerminalAction(held.helper.reclamationWatchdog)
+        try await Self.cycleToTheTerminalAction(held.helper)
 
         #expect(await held.plane.didFire, "nothing was released inside the hand-back")
         #expect(
@@ -71,7 +71,7 @@ extension FinaliseReleaseLedgerTests {
     func aRefusedLateRegistrationKeepsTheMark() async throws {
         let (helper, log) = try await Self.holding()
         let ended = try #require(await helper.leases.activeLease()).id
-        await Self.cycleToTheTerminalAction(helper)
+        try await Self.cycleToTheTerminalAction(helper)
         await Self.expectTheRevocationRestoredThroughTheRestorer(helper)
         #expect(await helper.ledger.isReclaimed(fanAt: 0), "the terminal action kept no mark")
 
@@ -126,7 +126,7 @@ extension FinaliseReleaseLedgerTests {
         try await HelperRestorerTests.engage(fan: 0, in: helper, under: lease.id)
         await plane.interfere { clock.advance(by: .seconds(Lease.defaultTimeToLive + 1)) }
 
-        await Self.cycleToTheTerminalAction(helper)
+        try await Self.cycleToTheTerminalAction(helper)
 
         #expect(await plane.didFire, "the lease never lapsed inside the hand-back")
         #expect(log.lines(containing: "no speed to re-assert").count == 1)

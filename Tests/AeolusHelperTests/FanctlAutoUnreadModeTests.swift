@@ -46,7 +46,7 @@ struct FanctlAutoUnreadModeTests {
             ])
         await helper.plane.setMode(.manual, ofFan: 0)
         await helper.plane.advance()
-        await FinaliseReleaseLedgerTests.cycleToTheTerminalAction(helper)
+        try await FinaliseReleaseLedgerTests.cycleToTheTerminalAction(helper)
         #expect(
             log.lines(containing: "because the helper cannot read its state").count == 1,
             "§ 5 never gave the blind fan up, so nothing here was tested")
