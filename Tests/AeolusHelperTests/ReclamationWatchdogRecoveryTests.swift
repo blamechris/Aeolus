@@ -41,9 +41,9 @@ struct ReclamationWatchdogRecoveryTests {
     /// to the fan's declared maximum, so the two differ and a stale record is visible: the
     /// next cycle would judge a correctly held 5,777 RPM as a divergence from 99,000.
     ///
-    /// **Mutation:** delete `registry.recordReassertedTarget(recommanded, ofFan: index)` after the
-    /// command write in `reassert(fanAt:heldUnder:attempt:reengaging:)`. Run: red on the
-    /// recorded-target assertion.
+    /// **Mutation:** delete `registry.recordReassertedTarget(recommanded, decidedOn: target,
+    /// ofFan: index)` after the command write in `reassert(fanAt:heldUnder:attempt:reengaging:)`.
+    /// Run: red on the recorded-target assertion.
     @Test("A re-assert records the target it wrote, not the one it was asked for")
     func aReassertRecordsTheTargetItWrote() async throws {
         let machine = ReclamationMachine(fans: [0: .held(at: 1_800)])

@@ -1129,12 +1129,14 @@ thing more ([#381](https://github.com/blamechris/Aeolus/issues/381)): whether th
 registered again under its own lease since the examination began, which stamps the record before its
 read. If it has, that engagement commands the fan itself, after the reading the re-assert was
 decided on, so § 5 writes nothing more for that examination and says so; the attempt stays spent,
-and the mark is left to the episode. If it has not, § 5 commands the record's target as it stands
-after its last suspension before the write, never the one it judged, and records its write only over
-that target, so a report that arrived during the write is kept. The terminal action ends only the
-lease it was holding the fan for: revoked if it is live, ended as expired if it has lapsed and is
-still unswept — inside the call, so its release notice cannot erase the mark the terminal action
-keeps — and not touched if it has already ended; the fan is handed back in every case. A sweep or a
+and the mark is left to the episode. A first step refused because that engagement had already taken
+the fan off automatic control writes nothing, and is the same stand-down, not a failed write. If it
+has not, § 5 commands the record's target as it stands after its last suspension before the write,
+never the one it judged, and records its write only over that target, so a report that arrived
+during the write is kept. The terminal action ends only the lease it was holding the fan for:
+revoked if it is live, ended as expired if it has lapsed and is still unswept — inside the call, so
+its release notice cannot erase the mark the terminal action keeps — and not touched if it has
+already ended; the fan is handed back in every case. A sweep or a
 teardown that removes the lease after the hand-back and before the revocation is outwaited: the
 revocation answers only once that teardown's handback of the fan has returned, so its notice finds
 the mark kept ([#368](https://github.com/blamechris/Aeolus/issues/368)). A registration under a
@@ -1180,9 +1182,13 @@ next readable cycle.
 A client write issued during § 5's own command write can still land first (#381). The fan then
 holds § 5's re-fetched target, which is older than the client's, until the next readable cycle
 reads it as diverged and re-asserts the client's: one cycle, one more attempt, and the mark kept
-for that cycle. Only mutual exclusion over the write closes it. A target reported between § 5's
-read and its judgement is compared against a reading that predates it, so an ordinary step can
-read as diverged; that is [#383](https://github.com/blamechris/Aeolus/issues/383).
+for that cycle. Only mutual exclusion over the write closes it. A same-lease re-apply just before a
+genuine re-reclamation stands that cycle's re-assert down, and so does one that registers without
+engaging a fan the system has taken back to automatic, which A6's contract allows for a fan it
+believes already engaged; the fan stays on automatic until the next cycle re-engages it. Each costs
+one cycle and one attempt, in the direction of giving the fan up sooner. A target reported between
+§ 5's read and its judgement is compared against a reading that predates it, so an ordinary step
+can read as diverged; that is [#383](https://github.com/blamechris/Aeolus/issues/383).
 
 The order is deliberate. The fan's own lease is asked *after* the read because every teardown
 drops its lease before it restores, so a read that saw that restore land is followed by a
@@ -1207,15 +1213,18 @@ worse than a UI that reports an error, because the user acts on it.
 `TerminalActionTeardownRaceTests.swift`, `LeaseRevocationTests.swift`,
 `LeaseRevocationOutwaitTests.swift`, `ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
 `ReclamationSupervisorTests.swift`, `ReclamationEmergencyRegistrationTests.swift`,
-`ReclamationRegistryTests.swift` (the registry and the per-reading judgement as values, #128)
-with `ReclamationRegistryEpisodeTests.swift` (#366's episode and given-up lease as values),
+the `ReclamationRegistryTests` suite (the registry and the per-reading judgement as values, #128,
+and #366's episode and given-up lease as values, in its extension in
+`ReclamationRegistryEpisodeTests.swift`),
 `ReclamationEpisodeMarkTests.swift` (the mark following the primary signal, and a re-apply
 mid-episode leaving it to the episode, #366, with the three boundaries #384's review added: a
 blind cycle keeps the episode open, a run of `.short` cycles does not refill the re-assert
 budget, and a cycle that cannot read clears nothing),
-`ReclamationReassertViewTests.swift` with `ReclamationReassertTargetValueTests.swift` (the
+the `ReclamationReassertViewTests` suite, with its extension in
+`ReclamationReassertSuspensionTests.swift`, and `ReclamationReassertTargetValueTests` (the
 re-assert writing the fan as it stands: a same-lease re-apply landed in each of its suspensions,
-and the stamp, the re-fetch and the record as values, #381),
+before its first step and once the control-state read has sampled included, and the stamp, the
+re-fetch and the record as values, #381),
 `ReclamationRefetchIdentityTests.swift` and `ReclamationLateRegistrationTests.swift` (the
 identity half of each reachable re-fetch, and the registrations the generation lets through:
 accepted after a lapse or a lost release notice, and refused under the lease the terminal action

@@ -1840,7 +1840,7 @@ The ruling is the architect's #366 consult, run on Opus.
 This amendment corrects clauses of a Proposed ADR rather than the decisions they sit under. **Status
 stays Proposed.**
 
-## Amendment (2026-10-15, [#381](https://github.com/blamechris/Aeolus/issues/381)) — § 5's re-assert writes the fan as it stands, and leaves a fan its own lease re-engaged to that engagement
+## Amendment (2026-10-16, [#381](https://github.com/blamechris/Aeolus/issues/381)) — § 5's re-assert writes the fan as it stands, and leaves a fan its own lease re-engaged to that engagement
 
 An A6 precondition, found by the architect's #366 consult. Unreachable on every build on `main`,
 where a `.notBuilt` plane grants no lease. It is `CLAUDE.md` rule 6 in the direction that claims
@@ -1868,9 +1868,11 @@ Then:
   same-lease registration keeps the record and moves the generation, so the two differ.
 - **A same-lease registration since the stamp stands the re-assert down.**
   `Registry.reassertTarget(ofFan:under:)` answers `nil`. The re-fetches after the envelope read and
-  after the first step stop there: § 5 writes nothing more for that examination and says so. The
-  attempt booked in `diverged` stays spent, because that engagement's writes are this round's. The
-  mark is left to the episode (#366).
+  after the first step stop there: § 5 writes nothing more for that examination and says so. So
+  does a first step refused `.notAutomatic`, which wrote nothing, while that answer is `nil`: the
+  engagement took the fan off automatic control first, so it is logged as the stand-down, not as a
+  failed write (`reengageRefused(fanAt:heldUnder:error:)`). The attempt booked in `diverged` stays
+  spent, because that engagement's writes are this round's. The mark is left to the episode (#366).
 - **The target is the record's as it stands after the last suspension before the write.** `reassert`
   no longer takes one.
 - **The record keeps a newer report.** `recordReassertedTarget(_:decidedOn:ofFan:)` records § 5's
@@ -1904,9 +1906,17 @@ Then:
   cycle. Only mutual exclusion over the write closes it.
 - *Two engagements of one fan under one lease remain an A6 precondition.* The plane's in-progress
   record is still per fan. A same-lease engagement that completes during § 5's own mode write now
-  stands § 5 down rather than being commanded over.
+  stands § 5 down rather than being commanded over, and one that completes before § 5's first step
+  stands it down there, without a `.fault`.
 - *A same-lease re-apply just before a genuine re-reclamation stands that cycle's re-assert down.*
   It costs one cycle and one attempt, in the direction of giving the fan up sooner.
+- *So does a re-apply that registers without engaging a fan the system has taken back.* Item 2
+  registers a fan already engaged under the lease without engaging it again, and the system may
+  have reclaimed it since. The stand-down leaves the fan on automatic, with the client's target
+  written where nothing honours it, until the next cycle reads the mode reclaimed and re-engages
+  it: one cycle and one attempt, in the same safe direction. Requiring A6 to engage such a fan
+  would close it; it is listed rather than required, because the direction is safe and the next
+  cycle bounds it.
 - *The judgement's own view is not covered.* A target reported between § 5's read and its judgement
   is compared against a reading that predates it; tracked as
   [#383](https://github.com/blamechris/Aeolus/issues/383), an A6 precondition.

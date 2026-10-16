@@ -256,9 +256,9 @@ struct ReclamationWatchdogStalenessTests {
     /// landed *before* this write did, so § 5 is the only thing that can put it back.
     ///
     /// **Mutation:** replace the `guard isHeld(index, under: lease)` after the command write with
-    /// an unconditional `registry.recordReassertedTarget(recommanded, ofFan: index)`, which does
-    /// nothing to a released fan, as `held[index]?.commanded = recommanded` did. Run: red on the
-    /// restore, the re-assert log and the release log.
+    /// an unconditional `registry.recordReassertedTarget(recommanded, decidedOn: target, ofFan:
+    /// index)`, which does nothing to a released fan, as `held[index]?.commanded = recommanded`
+    /// did. Run: red on the restore, the re-assert log and the release log.
     @Test("A fan released during the re-assert's command write is restored, not re-asserted")
     func aFanReleasedDuringTheCommandWriteIsRestored() async throws {
         let plane = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)])
