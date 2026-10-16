@@ -62,9 +62,8 @@ struct UnconfirmedHandbackTests {
     /// is `[.fan(0)]` rather than `[.everyFan]` — the keystone is not reached until the wedge
     /// lets go, which is the honest shape of a stale `io_connect_t` under a live lease.
     ///
-    /// **Mutation A:** in `handBackEveryFan()`, move `await leases.releaseEveryLease()` below
-    /// the `do { try await writer.restoreToAutomatic(.everyFan) … }` block. Run: red on the
-    /// lease count.
+    /// **Mutation A:** in `handBackEveryFan()`, move `await leases.releaseEveryLease()` below the
+    /// `do { try await writer.restoreToAutomatic(.everyFan) … }` block. Run: red on lease count.
     /// **Mutation B:** delete the `guard unconfirmed.isEmpty` block from
     /// `LeaseAuthority.acquireLease`. Run: red.
     /// **Mutation C:** in `LeaseAuthority.recordUnconfirmedHandbacks()`, union every
@@ -90,6 +89,7 @@ struct UnconfirmedHandbackTests {
         #expect(await helper.leases.leaseCount == 1)
 
         let delivery = try observer.deliverWithoutWaiting(.willSleep)
+        await yieldUntil("fan 0's restore to park") { await plane.restoreScopes == [.fan(0)] }
         try await observer.didAcknowledge.wait()
 
         #expect(

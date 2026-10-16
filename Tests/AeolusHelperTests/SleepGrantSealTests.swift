@@ -160,6 +160,8 @@ struct SleepGrantSealTests {
         await helper.plane.park(.everyFan)
 
         let sleep = observing { try await observer.deliver(.willSleep) }
+        // Parked first, then acknowledged: the acknowledgement is a 50 ms wall-clock budget's.
+        await yieldUntil("the keystone to park") { await helper.plane.parkedRestores == 1 }
         try await observer.didAcknowledge.wait()
         #expect(
             await helper.plane.restoreScopes == [.everyFan],
@@ -203,6 +205,8 @@ struct SleepGrantSealTests {
         await helper.plane.park(.fan(0))
 
         let sleep = observing { try await observer.deliver(.willSleep) }
+        // Parked first, then acknowledged, for the reason the keystone test gives.
+        await yieldUntil("the sweep to park on fan 0") { await helper.plane.parkedRestores == 1 }
         try await observer.didAcknowledge.wait()
         #expect(
             await helper.plane.restoreScopes == [.fan(0)],

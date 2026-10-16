@@ -72,12 +72,12 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// sleeps. While one runs, every fan nothing else refuses reads this, so its machine-wide
         /// restore cannot undo a lease granted under it ([#350](https://github.com/blamechris/Aeolus/issues/350)).
         ///
-        /// Transient, and the shortest-lived reason here — `systemSleeping` is the other
-        /// transient one, and it lasts until the machine wakes. Granting during the window would
-        /// hand a client a lease over a fan that is about to be returned to the system
-        /// underneath it — the client writes a target, the in-flight restore lands, and the
-        /// client holds a live lease over a fan nothing is honouring. Refusing for a few
-        /// milliseconds is the honest answer; a client may simply retry.
+        /// Transient, and normally the shortest-lived reason here — milliseconds; `systemSleeping`
+        /// is the other transient one, and lasts until the machine wakes. Not always milliseconds:
+        /// a § 4 handback still running after its wake has outlived the five-second budget (#364),
+        /// so the advice escalates when this does not clear. Granting in the window would hand a
+        /// client a lease over a fan about to be returned to the system underneath it, which it
+        /// would hold with nothing honouring it. Refusing is the honest answer; a client may retry.
         case releaseInProgress
         /// The helper issued this fan's restore-to-automatic, stopped waiting for it, and
         /// nothing has confirmed what mode the fan is in.

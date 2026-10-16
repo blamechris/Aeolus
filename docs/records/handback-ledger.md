@@ -704,13 +704,21 @@ acknowledge keep their order, and the budget its bound. On the handed-back path 
 before the acknowledgement; behind a budget acknowledgement it stays open until the teardown
 returns.
 
-**What it costs.** A teardown that never returns holds the count, so every grant is refused
-`.releaseInProgress` after the wake as well as before it, until the teardown returns or
+**What it costs.** A teardown that never returns holds the count, so every grant is refused after
+the wake as well as before it — `.systemSleeping` while the sleep seal stands, which the gate checks
+first, then `.releaseInProgress` once the wake lifts it — until the teardown returns or
 [ADR 0012](../ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md) ends the helper. That
 is § 7's cost on the same terms, and the safe side: a lease granted there is one the pending
-`.everyFan` undoes when the wedge clears. "Retry in a moment" understates a wedge here as it does
-for § 7. A fan only the keystone covers is not given D33's register, which would be the second
-producer #202 item 2 refused.
+`.everyFan` undoes when the wedge clears.
+
+**After a wake the teardown outlived, "retry in a moment" is wrong by construction**, not merely
+possibly. The machine slept only once the sleep was acknowledged, and with the teardown still
+running that acknowledgement came from the five-second budget or the kernel's own timeout, so the
+restore has already outlived the budget. A fan the sweep covered is told `.handbackUnconfirmed`,
+which says so. A fan only the keystone covers cannot be — that would give D33's register a second
+producer, which #202 item 2 refused — so `.releaseInProgress`'s recovery advice carries the
+escalation instead: if it does not clear within a few seconds, a restore has not returned, and
+`docs/RECOVERY.md` sends the user to step 5.
 
 **What the snapshot says.** Step 10 re-states `.available` while the count is above zero. After a
 declined seal, and after a wake the teardown outlived, the snapshot and the grant both say
@@ -804,7 +812,11 @@ between is dropped and its fan handed back at a moment nothing asked for. The fa
 lease, since there is no revocation callback. That is `CLAUDE.md` rule 6, bounded and honest
 rather than thermal. Since [#364](https://github.com/blamechris/Aeolus/issues/364) no lease can be
 taken *during* the starved teardown: it runs inside the machine-wide restore seal, so a grant while
-it runs is refused `.releaseInProgress` rather than granted and undone by its `.everyFan`.
+it runs is refused `.releaseInProgress` rather than granted and undone by its `.everyFan`. A lease
+taken before the teardown enters that seal is still dropped by it, and not only after a declined
+seal: a sealed episode whose body is starved between `sealForSleep` and the `sealingGrants` hop,
+until the budget has acknowledged and the wake has lifted the sleep seal, drops a lease granted in
+that gap the same way.
 
 `SleepOrderingTests` pins all of it, including the sequence the counting version could not
 survive: `.didWake`, `.willSleep`, `.didWake`, `.willSleep`, with the second ordinary sleep

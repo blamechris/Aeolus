@@ -104,7 +104,8 @@ extension ManualControlAvailability.Reason {
         case .selfRenewalNotBuilt:
             return "Ask for a lease without self-renewal instead."
         case .releaseInProgress:
-            return "Retry in a moment; this normally clears in milliseconds."
+            return "Retry in a moment; this normally clears in milliseconds. If it does not "
+                + "clear within a few seconds, a restore has not returned; see docs/RECOVERY.md."
         case .handbackUnconfirmed:
             return "The outstanding restore is still running; retry shortly, or watch "
                 + "connection health. A helper restart is not the first action — only reach "

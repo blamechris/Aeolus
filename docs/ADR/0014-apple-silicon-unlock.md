@@ -1370,10 +1370,14 @@ sealed teardown the grant says `.systemSleeping` and the snapshot `.releaseInPro
 `.available`: [#269](https://github.com/blamechris/Aeolus/issues/269)'s gap, narrower in availability.
 #269's rung goes above step 10.
 
-**What it costs.** A teardown that never returns holds every grant at `.releaseInProgress`, after the
-wake as before it, until it returns or ADR 0012 ends the helper. A lease granted there is one the
-pending `.everyFan` would undo. A fan the sweep covered still answers `.handbackUnconfirmed`, checked
-first.
+**What it costs.** A teardown that never returns refuses every grant, after the wake as before it —
+`.systemSleeping` while the sleep seal stands, `.releaseInProgress` once the wake lifts it — until it
+returns or ADR 0012 ends the helper. A lease granted there is one the pending `.everyFan` would undo.
+A fan the sweep covered still answers `.handbackUnconfirmed`, checked first. After a wake the
+teardown outlived, "retry in a moment" is untrue by construction: the machine slept only once the
+budget or the kernel's timeout acknowledged, so the restore has outlived five seconds. Rather than
+give D33's register a second producer, `.releaseInProgress`'s advice escalates when it does not
+clear within a few seconds.
 
 ### #347 — a wake clears only a seal older than every sleep that met it
 
@@ -1417,9 +1421,10 @@ already exists.
 - *Seal § 6's teardown too.* Its gate refuses `apply`, so nothing granted in flight engages.
 - *For #347, assign rather than take the larger generation.* `SleepOrderingTests` holds it.
 
-**Revisit if** D8's measured § 4 round trip makes "retry in a moment" untrue; a client re-acquires on
-every wake (#211); or concurrent leases or a second production plane arrive. The ruling is the
-architect's #364/#347 consult, run on Opus.
+**Revisit if** a client re-acquires on every wake (#211), or concurrent leases or a second production
+plane arrive. "Retry in a moment" is already untrue after a wake a teardown outlived, which the
+escalating advice answers; revisit the reason itself if D8's measured § 4 round trip shows an ordinary
+teardown taking seconds. The ruling is the architect's #364/#347 consult, run on Opus.
 
 This amendment corrects clauses of a Proposed ADR rather than the decisions they sit under.
 **Status stays Proposed.**
