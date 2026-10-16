@@ -111,10 +111,11 @@ struct ReclamationEpisodeMarkTests {
     /// again the re-assert is the second of the budget.
     ///
     /// **Mutations:** (a) the actor always clears, as in demo A: red on the first cycle's mark.
-    /// (b) Take `.short` out of the clearing case in `examine(fanAt:)`: red on the second cycle's
-    /// mark and its "resolved" line. (c) `registry.refundReassertAttempt(ofFan:)` in the envelope
-    /// read's stand-down: red on the third cycle's attempt. (d) The envelope read's re-fetch back
-    /// to `isHeld(_:under:)`, which lets the re-assert land: red on the stand-down line.
+    /// (b) Take `.short` out of the clearing case in `examine(fanAt:inBound:)`: red on the second
+    /// cycle's mark and its "resolved" line. (c) `registry.refundReassertAttempt(ofFan:)` in the
+    /// envelope read's stand-down: red on the third cycle's attempt. (d) The envelope read's
+    /// re-fetch back to `isHeld(_:under:)`, which lets the re-assert land: red on the stand-down
+    /// line.
     @Test("A re-apply mid-episode leaves the mark for exactly one readable cycle")
     func aReapplyMidEpisodeLeavesTheMarkForOneCycle() async throws {
         let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
@@ -212,7 +213,7 @@ struct ReclamationEpisodeMarkTests {
     /// at 1,800, a ramp in flight. The next cycle's primary converges, so the mark goes then, and
     /// the shortfall is reported once, at the dwell, as it always was.
     ///
-    /// **Mutation:** take `.short` out of the clearing case in `examine(fanAt:)` — `case
+    /// **Mutation:** take `.short` out of the clearing case in `examine(fanAt:inBound:)` — `case
     /// .converged:` clears and `.short` joins `.graced, nil`. Run: red on the second cycle's mark
     /// and on the "resolved" line.
     @Test("A re-asserted fan still ramping to its target is not reported reclaimed")
@@ -256,7 +257,7 @@ struct ReclamationEpisodeMarkTests {
     /// A mark is put in the ledger before every cycle, up to one past the dwell, as a false one
     /// is (the residual C2, a stale restore landing before a newer lease registers). Every cycle
     /// whose primary converges clears it — the report cycle at the dwell included, which is a
-    /// case of its own in `examine(fanAt:)`.
+    /// case of its own in `examine(fanAt:inBound:)`.
     ///
     /// **Mutations:** (a) delete the clear from the dwell-report case: red at cycle
     /// `actualDwellCycles` only, for `.ramping`. (b) Drop `.converged` from the clearing case:
@@ -295,7 +296,8 @@ struct ReclamationEpisodeMarkTests {
     /// the mark where it was: nothing read in them says who holds the fan.
     ///
     /// **Mutation:** add `await clearReclamationMark(fanAt: index)` before `cycleCouldNotSee` in
-    /// `examine(fanAt:)`'s `.failure` case. Run: red on the mark after the first blind cycle.
+    /// `examine(fanAt:inBound:)`'s `.failure` case. Run: red on the mark after the first blind
+    /// cycle.
     @Test("A cycle that cannot read the fan leaves its mark")
     func aCycleThatCannotReadTheFanLeavesItsMark() async throws {
         let machine = ReclamationMachine(

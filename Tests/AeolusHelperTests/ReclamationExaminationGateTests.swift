@@ -55,7 +55,7 @@ struct ReclamationExaminationGateTests {
     /// the 2,400 it read against the 2,400 recorded, and the step lands after the examination;
     /// the next cycle reads 2,000 against 2,000.
     ///
-    /// **Mutation:** § 5 skips the gate — `cycle()` calls `examine(fanAt: index, gated: true)`
+    /// **Mutation:** § 5 skips the gate — `cycle()` calls `examine(fanAt: index, inBound: true)`
     /// and enters nothing. Run: red on the wait, the step landing inside the examination, the
     /// mark, the `.fault` and the re-assert.
     @Test("A step attempted during the lease check waits, and is not judged a reclamation")
@@ -170,7 +170,7 @@ struct ReclamationExaminationGateTests {
     /// re-engages the fan: nothing stands its re-assert down.
     ///
     /// **Mutation:** stamp first — `cycle()` calls `registry.beginExamination(ofFan: index,
-    /// gated: true)` before entering the gate, and `examine` reads the lease from the record
+    /// inBound: true)` before entering the gate, and `examine` reads the lease from the record
     /// without stamping. Run: red on the stand-down line, the re-engage and the command.
     @Test("§ 5 takes the gate before it stamps, so a step's registration is not inside it")
     func theGateIsTakenBeforeTheStamp() async throws {
@@ -206,7 +206,7 @@ struct ReclamationExaminationGateTests {
     /// budget is spent the terminal action restores the fan: every restore still happens. § 5
     /// writes nothing away from automatic control throughout.
     ///
-    /// **Mutation:** ignore the stamp — drop `record.examinedGated` from
+    /// **Mutation:** ignore the stamp — drop `record.examinedInBound` from
     /// `Registry.reassertTarget(ofFan:under:)`. Run: red on the writes, the stand-down line and
     /// the terminal action, which the re-asserts postpone.
     @Test("Past the gate's bound, § 5 marks a diverged fan and writes nothing away from automatic")
@@ -254,7 +254,7 @@ struct ReclamationExaminationGateTests {
     /// cancellation guard, which refunds the attempt (#144). Once level 6 leaves, the first real
     /// sweep re-engages the fan with its whole budget.
     ///
-    /// **Mutation:** take a cancelled wait for an expiry — `cycle()` passes `gated: pass.isHeld`.
+    /// **Mutation:** take a cancelled wait for an expiry — `cycle()` passes `inBound: pass.isHeld`.
     /// Run: red on the cancellation lines, the stand-down lines and the re-engage; the budget is
     /// spent and the real sweep gives the fan up.
     @Test("A cancelled wait for the gate still refunds the re-assert's attempt")

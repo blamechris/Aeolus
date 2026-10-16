@@ -19,8 +19,8 @@
 /// defect: it let a sustained actual-RPM shortfall travel the same path as a genuine
 /// reclamation and reach restore-plus-revoke on a fan whose `F<n>Tg` read back exactly what
 /// Aeolus commanded. Reaching the secondary signal at all *means* the firmware is holding our
-/// target — `ReclamationWatchdog.examine(fanAt:gated:)` returns early on any primary divergence —
-/// so a shortfall is a fan that cannot reach its speed, not a fan that was taken.
+/// target — `ReclamationWatchdog.examine(fanAt:inBound:)` returns early on any primary
+/// divergence — so a shortfall is a fan that cannot reach its speed, not a fan that was taken.
 /// `ReclamationWatchdog.HeldFan.judge(_:)` carries it, the actor emits its own log line,
 /// and neither constructs one of these. Removing the case is what stops the two ever
 /// sharing a path again.
@@ -41,8 +41,8 @@ enum ReclamationDivergence: Sendable, Hashable {
     ///
     /// [ADR 0009](../../../docs/ADR/0009-precedence-at-the-write.md) D2, and the one case that
     /// is **not a firmware finding**: it comes from asking the lease table, in
-    /// `ReclamationWatchdog.examine(fanAt:gated:)`, after the control-state read and before either
-    /// signal is computed from it. Its only action is restore-and-forget. It never reaches
+    /// `ReclamationWatchdog.examine(fanAt:inBound:)`, after the control-state read and before
+    /// either signal is computed from it. Its only action is restore-and-forget. It never reaches
     /// `diverged(_:fanAt:heldUnder:)`, the ledger's reclaimed set or the terminal action,
     /// because the system did not take this fan — Aeolus stopped being entitled to it, and
     /// reporting `isReclaimedBySystem` would be `CLAUDE.md` rule 6 claiming a loss nobody caused.
@@ -109,7 +109,7 @@ enum ReclamationLimits {
     /// load-bearing.** It said a ramp is separated from a reclamation by "the primary signal
     /// converging", which suppresses nothing: the primary converging is the *precondition*
     /// for the secondary being evaluated at all, since
-    /// `ReclamationWatchdog.examine(fanAt:gated:)` returns early on primary divergence. A
+    /// `ReclamationWatchdog.examine(fanAt:inBound:)` returns early on primary divergence. A
     /// correctly-reading `F<n>Tg` is what gets you here, not what protects you.
     ///
     /// What this dwell actually buys is that a fan briefly short of its target — a ramp, a

@@ -1785,11 +1785,14 @@ extension SafetyLog {
         )
     }
 
-    /// A re-assert stood down at `moment`, writing nothing more: `ungated` when the examination
-    /// ran past the gate's bound, and otherwise for a registration under the same lease since the
-    /// examination began, which `reclamationReassertLeftToItsEngagement(fan:at:)` says (#381).
-    func reclamationReassertStoodDown(fan: Int, at moment: String, ungated: Bool) {
-        guard ungated else { return reclamationReassertLeftToItsEngagement(fan: fan, at: moment) }
+    /// A re-assert stood down at `moment`, writing nothing more: `pastTheBound` when the
+    /// examination ran past the gate's bound, and otherwise for a registration under the same
+    /// lease since the examination began, which `reclamationReassertLeftToItsEngagement(fan:at:)`
+    /// says (#381).
+    func reclamationReassertStoodDown(fan: Int, at moment: String, pastTheBound: Bool) {
+        guard pastTheBound else {
+            return reclamationReassertLeftToItsEngagement(fan: fan, at: moment)
+        }
         emit(
             .notice,
             """

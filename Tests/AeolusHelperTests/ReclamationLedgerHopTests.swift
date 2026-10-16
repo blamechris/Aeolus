@@ -44,7 +44,7 @@ struct ReclamationLedgerHopTests {
     /// grace's own outcome, not one decided on a copy the step had overtaken. Granted once § 5
     /// leaves, the step finds its lease revoked and writes nothing.
     ///
-    /// **Mutation:** drop the gate — `cycle()` calls `examine(fanAt: index, gated: true)` and
+    /// **Mutation:** drop the gate — `cycle()` calls `examine(fanAt: index, inBound: true)` and
     /// enters nothing. Run: red on the wait, the record during the hop and the no-speed line: the
     /// step lands in the hop and § 5 re-asserts it.
     @Test("A first command attempted during the ledger hop waits for the gate")
@@ -95,8 +95,8 @@ struct ReclamationLedgerHopTests {
     ///
     /// **Mutation (a):** decide on the copy taken before the hop — `guard judged.commanded != nil`
     /// in `diverged`. Run: red on the no-speed line, the restore, the revocation and the record.
-    /// **(b):** ignore the stamp — drop `record.examinedGated` from `reassertTarget(ofFan:under:)`.
-    /// Run: red on the re-engage and the stand-down line.
+    /// **(b):** ignore the stamp — drop `record.examinedInBound` from
+    /// `reassertTarget(ofFan:under:)`. Run: red on the re-engage and the stand-down line.
     @Test("Past the gate's bound, a first command reported in the hop is decided on, not given up")
     func pastTheBoundAFirstCommandInTheHopIsSeen() async throws {
         let machine = ReclamationMachine(fans: [0: .automatic(at: 2_400)], parkingSafetyHops: true)

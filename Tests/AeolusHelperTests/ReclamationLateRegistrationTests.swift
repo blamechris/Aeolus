@@ -47,8 +47,8 @@ extension ReclamationLeaseIdentityTests {
     /// accepted: fan 0 is recorded under a lease that has ended. The next cycle hands it back,
     /// and does not blame the system for a lease ending.
     ///
-    /// **Mutation:** delete the `guard entitled` block from `examine(fanAt:)`. Run: red on the
-    /// second cycle's restore, registry and log assertions — nothing else revisits a fan that
+    /// **Mutation:** delete the `guard entitled` block from `examine(fanAt:inBound:)`. Run: red on
+    /// the second cycle's restore, registry and log assertions — nothing else revisits a fan that
     /// reads converged.
     @Test(
         "A registration accepted after an unannounced lease end is handed back as lapsed",

@@ -91,7 +91,7 @@ struct ReclamationWatchdogAccessTests {
         "let gate: FanExaminationGate",
         "var registry = Registry()",
         "var isSweeping = false",
-        "func examine(fanAt index: Int, gated: Bool) async {",
+        "func examine(fanAt index: Int, inBound: Bool) async {",
         "func diverged(",
         "func reassert(",
         "func commandWriteFailed(",
@@ -220,7 +220,7 @@ struct ReclamationWatchdogAccessTests {
     /// and swift-format writes chains that way; and `registry.self` is refused, because it is
     /// the whole value spelled as a member.
     ///
-    /// **Mutations:** add `let before = registry` to `examine(fanAt:)`; add
+    /// **Mutations:** add `let before = registry` to `examine(fanAt:inBound:)`; add
     /// `registry = Registry()` to `cycle()`. Run: red on each.
     @Test("The watchdog reaches its registry only through the registry's members")
     func registryIsOnlyReachedThroughItsMembers() throws {

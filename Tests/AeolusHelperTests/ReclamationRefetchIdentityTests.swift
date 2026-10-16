@@ -162,9 +162,9 @@ extension ReclamationLeaseIdentityTests {
     /// re-assert" notice.
     ///
     /// **Mutation (identity):** make the re-fetch after `leases.hasLiveLease` in
-    /// `examine(fanAt:)` check presence only — `guard registry.record(ofFan: index) != nil, let
-    /// fan = registry.record(ofFan: index)`. Run: red on the regranted case's log assertions, and
-    /// on the true-answer case's behaviour: the newer lease's grace is spent.
+    /// `examine(fanAt:inBound:)` check presence only — `guard registry.record(ofFan: index) != nil,
+    /// let fan = registry.record(ofFan: index)`. Run: red on the regranted case's log assertions,
+    /// and on the true-answer case's behaviour: the newer lease's grace is spent.
     /// **Mutation (absence):** replace the whole guard with `let fan = registry.record(ofFan:
     /// index) ?? HeldFan.registering(lease, over: nil)`. Run: red on the released case, which
     /// restores the fan a second time.

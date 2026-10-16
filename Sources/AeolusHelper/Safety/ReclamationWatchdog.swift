@@ -72,15 +72,15 @@ import Foundation
 /// - Note: since [#128](https://github.com/blamechris/Aeolus/issues/128)'s third pass `held`,
 ///   `finalising` and `registrations` are `Registry`'s, a value type this actor holds
 ///   `private`, and the per-reading judgement is `HeldFan.judge(_:)`'s; #366 added `givenUp` there
-///   and the episode to the record, #381 the examination's stamp, and A6 the gate and its
-///   ungated stamp (`FanExaminationGate`). What is left below
+///   and the episode to the record, #381 the examination's stamp, and A6 the gate
+///   (`FanExaminationGate`) and the stamp's `inBound`. What is left below
 ///   awaits, re-fetches after an `await` or acts, over `registry`, `log`, `ledger`, `writer`,
 ///   `sensing`, `leases`, `latch` or `gate`, so none of it can move to another file without
 ///   widening that state or adding a suspension point. The splits taken, and the rationale
 ///   relocated out of this file's doc comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
 ///   The body is 334 code lines against `type_body_length`'s error at 350,
-///   `examine(fanAt:gated:)` 50 against `function_body_length`'s warning at 50, and the file
+///   `examine(fanAt:inBound:)` 50 against `function_body_length`'s warning at 50, and the file
 ///   980 lines against `file_length`'s at 1000. New § 5 state belongs in `Registry`, tested as a
 ///   value, and new behaviour in the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
@@ -101,7 +101,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     private let engagement: EngagementDriver<Plane>
 
     /// The authority on whether the lease a fan in `held` was registered under is still live —
-    /// asked at registration and in every `examine(fanAt:gated:)`, ADR 0009 D2 — and what
+    /// asked at registration and in every `examine(fanAt:inBound:)`, ADR 0009 D2 — and what
     /// `finaliseRelease(fanAt:heldUnder:because:)` revokes. A role, `HeldLeaseRole`, so § 5 can
     /// ask those two things of the lease core and nothing else.
     private let leases: any HeldLeaseRole
@@ -363,12 +363,13 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // **The gate, then the stamp** (ADR 0014's A6 amendment): a step that held the gate,
         // registration included, is then before the examination, never inside it. The wait is
         // bounded, and one past it examines ungated: judging, marking and restoring, and writing
-        // nothing away from automatic control. A cancelled wait is not past it. Left after the
-        // examination's last act, whichever way it returns.
+        // nothing away from automatic control. A cancelled wait is not past it, though it holds
+        // nothing either: the re-assert's cancellation guard stops it before any write. Left
+        // after the examination's last act, whichever way it returns.
         for index in registry.fansInOrder {
             let pass = await gate.enterForExamination(fanAt: index)
             defer { gate.leave(pass) }
-            await examine(fanAt: index, gated: !pass.isPastTheBound)
+            await examine(fanAt: index, inBound: !pass.isPastTheBound)
         }
     }
 
@@ -402,10 +403,10 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// One fan: read it, ask whether the lease it was registered under is still live, decide,
     /// act. Everything after this is for that lease, captured before the read, and the record is
     /// stamped with the fan's generation then too, so a re-assert this examination decides on can
-    /// tell a registration under that lease since (#381), and with `gated`, which is `false` only
-    /// past the gate's bound: such an examination stands its re-assert down.
-    private func examine(fanAt index: Int, gated: Bool) async {
-        guard let lease = registry.beginExamination(ofFan: index, gated: gated) else { return }
+    /// tell a registration under that lease since (#381), and with `inBound`, which is `false`
+    /// only past the gate's bound: such an examination stands its re-assert down.
+    private func examine(fanAt index: Int, inBound: Bool) async {
+        guard let lease = registry.beginExamination(ofFan: index, inBound: inBound) else { return }
 
         // Read here, believed only below the lease check — a failed read included.
         let reading: Result<FanControlState, any Error>
@@ -750,8 +751,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         guard isHeld(index, under: lease) else {
             return log.reclamationFanReleasedMidExamination(fan: index, during: moment)
         }
-        let ungated = registry.record(ofFan: index)?.examinedGated == false
-        log.reclamationReassertStoodDown(fan: index, at: moment, ungated: ungated)
+        let pastTheBound = registry.record(ofFan: index)?.examinedInBound == false
+        log.reclamationReassertStoodDown(fan: index, at: moment, pastTheBound: pastTheBound)
     }
 
     /// The re-assert's re-engage threw. A `.notAutomatic` refusal while

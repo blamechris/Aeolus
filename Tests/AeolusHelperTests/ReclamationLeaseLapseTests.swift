@@ -9,7 +9,7 @@ import Testing
 /// ([#180](https://github.com/blamechris/Aeolus/issues/180)).
 ///
 /// A fan in `held` whose own lease is no longer live is `ReclamationDivergence.leaseLapsed`,
-/// decided in `examine(fanAt:)` after the control-state read and before either firmware
+/// decided in `examine(fanAt:inBound:)` after the control-state read and before either firmware
 /// signal is computed from it, and its only action is restore-and-forget: no re-assert, no
 /// ledger mark, no revocation. Every scenario here ends a lease **without telling § 5** —
 /// `endLease()` drops the table entry and hands the fans to a `RecordingFanRestorer`, and
@@ -46,11 +46,11 @@ struct ReclamationLeaseLapseTests {
     /// between — the same masking `itNeverReassertsWhileTheThermalLatchHolds` records for § 3's
     /// branch, closed here by looking at the instant rather than at a log line.
     ///
-    /// **Mutation:** delete the `guard entitled else { … }` block from `examine(fanAt:)`.
+    /// **Mutation:** delete the `guard entitled else { … }` block from `examine(fanAt:inBound:)`.
     /// Run: red on the engage assertion — the write the guard refuses —
     /// and on every assertion after it except `restorer.causes`.
-    /// **Mutation:** move that block below the primary-signal `if` in `examine(fanAt:)`. Run:
-    /// red on the same assertions.
+    /// **Mutation:** move that block below the primary-signal `if` in `examine(fanAt:inBound:)`.
+    /// Run: red on the same assertions.
     /// **Mutation:** add `await ledger.markReclaimed(fanAt: index)` to the guard's `else`,
     /// before `restoreAndForget`. Run: red on `sightings` — and with it after
     /// `restoreAndForget`, red on the final ledger assertion.
@@ -100,7 +100,7 @@ struct ReclamationLeaseLapseTests {
     /// looked exactly like the system taking the fan.
     ///
     /// **Mutation:** move `let entitled = await leases.hasLiveLease(id: lease, coveringFan: index)`
-    /// above the `readControlState(ofFan:)` call in `examine(fanAt:)`. Run: red on every
+    /// above the `readControlState(ofFan:)` call in `examine(fanAt:inBound:)`. Run: red on every
     /// assertion after `didFire`, and on no other test.
     @Test("A lease ending during the read is caught by the check after it")
     func aLeaseEndingDuringTheReadIsCaughtByTheCheckAfterIt() async throws {
@@ -133,7 +133,7 @@ struct ReclamationLeaseLapseTests {
     /// `.supervisorBlind` three cycles later and revoked every lease on the machine.
     ///
     /// **Mutation:** move the `guard entitled` block below the `switch reading` in
-    /// `examine(fanAt:)`, where only a successful read reaches it. Run: red on the restore,
+    /// `examine(fanAt:inBound:)`, where only a successful read reaches it. Run: red on the restore,
     /// the registry and both log assertions, and on no other test.
     @Test("An unreadable fan with no live lease is handed back at once")
     func anUnreadableFanWithNoLeaseIsHandedBackAtOnce() async throws {

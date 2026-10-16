@@ -113,7 +113,7 @@ struct ReclamationWatchdogStalenessTests {
             "an abandoned examination revoked the lease that was live while it ran")
         // **This assertion is what makes the test discriminate**, and without it the test
         // could not fail for the guard it is named after. Mutation-checked: deleting the
-        // re-fetch after the read in `examine(fanAt:)` left every assertion above green,
+        // re-fetch after the read in `examine(fanAt:inBound:)` left every assertion above green,
         // because the next re-fetch — after the lease check since #180, in
         // `diverged(_:fanAt:heldUnder:)` before that — catches the same release one hop later and
         // returns before the ledger, the restore or the revocation is touched. The one
@@ -135,7 +135,7 @@ struct ReclamationWatchdogStalenessTests {
     ///
     /// Judging that episode against the previous one's 2,400 RPM is a divergence report
     /// about a fan a client has only just been granted, and it is exactly what the pre-read
-    /// copy produces. Only the re-fetch in `examine(fanAt:)` prevents it, which is why this
+    /// copy produces. Only the re-fetch in `examine(fanAt:inBound:)` prevents it, which is why this
     /// scenario is here and not folded into the one above.
     @Test("A fan re-engaged during its control-state read is not judged against the old target")
     func aFanReEngagedDuringTheReadIsNotJudgedAgainstTheOldTarget() async throws {
@@ -360,8 +360,8 @@ struct ReclamationWatchdogStalenessTests {
     /// after the command write. What D2 guarantees is that the state is not permanent — the
     /// next cycle's lease check hands the fan back.
     ///
-    /// **Mutation:** delete the `guard entitled` block from `examine(fanAt:)`. Run: red on the
-    /// second cycle's restore, registry and log assertions: the fan reads back the 2,400 RPM
+    /// **Mutation:** delete the `guard entitled` block from `examine(fanAt:inBound:)`. Run: red on
+    /// the second cycle's restore, registry and log assertions: the fan reads back the 2,400 RPM
     /// just written, converged on both signals, and nothing else would revisit it.
     @Test("A lease that lapses during the re-assert is handed back by the next cycle")
     func aLeaseLapsingDuringTheReassertIsHandedBackNextCycle() async throws {

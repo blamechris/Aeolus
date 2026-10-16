@@ -28,7 +28,7 @@ import Testing
 /// `hold(fan:commanding:)` and `holdWithoutCommanding(fan:)` take a lease over every fan the
 /// machine has when none is live, which is what E3's control plane will have done before it
 /// registers anything. Until #180 a fan could be registered with no lease at all and § 5
-/// never noticed; now `examine(fanAt:)` asks the lease table before either firmware signal,
+/// never noticed; now `examine(fanAt:inBound:)` asks the lease table before either firmware signal,
 /// and an unleased fan is `.leaseLapsed` on its first cycle — so a scenario about anything
 /// else has to start leased, and one about D2 ends the lease on purpose: `endLease()`, or
 /// `leaseClock` advanced past the deadline.
@@ -570,7 +570,8 @@ actor InterferingFanStateSensing: FanControlPlane {
 
     /// Which read or write the effect happens inside.
     enum Moment: Sendable {
-        /// Inside `readControlState(ofFan:)` — the suspension `examine(fanAt:)` resumes from.
+        /// Inside `readControlState(ofFan:)` — the suspension `examine(fanAt:inBound:)` resumes
+        /// from.
         case controlStateRead
         /// Inside `readControlState(ofFan:)`, once the plane has answered and before the answer is
         /// returned: the reading § 5 resumes with predates the effect, as a production read's

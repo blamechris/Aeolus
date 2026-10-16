@@ -549,7 +549,7 @@ struct WriteVerbAllowlistTests {
             + "detail: String)",
         "ReclamationWatchdog.swift: diverged(_: ReclamationDivergence, fanAt: Int, "
             + "heldUnder: UUID)",
-        "ReclamationWatchdog.swift: examine(fanAt: Int, gated: Bool)",
+        "ReclamationWatchdog.swift: examine(fanAt: Int, inBound: Bool)",
         "ReclamationWatchdog.swift: finaliseRelease(fanAt: Int, heldUnder: UUID, "
             + "because: FanRestoreCause)",
         "ReclamationWatchdog.swift: manualControlReleased(fanAt: Int)",

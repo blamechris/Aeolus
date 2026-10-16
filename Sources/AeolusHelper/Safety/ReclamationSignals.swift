@@ -7,7 +7,7 @@ import FanKit
 // Split from `ReclamationWatchdog.swift` for `ReclamationLimits.swift`'s reason, and it is
 // the same reason that bounds what may follow them here: both are `static` and pure, so
 // neither reads or writes § 5's registry and moving them costs none of the read-then-mutate
-// reasoning that keeps `examine(fanAt:gated:)` checkable. Since
+// reasoning that keeps `examine(fanAt:inBound:)` checkable. Since
 // [#128](https://github.com/blamechris/Aeolus/issues/128)'s third pass their caller is
 // `HeldFan.judge(_:)`, and what is left in that file awaits, re-fetches or acts — see the
 // `- Note:` on the actor.

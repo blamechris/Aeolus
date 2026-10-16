@@ -206,9 +206,9 @@ struct ReclamationLeaseIdentityTests {
     /// lease check — so the **log line** is what discriminates the two, as
     /// `aFanReleasedDuringTheControlStateReadIsAbandoned` records for the presence half.
     ///
-    /// **Mutation:** make the re-fetch after `readControlState(ofFan:)` in `examine(fanAt:)`
-    /// check presence only — `guard registry.record(ofFan: index) != nil`. Run: red on the log
-    /// assertion.
+    /// **Mutation:** make the re-fetch after `readControlState(ofFan:)` in
+    /// `examine(fanAt:inBound:)` check presence only — `guard registry.record(ofFan: index) !=
+    /// nil`. Run: red on the log assertion.
     @Test("A record registered under a new lease during the read stops the examination there")
     func aRecordRegisteredUnderANewLeaseDuringTheReadStopsTheExamination() async throws {
         let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
