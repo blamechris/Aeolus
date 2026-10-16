@@ -231,7 +231,7 @@ struct FinaliseReleaseLedgerTests {
         let holder = held.holder
         await held.plane.interfere { await leases.connectionDidInvalidate(holder) }
 
-        await Self.cycleToTheTerminalAction(held.helper)
+        try await cycledToTheTerminalAction(held.helper.reclamationWatchdog)
 
         #expect(await held.plane.didFire, "the connection never died inside the hand-back")
         #expect(

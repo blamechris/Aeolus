@@ -42,7 +42,7 @@ extension FinaliseReleaseLedgerTests {
             }
         }
 
-        await Self.cycleToTheTerminalAction(held.helper)
+        try await cycledToTheTerminalAction(held.helper.reclamationWatchdog)
 
         #expect(await held.plane.didFire, "nothing was released inside the hand-back")
         #expect(

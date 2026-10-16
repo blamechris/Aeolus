@@ -310,9 +310,7 @@ struct ReclamationLeaseIdentityTests {
             }
         }
 
-        for _ in 1...ReclamationLimits.blindCyclesBeforeDivergence {
-            await machine.watchdog.cycle()
-        }
+        try await cycledToTheTerminalAction(machine.watchdog)
 
         #expect(await sensing.didFire, "the terminal action's hand-back never reached the seam")
         #expect(machine.safetyLog.lines(containing: "no speed to re-assert").count == 1)

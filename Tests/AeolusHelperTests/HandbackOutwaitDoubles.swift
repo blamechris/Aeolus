@@ -115,3 +115,21 @@ func finishedBeforeCeiling<Value: Sendable>(
     }
     return try await work.task.value
 }
+
+/// § 5's cycles up to the terminal action, under `outwaitCeiling`, for a test whose terminal
+/// action meets a lease another path already ended.
+///
+/// That revocation answers `.gone` only once the fan's handback has returned (#368). In these
+/// tests it has returned before the revocation runs, so nothing parks; a mutant that parks a
+/// `.gone` with no handback under way would otherwise hang the test behind a continuation nothing
+/// resumes, and `.timeLimit` cannot end a wait that is not cancellable.
+func cycledToTheTerminalAction<Plane: FanControlPlane>(
+    _ watchdog: ReclamationWatchdog<Plane>,
+    sourceLocation: SourceLocation = #_sourceLocation
+) async throws {
+    let cycles = observing {
+        for _ in 1...ReclamationLimits.blindCyclesBeforeDivergence { await watchdog.cycle() }
+    }
+    try await finishedBeforeCeiling(
+        "§ 5's cycles to the terminal action", cycles, sourceLocation: sourceLocation)
+}
