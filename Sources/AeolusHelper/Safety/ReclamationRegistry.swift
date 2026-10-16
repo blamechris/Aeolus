@@ -10,8 +10,9 @@
 // nothing. What moved is the bookkeeping. Every `await`, every re-fetch after one and every act
 // stays on the actor's side, in the order it had.
 //
-// A value type, so nothing here can suspend, and three rules keep it that way. Each is held by
-// `ReclamationWatchdogAccessTests`, because the compiler holds only the first half of the first:
+// A value type, so nothing here can suspend, and three rules keep it that way. The two access
+// suites hold each, `ReclamationRegistryAccessTests` and `ReclamationWatchdogAccessTests`,
+// because the compiler holds only the first half of the first:
 //
 // - **No `async` member.** The compiler refuses a *mutating* `async` call on an actor's stored
 //   struct, but a non-mutating one compiles, and would answer from a copy taken before its own

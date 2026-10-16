@@ -116,7 +116,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// `held`, `finalising` and `registrations`, with every synchronous decision made over them,
     /// in `ReclamationRegistry.swift` (#128). A value type, so no transition on it can suspend;
     /// `private`; and reached only through its members, never copied out across an `await` —
-    /// `ReclamationWatchdogAccessTests` holds all three.
+    /// `ReclamationWatchdogAccessTests` and `ReclamationRegistryAccessTests` hold all three.
     private var registry = Registry()
 
     /// `sensing` is an existential rather than `some FanStateSensing`, unlike

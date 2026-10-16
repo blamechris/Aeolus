@@ -15,9 +15,9 @@ import Testing
 ///   collaborator beside it.
 /// - **The actor's internal surface is exactly what it was.** The five seam members and the two
 ///   static classifiers, and nothing a sibling file could call to reach `registry`.
-/// - **The registry's own stores stay `private`, and are exactly three.** The new surface is two
-///   types; an instance outside the actor governs nothing, and a fourth store is a decision —
-///   #366's episode mark and #368's token will each update `registryStores` on purpose.
+/// - **The registry's own stores stay `private`, and are exactly three.** An instance outside the
+///   actor governs nothing, and a fourth store is a decision — #366's episode mark and #368's
+///   token will each update `ReclamationRegistryAccessTests.registryStores` on purpose.
 /// - **Nothing in the registry can suspend.** The compiler refuses a *mutating* `async` call on
 ///   an actor's stored struct, and does not refuse a non-mutating one, which would answer from a
 ///   copy taken before its own suspension. So no `async` and no `await`, anywhere in the file.
@@ -26,21 +26,32 @@ import Testing
 ///   accesses … modification requires exclusive access"), and a trap is the root daemon dying.
 /// - **The actor never uses `registry` as a whole value.** `let before = registry`, an `await`,
 ///   and a write back loses every transition that ran during the suspension.
+/// - **Every internal property is a get-only view.** Its accessor block is read whole, so a
+///   `set`, a `_modify` or an observer is seen wherever it is written.
+///
+/// ## The routes around the scan, closed after #128's review
+///
+/// Three evasions left the first version of this suite green, each a compiling spelling:
+///
+/// - a `typealias` naming the actor, and `extension W.Registry { … }` in a new file — the file
+///   set keys on a literal `extension ReclamationWatchdog`, so nothing here read it;
+/// - a tuple pattern or a comma list — `MemberAccessScan` keys a declaration on its first name;
+/// - a setter or `_modify` on a view — the old check read only the declaration's line.
+///
+/// `nothingReachesTheRegistryAroundTheFileSet`, `everyDeclarationBindsOneName` and
+/// `everyInternalPropertyIsAGetOnlyView` close them. Two shapes are left open on purpose: a
+/// `Registry` method returning a copy of one of its private stores, and a `snapshot() -> Self`.
+/// Each hands out a value and changes nothing, and writing one back needs either a whole-value
+/// assignment to `registry`, which `registryIsOnlyReachedThroughItsMembers` refuses, or a
+/// `Registry`-typed parameter, which `ReclamationRegistryAccessTests`' type allowlist refuses.
 ///
 /// ## Both directions, for the reason `LeaseAuthorityAccessTests` gives
 ///
-/// A listed member that loses its `private` fails, as does one that is no longer declared or is
-/// declared twice (`MemberAccessScan.declaration(of:in:from:)`); and the exhaustive halves fail
-/// on a widening nobody listed. The file set is read off the tree by
-/// `MemberAccessScan.filesDeclaring(_:inTarget:)`, so a fifth file declaring
-/// `extension ReclamationWatchdog` is a failure here rather than a file scanned by nothing.
-///
-/// ## Where the per-reading judgement lives, and why it is not scanned here
-///
-/// `HeldFan.judge(_:)` and the record's other mutating methods are declared inside the
-/// `struct HeldFan` body rather than in an `extension ReclamationWatchdog.HeldFan`, which the
-/// file-set regex would match. They are a record's methods, reached from the actor only through
-/// `Registry`'s transitions, and `held` is private to `Registry`.
+/// A listed member that loses its `private` fails, as does one no longer declared or declared
+/// twice; the exhaustive halves fail on a widening nobody listed; and the file set is read off
+/// the tree, so a fifth file declaring `extension ReclamationWatchdog` fails here. The
+/// registry's own half — its stores, `async`, closures — is `ReclamationRegistryAccessTests`.
+/// `HeldFan`'s methods are written inside its struct body, reached only through `Registry`.
 @Suite("§ 5's registry stays private to the watchdog and is reached only through its members")
 struct ReclamationWatchdogAccessTests {
 
@@ -49,9 +60,6 @@ struct ReclamationWatchdogAccessTests {
 
     /// The file that declares the actor, and so the only one that can name `registry`.
     private static let watchdogFile = "ReclamationWatchdog.swift"
-
-    /// The file that declares `Registry`.
-    private static let registryFile = "ReclamationRegistry.swift"
 
     /// Every file `ReclamationWatchdog`'s members are written in, **sorted**, and checked against
     /// the tree by `theScannedFilesAreEveryFileTheActorIsIn` rather than trusted.
@@ -112,18 +120,10 @@ struct ReclamationWatchdogAccessTests {
         "actualShortfall(of: FanControlState, against: CommandedTarget?)",
     ]
 
-    /// `Registry`'s stored properties, every one `private`. A new one is § 5 state, which is
-    /// what this type is for — and adding it is a decision this list records.
-    private static let registryStores: Set<String> = ["held", "finalising", "registrations"]
-
-    /// `Registry`'s internal properties: computed, get-only views of `held`.
-    private static let registryQueries: Set<String> = ["isEmpty", "fans", "fansInOrder"]
-
-    /// Every type a `Registry` method may take. Value types, so nothing handed in can run code
-    /// against the registry while a transition is mutating it — a function type, a generic
-    /// parameter and a `typealias` for either are all absent from this set.
-    private static let registryParameterTypes: Set<String> = [
-        "Int", "UUID", "Bool", "UInt64", "CommandedTarget", "FanControlState",
+    /// The actor and every type nested in it, which no other file may reach by an alias or a
+    /// dotted extension.
+    private static let sectionFiveTypes: Set<String> = [
+        "ReclamationWatchdog", "Registry", "HeldFan", "Judgement", "Registration",
     ]
 
     // MARK: - The actor
@@ -246,98 +246,147 @@ struct ReclamationWatchdogAccessTests {
         )
     }
 
-    // MARK: - The registry
+    /// Every internal property of the actor and of `Registry` is computed, and nothing in its
+    /// accessor block writes. The block is read whole, brace-matched from the declaration, so a
+    /// `get { … } set { … }` pair or a `_modify` split across lines is seen; a declaration with
+    /// an `=` before its block, or with no block at all, has storage.
+    ///
+    /// **Mutations:** declare `var fans: Set<Int> = []` as a stored property; give `Registry.fans`
+    /// a `set`; give `Registry.isEmpty` a `_modify`; give the actor's `fansUnderManualControl` a
+    /// `set`. Run: red on each.
+    @Test("Every internal property of the watchdog and the registry is a computed, get-only view")
+    func everyInternalPropertyIsAGetOnlyView() throws {
+        let watchdog = try MemberAccessScan.strippedSource(of: Self.watchdogFile)
+        let registry = try ReclamationRegistryAccessTests.registryMembersSource()
+        let views =
+            Self.acknowledgedInternalProperties.sorted().map { (Self.watchdogFile, $0) }
+            + ReclamationRegistryAccessTests.registryQueries.sorted().map { ("Registry", $0) }
+        let writers = try NSRegularExpression(
+            pattern: #"\b(set|_modify|willSet|didSet|unsafeMutableAddress)\b"#)
 
-    /// **Mutations:** declare `var held` without `private`; add `private var extra = 0`;
-    /// declare `var fans: Set<Int> = []` as a stored property. Run: red on each.
-    @Test("The registry's three stores are private, and its only internal properties are views")
-    func theRegistrysStoresArePrivateAndExactlyThree() throws {
-        let code = try Self.registryMembersSource()
-        let properties = MemberAccessScan.members(inSource: code, keyword: .property)
-        let stores = Set(properties.filter(\.isPrivate).map(\.key))
-        let queries = properties.filter { !$0.isPrivate }
-
-        #expect(
-            stores == Self.registryStores,
-            """
-            Registry's private properties changed: found \(stores.sorted()), acknowledged \
-            \(Self.registryStores.sorted()). A new store is § 5 state; record it in \
-            `registryStores` with the issue that needs it.
-            """
-        )
-        #expect(
-            Set(queries.map(\.key)) == Self.registryQueries,
-            """
-            Registry's internal properties changed: found \(queries.map(\.key).sorted()), \
-            acknowledged \(Self.registryQueries.sorted()).
-            """
-        )
-        for query in queries {
-            let line = try MemberAccessScan.declaration(
-                of: "var \(query.key):", in: code, from: Self.registryFile)
+        for (owner, name) in views {
+            let code = owner == Self.watchdogFile ? watchdog : registry
+            let block = try #require(
+                try Self.accessorBlock(of: name, in: code),
+                """
+                `\(name)` in \(owner) has no accessor block straight after its type, so it has \
+                storage: an internal store is writable state, and these must be views.
+                """)
+            let found =
+                writers
+                .matches(in: block, range: NSRange(block.startIndex..., in: block))
+                .compactMap { Range($0.range, in: block).map { String(block[$0]) } }
             #expect(
-                line.contains("{") && !line.contains("="),
-                "`\(line)` is not a computed, get-only view: an internal store is writable state")
+                found.isEmpty,
+                """
+                `\(name)` in \(owner) declares \(found) in its accessor block. A view that can \
+                be written is a route to the state it views.
+                """
+            )
         }
     }
 
-    /// The whole file, comments stripped, so a member of `Registration` is not an exception.
+    /// No file in the helper names § 5's nested types through a `typealias`, or extends one by a
+    /// dotted path. Either is a way past `theScannedFilesAreEveryFileTheActorIsIn`, which keys
+    /// on a literal `extension ReclamationWatchdog`: `typealias W =
+    /// ReclamationWatchdog<SMCFanControlPlane>` and then `extension W.Registry { … }` in a new
+    /// file add members to the registry where none of this suite looks. A non-mutating `async`
+    /// one compiles: the stale-copy route `ReclamationRegistryAccessTests` closes in its own file.
     ///
-    /// **Mutation:** add `func later() async -> Self { self }` to `Registry`. Run: red.
-    @Test("Nothing in the registry's file is async or awaits")
-    func theRegistryCannotSuspend() throws {
-        let code = try MemberAccessScan.strippedSource(of: Self.registryFile)
-        let suspending = try NSRegularExpression(pattern: #"\b(async|await)\b"#)
-        let found = suspending.matches(in: code, range: NSRange(code.startIndex..., in: code))
+    /// **Mutation:** add `Sources/AeolusHelper/Safety/ReclamationAlias.swift` declaring
+    /// `typealias W = ReclamationWatchdog<SMCFanControlPlane>` and `extension W.Registry { func
+    /// later() async -> Int { 0 } }`. Run: red.
+    @Test("No file reaches § 5's types through a typealias or a dotted extension")
+    func nothingReachesTheRegistryAroundTheFileSet() throws {
+        let aliases = try SeamScanner.typeAliases(in: Self.helperTarget)
+            .filter { !Self.sectionFiveTypes.isDisjoint(with: $0.names) }
+            .map { "\($0.file): typealias \($0.name)" }
+
+        let extending = try NSRegularExpression(pattern: #"\bextension\s+([^{]+?)\s*\{"#)
+        let nested = Self.sectionFiveTypes.subtracting([Self.watchdogType])
+        var dotted: [String] = []
+        for url in try SeamScanner.swiftFiles(under: Self.helperTarget) {
+            let code = SeamScanner.strippingComments(try String(contentsOf: url, encoding: .utf8))
+            for match in extending.matches(in: code, range: NSRange(code.startIndex..., in: code)) {
+                guard let range = Range(match.range(at: 1), in: code) else { continue }
+                let extended = SeamScanner.identifiers(in: String(code[range]))
+                if !nested.isDisjoint(with: extended) {
+                    dotted.append("\(url.lastPathComponent): extension \(code[range])")
+                }
+            }
+        }
+
+        #expect(
+            aliases.isEmpty && dotted.isEmpty,
+            """
+            § 5's types are reached around the file set: \(aliases + dotted). Name them in \
+            full in a file `watchdogFiles` lists, or add the file there and say why.
+            """
+        )
+    }
+
+    /// `MemberAccessScan` keys a declaration on its first name, so a tuple pattern or a comma
+    /// list adds a member every exact list here would miss (#128's review). Asserted absent
+    /// rather than parsed, so the spelling fails loudly.
+    ///
+    /// **Mutations:** `private var (hiddenA, hiddenB) = (0, 0)` in `Registry`; `private var
+    /// finalising: [Int: UUID] = [:], hiddenStore: [Int: UUID] = [:]` in `Registry`; `var (leakA,
+    /// leakB) = (0, 0)` on the actor. Run: red on each.
+    @Test("Every declaration the exact lists read binds exactly one name")
+    func everyDeclarationBindsOneName() throws {
+        var found: [String] = []
+        for file in Self.watchdogFiles {
+            found += MemberAccessScan.multipleBindings(
+                inSource: try MemberAccessScan.strippedSource(of: file)
+            ).map { "\(file): \($0)" }
+        }
+        let registry = try ReclamationRegistryAccessTests.registryMembersSource()
+        found += MemberAccessScan.multipleBindings(inSource: registry).map { "Registry: \($0)" }
 
         #expect(
             found.isEmpty,
             """
-            \(Self.registryFile) names `async` or `await` \(found.count) time(s). The compiler \
-            refuses a mutating async call on an actor's stored struct and not a non-mutating \
-            one, which answers from a copy taken before its own suspension.
+            these declarations bind more than one name: \(found). The access scan reads only the \
+            first, so the rest are members nothing here acknowledges. Write one per line.
             """
         )
-    }
-
-    /// Every method's parameters are drawn from `registryParameterTypes`, and the file declares
-    /// no `subscript`, which `func` scanning would not see.
-    ///
-    /// **Mutations:** add `mutating func amend(_ index: Int, _ change: (inout HeldFan) -> Void)
-    /// { … }` to `Registry`; add `subscript(_ change: (Int) -> Void) -> Int { 0 }`. Run: red on
-    /// each.
-    @Test("Nothing in the registry takes a closure")
-    func theRegistryTakesNoClosure() throws {
-        let code = try MemberAccessScan.strippedSource(of: Self.registryFile)
-        let unexpected = try SeamScanner.functions(inSource: code, file: Self.registryFile)
-            .flatMap { function in
-                function.parameterTypes
-                    .filter { !Self.registryParameterTypes.contains($0) }
-                    .map { "\(function.name): \($0)" }
-            }
-
-        #expect(
-            unexpected.isEmpty,
-            """
-            a Registry method takes \(unexpected), outside \
-            \(Self.registryParameterTypes.sorted()). A closure that reaches the actor's \
-            `registry` while a transition is mutating it traps the helper at run time.
-            """
-        )
-        #expect(
-            !code.contains("subscript"),
-            "\(Self.registryFile) declares a subscript, which this suite's `func` scan cannot see")
     }
 
     // MARK: - Parsing
 
-    /// `Registry`'s members are at eight spaces of indent, nested in the extension, and
-    /// `MemberAccessScan` reads four. Dropping one indent level brings them to four and the
-    /// extension's own members to none, which the actor's suite above already scans.
-    private static func registryMembersSource() throws -> String {
-        try MemberAccessScan.strippedSource(of: registryFile)
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.hasPrefix("    ") ? String($0.dropFirst(4)) : String($0) }
-            .joined(separator: "\n")
+    /// The accessor block of the member-indent `var name:` in `code`, braces included — or `nil`
+    /// when the declaration reaches a `=` or a newline before any `{`, which is a stored one.
+    ///
+    /// String literals are stepped over, so a `}` written inside one cannot close the block
+    /// early and leave a `set` after it unread.
+    private static func accessorBlock(of name: String, in code: String) throws -> String? {
+        let declaration = try NSRegularExpression(
+            pattern: #"(?m)^    (?:[^\s]+ )*var \#(name)\s*:"#)
+        guard
+            let match = declaration.firstMatch(
+                in: code, range: NSRange(code.startIndex..., in: code)),
+            let found = Range(match.range, in: code),
+            let open = code[found.upperBound...].firstIndex(where: { "{=\n".contains($0) }),
+            code[open] == "{"
+        else { return nil }
+
+        var depth = 0
+        var index = open
+        var skipped = ""
+        while index < code.endIndex {
+            if code[index] == "\"" {
+                let delimiter = code[index...].hasPrefix("\"\"\"") ? "\"\"\"" : "\""
+                index = SeamScanner.copyDelimited(
+                    code, from: index, delimiter: delimiter, into: &skipped)
+                continue
+            }
+            if code[index] == "{" { depth += 1 }
+            if code[index] == "}" {
+                depth -= 1
+                if depth == 0 { return String(code[open...index]) }
+            }
+            index = code.index(after: index)
+        }
+        return nil
     }
 }
