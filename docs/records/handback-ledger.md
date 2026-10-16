@@ -624,8 +624,8 @@ fan that would otherwise read `.available` as `.unavailable(.releaseInProgress)`
 the grant gives ahead of the seal, except step 3's, which is the same reason; so a fan another
 rung refuses keeps the answer that is still true once the panic returns. A rung that overwrote
 any fan would replace `.foreignManualControl` with "retry in a moment" about a fan another
-program holds, and would erase the refusal [#360](https://github.com/blamechris/Aeolus/issues/360)'s
-fix adds.
+program holds, and would erase the `.supervisorBlind`
+[#360](https://github.com/blamechris/Aeolus/issues/360) states for a fan whose mode did not read.
 
 **Where the guard sits** is item 6 of [The grant gate's ordering](#the-grant-gates-ordering).
 
@@ -725,8 +725,9 @@ declined seal, and after a wake the teardown outlived, the snapshot and the gran
 `.releaseInProgress`. During a sealed teardown before the wake the grant says `.systemSleeping` and
 the snapshot `.releaseInProgress`, where it said `.available`:
 [#269](https://github.com/blamechris/Aeolus/issues/269)'s gap, narrower in availability and
-different in reason. When #269 gives `.systemSleeping` a rung, it goes above step 10, in the grant's
-order.
+different in reason. When #269 gives `.systemSleeping` a rung, it goes below step 5 and above step
+10, in the grant's order: `acquireLease` checks the sleep seal after its fresh read, which step 5
+mirrors, and before this seal.
 
 **Why two tests were inverted.** `UnconfirmedHandbackTests.aWedgedHandbackDropsTheLeaseFirstAndLeavesTheFanUnconfirmed`
 and `SleepCycleSurvivalTests.aHandbackThatNeverReturnsIsStillRefusedAfterASecondWake` granted fan 1

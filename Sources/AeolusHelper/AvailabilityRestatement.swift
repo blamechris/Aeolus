@@ -39,6 +39,7 @@ import FanKit
 // | 2 | `.handbackUnconfirmed` | `reportingHandbackState` — § 4's budget expired |
 // | 3 | `.releaseInProgress` | `reportingHandbackState` — a restore on the wire |
 // | 5 | § 6's durable refusal (not over step 6), then `.foreignManualControl` | § 6's baseline |
+// |   | … or `.supervisorBlind`, mode did not read (not over step 6; #360) | the read's `F<n>Md` |
 // |   | … or `.restoreToAutomaticUnconfirmed`, for a fan § 3 keeps (#303) | § 3's kept set |
 // | 6 | `.writePathNotBuilt` | `availability(writeCapabilityIs:bounds:)` — the seam |
 // | 8 | `.boundsImplausible` | `availability(writeCapabilityIs:bounds:)` — § 2's gate |
@@ -56,7 +57,8 @@ import FanKit
 // So a fan another rung refuses keeps that rung's answer, which is also the one still true once
 // the panic returns. Step 8 is the one the grant does not share yet (#270): there the snapshot
 // keeps the bounds and the grant answers with the seal. Never widen this rung to overwrite a
-// refusal: #360's fix, for a fan the grant refuses and this ladder reports available, rests on it.
+// refusal: step 5's `.supervisorBlind` for a fan whose mode did not read (#360) rests on it, since
+// the grant refuses that fan at its fresh read, above the seal's guard.
 //
 // **Steps 1–3 and step 5 cannot both apply, so their relative order is not load-bearing and
 // is not relied on.** Every fan in one of the three handback registers is in
@@ -66,38 +68,54 @@ import FanKit
 // asserted by `SnapshotAvailabilityTests`, because a change to either set would make the
 // composition order start mattering silently.
 //
-// **Step 5 answers three questions, in `StartupReconciliation.refusalForGrant`'s order.** First
+// **Step 5 answers four questions, in `StartupReconciliation.refusalForGrant`'s order.** First
 // the durable refusals the one-shot pass left — `.supervisorBlind` for a fan whose mode it
 // never established or confirmed, `.restoreToAutomaticFailed` for one it could not hand back
 // — through the same `ReconciliationBaseline.durableRefusal(overFans:)` the grant path calls,
-// so the two cannot drift ([#204](https://github.com/blamechris/Aeolus/issues/204)). Then
-// foreign control, judged from the snapshot's own mode read where the grant path takes a
-// fresh one. Before #204 only the second question was asked here, so on a seam that can
-// write a fan reconciliation had refused read `.available`, or `.foreignManualControl`.
+// so the two cannot drift ([#204](https://github.com/blamechris/Aeolus/issues/204)). The second
+// and third judge the fan's mode from the snapshot's own `F<n>Md` read, where the grant path
+// takes a fresh one. **The second is whether the mode read at all: no answer is
+// `.supervisorBlind`**, the grant's own answer when its read throws
+// ([#360](https://github.com/blamechris/Aeolus/issues/360)). The third is whether it reads
+// manual: automatic is left to the rungs below, and manual is foreign control. Before #204 only
+// the third was asked here, so on a seam that can write a fan reconciliation had refused read
+// `.available`, or `.foreignManualControl`; before #360 a fan whose mode did not read was
+// judged automatic, by #178's fold, and read `.available` while the grant refused it.
 //
-// **The third is whose manual it is** ([#303](https://github.com/blamechris/Aeolus/issues/303)).
+// **The second covers every fan Aeolus is not accountable for**, not only § 3's kept set:
+// the grant refuses any candidate whose read throws. The read path hands the answer over beside
+// the snapshot it was read for — `ReadOnlyFanAuthority.observe()`, one read and one dictionary —
+// because `FanState.mode` cannot carry it: the wire has no way yet to say "not known" (#178).
+//
+// **The fourth is whose manual it is** ([#303](https://github.com/blamechris/Aeolus/issues/303)).
 // A manual fan § 3 is keeping because Aeolus's own restore was issued and not confirmed is
 // `.restoreToAutomaticUnconfirmed`, and only a fan outside that set is foreign. It is a
 // reclassification of the foreign answer and never an exemption from step 5: § 3's set is
 // carried beside `accountableFans`, not in it, because a fan in `accountableFans` is returned
 // untouched and would read `.available`. The steps-1–3 disjointness below is unchanged by it —
 // a fan in both § 3's set and a handback register is in `accountableFans`, so it is exempted
-// before the third question is asked and answered by steps 1–3.
+// before the fourth question is asked and answered by steps 1–3.
 //
-// **The first question is not asked over step 6's `.writePathNotBuilt`**, which is where it
-// differs from foreign control. `acquireLease` refuses a seam that cannot write before it
-// asks anything else, so on today's build a grant over every fan answers `.writePathNotBuilt`
-// — and every reconciliation restore is refused by the *build*, which is not the firmware
-// refusal `.restoreToAutomaticFailed` names. Answering the durable refusal there would state a
-// reason no grant returns and blame firmware that was never written to. Foreign control keeps
-// its pre-existing place above step 6: it is a fact about the machine, true on any build, and
-// is what `HelperHardwareTests.expectHonestAvailability` holds this machine to.
+// **Neither the durable refusal nor the no-answer arm is stated over step 6's
+// `.writePathNotBuilt`**, which is where both differ from foreign control. `acquireLease`
+// refuses a seam that cannot write before it asks anything else, so on today's build a grant
+// over every fan answers `.writePathNotBuilt` — and every reconciliation restore is refused by
+// the *build*, which is not the firmware refusal `.restoreToAutomaticFailed` names. Answering
+// either there would state a reason no grant returns: the durable one would blame firmware that
+// was never written to, and `.supervisorBlind` would be stated, permanently, on every fan of
+// every Mac without `F<n>Md`, which by the reported key map is every Intel Mac. Whether such a
+// build can say "not known" is #178's. Foreign control keeps its pre-existing place above step
+// 6: it is a fact about the machine, true on any build, and is what
+// `HelperHardwareTests.expectHonestAvailability` holds this machine to.
 //
 // **`.leaseHeldByAnotherClient` is absent from the ladder and cannot be added.** See
 // `LeaseAccountability`: a snapshot has no `ConnectionID`, so the helper cannot know whether
 // the reader is the holder. `.systemSleeping` is absent for a weaker reason — § 4's seal is
 // machine-wide state the snapshot does not read — and is
-// [#269](https://github.com/blamechris/Aeolus/issues/269)'s.
+// [#269](https://github.com/blamechris/Aeolus/issues/269)'s. Its rung goes **below step 5 and
+// above step 10**: `acquireLease` checks the sleep seal after its fresh read, so while the seal
+// holds a fan whose mode did not read is still refused `.supervisorBlind`, and the two agree.
+// `.noThermalTelemetry`, which the grant checks *before* that read, is #269's too.
 
 extension ReadOnlyFanReport {
 
@@ -115,14 +133,17 @@ extension ReadOnlyFanReport {
     /// compose in either order for the reason this file's header gives: the fans they speak
     /// about are disjoint by construction. The third, § 7's seal, is applied last and only to
     /// what the other two left `.available`.
+    ///
+    /// `observedMode` is `F<n>Md`'s answer for this fan on the read it was built from, `nil`
+    /// when it did not answer — `MachineObservation.modes`, never a second read (#360).
     static func restatingAvailability(
-        of fan: FanState, given leases: LeaseAccountability,
+        of fan: FanState, observedMode: FirmwareFanMode?, given leases: LeaseAccountability,
         reconciliation baseline: ReconciliationBaseline
     ) -> FanState {
         reportingMachineWideRestore(
             of: reportingHandbackState(
                 of: reportingForeignControl(
-                    of: fan, heldByAeolus: leases.accountableFans,
+                    of: fan, observedMode: observedMode, heldByAeolus: leases.accountableFans,
                     awaitingConfirmation: leases.restoresAwaitingConfirmation,
                     reconciliation: baseline),
                 given: leases),
@@ -137,7 +158,7 @@ extension ReadOnlyFanReport {
     /// other answer passes through untouched; see this file's header for why that is the whole
     /// rule. During a sealed sleep the grant says `.systemSleeping` first, which this ladder does
     /// not state yet ([#269](https://github.com/blamechris/Aeolus/issues/269)); #269's rung goes
-    /// above this one, in the grant's order.
+    /// above this one and below step 5, as this file's header says.
     static func reportingMachineWideRestore(
         of fan: FanState, given leases: LeaseAccountability
     ) -> FanState {
@@ -238,11 +259,24 @@ extension ReadOnlyFanReport {
     /// The fan it leaves alone is one Aeolus is accountable for, `held`, which steps 1–3
     /// answer for more precisely. Everything else is judged, and in
     /// `StartupReconciliation.refusalForGrant`'s order, question for question: the `held`
-    /// exemption, the durable reconciliation refusal, the mode guard, § 3's kept set (#303),
-    /// then `.foreignManualControl`. The one difference is the read the mode guard judges: the
-    /// grant takes a fresh one and refuses `.supervisorBlind` when it throws, while this judges
-    /// the snapshot's own, which reports an unreadable fan as automatic
-    /// ([#178](https://github.com/blamechris/Aeolus/issues/178)).
+    /// exemption, the durable reconciliation refusal, the mode three ways, § 3's kept set
+    /// (#303), then `.foreignManualControl`.
+    ///
+    /// ## A mode that did not read is `.supervisorBlind`
+    ///
+    /// [#360](https://github.com/blamechris/Aeolus/issues/360). `observedMode` is what `F<n>Md`
+    /// answered on the read this fan was built from, `nil` when it did not answer, and the grant
+    /// refuses `.supervisorBlind` when its own read throws — so this does too, for every fan the
+    /// guards above leave, not only § 3's kept set. Before #360 this judged `FanState.mode`,
+    /// which folds an unread mode into automatic
+    /// ([#178](https://github.com/blamechris/Aeolus/issues/178)), and such a fan read
+    /// `.available` beside the grant's refusal; `fanctl auto` then read it as cleared.
+    ///
+    /// `observedMode` is **required, with no default**: `nil` would make every fan blind, and
+    /// `.automatic` would put the fold back here. The `switch` is exhaustive, so a third
+    /// `FirmwareFanMode` case — ADR 0014's U0 failing — is a compile error here rather than a fan
+    /// silently judged one way. Not stated over `.writePathNotBuilt`, for the durable refusal's
+    /// reason below and through the same `canWrite`.
     ///
     /// ## § 5's fans are judged like any other
     ///
@@ -272,7 +306,7 @@ extension ReadOnlyFanReport {
     ///
     /// A fan reconciliation refused is refused whether it reads automatic now or not: the
     /// grant path asks the baseline *before* its fresh read, and answers from it without
-    /// reading at all. So the mode guard sits below it rather than above.
+    /// reading at all. So the mode is judged below it rather than above.
     ///
     /// **Except over `.writePathNotBuilt`**, which the grant path answers first — see this
     /// file's header. Keyed on the read path's own answer rather than on a capability passed
@@ -286,25 +320,31 @@ extension ReadOnlyFanReport {
     /// been confirmed by a read, and one of them in manual is refused
     /// `.restoreToAutomaticUnconfirmed` instead — `StartupReconciliation.refusalForGrant`'s
     /// reclassification, at the same step and keyed
-    /// on the same mode, so the two answers agree (#303). **After the mode guard, never
-    /// before it**: a kept fan reading automatic is available, and a membership test ahead of
-    /// the guard would refuse every fan for up to a cycle after each ordinary handback. And
+    /// on the same mode, so the two answers agree (#303). **Inside the manual arm, never
+    /// above the `switch`**: a kept fan reading automatic is available, and a membership test
+    /// ahead of it would refuse every fan for up to a cycle after each ordinary handback. And
     /// not unioned into `held`, which would return the fan untouched — `.available` on a seam
     /// that can write, with the lease then granted.
     static func reportingForeignControl(
-        of fan: FanState, heldByAeolus held: Set<Int>, awaitingConfirmation awaiting: Set<Int>,
-        reconciliation baseline: ReconciliationBaseline
+        of fan: FanState, observedMode: FirmwareFanMode?, heldByAeolus held: Set<Int>,
+        awaitingConfirmation awaiting: Set<Int>, reconciliation baseline: ReconciliationBaseline
     ) -> FanState {
         guard !held.contains(fan.index) else { return fan }
-        if fan.manualControlAvailability != .unavailable(.writePathNotBuilt),
-            let durable = baseline.durableRefusal(overFans: [fan.index])
-        {
+        let canWrite = fan.manualControlAvailability != .unavailable(.writePathNotBuilt)
+        if canWrite, let durable = baseline.durableRefusal(overFans: [fan.index]) {
             return restating(fan, as: .unavailable(durable))
         }
-        guard fan.mode != .automatic else { return fan }
-        if awaiting.contains(fan.index) {
-            return restating(fan, as: .unavailable(.restoreToAutomaticUnconfirmed))
+        switch observedMode {
+        case .automatic:
+            return fan
+        case nil:
+            guard canWrite else { return fan }
+            return restating(fan, as: .unavailable(.supervisorBlind))
+        case .manual:
+            if awaiting.contains(fan.index) {
+                return restating(fan, as: .unavailable(.restoreToAutomaticUnconfirmed))
+            }
+            return restating(fan, as: .unavailable(.foreignManualControl))
         }
-        return restating(fan, as: .unavailable(.foreignManualControl))
     }
 }

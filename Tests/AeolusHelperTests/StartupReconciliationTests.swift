@@ -563,14 +563,15 @@ struct ForeignManualControlReportingTests {
     ///
     /// `F<n>Md` reads non-zero (the decoded fold, #208) for a fan Aeolus is holding and for a
     /// fan somebody else is holding, and names no owner either way — so the lease exclusion in
-    /// `reportingForeignControl(of:heldByAeolus:awaitingConfirmation:reconciliation:)` is the
-    /// only thing between a user and being told to go and quit software that is not running.
+    /// `reportingForeignControl(of:observedMode:heldByAeolus:awaitingConfirmation:reconciliation:)`
+    /// is the only thing between a user and being told to go and quit software that is not
+    /// running.
     /// Until this test existed the clause could be deleted with the whole non-hardware suite
     /// staying green: nothing put a fan under a live lease *and* in manual at once.
     ///
     /// **Mutation:** delete `!held.contains(fan.index)` from
-    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:awaitingConfirmation:
-    /// reconciliation:)`. Run: red.
+    /// `ReadOnlyFanReport.reportingForeignControl(of:observedMode:heldByAeolus:
+    /// awaitingConfirmation:reconciliation:)`. Run: red.
     @Test("A fan under a live lease is Aeolus's own on the snapshot, not somebody else's")
     func aLeasedFanIsNotReportedAsForeign() async throws {
         let helper = Self.helperSeeingFanZeroInManual()
@@ -662,8 +663,8 @@ struct ForeignManualControlReportingTests {
     /// took, or a diagnosis that was wrong, and the grant's answer is the current one.
     ///
     /// **Mutation:** re-add `, !fan.isReclaimedBySystem` to the `held` guard in
-    /// `ReadOnlyFanReport.reportingForeignControl(of:heldByAeolus:awaitingConfirmation:
-    /// reconciliation:)`. Run: red.
+    /// `ReadOnlyFanReport.reportingForeignControl(of:observedMode:heldByAeolus:
+    /// awaitingConfirmation:reconciliation:)`. Run: red.
     @Test("A reclaimed fan that reads manual is reported as the grant path refuses it")
     func aReclaimedFanReadingManualAgreesWithTheGrant() async throws {
         let reclaimed = await Self.helperWithAManualFan { await $0.markReclaimed(fanAt: 0) }

@@ -62,6 +62,14 @@ extension FanStateSensing {
 /// or two extra turns against the 48 a full snapshot already takes; the alternative — one
 /// batched read of every fan's mode key — would make this seam something `FanStateSensing`
 /// could no longer satisfy, and the composability is worth more than 2% of a turn budget.
+///
+/// **It must read the mode the way the plane does** ([#360](https://github.com/blamechris/Aeolus/issues/360)).
+/// Step 5 of the availability ladder refuses a fan this read did not answer `.supervisorBlind`,
+/// on the grounds that the grant's own read — `SMCFanControlPlane.readControlState(ofFan:)` —
+/// would fail too. Today both read `F<n>Md` through one decode. The day the plane gains a
+/// platform branch (Intel expresses the mode as bit *n* of `FS!`), this type takes the same
+/// branch or shares its decode in the same change; otherwise a `.built` plane on that platform
+/// reports every fan blind while the grant grants. ADR 0014's #360 assumption row says so too.
 struct SnapshotFanModeReads: FanModeSensing {
 
     private let provider: any SensorProvider
@@ -116,10 +124,19 @@ actor ObservedFanModes {
     private let source: any FanModeSensing
     private let log: HelperLog
 
-    /// The fans whose mode has already been reported unreadable at error level, so that a
-    /// 1 Hz path cannot log one non-fault 86,400 times a day per fan — see
-    /// `HelperLog.fanModeUnreadable(fanIndex:reason:alreadyReported:)`. Per fan and for the
-    /// life of the process: `AeolusHelperMain` builds one authority for every connection.
+    /// The fans whose mode has been reported unreadable at error level **and has not read since**,
+    /// so that a 1 Hz path cannot log one non-fault 86,400 times a day per fan — see
+    /// `HelperLog.fanModeUnreadable(fanIndex:reason:alreadyReported:)`. Per fan, held by the one
+    /// authority `AeolusHelperMain` builds for every connection.
+    ///
+    /// **A fan leaves the set when its read answers again**
+    /// ([#360](https://github.com/blamechris/Aeolus/issues/360)'s review). Before it, a fan stayed
+    /// in the set for the life of the process, so a second episode after a recovery logged only
+    /// at `.debug`, which is not persisted — on a helper that can write, a fan refused
+    /// `.supervisorBlind` with nothing in the persisted log saying why. A fan that never answers,
+    /// every Intel fan among them, is still reported once. The cost is a fan that flickers, which
+    /// logs each failure that follows an answer: a hardware anomaly ADR 0014 says to fix at the
+    /// read, and worth seeing.
     private var reportedUnreadable: Set<Int> = []
 
     init(reading source: some FanModeSensing, log: HelperLog) {
@@ -143,6 +160,7 @@ actor ObservedFanModes {
         for index in indices {
             do {
                 modes[index] = try await source.readMode(ofFan: index)
+                reportedUnreadable.remove(index)
             } catch {
                 // `insert` answers "was this new" in the same statement that records it, so
                 // the check and the record cannot drift apart.

@@ -196,7 +196,16 @@ be strengthened, and a fan whose mode could not be read can be given its own out
 > `automatic` with `available` beside it, and on a plane that can write `auto` would exit 0
 > without sending its restore: the outcome "Exit 0 on the mode alone" rejects, reached by a
 > residue this section accepted only while a reason sat beside the fan. It is tracked as
-> [#360](https://github.com/blamechris/Aeolus/issues/360), which must close before A6.
+> [#360](https://github.com/blamechris/Aeolus/issues/360), which must close before A6. *Closed on a
+> helper that can write by the amendment below.*
+
+*Amended 2026-10-15 ([#360](https://github.com/blamechris/Aeolus/issues/360)).* On a helper that
+can write, the remaining case is built. A fan whose mode did not read on a snapshot carries
+`supervisorBlind`, the grant's own reason, unless Aeolus is accountable for it. A fan Aeolus is
+accountable for is either leased, which `auto` judges from `activeLease`, or in a handback register,
+which carries its own pending or durable reason. So on such a helper, exit 0 means every fan's mode
+was read on the last snapshot. On a `.notBuilt` helper, every build on `main`, the gap stands, and
+#178 owns it.
 
 ### `supervisorBlind` as 9
 
@@ -235,7 +244,7 @@ hardware rows measure the restore's real latency.
 | The helper ends every lease and attempts every fan it is accountable for when it takes `restoreAllToAutomatic` | `LeaseAuthority.releaseEveryLease` and SAFETY.md § 7, as built. *2026-10-10:* on a plane that can write, the request also includes the machine-wide restore ([ADR 0014](0014-apple-silicon-unlock.md) D5), which can return a foreign-held fan to automatic; how a durable refusal is then reported is [#351](https://github.com/blamechris/Aeolus/issues/351) | `auto` reports what is left, as 5, 8 or 9. No CLI change. |
 | Ten seconds covers the restore's visible latency | Not measured. No restore has been performed on hardware | Raise the window, or `auto` reports 8 for a restore that was working. |
 | `foreignManualControl` and `restoreToAutomaticFailed` are the only durable reasons, and the pending and silent classes above are right | `ManualControlAvailability`'s own documentation, and the classification decided on review of #321 | A new reason is a compile error in `SafeState.clearance(of:)`, and has to be decided there. |
-| The helper's `mode`, read beside the availability, is the best statement of a fan's state | `mode` alone is not (#178); the availability is the other field | #178 gives the wire a way to say "not known", and exit 0 is strengthened. |
+| The helper's `mode`, read beside the availability, is the best statement of a fan's state | `mode` alone is not (#178); the availability is the other field. *2026-10-15:* on a helper that can write, an unread mode is stated by the availability (#360) | #178 gives the wire a way to say "not known", and exit 0 is strengthened. |
 | A snapshot that fails after a successful handshake is the helper's state being inconsistent, and the request is safe to send | SAFETY.md § 7; the request needs no snapshot | `auto` would send a request the helper cannot act on, and exit 8. |
 | A first snapshot that fails with the handshake still in force proves the helper is identified; one that times out, or whose helper restarts under it (XPC 4097), does not | `HelperClient.translate` discards the connection on `helperNeverAnswered`, and `connectionWasInterrupted` clears the negotiated handshake on 4097; either way `negotiated` is `nil` afterwards | Those two cases send nothing and exit 1; the message opens "No restore request was sent." and tells the user to run `fanctl reset --all`. Unchanged unless the client keeps the evidence. |
 | Another client's lease may be ended by a command moving toward automatic | The maintainer's decision, D2.4 | `auto` would refuse with 5 and fail when a hold was orphaned. |

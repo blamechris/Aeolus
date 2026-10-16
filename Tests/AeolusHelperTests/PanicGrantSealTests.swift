@@ -30,22 +30,25 @@ struct PanicGrantSealTests {
     private typealias Fixture = AvailabilityFixture
 
     /// The daemon's wiring over firmware whose restores can be parked by scope. `manual` fans
-    /// read manual both in the firmware and in the snapshot's own mode read.
+    /// read manual both in the firmware and in the snapshot's own mode read, which is the
+    /// firmware's through `PlaneBackedProvider` (#360). `unreadable` fans' `F<n>Md` answers
+    /// neither.
     private static func composed(
-        fanCount: Int = 1, manual: Set<Int> = []
+        fanCount: Int = 1, manual: Set<Int> = [], unreadable: Set<Int> = []
     ) -> HelperComposition<ScopeParkingPlane> {
         var fans: [Int: ScriptedControlPlane.FanCondition] = [:]
-        var modeKeys: [String: Result<SensorReading, SensorReadFailure>] = [:]
         for fan in 0..<fanCount {
             fans[fan] = manual.contains(fan) ? .init(mode: .manual) : .automatic(at: 2_400)
-            if manual.contains(fan) { modeKeys["F\(fan)Md"] = .reading("F\(fan)Md", 1) }
         }
+        let firmware = ScriptedControlPlane(
+            fans: fans,
+            stages: [
+                ScriptedControlPlane.Stage(
+                    temperatures: LeaseFixture.nominalDieTemperatures, unreadableModes: unreadable)
+            ])
         return HelperComposition(
-            plane: ScopeParkingPlane(
-                ScriptedControlPlane(
-                    fans: fans,
-                    stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])),
-            snapshotProvider: fanProvider(fanCount: fanCount, extraKeys: modeKeys),
+            plane: ScopeParkingPlane(firmware),
+            snapshotProvider: PlaneBackedProvider(over: firmware, fanCount: fanCount),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             log: Fixture.helperLog,
@@ -227,7 +230,7 @@ struct PanicGrantSealTests {
     }
 
     /// A grant made after the seal opens and before the sweep empties the table is refused by
-    /// the seal, not as another client's lease: nothing inserts while the seal is open, so the
+    /// the seal, not as another client's lease: no lease is added while the seal is open, so the
     /// lease it can see is one the sweep is about to drop, and the snapshot already says
     /// `.releaseInProgress` about it.
     ///
@@ -293,6 +296,44 @@ struct PanicGrantSealTests {
             """)
         #expect(
             try await Self.shownReason(ofFanAt: 0, in: helper) == .releaseInProgress,
+            "the seal is not open, so this test is not asking about it")
+
+        await helper.plane.releaseAll()
+        _ = try await finished("the panic verb to return", panic)
+    }
+
+    /// A fan whose mode will not read keeps `.supervisorBlind` while the seal is open, in the
+    /// snapshot and at the grant, while a readable fan beside it reads the seal's
+    /// `.releaseInProgress` on both sides (#360).
+    ///
+    /// The grant's fresh read is above its straight-line region, so it refuses the unreadable fan
+    /// before it reaches the seal's guard; step 5 says the same, and the seal's rung, which
+    /// re-states only `.available`, leaves it. Both fans are unleased, so neither is mid-handback.
+    ///
+    /// **Mutation:** in `reportingMachineWideRestore(of:given:)`, drop
+    /// `fan.manualControlAvailability == .available` from the guard. Run: red — the snapshot says
+    /// `.releaseInProgress` about fan 1 while the grant refuses it `.supervisorBlind`.
+    @Test("A fan whose mode will not read keeps its refusal while the panic verb runs")
+    func anUnreadFanKeepsItsRefusalWhileTheSealIsOpen() async throws {
+        let helper = Self.composed(fanCount: 2, unreadable: [1])
+        await helper.bindSafetyRegistries()
+        await helper.plane.park(.everyFan)
+        let panic = await Self.panicParked(in: helper)
+        #expect(await helper.plane.restoreScopes == [.everyFan], "the verb is parked elsewhere")
+
+        let blind = await Fixture.refusalForGrant(over: 1, from: helper.leases)
+        #expect(blind == .supervisorBlind, "the grant never reached its read of fan 1")
+        let shownBlind = try await Self.shownReason(ofFanAt: 1, in: helper)
+        #expect(
+            shownBlind == blind,
+            """
+            the snapshot says \(shownBlind) about a fan whose mode will not read, while the grant \
+            refuses it \(blind): the seal's rung overwrote a refusal the grant makes before it.
+            """)
+        let sealed = await Fixture.refusalForGrant(over: 0, from: helper.leases)
+        #expect(sealed == .releaseInProgress)
+        #expect(
+            try await Self.shownReason(ofFanAt: 0, in: helper) == sealed,
             "the seal is not open, so this test is not asking about it")
 
         await helper.plane.releaseAll()

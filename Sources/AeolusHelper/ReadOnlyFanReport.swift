@@ -13,11 +13,11 @@ import SMCCore
 /// `private` state module-visible, which is the trade `SnapshotSensorReads` refused for the
 /// same reason and [#128](https://github.com/blamechris/Aeolus/issues/128) records.
 ///
-/// **The availability ladder is in `AvailabilityRestatement.swift`**, which holds the two
+/// **The availability ladder is in `AvailabilityRestatement.swift`**, which holds the
 /// re-statements `SupervisedFanAuthority.snapshot()` makes over this file's answer and states
 /// the full order in one place. Read it before changing
 /// `availability(writeCapabilityIs:bounds:)` below: that method produces three of the ladder's
-/// seven answers and the other four can overwrite them.
+/// eight rows and the other five can overwrite them.
 enum ReadOnlyFanReport {
 
     /// One enumerated fan as the wire reports it.
@@ -141,11 +141,14 @@ enum ReadOnlyFanReport {
     /// Blindness was also the wrong tense here. "Cannot currently read" was false whenever the
     /// reconnect § 5 attempts before giving up had worked.
     ///
-    /// **What this leaves, stated rather than hidden.** A fan § 5 gave up blind that is *still*
+    /// **What this leaves, and where it is answered.** A fan § 5 gave up blind that is *still*
     /// unreadable reads `.available` here, while the grant's fresh read refuses it
-    /// `.supervisorBlind`. That is the gap every unreadable fan already has (see
-    /// `controlMode(_:)` and [#178](https://github.com/blamechris/Aeolus/issues/178)), and it is
-    /// fail-safe: no lease is granted.
+    /// `.supervisorBlind`. That is the gap every unreadable fan has at this step (see
+    /// `controlMode(_:)` and [#178](https://github.com/blamechris/Aeolus/issues/178)). Since
+    /// [#360](https://github.com/blamechris/Aeolus/issues/360) it is closed one step later, on a
+    /// seam that can write: step 5 judges the snapshot's own `F<n>Md` answer as the grant judges
+    /// its read, and states `.supervisorBlind` for such a fan unless Aeolus is accountable for
+    /// it. On a `.notBuilt` seam the fan reads `.writePathNotBuilt`, as every grant there does.
     private static func availability(
         writeCapabilityIs capability: FanWriteCapability,
         bounds: Result<FanControlEnvelope, FanBoundsImplausibility>
@@ -189,6 +192,14 @@ enum ReadOnlyFanReport {
     /// the reason for every fan it could not read — `HelperLog.fanModeUnreadable` — so the
     /// gap is visible in `log show` rather than only here, and
     /// [#178](https://github.com/blamechris/Aeolus/issues/178) holds it open.
+    ///
+    /// **On a seam that can write, the availability beside it says so**
+    /// ([#360](https://github.com/blamechris/Aeolus/issues/360)). Step 5 of the ladder is handed
+    /// the read this fold discards — `ReadOnlyFanAuthority.observe()` — and states
+    /// `.supervisorBlind`, the grant's own answer, for an unread fan Aeolus is not accountable
+    /// for. The fold itself is unchanged, because it is the wire's limit rather than the
+    /// ladder's. On a `.notBuilt` seam, every build that has shipped, nothing beside this field
+    /// says the mode is not known, and that is still #178's.
     ///
     /// Note the asymmetry with `FirmwareFanMode(declaredByFirmware:)`, which resolves an
     /// *ambiguous value* toward manual. That is a different question: there, the machine

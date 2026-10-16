@@ -137,6 +137,14 @@ struct SMCFanControlPlane: FanControlPlane {
     /// `CLAUDE.md` rule 9 — one code path keyed on what the SMC declares, never on
     /// `uname -m` — applied to the seam rather than asserted about it.
     ///
+    /// **Except the snapshot's read of the same fact**
+    /// ([#360](https://github.com/blamechris/Aeolus/issues/360)). `SnapshotFanModeReads` decodes
+    /// `F<n>Md` on its own, and since #360 a mode it cannot read is refused `.supervisorBlind`
+    /// on a seam that can write. A platform branch added here — Intel's `FS!` bit — must be
+    /// taken there too, or the decode shared, **in the same change**: otherwise every fan on
+    /// that platform reads `.supervisorBlind` for ever while the grant, reading through this
+    /// method, grants.
+    ///
     /// `Ftst` is deliberately not read here. It is a *write-side* key: set as part of the
     /// M3+ unlock sequence and cleared as part of a restore, per `SMCKey.forceTest` and
     /// [ADR 0007](../../docs/ADR/0007-safety-composition.md)'s keystone. It says nothing

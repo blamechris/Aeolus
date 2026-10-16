@@ -257,19 +257,19 @@ public enum ManualControlAvailability: Sendable, Hashable {
         /// loss of control that nothing had established — `CLAUDE.md` rule 6 in the
         /// direction that is easy to miss.
         ///
-        /// **Two producers, both of which the grant path shares**
-        /// ([#355](https://github.com/blamechris/Aeolus/issues/355)). The first is a grant-time
-        /// read of the fan's control state that throws: the grant is refused this way, and a
-        /// retry is reasonable, because the next read may answer. The second is startup
-        /// reconciliation, for a fan it could not confirm back under automatic control: one it
-        /// read back in manual after a write the firmware accepted, one whose read-back threw,
-        /// one whose mode would not read and whose restore was then refused, or one its bounded
-        /// budget never reached — see
+        /// **Two producers, both of which the grant path shares** (#355), **and a snapshot shows
+        /// both** ([#360](https://github.com/blamechris/Aeolus/issues/360)). The first is a read
+        /// of the fan's control state that throws: a grant is refused this way when its fresh read
+        /// throws, and on a helper that can write a snapshot says the same when its own read of
+        /// the fan's mode did not answer. A retry is reasonable, because the next read may answer.
+        /// The second is startup reconciliation, for a fan it could not confirm back under
+        /// automatic control: one it read back in manual after a write the firmware accepted, one
+        /// whose read-back threw, one whose mode would not read and whose restore was then
+        /// refused, or one its bounded budget never reached — see
         /// [ADR 0011](../../docs/ADR/0011-reconciliation-and-foreign-manual-control.md). The
         /// helper serves clients anyway, because refusing to answer a snapshot helps nobody,
         /// and refuses a lease over that fan for the life of the process: reconciliation is
-        /// one-shot, so nothing will revise the answer. That producer is the one a snapshot
-        /// shows.
+        /// one-shot, so nothing will revise the answer.
         ///
         /// **§ 5's blindness is not a producer.** § 5 still gives up a fan it cannot read for
         /// `ReclamationLimits.blindCyclesBeforeDivergence` cycles, and that is history,
