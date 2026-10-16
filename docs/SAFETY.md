@@ -1129,9 +1129,10 @@ thing more ([#381](https://github.com/blamechris/Aeolus/issues/381)): whether th
 registered again under its own lease since the examination began, which stamps the record before its
 read. If it has, that engagement commands the fan itself, after the reading the re-assert was
 decided on, so § 5 writes nothing more for that examination and says so; the attempt stays spent,
-and the mark is left to the episode. A first step refused because that engagement had already taken
-the fan off automatic control writes nothing, and is the same stand-down, not a failed write. If it
-has not, § 5 commands the record's target as it stands after its last suspension before the write,
+and the mark is left to the episode. While one engagement of a fan runs at a time, a first step
+refused because that engagement had already taken the fan off automatic control writes nothing, and
+is the same stand-down, not a failed write. If it has not, § 5 commands the record's target as it
+stands after its last suspension before the write,
 never the one it judged, and records its write only over that target, so a report that arrived
 during the write is kept. The terminal action ends only the lease it was holding the fan for:
 revoked if it is live, ended as expired if it has lapsed and is still unswept — inside the call, so
@@ -1186,7 +1187,14 @@ for that cycle. Only mutual exclusion over the write closes it. A same-lease re-
 genuine re-reclamation stands that cycle's re-assert down, and so does one that registers without
 engaging a fan the system has taken back to automatic, which A6's contract allows for a fan it
 believes already engaged; the fan stays on automatic until the next cycle re-engages it. Each costs
-one cycle and one attempt, in the direction of giving the fan up sooner. A target reported between
+one cycle and one attempt, in the direction of giving the fan up sooner. Two engagements of one fan
+under one lease can still overlap, an A6 precondition tracked as
+[#389](https://github.com/blamechris/Aeolus/issues/389). A same-lease engagement that completes
+during § 5's yield wait re-admits § 5's next step as a first step, which is refused `.notAutomatic`
+after § 5's driver has written. The driver hands the fan back, and § 5 logs the stand-down, whose
+line says nothing was written. The fan ends on automatic control and the mark is kept, so the
+snapshot is truthful; the log line is not, and the client's engagement believes it holds a fan it
+does not. A target reported between
 § 5's read and its judgement is compared against a reading that predates it, so an ordinary step
 can read as diverged; that is [#383](https://github.com/blamechris/Aeolus/issues/383).
 
@@ -1223,8 +1231,9 @@ budget, and a cycle that cannot read clears nothing),
 the `ReclamationReassertViewTests` suite, with its extension in
 `ReclamationReassertSuspensionTests.swift`, and `ReclamationReassertTargetValueTests` (the
 re-assert writing the fan as it stands: a same-lease re-apply landed in each of its suspensions,
-before its first step and once the control-state read has sampled included, and the stamp, the
-re-fetch and the record as values, #381),
+before its first step and once the control-state read has sampled included, a first step refused
+after its mode write or after a release, and the stamp, the re-fetch and the record as values,
+#381),
 `ReclamationRefetchIdentityTests.swift` and `ReclamationLateRegistrationTests.swift` (the
 identity half of each reachable re-fetch, and the registrations the generation lets through:
 accepted after a lapse or a lost release notice, and refused under the lease the terminal action

@@ -1869,9 +1869,12 @@ Then:
 - **A same-lease registration since the stamp stands the re-assert down.**
   `Registry.reassertTarget(ofFan:under:)` answers `nil`. The re-fetches after the envelope read and
   after the first step stop there: § 5 writes nothing more for that examination and says so. So
-  does a first step refused `.notAutomatic`, which wrote nothing, while that answer is `nil`: the
-  engagement took the fan off automatic control first, so it is logged as the stand-down, not as a
-  failed write (`reengageRefused(fanAt:heldUnder:error:)`). The attempt booked in `diverged` stays
+  does a first step refused `.notAutomatic` while that answer is `nil`. While one engagement of a
+  fan runs at a time, that refusal wrote nothing: the engagement took the fan off automatic control
+  first, so it is logged as the stand-down, not as a failed write
+  (`reengageRefused(fanAt:heldUnder:error:)`). It is decided on the error type, and the driver
+  throws the same `.notAutomatic` after a step has written when two engagements of the fan overlap;
+  that case is the two-engagements residual below. The attempt booked in `diverged` stays
   spent, because that engagement's writes are this round's. The mark is left to the episode (#366).
 - **The target is the record's as it stands after the last suspension before the write.** `reassert`
   no longer takes one.
@@ -1907,7 +1910,15 @@ Then:
 - *Two engagements of one fan under one lease remain an A6 precondition.* The plane's in-progress
   record is still per fan. A same-lease engagement that completes during § 5's own mode write now
   stands § 5 down rather than being commanded over, and one that completes before § 5's first step
-  stands it down there, without a `.fault`.
+  stands it down there, without a `.fault`. One that completes during § 5's yield wait, between two
+  of its driver's steps, clears the shared record, so § 5's next step is admitted as a first step
+  and refused `.notAutomatic` after § 5's driver has written. The driver hands the fan back, and § 5
+  logs the stand-down, whose line says nothing was written; until `reengageRefused`, that case
+  logged a `.fault`. The fan ends on automatic control and the mark is kept, so the snapshot is
+  truthful, but the log line is not, and the client's engagement believes it holds a fan it does
+  not. Tracked as [#389](https://github.com/blamechris/Aeolus/issues/389), an A6 precondition.
+  Routing on whether the driver wrote would change the driver's error vocabulary, which level 6 also
+  maps, so that choice is #389's.
 - *A same-lease re-apply just before a genuine re-reclamation stands that cycle's re-assert down.*
   It costs one cycle and one attempt, in the direction of giving the fan up sooner.
 - *So does a re-apply that registers without engaging a fan the system has taken back.* Item 2

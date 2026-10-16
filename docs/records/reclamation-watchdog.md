@@ -128,7 +128,7 @@ to end the episode too. The actor's share is the binding of `mayClearTheMark` an
 `manualControlEngaged`, and the `.short` clears in `examine`. `examine(fanAt:)` is now exactly 50
 code lines, `function_body_length`'s warning, so the next line it needs takes a split first.
 
-**#381 spent seventeen: 323 code lines, and about 27 left; file 936** (SwiftLint 0.65.1). The
+**#381 spent seventeen: 323 code lines, and about 27 left; file 944** (SwiftLint 0.65.1). The
 stamp, the re-fetch of the target and the comparison before recording are three `Registry` members,
 and a field on `HeldFan` stamped by its own method so that #383 can add to the stamp, all tested as
 values. The actor's share is the stamp in `examine`'s first line, which replaced the line that read
@@ -316,13 +316,20 @@ value's, in `ReclamationRegistryEpisodeTests.swift`. What stays open:
    automatic stands that cycle's re-assert down, as does one landing just before a genuine
    re-reclamation. The fan stays on automatic until the next cycle re-engages it: one cycle and
    one attempt, in the direction of giving the fan up sooner (#381).
+6. Two engagements of one fan under one lease can overlap. One that completes during § 5's yield
+   wait re-admits § 5's next step as a first step, which is refused `.notAutomatic` after § 5's
+   driver has written; the driver hands the fan back, and `reengageRefused`, which routes on the
+   error type, logs the stand-down, whose line says nothing was written. The fan ends on automatic
+   control and the mark is kept, so the snapshot is truthful and the log line is not. An A6
+   precondition, tracked as [#389](https://github.com/blamechris/Aeolus/issues/389).
 
 Until #381 the re-assert acted on the target and mode it judged before its envelope read, so a
 re-apply inside that read was overwritten — for a diverged target the old number was re-commanded
 over the client's, and for a reclaimed mode the re-assert logged a failed re-engage and spent an
 attempt. #381 closed it: the examination stamps the record, a same-lease registration since the
-stamp stands the re-assert down with its attempt spent, at either re-fetch or at a first step
-refused because that engagement took the fan first, the target is re-fetched before the write,
+stamp stands the re-assert down with its attempt spent, at either re-fetch or, while one engagement
+of a fan runs at a time, at a first step refused because that engagement took the fan first, the
+target is re-fetched before the write,
 and the write is recorded only over the target it was decided on (ADR 0014's #381 amendment).
 
 **Why a refusal never leaves a fan off automatic control with nothing watching it.** A

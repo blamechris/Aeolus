@@ -718,11 +718,19 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         log.reclamationReassertLeftToItsEngagement(fan: index, at: moment)
     }
 
-    /// The re-assert's re-engage threw. A first step refused `.notAutomatic` wrote nothing, so
-    /// when `reassertTarget(ofFan:under:)` also answers `nil` it stops as the envelope re-fetch
-    /// does: a registration since the stamp is that engagement's fan, which it had already taken
-    /// off automatic control (#381). Anything else, after a step may have written, is the `.fault`
-    /// it always was. Out of `reassert` for its complexity.
+    /// The re-assert's re-engage threw. A `.notAutomatic` refusal while
+    /// `reassertTarget(ofFan:under:)` answers `nil` stops as the envelope re-fetch does: a
+    /// registration since the stamp is that engagement's fan, which it had already taken off
+    /// automatic control (#381). Anything else is the `.fault` it always was.
+    ///
+    /// **That stand-down holds while one engagement of a fan runs at a time.** It routes on the
+    /// error type, and the driver throws `.notAutomatic` in two places: at a first step, before
+    /// any write, and, after a step answered, when a same-lease engagement of the same fan
+    /// completed during § 5's yield wait, so the plane's shared per-fan record admitted § 5's next
+    /// step as a first step. The second is two engagements of one fan overlapping, an A6
+    /// precondition tracked as [#389](https://github.com/blamechris/Aeolus/issues/389). In that
+    /// overlap the driver has written and undone it, handing the fan back, and the stand-down line
+    /// misreports that as nothing written. Out of `reassert` for its complexity.
     private func reengageRefused(fanAt index: Int, heldUnder lease: UUID, error: any Error) {
         guard case .notAutomatic? = error as? FanControlPlaneError,
             registry.reassertTarget(ofFan: index, under: lease) == nil
