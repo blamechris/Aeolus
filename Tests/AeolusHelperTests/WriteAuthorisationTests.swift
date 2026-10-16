@@ -291,7 +291,12 @@ struct WriteAuthorisationTests {
     ///   they are the two that are supposed to. A synchronous write verb escapes, and that is
     ///   not contrived — `SMCConnection.write(_:to:)` is synchronous, so an E3/E4 wrapper
     ///   plausibly would be.
-    /// - `[^)]*` cannot span a nested `)`, so a verb with a closure parameter is invisible.
+    /// - The parameter list is found by balanced-parenthesis scanning, so a default value with a
+    ///   call in it (`under lease: UUID = UUID()`) or a closure-typed parameter does not hide the
+    ///   verb. A `[^)]*` class did, and `everyEngageVerbTakesAPermit` stayed green on exactly that
+    ///   signature ([#362](https://github.com/blamechris/Aeolus/issues/362)).
+    ///   `SeamScannerWriteVerbTests` holds the shapes. A `"` inside an interpolation in a
+    ///   default value is the one it does not parse: the scan counts quotes and does not lex.
     @Test("Every fan-target write verb in Sources takes a permit and nothing else")
     func everyTargetWriteVerbTakesAnAuthorisation() throws {
         let declarations = try SeamScanner.writeVerbs(named: #"\w*[Tt]arget\w*"#)
@@ -340,8 +345,7 @@ struct WriteAuthorisationTests {
     /// keystone seam outside the scan entirely.
     @Test("No restore verb in Sources takes an authorisation of any kind")
     func theRestoreVerbTakesNoAuthorisation() throws {
-        let declarations = try SeamScanner.declarations(
-            matching: #"func\s+restore\w*\s*\([^)]*\)\s*async(\s+throws)?"#)
+        let declarations = try SeamScanner.writeVerbs(named: #"restore\w*"#)
         let permits = [
             "CommandableFan", "AuthorisedFanTarget", "FanTargetRPM", "FanControlEnvelope",
         ]
