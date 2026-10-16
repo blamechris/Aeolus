@@ -77,16 +77,19 @@ extension ReclamationWatchdog {
         /// The step a writer announced it is about to put on the wire and has not yet reported
         /// (#383): a target the fan may hold before that step's report arrives. Replaced by the
         /// next announcement, closed by the next report, and gone with the record. It holds a
-        /// reading only while `announcementSpent` is clear (#390).
+        /// reading only if it is not `barred` (#390).
         var announced: CommandedTarget?
-        /// Whether a reading has been held at an announced step since a report last confirmed one
-        /// (#390). An announcement holds one examination's reading on credit, and the credit
-        /// comes back only with a report of the step it announced (`command(_:)`), never with a
-        /// fresh announcement. So a step whose write never lands, because it threw or was never
-        /// issued, holds a target the system chose for one examination at most, however often it
-        /// is announced again. Kept with the rest of a same-lease record, so registering again
-        /// cannot renew it.
-        var announcementSpent = false
+        /// The target the last held examination read the fan at (#390), until the next judged
+        /// examination settles it: vindicated only if it was an announced step (`owedRecord`) and
+        /// that examination began with it as the record. Otherwise it becomes `barred`.
+        var lastHold: CommandedTarget?
+        /// The announced step the last hold read, which must be the record when the next
+        /// examination begins (#390).
+        var owedRecord: CommandedTarget?
+        /// A held target the next examination did not vindicate (#390). No reading at it is held
+        /// again until an examination converges on the record. Kept with the rest of a same-lease
+        /// record, so registering again cannot lift it.
+        var barred: CommandedTarget?
 
         /// Gives back an attempt booked for a write that never reached the firmware —
         /// `reassert`'s cancellation exit. Decremented rather than assigned, and floored at
@@ -133,12 +136,12 @@ extension ReclamationWatchdog {
         /// A fresh command resets the secondary dwell: the fan is being asked for something
         /// new, and cycles spent short of the *previous* target say nothing about this one. It
         /// also closes any announced step (#383): the report is the newer word on that fan.
+        ///
+        /// A report no plane can write, not a number or below the floor every permit is clamped
+        /// to, is ignored, and the record keeps the last one (#390).
         mutating func command(_ target: CommandedTarget) {
-            // A report of the step announced confirms it, and gives back its credit (#390).
-            let tolerance = ReclamationLimits.targetToleranceRPM
-            if let announced, abs(announced.rpm - target.rpm) <= tolerance {
-                announcementSpent = false
-            }
+            // A speed no plane can write is no report: the record keeps the last one (#390).
+            guard Self.isWritable(target) else { return }
             commanded = target
             announced = nil
             actualDwellCycles = 0
@@ -149,22 +152,45 @@ extension ReclamationWatchdog {
         /// or a step announced and not yet reported, each compared by
         /// `primaryDivergence(of:against:)`, so there is no second tolerance rule. An examination
         /// that began with nothing commanded judges no target, as a cycle with nothing commanded
-        /// judges none; a judgement with no examination's stamp holds nothing.
-        ///
-        /// The opening target was reported, so its write returned, and it is asked first and
-        /// spends nothing. The announced step is asked only while `announcementSpent` is clear,
-        /// and holding a reading spends it (#390).
+        /// judges none; a judgement with no examination's stamp holds nothing; and a reading at the
+        /// `barred` target is never held (#390). Every hold is settled by the next judgement:
+        /// `settleLastHold()`.
         private mutating func holds(
             _ primary: ReclamationDivergence?, readFrom state: FanControlState
         ) -> Bool {
-            guard case .targetDiverged = primary, examinedAtGeneration != nil else { return false }
-            guard let opening = examinedCommanded else { return true }
-            if Self.reads(state, opening) { return true }
-            guard !announcementSpent, let announced, Self.reads(state, announced) else {
-                return false
+            guard case .targetDiverged(_, let readBack) = primary, examinedAtGeneration != nil,
+                barred.map({ !Self.reads(state, $0) }) ?? true
+            else { return false }
+            if let opening = examinedCommanded, !Self.reads(state, opening) {
+                guard let announced, Self.reads(state, announced) else { return false }
+                owedRecord = announced
             }
-            announcementSpent = true
+            lastHold = CommandedTarget(fanIndex: state.index, rpm: readBack)
             return true
+        }
+
+        /// Settles the last hold (#390). It is vindicated only if it read an announced step and
+        /// this examination began with that step as the record: the lease holder's next word, when
+        /// § 5 looked again, was the target § 5 had read. Any other hold's target is barred until
+        /// an examination converges on the record, because a step that has landed is read as the
+        /// record, not held twice.
+        private mutating func settleLastHold() {
+            guard let held = lastHold else { return }
+            let tolerance = ReclamationLimits.targetToleranceRPM
+            let reported =
+                owedRecord.map { owed in
+                    examinedCommanded.map { abs($0.rpm - owed.rpm) <= tolerance } ?? false
+                } ?? false
+            if !reported { barred = held }
+            (lastHold, owedRecord) = (nil, nil)
+        }
+
+        /// Whether `target` can be a record (#390): finite, and not below the floor every permit is
+        /// clamped to, so a target that is not a number never reaches a judgement or a log line
+        /// and a record of 0 RPM never holds a fan the system has stopped. One above a fan's
+        /// maximum is kept: no reading matches it, and a re-assert of it is clamped.
+        private static func isWritable(_ target: CommandedTarget) -> Bool {
+            target.rpm.isFinite && target.rpm >= FanSafetyLimits.minimumManualRPM
         }
 
         /// Whether `state` reads `candidate` back, by the primary signal's own rule.
@@ -225,17 +251,19 @@ extension ReclamationWatchdog {
         /// same question. reclamation-watchdog.md § *"Bounded by `blindCyclesBeforeDivergence`,
         /// and not by a fourth constant"*.
         ///
-        /// ## Judged against what the fan could have been holding (#383)
+        /// ## Judged against what the fan could have been holding (#383, #390)
         ///
         /// The reading predates the examination's suspensions, and a report can land in any of
         /// them, so `commanded` can be newer than the reading. A step can also land before the
         /// read with its report still to come, so the reading can be newer than `commanded`.
         ///
-        /// A `.targetDiverged` reading that `holds(_:readFrom:)` is `.held`, and a held cycle
-        /// concludes nothing: no counter moves, no episode opens or closes, and the actor leaves
-        /// the ledger's mark as it stands. An announced step holds once per report of that step
-        /// (`announcementSpent`), because an announcement is not a landed write: one whose write
-        /// threw can coincide with a target the system chose. Nothing else is held (#390).
+        /// A `.targetDiverged` reading that `holds(_:readFrom:)` is therefore `.held`, and a held
+        /// cycle concludes nothing: no counter moves, no episode opens or closes, and the actor
+        /// leaves the ledger's mark as it stands. The next judgement settles every hold
+        /// (`settleLastHold()`): an announced step that is the record when that examination begins
+        /// is vindicated, and any other held target is barred until an examination converges on
+        /// the record, because a step that has landed is read as the record, not held twice.
+        /// Nothing else is held.
         /// reclamation-watchdog.md § *"Judged against what the fan could have been holding"*.
         ///
         /// ## The secondary signal reports, and does nothing else: `.short`
@@ -271,6 +299,7 @@ extension ReclamationWatchdog {
         /// and stay off automatic control for as long as the flapping lasted, which is
         /// `ReclamationRegistrationWindowTests.aConvergedCycleDoesNotRefillTheGrace`.
         mutating func judge(_ state: FanControlState) -> Judgement {
+            settleLastHold()
             let primary = ReclamationWatchdog.primaryDivergence(of: state, against: commanded)
             // A target the fan could have been holding at the read is held: nothing moves (#390).
             if holds(primary, readFrom: state) { return .held }
@@ -292,8 +321,9 @@ extension ReclamationWatchdog {
             }
 
             // The primary converged: the firmware holds Aeolus's target, so whatever the secondary
-            // says, nothing is reclaimed and no episode is in flight (#366).
+            // says, nothing is reclaimed and no episode is in flight (#366), and nothing is barred.
             episodeInFlight = false
+            barred = nil
 
             if let shortfall = ReclamationWatchdog.actualShortfall(of: state, against: commanded) {
                 actualDwellCycles += 1

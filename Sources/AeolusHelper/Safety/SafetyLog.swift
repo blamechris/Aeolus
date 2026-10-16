@@ -156,7 +156,7 @@ struct SafetyLog: Sendable {
         emit(
             .notice,
             """
-            Thermal emergency commanded fan \(fan) to \(Int(rpm.rounded())) RPM in a \
+            Thermal emergency commanded fan \(fan) to \(wholeRPM(rpm)) RPM in a \
             single write, bypassing the ramp governor (docs/SAFETY.md § 8, ADR 0007).
             """
         )
@@ -464,7 +464,7 @@ extension SafetyLog {
         let consequence =
             if let commanded {
                 """
-                Aeolus asked for \(Int(commanded.rpm.rounded())) RPM and the firmware is not \
+                Aeolus asked for \(wholeRPM(commanded.rpm)) RPM and the firmware is not \
                 holding it
                 """
             } else {
@@ -521,8 +521,8 @@ extension SafetyLog {
         emit(
             .notice,
             """
-            Fan \(fan) has turned at \(Int(actual.rounded())) RPM against a commanded \
-            \(Int(commanded.rounded())) RPM for \(dwellCycles) consecutive cycles. Its \
+            Fan \(fan) has turned at \(wholeRPM(actual)) RPM against a commanded \
+            \(wholeRPM(commanded)) RPM for \(dwellCycles) consecutive cycles. Its \
             target reads back correctly, so Aeolus still holds the fan and the firmware is \
             honouring the request — the fan is not reaching it. Nothing is being taken back.
             """
@@ -691,7 +691,7 @@ extension SafetyLog {
         emit(
             .notice,
             """
-            Reclamation on fan \(fan): re-asserted \(Int(rpm.rounded())) RPM, attempt \
+            Reclamation on fan \(fan): re-asserted \(wholeRPM(rpm)) RPM, attempt \
             \(attempt) of \(budget). The next cycle's read-back decides whether it held.
             """
         )
@@ -1742,3 +1742,8 @@ extension SafetyLog {
         )
     }
 }
+
+/// `FanControlPlaneValue.wholeRPM(_:)`, the one total RPM-to-text conversion every line here uses
+/// (#390): `Int(_:)` traps on a value that is not a number, and a log line may never kill the
+/// helper.
+private func wholeRPM(_ value: Double) -> String { FanControlPlaneValue.wholeRPM(value) }

@@ -7,9 +7,11 @@ import Testing
 /// [#383](https://github.com/blamechris/Aeolus/issues/383)'s record half, as values: what an
 /// examination may read a fan as holding. The examination's stamp carries the target last
 /// reported, an announced step is held until a report closes it, and only a `.targetDiverged`
-/// reading is ever held. A held reading concludes nothing, and an announced step holds one
-/// reading until a report of it gives the credit back (#390). The actor's half, each step landed
-/// around a real read, is `ReclamationJudgementViewTests` and `ReclamationAnnouncementCreditTests`.
+/// reading is ever held. A held reading concludes nothing, and the next judgement settles every
+/// hold: vindicated if it read an announced step that is the record when that examination begins,
+/// and its target barred until an examination converges on the record otherwise (#390). The
+/// actor's half, each step landed around a real read, is `ReclamationJudgementViewTests`,
+/// `ReclamationAnnouncementCreditTests` and `ReclamationHoldSettlementTests`.
 ///
 /// Every assertion names the mutation it kills, and each was run. The mutations are numbered as
 /// the actor suite numbers them.
@@ -37,9 +39,9 @@ struct ReclamationJudgementViewValueTests {
     /// `examinedCommanded` only once (`if examinedCommanded == nil`); M9, excuse any
     /// `.targetDiverged` while the record's target has moved since the stamp; M10, accept any
     /// reading between the stamp's target and the record's; M11, judge against the stamp's target
-    /// alone (`examinedCommanded ?? commanded`); K, a held reading answered as `.converged`; SPO,
-    /// a reading the opening target holds spending the announcement's credit (#390). Run: red on
-    /// each.
+    /// alone (`examinedCommanded ?? commanded`); K, a held reading answered as `.converged`; M2,
+    /// at the last assertion: an announced step held once the opening target's hold is settled
+    /// (#390). Run: red on each.
     @Test("An examination reads the fan as holding the target reported as it began, and only then")
     func theOpeningTargetIsHeldForThatExaminationOnly() {
         var registry = registered()
@@ -63,14 +65,15 @@ struct ReclamationJudgementViewValueTests {
         registry.announce(target(1_900))
         #expect(
             registry.judge(reading(1_900), ofFan: 0) == .held,
-            "holding the opening target spent the announcement's credit")
+            "the opening target's hold refused a later announced step")
     }
 
     /// **Mutations:** M2, drop `announced` from `HeldFan.holds(_:readFrom:)`; M3, make
     /// `Registry.announce(_:)` record nothing; M5, leave `announced` set in `HeldFan.command(_:)`;
-    /// K. Run: red on each. M5 survived this test as #383 wrote it once the credit existed: the
+    /// K. Run: red on each. M5 survived this test as #383 wrote it under #390's first fold, whose
     /// spent credit kept the unclosed announcement from holding, a downstream guard masking the
-    /// upstream one, so the announcement it closes is now one with its credit unspent (#390).
+    /// upstream one. The bar the first hold leaves is at 2,000, not at the announcement's 1,900, so
+    /// nothing downstream of the close refuses that reading (#390).
     @Test("An announced step is held until a report closes it")
     func anAnnouncedStepIsHeldUntilAReportClosesIt() {
         var registry = registered()
@@ -80,8 +83,8 @@ struct ReclamationJudgementViewValueTests {
 
         #expect(registry.judge(reading(2_000), ofFan: 0) == .held, "the announced step")
 
-        // Its own report gives the credit back, so the next announcement is closed by a report
-        // with the credit unspent: what keeps it from holding is the close, and nothing after it.
+        // The step is reported and superseded before the next examination, so its hold is barred
+        // at 2,000; what keeps the next announcement from holding is the close, and nothing after.
         registry.command(target(2_000), ofFan: 0)
         registry.announce(target(1_900))
         registry.command(target(2_100), ofFan: 0)
@@ -114,41 +117,75 @@ struct ReclamationJudgementViewValueTests {
 
     // MARK: - #390
 
-    /// **Mutations:** C1, no credit at all (`holds(_:readFrom:)` never sets `announcementSpent`);
-    /// B, a fresh announcement renews it (`announcementSpent = false` in `Registry.announce`); R,
-    /// any report renews it (the match dropped from `HeldFan.command(_:)`); N, no report renews
-    /// it (the reset deleted). Run: red on each, at the assertion that names it.
-    @Test("An announcement holds one reading until a report of its own step confirms it")
-    func anAnnouncementHoldsOneReadingUntilAReportConfirmsIt() {
+    /// **Mutations:** Q1, a hold never barred (`barred = held` deleted from `settleLastHold`); Q2,
+    /// the bar never consulted in `holds(_:readFrom:)`; Q3, the bar lifted by any judgement that
+    /// holds nothing, not only one that converges; Q4, the bar never lifted; Q8, a hold that is
+    /// not vindicated refusing every hold of the next examination rather than its own target. Run:
+    /// red on each, at the assertion that names it.
+    @Test("A hold the next examination does not vindicate bars its target until convergence")
+    func anUnvindicatedHoldIsBarredUntilConvergence() {
         var registry = registered()
         registry.command(target(2_400), ofFan: 0)
         registry.announce(target(2_000))
         _ = registry.beginExamination(ofFan: 0)
         #expect(registry.judge(reading(2_000), ofFan: 0) == .held, "the announced step")
 
+        // Codex's sequence: the step is reported, and then another, before § 5 looks again.
+        registry.command(target(2_000), ofFan: 0)
+        registry.command(target(2_400), ofFan: 0)
         let unheld = ReclamationDivergence.targetDiverged(commanded: 2_400, readBack: 2_000)
+        registry.announce(target(2_000))
         _ = registry.beginExamination(ofFan: 0)
-        #expect(registry.judge(reading(2_000), ofFan: 0) == .diverged(unheld), "C1: held twice")
+        #expect(registry.judge(reading(2_000), ofFan: 0) == .diverged(unheld), "Q1/Q2: held again")
 
         registry.announce(target(2_000))
         _ = registry.beginExamination(ofFan: 0)
-        #expect(registry.judge(reading(2_000), ofFan: 0) == .diverged(unheld), "B: renewed")
+        #expect(registry.judge(reading(2_000), ofFan: 0) == .diverged(unheld), "Q3: bar lifted")
 
-        registry.command(target(2_100), ofFan: 0)
         registry.announce(target(1_900))
         _ = registry.beginExamination(ofFan: 0)
-        #expect(
-            registry.judge(reading(1_900), ofFan: 0)
-                == .diverged(.targetDiverged(commanded: 2_100, readBack: 1_900)),
-            "R: a report of another target confirmed the announcement")
+        #expect(registry.judge(reading(1_900), ofFan: 0) == .held, "Q8: another target refused")
 
         registry.command(target(1_900), ofFan: 0)
-        registry.announce(target(1_800))
         _ = registry.beginExamination(ofFan: 0)
-        #expect(registry.judge(reading(1_800), ofFan: 0) == .held, "N: its own report did not")
+        #expect(registry.judge(reading(1_900), ofFan: 0) == .converged)
+        registry.command(target(2_400), ofFan: 0)
+        registry.announce(target(2_000))
+        _ = registry.beginExamination(ofFan: 0)
+        #expect(registry.judge(reading(2_000), ofFan: 0) == .held, "Q4: convergence kept the bar")
     }
 
-    /// **Mutation:** S2, `.held` replaced by the converged path (`primary = nil` and fall
+    /// A loop on A6's contract holds every reading of a ramp in either phase, and across a drift
+    /// between them, because the next examination vindicates each hold.
+    ///
+    /// **Mutations:** Q6, the vindication ignored (an announced step is barred even when it is the
+    /// record as the next examination begins); Q8. Run: red on each.
+    @Test("Each hold of a ramp is vindicated by the next examination, in either phase")
+    func eachHoldOfARampIsVindicated() {
+        var registry = registered()
+        registry.command(target(2_400), ofFan: 0)
+        // Reverse: each step is announced and read before its report, which then lands.
+        for step in [2_200.0, 2_000, 1_800] {
+            registry.announce(target(step))
+            _ = registry.beginExamination(ofFan: 0)
+            #expect(registry.judge(reading(step), ofFan: 0) == .held, "reverse step \(step)")
+            registry.command(target(step), ofFan: 0)
+        }
+        // A drift to forward: the next step's report lands after the read, which reads the step
+        // just held again (Q6); an oscillation holds each of its two targets in turn.
+        for (read, next) in [(1_800.0, 2_000.0), (2_000, 1_800), (1_800, 2_000)] {
+            _ = registry.beginExamination(ofFan: 0)
+            registry.command(target(next), ofFan: 0)
+            #expect(registry.judge(reading(read), ofFan: 0) == .held, "forward read \(read)")
+        }
+        // A drift back to reverse: the last hold, at 1,800, is barred, and the new step is held
+        // all the same, because only 1,800 is (Q8).
+        registry.announce(target(2_200))
+        _ = registry.beginExamination(ofFan: 0)
+        #expect(registry.judge(reading(2_200), ofFan: 0) == .held, "a drift to reverse")
+    }
+
+    /// **Mutation:** K, `.held` replaced by the converged path (`primary = nil` and fall
     /// through), which closes the episode and refills the budget from a reading the record does
     /// not hold. Run: red.
     @Test("A held reading moves no counter, closes no episode and refills nothing")
