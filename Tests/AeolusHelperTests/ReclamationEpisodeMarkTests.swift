@@ -22,6 +22,10 @@ import Testing
 ///   is open is accepted and clears nothing. It used to clear the mark, and a terminal action that
 ///   followed gave the fan up with no mark left.
 ///
+/// Three boundaries of those rules were green under their mutations until #384's review, and
+/// each now has a test: a cycle that cannot read neither closes the episode nor clears the mark,
+/// and a `.short` cycle clears the mark but does not refill the re-assert budget.
+///
 /// The value half — `episodeInFlight`, and what
 /// `Registration.accepted(replacedEndedLease:mayClearTheMark:)` answers — is
 /// `ReclamationRegistryTests`. Every test names the mutation it kills, and each was run.
@@ -140,6 +144,52 @@ struct ReclamationEpisodeMarkTests {
         #expect(await machine.leases.activeLease()?.id == lease)
     }
 
+    /// **A blind cycle does not close the episode.** Fan 0 is commanded 2,400 RPM and the
+    /// firmware holds 1,800, so § 5 marks it reclaimed and re-asserts, and the re-assert lands.
+    /// The next cycle cannot read the fan, and the holder re-applies under L1 after it. No cycle
+    /// has read the target held, so the episode is still open and the re-apply clears nothing.
+    /// The cycle after reads again, its primary converges while the fan is short, and that clears
+    /// the mark.
+    ///
+    /// **Mutation:** add `episodeInFlight = false` to `HeldFan.recordReadFailure()`. Run: red on
+    /// the mark after the re-apply and on its "left to its episode" line. The re-apply on a blind
+    /// cycle cleared the mark, so the fan was reported in Aeolus's control on a machine that had
+    /// stopped answering.
+    @Test("A cycle that cannot read the fan does not close the episode a re-apply defers to")
+    func aBlindCycleDoesNotCloseTheEpisode() async throws {
+        let machine = ReclamationMachine(
+            stages: [.nominal(), .blind(), .nominal()], fans: [0: .held(at: 1_800)])
+        try await machine.hold(fan: 0, commanding: 2_400)
+        let lease = try #require(await machine.leases.activeLease()).id
+        let permit = try commandableFan(0, declaring: .held(at: 1_800))
+        await machine.watchdog.cycle()
+        #expect(await machine.commandedRPMs == [2_400], "the re-assert did not land")
+        await machine.plane.advance()
+        await machine.watchdog.cycle()
+        #expect(
+            machine.safetyLog.lines(containing: "could not read fan 0").count == 1,
+            "the second cycle read the fan")
+        #expect(await machine.ledger.isReclaimed(fanAt: 0), "the blind cycle cleared the mark")
+
+        try await machine.watchdog.manualControlEngaged(permit, under: lease)
+
+        #expect(
+            await machine.ledger.isReclaimed(fanAt: 0),
+            "a re-apply after a blind cycle cleared the mark before § 5 read the target held")
+        #expect(machine.safetyLog.lines(containing: Self.leftToItsEpisode).count == 1)
+        #expect(machine.safetyLog.lines(containing: Self.resolved).isEmpty)
+
+        await machine.plane.advance()
+        await machine.watchdog.cycle()
+
+        #expect(
+            await machine.ledger.isReclaimed(fanAt: 0) == false,
+            "the readable cycle whose primary converged left the mark")
+        #expect(machine.safetyLog.lines(containing: Self.resolved).count == 1)
+        #expect(await machine.didRestore(fan: 0) == false)
+        #expect(await machine.leases.activeLease()?.id == lease)
+    }
+
     // MARK: - The mark follows the primary signal
 
     /// **Demo C.** Fan 0 is commanded 2,400 RPM and the firmware holds 1,800, so § 5 marks it
@@ -223,5 +273,75 @@ struct ReclamationEpisodeMarkTests {
         #expect(await machine.commandedRPMs.isEmpty, "a held target was re-asserted")
         #expect(await machine.didRestore(fan: 0) == false)
         #expect(await machine.watchdog.fansUnderManualControl == [0])
+    }
+
+    /// **A cycle that cannot read clears nothing.** Fan 0 is marked and re-asserted, as in demo
+    /// C, and every cycle after cannot read it. Up to the blindness threshold those cycles leave
+    /// the mark where it was: nothing read in them says who holds the fan.
+    ///
+    /// **Mutation:** add `await clearReclamationMark(fanAt: index)` before `cycleCouldNotSee` in
+    /// `examine(fanAt:)`'s `.failure` case. Run: red on the mark after the first blind cycle.
+    @Test("A cycle that cannot read the fan leaves its mark")
+    func aCycleThatCannotReadTheFanLeavesItsMark() async throws {
+        let machine = ReclamationMachine(
+            stages: [.nominal(), .blind()], fans: [0: .held(at: 1_800)])
+        try await machine.hold(fan: 0, commanding: 2_400)
+        await machine.watchdog.cycle()
+        #expect(await machine.ledger.isReclaimed(fanAt: 0), "§ 5 never marked the fan")
+        await machine.plane.advance()
+
+        for cycle in 1..<ReclamationLimits.blindCyclesBeforeDivergence {
+            await machine.watchdog.cycle()
+            #expect(
+                await machine.ledger.isReclaimed(fanAt: 0),
+                "blind cycle \(cycle) cleared the mark on a fan it could not read")
+        }
+
+        #expect(
+            machine.safetyLog.lines(containing: "could not read fan 0").count == 1,
+            "the cycles after the first read the fan")
+        #expect(machine.safetyLog.lines(containing: Self.resolved).isEmpty)
+        #expect(await machine.didRestore(fan: 0) == false)
+        #expect(await machine.watchdog.fansUnderManualControl == [0])
+    }
+
+    // MARK: - The budget is the contest's, not the mark's
+
+    /// **A `.short` cycle does not refill the re-assert budget.** The firmware takes fan 0 back
+    /// after every re-assert: each re-assert lands, the next cycle reads the target held while the
+    /// fan is still short, and the system then takes the fan again. The `.short` cycles clear the
+    /// mark, which follows the primary signal, but only a cycle converged on both signals ends the
+    /// contest. So after `reassertAttemptBudget` re-asserts the next reclamation is the terminal
+    /// action.
+    ///
+    /// **Mutation:** add `reassertAttempts = 0` after `actualDwellCycles += 1` on `.short`'s
+    /// return in `HeldFan.judge(_:)`. Run: red on the restore and on the revocation. The fan was
+    /// contested for ever, never given up, and its mark flapped.
+    @Test("A cycle that reads the target held while the fan is short does not refill the budget")
+    func aShortCycleDoesNotRefillTheReassertBudget() async throws {
+        let budget = ReclamationLimits.reassertAttemptBudget
+        let machine = ReclamationMachine(fans: [0: .held(at: 1_800)])
+        try await machine.hold(fan: 0, commanding: 2_400)
+
+        for _ in 0..<budget {
+            await machine.plane.setMode(.automatic, ofFan: 0)
+            await machine.watchdog.cycle()
+            await machine.watchdog.cycle()
+        }
+
+        #expect(await machine.didRestore(fan: 0) == false, "the budget ran out early")
+        #expect(await machine.commandedRPMs == Array(repeating: 2_400, count: budget))
+        #expect(machine.safetyLog.lines(containing: Self.resolved).count == budget)
+
+        await machine.plane.setMode(.automatic, ofFan: 0)
+        await machine.watchdog.cycle()
+
+        #expect(
+            await machine.didRestore(fan: 0),
+            "a fan the system took back after every re-assert was contested past the budget")
+        #expect(await machine.restorer.causes == [.systemReclaimed], "the lease was not revoked")
+        #expect(await machine.commandedRPMs.count == budget)
+        #expect(await machine.ledger.isReclaimed(fanAt: 0))
+        #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
     }
 }
