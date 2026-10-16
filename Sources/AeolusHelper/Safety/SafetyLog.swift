@@ -589,7 +589,7 @@ extension SafetyLog {
     /// § 3 latched while § 5 was mid-re-assert, so the re-assert was undone.
     ///
     /// The compensating half of
-    /// `ReclamationWatchdog.reassert(_:fanAt:heldUnder:attempt:reengaging:)`. Check and act cannot
+    /// `ReclamationWatchdog.reassert(fanAt:heldUnder:attempt:reengaging:)`. Check and act cannot
     /// be made atomic across two actors, so the ruling is verified again after the writes and this
     /// is what happens when it changed underneath them.
     func reclamationUndoneAfterEmergencyLatched(fan: Int) {
@@ -1669,15 +1669,34 @@ extension SafetyLog {
     /// A registration under the lease a fan is held for was accepted while § 5's reclamation
     /// episode for the fan is in flight, so it cleared nothing (#366). It is the holder
     /// re-applying while § 5 contests the fan: the mark stays until a cycle reads the fan's target
-    /// held, or the terminal action gives the fan up and keeps it. `.notice`: nothing about the fan
-    /// changed.
+    /// held, or the terminal action gives the fan up as reclaimed and keeps it. An episode that
+    /// escalates through blind cycles instead ends `.supervisorBlind`, because the ledger's last
+    /// diagnosis wins, and the fan is then not reported as reclaimed. `.notice`: nothing about the
+    /// fan changed.
     func reclamationMarkLeftToItsEpisode(fan: Int) {
         emit(
             .notice,
             """
             Fan \(fan) was registered with § 5 again under the lease it is held for, while § 5 \
             is contesting a reclamation of it. It stays reported as reclaimed until § 5 reads its \
-            target held, or gives the fan up and keeps it.
+            target held, or gives the fan up as reclaimed and keeps it; if § 5 cannot read the \
+            fan first, blindness takes over.
+            """
+        )
+    }
+
+    /// § 5 stood a re-assert down: the fan was registered again under the lease it is held for
+    /// since the examination began, so that engagement commands the fan, after the reading the
+    /// re-assert was decided on (#381). `.notice`, not `.fault`: nothing failed. The attempt
+    /// stays spent, so a holder re-applying every cycle still meets the terminal action when the
+    /// budget runs out.
+    func reclamationReassertLeftToItsEngagement(fan: Int, during: String) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) was registered again, under the lease it is held for, during \(during), \
+            so § 5 left this re-assert to that engagement and wrote nothing more. The attempt \
+            stays spent; the next cycle's read-back decides whether the fan is held.
             """
         )
     }

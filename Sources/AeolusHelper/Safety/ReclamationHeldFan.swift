@@ -23,7 +23,7 @@ extension ReclamationWatchdog {
     /// was not the dead field, it was the sentence attached to it — *"replaced by every successful
     /// re-assert, so it is never older than the last envelope actually read"* — which is both
     /// inaccurate on its own terms and an argument, handed to the next editor, for deleting
-    /// `reassert(_:fanAt:heldUnder:attempt:reengaging:)`'s fresh `readEnvelope(ofFan:)` and passing
+    /// `reassert(fanAt:heldUnder:attempt:reengaging:)`'s fresh `readEnvelope(ofFan:)` and passing
     /// the stored permit instead. That would remove the bounds check the branch exists to perform
     /// and the "no envelope → restore, not command" failure path with it. ADR 0008's context is the
     /// same defect: a comment telling an editor that load-bearing code was redundant. The field is

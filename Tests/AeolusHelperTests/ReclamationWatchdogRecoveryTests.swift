@@ -42,7 +42,7 @@ struct ReclamationWatchdogRecoveryTests {
     /// next cycle would judge a correctly held 5,777 RPM as a divergence from 99,000.
     ///
     /// **Mutation:** delete `registry.recordReassertedTarget(recommanded, ofFan: index)` after the
-    /// command write in `reassert(_:fanAt:heldUnder:attempt:reengaging:)`. Run: red on the
+    /// command write in `reassert(fanAt:heldUnder:attempt:reengaging:)`. Run: red on the
     /// recorded-target assertion.
     @Test("A re-assert records the target it wrote, not the one it was asked for")
     func aReassertRecordsTheTargetItWrote() async throws {

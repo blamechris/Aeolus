@@ -41,7 +41,7 @@ struct ReclamationWatchdogStalenessTests {
     /// be written to.
     ///
     /// The interference fires inside `readEnvelope(ofFan:)` — the suspension
-    /// `reassert(_:fanAt:heldUnder:attempt:reengaging:)` resumes from — and releases the fan the
+    /// `reassert(fanAt:heldUnder:attempt:reengaging:)` resumes from — and releases the fan the
     /// way the lease core does when a TTL lapses or a connection dies. The watchdog resumes holding
     /// a `permit` for a fan it is no longer watching.
     ///

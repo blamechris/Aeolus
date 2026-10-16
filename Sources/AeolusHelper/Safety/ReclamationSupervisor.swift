@@ -133,7 +133,7 @@ actor ReclamationSupervisor<Plane: FanControlPlane> {
     /// suspended inside a read finishes after this returns —
     /// [#144](https://github.com/blamechris/Aeolus/issues/144)'s second side effect, where that
     /// sweep could still take a fan *off* automatic control from a supervisor that had stopped
-    /// watching. `ReclamationWatchdog.reassert(_:fanAt:heldUnder:attempt:reengaging:)` now checks
+    /// watching. `ReclamationWatchdog.reassert(fanAt:heldUnder:attempt:reengaging:)` now checks
     /// cancellation immediately before that write, so the outgoing sweep can read, log and restore,
     /// and can no longer acquire. What it does **not** do is make `isRunning` wait for that sweep:
     /// the handle is cleared here and the cycle may still be running when it reads `false`.

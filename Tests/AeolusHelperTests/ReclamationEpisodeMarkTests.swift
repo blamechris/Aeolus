@@ -24,7 +24,8 @@ import Testing
 ///
 /// Three boundaries of those rules were green under their mutations until #384's review, and
 /// each now has a test: a cycle that cannot read neither closes the episode nor clears the mark,
-/// and a `.short` cycle clears the mark but does not refill the re-assert budget.
+/// and a `.short` cycle clears the mark but does not refill the re-assert budget, through a run
+/// of them long enough to reach the dwell's report (#386).
 ///
 /// The value half — `episodeInFlight`, and what
 /// `Registration.accepted(replacedEndedLease:mayClearTheMark:)` answers — is
@@ -100,11 +101,12 @@ struct ReclamationEpisodeMarkTests {
         #expect(await machine.watchdog.fansUnderManualControl.isEmpty)
     }
 
-    /// **The one-cycle bound, both ways.** The same re-apply, with an envelope that reads and a
-    /// re-assert that lands: the firmware holds the re-commanded 2,400 RPM, and the fan still
-    /// turns at 1,800. The re-apply does not clear the mark early, and the next readable cycle,
-    /// whose primary converges while the fan is short, clears it rather than leaving it for the
-    /// ramp.
+    /// **The one-cycle bound, both ways.** The same re-apply, landing during the re-assert's
+    /// command write so that the re-assert lands: the firmware holds the re-commanded 2,400 RPM,
+    /// and the fan still turns at 1,800. The re-apply does not clear the mark early, and the next
+    /// readable cycle, whose primary converges while the fan is short, clears it rather than
+    /// leaving it for the ramp. A re-apply during the envelope read stands the re-assert down
+    /// instead (#381), and `ReclamationReassertViewTests` holds the same bound for that.
     ///
     /// **Mutations:** (a) the actor always clears, as in demo A: red on the first cycle's mark.
     /// (b) Take `.short` out of the clearing case in `examine(fanAt:)`: red on the second cycle's
@@ -112,7 +114,7 @@ struct ReclamationEpisodeMarkTests {
     @Test("A re-apply mid-episode leaves the mark for exactly one readable cycle")
     func aReapplyMidEpisodeLeavesTheMarkForOneCycle() async throws {
         let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
-        let sensing = InterferingFanStateSensing(plane, during: .envelopeRead)
+        let sensing = InterferingFanStateSensing(plane, during: .commandWrite)
         let machine = ReclamationMachine(
             plane: plane, fans: [0: .held(at: 1_800)], interfering: sensing)
         try await machine.hold(fan: 0, commanding: 2_400)
@@ -308,15 +310,18 @@ struct ReclamationEpisodeMarkTests {
     // MARK: - The budget is the contest's, not the mark's
 
     /// **A `.short` cycle does not refill the re-assert budget.** The firmware takes fan 0 back
-    /// after every re-assert: each re-assert lands, the next cycle reads the target held while the
-    /// fan is still short, and the system then takes the fan again. The `.short` cycles clear the
-    /// mark, which follows the primary signal, but only a cycle converged on both signals ends the
-    /// contest. So after `reassertAttemptBudget` re-asserts the next reclamation is the terminal
-    /// action.
+    /// after every re-assert: each re-assert lands, and the cycles after it read the target held
+    /// while the fan is still short, `ReclamationLimits.actualDwellCycles` of them so that each run
+    /// reaches the dwell's report, as a real spin-up of several seconds does. The system then
+    /// takes the fan again. Each run's first `.short` cycle clears the mark, which follows the
+    /// primary signal, but only a cycle converged on both signals ends the contest. So after
+    /// `reassertAttemptBudget` re-asserts the next reclamation is the terminal action.
     ///
-    /// **Mutation:** add `reassertAttempts = 0` after `actualDwellCycles += 1` on `.short`'s
-    /// return in `HeldFan.judge(_:)`. Run: red on the restore and on the revocation. The fan was
-    /// contested for ever, never given up, and its mark flapped.
+    /// **Mutations**, each in `HeldFan.judge(_:)` after `actualDwellCycles += 1` on `.short`'s
+    /// return: (a) `reassertAttempts = 0`; (b) `if actualDwellCycles >= 2 { reassertAttempts = 0
+    /// }`, which one `.short` cycle per re-assert left green (#386); (c) `reassertAttempts =
+    /// max(0, reassertAttempts - 1)`. Run: red on each, on the restore and on the revocation. The
+    /// fan was contested for ever, never given up, and its mark flapped.
     @Test("A cycle that reads the target held while the fan is short does not refill the budget")
     func aShortCycleDoesNotRefillTheReassertBudget() async throws {
         let budget = ReclamationLimits.reassertAttemptBudget
@@ -326,12 +331,17 @@ struct ReclamationEpisodeMarkTests {
         for _ in 0..<budget {
             await machine.plane.setMode(.automatic, ofFan: 0)
             await machine.watchdog.cycle()
-            await machine.watchdog.cycle()
+            for _ in 0..<ReclamationLimits.actualDwellCycles {
+                await machine.watchdog.cycle()
+            }
         }
 
         #expect(await machine.didRestore(fan: 0) == false, "the budget ran out early")
         #expect(await machine.commandedRPMs == Array(repeating: 2_400, count: budget))
         #expect(machine.safetyLog.lines(containing: Self.resolved).count == budget)
+        #expect(
+            machine.safetyLog.lines(containing: "has turned at").count == budget,
+            "a run of short cycles did not reach the dwell's report after every re-assert")
 
         await machine.plane.setMode(.automatic, ofFan: 0)
         await machine.watchdog.cycle()
