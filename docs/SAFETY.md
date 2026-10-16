@@ -1202,10 +1202,10 @@ next readable cycle.
 A client write issued during § 5's own command write can still land first (#381). The fan then
 holds § 5's re-fetched target, which is older than the client's, until the next readable cycle
 reads it as diverged and re-asserts the client's: one cycle, one more attempt, and the mark kept
-for that cycle. Only mutual exclusion over the write closes it, and A6's examination gate is that
-exclusion (ADR 0014's #383 amendment): a client write then waits out § 5's re-assert, so the case
-remains only past § 5's bound, when § 5 examines without the gate, or for a write that bypasses the
-gate. A same-lease re-apply just before a genuine re-reclamation stands that cycle's re-assert down,
+for that cycle. Only mutual exclusion over the write closes it, and the fans' examination gate is
+that exclusion (ADR 0014's #383 and A6 amendments): a client write then waits out § 5's re-assert,
+so the case remains only past § 5's bound, when § 5 examines without the gate and writes nothing,
+or for a write that bypasses the gate. A same-lease re-apply just before a genuine re-reclamation stands that cycle's re-assert down,
 and so does one that registers without engaging a fan the system has taken back to automatic, which
 A6's contract allows for a fan it believes already engaged; the fan stays on automatic until the
 next cycle re-engages it. Each costs
@@ -1221,7 +1221,23 @@ record that predates or postdates the reading, so an ordinary step can read as d
 excuses no reading for it, because any excuse built on what the lease holder reports can be met by
 a lease holder that reports a target the system holds; instead A6 keeps each step out of § 5's
 examination of the fan (ADR 0014's #383 amendment,
-[#383](https://github.com/blamechris/Aeolus/issues/383)). Until A6, nothing steps. A target that
+[#383](https://github.com/blamechris/Aeolus/issues/383)).
+
+**The examination gate, as built** (ADR 0014's A6 amendment). `FanExaminationGate` lets one § 5
+examination or one level-6 step hold a fan at a time, first in, first out, per fan. § 5 takes it
+before it stamps the examination and holds it to the examination's last act, so a step lands
+before an examination or after it, never inside. § 5 waits at most `examinationWait`, 13.5 s: the
+longest hold a step that keeps A6's contract can make before ADR 0012 ends the helper. Past it,
+which means the contract was broken, the gate says so at `.fault` and § 5 examines without it:
+it judges, marks and restores as before, and its re-assert stands down, so nothing it writes
+takes the fan away from automatic control. Later examinations against the same holder do not wait
+at all. A cancelled wait is not past the bound, and the re-assert's cancellation guard still
+refunds its attempt (#144). `diverged` decides on the record as it stands after its ledger hop, so
+past the bound a first command reported there is seen, not overtaken by a stale copy. Level 6 will
+wait at most `stepWait`, 1 s, and never write without the gate. § 3's writes and every restore
+never take the gate, so no hand-back waits on a holder; the engagement driver and the writers never
+take it either, because § 5's re-engage runs through them while § 5 holds it. Until level 6 takes
+the gate in A6's next change, nothing steps. A target that
 is not a number, or is below the floor every permit is clamped to, is not recorded, whether a report
 or a re-assert's write returned it, and the refusal is logged at `.fault`; the record then keeps the
 step before. The check is a floor and no ceiling. A target that is not a number diverges, and every
@@ -1271,8 +1287,16 @@ after its mode write or after a release, and the stamp, the re-fetch and the rec
 `ReclamationLateRegistrationTests.swift` (the identity half of every re-fetch, and the
 registrations the generation lets through: accepted after a lapse or a lost release notice, and
 refused under the lease the terminal action gave the fan up for, whatever notice was sent, #365,
-#366, #380), `ReclamationLedgerHopTests` (what `diverged` reads from the record it copied before
-its ledger hop, pinned as it stands, #365's C1 note)
+#366, #380), `ReclamationLedgerHopTests` (what `diverged` decides on after its ledger hop: the live
+record, a first command that waits for the gate, and one seen past the gate's bound, #365's C1
+note and #383), the examination gate in `FanExaminationGateTests.swift` and, as a value,
+`FanExaminationGateLanesTests.swift` (exclusion, the per-fan lanes, first in first out, both bounds
+to the nanosecond, a grant and an expiry at one instant, cancellation, the outwaited holder),
+`ReclamationExaminationGateTests.swift` (a step in either order around the read, the gate before
+the stamp, a divergence past the bound marked with nothing written, and a cancelled wait's refund),
+`ExaminationGateRestoreTests.swift` (every hand-back finishing with a gate held for good) and
+`ExaminationGateRouteTests.swift` (where the gate may be named and entered, its one instance, and
+a shipped build never entering it)
 and `ReclamationWatchdogAccessTests.swift` with `ReclamationRegistryAccessTests.swift` (their
 access) and `ReclamationRoleTripwireTests.swift` (what the three roles over the lease core, the
 latch and the ledger carry, #380), with the

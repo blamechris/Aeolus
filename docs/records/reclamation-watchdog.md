@@ -149,6 +149,17 @@ its own would have made it 11.
 and two initialiser parameters' types in place; every call site, and so every `await`, is
 unchanged. A6's first two PRs need about ten of the 22.
 
+**A6's first PR spent six: 334 code lines, and about 16 left; `examine(fanAt:gated:)` 50; file
+980** (SwiftLint 0.65.1). The gate is a type of its own, `FanExaminationGate`, outside the actor,
+with its bookkeeping a value (`FanExaminationGate.Lanes`) tested as one. The actor's share is the
+stored `gate`, its initialiser parameter and assignment, two more lines in `cycle()`'s loop (enter,
+and defer the leave, around the call to `examine`), and one in `reassertStopped` that tells the
+ungated stand-down's line from #381's. `examine` stays at 50: only its signature and its stamp
+gain `gated`. The ungated stand-down is `Registry.reassertTarget(ofFan:under:)` answering `nil`,
+also a value, and `diverged`'s live record is a rename: the copy's binding moved to the re-fetch
+after the ledger hop, and the copy kept a name of its own for the reclamation line. Level 6's
+hand-back verb, in A6's next PR, needs about four of the 16.
+
 ## Every act is for the lease the fan was registered under
 
 *Added by [#353](https://github.com/blamechris/Aeolus/issues/353) and
@@ -441,18 +452,19 @@ real divergence straight to the terminal action: it does when the copy had spent
 re-assert itself is stopped before any write, by the envelope read's re-fetch.
 `ReclamationSafetyHopIdentityTests.swift` asserts both.
 
-**What `diverged` still reads from its copy (#365's C1 note).** The record is copied at the
-precedence check and the copy is read after the ledger hop, where the re-fetch asks only about
-identity. A report under the same lease that lands in the hop reaches the record, not the copy.
-The re-assert's target is the record's as it stands after the envelope read (#381), so a newer
-target reported in the hop is the one written. The nothing-commanded check reads the copy, so a
-holder's *first* command reported in the hop is not seen: § 5 finds no speed to re-assert, hands
-the fan back and revokes the lease as `.systemReclaimed`. That fails safe and gives a false
-account. The attempt count is the copy's too, and cannot move under the same lease during the hop,
-because only the sweep in flight judges, spends or refunds it. `ReclamationLedgerHopTests` pins
-both cases as they stand. The first is a pinned defect,
-[#383](https://github.com/blamechris/Aeolus/issues/383): closing it turns that case red on
-purpose, and A6 decides on the live record.
+**What `diverged` reads from its copy, and what from the live record (#365's C1 note,
+[#383](https://github.com/blamechris/Aeolus/issues/383)).** The record is copied at the precedence
+check, and the copy now names only what the reclamation line reports. Every decision after the
+ledger hop is made on the record re-fetched there: whether anything was ever commanded, and the
+attempt count. Until A6 the nothing-commanded check read the copy, so a holder's *first* command
+reported in the hop was not seen: § 5 found no speed to re-assert, handed the fan back and revoked
+the lease as `.systemReclaimed`, failing safe with a false account. That was the pinned defect.
+Under the examination gate no step can land in the hop at all, because § 5 holds the gate from its
+stamp to its last act and level 6's step waits for it. Past the gate's bound one can, and the live
+record sees it: § 5 re-asserts rather than giving the fan up, and the ungated re-assert stands
+down. The re-assert's target is the record's as it stands after the envelope read (#381), so a
+newer target reported in the hop is still the one written. `ReclamationLedgerHopTests` holds all
+three: the step that waits, the first command seen past the bound, and the newer target.
 
 ## Built once per registration, per lease
 
