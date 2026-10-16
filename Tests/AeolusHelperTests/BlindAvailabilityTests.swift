@@ -72,7 +72,7 @@ struct BlindAvailabilityTests {
         await helper.plane.advance()
         #expect(
             try await helper.plane.firmwareBound(.maximum, ofFan: 0) == Fixture.byteSwappedBound,
-            "fan 0's maximum reads plausible, so step 8 has nothing to answer")
+            "fan 0's maximum does not read the staged value, so step 8 has nothing to answer")
 
         let (shown, thrown) = try await SleepSealAvailabilityTests.reasons(forFanAt: 0, in: helper)
 
@@ -82,59 +82,63 @@ struct BlindAvailabilityTests {
 
     // MARK: - Where the two part
 
-    /// What a blind machine's fan carries beside the blindness.
+    /// What a blind machine's fan carries beside the blindness: with `Handback`, one scenario for
+    /// every reason other than step 8's that the ladder can state on a seam that can write.
     enum OwnReason: String, CaseIterable, Sendable {
-        /// Step 5: the fan's `F<n>Md` does not answer — pending.
+        /// Step 5: the fan's `F<n>Md` does not answer — `.supervisorBlind`.
         case unread
-        /// Step 1: the firmware refused every restore of the fan — durable.
+        /// Step 5: another program holds the fan in manual — `.foreignManualControl`.
+        case foreign
+        /// Step 5: § 3 is keeping the fan, whose accepted handback the firmware discarded —
+        /// `.restoreToAutomaticUnconfirmed`.
+        case kept
+        /// Step 1: the firmware refused every restore of the fan — `.restoreToAutomaticFailed`.
         case abandoned
-        /// Step 11: § 4's seal stands — pending, and machine-wide.
+        /// Step 11: § 4's seal stands — `.systemSleeping`, machine-wide.
         case sleepSeal
+        /// Step 10: the machine-wide restore seal is open — `.releaseInProgress`, machine-wide.
+        case machineWideSeal
     }
 
-    /// On a blind machine, a fan whose mode will not read, one whose handback was abandoned, and
-    /// any fan under § 4's seal keep their own reason in the snapshot while the grant refuses
+    /// On a blind machine, a fan step 5 refuses, one whose handback was abandoned, and any fan
+    /// under either seal keep their own reason in the snapshot while the grant refuses
     /// `.noThermalTelemetry`. Both refuse; the reasons part, by the rule's one exception, and
     /// `SafeState` reads the snapshot's as pending or durable where it would read the grant's as
     /// silent.
     ///
-    /// The abandoned fan's lease is taken while § 3 can see, and the clock then ages that sighting
-    /// past the cache's one-period bound, so both sides read the machine blind afresh.
+    /// Each scenario is staged while § 3 can see, and the clock then ages any sighting past the
+    /// cache's one-period bound, so both sides read the machine blind afresh.
     ///
     /// **Mutation:** in `restatingAvailability`, make `silent` `answer !=
     /// .unavailable(.writePathNotBuilt)` — the rung in strict grant order, below step 6 only. Run:
-    /// red on all three — the snapshot says `.noThermalTelemetry`.
+    /// red on every argument — the snapshot says `.noThermalTelemetry`. **Mutation:** add `||
+    /// answer == .unavailable(r)` to `silent`, for `r` each of `.foreignManualControl`,
+    /// `.restoreToAutomaticUnconfirmed` and `.releaseInProgress`. Run: red on `foreign`, `kept`
+    /// and `machineWideSeal` respectively.
     @Test(
         "A blind machine's fan keeps its own pending or durable reason, and both refuse",
         arguments: OwnReason.allCases)
     func aFansOwnReasonOutranksBlindness(_ own: OwnReason) async throws {
-        let refused = Fixture.firmwareRefusesTheModeWrite
+        let writes: ScriptedControlPlane.WriteBehaviour =
+            switch own {
+            case .abandoned: Fixture.firmwareRefusesTheModeWrite
+            case .kept: .reverted
+            default: .honoured
+            }
         let clock = TestClock()
         let helper = Fixture.composed(
-            writes: own == .abandoned ? refused : .honoured, clock: clock,
+            writes: writes, clock: clock,
             afterwards: [
-                Fixture.sightless(
-                    writes: own == .abandoned ? refused : .honoured,
-                    unreadableModes: own == .unread ? [0] : [])
+                Fixture.sightless(writes: writes, unreadableModes: own == .unread ? [0] : [])
             ])
         await helper.bindSafetyRegistries()
-        let expected: Reason
-        switch own {
-        case .unread:
-            expected = .supervisorBlind
-        case .abandoned:
-            try await Fixture.acquireAndRelease(fanAt: 0, in: helper)
-            #expect(await helper.leases.fansWithAbandonedHandbacks == [0])
-            expected = .restoreToAutomaticFailed
-        case .sleepSeal:
-            await helper.leases.sealForSleep(generation: 1)
-            expected = .systemSleeping
-        }
+        let (expected, lift) = try await Self.stage(own, in: helper)
         await helper.plane.advance()
         clock.advance(by: .seconds(2))
 
         let (shown, thrown) = try await SleepSealAvailabilityTests.reasons(forFanAt: 0, in: helper)
 
+        try await lift()
         #expect(thrown == .noThermalTelemetry, "§ 3 can see, so the reasons cannot part here")
         #expect(
             shown == expected,
@@ -142,6 +146,94 @@ struct BlindAvailabilityTests {
             the snapshot says \(shown) about a fan whose own reason is \(expected): a refusal \
             fanctl auto reads as silent was stated over one it would have waited on.
             """)
+    }
+
+    /// Puts fan 0 where `own` names, and returns the reason the snapshot must keep and what ends
+    /// the scenario once both sides are read: the machine-wide seal stays open until then.
+    private static func stage(
+        _ own: OwnReason, in helper: HelperComposition<ScriptedControlPlane>
+    ) async throws -> (expected: Reason, lift: @Sendable () async throws -> Void) {
+        switch own {
+        case .unread:
+            return (.supervisorBlind, {})
+        case .foreign:
+            await helper.plane.setMode(.manual, ofFan: 0)
+            return (.foreignManualControl, {})
+        case .kept:
+            let connection = ConnectionID()
+            let lease = try await helper.leases.acquireLease(
+                LeaseFixture.request(fans: [0]), from: connection)
+            try await HelperRestorerTests.engage(fan: 0, in: helper, under: lease.id)
+            await helper.plane.setMode(.manual, ofFan: 0)
+            try await helper.leases.releaseLease(id: lease.id, from: connection)
+            #expect(await helper.thermalEmergency.fansOwedHandbackReadBack == [0])
+            return (.restoreToAutomaticUnconfirmed, {})
+        case .abandoned:
+            try await Fixture.acquireAndRelease(fanAt: 0, in: helper)
+            #expect(await helper.leases.fansWithAbandonedHandbacks == [0])
+            return (.restoreToAutomaticFailed, {})
+        case .sleepSeal:
+            await helper.leases.sealForSleep(generation: 1)
+            return (.systemSleeping, {})
+        case .machineWideSeal:
+            let sealed = AsyncSignal()
+            let lift = AsyncSignal()
+            let leases = helper.leases
+            let seal = observing {
+                await leases.sealingGrants {
+                    await sealed.signal()
+                    try? await lift.wait()
+                }
+            }
+            try await sealed.wait()
+            return (
+                .releaseInProgress,
+                {
+                    await lift.signal()
+                    _ = try await finished("the seal to close", seal)
+                }
+            )
+        }
+    }
+
+    /// Which handback register holds a blind machine's fan.
+    enum Handback: String, CaseIterable, Sendable {
+        /// Step 3: the fan's restore is still running — `.releaseInProgress`.
+        case inFlight
+        /// Step 2: § 4's budget gave up waiting for it — `.handbackUnconfirmed`.
+        case unconfirmed
+    }
+
+    /// On a blind machine, a fan mid-handback, or one whose handback outlived § 4's budget, keeps
+    /// the register's reason in the snapshot while the grant refuses `.noThermalTelemetry`.
+    ///
+    /// **Mutation:** add `|| answer == .unavailable(.handbackUnconfirmed)` to `silent`. Run: red
+    /// on `unconfirmed`. **Mutation:** add `|| answer == .unavailable(.releaseInProgress)`. Run:
+    /// red on `inFlight`.
+    @Test(
+        "A blind machine's fan in a handback register keeps the register's reason",
+        arguments: Handback.allCases)
+    func aHandbackOutranksBlindness(_ register: Handback) async throws {
+        let clock = TestClock()
+        let firmware = Fixture.firmware(
+            fanCount: 1, writes: .honoured, afterwards: [Fixture.sightless()])
+        let helper = Fixture.wedging(firmware: firmware, clock: clock)
+        let parked = try await Fixture.parkedHandback(ofFanAt: 0, in: helper)
+        if register == .unconfirmed {
+            #expect(await helper.leases.recordUnconfirmedHandbacks() == [0])
+        }
+        await firmware.advance()
+        clock.advance(by: .seconds(2))
+
+        let (shown, thrown) = try await SleepSealAvailabilityTests.reasons(forFanAt: 0, in: helper)
+
+        await helper.plane.release()
+        await parked.value
+        let expected: Reason = register == .unconfirmed ? .handbackUnconfirmed : .releaseInProgress
+        #expect(thrown == .noThermalTelemetry, "§ 3 can see, so the reasons cannot part here")
+        #expect(
+            shown == expected,
+            "the snapshot says \(shown) about a fan whose register's reason is \(expected)")
     }
 
     // MARK: - What it costs
@@ -167,6 +259,30 @@ struct BlindAvailabilityTests {
         #expect(
             reads == 1,
             "a snapshot and a grant read the curated set \(reads) times: two caches, or none")
+    }
+
+    /// One snapshot on a seam that can write asks the sightings cache exactly once, cold or warm:
+    /// a read of its own on an empty cache, a served sighting on a fresh one. The clock is frozen,
+    /// so the warm sighting cannot expire under a slow runner.
+    ///
+    /// **Mutation:** in `SupervisedFanAuthority.snapshot()`, add `_ = try await isBlind()` above
+    /// `let blind = try await isBlind()`. Run: red on both arguments — asked twice.
+    @Test(
+        "One snapshot on a seam that can write asks the sightings cache once",
+        arguments: [false, true])
+    func aSnapshotAsksTheCacheOnce(warm: Bool) async throws {
+        let helper = Fixture.composed(clock: TestClock())
+        await helper.bindSafetyRegistries()
+        if warm { _ = try await helper.sightings.sighting() }
+        let before = await helper.sightings.readsIssued + helper.sightings.coalescedSightings
+
+        let snapshot = try await helper.authority.snapshot()
+
+        #expect(try Fixture.availability(ofFanAt: 0, in: snapshot) == .available)
+        let asked = await helper.sightings.readsIssued + helper.sightings.coalescedSightings
+        #expect(
+            asked - before == 1,
+            "one snapshot asked the sightings cache \(asked - before) times, not once")
     }
 
     /// On a seam that cannot write the snapshot asks § 3 nothing: no sighting, served or read,
@@ -257,38 +373,4 @@ struct BlindAvailabilityTests {
             "\(lines.count - afterFirst) lines were logged across five snapshots of a blind machine"
         )
     }
-}
-
-/// A `SightednessProving` whose every `sighting()` parks until it is cancelled, and then throws
-/// `CancellationError`. A continuation, so nothing blocks a thread.
-private actor ParkedSighting: SightednessProving {
-    private var waiters: [CheckedContinuation<CriticalTemperatureReport, any Error>] = []
-
-    /// Sightings parked right now.
-    var parked: Int { waiters.count }
-
-    func sighting() async throws -> CriticalTemperatureReport {
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { waiters.append($0) }
-        } onCancel: {
-            Task { await self.cancelAll() }
-        }
-    }
-
-    private func cancelAll() {
-        let waiting = waiters
-        waiters = []
-        for waiter in waiting { waiter.resume(throwing: CancellationError()) }
-    }
-}
-
-/// How many lines every recording log has been handed. `NSLock` rather than an actor, so a log's
-/// synchronous sink can count without an `await`, as `RecordedLog` does.
-private final class LineCount: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lines = 0
-
-    func add() { lock.withLock { lines += 1 } }
-
-    var count: Int { lock.withLock { lines } }
 }

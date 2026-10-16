@@ -87,6 +87,63 @@ struct SleepSealAvailabilityTests {
             "the snapshot says \(shown) about a fan mid-handback while the grant says \(thrown)")
     }
 
+    // MARK: - Beside a live lease
+
+    /// A free fan beside another client's lease reads `.systemSleeping` while the seal stands, as
+    /// a grant over it is refused: the grant checks the seal before its lease table, so it never
+    /// reaches the `.leaseHeldByAnotherClient` a snapshot cannot state, and the two agree on
+    /// whether it is refused as well as why. A lease live under the seal is § 4's own order — the
+    /// seal, then the release — so this is the teardown's first window.
+    ///
+    /// **Mutation:** in `firstRefusal`, make step 11 `if leases.sleepSealed, leases.lease == nil`.
+    /// Run: red — the snapshot says `.available` — and red in the leased-bounds test below.
+    @Test("A free fan beside another client's lease reads the seal, as the grant refuses it")
+    func aFreeFanBesideALeaseReadsSystemSleeping() async throws {
+        let helper = Fixture.composed(fanCount: 2)
+        await helper.bindSafetyRegistries()
+        _ = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [1]), from: ConnectionID())
+        await helper.leases.sealForSleep(generation: 1)
+
+        let (shown, thrown) = try await Self.reasons(forFanAt: 0, in: helper)
+
+        #expect(thrown == .systemSleeping, "the grant reached the lease table, not the seal")
+        #expect(
+            shown == thrown,
+            """
+            the snapshot says \(shown) about a free fan while every grant over it is refused \
+            \(thrown): a client is offered control the sleep seal refuses.
+            """)
+    }
+
+    /// A leased fan whose bounds read implausible while the seal stands reads `.systemSleeping`, as
+    /// another connection's grant over it is refused: step 8 speaks only for the fans Aeolus is not
+    /// accountable for, so a leased fan's bounds are step 9's answer, below the seal. The sleep
+    /// seal's twin of `GrantBoundsAgreementTests.aLeasedFansBoundsDoNotOutrankTheSeal`.
+    ///
+    /// **Mutation:** in `firstRefusal`, drop `!accountable, ` from step 8's condition. Run: red —
+    /// the snapshot says `.boundsImplausible`, which `fanctl auto` reads as silent.
+    @Test("A leased fan with implausible bounds reads the sleep seal, as the grant refuses it")
+    func aLeasedFansBoundsDoNotOutrankTheSleepSeal() async throws {
+        let helper = Fixture.composed(
+            afterwards: [Fixture.fanZeroMaximum(Fixture.byteSwappedMaximum)])
+        await helper.bindSafetyRegistries()
+        _ = try await helper.leases.acquireLease(
+            LeaseFixture.request(fans: [0]), from: ConnectionID())
+        await helper.plane.advance()
+        #expect(
+            try await helper.plane.firmwareBound(.maximum, ofFan: 0) == Fixture.byteSwappedBound,
+            "fan 0's maximum does not read the staged value, so its bounds are not in question")
+        await helper.leases.sealForSleep(generation: 1)
+
+        let (shown, thrown) = try await Self.reasons(forFanAt: 0, in: helper)
+
+        #expect(thrown == .systemSleeping)
+        #expect(
+            shown == thrown,
+            "the snapshot says \(shown) about a leased fan while the grant says \(thrown)")
+    }
+
     // MARK: - What the seal does not overwrite
 
     /// Which more durable refusal stands beside the seal.

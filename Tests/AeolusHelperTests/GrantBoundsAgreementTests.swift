@@ -155,7 +155,7 @@ struct GrantBoundsAgreementTests {
         await helper.plane.advance()
         #expect(
             try await helper.plane.firmwareBound(.maximum, ofFan: 0) == Fixture.byteSwappedBound,
-            "fan 0's maximum reads plausible, so the bounds have nothing to say")
+            "fan 0's maximum does not read the staged value, so the bounds have nothing to say")
 
         let sealed = AsyncSignal()
         let lift = AsyncSignal()
@@ -236,7 +236,7 @@ struct GrantBoundsAgreementTests {
         await helper.plane.advance()
         #expect(
             try await helper.plane.firmwareBound(.maximum, ofFan: 0) == Fixture.byteSwappedBound,
-            "fan 0's maximum reads plausible, so the bounds have nothing to outrank")
+            "fan 0's maximum does not read the staged value, so the bounds have nothing to outrank")
 
         let shown = try await Self.shownReason(ofFanAt: 0, in: helper)
         let thrown = await Fixture.refusalForGrant(over: 0, from: helper.leases)

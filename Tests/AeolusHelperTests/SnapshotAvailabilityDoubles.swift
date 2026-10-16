@@ -149,16 +149,19 @@ enum AvailabilityFixture {
     }
 
     /// The same wiring over firmware whose restore can be parked on demand. `firmware` is a
-    /// parameter so a scenario can keep it and advance its stages beneath the parking plane.
+    /// parameter so a scenario can keep it and advance its stages beneath the parking plane, and
+    /// `clock` so it can age a sighting out under a parked handback.
     static func wedging(
         firmware: ScriptedControlPlane = AvailabilityFixture.firmware(
-            fanCount: 1, writes: .honoured)
+            fanCount: 1, writes: .honoured),
+        clock: some MonotonicClock = SystemMonotonicClock()
     ) -> HelperComposition<CycleWedgingRestorePlane> {
         HelperComposition(
             plane: CycleWedgingRestorePlane(firmware),
             snapshotProvider: PlaneBackedProvider(over: firmware, fanCount: 1),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: clock,
             log: Self.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog,

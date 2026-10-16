@@ -267,7 +267,7 @@ struct UnreadModeAvailabilityTests {
         await helper.plane.advance()
         #expect(
             try await helper.plane.firmwareBound(.maximum, ofFan: 0) == Fixture.byteSwappedBound,
-            "fan 0's maximum reads plausible, so the bounds have nothing to be outranked by")
+            "fan 0's maximum does not read the staged value, so no bounds are outranked")
         await helper.plane.setMode(.manual, ofFan: 0)
         await helper.reconciliation.reconcile()
         #expect(
