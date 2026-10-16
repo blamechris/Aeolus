@@ -1363,7 +1363,9 @@ snapshot it was read for, from the same read. `FanState.mode` is unchanged.
   fan it cannot read; a rung keyed
   on § 3's set mirrors a subset of that rule.
 - **Above #350's seal**, which re-states only a fan nothing else refused: the grant's fresh read is
-  above its straight-line region, and the seal check is inside it.
+  above its straight-line region, and the seal check is inside it. *(Superseded in form by the
+  #128/#270/#269 amendment below: the seal is step 10 of one first-match ladder and states
+  `.releaseInProgress` over every fan no higher rung refuses. Step 5 is still above it.)*
 - **Disjoint from steps 1–3**, by the argument they already rest on: a fan in a handback register
   is in `fansAeolusIsAccountableFor`, and step 5 returns it untouched.
 
@@ -1747,11 +1749,14 @@ re-states `.available` and `.boundsImplausible` and nothing else. Steps 4 and 7 
 step because it suspends. In that order the rung would overwrite `.supervisorBlind`, the registers and
 the seals — reasons `SafeState` classes pending or durable — with one it classes silent, and `fanctl
 auto` would exit 0 about a fan whose mode did not read, on a machine that cannot read: #360's defect.
-So: **the snapshot agrees with the grant on whether a grant is refused, always, and on the reason,
-except that a machine-wide refusal `fanctl auto` reads as silent is never stated over a fan's own
-durable or pending reason.** Step 5's manual arm over step 6 was the first instance; step 12 is the
-second. Where they part, both refuse. Step 11 is pending, so it follows the grant's order exactly; if
-ADR 0013 classes it silent, it drops below steps 3 and 10 in the same change.
+So: **the snapshot agrees with the grant on whether a grant is refused, for every refusal a
+snapshot states per fan, and on the reason, except that a machine-wide refusal `fanctl auto` reads
+as silent is never stated over a fan's own durable or pending reason.** Two refusals are not stated
+per fan, so a fan nothing else refuses reads `.available` beside them: another client's lease,
+which a snapshot cannot attribute, and § 3's latch, stated machine-wide. Step 5's manual arm over
+step 6 was the first instance; step 12 is the second. Where they part, both refuse. Step 11 is
+pending, so it follows the grant's order exactly; if ADR 0013 classes it silent, it drops below
+steps 3 and 10 in the same change.
 
 **Plumbing.** `SupervisedFanAuthority` holds the cache the lease core proves grants against, the same
 instance, as a required `private let telemetry: any SightednessProving`. `snapshot()` asks it first,
@@ -1765,17 +1770,21 @@ read cold. Measured on `Mac16,5`, macOS 27.0.1 (26A434), by
 test on the machine: warm, the check took 0.79–0.96 µs at p50 and at most 1.7 µs, with no curated
 read in 160 snapshots; cold, one curated-set read per snapshot, 40 of 40, at 48–115 ms p50; and with
 § 3 stopped, twelve bursts of 16 concurrent snapshots on an expired cache issued one read each and
-never held more than one `.supervisor` turn, parked or in flight. A snapshot-path failure is
-remembered as a grant-path one is, so the
-snapshot can produce the blindness a grant is refused on — the same read. On a `.built` seam, during a
-sealed sleep after the teardown returns, `fanctl auto` exits 8 where it exited 0: `systemSleeping` is
-pending (ADR 0013). § 3's latch stays machine-wide only.
+never held more than one `.supervisor` turn, parked or in flight. The test was then cut to ten warm
+rounds, three cold snapshots and one burst, for its cost on every local `swift test`, 126 s to 39 s;
+run once alone at that size, it met all three again: warm p50 0.96 µs and no curated read, one read
+per cold snapshot, and one read and one `.supervisor` turn for the burst. A snapshot-path failure
+is remembered as a grant-path one is, so the snapshot can produce the blindness a grant is refused
+on — the same read. On a `.built` seam, during a sealed sleep after the teardown returns, `fanctl
+auto` exits 8 where it exited 0: `systemSleeping` is pending (ADR 0013). § 3's latch stays
+machine-wide only.
 
 **No `AeolusXPCVersion` bump.** No field, case or method changes: `.systemSleeping` and
 `.noThermalTelemetry` are on the wire and already thrown.
 
 **Assumption added.** The cache keeps the snapshot's sighting to one curated read per period. It is a
-row of the table below.
+row of the table below, which also says why, with § 3 running, that read is spent on every cycle
+rather than in an edge case ([#393](https://github.com/blamechris/Aeolus/issues/393)).
 
 **Alternatives considered.** *A machine-wide field for either rung*: a bump. *Rung 12 in grant
 order*: #360's exit 0. *Reclassify `noThermalTelemetry` as pending*: `auto` never exits 0 on a blind
@@ -2059,7 +2068,7 @@ they sit under. **Status stays Proposed.**
 | — | At most one live lease covers a fan | One lease at a time (`.leaseHeldByAnotherClient`) | Overlapping leases: § 5's records keyed per (fan, lease), and registration's arbitration re-decided |
 | — | Every lease-core restore notice for a fan precedes any grant over it, and precedes the fan leaving `releasing` | `releasing` is held from before the restorer's notices until it returns; `HelperFanRestorer` awaits each notice before its write | A restore path bypassing `releasing` lets the index-keyed `manualControlReleased(fanAt:)` erase a newer lease's record, and a notice delivered after the restorer returns ends #368's wait before it arrives; either way the notice must then carry the lease |
 | — | The snapshot's `F<n>Mn`/`F<n>Mx` read and the grant's `readEnvelope(ofFan:)` fail together and reach one plausibility gate (#270) | Code: one scheduler and connection, the same two keys. Each path checks finiteness before the gate: the plane at its seam, and the snapshot's in `SMCFanEnumeration`, which turns a non-finite read into `.notDecodable`. A non-finite bound is therefore `.notMeasured` on both, and both end at that gate as `.boundsImplausible`. Unverified on Intel and M1/M2 | The grant refuses leases the snapshot offers, or the reverse. Fix the read in the same change; do not debounce |
-| — | The cache keeps the snapshot's sighting to one curated read per period (#269) | Measured on `Mac16,5` (27.0.1, 26A434) with § 3 stopped, in four runs: one curated read per cold snapshot, 40 of 40, and one per burst of 16 concurrent snapshots, 12 of 12, never more than one `.supervisor` turn held; none warm. Not measured with § 3 running beside an expired cache, nor on Intel or M1/M2 | The cost question reopens: a `.built` snapshot's check would queue `.supervisor` turns ahead of § 3. Fix the cache's coalescing; do not move the check off the snapshot |
+| — | The cache keeps the snapshot's sighting to one curated read per period (#269) | Measured on `Mac16,5` (27.0.1, 26A434) with § 3 stopped, in four runs: one curated read per cold snapshot, 40 of 40, and one per burst of 16 concurrent snapshots, 12 of 12, never more than one `.supervisor` turn held; none warm. With § 3 running, the shared cache expires for part of every § 3 cycle by construction: § 3 sleeps its interval after each cycle, the cache's age bound is that interval, and § 3 records when its read finishes, so the entry is expired for the whole of § 3's next read and any gap before it. So a snapshot can add one curated read per period, a duplicate whose result the cache drops, or queue its read ahead of § 3's and delay that cycle by one read. ADR 0010's bound still holds — at most one other read in flight — so that is a cost on every cycle, not a safety failure. Unmeasured with § 3 running ([#393](https://github.com/blamechris/Aeolus/issues/393), before E3 makes `.built` reachable), and on Intel or M1/M2 | The cost question reopens: a `.built` snapshot's check would queue `.supervisor` turns ahead of § 3. Fix the cache's coalescing; do not move the check off the snapshot |
 | — | The snapshot's `F<n>Md` read and the grant's fresh read fail together | Code: one scheduler and connection, the same key and `FirmwareFanMode(declaredByFirmware:)` decode behind the same finiteness rule; a `.snapshot` read waits and never fails for its priority. They differ only in priority and instant. Every recorded `F<n>Md` read on `Mac16,5` answered, and none was taken while reads were failing | The #360 rung refuses leases the helper grants. Fix the read, and re-decide here. The same holds for a platform whose mode is not `F<n>Md` (Intel, `FS! `): the snapshot's read must take the plane's branch, or share its decode, in the same change |
 
 Every observation above is `Mac16,5`; the write-path rows are hypotheses until D8 runs. Intel and

@@ -15,12 +15,15 @@ import FanKit
 // `FanState.manualControlAvailability` is the field a UI turns into an enabled or disabled
 // control, so *which* refusal it states when several apply is a decision rather than a
 // detail. The whole order lives here, and its rule is: **the snapshot agrees with
-// `LeaseAuthority.acquireLease` on whether a grant over the fan is refused, always; and on the
-// reason, except that a machine-wide refusal `fanctl auto` reads as silent is never stated over
-// a fan's own durable or pending reason**
-// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s #128/#270/#269 amendment). Anything
-// else is `CLAUDE.md` rule 6 — a screen offering control that the click cannot get, or refusing
-// control the helper would in fact grant.
+// `LeaseAuthority.acquireLease` on whether a grant over the fan is refused, wherever the refusal
+// is one a snapshot states per fan; and on the reason, except that a machine-wide refusal
+// `fanctl auto` reads as silent is never stated over a fan's own durable or pending reason**
+// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s #128/#270/#269 amendment). Two
+// refusals are not stated per fan, so a fan nothing else refuses reads `.available` beside them:
+// another client's lease (`.leaseHeldByAnotherClient`, last paragraph below) and § 3's latch,
+// which the snapshot states machine-wide as `isThermalEmergencyActive`. Anything else is
+// `CLAUDE.md` rule 6 — a screen offering control that the click cannot get, or refusing control
+// the helper would in fact grant.
 //
 // **The rule has a corollary, and it binds both sides** (ADR 0014's 2026-10-15 amendment): a
 // grant refusal, and the availability that mirrors it, is computed from **current evidence the
