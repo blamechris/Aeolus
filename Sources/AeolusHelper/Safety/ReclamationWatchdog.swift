@@ -391,10 +391,10 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         let entitled = await leases.hasLiveLease(id: lease, coveringFan: index)
 
         // Re-fetched across the lease hop before either answer is acted on, so a fan released
-        // during it gets no second restore and no false "may still be pinned". **Untested, and
-        // kept by this file's re-fetch rule.** `HeldLeaseRole` is now the seam that holds the
-        // hop open without blocking a pool thread (the lease-clock route failed on CI, run
-        // 37940001373), and no test lands a release here with it yet: #344.
+        // during it gets no second restore and no false "may still be pinned". **Tested** (#344,
+        // #365): `HeldLeaseRole` is the seam that holds the hop open without blocking a pool
+        // thread (the lease-clock route failed on CI, run 37940001373), and
+        // `ReclamationLeaseIdentityTests.aRecordChangedDuringTheLeaseCheckStopsTheExamination`.
         guard isHeld(index, under: lease), let fan = registry.record(ofFan: index) else {
             log.reclamationFanReleasedMidExamination(fan: index, during: "the lease check")
             return

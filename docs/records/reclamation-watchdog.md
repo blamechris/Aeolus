@@ -186,21 +186,31 @@ with no notice and no other registration leaves the generation where it was, so 
 is accepted and records the fan under a lease that has ended. Nothing is overwritten — only the
 same lease's record, or none, can be in the slot, because any other lease's registration would
 have moved the generation — and the next examination asks D2 about that record's own lease,
-finds it not live, and hands the fan back as `.leaseLapsed`. That holds with the terminal
-action's bump below: a registration accepted after a terminal action returned finds no record
-and no live lease, and is handed back the same way.
-`ReclamationLeaseIdentityTests.aRegistrationAcceptedAfterAnUnannouncedLeaseEndIsHandedBack` and
-`aRegistrationAcceptedAfterTheTerminalActionIsHandedBack` hold both (#365). They assert the
-acceptance as well as the hand-back, so closing either residual turns them red and this record
-gets updated with it.
+finds it not live, and hands the fan back as `.leaseLapsed`. The shipping route here is a lapse:
+the TTL passes and the sweep has not run, so nothing moves the generation. A teardown sends a
+release notice, so a lease ended by one is this case only if the notice was lost. Both routes
+are held by `ReclamationLeaseIdentityTests.aRegistrationAcceptedAfterAnUnannouncedLeaseEndIsHandedBack`
+(#365), which asserts the acceptance as well as the hand-back, so closing the residual turns it
+red and this record gets updated with it.
 
-**One consequence the hand-back does not cover.** A registration accepted after the terminal
-action returned also clears the `.systemReclaimed` mark the terminal action kept (#346), because
-an accepted registration clears unconditionally. `finalising` and the entry's bump refuse such a
-registration only while the terminal action runs or when its answer predates it; one that began
-during the hand-back and resumed afterwards is neither. The test does not assert the clear: it
-pins the hand-back this record relies on, and a pinned clear would endorse a mark erased for a
-fan the system did reclaim.
+**After the terminal action, the revocation's notice refuses it.** The terminal action's
+revocation restores through the lease core, and the shipping restorer (`HelperFanRestorer`)
+sends § 5 `manualControlReleased(fanAt:)` for every fan before every lease-core restore, which
+moves the generation. So a re-apply under the lease being given up that began during the
+hand-back is refused on whichever side of the revocation it resumes: before it, by `finalising`
+(`aRegistrationInFlightAtTheTerminalActionClearsNothing`); after it, by the moved generation
+(`aReapplyThatBeganInTheHandBackIsRefusedAfterTheRevocationsNotice`, which delivers the notice
+inside the revocation as the restorer does). The mark the terminal action keeps (#346) stays.
+
+**Without the notice it is accepted, and clears the mark.** A notice is a hint (ADR 0009 D2),
+and `RecordingFanRestorer` sends none. With it lost, a registration that began during the
+hand-back and resumes after the terminal action returned finds nothing moved the generation and
+`finalising` closed, so it is accepted, records the fan under the lease the terminal action
+revoked and, because an accepted registration clears unconditionally, erases the
+`.systemReclaimed` mark the terminal action kept. The next examination hands the fan back as
+`.leaseLapsed`. `aRegistrationAcceptedAfterTheTerminalActionWithItsNoticeLostIsHandedBack` holds
+the acceptance and the hand-back, and does not assert the clear: a pinned clear would endorse a
+mark erased for a fan the system did reclaim. #366 owns the mark's handling around an episode.
 
 **The terminal action moves it too** (the same review, its C3). The generation did not move when
 § 5 itself began giving the fan up. A registration under the same lease — a re-apply — told its
@@ -298,8 +308,12 @@ tested with a newer lease that `ParkableHeldLeases.vouch(for:)` makes § 5's own
 while the old lease stays live in the core: the state the instant between the driver's last
 answer and § 5 resuming leaves, which no seam holds open. The envelope read is tested both ways,
 for the same reason. The identity re-fetch after the control-state read is caught one hop later
-by the lease hop's, and the lease hop's by `restoreAndForget`'s own identity check, so only their
-log lines tell them from a presence check, and the tests assert those lines.
+by the lease hop's, so only its log line tells it from a presence check. The lease hop's is
+caught by `restoreAndForget`'s own identity check when the parked answer is `false`, so there
+too only the log line tells them apart; when the parked answer is `true` nothing masks it, and a
+presence-only re-fetch lets the stale examination judge the newer lease's record and spend its
+registration grace, which the third case of
+`aRecordChangedDuringTheLeaseCheckStopsTheExamination` catches on behaviour.
 
 **The two without a test: the precedence check and the ledger hop in `diverged`.** They are
 suspensions on `ThermalEmergencyLatch` and `ReclamationLedger`, which the actor holds as
@@ -310,8 +324,9 @@ for them: a registration that lands before the latch hop is stopped by the lease
 re-fetch, and one in the latch or ledger hop is stopped only by these two. They are kept by the
 rule alone until a role over each exists, as `HeldLeaseRole` is over the lease core. Presence
 only at the first would let `markReclaimed` put a `.systemReclaimed` mark on a newer lease's fan;
-at the second, the old lease's copy of the record would go on to spend its attempt count on the
-newer lease's record and re-assert for it.
+at the second, the old lease's copy of the record would go on to book its attempt count onto the
+newer lease's record, which can send that lease's first real divergence straight to the terminal
+action. The re-assert itself is stopped before any write, by the envelope read's re-fetch.
 
 ## Built once per registration, per lease
 

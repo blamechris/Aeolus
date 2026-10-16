@@ -1163,7 +1163,9 @@ worse than a UI that reports an error, because the user acts on it.
 `ReclamationSupervisorTests.swift`, `ReclamationEmergencyRegistrationTests.swift`,
 `ReclamationRegistryTests.swift` (the registry and the per-reading judgement as values, #128),
 `ReclamationRefetchIdentityTests.swift` and `ReclamationLateRegistrationTests.swift` (the
-identity half of each re-fetch, and the two registrations the generation lets through, #365)
+identity half of each reachable re-fetch, and the registrations the generation lets through:
+accepted after a lapse or a lost release notice, and refused once the revocation's notice is
+sent, #365)
 and `ReclamationWatchdogAccessTests.swift` with `ReclamationRegistryAccessTests.swift` (their
 access), with the
 engagement driver the re-assert engages through in `EngagementDriverTests.swift` and
@@ -1196,7 +1198,7 @@ bug that needs work to **arrive**. Three more, from #180, script a lease ending 
 the re-assert's *writes* — the same seam, now a write seam too, because the re-fetch missing
 after the command write was invisible to a seam that could only interfere with reads.
 
-The identity half of each re-fetch is pinned the same way: a registration under a newer lease is
+The identity half of each reachable re-fetch is pinned the same way: a registration under a newer lease is
 landed in that one suspension, and the test goes red when the re-fetch asks about presence
 instead (#365). `ReclamationRefetchIdentityTests.swift` lists each re-fetch against its test.
 **Two are not tested: the precedence check and the ledger hop in `diverged`.** They are
