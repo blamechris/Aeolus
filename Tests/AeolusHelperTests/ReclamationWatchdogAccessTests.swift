@@ -74,17 +74,18 @@ struct ReclamationWatchdogAccessTests {
     /// Every member of the actor whose privacy is load-bearing, spelled as declared.
     ///
     /// The nine stored members first: the read seam, the ungoverned writer, the engagement
-    /// driver, the lease role, § 3's latch, the ledger, the log, the registry and the sweep
-    /// flag. Then every method that acts on a held fan — each one awaits, re-fetches and acts in
-    /// an order the re-fetch rule depends on, and an internal one is callable from every file
-    /// in `AeolusHelper` with `registry` in scope — and the two hand-back steps #128 lifted out.
+    /// driver, the lease role, the latch role, the ledger role, the log, the registry and the
+    /// sweep flag; what each role carries is `ReclamationRoleTripwireTests`' (#380). Then every
+    /// method that acts on a held fan — each one awaits, re-fetches and acts in an order the
+    /// re-fetch rule depends on, and an internal one is callable from every file in
+    /// `AeolusHelper` with `registry` in scope — and the two hand-back steps #128 lifted out.
     private static let mustStayPrivate = [
         "let sensing: any FanStateSensing",
         "let writer: SafetyActorWriter<Plane>",
         "let engagement: EngagementDriver<Plane>",
         "let leases: any HeldLeaseRole",
-        "let latch: ThermalEmergencyLatch",
-        "let ledger: ReclamationLedger",
+        "let latch: any ThermalLatchRole",
+        "let ledger: any ReclamationLedgerRole",
         "let log: SafetyLog",
         "var registry = Registry()",
         "var isSweeping = false",

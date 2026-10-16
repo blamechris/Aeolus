@@ -488,6 +488,14 @@ struct WriteVerbAllowlistTests {
         // through the conformer's `restore(_:because:)`.
         "HeldLeaseRole.swift: hasLiveLease(id: UUID, coveringFan: Int)",
         "HeldLeaseRole.swift: revokeLease(id: UUID, forFan: Int, because: FanRestoreCause)",
+        // § 5's role over the ledger (#380): the three calls it makes, as requirements
+        // `ReclamationLedger` witnesses with synchronous, isolated methods. Each records or clears
+        // why a fan was given up, which the snapshot reads; none reaches a restorer, a writer or
+        // the plane. The latch's role carries one `get async` property, which this scan does
+        // not read, and which writes nothing either.
+        "ReclamationLedgerRole.swift: markReclaimed(fanAt: Int)",
+        "ReclamationLedgerRole.swift: markSupervisorBlind(fanAt: Int)",
+        "ReclamationLedgerRole.swift: clearReclaimed(fanAt: Int)",
         "LeaseAuthority.swift: revokeLeases(coveringFan: Int, because: FanRestoreCause)",
         "LeaseAuthorityRefusals.swift: refuseIfBlind(_: ConnectionID)",
         "LeaseAuthorityRefusals.swift: refuseIfForeignManualControl(_: ConnectionID, "
