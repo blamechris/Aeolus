@@ -137,6 +137,8 @@ three private helpers for where they stop — `reassertStopped`, `reassertStoppe
 and `reengageRefused` for a first step refused because a same-lease engagement took the fan first
 — which keep `reassert`'s cyclomatic complexity at 10 where inline guards would have made it 13.
 
+**#390's subset spent none: 323 code lines; `examine(fanAt:)` 50** (SwiftLint 0.65.1).
+
 ## Every act is for the lease the fan was registered under
 
 *Added by [#353](https://github.com/blamechris/Aeolus/issues/353) and

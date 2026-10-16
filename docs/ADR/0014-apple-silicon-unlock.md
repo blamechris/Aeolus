@@ -1314,9 +1314,11 @@ lease is judged against the permit's own fan at every examination. No write verb
    `.supervisorBlind` instead (#366). Register each fan before this `apply`'s first command write
    to it, a fan already engaged under the lease included. A registration accepted while § 5 is
    examining the fan leaves that examination's re-assert to this engagement (#381).
-3. Report each commanded target with `commandedTarget(_:under:)`, after the write returns and never
-   before. § 5 re-asserts the target last reported, and a report that arrives during its own
-   command write wins the record (#381).
+3. Take the fan's examination gate for each step: issue the command write, report it with
+   `commandedTarget(_:under:)` after the write returns and never before, and release the gate after
+   the report, or after the write has thrown. Hold one fan's gate at a time, and nothing under it
+   but that write and its report. Engage under the same gate. § 5 re-asserts the target last
+   reported, and judges every reading against it (#383).
 4. Ask `heldLease(id:from:)` again before replying, so the reply never says *applied* under a
    lease that has ended.
 5. Map a superseded step to `.releaseInProgress`, unless the lease itself has gone. Map a
@@ -1941,8 +1943,8 @@ Then:
   would close it; it is listed rather than required, because the direction is safe and the next
   cycle bounds it.
 - *The judgement's own view is not covered.* A target reported between § 5's read and its judgement
-  is compared against a reading that predates it; tracked as
-  [#383](https://github.com/blamechris/Aeolus/issues/383), an A6 precondition.
+  is compared against a reading that predates it; resolved by ordering, not by excuse: see the
+  [#383](https://github.com/blamechris/Aeolus/issues/383) amendment below.
 
 **Alternatives considered.**
 
@@ -1972,6 +1974,116 @@ Then:
 The ruling is the architect's #381 consult, run on Opus. **No `AeolusXPCVersion` bump:** nothing
 crosses the boundary. This amendment corrects clauses of a Proposed ADR rather than the decisions
 they sit under. **Status stays Proposed.**
+
+## Amendment (2026-10-16, [#383](https://github.com/blamechris/Aeolus/issues/383), [#390](https://github.com/blamechris/Aeolus/pull/390)) — § 5 judges every reading against the record, and level 6 keeps its steps out of § 5's examinations
+
+An A6 precondition, found by the architect's #381 consult. Unreachable on every build on `main`,
+where a `.notBuilt` plane grants no lease.
+
+**The defect.** § 5 reads a fan's control state and then suspends on the lease check before it
+judges the reading against the record. A level-6 step can land on either side of the read: reported
+after the read, so the reading predates the record, or written before it and reported after the
+judgement, so the record predates the reading. Either way an ordinary step reads as
+`.targetDiverged`: the fan is marked, "Reclamation detected" is logged at `.fault`, an attempt is
+spent, and in the second order § 5 re-asserts the old target over the new one. A loop phase-locked
+to § 5's sweep does this on consecutive cycles and reaches the terminal action mid-ramp.
+
+**Decision.**
+
+- **§ 5 judges every reading against the record, and excuses none.** No announcement, report, stamp
+  or timing makes a reading other than the record's target anything but a divergence. Whatever
+  level 6 does, it can cost § 5 a false fault, in the safe direction, and never a false claim of
+  control.
+- **Level 6 keeps each step out of § 5's examination of the fan.** One examination or one step per
+  fan at a time, under an exclusion A6 adds, the fan's examination gate. § 5 holds it from the
+  examination's stamp to its last act, re-assert included. Level 6 holds it for each step, from the
+  command write until the step is reported or its write has thrown, and A6's engagement holds it
+  across its engage steps. Under it, the record at the read is exactly level 6's last write that
+  returned, so the comparison is exact in both orders. The same gate keeps a client step out of
+  § 5's re-assert (#381) and keeps two engagements of one fan apart (#389).
+- **§ 5 never waits long on level 6.** Its wait for the gate is bounded; past the bound it examines
+  without the gate, and because it excuses nothing, the cost is a false fault at most. § 3's writes,
+  the terminal action's restore and every other restore never take the gate.
+- **A report no plane can write is not recorded, a target that is not a number diverges, and every
+  RPM a log line states is written out by one conversion that cannot trap** (#390). These stand
+  however the steps are ordered.
+
+| The step | When it runs | § 5 judges the fan |
+|---|---|---|
+| Under the gate, before the examination | Written and reported | Against the record, which is the step |
+| Under the gate, after the examination | Written and reported | At the next examination, against the record |
+| Without the gate, a contract breach | Anywhere | Against the record: possibly a false fault, never a hold |
+| Its write throws | Not reported | Against the record, which the fan still holds |
+| Past § 5's bound | In flight | Without the gate: possibly a false fault |
+
+**A6's contract.**
+
+- Item 3 becomes: *Take the fan's examination gate for each step: issue the command write, report it
+  with `commandedTarget(_:under:)` after the write returns and never before, and release the gate
+  after the report, or after the write has thrown. Hold one fan's gate at a time, and nothing under
+  it but that write and its report. Engage under the same gate. § 5 re-asserts the target last
+  reported, and judges every reading against it (#383).*
+- `GovernedFanWriter` needs no change: the step it computes is written and reported under the gate.
+- Items 2, 4 and 5 are unchanged.
+
+**#381's amendment.** Its last "What remains" bullet, the judgement's own view, is resolved by
+ordering, not by excuse, in this amendment.
+
+**What remains.**
+
+- *A level-6 write that bypasses the gate* can land around an examination as before: a false fault,
+  in the safe direction.
+- *A step that lands and then throws* leaves the fan at a target nothing reports: a false fault, and
+  the re-assert restores the record.
+- *A system target equal to the record* is read as Aeolus's, as it always was (#119).
+- *Until A6*, nothing takes the gate, and nothing steps.
+
+**Alternatives considered.**
+
+- *Excuse a reading the fan could have been holding* (#383's first ruling, and three rounds of
+  #390). § 5 held a `.targetDiverged` reading that matched the target reported when the examination
+  began, or a step level 6 announced before writing it. It then bounded the hold with a credit
+  renewed by a report, and then with a settlement at the next examination and a barred target. Each
+  round's review found a sequence that held a system target indefinitely:
+  - a stale announcement;
+  - a report followed by another before § 5 looked again, found both by Codex and, on A6's contract,
+    by the delta review's fallback;
+  - a stamp's target superseded inside every examination;
+  - a 1-RPM tolerance chained across settlements;
+  - a system alternating its own target past a single barred slot.
+
+  The class cannot be closed. A level 6 that announces, writes and reports, one step a sweep, the
+  target the system held one cycle earlier is indistinguishable from a reverse-phase ramp, so any
+  excuse built on what the lease holder says can be met on contract. It was a supervisor's bound
+  resting on the supervised.
+- *The plane's own last-written target, returned with the read in the same scheduler turn.* It is
+  exact for any writer and needs no announcement, and no `AeolusXPCVersion` bump, because
+  `FanControlState` never crosses the boundary. But it designs E4's write ordering now:
+  `SMCReadScheduler` is read-only and the production write path is `.notBuilt`, so the suite would
+  certify an ordering only `ScriptedControlPlane` provides. It changes `FanControlState` and every
+  control-state reader. And § 5 would then need a rule for a fan that holds Aeolus's last write
+  while the record names another target: #381's overwritten step, or a write that lands and throws.
+  Kept for if A6 cannot take the gate.
+- *Withdraw the excuse and order nothing.* The false faults are in the safe direction, but a loop
+  phase-locked to § 5's sweep diverges on consecutive cycles: a `fanctl set` from 50 to 100 percent,
+  about thirteen governed steps at 200 RPM a second, would be handed back after four. Ordering is an
+  A6 precondition, not an option.
+- *Run level 6's steps on the supervisor's tick, after § 5's cycle.* No new primitive, but an
+  `apply` arriving between ticks either waits up to a sweep for its first write, or races the
+  examination.
+
+**Revisit if:**
+
+- A6 needs a step that cannot take the gate, or writes several fans in one SMC transaction;
+- a gated step is observed to keep § 5 waiting past its bound;
+- false faults are observed with every step gated;
+- E4's write path is designed, when the plane register costs less than it does today;
+- leases that can overlap on a fan are proposed.
+
+The ruling is the architect's #383 consult and its #390 consults, run on Opus, and it withdraws the
+excuse the first of them introduced. **No `AeolusXPCVersion` bump:** nothing crosses the boundary.
+This amendment corrects clauses of a Proposed ADR rather than the decisions they sit under.
+**Status stays Proposed.**
 
 ## Assumptions and what would invalidate them
 

@@ -1195,9 +1195,15 @@ during § 5's yield wait re-admits § 5's next step as a first step, which is re
 after § 5's driver has written. The driver hands the fan back, and § 5 logs the stand-down, whose
 line says nothing was written. The fan ends on automatic control and the mark is kept, so the
 snapshot is truthful; the log line is not, and the client's engagement believes it holds a fan it
-does not. A target reported between
-§ 5's read and its judgement is compared against a reading that predates it, so an ordinary step
-can read as diverged; that is [#383](https://github.com/blamechris/Aeolus/issues/383).
+does not. A level-6 step that lands between § 5's read and its judgement is judged against a
+record that predates or postdates the reading, so an ordinary step can read as diverged. § 5
+excuses no reading for it, because any excuse built on what the lease holder reports can be met by
+a lease holder that reports a target the system holds; instead A6 keeps each step out of § 5's
+examination of the fan (ADR 0014's #383 amendment,
+[#383](https://github.com/blamechris/Aeolus/issues/383)). Until A6, nothing steps. A report no
+plane can write is not recorded, a target that is not a number diverges, and every RPM a § 5 or
+§ 3 line states is written out by a conversion that cannot trap
+([#390](https://github.com/blamechris/Aeolus/pull/390)).
 
 The order is deliberate. The fan's own lease is asked *after* the read because every teardown
 drops its lease before it restores, so a read that saw that restore land is followed by a
@@ -1221,6 +1227,8 @@ worse than a UI that reports an error, because the user acts on it.
 `FinaliseReleaseLedgerTests.swift`, `FinaliseReleaseRevocationTests.swift`,
 `TerminalActionTeardownRaceTests.swift`, `LeaseRevocationTests.swift`,
 `LeaseRevocationOutwaitTests.swift`, `ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
+`ReclamationRecordIntegrityTests.swift` (a report no plane can write, a target that is not a number,
+and every RPM a log line states, #390),
 `ReclamationSupervisorTests.swift`, `ReclamationEmergencyRegistrationTests.swift`,
 the `ReclamationRegistryTests` suite (the registry and the per-reading judgement as values, #128,
 and #366's episode and given-up lease as values, in its extension in
