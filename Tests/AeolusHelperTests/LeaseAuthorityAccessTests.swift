@@ -147,10 +147,16 @@ struct LeaseAuthorityAccessTests {
     /// `LeaseAuthorityRefusals.swift` for the same reason `foreignControl` is, and `private(set)`
     /// so only `bind(emergencyRestores:)` can change it. It is a role, not § 3's actor, so
     /// reading it reaches one read-only question and none of § 3's mutators.
+    ///
+    /// `envelopes` is #270's: `FanEnvelopeReading`, one read verb, readable from
+    /// `LeaseAuthorityRefusals.swift` for `foreignControl`'s reason. It is a role, not the plane:
+    /// what it answers is a `FanEnvelope`, and turning one into a permit is a step the lease
+    /// core's files are held to never naming, by `theLeaseCoreMintsNoPermit` below.
     private static let acknowledgedInternalProperties: Set<String> = [
         "writeCapability",
         "telemetry",
         "foreignControl",
+        "envelopes",
         "log",
         "fansAeolusIsAccountableFor",
         "leaseCount",
@@ -194,6 +200,10 @@ struct LeaseAuthorityAccessTests {
         // produce a refusal and nothing else: it reads `fansAeolusIsAccountableFor`, which is
         // already acknowledged below, and no register that set is derived from.
         "refuseIfExemptionLapsed(_: ConnectionID, exempted: Set<Int>)",
+        // #270's, § 2's bounds gate, above the marker. Like the three above it, it can produce a
+        // refusal and nothing else: it reads `envelopes`, judges what it reads and drops it, and
+        // touches no register.
+        "refuseIfBoundsImplausible(_: ConnectionID, wanting: Set<Int>)",
         "acquireLease(_: LeaseRequest, from: ConnectionID)",
         "renewLease(id: UUID, from: ConnectionID)",
         "releaseLease(id: UUID, from: ConnectionID)",
@@ -315,6 +325,52 @@ struct LeaseAuthorityAccessTests {
         )
     }
 
+    /// The lease core's files name neither the permit nor the property that mints one
+    /// ([#270](https://github.com/blamechris/Aeolus/issues/270)).
+    ///
+    /// `refuseIfBoundsImplausible(_:wanting:)` reads a `FanEnvelope`, and a `FanEnvelope` is one
+    /// property away from the `CommandableFan` both write verbs take. The gate judges the bounds
+    /// with `FanState.controlEnvelope(declaredMinimum:declaredMaximum:)` instead, which yields an
+    /// envelope that carries no fan index and so authorises nothing, and this is what keeps it
+    /// that way: a lease core that minted a permit would be one edit from writing.
+    ///
+    /// Every file named `LeaseAuthority*.swift` under `Sources/AeolusHelper`, and every file the
+    /// actor is written in, comments stripped and string literals kept — an interpolation is
+    /// code — matched case-insensitively, so the type name and the property name are one
+    /// search. A helper elsewhere that mints the
+    /// permit for it evades this; such a helper names `CommandableFan` and enters
+    /// `WriteVerbAllowlistTests`' population, which is where it would have to be answered for.
+    ///
+    /// **Mutation:** in `refuseIfBoundsImplausible(_:wanting:)`, judge with
+    /// `declared.commandable.map(\.envelope)` in place of `FanState.controlEnvelope(…)`. Run:
+    /// red here, while every behavioural test stays green.
+    @Test("The lease core's files name no permit and nothing that mints one")
+    func theLeaseCoreMintsNoPermit() throws {
+        let named = try SeamScanner.swiftFiles(under: Self.helperTarget)
+            .map(\.lastPathComponent)
+            .filter { $0.hasPrefix(Self.authorityType) && $0.hasSuffix(".swift") }
+        let files = Set(named).union(Self.authorityFiles).sorted()
+        #expect(
+            files == Self.authorityFiles.sorted(),
+            "the scan covers \(files), so a LeaseAuthority file this suite does not know exists")
+
+        var offences: [String] = []
+        for file in files {
+            let code = SeamScanner.strippingAllComments(
+                try MemberAccessScan.strippedSource(of: file))
+            if code.range(of: "commandable", options: .caseInsensitive) != nil {
+                offences.append(file)
+            }
+        }
+        #expect(
+            offences.isEmpty,
+            """
+            \(offences) name CommandableFan or `commandable`. The lease core judges bounds and \
+            grants leases; minting the permit a write verb takes is `apply`'s and § 5's, and a \
+            lease core holding one is one edit from writing (docs/SAFETY.md § 2).
+            """)
+    }
+
     // MARK: - The member parse
 
     /// Every member of the requested kind declared at the actor's own member indent, across
@@ -335,4 +391,5 @@ struct LeaseAuthorityAccessTests {
     private static func strippedSource(of file: String) throws -> String {
         try MemberAccessScan.strippedSource(of: file)
     }
+
 }

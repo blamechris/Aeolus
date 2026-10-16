@@ -223,17 +223,10 @@ struct UnreadModeAvailabilityTests {
 
     // MARK: - Over the bounds gate
 
-    /// `F0Mx`'s value in the scenarios below: a byte-swapped `flt`'s shape, which § 2's gate
-    /// refuses as implausible.
-    private static let implausibleMaximum: [String: Result<SensorReading, SensorReadFailure>] = [
-        SMCFanEnumeration.maximumKey(forFan: 0): .reading(
-            SMCFanEnumeration.maximumKey(forFan: 0), 1e14)
-    ]
-
     /// A fan whose bounds are implausible and whose mode will not read reads `.supervisorBlind`,
-    /// the grant's answer: the grant has no bounds gate yet (#270), so its fresh read refuses
-    /// first, and step 5 restates the read path's `.boundsImplausible` as it restates
-    /// `.available`.
+    /// the grant's answer: the grant reads the bounds (#270) only after its fresh read of the
+    /// mode, which refuses first, and step 5 restates the read path's `.boundsImplausible` as it
+    /// restates `.available`. The firmware scripts `F0Mx` once, for both sides.
     ///
     /// `.boundsImplausible` is silent to `fanctl auto`, so a snapshot that kept it would exit 0
     /// about a fan the grant refuses as blind: #360's defect, for such a fan.
@@ -241,11 +234,19 @@ struct UnreadModeAvailabilityTests {
     /// **Mutation:** in `ReadOnlyFanReport.reportingForeignControl(of:observedMode:heldByAeolus:
     /// awaitingConfirmation:reconciliation:)`, key `canWrite` on
     /// `fan.manualControlAvailability == .available`. Run: red on the agreement.
+    /// **Mutation:** in `LeaseAuthority.acquireLease`, move the bounds gate above the foreign
+    /// read, as `try await refuseIfBoundsImplausible(connection, wanting:
+    /// wanting.subtracting(fansAeolusIsAccountableFor))` before `let exempted`. Run: red — the
+    /// grant says `.boundsImplausible`.
     @Test("A fan with implausible bounds whose mode will not read reads the grant's own refusal")
     func implausibleBoundsDoNotHideAnUnreadMode() async throws {
         let helper = Fixture.composed(
-            extraKeys: Self.implausibleMaximum, afterwards: [Self.modesUnread([0])])
+            afterwards: [
+                Fixture.fanZeroMaximum(Fixture.byteSwappedMaximum),
+                Fixture.fanZeroMaximum(Fixture.byteSwappedMaximum, unreadableModes: [0]),
+            ])
         await helper.bindSafetyRegistries()
+        await helper.plane.advance()
         #expect(
             try Fixture.availability(ofFanAt: 0, in: try await helper.authority.snapshot())
                 == .unavailable(.boundsImplausible),
@@ -266,13 +267,22 @@ struct UnreadModeAvailabilityTests {
     }
 
     /// A fan reconciliation could not hand back reads that durable refusal over implausible
-    /// bounds, as the grant does: the grant asks the baseline before anything about the fan.
+    /// bounds, as the grant does: the grant asks the baseline before anything about the fan,
+    /// its bounds included (#270). The refusal hides the bounds from the snapshot, so `F0Mx` is
+    /// read back first: a stage that stopped applying would leave this green over plausible bounds.
     ///
-    /// **Mutation:** as above. Run: red — the snapshot says `.foreignManualControl`.
+    /// **Mutation:** either of the two above. Run: red — with the first the snapshot says
+    /// `.foreignManualControl`, with the second the grant says `.boundsImplausible`.
     @Test("A durable reconciliation refusal is stated over implausible bounds")
     func aDurableRefusalOutranksImplausibleBounds() async throws {
         let refused = Fixture.firmwareRefusesTheModeWrite
-        let helper = Fixture.composed(writes: refused, extraKeys: Self.implausibleMaximum)
+        let helper = Fixture.composed(
+            writes: refused,
+            afterwards: [Fixture.fanZeroMaximum(Fixture.byteSwappedMaximum, writes: refused)])
+        await helper.plane.advance()
+        #expect(
+            try await helper.plane.firmwareBound(.maximum, ofFan: 0) == Fixture.byteSwappedBound,
+            "fan 0's maximum reads plausible, so the bounds have nothing to be outranked by")
         await helper.plane.setMode(.manual, ofFan: 0)
         await helper.reconciliation.reconcile()
         #expect(

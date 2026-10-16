@@ -29,7 +29,7 @@ import FanKit
 // ([#355](https://github.com/blamechris/Aeolus/issues/355)). A refusal that no read can clear
 // seals its own exit: the only events that clear the ledger need the lease it would refuse. On
 // the grant side the same rule is why `.boundsImplausible`, current evidence re-read on every
-// snapshot, belongs in the grant ([#270](https://github.com/blamechris/Aeolus/issues/270)).
+// snapshot, is in the grant ([#270](https://github.com/blamechris/Aeolus/issues/270)).
 //
 // Highest first, with the step that produces each:
 //
@@ -55,10 +55,11 @@ import FanKit
 // grant shares, the grant gives ahead of the seal — above the marker, or ahead of the seal's
 // guard in the straight-line region — except step 3's, which is the same `.releaseInProgress`.
 // So a fan another rung refuses keeps that rung's answer, which is also the one still true once
-// the panic returns. Step 8 is the one the grant does not share yet (#270): there the snapshot
-// keeps the bounds and the grant answers with the seal. Never widen this rung to overwrite a
-// refusal: step 5's `.supervisorBlind` for a fan whose mode did not read (#360) rests on it, since
-// the grant refuses that fan at its fresh read, above the seal's guard.
+// the panic returns. Step 8 is among them since #270: the grant reads the bounds above the
+// marker, after its foreign-control read, so step 5 outranks step 8 on both sides and both
+// outrank the seal. Never widen this rung to overwrite a refusal: step 5's `.supervisorBlind`
+// for a fan whose mode did not read (#360) rests on it, since the grant refuses that fan at its
+// fresh read, above the seal's guard.
 //
 // **Steps 1–3 and step 5 cannot both apply, so their relative order is not load-bearing and
 // is not relied on.** Every fan in one of the three handback registers is in
@@ -112,10 +113,11 @@ import FanKit
 // `LeaseAccountability`: a snapshot has no `ConnectionID`, so the helper cannot know whether
 // the reader is the holder. `.systemSleeping` is absent for a weaker reason — § 4's seal is
 // machine-wide state the snapshot does not read — and is
-// [#269](https://github.com/blamechris/Aeolus/issues/269)'s. Its rung goes **below step 5 and
-// above step 10**: `acquireLease` checks the sleep seal after its fresh read, so while the seal
-// holds a fan whose mode did not read is still refused `.supervisorBlind`, and the two agree.
-// `.noThermalTelemetry`, which the grant checks *before* that read, is #269's too.
+// [#269](https://github.com/blamechris/Aeolus/issues/269)'s. Its rung goes **below step 8, and so
+// below step 5, and above step 10**: `acquireLease` checks the sleep seal after its fresh read
+// and, since #270, after its bounds read, so while the seal holds a fan whose mode did not read is
+// still refused `.supervisorBlind`, one with implausible bounds `.boundsImplausible`, and the two
+// sides agree. `.noThermalTelemetry`, which the grant checks *before* that read, is #269's too.
 
 extension ReadOnlyFanReport {
 
@@ -158,7 +160,7 @@ extension ReadOnlyFanReport {
     /// other answer passes through untouched; see this file's header for why that is the whole
     /// rule. During a sealed sleep the grant says `.systemSleeping` first, which this ladder does
     /// not state yet ([#269](https://github.com/blamechris/Aeolus/issues/269)); #269's rung goes
-    /// above this one and below step 5, as this file's header says.
+    /// above this one and below step 8, as this file's header says.
     static func reportingMachineWideRestore(
         of fan: FanState, given leases: LeaseAccountability
     ) -> FanState {

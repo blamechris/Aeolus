@@ -31,7 +31,10 @@
 /// **Revisit when** a supervisor-priority reader exists that can be neither coalesced nor
 /// paced. E3's per-command `readEnvelope(ofFan:)` is the candidate — one read per client
 /// message, over a value the client is about to act on, which is exactly the shape that
-/// cannot be served from a cycle's own reading.
+/// cannot be served from a cycle's own reading. Since
+/// [#270](https://github.com/blamechris/Aeolus/issues/270) the grant takes that read too, once
+/// per requested fan Aeolus is not accountable for, as its foreign-control read takes `F<n>Md`:
+/// paced by per-connection message serialisation, and recorded here rather than acted on.
 enum SMCReadPriority: Sendable, Hashable, CaseIterable {
 
     /// `docs/SAFETY.md` § 3's cycle: the curated critical set — thirty-four keys on

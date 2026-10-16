@@ -396,8 +396,11 @@ must pass a plausibility gate:
 | `F<n>Mx <= 20,000` | Rejects the denormal and ~1e14 shapes of a byte-order fault, with wide margin over real hardware |
 
 A fan that fails any of them is reported
-`manualControlAvailability: .unavailable(.boundsImplausible)` — distinct from "no helper"
-and from "no such fan" — and **no target write of any kind may be produced for it, ever**.
+`manualControlAvailability: .unavailable(.boundsImplausible)` — by the snapshot, and since
+[#270](https://github.com/blamechris/Aeolus/issues/270) by the grant, which reads both bounds
+afresh for every requested fan Aeolus is not already accountable for, after the foreign-control
+read and before its straight-line region. That reason is distinct from "no helper" and from "no
+such fan", and **no target write of any kind may be produced for it, ever**.
 Inventing a maximum to write against would push a fabricated number through the exact path
 rule 4 exists to guard; see [ADR 0007](ADR/0007-safety-composition.md). The only action such
 a fan is subject to is the bounds-free mode verb, restore-to-automatic, which needs no
@@ -446,7 +449,11 @@ the declared-minimum-of-zero case; a rejection test per gate check, using synthe
 and no hardware; a test asserting an observation below the declared minimum passes through
 unclamped; and, on the helper side, a permit refused for every implausible declaration,
 granted for a legitimate zero minimum, and source tripwires asserting that both write verbs
-take a permit and that the restore verb takes none.
+take a permit and that the restore verb takes none. Since #270: a grant refused
+`.boundsImplausible` for the one scripted firmware value the snapshot reads, ranked as the
+snapshot ranks it beside foreign control, a mode that will not read, a handback register and
+§ 7's seal (`GrantBoundsAgreementTests`); the gate's reads counted, and cancellation kept apart
+(`GrantBoundsGateTests`); and a source tripwire asserting that the lease core names no permit.
 
 ## 3. Thermal emergency override
 
