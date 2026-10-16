@@ -30,8 +30,13 @@ struct TeardownCountTripwireTests {
     /// The restore that counts the fans, awaited, with or without `self.`.
     private static let countingRestore = #"\bawait (self\.)?restore\("#
 
-    /// The count itself, inside `restore(_:because:)`: `releasing[fan, default: 0] += 1`.
-    private static let releasingCount = #"\breleasing\[[^\]]*\] ?\+= ?1"#
+    /// The count itself, inside `restore(_:because:)`: `registers.beginHandback(ofFan: fan)`,
+    /// the transition that runs `releasing[fan, default: 0] += 1` since #128's lease-core pass
+    /// moved `releasing` into `LeaseAuthority.HandbackRegisters`. A call rather than the
+    /// statement, and still the count: nothing in that type can suspend
+    /// (`LeaseAuthorityRegistersAccessTests`), and an `await` written before the call is in the
+    /// prologue this suite reads.
+    private static let releasingCount = #"\bregisters\.beginHandback\(ofFan:"#
 
     /// The one member read an argument to the counting restore may make: the removed entry's fans.
     private static let readableMembers: Set<String> = ["entry.fanIndices"]
@@ -130,7 +135,7 @@ struct TeardownCountTripwireTests {
             "the lease core declares no `func restore(`, so the count was not read")
         let count = try #require(
             restore.body.range(of: Self.releasingCount, options: .regularExpression),
-            "restore(_:because:) has no `releasing[…] += 1` this scan can find")
+            "restore(_:because:) has no `registers.beginHandback(ofFan:)` this scan can find")
 
         let prologue = restore.body[..<count.lowerBound]
         #expect(

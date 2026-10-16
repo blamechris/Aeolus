@@ -38,10 +38,11 @@ import Foundation
 ///
 /// ## Strict concurrency
 ///
-/// An actor, with every piece of mutable state — the table and the tombstones — inside it,
-/// and both are value types so no reference escapes. There is no `@unchecked` conformance
-/// anywhere here and none is needed; `CLAUDE.md` rule 10 and this repository's
-/// `no_unchecked_sendable_in_helper` rule would both treat one as a claim requiring review.
+/// An actor, with every piece of mutable state — the table, the tombstones, the handback
+/// registers and the sleep pairing — inside it, and all four are value types so no reference
+/// escapes. There is no `@unchecked` conformance anywhere here and none is needed; `CLAUDE.md`
+/// rule 10 and this repository's `no_unchecked_sendable_in_helper` rule would both treat one as
+/// a claim requiring review.
 ///
 /// **Reentrancy is the hazard here, not data races.** An actor is reentrant across `await`,
 /// so every method is written as: suspend for whatever it needs, then decide in one
@@ -50,26 +51,35 @@ import Foundation
 /// [#95](https://github.com/blamechris/Aeolus/issues/95) is precisely what happens when a
 /// liveness check and the registration it guards are separated by a suspension point.
 ///
+/// **The two value types this actor decides through are bound by that rule, and it is stated
+/// here alone.** `HandbackRegisters` and `SleepSealPairing` hold the registers, the seal and
+/// every synchronous decision made over them; every `await`, every re-read after one and every
+/// act stays in this actor, in the order it had before #128 moved them. Neither type can
+/// suspend or take a closure, and this actor reaches each only through its members —
+/// `LeaseAuthorityRegistersAccessTests` holds all three.
+///
 /// ## The handback ledger lives in a document
 ///
-/// The three registers below — `releasing`, `handbackUnconfirmed`, `restoreAbandoned` — are
-/// one mechanism documented in five places, and the whole of it is now
-/// [docs/records/handback-ledger.md](../../../docs/records/handback-ledger.md): what enters
-/// each register and what clears it, why the grant gate answers with three different
+/// The three registers — `releasing`, `handbackUnconfirmed`, `restoreAbandoned`, held in
+/// `HandbackRegisters` — are one mechanism documented in five places, and the whole of it is
+/// now [docs/records/handback-ledger.md](../../../docs/records/handback-ledger.md): what
+/// enters each register and what clears it, why the grant gate answers with three different
 /// refusals in the order it does, why every teardown hands its sweep back in one call, and
-/// why the panic sweep has two sources. Each declaration below keeps the fact it states and
-/// cites the section that argues it.
+/// why the panic sweep has two sources. Each declaration keeps the fact it states and cites
+/// the section that argues it.
 ///
 /// That relocation is why this file is under the 1000-line `file_length` **error** it crossed
 /// when #271 and #273 met. The document's first section records what was refused to get there
 /// — no `swiftlint:disable`, no `.swiftlint.yml` override, and no split that would widen the
 /// `private` state `LeaseAuthorityAccessTests` holds — and #128 had already taken the one
-/// seam available without widening it.
+/// seam available without widening it. Its lease-core pass took a second that widens nothing:
+/// the registers and the seal as value types this actor holds `private`.
 ///
 /// Relocating prose cannot relieve `type_body_length`, which counts this body's code: 308 lines
-/// since #270's bounds gate in `acquireLease`, so 42 of headroom remain before its error at
-/// 350; the file is 956 lines against its error at 1000. New behaviour belongs in value types
-/// and the `EngagementDriver` (ADR 0014), not in this actor.
+/// after #270's bounds gate and 287 since that pass, so 63 of headroom remain before its error
+/// at 350; the file is 851 lines against its error at 1000. New behaviour belongs in value
+/// types — these two, `LeaseTable`, `ConnectionTombstones` — and the `EngagementDriver`
+/// (ADR 0014), not in this actor.
 actor LeaseAuthority: HeldLeaseRole {
 
     private let clock: any MonotonicClock
@@ -145,117 +155,23 @@ actor LeaseAuthority: HeldLeaseRole {
     private var table = LeaseTable()
     private var tombstones: ConnectionTombstones
 
-    /// Fans whose restore-to-automatic write is in flight right now, counted rather than
-    /// set-membership because the panic path can overlap a teardown on the same fan.
-    ///
-    /// Removing a lease from the table and completing its restore are not the same instant,
-    /// and the actor is reentrant across the `await` between them. Without this, an emptied
-    /// table is exactly what lets the next `acquireLease` through — the table being empty is
-    /// the *condition* it checks — so a client could take a lease over a fan whose handback
-    /// is still on the wire.
-    private var releasing: [Int: Int] = [:]
+    /// The handback ledger: `releasing`, `restoreAbandoned`, `handbackAcceptedUnconfirmed` and
+    /// `handbackUnconfirmed`, with every decision made over them — `HandbackRegisters`, in
+    /// `LeaseAuthorityHandbackRegisters.swift`, which carries each register's own documentation.
+    /// Reached only through its members, never as a whole value: a copy taken before an `await`
+    /// and written back after it would lose every transition that ran during the suspension.
+    private var registers = HandbackRegisters()
 
     /// The `.gone` revocations waiting for a fan's `releasing` count to reach zero, resumed in
-    /// `restore(_:because:)`'s `defer` at that instant (#368). It lives with `releasing` and is
-    /// resolved in the same synchronous region: handback-ledger.md § *"Outwaiting another path's
-    /// handback"*.
+    /// `restore(_:because:)`'s `defer` at that instant (#368). It is resolved in the same
+    /// synchronous region as `registers.endHandback(ofFan:)`, and stays on this actor because a
+    /// continuation is not a value: handback-ledger.md § *"Outwaiting another path's handback"*.
     private var handbackWaiters: [Int: [CheckedContinuation<Void, Never>]] = [:]
 
-    /// Fans a restorer gave up on: the attempts are spent and the firmware never took the
-    /// write. The durable half of the same ledger `releasing` holds the transient half of —
-    /// see `BoundedFanRestorer` for the bound, and #110 for why there is one.
-    ///
-    /// **One producer, and it is a firmware refusal**: the union in `restore(_:because:)`.
-    /// `docs/SAFETY.md` § 4's acknowledgement budget expiring is **not** a second one and was
-    /// one until ADR 0007, amendment 2026-09-06 (#209) — a budget is evidence about time
-    /// rather than about the firmware, so it records `handbackUnconfirmed` below instead, and
-    /// a fan reaches this set from there only when the outstanding restore comes back refused.
-    ///
-    /// **Not append-only since [#189](https://github.com/blamechris/Aeolus/issues/189)**, and
-    /// the one thing that clears it is a restore the restorer did *not* give up on **and** a
-    /// later read reporting automatic (#291, `confirmAcceptedHandbacks()`).
-    /// **A restore that never returns leaves it standing**, as does one refused again, and
-    /// both are the fail-safe direction.
-    ///
-    /// Why the register was self-sealing until #189, why the clearing standard is the one
-    /// `HelperFanRestorer` already deregisters § 3's registry on, and why a weaker one would
-    /// lift a refusal three observed firmware refusals set on evidence about a call:
-    /// handback-ledger.md § *"`restoreAbandoned` — the durable half"*.
-    private var restoreAbandoned: Set<Int> = []
-
-    /// Fans in `restoreAbandoned` whose latest restore the firmware **accepted**, owed a
-    /// read-back before the refusal lifts (#291). Always a subset of `restoreAbandoned`:
-    /// handback-ledger.md § *"Accepted is not automatic"*.
-    private var handbackAcceptedUnconfirmed: Set<Int> = []
-
-    /// Fans whose restore-to-automatic was issued, stopped being waited for, and has not come
-    /// back: `docs/SAFETY.md` § 4's acknowledgement budget expired with it still outstanding.
-    ///
-    /// The third register in this ledger, between the transient `releasing` and the durable
-    /// `restoreAbandoned`, and it is a distinct fact from either: the write is still in
-    /// flight, nothing cancelled it, and this process has no answer about the fan's mode.
-    /// Decision D33 on [#209](https://github.com/blamechris/Aeolus/issues/209) — ADR 0007,
-    /// amendment 2026-09-06.
-    ///
-    /// **Invariant: it is always a subset of `releasing.keys`.** A fan enters only from
-    /// `releasing.keys`, in `recordUnconfirmedHandbacks()`, and leaves only when its
-    /// `releasing` count drops to `nil` in `restore(_:because:)`'s `defer` — the instant the
-    /// restore that put it there returns. Nothing else writes it, which is why
-    /// `fansAeolusIsAccountableFor` needs no third union, and why
-    /// `UnconfirmedHandbackTests` asserts the subset rather than leaving it a sentence.
-    ///
-    /// **Not append-only, and that is the whole of D33**: the three outcomes a handback can
-    /// reach, and which register each ends in, are handback-ledger.md § *"The three
-    /// registers"*.
-    private var handbackUnconfirmed: Set<Int> = []
-
-    /// Whether `docs/SAFETY.md` § 4 has closed this table for a sleep that is under way.
-    ///
-    /// Set before § 4's teardown and cleared on `.didWake`, so no lease can be taken in the
-    /// window where the table is empty and the machine is about to sleep. A wake that never
-    /// comes refuses every lease, which is the fail-safe direction.
-    /// handback-ledger.md § *"`sleepSeal` — why the table is closed for a sleep"*.
-    ///
-    /// **Hearing them out of order is a different case, and it is guarded** — see
-    /// `wakesAheadOfTheirSeal`. The fail-safe argument above covers a wake that never comes;
-    /// it does not cover one that came and was answered before the seal it belonged to was
-    /// ever set, which leaves the seal standing over a machine that is demonstrably awake.
-    private var sleepSeal = false
-
-    /// The generation of the latest `.didWake` this actor has been told about.
-    ///
-    /// `SystemPowerObserver.deliver(_:acknowledging:)` spawns an unstructured `Task` per
-    /// event, so IOKit's serial queue orders the **spawns** and nothing orders the bodies. If
-    /// the `.willSleep` body is starved past the kernel's ~30 s acknowledgement window the
-    /// machine sleeps regardless, and on wake the `.didWake` body can reach
-    /// `unsealAfterWake(generation:)` first. The seal for that episode then arrives *after*
-    /// its own wake, and setting it would refuse every lease on a machine that is awake in
-    /// front of its user until the next sleep and wake.
-    ///
-    /// Comparing generations answers that exactly: a seal is declined when a **strictly
-    /// later** wake has already been seen, because that wake proves the episode is over. No
-    /// state accumulates and nothing is spent, so there is no reachable state in which the
-    /// seal stops being set and stays that way.
-    ///
-    /// **The first attempt counted instead, and it latched** — one unpaired wake disabled the
-    /// seal for the life of the process, turning a fail-safe defect into a fail-dangerous one.
-    /// Why counting cannot work here, and what a declined seal did to the count:
-    /// handback-ledger.md § *"Pairing a sleep with its own wake"*.
-    ///
-    /// **What this does not claim**: the starved body still drops every lease and restores
-    /// after the wake, and the client is never told it lost the lease. Bounded and honest
-    /// rather than thermal — handback-ledger.md § *"Pairing a sleep with its own wake"*.
-    private var latestWakeGeneration: UInt64 = 0
-
-    /// The generation of the newest non-declined `.willSleep` that set or met the seal standing.
-    ///
-    /// Without it a *stale* wake would clear a live seal: if episode 2's `.willSleep` body
-    /// runs before episode 1's starved `.didWake` body, that late wake is older than the seal
-    /// it would otherwise open, and the machine is at that moment going to sleep. A wake
-    /// clears the seal only when it is newer than every sleep that met it — so a sleep that
-    /// finds the seal already standing still records its generation, the larger of the two
-    /// (#347). handback-ledger.md § *"Pairing a sleep with its own wake"*.
-    private var sealGeneration: UInt64 = 0
+    /// § 4's seal over this table, and the two generations that pair a sleep with its own wake:
+    /// `SleepSealPairing`, in `LeaseAuthoritySleepSealPairing.swift`, reached only through its
+    /// members for `registers`' reason.
+    private var sleep = SleepSealPairing()
 
     /// How many machine-wide restores are inside `sealingGrants(during:)` right now — § 7's panic
     /// verbs and § 4's handbacks; not § 6's teardown or bring-up's restore. While it is not zero
@@ -353,7 +269,7 @@ actor LeaseAuthority: HeldLeaseRole {
         // This one is the most durable of them: a fan whose handback was given up on is
         // not coming back on its own, so a client told any of the others retries — past the
         // other client's release, past the handback window — into this refusal in the end.
-        let abandoned = request.fanIndices.filter { restoreAbandoned.contains($0) }
+        let abandoned = registers.abandoned(among: request.fanIndices)
         guard abandoned.isEmpty else {
             log.refusedAbandonedHandback(connection, fans: Set(abandoned))
             throw AeolusXPCFault.manualControlUnavailable(reason: .restoreToAutomaticFailed)
@@ -363,7 +279,7 @@ actor LeaseAuthority: HeldLeaseRole {
         // `.releaseInProgress` guard at the bottom would answer for it — "retry in a moment"
         // about a restore that has already outlived a five-second budget, which is the one
         // thing a client must not be told here.
-        let unconfirmed = request.fanIndices.filter { handbackUnconfirmed.contains($0) }
+        let unconfirmed = registers.unconfirmed(among: request.fanIndices)
         guard unconfirmed.isEmpty else {
             log.refusedUnconfirmedHandback(connection, fans: Set(unconfirmed))
             throw AeolusXPCFault.manualControlUnavailable(reason: .handbackUnconfirmed)
@@ -372,7 +288,7 @@ actor LeaseAuthority: HeldLeaseRole {
         // where an abandoned handback never lifts. Above both lease-table refusals, though,
         // and that is not a durability judgement: neither of those is worth telling a client
         // about a machine that is going to stop running this process before it can act on it.
-        guard !sleepSeal else {
+        guard !sleep.isSealed else {
             log.refusedSystemSleeping(connection)
             throw AeolusXPCFault.manualControlUnavailable(reason: .systemSleeping)
         }
@@ -393,7 +309,7 @@ actor LeaseAuthority: HeldLeaseRole {
             log.refusedConcurrentLease(connection)
             throw AeolusXPCFault.manualControlUnavailable(reason: .leaseHeldByAnotherClient)
         }
-        let midHandback = request.fanIndices.filter { releasing[$0] != nil }
+        let midHandback = registers.midHandback(among: request.fanIndices)
         guard midHandback.isEmpty else {
             log.refusedMidHandback(connection, fans: Set(midHandback))
             throw AeolusXPCFault.manualControlUnavailable(reason: .releaseInProgress)
@@ -651,7 +567,9 @@ actor LeaseAuthority: HeldLeaseRole {
     /// handback-ledger.md § *"`releaseEveryLease()`: what the sweep is, and what it is not"*.
     func releaseEveryLease() async {
         let dropped = table.removeAll()
-        let fans = dropped.reduce(into: restoreAbandoned) { $0.formUnion($1.fanIndices) }
+        let fans = dropped.reduce(into: registers.abandonedHandbacks) {
+            $0.formUnion($1.fanIndices)
+        }
         guard !fans.isEmpty else { return }
         await restore(fans, because: .allLeasesDropped)
     }
@@ -662,36 +580,33 @@ actor LeaseAuthority: HeldLeaseRole {
     ///
     /// Synchronous, and called *before* the teardown rather than after it, so there is no
     /// instant at which the table is empty and unsealed — which is the whole window. See
-    /// `sleepSeal`.
+    /// `SleepSealPairing.sleepSeal`.
     /// A seal whose own wake has already been answered is **not** set, and declining leaves
     /// any newer seal standing. One that is not declined records its generation even when it
-    /// finds the seal standing, and records the larger of the two (#347).
+    /// finds the seal standing, and records the larger of the two (#347): the decision is
+    /// `SleepSealPairing.seal(generation:)`, and the log line is this method's.
     /// handback-ledger.md § *"`sealForSleep`: declining a seal its wake already answered"*.
     ///
     /// - Parameter generation: the notification's place in the delivery order, stamped on
     ///   IOKit's serial queue — see `SystemPowerNotification.generation`.
     func sealForSleep(generation: UInt64) {
-        guard generation > latestWakeGeneration else {
-            log.declinedASealItsWakeAlreadyAnswered()
-            return
+        switch sleep.seal(generation: generation) {
+        case .declined: log.declinedASealItsWakeAlreadyAnswered()
+        case .metStanding: break
+        case .sealed: log.sealedForSleep()
         }
-        sealGeneration = max(sealGeneration, generation)
-        guard !sleepSeal else { return }
-        sleepSeal = true
-        log.sealedForSleep()
     }
 
     /// Reopens acquisition after a wake. Touches no fan and issues no write.
     ///
     /// The generation is recorded **whether or not there was a seal to clear**, because that
     /// is the record a later-arriving seal is compared against. A wake that is older than the
-    /// seal standing is ignored for the clearing, and still counted for the ordering.
+    /// seal standing is ignored for the clearing, and still counted for the ordering:
+    /// `SleepSealPairing.wake(generation:)`.
     ///
     /// - Parameter generation: as `sealForSleep(generation:)`.
     func unsealAfterWake(generation: UInt64) {
-        latestWakeGeneration = max(latestWakeGeneration, generation)
-        guard sleepSeal, generation > sealGeneration else { return }
-        sleepSeal = false
+        guard sleep.wake(generation: generation) else { return }
         log.unsealedAfterWake()
     }
 
@@ -718,9 +633,7 @@ actor LeaseAuthority: HeldLeaseRole {
     ///   line rather than asserting that some existed.
     @discardableResult
     func recordUnconfirmedHandbacks() -> Set<Int> {
-        let outstanding = Set(releasing.keys)
-        handbackUnconfirmed.formUnion(outstanding)
-        return outstanding
+        registers.recordUnconfirmedHandbacks()
     }
 
     // MARK: - The machine-wide restore seal
@@ -767,9 +680,9 @@ actor LeaseAuthority: HeldLeaseRole {
         return LeaseAccountability(
             lease: table.all.first?.asLease(),
             accountableFans: fansAeolusIsAccountableFor,
-            abandonedHandbacks: restoreAbandoned,
-            unconfirmedHandbacks: handbackUnconfirmed,
-            handbacksInFlight: Set(releasing.keys),
+            abandonedHandbacks: registers.abandonedHandbacks,
+            unconfirmedHandbacks: registers.unconfirmedHandbacks,
+            handbacksInFlight: registers.fansMidHandback,
             restoresAwaitingConfirmation: awaiting,
             machineWideRestoreInFlight: machineWideRestoresInFlight > 0
         )
@@ -784,16 +697,16 @@ actor LeaseAuthority: HeldLeaseRole {
     /// `fansAeolusIsAccountableFor` is: a caller can see the set, and nothing it does with the
     /// answer can put a fan into it or take one out. handback-ledger.md § *"The read-only rule
     /// the accessors are allowed under"* says what the three are for.
-    var fansWithUnconfirmedHandbacks: Set<Int> { handbackUnconfirmed }
+    var fansWithUnconfirmedHandbacks: Set<Int> { registers.unconfirmedHandbacks }
 
     /// The fans a restorer gave up on: the firmware refused every attempt. The durable half,
     /// under the same read-only rule as the set above.
-    var fansWithAbandonedHandbacks: Set<Int> { restoreAbandoned }
+    var fansWithAbandonedHandbacks: Set<Int> { registers.abandonedHandbacks }
 
     /// The fans with a restore issued and not yet returned — `releasing`'s keys, and nothing
     /// about its counts. Read-only, under the same rule as the two sets above, and what makes
     /// `handbackUnconfirmed ⊆ releasing.keys` a fact a test asserts rather than a sentence.
-    var fansMidHandback: Set<Int> { Set(releasing.keys) }
+    var fansMidHandback: Set<Int> { registers.fansMidHandback }
 
     /// The fans a `.gone` revocation is parked on until their handback returns (#368): the
     /// waiters' keys and no continuation, under the same read-only rule.
@@ -854,7 +767,7 @@ actor LeaseAuthority: HeldLeaseRole {
     /// this set. handback-ledger.md § *"`fansAeolusIsAccountableFor` is `internal`, and why that
     /// exposes nothing"*.
     var fansAeolusIsAccountableFor: Set<Int> {
-        table.fansUnderLease.union(restoreAbandoned).union(releasing.keys)
+        table.fansUnderLease.union(registers.abandonedHandbacks).union(registers.fansMidHandback)
     }
 
     private func refuseIfInvalidated(_ connection: ConnectionID) throws {
@@ -872,10 +785,11 @@ actor LeaseAuthority: HeldLeaseRole {
     /// have the first to finish clear a flag the second still needs.
     ///
     /// It is also where `handbackUnconfirmed` is cleared, and where that sits is load-bearing:
-    /// the `defer` is **inside the same loop as the decrement**, after it, so a fan leaves
-    /// exactly when its last outstanding restore returns, and being **in a `defer`** is what
-    /// makes a refused fan land in `restoreAbandoned` through the union below — D33. It clears
-    /// nothing from `restoreAbandoned` since #291; `confirmAcceptedHandbacks()` does.
+    /// `registers.endHandback(ofFan:)` clears it **in the same transition as the decrement**, so
+    /// a fan leaves exactly when its last outstanding restore returns, and being **in a `defer`**
+    /// is what makes a refused fan land in `restoreAbandoned` through
+    /// `registers.recordRestore(of:abandoned:)` first — D33. It clears nothing from
+    /// `restoreAbandoned` since #291; `confirmAcceptedHandbacks()` does.
     /// Why, and why a restore that never returns leaves a fan unconfirmed for the life of the
     /// process: handback-ledger.md § *"Where each register ends"*. The same branch resumes the
     /// revocations outwaiting the fan (#368), in the `defer` because the body returns early.
@@ -888,36 +802,19 @@ actor LeaseAuthority: HeldLeaseRole {
     ///   § *"`releasing` — the transient half"* names both facts.
     private func restore(_ fans: Set<Int>, because cause: FanRestoreCause) async {
         log.restored(fans: fans, because: cause)
-        for fan in fans { releasing[fan, default: 0] += 1 }
+        for fan in fans { registers.beginHandback(ofFan: fan) }
         defer {
             for fan in fans {
-                guard let outstanding = releasing[fan] else { continue }
-                guard outstanding > 1 else {
-                    releasing[fan] = nil
-                    handbackUnconfirmed.remove(fan)
-                    handbackWaiters.removeValue(forKey: fan)?.forEach { $0.resume() }
-                    continue
-                }
-                releasing[fan] = outstanding - 1
+                guard registers.endHandback(ofFan: fan) else { continue }
+                handbackWaiters.removeValue(forKey: fan)?.forEach { $0.resume() }
             }
         }
         // Whatever came back was not handed back. Recorded rather than dropped: the fan is
         // in a mode nothing has confirmed, so the next `acquireLease` over it is refused
         // durably instead of being told to retry a window that has closed.
         let abandoned = await restorer.restoreToAutomatic(fans: fans, because: cause)
-        restoreAbandoned.formUnion(abandoned)
-
-        // Refused again: no longer owed a read-back, and a `confirmAcceptedHandbacks()`
-        // mid-read for it will not lift the refusal just renewed.
-        handbackAcceptedUnconfirmed.subtract(abandoned)
-
-        // A fan the register held whose write was accepted is only marked owed a read-back:
-        // accepted is not automatic (#291), and the read is **not** taken here, because sleep
-        // and SIGTERM issue the keystone only after this returns — handback-ledger.md
-        // § *"Accepted is not automatic"*.
-        let accepted = restoreAbandoned.intersection(fans.subtracting(abandoned))
+        let accepted = registers.recordRestore(of: fans, abandoned: abandoned)
         guard !accepted.isEmpty else { return }
-        handbackAcceptedUnconfirmed.formUnion(accepted)
         log.abandonedHandbackAcceptedUnconfirmed(fans: accepted, because: cause)
     }
 
@@ -928,7 +825,7 @@ actor LeaseAuthority: HeldLeaseRole {
     /// written between it and the park: one there would let the count drain first.
     private func outwaitHandback(of fan: Int) async {
         await withCheckedContinuation { waiter in
-            guard releasing[fan] != nil else { return waiter.resume() }
+            guard registers.isMidHandback(fan) else { return waiter.resume() }
             handbackWaiters[fan, default: []].append(waiter)
         }
     }
@@ -940,17 +837,15 @@ actor LeaseAuthority: HeldLeaseRole {
     /// set is re-read after the await, so a refusal renewed meanwhile is not lifted. Why each
     /// of these: handback-ledger.md § *"Accepted is not automatic"*.
     func confirmAcceptedHandbacks() async {
-        let owed = handbackAcceptedUnconfirmed
+        let owed = registers.handbacksOwedAReadBack
         guard !owed.isEmpty else { return }
         let automatic = await foreignControl.fansReadingAutomatic(among: owed)
-        let recovered = automatic.intersection(handbackAcceptedUnconfirmed)
         let unconfirmed = owed.subtracting(automatic)
         if !unconfirmed.isEmpty {
             log.abandonedHandbackStillUnconfirmed(fans: unconfirmed)
         }
+        let recovered = registers.liftRefusals(readingAutomatic: automatic)
         guard !recovered.isEmpty else { return }
-        handbackAcceptedUnconfirmed.subtract(recovered)
-        restoreAbandoned.subtract(recovered)
         log.recoveredAbandonedHandback(fans: recovered)
     }
 }

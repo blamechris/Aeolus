@@ -95,19 +95,17 @@ struct LeaseAuthorityAccessTests {
         "let thermalEmergency: ThermalEmergencyLatch",
         "var table = LeaseTable()",
         "var tombstones: ConnectionTombstones",
-        "var releasing: [Int: Int] = [:]",
+        // #128's lease-core pass: the handback registers, held as one value whose own stores
+        // `LeaseAuthorityRegistersAccessTests` holds private.
+        "var registers = HandbackRegisters()",
         // #368's waiters. A reference to one is a continuation anybody could resume, ending a
         // `.gone` revocation before the handback it outwaits — the wait gone, with no error.
         "var handbackWaiters: [Int: [CheckedContinuation<Void, Never>]] = [:]",
-        "var restoreAbandoned: Set<Int> = []",
-        "var handbackUnconfirmed: Set<Int> = []",
-        "var sleepSeal = false",
-        // The two halves of § 4's episode pairing. Listed beside `sleepSeal` because they can
-        // *cancel* it: a `sealForSleep(generation:)` whose generation is not newer than
-        // `latestWakeGeneration` declines, so anything able to write these could hold the
-        // table open across a sleep without ever touching `sleepSeal` itself (#202 item 1).
-        "var latestWakeGeneration: UInt64 = 0",
-        "var sealGeneration: UInt64 = 0",
+        // `sleepSeal` and the two halves of § 4's episode pairing, one value since that pass. The
+        // halves can *cancel* the seal: a `sealForSleep(generation:)` not newer than
+        // `latestWakeGeneration` declines, so anything able to write them could hold the table
+        // open across a sleep without touching `sleepSeal` itself (#202 item 1).
+        "var sleep = SleepSealPairing()",
         // The machine-wide restore seal (#350, #364). Writable from elsewhere, it could reopen
         // the gate under a panic verb or a sleep handback still restoring, or close it for the
         // life of the process.

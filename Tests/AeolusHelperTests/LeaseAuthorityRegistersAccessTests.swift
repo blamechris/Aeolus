@@ -147,6 +147,40 @@ struct LeaseAuthorityRegistersAccessTests {
         }
     }
 
+    /// Every use of `registers` and of `sleep` in the actor is a member access, and each
+    /// declaration is the one exception. Whitespace before the `.` is skipped, because the
+    /// formatter writes chains that way, and `.self` is refused, because it is the whole value
+    /// spelled as a member.
+    ///
+    /// **Mutations:** add `let before = sleep` (and `_ = before`) to `sealForSleep(generation:)`;
+    /// add `registers = HandbackRegisters()` to `releaseEveryLease()`. Run: red on each.
+    @Test("The actor reaches each value type only through its members")
+    func theActorReachesEachOnlyThroughItsMembers() throws {
+        let code = try MemberAccessScan.strippedSource(of: Self.actorFile)
+        for type in Self.valueTypes {
+            let uses = try NSRegularExpression(pattern: #"\b\#(type.property)\b"#)
+            var wholeValueUses: [String] = []
+            for match in uses.matches(in: code, range: NSRange(code.startIndex..., in: code)) {
+                guard let found = Range(match.range, in: code) else { continue }
+                let after = code[found.upperBound...].drop { $0 == " " || $0 == "\n" }
+                let member = after.dropFirst().prefix { $0.isLetter || $0.isNumber || $0 == "_" }
+                if after.first == ".", member != "self" { continue }
+
+                let lineStart = code[..<found.lowerBound].lastIndex(of: "\n") ?? code.startIndex
+                let lineEnd = code[found.upperBound...].firstIndex(of: "\n") ?? code.endIndex
+                wholeValueUses.append(
+                    code[lineStart..<lineEnd].trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            #expect(
+                wholeValueUses == ["private var \(type.property) = \(type.name)()"],
+                """
+                `\(type.property)` is used as a whole value outside its declaration: \
+                \(wholeValueUses). A copy taken before an `await` and written back after it \
+                loses every transition that ran during the suspension.
+                """)
+        }
+    }
+
     /// No accessor in either file can write: a view with a `set` or a `_modify` is a route to
     /// the store it views, and a stored property with an observer is not a view.
     ///
