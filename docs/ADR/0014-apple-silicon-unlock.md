@@ -162,6 +162,7 @@ from the head of `e4/bring-up` and installs it over the current one. It is drive
     `WriteVerbAllowlistTests` keys a verb by file, name and parameters, so a second
     `engageManualControl(of:)` there would land silently under the existing entry. The new name
     still matches `everyEngageVerbTakesAPermit`'s `engage\w*`.
+    *(Withdrawn by the A6 amendment below: level 6 engages through its own driver.)*
 
   The driver's sources are stored properties set at composition, never arguments:
   - the lease core's per-fan liveness query (#180);
@@ -509,7 +510,8 @@ nothing more.
 `LeaseAuthority` stays hardware-free; a grant writes nothing. The first `apply` does four things:
 
 1. It engages the fans its settings name, through `GovernedFanWriter.engageUnderLease(of:)` and
-   the driver (D2–D4). The driver registers each fan with § 3.
+   the driver (D2–D4). The driver registers each fan with § 3. *(`engageUnderLease` is withdrawn, and
+   the order is per fan: the A6 amendment below.)*
 2. It registers each fan with § 5 at the landing.
 3. It commands each fan's target through `GovernedFanWriter`.
 4. It reads each target back.
@@ -2184,6 +2186,152 @@ The ruling is the architect's #383 consult and its #390 consults, run on Opus, a
 excuse the first of them introduced. **No `AeolusXPCVersion` bump:** nothing crosses the boundary.
 This amendment corrects clauses of a Proposed ADR rather than the decisions they sit under.
 **Status stays Proposed.**
+
+## Amendment (2026-10-16, A6, [#383](https://github.com/blamechris/Aeolus/issues/383), [#389](https://github.com/blamechris/Aeolus/issues/389)) — the examination gate as built, and level 6's `apply`
+
+A6's plan, from the architect's A6 consult. Unreachable on every build on `main`, where a
+`.notBuilt` plane grants no lease, so § 5's registry is always empty and its cycle returns before
+it reaches the gate. A6 lands in steps. This amendment arrives with the first, which builds the
+gate and has § 5 take it; level 6's `apply` takes it in the next.
+
+**Decision: the gate.**
+
+- **It is `FanExaminationGate`:** a lock-guarded exclusion with one first-in-first-out lane per
+  fan, on the composition's monotonic clock. It is not an actor, because `leave(_:)` has to be
+  synchronous so the `defer` in the frame that entered can call it. Whether a wait was granted, ran
+  out or was cancelled is decided once, under the lock.
+  - § 5 enters through `enterForExamination(fanAt:)`, and level 6 through `enterForStep(fanAt:)`.
+  - A pass is minted only in the gate's file, and leaving one that does not hold releases nothing.
+  - The composition builds exactly one gate and hands it to § 5, and to level 6 when it exists.
+  - `EngagementDriver`, the writers, the plane, the lease core, § 3 and every restore path never
+    name it. A census holds that. A composed test holds the consequence: with a pass held for good
+    and the clock frozen, every hand-back still finishes.
+  - The lock order is the gate before a scheduler turn, never the reverse.
+- **§ 5 takes the gate, then stamps.** `cycle()` enters the fan's gate before
+  `examine(fanAt:gated:)`, whose first act is the #381 stamp, and leaves it after the examination's
+  last act. A step that held the gate, its registration included, is then before the examination
+  and never inside it. Taken after the stamp, a registration made under the gate would stand § 5's
+  re-assert down.
+- **§ 5's wait is bounded by `examinationWait`:** `UnlockLimits.yieldBudget` plus two
+  `WatchdogLimits.roundTrip`, 13.5 s.
+  - That is the longest hold item 3 allows level 6 before ADR 0012 ends the helper: one
+    engagement's polling, its last step's turn, then its undo's turn or its command's. Level 6's
+    hand-back runs outside the gate. So a wait that runs out means the contract was broken, for
+    example by a pass never released.
+  - The first expiry against a holder is logged at `.fault` and remembered. Later examinations
+    against the same holder do not wait, so a stuck holder costs § 5 one bound in all, not one
+    per cycle.
+- **Past the bound, an examination judges, marks and restores, and writes nothing away from
+  automatic control.**
+  - It is stamped ungated, so `Registry.reassertTarget(ofFan:under:)` answers `nil`. The re-assert
+    stands down at its first re-fetch, through #381's path, and the attempt stays spent.
+  - The judgement, the ledger mark, the budget, and every restore and terminal action happen as
+    before, so a stuck holder cannot keep a fan from being given up.
+- **A cancelled wait is not an expiry.** It returns at once without the gate and is not stood
+  down. The cancellation guard before the re-assert's first write still refunds the attempt (#144).
+- **`diverged` decides on the live record.** Whether anything was commanded, and the attempt
+  count, are read from the record re-fetched after the ledger hop, not from the copy taken before
+  it. Under the gate no step can land in that hop. Past the bound one can, and the copy would give
+  up a fan whose first command had just been reported, revoking a healthy lease (#383's ledger-hop
+  window).
+- **Level 6 waits at most `stepWait`, 1 s, and never writes without the gate.**
+  `UnlockLimits.yieldBudget` plus `stepWait` stays under `HelperClientDeadlines.gatedVerb`'s 5 s,
+  leaving room for the envelope read, the command write and its report. Past it the fan's step is
+  refused. The figure is provisional:
+  [#325](https://github.com/blamechris/Aeolus/issues/325) measures the round trips it rests on.
+
+With these in place, the #383 amendment's "the cost is a false fault at most" is true. Past the
+bound, a contract breach costs one bound and false faults, and every act § 5 takes is toward
+automatic control.
+
+**Decision: level 6's `apply`, for A6's next steps.** The items are numbered as in the #353/#357
+amendment.
+
+- **Item 0 (new).** `apply` honours `.fixed(rpm:)` only. These are refused with
+  `invalidParameter(name: "settings")` and fixed text, before anything is read or written:
+  `.curve` (no evaluator until #17), `.automatic`, a fan the lease does not cover, a fan named
+  twice, and an empty list.
+- **Item 2 gains an undo order.** If a registration is refused, every fan this `apply` engaged is
+  undone. Its § 5 record is dropped first, under the lease (`manualControlHandedBack(fanAt:
+  under:)`), and then the fan is handed back through level 6's driver, outside the gate and never
+  waiting for one. A newly engaged fan whose command write throws is an engagement failure in the
+  same way. `LeaseApplier` keeps the set of fans it engaged under the current lease, reset when the
+  lease changes and cleared by its undo.
+- **Item 3 becomes one hold per fan.**
+  - Under the fan's gate: engage (only if this lease has not engaged the fan), register, ask the
+    entitlement, write and report. Then release it.
+  - Nothing else is done under it: no envelope read, no other fan, no second gate and no hand-back.
+  - Fans are taken one at a time, in index order. Each fan's envelope is read and its permit minted
+    before its gate is taken.
+  - Each `.fixed` setting is written whole, through `GovernedFanWriter.hold(_:of:)`, and the
+    writer's ramp memory is reset at every engagement and hand-back. `docs/SAFETY.md` § 8 says so
+    until E8a's loop shapes the steps a control loop takes.
+  - The read-back is the plane's, inside the command's turn: `apply` issues no read.
+  - `requireEntitlement` is asked before each command.
+- **Item 4 also asks § 3's latch** before replying.
+- **Item 5 maps every outcome:**
+
+| Cause | Answer |
+|---|---|
+| `heldLease` fault | That fault |
+| `.notBuilt` | `writePathNotBuilt` |
+| Validation (item 0) | `invalidParameter(name: "settings")` |
+| Envelope read failed, or implausible | `supervisorBlind`, or `boundsImplausible(fanIndex:detail:)` |
+| `stepWait` passed, superseded, or `leaseNotLive` | `releaseInProgress`, unless the lease has gone |
+| `preempted`, or § 3's latch set at item 4 | `thermalEmergencyActive` |
+| `notAutomatic` | `foreignManualControl` |
+| `yieldDidNotArrive`, `firmwareRefusedControl`, `engagementNotConfirmed` | `helperFailed`, with fixed text |
+
+- **D2: `GovernedFanWriter.engageUnderLease(of:)` is withdrawn.** It could not take a lease (ADR
+  0008's one-permit list), and a driver that takes its level from an ungoverned writer cannot be
+  asked about level 6. Level 6 gets its own `EngagementDriver`, over a `SafetyActorWriter` used
+  only for the step and the undo, with its arbiter level passed explicitly (`init(…, level:)`):
+  `.controlLoop` for level 6, `.reclamationWatchdog` for § 5. The control loop then holds no writer
+  it can command through, because its driver exposes no target verb.
+- **D3: the new reason cases wait for R1.** Until those outcomes are observed, they answer
+  `helperFailed`. R1 also logs the raw `F<n>Tg` in the turn that reads `.engaged`.
+- **D6: per fan, in index order, as item 3 says.** The read-back is the plane's.
+
+**What remains.**
+
+- *A contract breach costs one bound and false faults.* A pass never released makes § 5 wait one
+  `examinationWait`, logged at `.fault`, and then examine without the gate until the holder leaves.
+  That is possibly a false fault each cycle, in the safe direction, and a fan reclaimed meanwhile is
+  given up once its budget is spent.
+- *A write that bypasses the gate* is judged against the record, as the #383 amendment says: a
+  false fault at most, with #381's re-fetches still answering it.
+- *A fan the system took back before a re-apply* is #381's one-cycle residual.
+- *The bounds rest on U3's 3.5 s yield,* and routine holds are assumed to last milliseconds.
+  Neither is measured.
+- *Until level 6 takes the gate,* it excludes nothing but § 5 from itself, and the assumption row
+  "One engagement per fan at a time" stays as written.
+
+**Alternatives considered.**
+
+- *An actor gate.* Its release would need an `await`, so a `defer` could not make it.
+- *The gate's state inside § 5.* A continuation is not a value, it costs actor-body lines, and every
+  level-6 step would become a § 5 hop.
+- *A scoped-closure gate.* § 5's body would run outside its isolation.
+- *A non-copyable pass released in `deinit`.* The release would rest on where the compiler ends a
+  lifetime.
+- *An unbounded § 5 wait, or one of about 1 s.* The first parks § 5 behind any stuck holder. The
+  second is shorter than the hold the contract allows.
+- *Level 6 writing without the gate past its bound.* That is the race the gate exists to close.
+- *The plane's last-written target, read in the same turn.* It stays the fallback, as the #383
+  amendment keeps it.
+
+**Revisit if:**
+
+- R1 shows routine gate waits much longer than milliseconds, or `stepWait` refusing ordinary
+  applies. Then `apply` needs its own client deadline (#325);
+- a step must write several fans in one transaction;
+- a client that re-applies ships before E8a's loop;
+- leases that can overlap on a fan are proposed;
+- any trigger the #383 amendment lists fires.
+
+The ruling is the architect's A6 consult, run on Opus. **No `AeolusXPCVersion` bump:** no field,
+case or method changes, and `apply`'s version-1 meaning is unchanged. This amendment corrects
+clauses of a Proposed ADR rather than the decisions they sit under. **Status stays Proposed.**
 
 ## Assumptions and what would invalidate them
 
