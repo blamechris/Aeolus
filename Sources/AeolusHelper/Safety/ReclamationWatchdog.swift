@@ -77,8 +77,8 @@ import Foundation
 ///   that state or adding a suspension point. The splits taken, and the rationale relocated
 ///   out of this file's doc comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
-///   The body is 323 code lines against `type_body_length`'s error at 350, `examine(fanAt:)` 50
-///   against `function_body_length`'s warning at 50, and the file 947 lines against
+///   The body is 328 code lines against `type_body_length`'s error at 350, `examine(fanAt:)` 50
+///   against `function_body_length`'s warning at 50, and the file 959 lines against
 ///   `file_length`'s at 1000. New § 5 state belongs in `Registry`, tested as a
 ///   value, and new behaviour in the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
@@ -104,14 +104,15 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// ask those two things of the lease core and nothing else.
     private let leases: any HeldLeaseRole
 
-    /// § 3's bit, read once per cycle to decide the incumbent. Never written here: this
-    /// mechanism does not engage or release a thermal emergency, and `ThermalEmergency`
-    /// remains the only thing in `Sources/` that clears the latch at all — through
-    /// `cycle()`'s `release(ifStill:)`, the no-argument `release()` having no caller here.
-    private let latch: ThermalEmergencyLatch
+    /// § 3's bit, read by `currentRuling()` before each write it guards. Never written here:
+    /// `ThermalLatchRole` carries that one read and no verb (#380), so this mechanism cannot engage
+    /// or release a thermal emergency, and `ThermalEmergency` remains the only thing in `Sources/`
+    /// that clears the latch at all — through `cycle()`'s `release(ifStill:)`.
+    private let latch: any ThermalLatchRole
 
-    /// What the user is told, via `FanState.isReclaimedBySystem`.
-    private let ledger: ReclamationLedger
+    /// What the user is told, via `FanState.isReclaimedBySystem`. `ReclamationLedgerRole`: the
+    /// two marks and the clear this actor makes, and nothing else (#380).
+    private let ledger: any ReclamationLedgerRole
 
     private let log: SafetyLog
 
@@ -133,8 +134,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         writer: SafetyActorWriter<Plane>,
         engagement: EngagementDriver<Plane>,
         leases: any HeldLeaseRole,
-        latch: ThermalEmergencyLatch,
-        ledger: ReclamationLedger,
+        latch: any ThermalLatchRole,
+        ledger: any ReclamationLedgerRole,
         log: SafetyLog = SafetyLog()
     ) {
         self.sensing = sensing
@@ -496,7 +497,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             return
         }
 
-        // Re-fetched across the latch hop above.
+        // Re-fetched across the latch hop above; tested through `ThermalLatchRole` (#380).
         guard isHeld(index, under: lease), let fan = registry.record(ofFan: index) else {
             log.reclamationFanReleasedMidExamination(fan: index, during: "the precedence check")
             return
@@ -507,7 +508,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
                 fan: index, divergence: divergence, commanded: fan.commanded)
         }
 
-        // Re-fetched across the ledger hop above.
+        // Re-fetched across the ledger hop above, for identity only (tested through
+        // `ReclamationLedgerRole`, #380); `fan` stays the copy, #365's C1 note in the records.
         guard isHeld(index, under: lease) else {
             log.reclamationFanReleasedMidExamination(fan: index, during: "the reclamation report")
             return

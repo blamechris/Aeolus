@@ -35,7 +35,7 @@
 /// `ThermalEmergencyLatch` states in full: *log the transition, not the state*. These
 /// return whether a transition happened rather than leaving each caller to remember the
 /// previous value.
-actor ReclamationLedger {
+actor ReclamationLedger: ReclamationLedgerRole {
 
     /// Why a fan is no longer Aeolus's to command.
     ///

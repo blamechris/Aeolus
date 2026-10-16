@@ -194,9 +194,9 @@ struct ReclamationLeaseIdentityTests {
 
     // MARK: - Re-fetches after an await ask about identity
     //
-    // All but two are held here or in `ReclamationRefetchIdentityTests.swift`, whose header lists
-    // each re-fetch against its test. The precedence check and the ledger hop in `diverged` are
-    // not: they sit on concrete actors with nothing to park an answer in (#365).
+    // Every one is held here, in `ReclamationRefetchIdentityTests.swift`, whose header lists each
+    // re-fetch against its test, or in `ReclamationSafetyHopIdentityTests.swift`, which holds the
+    // precedence check and the reclamation report in `diverged` through #380's roles (#365).
 
     /// The re-fetch after the control-state read asks about the record's lease, not its
     /// presence. A newer lease registers fan 0 inside the read; § 5 stops there, and leaves the

@@ -22,7 +22,13 @@ import Testing
 /// - **The control-state read**, in `examine`:
 ///   `aRecordRegisteredUnderANewLeaseDuringTheReadStopsTheExamination`.
 /// - **The lease hop**, in `examine`: `aRecordChangedDuringTheLeaseCheckStopsTheExamination`.
-/// - **The precedence check** and **the ledger hop**, in `diverged`: untested, below.
+/// - **The precedence check**, in `diverged`, after the latch hop:
+///   `aRecordRegisteredUnderANewLeaseDuringThePrecedenceCheckIsLeftToIt`, in
+///   `ReclamationSafetyHopIdentityTests.swift` (#380).
+/// - **The reclamation report**, in `diverged`, after the ledger hop:
+///   `aRecordRegisteredUnderANewLeaseDuringTheReclamationReportIsLeftToIt`, in the same file. What
+///   `diverged` still reads from the record it copied before that hop is pinned, as it stands, by
+///   `ReclamationLedgerHopTests` (#365's C1 note).
 /// - **The envelope read**, in `reassert`:
 ///   `aRecordRegisteredUnderANewLeaseDuringTheEnvelopeReadIsLeftToIt`. Since #381 it also stops
 ///   for a registration under the record's own lease since the examination began, and that half
@@ -41,17 +47,17 @@ import Testing
 ///   guard covers it, and
 ///   `aTerminalActionEnteredForAnEndedLeaseLeavesTheNewerLeasesFanAlone` holds that guard.
 ///
-/// ## The two that are not tested, and why
+/// ## The two that needed a role
 ///
-/// The precedence check and the ledger hop are suspensions on `ThermalEmergencyLatch` and
-/// `ReclamationLedger`, which `ReclamationWatchdog` holds as concrete actors. There is no double
-/// to park their answers in, so a registration cannot be landed in either by a suspending seam:
-/// racing one in is the flakiness #109 is open about, and blocking a pool thread to hold the hop
-/// open passed locally and failed in a CI runner stall. Reaching them takes the step
-/// `HeldLeaseRole` took for the lease core: a role over each, in `Sources/AeolusHelper`. A
-/// registration cannot land in either from an earlier suspension either, because the re-fetches
-/// before them stop the examination first. This file does not claim them, and neither do
-/// `docs/SAFETY.md` § 5 or the watchdog's records.
+/// The precedence check and the reclamation report follow suspensions on `ThermalEmergencyLatch`
+/// and `ReclamationLedger`, which `ReclamationWatchdog` held as concrete actors until #380, with no
+/// double to park their answers in. Racing a registration in is the flakiness #109 is open about,
+/// and blocking a pool thread to hold the hop open passed locally and failed in a CI runner stall;
+/// and a registration cannot land in either from an earlier suspension, because the re-fetches
+/// before them stop the examination first. So § 5 now holds both through roles,
+/// `ThermalLatchRole` and `ReclamationLedgerRole`, as it holds the lease core through
+/// `HeldLeaseRole`, and `ParkableThermalLatch` and `ParkableReclamationLedger` park inside each
+/// hop. `ReclamationRoleTripwireTests` holds what each role carries.
 ///
 /// ## The newer lease
 ///

@@ -55,7 +55,7 @@ import SMCCore
 /// the episode, `release(ifStill:)` compares and clears in one step, and
 /// `ThermalEmergency.cycle()` refuses to judge an episode that was not already holding when
 /// it took its report.
-actor ThermalEmergencyLatch {
+actor ThermalEmergencyLatch: ThermalLatchRole {
 
     /// One episode of § 3 holding: what engaged it, and what the machine could see when it
     /// did.
