@@ -14,8 +14,9 @@ import Testing
 /// sleeps.
 ///
 /// What each pins, against the mutation it kills. The value half is
-/// `ReclamationJudgementViewValueTests`, which kills M1–M3, M5–M11 and M13 as well. #390's
-/// announcement credit and held judgement are `ReclamationAnnouncementCreditTests`.
+/// `ReclamationJudgementViewValueTests`, which kills M1–M3, M5–M11 and M13 as well. #390's held
+/// judgement is `ReclamationAnnouncementCreditTests`, and its settled hold
+/// `ReclamationHoldSettlementTests`.
 ///
 /// - **M1**, the stamp's target dropped from `HeldFan.holds(_:readFrom:)`: T1, T4.
 /// - **M2**, the announced step dropped from it: T2.

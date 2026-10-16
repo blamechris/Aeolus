@@ -4,19 +4,21 @@ import Testing
 
 @testable import AeolusHelper
 
-/// An announced step holds one reading on credit, and only a report of that step gives the credit
-/// back (#390). A held reading concludes nothing: it neither marks nor clears, and it spends and
-/// refills no attempt.
+/// A hold is settled by the next judged examination (#390). It is vindicated only if it read an
+/// announced step that was the record when that examination began; any other held target is
+/// barred until an examination converges on the record. A held reading concludes nothing: it
+/// neither marks nor clears, and it spends and refills no attempt.
 ///
-/// - **C1**, no credit at all: T11, T12, T13.
-/// - **B**, a fresh announcement renews the credit: T12.
-/// - **R**, any report renews it: T13.
+/// T17-T23 and the log-line conversion are `ReclamationHoldSettlementTests`.
+///
+/// - **Q1**, a hold never barred: T11, T12, T13.
+/// - **Q3**, the bar lifted by a judgement that holds nothing: T11.
 /// - **H**, the first announcement kept over the next: T14.
 /// - **E3**, the stamp's target re-taken after the read: T15.
 /// - **G**, an announcement admitting any reading between the record and the announced step: T16.
 /// - **K**, `.held` concluding as `.converged` does (clears the mark): T11.
 @Suite(
-    "§ 5 holds a reading at an announced step once per confirming report", .timeLimit(.minutes(1)))
+    "§ 5 holds a reading once unless the next examination vindicates it", .timeLimit(.minutes(1)))
 struct ReclamationAnnouncementCreditTests {
 
     private typealias View = ReclamationJudgementViewTests
@@ -46,12 +48,12 @@ struct ReclamationAnnouncementCreditTests {
 
         #expect(
             await machine.restorer.causes.contains(.systemReclaimed),
-            "C1: a stale announcement postponed the terminal action by more than a cycle")
+            "Q1: a stale announcement postponed the terminal action by more than a cycle")
         #expect(machine.safetyLog.lines(containing: "Reclamation detected").count == 1)
     }
 
     /// **T12.** As T11, but the lease holder announces 1,800 before every cycle and every write
-    /// throws. A fresh announcement renews no credit.
+    /// throws. A fresh announcement lifts no bar.
     @Test("A step announced again before every cycle holds one reading in all")
     func aRenewedAnnouncementRenewsNoCredit() async throws {
         let machine = ReclamationMachine(
@@ -70,7 +72,7 @@ struct ReclamationAnnouncementCreditTests {
 
         #expect(
             await machine.restorer.causes.contains(.systemReclaimed),
-            "B: renewing the announcement postponed the terminal action")
+            "Q1: renewing the announcement postponed the terminal action")
     }
 
     /// **T13.** Each cycle the lease holder announces 1,800 but writes and reports another step,
@@ -96,7 +98,7 @@ struct ReclamationAnnouncementCreditTests {
 
         #expect(
             await machine.restorer.causes.contains(.systemReclaimed),
-            "R: reports of other targets kept renewing the announcement")
+            "Q1: reports of other targets kept renewing the announcement")
     }
 
     /// **T14, the next announcement replaces it.** A step announced at 1,900 whose write threw,
