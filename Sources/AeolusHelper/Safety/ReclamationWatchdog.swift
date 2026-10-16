@@ -78,7 +78,7 @@ import Foundation
 ///   out of this file's doc comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
 ///   The body is 323 code lines against `type_body_length`'s error at 350, `examine(fanAt:)` 50
-///   against `function_body_length`'s warning at 50, and the file 936 lines against
+///   against `function_body_length`'s warning at 50, and the file 947 lines against
 ///   `file_length`'s at 1000. New § 5 state belongs in `Registry`, tested as a
 ///   value, and new behaviour in the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
@@ -655,8 +655,9 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             // The driver has handed back any step it took, so the fan is on Apple's thermal
             // management — or, if that undo was refused, registered with § 3, and the driver
             // said so at `.fault`. The attempt is spent and the budget is what bounds the trying.
-            // A first step refused with nothing written, for a registration since the stamp, is
-            // that engagement's fan and not a failure (#381): `reengageRefused`.
+            // A `.notAutomatic` refusal with a registration since the stamp is that engagement's
+            // fan and not a failure (#381), while one engagement of a fan runs at a time (#389):
+            // `reengageRefused`.
             return reengageRefused(fanAt: index, heldUnder: lease, error: error)
         }
 
@@ -708,9 +709,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         }
     }
 
-    /// A re-assert that stopped with nothing of its own written: the fan was released (#180) or is
+    /// A re-assert that stopped before writing anything more: the fan was released (#180) or is
     /// now another lease's (#357), or was registered again under its own lease since the
-    /// examination began (#381). Nothing has been written, so nothing is restored.
+    /// examination began (#381). Nothing of § 5's is left written, so nothing is restored: either
+    /// nothing was written, or, in the overlap `reengageRefused` names (#389), the driver had
+    /// already undone its own steps.
     private func reassertStopped(fanAt index: Int, heldUnder lease: UUID, during moment: String) {
         guard isHeld(index, under: lease) else {
             return log.reclamationFanReleasedMidExamination(fan: index, during: moment)

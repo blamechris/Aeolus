@@ -128,7 +128,7 @@ to end the episode too. The actor's share is the binding of `mayClearTheMark` an
 `manualControlEngaged`, and the `.short` clears in `examine`. `examine(fanAt:)` is now exactly 50
 code lines, `function_body_length`'s warning, so the next line it needs takes a split first.
 
-**#381 spent seventeen: 323 code lines, and about 27 left; file 944** (SwiftLint 0.65.1). The
+**#381 spent seventeen: 323 code lines, and about 27 left; file 947** (SwiftLint 0.65.1). The
 stamp, the re-fetch of the target and the comparison before recording are three `Registry` members,
 and a field on `HeldFan` stamped by its own method so that #383 can add to the stamp, all tested as
 values. The actor's share is the stamp in `examine`'s first line, which replaced the line that read
