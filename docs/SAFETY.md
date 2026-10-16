@@ -254,8 +254,9 @@ this document:
   terminal state independently
   ([ADR 0011](ADR/0011-reconciliation-and-foreign-manual-control.md)): a fan found in manual at
   bring-up whose handback the firmware refuses is recorded in reconciliation's own
-  `handbackRefused` set rather than in `LeaseAuthority.restoreAbandoned`, and reached before any
-  client connected rather than after one disconnected. It is watched by nothing for the same
+  `handbackRefused` set rather than in the lease core's `restoreAbandoned` (a private store of
+  `LeaseAuthority.HandbackRegisters`), and reached before any client connected rather than after
+  one disconnected. It is watched by nothing for the same
   reason — § 3 included, because reconciliation engaged nothing and there is no registry entry for
   the emergency bridge to find ([#201](https://github.com/blamechris/Aeolus/issues/201)).
   `Fan.ManualControlAvailability.Reason.restoreToAutomaticFailed` documents both producers on the
@@ -280,9 +281,9 @@ the softer of two refusals.** `StartupReconciliation.refusalForGrant` answers
 found **automatic** at bring-up that a fresh grant-time read then finds in manual — something else
 took it after the pass ran. The distinction matters here rather than being a naming detail,
 because the refusal actually carried over is the terminal state this section has just said
-nothing watches. Nor does #189's clear reach it: that is `LeaseAuthority.restoreAbandoned`, and
-reconciliation's `handbackRefused` is a separate set in a separate type, which no lease teardown
-and no panic sweep writes to.
+nothing watches. Nor does #189's clear reach it: that clears the lease core's `restoreAbandoned`,
+in `LeaseAuthority.HandbackRegisters`, and reconciliation's `handbackRefused` is a separate set
+in a separate type, which no lease teardown and no panic sweep writes to.
 
 *Tested by:* unit tests on expiry arithmetic, including a wall clock moved in either
 direction and a monotonic jump (`LeaseExpiryTests`); tests on the supervisor's *schedule* as
@@ -1549,11 +1550,12 @@ only: no restore reads it, the restore waits on nothing new, and the reply is un
 sleep handback runs inside the same seal (#364).
 
 **One fan under no live lease *is* touched, and it is the fan this path exists for**
-([#189](https://github.com/blamechris/Aeolus/issues/189)). `releaseEveryLease()` sweeps
-`LeaseAuthority.restoreAbandoned` — § 1's terminal state — beside the lease table, per fan
-through the same `restoreToAutomatic(.fan(index))` every teardown uses. Those fans are Aeolus's
-own: it leased them, put them off automatic, asked for them back and was refused, so
-`fansAeolusIsAccountableFor` counts them and ADR 0011's decline-the-contest rule does not apply.
+([#189](https://github.com/blamechris/Aeolus/issues/189)). `releaseEveryLease()` sweeps the lease
+core's `restoreAbandoned` (`LeaseAuthority.HandbackRegisters`), § 1's terminal state, beside the
+lease table, per fan through the same `restoreToAutomatic(.fan(index))` every teardown uses.
+Those fans are Aeolus's own: it leased them, put them off automatic, asked for them back and was
+refused, so `fansAeolusIsAccountableFor` counts them and ADR 0011's decline-the-contest rule does
+not apply.
 Before this they were unreachable by any restore the helper issued, because § 1's own refusal kept
 a lease over them from existing — so § 7 could not recover the one state § 1 called terminal, and
 a fan that entered it stayed there for the life of the process. A write the firmware accepts,

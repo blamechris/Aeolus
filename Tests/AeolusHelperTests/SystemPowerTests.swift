@@ -409,7 +409,7 @@ struct SystemPowerTests {
     /// refuses every lease for the life of the process, which is safe and useless; the pair is
     /// the mechanism.
     ///
-    /// **Mutation:** delete the `guard !sleepSeal` block from `LeaseAuthority.acquireLease`.
+    /// **Mutation:** delete the `guard !sleep.isSealed` block from `LeaseAuthority.acquireLease`.
     /// Run: red — the parked request is granted.
     @Test("A lease request parked across the sleep is refused until the machine wakes")
     func aLeaseParkedAcrossTheSleepIsRefusedUntilTheWake() async throws {

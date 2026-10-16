@@ -795,11 +795,11 @@ actor LeaseAuthority: HeldLeaseRole {
     /// revocations outwaiting the fan (#368), in the `defer` because the body returns early.
     ///
     /// - Note: **The overlap the count exists for is unreachable in this build, and the count
-    ///   is therefore not load-bearing today.** Replacing it with set membership passes the
-    ///   whole suite; it is written this way because the overlap becomes reachable the moment
-    ///   either of the two facts that make it unreachable changes. Recorded rather than
-    ///   implied, so nobody simplifies it believing a test is watching — handback-ledger.md
-    ///   § *"`releasing` — the transient half"* names both facts.
+    ///   is therefore not load-bearing today.** Set membership at this call site passes the
+    ///   whole suite, and only `beginHandback(ofFan:)`'s own count is watched; it is written
+    ///   this way because the overlap becomes reachable the moment either of the two facts that
+    ///   make it unreachable changes. Recorded rather than implied, so nobody simplifies it
+    ///   believing a test is watching — handback-ledger.md § *"`releasing` — the transient half"*.
     private func restore(_ fans: Set<Int>, because cause: FanRestoreCause) async {
         log.restored(fans: fans, because: cause)
         for fan in fans { registers.beginHandback(ofFan: fan) }

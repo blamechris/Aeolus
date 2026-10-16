@@ -123,11 +123,18 @@ it checks — so a client could take a lease over a fan whose handback is still 
 **That overlap is unreachable in this build, and the count is therefore not load-bearing
 today.** `guard table.isEmpty` holds the table to a single entry, and every teardown path
 removes its entry synchronously before restoring, so whichever path removes first is the only
-one that restores. Replacing the count with set membership passes the whole suite. It is
-written this way because the overlap becomes reachable the moment either of those two facts
-changes — E5.3's control plane issuing a restore outside lease teardown, or the table holding
-more than one lease — and both are cheaper to be already correct for than to retrofit.
-Recorded rather than implied, so nobody simplifies it believing a test is watching.
+one that restores. It is written this way because the overlap becomes reachable the moment
+either of those two facts changes — E5.3's control plane issuing a restore outside lease
+teardown, or the table holding more than one lease — and both are cheaper to be already correct
+for than to retrofit.
+
+**Which form is watched.** Since #128's lease-core pass the count is a value's, and the value is
+watched: `releasing[fan] = 1` in place of `+= 1` in `HandbackRegisters.beginHandback(ofFan:)`
+fails `LeaseAuthorityRegistersTests.aFanLeavesOnlyWithItsLastRestore`. The **wiring** is not:
+`restore(_:because:)` counting a fan only when it is not already mid-handback — `for fan in fans
+where !registers.isMidHandback(fan)` — is set membership spelled at the call site, and passes the
+whole suite, because no reachable sequence restores one fan twice at once. Recorded rather than
+implied, so nobody simplifies the call site believing a test is watching it.
 
 ### `restoreAbandoned` — the durable half
 

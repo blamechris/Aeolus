@@ -25,7 +25,7 @@ extension LeaseAuthority {
         /// handback-ledger.md § *"`sleepSeal` — why the table is closed for a sleep"*.
         ///
         /// **Hearing them out of order is a different case, and it is guarded** — see
-        /// `wakesAheadOfTheirSeal`. The fail-safe argument above covers a wake that never comes;
+        /// `latestWakeGeneration`. The fail-safe argument above covers a wake that never comes;
         /// it does not cover one that came and was answered before the seal it belonged to was
         /// ever set, which leaves the seal standing over a machine that is demonstrably awake.
         private var sleepSeal = false
