@@ -1204,19 +1204,18 @@ holds § 5's re-fetched target, which is older than the client's, until the next
 reads it as diverged and re-asserts the client's: one cycle, one more attempt, and the mark kept
 for that cycle. Only mutual exclusion over the write closes it, and the fans' examination gate is
 that exclusion (ADR 0014's #383 and A6 amendments): a client write then waits out § 5's re-assert,
-and past § 5's bound § 5 writes nothing, so the case remains only for a write that bypasses the
-gate. A same-lease re-apply just before a genuine re-reclamation stands that cycle's re-assert
-down, and so does one that registers without engaging a fan the system has taken back to
-automatic, which A6's contract allows for a fan it believes already engaged; the fan stays on
-automatic until the next cycle re-engages it. Each costs one cycle and one attempt, in the
-direction of giving the fan up sooner. Two engagements of one fan
-under one lease can still overlap, an A6 precondition tracked as
-[#389](https://github.com/blamechris/Aeolus/issues/389). A same-lease engagement that completes
-during § 5's yield wait re-admits § 5's next step as a first step, which is refused `.notAutomatic`
-after § 5's driver has written. The driver hands the fan back, and § 5 logs the stand-down, whose
-line says nothing was written. The fan ends on automatic control and the mark is kept, so the
-snapshot is truthful; the log line is not, and the client's engagement believes it holds a fan it
-does not. A level-6 step that lands between § 5's read and its judgement is judged against a
+and past § 5's bound § 5 writes nothing away from automatic control, so the case remains only for a
+write that bypasses the gate. A same-lease re-apply just before a genuine re-reclamation stands
+that cycle's re-assert down, and so does one that registers without engaging a fan the system has
+taken back to automatic, which A6's contract allows for a fan it believes already engaged; the fan
+stays on automatic until the next cycle re-engages it. Each costs one cycle and one attempt, in the
+direction of giving the fan up sooner. Two engagements of one fan under one lease no longer
+overlap ([#389](https://github.com/blamechris/Aeolus/issues/389), closed by A6's second step):
+level 6 engages only under the fan's examination gate, which § 5 holds through its re-assert, so a
+same-lease engagement attempted during § 5's yield wait waits for it, and neither undoes the
+other. Before the gate, one that completed during that wait re-admitted § 5's next step as a first
+step, refused `.notAutomatic` after § 5's driver had written, and § 5's stand-down line then said
+nothing was written. A level-6 step that lands between § 5's read and its judgement is judged against a
 record that predates or postdates the reading, so an ordinary step can read as diverged. § 5
 excuses no reading for it, because any excuse built on what the lease holder reports can be met by
 a lease holder that reports a target the system holds; instead A6 keeps each step out of § 5's
@@ -1226,21 +1225,33 @@ examination of the fan (ADR 0014's #383 amendment,
 **The examination gate, as built** (ADR 0014's A6 amendment). `FanExaminationGate` lets one § 5
 examination or one level-6 step hold a fan at a time, first in, first out, per fan. § 5 takes it
 before it stamps the examination and holds it to the examination's last act, so a step lands before
-an examination or after it, never inside. § 5 waits at most `examinationWait`, 14.5 s: the longest
+an examination or after it, never inside. § 5 waits at most `examinationWait`, 15.5 s: the longest
 hold a step that keeps A6's contract can make before ADR 0012 ends the helper, 13.5 s, after the
-longest a step queued ahead of § 5 waits for its grant, `stepWait`. Past it, which means the
-contract was broken, the gate says so at `.fault` and § 5 examines without it: it judges, marks and
-restores as before, and its re-assert stands down, so nothing it writes takes the fan away from
-automatic control. Later examinations against the same holder do not wait at all. The bound counts
-time asleep, so a wait that spans a system sleep can run out inside a lawful hold: that `.fault` is
-a false breach, and diagnostic only. A cancelled wait is not past the bound, though it holds
-nothing; the re-assert's cancellation guard stops its writes and refunds its attempt (#144), and a
-mark its judgement leaves is cleared by the next converged cycle. `diverged` decides on the record
-as it stands after its ledger hop, so past the bound a first command reported there is seen, not
-overtaken by a stale copy. Level 6 will wait at most `stepWait`, 1 s, and never write without the
-gate. § 3's writes and every restore never take the gate, so no hand-back waits on a holder; the
-engagement driver and the writers never take it either, because § 5's re-engage runs through them
-while § 5 holds it. Until level 6 takes the gate in A6's next change, nothing steps. A target that
+longest a step queued ahead of § 5 waits for its grant, `stepWait`, and `examinationMargin`, 1 s,
+for a late timer wake and the actor hops a step makes inside its hold, which no SMC deadline bounds
+(ADR 0014's A6 PR-2 amendment). Past it, which means the contract was broken, the gate says so at
+`.fault` and § 5 examines without it: it judges, marks and restores as before, and its re-assert
+stands down, so nothing it writes takes the fan away from automatic control. A false divergence
+there still spends an attempt, and at the budget it takes the terminal action. Later examinations
+against the same holder do not wait at all. The bound counts time asleep, so a wait that spans a
+system sleep can run out inside a lawful hold: that `.fault` is a false breach, and diagnostic only.
+A cancelled wait is not past the bound, though it holds nothing; the re-assert's cancellation guard
+stops its writes and refunds its attempt (#144), a mark its judgement leaves is cleared by the next
+converged cycle, and a restore or a revocation it reaches, through `finaliseRelease`, still
+happens. `diverged` decides on the record as it stands after its ledger hop, so past the bound a
+first command reported there is seen, not overtaken by a stale copy. Level 6 waits at most
+`stepWait`, 1 s, and never writes without the gate. § 3's writes and every restore never take the
+gate, so no hand-back waits on a holder; the engagement driver and the writers never take it either,
+because § 5's re-engage runs through them while § 5 holds it.
+
+**Level 6's `apply`, as built** (ADR 0014's A6 PR-2 amendment). `LeaseApplier` takes each fan's gate
+for the whole of that fan's step: it engages the fan if this lease has not, registers it with § 5,
+asks the entitlement, writes the fixed target whole and reports what the write returned, one fan at
+a time and one gate at a time, after reading the fan's envelope outside the gate. Any refusal on
+the way undoes what this `apply` engaged, dropping § 5's record first and then handing the fan back,
+outside the gate and without waiting for one. Before it replies it asks the lease and § 3's latch
+again. It is built by tests only, and A6's next step wires it to the privilege boundary; on a
+`.notBuilt` build it is unreachable, because no lease is granted. A target that
 is not a number, or is below the floor every permit is clamped to, is not recorded, whether a report
 or a re-assert's write returned it, and the refusal is logged at `.fault`; the record then keeps the
 step before. The check is a floor and no ceiling. A target that is not a number diverges, and every
@@ -1302,7 +1313,13 @@ gate, the gate before the stamp, a divergence past the bound marked with nothing
 cancelled wait's refund), `ExaminationGateRestoreTests.swift` (every hand-back finishing with a
 gate held for good, `restoreAndForget` and the driver's undo included) and
 `ExaminationGateRouteTests.swift` (where the gate may be named and entered, its one instance, and
-a shipped build never entering it)
+a shipped build never entering it). *Not claimed:* the two cancellation guards in the gate's timer,
+in its `catch` and after its sleep, are equivalent mutants that leave every gate test green, since
+the timer is cancelled only once its wait is decided. Level 6's `apply` is tested in the
+`LeaseApplier` suites (`LeaseApplierTests.swift` and its siblings: item 0's checks, the item 5
+table row by row, the undo's order and that it never waits for a gate, one hold per fan, the ramp
+reset, and #383's and #389's acceptance with the real level 6), with `manualControlHandedBack` in
+`ReclamationHandedBackTests.swift`
 and `ReclamationWatchdogAccessTests.swift` with `ReclamationRegistryAccessTests.swift` (their
 access) and `ReclamationRoleTripwireTests.swift` (what the three roles over the lease core, the
 latch and the ledger carry, #380), with the
@@ -1744,6 +1761,14 @@ Ramp limiting shapes the control loop's output **only, and never delays a safety
 write**: the thermal override in § 3 is not rate-limited by a comfort mechanism. See
 [ADR 0007](ADR/0007-safety-composition.md).
 
+**It shapes the steps a control loop takes, not a client's setpoint** (ADR 0014's A6 amendments).
+Until E8a's loop exists, level 6 writes a `.fixed(rpm:)` setting whole, in one write of the clamped
+goal (`GovernedFanWriter.hold(_:of:)`): a single governed step towards it would write a speed the
+client did not ask for and report it applied, which is `CLAUDE.md` rule 6. The writer's memory of
+the last target, which a governed step ramps from, is reset at every engagement and every hand-back
+level 6 makes, so no later step ramps from a speed a fan stopped holding when it went back to
+automatic. § 2's clamp and the 0 RPM floor bind the whole write as they bind every other.
+
 **The ramp governor is built; hysteresis is not.** #121 recorded that three places named
 three different owners for the governor, that #101 had shipped only the constraint on the
 *number* — a curve could not hold a rate above the cap, and nothing consumed the result —
@@ -1834,8 +1859,12 @@ numbering.
 **§ 8 is not a peer of these.** Ramp limiting shapes level 6's output only and never delays a
 safety write — and that holds structurally rather than by a runtime check. Levels 1–5 write
 through `SafetyActorWriter`, which holds no `RampGovernor` and has no property one could be
-assigned to; level 6 writes through `GovernedFanWriter`, the only holder of one, which does not
-declare the verbs a safety actor calls. The two share no *writing* protocol, so no code can be
+assigned to; level 6 writes its targets through `GovernedFanWriter`, the only holder of one, which
+does not declare the verbs a safety actor calls. Level 6 engages through an `EngagementDriver` of
+its own, at `.controlLoop` (ADR 0014's A6 amendments), which steps through a `SafetyActorWriter`
+for the mode write and the undo and nothing else: the driver has no target verb, and the file that
+holds it never names the writer type, so the control loop holds no writer it can command a target
+through but the governed one. The two share no *writing* protocol, so no code can be
 generic over "a writer" and hand a safety actor the governed one; the compile-time guarantee is
 exactly that `GovernedFanWriter` declares neither `commandMaximum(of:)` nor
 `restoreToAutomatic(_:)`. (They do both satisfy `Sendable`, so a `<W: Sendable>` parameter accepts
