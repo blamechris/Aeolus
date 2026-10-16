@@ -405,7 +405,9 @@ something less true than what was available.
    ([#311](https://github.com/blamechris/Aeolus/issues/311)). The foreign-control step above
    the marker exempts every fan in `fansAeolusIsAccountableFor` and never reads it, on the
    argument that one of the four refusals here answers for it. It then suspends — on the
-   reconciliation actor, and once per fan it does read — so a handback can land in between.
+   reconciliation actor, and once per fan it does read — and the bounds read after it suspends
+   once per fan it reads too ([#270](https://github.com/blamechris/Aeolus/issues/270)), so a
+   handback can land anywhere in that window.
    The fan's `releasing` entry clears, item 4 no longer sees it, and until #311 nothing refused
    it however it read: a lease over a fan in manual that nothing had read since its restore.
    `refuseIfExemptionLapsed(_:exempted:)` refuses a requested fan that was exempted and is no
@@ -731,9 +733,10 @@ declined seal, and after a wake the teardown outlived, the snapshot and the gran
 `.releaseInProgress`. During a sealed teardown before the wake the grant says `.systemSleeping` and
 the snapshot `.releaseInProgress`, where it said `.available`:
 [#269](https://github.com/blamechris/Aeolus/issues/269)'s gap, narrower in availability and
-different in reason. When #269 gives `.systemSleeping` a rung, it goes below step 5 and above step
-10, in the grant's order: `acquireLease` checks the sleep seal after its fresh read, which step 5
-mirrors, and before this seal.
+different in reason. When #269 gives `.systemSleeping` a rung, it goes below step 8, and so below
+step 5, and above step 10, in the grant's order: `acquireLease` checks the sleep seal after its
+fresh read, which step 5 mirrors, after its bounds read since #270, which step 8 mirrors, and
+before this seal.
 
 **Why two tests were inverted.** `UnconfirmedHandbackTests.aWedgedHandbackDropsTheLeaseFirstAndLeavesTheFanUnconfirmed`
 and `SleepCycleSurvivalTests.aHandbackThatNeverReturnsIsStillRefusedAfterASecondWake` granted fan 1
@@ -886,12 +889,16 @@ same advice are recorded for `ReclamationWatchdog` in
 
 *From the documentation of the type.*
 
-The third arrived with #124 and is the only one that reads. It is worth stating plainly
+The third arrived with #124 and was, when it arrived, the only one that read. It is no
+longer the only one: `foreignControl` reads each requested fan's mode afresh, and since
+[#270](https://github.com/blamechris/Aeolus/issues/270) `envelopes` reads its bounds, and the
+type asks six things of the machine in all. It is worth stating plainly
 here, because `acquireLease`'s `// ---- No await below this line ----` marker can only be
 reasoned about correctly by somebody who knows how many suspension points that method
 has: an earlier version of this paragraph said the type "cannot enumerate a fan, read a
 sensor, or write a value" and named only two dependencies, which would have hidden the
-slowest of the three from exactly that analysis.
+slowest of the three from exactly that analysis. `LeaseBindingRaceTests` now holds the
+marker to its word in source, so a suspension added below it fails a test.
 
 It was `CriticalTemperatureSensing` until #134, and the swap is not a rename. A read is
 still what happens when there is no fresh evidence; what changed is that the grant path

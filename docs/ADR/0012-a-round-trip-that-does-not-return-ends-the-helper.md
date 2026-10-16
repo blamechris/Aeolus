@@ -293,8 +293,10 @@ count. One over-bound observation is not a verdict.
 How long a § 3 cycle can legitimately take is **not a constant**. It depends on *N*, the number of
 supervisor-priority reads outstanding at once, and nothing in the helper bounds N. Besides the
 fixed readers (§ 3's cycle, § 5's cycle, the grant path's curated read, which is single-flight,
-and a reconnect's exclusive turn) there is one mode read per connection with an `acquireLease` in
-flight and one per in-flight `restoreAllToAutomatic`, and nothing caps connections or those
+and a reconnect's exclusive turn) there is one mode or bounds read per connection with an
+`acquireLease` in flight — sequential within a grant, and a bounds read's two keys fit the reader
+turn below ([#270](https://github.com/blamechris/Aeolus/issues/270)) — and one per in-flight
+`restoreAllToAutomatic`, and nothing caps connections or those
 messages ([#332](https://github.com/blamechris/Aeolus/issues/332)). Today's build is N = 3: the
 write path is not built, so `acquireLease` refuses before it reads. The client-driven terms
 arrive with E3.

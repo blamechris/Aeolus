@@ -113,10 +113,11 @@ import FanKit
 // `LeaseAccountability`: a snapshot has no `ConnectionID`, so the helper cannot know whether
 // the reader is the holder. `.systemSleeping` is absent for a weaker reason — § 4's seal is
 // machine-wide state the snapshot does not read — and is
-// [#269](https://github.com/blamechris/Aeolus/issues/269)'s. Its rung goes **below step 5 and
-// above step 10**: `acquireLease` checks the sleep seal after its fresh read, so while the seal
-// holds a fan whose mode did not read is still refused `.supervisorBlind`, and the two agree.
-// `.noThermalTelemetry`, which the grant checks *before* that read, is #269's too.
+// [#269](https://github.com/blamechris/Aeolus/issues/269)'s. Its rung goes **below step 8, and so
+// below step 5, and above step 10**: `acquireLease` checks the sleep seal after its fresh read
+// and, since #270, after its bounds read, so while the seal holds a fan whose mode did not read is
+// still refused `.supervisorBlind`, one with implausible bounds `.boundsImplausible`, and the two
+// sides agree. `.noThermalTelemetry`, which the grant checks *before* that read, is #269's too.
 
 extension ReadOnlyFanReport {
 
@@ -159,7 +160,7 @@ extension ReadOnlyFanReport {
     /// other answer passes through untouched; see this file's header for why that is the whole
     /// rule. During a sealed sleep the grant says `.systemSleeping` first, which this ladder does
     /// not state yet ([#269](https://github.com/blamechris/Aeolus/issues/269)); #269's rung goes
-    /// above this one and below step 5, as this file's header says.
+    /// above this one and below step 8, as this file's header says.
     static func reportingMachineWideRestore(
         of fan: FanState, given leases: LeaseAccountability
     ) -> FanState {

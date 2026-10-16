@@ -8,18 +8,18 @@ import Foundation
 ///
 /// Behind `FanAuthority`, not on it. Every method below carries a `FanAuthority` signature
 /// verbatim, so the helper's control plane composes it with one-line forwards, but this
-/// type owns no hardware and produces no `SystemSnapshot`. It asks for exactly three things
-/// of the machine, each as a narrow role rather than a control plane:
+/// type owns no hardware and produces no `SystemSnapshot`. It asks six things of the machine,
+/// each as a narrow role rather than a control plane:
 ///
-/// - `FanEnumerating` — which fans exist.
-/// - `FanRestoring` — put them back on automatic.
+/// - `FanEnumerating`, which fans exist; `FanRestoring`, put them back on automatic; and
+///   `FanWriteCapabilityReporting`, whether this build can write at all.
 /// - `SightednessProving` — **can the mechanism that protects a leased fan see anything at
-///   all**, asked once per grant. This one can cost a real hardware round trip, and since
-///   [#134](https://github.com/blamechris/Aeolus/issues/134) usually does not.
+///   all**, asked once per grant; since [#134](https://github.com/blamechris/Aeolus/issues/134)
+///   it asks whether § 3 can see rather than reading the curated set now (ADR 0010).
+/// - `ForeignManualControlSensing` and, since #270, `FanEnvelopeReading`: each requested fan's
+///   mode and bounds, read afresh, one `.supervisor` turn per fan. Every role but the capability
+///   is asked across an `await`; an earlier version of this paragraph hid the sightedness one.
 ///
-/// The third arrived with #124 and is a suspension point in `acquireLease` that an earlier
-/// version of this paragraph hid; since #134 it asks whether § 3 can see rather than reading
-/// the curated set now ([ADR 0010](../../../docs/ADR/0010-coalesced-supervisor-reads.md)).
 /// handback-ledger.md § *"Where this sits: the third role, and the swap from #134"*.
 ///
 /// **Still no write of any kind** — `SMCConnection.write` is SPI-gated and still

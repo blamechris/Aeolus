@@ -1376,7 +1376,8 @@ unreadable fan reads `.supervisorBlind`, a refusal the grant makes once those cl
 has no `.noThermalTelemetry` rung yet (#269). The sleep seal is checked *after* the fresh read, so
 while it holds the grant also answers `.supervisorBlind` for such a fan and the two agree; #269's
 `.systemSleeping` rung therefore goes below step 5 and above step 10. #270 places its bounds gate
-relative to the fresh read and moves steps 5 and 8 together.
+relative to the fresh read and moves steps 5 and 8 together. *(Taken by the #128/#270 amendment
+below, which also moves #269's rung below step 8.)*
 
 **No `AeolusXPCVersion` bump.** No field, case or method changes. `.supervisorBlind` is on the wire
 and already published for the reconciliation producer, and "cannot read this fan's control state" is
@@ -1681,10 +1682,13 @@ failed read is `.notMeasured`, as the snapshot's is. It refuses
 - **After the foreign read**, so a fan whose reads fail is told `.supervisorBlind`, and the ladder's
   step 5 already ranks above step 8: the two sides keep one order and no rung moves. Ahead of it, the
   snapshot would state a reason `fanctl auto` reads as silent over one it reads as pending.
-- **Over the fans the foreign read exempts, never them.** A fan in a handback register is answered by
-  the register, as the snapshot answers it; `refuseIfExemptionLapsed` covers a handback landing during
-  this read as it covers one during the foreign read.
+- **Over the fans the foreign read did not exempt, never the exempted ones.** A fan in a handback
+  register is answered by the register, as the snapshot answers it; `refuseIfExemptionLapsed` covers
+  a handback landing during this read as it covers one during the foreign read.
 - The seal case, recorded at step 10 as the one divergence left, closes.
+- **Above the marker, so above the sleep seal's guard.** #269's `.systemSleeping` rung therefore goes
+  below step 8 as well as step 5: while the seal holds, a fan with implausible bounds is refused
+  `.boundsImplausible`, as the snapshot states.
 
 **What it costs.** One `.supervisor` turn per requested fan Aeolus is not accountable for, per grant,
 bounded by per-connection serialisation, as the foreign read is. `SMCReadPriority`'s "revisit when"
@@ -1732,7 +1736,7 @@ Proposed.**
 | — | A re-grant after § 5's terminal action is a client's request | `AeolusXPCClient` and ADR 0013 D1 never re-acquire; the app has no control UI yet | A self-re-acquiring client makes the contest with the system unbounded: a measured, time-limited ledger refusal, mirrored in the snapshot |
 | — | At most one live lease covers a fan | One lease at a time (`.leaseHeldByAnotherClient`) | Overlapping leases: § 5's records keyed per (fan, lease), and registration's arbitration re-decided |
 | — | Every lease-core restore notice for a fan precedes any grant over it, and precedes the fan leaving `releasing` | `releasing` is held from before the restorer's notices until it returns; `HelperFanRestorer` awaits each notice before its write | A restore path bypassing `releasing` lets the index-keyed `manualControlReleased(fanAt:)` erase a newer lease's record, and a notice delivered after the restorer returns ends #368's wait before it arrives; either way the notice must then carry the lease |
-| — | The snapshot's `F<n>Mn`/`F<n>Mx` read and the grant's `readEnvelope(ofFan:)` fail together and reach one plausibility gate (#270) | Code: one scheduler and connection, the same two keys; the plane checks finiteness at its seam and the snapshot's path leaves a non-finite value to `FanControlEnvelope.validating`, so both end at that gate as `.boundsImplausible`. Unverified on Intel and M1/M2 | The grant refuses leases the snapshot offers, or the reverse. Fix the read in the same change; do not debounce |
+| — | The snapshot's `F<n>Mn`/`F<n>Mx` read and the grant's `readEnvelope(ofFan:)` fail together and reach one plausibility gate (#270) | Code: one scheduler and connection, the same two keys. Each path checks finiteness before the gate: the plane at its seam, and the snapshot's in `SMCFanEnumeration`, which turns a non-finite read into `.notDecodable`. A non-finite bound is therefore `.notMeasured` on both, and both end at that gate as `.boundsImplausible`. Unverified on Intel and M1/M2 | The grant refuses leases the snapshot offers, or the reverse. Fix the read in the same change; do not debounce |
 | — | The snapshot's `F<n>Md` read and the grant's fresh read fail together | Code: one scheduler and connection, the same key and `FirmwareFanMode(declaredByFirmware:)` decode behind the same finiteness rule; a `.snapshot` read waits and never fails for its priority. They differ only in priority and instant. Every recorded `F<n>Md` read on `Mac16,5` answered, and none was taken while reads were failing | The #360 rung refuses leases the helper grants. Fix the read, and re-decide here. The same holds for a platform whose mode is not `F<n>Md` (Intel, `FS! `): the snapshot's read must take the plane's branch, or share its decode, in the same change |
 
 Every observation above is `Mac16,5`; the write-path rows are hypotheses until D8 runs. Intel and
