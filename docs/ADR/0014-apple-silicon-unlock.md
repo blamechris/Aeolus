@@ -1997,7 +1997,9 @@ Then:
   cycle. Only mutual exclusion over the write closes it, and the
   [#383](https://github.com/blamechris/Aeolus/issues/383) amendment below adds it: under the fan's
   examination gate a client write waits out § 5's re-assert, so the case remains only past § 5's
-  bound, when § 5 examines without the gate, or for a write that bypasses the gate.
+  bound, when § 5 examines without the gate, or for a write that bypasses the gate. *(Superseded by
+  the A6 amendment below: past the bound § 5's re-assert stands down and writes nothing, so the case
+  remains only for a write that bypasses the gate.)*
 - *Two engagements of one fan under one lease remain an A6 precondition.* The plane's in-progress
   record is still per fan. A same-lease engagement that completes during § 5's own mode write now
   stands § 5 down rather than being commanded over, and one that completes before § 5's first step
@@ -2111,7 +2113,9 @@ to § 5's sweep does this on consecutive cycles and reaches the terminal action 
   reported, and a report that arrives during its own command write wins the record (#381). § 5
   judges every reading against the record (#383).* The #381 clause stays because
   `recordReassertedTarget(_:decidedOn:ofFan:)`'s decided-on check still implements it, and it
-  still decides the record past § 5's bound, when § 5 writes without the gate.
+  still decides the record past § 5's bound, when § 5 writes without the gate. *(Superseded by the
+  A6 amendment below: past the bound § 5 writes nothing away from automatic control, so the check
+  decides the record only against a write that bypasses the gate.)*
 - `GovernedFanWriter` needs no change: the step it computes is written and reported under the gate.
 - Items 2, 4 and 5 are unchanged.
 
@@ -2208,27 +2212,43 @@ gate and has § 5 take it; level 6's `apply` takes it in the next.
     and the clock frozen, every hand-back still finishes.
   - The lock order is the gate before a scheduler turn, never the reverse.
 - **§ 5 takes the gate, then stamps.** `cycle()` enters the fan's gate before
-  `examine(fanAt:gated:)`, whose first act is the #381 stamp, and leaves it after the examination's
-  last act. A step that held the gate, its registration included, is then before the examination
-  and never inside it. Taken after the stamp, a registration made under the gate would stand § 5's
-  re-assert down.
-- **§ 5's wait is bounded by `examinationWait`:** `UnlockLimits.yieldBudget` plus two
-  `WatchdogLimits.roundTrip`, 13.5 s.
-  - That is the longest hold item 3 allows level 6 before ADR 0012 ends the helper: one
+  `examine(fanAt:inBound:)`, whose first act is the #381 stamp, and leaves it after the
+  examination's last act. A step that held the gate, its registration included, is then before
+  the examination and never inside it. Taken after the stamp, a registration made under the gate
+  would stand § 5's re-assert down.
+- **§ 5's wait is bounded by `examinationWait`:** `UnlockLimits.yieldBudget`, two
+  `WatchdogLimits.roundTrip` and `stepWait`, 14.5 s.
+  - 13.5 s of it is the longest hold item 3 allows level 6 before ADR 0012 ends the helper: one
     engagement's polling, its last step's turn, then its undo's turn or its command's. Level 6's
-    hand-back runs outside the gate. So a wait that runs out means the contract was broken, for
-    example by a pass never released.
+    hand-back runs outside the gate.
+  - `stepWait` is there because a step queued ahead of § 5 is granted within `stepWait` of
+    arriving or refused, so the last step ahead of § 5 is granted at most `stepWait` after § 5
+    arrives, and may then hold for 13.5 s. This amendment first had the bound without it, 13.5 s,
+    and that ran out inside a lawful hold: § 5 examined without the gate during a step and logged a
+    breach that was not one. A `ManualClock` test pins the sequence.
+  - So a wait that runs out means the contract was broken, for example by a pass never released,
+    with one exception. The bound is measured on the composition's clock, which counts time asleep
+    (ADR 0007; unverified on this machine), so a wait that spans a system sleep can run out on wake
+    inside a lawful hold. That `.fault` is a false breach, and diagnostic only: past the bound § 5
+    writes nothing away from automatic control.
+  - A clock whose sleep fails for any reason but cancellation ends the wait as the bound would,
+    rather than leaving it to a grant that may never come.
   - The first expiry against a holder is logged at `.fault` and remembered. Later examinations
     against the same holder do not wait, so a stuck holder costs § 5 one bound in all, not one
     per cycle.
 - **Past the bound, an examination judges, marks and restores, and writes nothing away from
   automatic control.**
-  - It is stamped ungated, so `Registry.reassertTarget(ofFan:under:)` answers `nil`. The re-assert
-    stands down at its first re-fetch, through #381's path, and the attempt stays spent.
+  - It is stamped out of bound (`HeldFan.examinedInBound` is `false`), so
+    `Registry.reassertTarget(ofFan:under:)` answers `nil`. The re-assert stands down at its first
+    re-fetch, through #381's path, and the attempt stays spent.
   - The judgement, the ledger mark, the budget, and every restore and terminal action happen as
     before, so a stuck holder cannot keep a fan from being given up.
 - **A cancelled wait is not an expiry.** It returns at once without the gate and is not stood
   down. The cancellation guard before the re-assert's first write still refunds the attempt (#144).
+  It is stamped in bound though it holds nothing: the stamp names the bound, not the gate. Its
+  examination runs without the gate, so a step can land inside it, and its judgement can then
+  mark the fan and log a false `.fault`. It writes nothing, because that guard stops it, and the
+  next converged cycle clears the mark (#366's episode).
 - **`diverged` decides on the live record.** Whether anything was commanded, and the attempt
   count, are read from the record re-fetched after the ledger hop, not from the copy taken before
   it. Under the gate no step can land in that hop. Past the bound one can, and the copy would give
@@ -2300,6 +2320,10 @@ amendment.
   given up once its budget is spent.
 - *A write that bypasses the gate* is judged against the record, as the #383 amendment says: a
   false fault at most, with #381's re-fetches still answering it.
+- *A cancelled examination's judgement* can leave a false mark and a false `.fault`, and never a
+  write: the next converged cycle clears the mark. § 5's wait is cancelled when its loop is stopped.
+- *A wait that spans a system sleep* can run out on wake inside a lawful hold: a false breach
+  `.fault` and one examination without the gate, diagnostic only.
 - *A fan the system took back before a re-apply* is #381's one-cycle residual.
 - *The bounds rest on U3's 3.5 s yield,* and routine holds are assumed to last milliseconds.
   Neither is measured.

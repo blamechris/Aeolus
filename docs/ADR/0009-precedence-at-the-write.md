@@ -212,8 +212,8 @@ is dormant until a caller registers fans with §5** — row A6 (the level-6 `app
 [#9](https://github.com/blamechris/Aeolus/issues/9)'s slice plan, now that A4 (the engagement
 driver and #181) has landed. No lease can be granted in this build, so `held` is always empty and the check has
 nothing to judge.
-`ReclamationDivergence.leaseLapsed` exists, and `ReclamationWatchdog.examine(fanAt:)` decides it
-on every examination: the control-state read is taken, then
+`ReclamationDivergence.leaseLapsed` exists, and `ReclamationWatchdog.examine(fanAt:inBound:)`
+decides it on every examination: the control-state read is taken, then
 `LeaseAuthority.hasLiveLease(coveringFan:)` is asked, and only then is the reading believed — a
 failed read included. A fan no live lease covers goes to `restoreAndForget(fanAt:)`: the
 keystone restore, the `held` entry dropped, the ledger cleared, and no `markReclaimed` and no
@@ -329,8 +329,8 @@ too (ADR 0014, amended alongside).
   gave the fan up for, while it runs or after (#366, ADR 0014's amendment of that issue). Only an
   accepted registration clears the fan's ledger entry, and one under the record's own lease while
   § 5's reclamation episode for the fan is in flight does not.
-- `examine(fanAt:)` asks `hasLiveLease(id:coveringFan:)` about the record's own lease, in the
-  same place. `.leaseLapsed`'s action is unchanged: restore-and-forget, whatever covers the fan
+- `examine(fanAt:inBound:)` asks `hasLiveLease(id:coveringFan:)` about the record's own lease, in
+  the same place. `.leaseLapsed`'s action is unchanged: restore-and-forget, whatever covers the fan
   now.
 - The re-fetch rule becomes: *re-fetch after every `await`, and treat an absent record, or one
   under another lease, as an instruction to stop.* An absent record after a write is restored

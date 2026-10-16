@@ -44,7 +44,7 @@ Three escapes were available and all three were refused.
   another file that moved `reportShortfall(_:fanAt:)` (now part of `HeldFan.judge(_:)`)
   verbatim failed to compile with `'held'
   is inaccessible due to 'private' protection level`, and the same for `log`. D36 is that
-  stored state stays `private`, and `held` is exactly what makes `examine(fanAt:)`'s
+  stored state stays `private`, and `held` is exactly what makes `examine(fanAt:inBound:)`'s
   read-then-mutate reasoning checkable.
 
   *That was the whole of the actor when it was written, and it is now true only of what the
@@ -149,16 +149,21 @@ its own would have made it 11.
 and two initialiser parameters' types in place; every call site, and so every `await`, is
 unchanged. A6's first two PRs need about ten of the 22.
 
-**A6's first PR spent six: 334 code lines, and about 16 left; `examine(fanAt:gated:)` 50; file
-980** (SwiftLint 0.65.1). The gate is a type of its own, `FanExaminationGate`, outside the actor,
+**A6's first PR spent six: 334 code lines, and about 16 left; `examine(fanAt:inBound:)` 50; file
+981** (SwiftLint 0.65.1). The gate is a type of its own, `FanExaminationGate`, outside the actor,
 with its bookkeeping a value (`FanExaminationGate.Lanes`) tested as one. The actor's share is the
 stored `gate`, its initialiser parameter and assignment, two more lines in `cycle()`'s loop (enter,
 and defer the leave, around the call to `examine`), and one in `reassertStopped` that tells the
-ungated stand-down's line from #381's. `examine` stays at 50: only its signature and its stamp
-gain `gated`. The ungated stand-down is `Registry.reassertTarget(ofFan:under:)` answering `nil`,
-also a value, and `diverged`'s live record is a rename: the copy's binding moved to the re-fetch
-after the ledger hop, and the copy kept a name of its own for the reclamation line. Level 6's
-hand-back verb, in A6's next PR, needs about four of the 16.
+stand-down past the gate's bound from #381's. `examine` stays at 50: only its signature and its
+stamp gain `inBound`, which says whether § 5's wait for the gate ended inside its bound, and not
+whether the gate is held: a wait cancelled inside the bound holds nothing and is stamped `true`.
+It was `gated` until review found the name claimed more than that. Its one-line width is why the
+name is short: a longer one would have split `examine`'s first line and made it 51. The stand-down
+past the bound is `Registry.reassertTarget(ofFan:under:)` answering `nil`, also a value, and
+`diverged`'s live record is a rename: the copy's binding moved to the re-fetch after the ledger
+hop, and the copy kept a name of its own for the reclamation line. The review's corrective push
+spent no code line here; one comment line in `cycle()` made the file 981. Level 6's hand-back verb,
+in A6's next PR, needs about four of the 16.
 
 ## Every act is for the lease the fan was registered under
 
@@ -177,7 +182,7 @@ re-asserted the old target for a holder that never applied, or spent the old bud
 up and revoked the new lease blaming the operating system (#357). The same shape was in seven
 places, not one:
 
-1. D2's question in `examine(fanAt:)`;
+1. D2's question in `examine(fanAt:inBound:)`;
 2. every re-fetch of `held[index]` after an `await` — presence passed a record a newer lease
    registered during the `await`;
 3. `restoreAndForget`'s forget;
@@ -553,7 +558,7 @@ and restoring if the latch engaged underneath them.
 > **Corrected 2026-10-11 ([#345](https://github.com/blamechris/Aeolus/pull/345)).** "Indefinitely" above is false.
 > `ThermalEmergency.fire(_:from:)` ends in `leases.revokeEveryLease(because: .thermalEmergency)`,
 > which drops every live lease and restores the fans they covered, and a fan this mechanism
-> re-engages is under a live lease: `examine(fanAt:)` hands back any fan that none covers
+> re-engages is under a live lease: `examine(fanAt:inBound:)` hands back any fan that none covers
 > (ADR 0009 D2). So the cycle that fires hands such a fan back even though no registry § 3
 > bridges holds it. What stands is the rest of the paragraph: relying on another mechanism to
 > clean up after this one was the wrong shape, and `reassert(_:fanAt:attempt:)` still performs
