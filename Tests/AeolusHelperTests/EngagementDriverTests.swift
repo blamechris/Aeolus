@@ -288,7 +288,11 @@ struct EngagementDriverTests {
     /// `writer.engageManualControl(of: permit)`, through `writer` and `.engageManualControl` on
     /// two lines, through `writer.engageManualControl (of: permit)`, through a method reference
     /// `let step = writer.engageManualControl`, through an optional or force-unwrapped copy of
-    /// the writer (`maybe?.` / `maybe!.`), or through `(writer).`. Run: red on each.
+    /// the writer (`maybe?.` / `maybe!.`), or through `(writer).`. Run: red on each. And through
+    /// `writer . engageManualControl (of: permit)` (#343). Run: red.
+    ///
+    /// **What it cannot see**, and `EngagementRouteTripwireTests` holds: a use on a call result
+    /// or a subscript, and one with no receiver, are attributed to nothing here.
     @Test("Nothing in the helper engages a fan except through the driver")
     func onlyTheDriverEngages() throws {
         var uses: Set<String> = []

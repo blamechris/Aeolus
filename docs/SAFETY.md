@@ -209,12 +209,17 @@ this document:
   deliberately distinct from the transient `.releaseInProgress`, so a client can tell
   *retrying* from *gave up*. `CLAUDE.md` rule 6 is the whole of it: the helper asked for
   automatic, was refused, and stopped asking, so it does not know what mode the fan is in.
-- **Only § 3 watches it.** Every path that reaches this state has already cleared § 5's
-  registry, so § 5 has no entry left to cycle over — not even for ADR 0009 D2's
-  `.leaseLapsed`, which judges only fans still registered. What remains is § 3 keeping a fan
-  whose handback was refused registered, so an emergency still bridges it; below the ceiling,
-  nothing retries its restore short of § 7's panic verb.
-  [#343](https://github.com/blamechris/Aeolus/issues/343) owns that gap.
+- **What watches it, decided in [#343](https://github.com/blamechris/Aeolus/issues/343).** Every
+  path that reaches this state has already cleared § 5's registry — `HelperFanRestorer` tells § 5
+  before it writes — so ADR 0009 D2's `.leaseLapsed`, which judges only fans still registered, never
+  sees it. § 3 keeps it registered, because the restorer marks only fans the firmware accepted, so an
+  emergency bridges it to maximum and restores it. Below the ceiling nothing retries it on its own:
+  § 7's panic verb, § 4's sleep handback and SIGTERM's teardown each sweep this register through
+  `releaseEveryLease()` and then issue `.everyFan`, and the next process reconciles it (§ 6). A retry
+  of its own was declined until a run on hardware shows what a refused keystone is — ADR 0009,
+  amendment 2026-10-15. That every fan Aeolus engages is in § 3's registry — once its engagement
+  returns, or at its undo — is ADR 0014's A6 contract, held by a source tripwire. The grant refusal
+  and the snapshot are what tell the user.
 - **A later restore the firmware accepts clears it, and nothing else does**
   ([#189](https://github.com/blamechris/Aeolus/issues/189)). The ledger was append-only for
   the life of the helper process until then, which made this the one state in this document
@@ -1112,9 +1117,9 @@ a newer lease means that lease's engagement holds the fan and its own record is 
 holding the fan for: revoked if it is live, ended as expired if it has lapsed and is still
 unswept — inside the call, so its release notice cannot erase the mark the terminal action keeps
 — and not touched if it has already ended; the fan is handed back in every case. A sweep or a
-teardown that removes the lease after the hand-back and before the revocation can still erase
-that mark with its own notice, a gap `main` shares
-([#368](https://github.com/blamechris/Aeolus/issues/368), an A6 precondition). A registration
+teardown that removes the lease after the hand-back and before the revocation is outwaited: the
+revocation answers only once that teardown's handback of the fan has returned, so its notice
+finds the mark kept ([#368](https://github.com/blamechris/Aeolus/issues/368)). A registration
 under a lease that is no longer live is refused, as is one whose fan was released or registered
 while it asked, and one under the lease the terminal action is giving the fan up for, while it
 does: the terminal action moves the registration's generation as it begins, and that lease's
@@ -1153,7 +1158,8 @@ worse than a UI that reports an error, because the user acts on it.
 `ReclamationLeaseIdentityTests.swift`, `ReclamationRegistrationHopTests.swift`,
 `ReclamationTerminalEntryTests.swift`, `ReclamationRefusedCommandWriteTests.swift`,
 `FinaliseReleaseLedgerTests.swift`, `FinaliseReleaseRevocationTests.swift`,
-`LeaseRevocationTests.swift`, `ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
+`TerminalActionTeardownRaceTests.swift`, `LeaseRevocationTests.swift`,
+`LeaseRevocationOutwaitTests.swift`, `ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
 `ReclamationSupervisorTests.swift`, `ReclamationEmergencyRegistrationTests.swift`,
 `ReclamationRegistryTests.swift` (the registry and the per-reading judgement as values, #128)
 and `ReclamationWatchdogAccessTests.swift` with `ReclamationRegistryAccessTests.swift` (their
@@ -1165,7 +1171,9 @@ envelope, a read held open so overlapping reads would be visible, a read or writ
 side effect while it is suspended, a control-state read answered from a scripted sequence so a
 `F<n>Tg` can be readable on one cycle and not the next, and a lease answer held open on a
 continuation (`ParkableHeldLeases`) so a release, a re-grant or the terminal action can land
-between the lease core answering and § 5 resuming. § 1's line makes the same distinction
+between the lease core answering and § 5 resuming — the same seam lands #368's teardown between
+§ 5's hand-back and its revocation, held inside its handback by `ParkingFanRestorer`, a
+`FanRestoring` decorator in `HandbackOutwaitDoubles.swift`. § 1's line makes the same distinction
 for the same reason, and it is drawn rather than rounded off because "entirely through the
 scripted plane" is a claim about how much of the mechanism one shared double can reach. The
 registration grace above is the fourth suite, one test per answer the primary signal can give

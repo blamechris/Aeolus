@@ -63,13 +63,14 @@ struct FinaliseReleaseLedgerTests {
 
     /// Cycles § 5 until the terminal action, which for both scenarios here is the
     /// `blindCyclesBeforeDivergence`th cycle — the registration grace for an uncommanded fan
-    /// reading automatic, and the blindness threshold for one that cannot be read.
+    /// reading automatic, and the blindness threshold for one that cannot be read. Bounded, by
+    /// `cycledToTheTerminalAction(_:sourceLocation:)`, so a revocation that never returns fails
+    /// the test rather than hanging the run (#368).
     static func cycleToTheTerminalAction<Plane: FanControlPlane>(
-        _ helper: HelperComposition<Plane>
-    ) async {
-        for _ in 1...ReclamationLimits.blindCyclesBeforeDivergence {
-            await helper.reclamationWatchdog.cycle()
-        }
+        _ helper: HelperComposition<Plane>, sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws {
+        try await cycledToTheTerminalAction(
+            helper.reclamationWatchdog, sourceLocation: sourceLocation)
     }
 
     /// The driver's hand-back, then the revocation's restore through the bound restorer — which
@@ -163,7 +164,7 @@ struct FinaliseReleaseLedgerTests {
     func aSystemReclamationSurvivesTheRevocation() async throws {
         let (helper, log) = try await Self.holding()
 
-        await Self.cycleToTheTerminalAction(helper)
+        try await Self.cycleToTheTerminalAction(helper)
 
         #expect(
             log.lines(containing: "no speed to re-assert").count == 1,
@@ -197,7 +198,7 @@ struct FinaliseReleaseLedgerTests {
         let (helper, log) = try await Self.holding(afterwards: [.blind()])
         await helper.plane.advance()
 
-        await Self.cycleToTheTerminalAction(helper)
+        try await Self.cycleToTheTerminalAction(helper)
 
         #expect(
             log.lines(containing: "because the helper cannot read its state").count == 1,
@@ -222,7 +223,8 @@ struct FinaliseReleaseLedgerTests {
     ///
     /// **Mutation:** move the `registry.beginFinalising(fanAt:for:)` guard and its `defer` in
     /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` to just above
-    /// `leases.revokeLease(id:because:)`. Run: red on the ledger and the "resolved" assertions.
+    /// `leases.revokeLease(id:forFan:because:)`. Run: red on the ledger and the "resolved"
+    /// assertions.
     @Test("A lease ending during the terminal action's hand-back does not erase its entry")
     func aTeardownDuringTheHandBackKeepsTheEntry() async throws {
         let held = try await Self.holdingThroughInterference()
@@ -230,7 +232,7 @@ struct FinaliseReleaseLedgerTests {
         let holder = held.holder
         await held.plane.interfere { await leases.connectionDidInvalidate(holder) }
 
-        await Self.cycleToTheTerminalAction(held.helper)
+        try await Self.cycleToTheTerminalAction(held.helper)
 
         #expect(await held.plane.didFire, "the connection never died inside the hand-back")
         #expect(
@@ -269,7 +271,7 @@ struct FinaliseReleaseLedgerTests {
     @Test("A later, ordinary lease release still clears the kept entry")
     func anOrdinaryReleaseAfterwardsStillClearsTheEntry() async throws {
         let (helper, log) = try await Self.holding()
-        await Self.cycleToTheTerminalAction(helper)
+        try await Self.cycleToTheTerminalAction(helper)
         await Self.expectTheRevocationRestoredThroughTheRestorer(helper)
         #expect(await helper.ledger.isReclaimed(fanAt: 0), "the setup kept no entry to clear")
         await helper.thermalEmergency.cycle()
@@ -311,14 +313,14 @@ struct FinaliseReleaseLedgerTests {
         let first = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [1]), from: ConnectionID())
         try await HelperRestorerTests.engage(fan: 1, in: helper, under: first.id)
-        await Self.cycleToTheTerminalAction(helper)
+        try await Self.cycleToTheTerminalAction(helper)
         #expect(await helper.ledger.isReclaimed(fanAt: 1), "the setup kept no mark on fan 1")
         await helper.thermalEmergency.cycle()
 
         let second = try await helper.leases.acquireLease(
             LeaseFixture.request(fans: [0, 1]), from: ConnectionID())
         try await HelperRestorerTests.engage(fan: 0, in: helper, under: second.id)
-        await Self.cycleToTheTerminalAction(helper)
+        try await Self.cycleToTheTerminalAction(helper)
 
         #expect(log.lines(containing: "no speed to re-assert").count == 2)
         #expect(
@@ -366,7 +368,7 @@ struct FinaliseReleaseLedgerTests {
             }
         }
 
-        await Self.cycleToTheTerminalAction(held.helper)
+        try await Self.cycleToTheTerminalAction(held.helper)
 
         #expect(await held.plane.didFire, "nothing registered fan 0 inside the hand-back")
         #expect(

@@ -837,7 +837,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             for sibling in siblings { await clearReclamationMark(fanAt: sibling) }
         }
 
-        if await leases.revokeLease(id: lease, because: cause) != .revoked {
+        if await leases.revokeLease(id: lease, forFan: index, because: cause) != .revoked {
             log.reclamationHandbackLeaseAlreadyEnded(fan: index)
         }
     }

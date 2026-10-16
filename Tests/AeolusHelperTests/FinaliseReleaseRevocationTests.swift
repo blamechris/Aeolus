@@ -20,7 +20,7 @@ extension FinaliseReleaseLedgerTests {
     /// `LeaseLog` has no recording sink, so the revocation that must not happen is observed
     /// where it would land: the table, and a third restore of fan 0 through the restorer.
     ///
-    /// **Mutation:** replace the `revokeLease(id:because:)` guard in
+    /// **Mutation:** replace the `revokeLease(id:forFan:because:)` guard in
     /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` with
     /// `await leases.revokeEveryLease(because: cause)`. Run: red on the new lease, the count,
     /// the restores and the notice.
@@ -42,7 +42,7 @@ extension FinaliseReleaseLedgerTests {
             }
         }
 
-        await Self.cycleToTheTerminalAction(held.helper)
+        try await Self.cycleToTheTerminalAction(held.helper)
 
         #expect(await held.plane.didFire, "nothing was released inside the hand-back")
         #expect(
@@ -72,7 +72,7 @@ extension FinaliseReleaseLedgerTests {
     func aRefusedLateRegistrationKeepsTheMark() async throws {
         let (helper, log) = try await Self.holding()
         let ended = try #require(await helper.leases.activeLease()).id
-        await Self.cycleToTheTerminalAction(helper)
+        try await Self.cycleToTheTerminalAction(helper)
         await Self.expectTheRevocationRestoredThroughTheRestorer(helper)
         #expect(await helper.ledger.isReclaimed(fanAt: 0), "the terminal action kept no mark")
 
@@ -100,7 +100,7 @@ extension FinaliseReleaseLedgerTests {
     /// now ended inside the call, as `.leaseExpired`, so the notice lands while `finalising`
     /// holds the fan; `LeaseRevocationTests.revokeLeaseEndsALapsedLeaseAsExpired` holds the cause.
     ///
-    /// **Mutation:** decline a lapsed lease in `revokeLease(id:because:)` again — `guard let
+    /// **Mutation:** decline a lapsed lease in `revokeLease(id:forFan:because:)` again — `guard let
     /// entry = table.entry(id: id), !entry.hasLapsed(asOf: clock.now) else { return .gone }`.
     /// Run: red on the ledger and the snapshot after the sweep.
     @Test(
@@ -127,7 +127,7 @@ extension FinaliseReleaseLedgerTests {
         try await HelperRestorerTests.engage(fan: 0, in: helper, under: lease.id)
         await plane.interfere { clock.advance(by: .seconds(Lease.defaultTimeToLive + 1)) }
 
-        await Self.cycleToTheTerminalAction(helper)
+        try await Self.cycleToTheTerminalAction(helper)
 
         #expect(await plane.didFire, "the lease never lapsed inside the hand-back")
         #expect(log.lines(containing: "no speed to re-assert").count == 1)
