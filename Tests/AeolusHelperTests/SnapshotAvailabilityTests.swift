@@ -188,9 +188,9 @@ struct SnapshotAvailabilityTests {
     /// `BoundedFanRestorer` spends `RestoreLimits.attemptBudget` and reports the fan as one it
     /// could not hand back.
     ///
-    /// **Mutation:** delete the `abandonedHandbacks` arm from
-    /// `ReadOnlyFanReport.handbackRefusal(forFanAt:given:)`. Run: red — the snapshot says
-    /// `.available` while the grant path refuses.
+    /// **Mutation:** delete the `abandonedHandbacks` rung from
+    /// `ReadOnlyFanReport.firstRefusal(of:observedMode:given:reconciliation:)`. Run: red — the
+    /// snapshot says `.available` while the grant path refuses.
     @Test("An abandoned handback reads the same reason the grant path throws")
     func anAbandonedHandbackAgreesWithTheGrantPath() async throws {
         let helper = Fixture.composed(writes: Fixture.firmwareRefusesTheModeWrite)
@@ -212,8 +212,8 @@ struct SnapshotAvailabilityTests {
     /// the lease core's `releasing` exists to describe is held open for as long as the assertions
     /// need — which is the only way to observe a state that is otherwise milliseconds wide.
     ///
-    /// **Mutation:** delete the `handbacksInFlight` arm from
-    /// `ReadOnlyFanReport.handbackRefusal(forFanAt:given:)`. Run: red.
+    /// **Mutation:** delete the `handbacksInFlight` rung from
+    /// `ReadOnlyFanReport.firstRefusal(of:observedMode:given:reconciliation:)`. Run: red.
     @Test("A fan mid-handback reads the same reason the grant path throws")
     func aFanMidHandbackAgreesWithTheGrantPath() async throws {
         let helper = Fixture.wedging()
@@ -236,10 +236,10 @@ struct SnapshotAvailabilityTests {
     /// that register alone would tell a client "retry in a moment" about a restore that has
     /// already outlived a five-second budget.
     ///
-    /// **Mutation:** delete the `unconfirmedHandbacks` arm from
-    /// `ReadOnlyFanReport.handbackRefusal(forFanAt:given:)`. Run: red — and the failure is the
-    /// *wrong reason*, `.releaseInProgress`, not `.available`, which is what makes the ordering
-    /// rather than the presence of the arm the thing under test.
+    /// **Mutation:** delete the `unconfirmedHandbacks` rung from
+    /// `ReadOnlyFanReport.firstRefusal(of:observedMode:given:reconciliation:)`. Run: red — and the
+    /// failure is the *wrong reason*, `.releaseInProgress`, not `.available`, which is what makes
+    /// the ordering rather than the presence of the rung the thing under test.
     @Test("An unconfirmed handback reads the same reason the grant path throws")
     func anUnconfirmedHandbackAgreesWithTheGrantPath() async throws {
         let helper = Fixture.wedging()
@@ -264,7 +264,7 @@ struct SnapshotAvailabilityTests {
     /// "any fan is in the register" would disable the control for a whole machine because one
     /// fan's handback failed.
     ///
-    /// **Mutation:** in `handbackRefusal(forFanAt:given:)`, replace
+    /// **Mutation:** in `firstRefusal(of:observedMode:given:reconciliation:)`, replace
     /// `leases.abandonedHandbacks.contains(index)` with
     /// `!leases.abandonedHandbacks.isEmpty`. Run: red on fan 1 while the test above stays green.
     @Test("An abandoned handback does not make the neighbour fan unavailable")
@@ -284,13 +284,13 @@ struct SnapshotAvailabilityTests {
 
     /// Every fan in a handback register is one Aeolus is accountable for.
     ///
-    /// The invariant that lets `ReadOnlyFanReport`'s two re-statements compose in either order,
+    /// The invariant that keeps the ladder's step 5, above the handback registers as the grant's
+    /// foreign read is above its straight-line region, from ever answering for a register's fan,
     /// asserted rather than described.
     /// `reportingForeignControl(of:observedMode:heldByAeolus:awaitingConfirmation:reconciliation:)`
     /// returns an accountable fan untouched, so while this holds the foreign-control rule and the
-    /// handback rule can never speak about the same fan — and the day it stops holding, the
-    /// composition order in `restatingAvailability(of:observedMode:given:reconciliation:)` starts
-    /// deciding which reason a user sees, silently.
+    /// handback rule can never speak about the same fan — and the day it stops holding, step 5
+    /// answers first and a user is told another program holds a fan Aeolus pinned, silently.
     ///
     /// **Mutation:** drop `.union(restoreAbandoned)` from
     /// `LeaseAuthority.fansAeolusIsAccountableFor`. Run: red.

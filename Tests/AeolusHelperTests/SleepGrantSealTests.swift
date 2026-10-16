@@ -89,8 +89,9 @@ struct SleepGrantSealTests {
     /// **Mutation:** keep the call bare and wrap only the `.everyFan` `do`/`catch` in
     /// `handBackEveryFan` in `leases.sealingGrants`. Run: red on the leased argument only, which
     /// is what the second argument is for. **Mutation:** delete `sealingGrants`' `defer`. Run: red
-    /// on the last grant only. **Mutation:** drop `reportingMachineWideRestore` from
-    /// `restatingAvailability`. Run: red on the agreement only.
+    /// on the last grant only. **Mutation:** delete the `machineWideRestoreInFlight` rung from
+    /// `ReadOnlyFanReport.firstRefusal(of:observedMode:given:reconciliation:)`. Run: red on the
+    /// agreement only.
     @Test(
         "A grant while a declined seal's teardown runs is refused, and the snapshot agrees",
         arguments: [false, true])

@@ -3,8 +3,7 @@ import FanKit
 // The re-statements `SupervisedFanAuthority.snapshot()` makes over the read path's answer,
 // lifted out of `ReadOnlyFanReport.swift` by
 // [#187](https://github.com/blamechris/Aeolus/issues/187) — which added one of them and put
-// that file over the 400-line threshold #128 split it out to hold. There were two until
-// [#350](https://github.com/blamechris/Aeolus/issues/350) added § 7's grant seal as a third.
+// that file over the 400-line threshold #128 split it out to hold.
 //
 // Same trade as `LeaseAuthorityRefusals.swift`, and cheaper: `ReadOnlyFanReport` is a
 // namespace of pure functions with no state, so nothing widens with the move. The one member
@@ -20,54 +19,54 @@ import FanKit
 // Anything else is `CLAUDE.md` rule 6 — a screen offering control that the click cannot get,
 // or refusing control the helper would in fact grant.
 //
-// **The rule has a corollary, and it binds both sides**
-// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s 2026-10-15 amendment): a grant
-// refusal, and the availability that mirrors it, is computed from **current evidence the grant
-// path consults**. A diagnosis of something that already happened is a fact, and is reported as
-// one. § 5's ledger is that kind of fact — `FanState.isReclaimedBySystem`, the fault log, the
-// lease it ended — and is never a rung here
+// **The rule has a corollary, and it binds both sides** (ADR 0014's 2026-10-15 amendment): a
+// grant refusal, and the availability that mirrors it, is computed from **current evidence the
+// grant path consults**. A diagnosis of something that already happened is a fact, and is
+// reported as one. § 5's ledger is that kind of fact — `FanState.isReclaimedBySystem`, the fault
+// log, the lease it ended — and is never a rung here
 // ([#355](https://github.com/blamechris/Aeolus/issues/355)). A refusal that no read can clear
 // seals its own exit: the only events that clear the ledger need the lease it would refuse. On
 // the grant side the same rule is why `.boundsImplausible`, current evidence re-read on every
 // snapshot, is in the grant ([#270](https://github.com/blamechris/Aeolus/issues/270)).
 //
-// Highest first, with the step that produces each:
+// **It is one first-match function, statement for statement against `acquireLease`**
+// ([#269](https://github.com/blamechris/Aeolus/issues/269)): the first rung that refuses
+// answers, and nothing below it is asked. It replaced re-statements layered over one another,
+// each keyed on what the one before had left; a rung written as "overwrite `.available`" breaks
+// silently the day a rung above it starts producing what it overwrites. In the grant's order:
 //
-// | # | Reason | Produced by |
+// | # | Reason | What it mirrors in `acquireLease` |
 // |---|---|---|
-// | 1 | `.restoreToAutomaticFailed` | `reportingHandbackState` — § 4/§ 5's durable register |
-// | 2 | `.handbackUnconfirmed` | `reportingHandbackState` — § 4's budget expired |
-// | 3 | `.releaseInProgress` | `reportingHandbackState` — a restore on the wire |
-// | 5 | § 6's durable refusal (not over step 6), then `.foreignManualControl` | § 6's baseline |
-// |   | … or `.supervisorBlind`, mode did not read (not over step 6; #360) | the read's `F<n>Md` |
-// |   | … or `.restoreToAutomaticUnconfirmed`, for a fan § 3 keeps (#303) | § 3's kept set |
-// | 6 | `.writePathNotBuilt` | `availability(writeCapabilityIs:bounds:)` — the seam |
-// | 8 | `.boundsImplausible` | `availability(writeCapabilityIs:bounds:)` — § 2's gate |
-// | 10 | `.releaseInProgress` | `reportingMachineWideRestore` — the machine-wide restore seal |
-// | 9 | `.available` | nothing refused |
+// | 6 | `.writePathNotBuilt`, with only step 5's manual arm over it | `refuseIfWritePathNotBuilt` |
+// | 5 | § 6's durable refusal, `.supervisorBlind`, § 3's kept set, foreign | the foreign read |
+// | 8 | `.boundsImplausible`, for a fan Aeolus is not accountable for | the bounds read |
+// | 1 | `.restoreToAutomaticFailed`, from `abandonedHandbacks` | the region's first guard |
+// | 2 | `.handbackUnconfirmed`, from `unconfirmedHandbacks` | its second |
+// | 10 | `.releaseInProgress`, from `machineWideRestoreInFlight` | its fourth |
+// | 3 | `.releaseInProgress`, from `handbacksInFlight` | `releasing`, after the table |
+// | 9 | `.available`, or step 8's answer for a fan under lease | the grant |
 //
-// **Steps 4 and 7 were § 5's ledger** — `.supervisorBlind` and `.reclaimedBySystem` — until
-// #355 removed them. The numbers are kept so that every reference to steps 5, 6 and 8 still
-// names the same rung, and neither is reused: step 10 is the next unused number, which is why
-// it is listed above step 9, `.available`, whose number predates it.
+// **Step numbers are names, not places.** Steps 4 and 7 were § 5's ledger — `.supervisorBlind`
+// and `.reclaimedBySystem` — until #355 removed them, and stay retired so that every reference to
+// a step still names the same rung; 10 is the next unused number, which is why it is not
+// listed after 9.
 //
-// **Step 10 re-states `.available` and nothing else.** Every refusal ranked above it that the
-// grant shares, the grant gives ahead of the seal — above the marker, or ahead of the seal's
-// guard in the straight-line region — except step 3's, which is the same `.releaseInProgress`.
-// So a fan another rung refuses keeps that rung's answer, which is also the one still true once
-// the panic returns. Step 8 is among them since #270: the grant reads the bounds above the
-// marker, after its foreign-control read, so step 5 outranks step 8 on both sides and both
-// outrank the seal. Never widen this rung to overwrite a refusal: step 5's `.supervisorBlind`
-// for a fan whose mode did not read (#360) rests on it, since the grant refuses that fan at its
-// fresh read, above the seal's guard.
+// **Step 8 speaks only for fans Aeolus is not accountable for**, the fans the grant's bounds read
+// covers: it subtracts what the foreign-control read exempted. An accountable fan is answered by
+// the register that holds it, or, under a lease, by step 9, which then states the read path's
+// answer, step 8's if the bounds are bad: the grant answers that fan `.leaseHeldByAnotherClient`,
+// which a snapshot cannot state (below), and both refuse.
 //
-// **Steps 1–3 and step 5 cannot both apply, so their relative order is not load-bearing and
-// is not relied on.** Every fan in one of the three handback registers is in
-// `LeaseAuthority.fansAeolusIsAccountableFor`, and `reportingForeignControl` returns such a
-// fan untouched — foreign control is by definition a fan Aeolus is *not* accountable for.
-// That disjointness is what lets the two re-statements compose in either order; it is
-// asserted by `SnapshotAvailabilityTests`, because a change to either set would make the
-// composition order start mattering silently.
+// **Steps 1, 2, 10 and 3 are the straight-line region's guards in its order**, most durable
+// first; § 4's sleep seal sits between 2 and 10 there, and the lease table between 10 and 3.
+// Steps 10 and 3 give one reason, so their order changes nothing a client reads.
+//
+// **Steps 1–3 and step 5 cannot both apply.** Every fan in one of the three handback registers is
+// in `LeaseAuthority.fansAeolusIsAccountableFor`, and `reportingForeignControl` returns such a fan
+// untouched — foreign control is by definition a fan Aeolus is *not* accountable for. So step 5,
+// above the registers as the grant's foreign read is above its region, never speaks over one;
+// `SnapshotAvailabilityTests` asserts the containment, because a change to either set would make
+// step 5 start answering for a register's fan silently.
 //
 // **Step 5 answers four questions, in `StartupReconciliation.refusalForGrant`'s order.** First
 // the durable refusals the one-shot pass left — `.supervisorBlind` for a fan whose mode it
@@ -93,7 +92,7 @@ import FanKit
 // `.restoreToAutomaticUnconfirmed`, and only a fan outside that set is foreign. It is a
 // reclassification of the foreign answer and never an exemption from step 5: § 3's set is
 // carried beside `accountableFans`, not in it, because a fan in `accountableFans` is returned
-// untouched and would read `.available`. The steps-1–3 disjointness below is unchanged by it —
+// untouched and would read `.available`. The steps-1–3 disjointness above is unchanged by it —
 // a fan in both § 3's set and a handback register is in `accountableFans`, so it is exempted
 // before the fourth question is asked and answered by steps 1–3.
 //
@@ -111,13 +110,10 @@ import FanKit
 //
 // **`.leaseHeldByAnotherClient` is absent from the ladder and cannot be added.** See
 // `LeaseAccountability`: a snapshot has no `ConnectionID`, so the helper cannot know whether
-// the reader is the holder. `.systemSleeping` is absent for a weaker reason — § 4's seal is
-// machine-wide state the snapshot does not read — and is
-// [#269](https://github.com/blamechris/Aeolus/issues/269)'s. Its rung goes **below step 8, and so
-// below step 5, and above step 10**: `acquireLease` checks the sleep seal after its fresh read
-// and, since #270, after its bounds read, so while the seal holds a fan whose mode did not read is
-// still refused `.supervisorBlind`, one with implausible bounds `.boundsImplausible`, and the two
-// sides agree. `.noThermalTelemetry`, which the grant checks *before* that read, is #269's too.
+// the reader is the holder. `SystemSnapshot.activeLease` is how a client learns it.
+// `.systemSleeping` and `.noThermalTelemetry` are absent for a weaker reason, and are
+// [#269](https://github.com/blamechris/Aeolus/issues/269)'s: the snapshot reads neither § 4's seal
+// nor § 3's sightedness yet.
 
 extension ReadOnlyFanReport {
 
@@ -130,99 +126,72 @@ extension ReadOnlyFanReport {
     /// re-states one field of it, and the ordering that makes a lapsing lease honest is
     /// preserved.
     ///
-    /// The first two are separate functions because they answer to different mechanisms —
-    /// § 6's post-reconciliation baseline and the lease core's handback ledgers — and they
-    /// compose in either order for the reason this file's header gives: the fans they speak
-    /// about are disjoint by construction. The third, § 7's seal, is applied last and only to
-    /// what the other two left `.available`.
-    ///
-    /// `observedMode` is `F<n>Md`'s answer for this fan on the read it was built from, `nil`
-    /// when it did not answer — `MachineObservation.modes`, never a second read (#360).
+    /// The ladder is `firstRefusal(of:observedMode:given:reconciliation:)`; this file's header
+    /// gives the order and why. `observedMode` is `F<n>Md`'s answer for this fan on the read it
+    /// was built from, `nil` when it did not answer — `MachineObservation.modes`, never a second
+    /// read (#360).
     static func restatingAvailability(
         of fan: FanState, observedMode: FirmwareFanMode?, given leases: LeaseAccountability,
         reconciliation baseline: ReconciliationBaseline
     ) -> FanState {
-        reportingMachineWideRestore(
-            of: reportingHandbackState(
-                of: reportingForeignControl(
-                    of: fan, observedMode: observedMode, heldByAeolus: leases.accountableFans,
-                    awaitingConfirmation: leases.restoresAwaitingConfirmation,
-                    reconciliation: baseline),
-                given: leases),
-            given: leases)
+        restating(
+            fan,
+            as: firstRefusal(
+                of: fan, observedMode: observedMode, given: leases, reconciliation: baseline))
     }
 
-    /// Step 10 of the ladder: the machine-wide restore seal
-    /// ([#350](https://github.com/blamechris/Aeolus/issues/350), #364), as one fan's availability.
-    ///
-    /// While § 7's panic verb or § 4's handback runs, a fan that would otherwise read `.available`
-    /// reads `.unavailable(.releaseInProgress)`, the reason `acquireLease` throws for it. Every
-    /// other answer passes through untouched; see this file's header for why that is the whole
-    /// rule. During a sealed sleep the grant says `.systemSleeping` first, which this ladder does
-    /// not state yet ([#269](https://github.com/blamechris/Aeolus/issues/269)); #269's rung goes
-    /// above this one and below step 8, as this file's header says.
-    static func reportingMachineWideRestore(
-        of fan: FanState, given leases: LeaseAccountability
-    ) -> FanState {
-        guard leases.machineWideRestoreInFlight, fan.manualControlAvailability == .available
-        else { return fan }
-        return restating(fan, as: .unavailable(.releaseInProgress))
-    }
-
-    /// Steps 1–3 of the ladder: what the lease core would refuse a grant over this fan for.
+    /// Every rung, first match, in `acquireLease`'s order.
     ///
     /// ## What [#187](https://github.com/blamechris/Aeolus/issues/187) was
     ///
-    /// The three registers behind these reasons reached a client **only** as an `acquireLease`
-    /// fault. Nothing put any of them into `SystemSnapshot`, so a fan whose handback was in
-    /// flight — or, worse, one whose handback had been abandoned outright and never would
-    /// complete — rendered as `.available` in the same instant a grant over it was refused. The
-    /// user clicks, and the click fails for a reason the screen never showed: `CLAUDE.md`
-    /// rule 6, in the read path rather than the write path.
-    ///
-    /// `.restoreToAutomaticFailed` is what made it worth a safety label rather than a polish
-    /// issue. `.releaseInProgress` is transient and resolves in milliseconds, so a client that
-    /// retried would get its lease; the durable refusal never resolves, so a permanently
-    /// unleasable fan was permanently displayed as available.
+    /// The three handback registers reached a client **only** as an `acquireLease` fault, so a
+    /// fan whose handback was in flight — or, worse, one whose handback had been abandoned
+    /// outright and never would complete — rendered as `.available` in the same instant a grant
+    /// over it was refused: `CLAUDE.md` rule 6, in the read path. `.restoreToAutomaticFailed` is
+    /// what made it a safety label rather than polish: `.releaseInProgress` resolves in
+    /// milliseconds, while the durable refusal never does, so a permanently unleasable fan was
+    /// permanently displayed as available.
     ///
     /// ## The order is `acquireLease`'s, not a fresh judgement
     ///
-    /// Most durable first, matching the straight-line region of
-    /// `LeaseAuthority.acquireLease` statement for statement: abandoned, then unconfirmed, then
-    /// in flight. That is not a coincidence to be preserved by care — it is the property
-    /// #187's acceptance asks for, and `SnapshotAvailabilityTests` asserts it by putting a fan
-    /// into a register and requiring the snapshot's reason and the thrown fault's reason to be
-    /// the *same value*.
+    /// Statement for statement, and that is not a coincidence to be preserved by care: it is the
+    /// property the agreement suites assert, by putting a fan where a rung applies and requiring
+    /// the snapshot's reason and the thrown fault's reason to be the *same value*.
+    /// `.handbackUnconfirmed` sits above both `.releaseInProgress` rungs for the reason the grant
+    /// path gives: an unconfirmed fan is mid-`releasing` too, by the lease core's own subset
+    /// invariant, so without this order a client would be told *"retry in a moment"* about a
+    /// restore that has already outlived a five-second budget.
     ///
-    /// `.handbackUnconfirmed` sits above `.releaseInProgress` for the reason the grant path
-    /// gives at length: an unconfirmed fan is mid-`releasing` too, by the lease core's own
-    /// subset invariant, so without this ordering a client would be told *"retry in a moment"*
-    /// about a restore that has already outlived a five-second budget.
-    ///
-    /// ## What it overwrites
-    ///
-    /// The read path's answer, which since [#355](https://github.com/blamechris/Aeolus/issues/355)
-    /// is only ever the build, the bounds gate or `.available`. Before it, the read path said
-    /// `.supervisorBlind` for a fan § 5 went blind on, and one whose restore then failed was in
-    /// both the ledger and `restoreAbandoned`: this overwrote the blindness with
-    /// `.restoreToAutomaticFailed`, the answer `acquireLease` gives, because the abandoned
-    /// handback is the fact that the fan is still pinned. That fan reads the same today, with no
-    /// diagnosis left beneath it to overwrite.
-    static func reportingHandbackState(
-        of fan: FanState, given leases: LeaseAccountability
-    ) -> FanState {
-        guard let reason = handbackRefusal(forFanAt: fan.index, given: leases) else { return fan }
-        return restating(fan, as: .unavailable(reason))
-    }
-
-    /// The three registers, read in `acquireLease`'s own order. `nil` when none names this fan.
-    private static func handbackRefusal(
-        forFanAt index: Int, given leases: LeaseAccountability
-    ) -> ManualControlAvailability.Reason? {
-        if leases.abandonedHandbacks.contains(index) { return .restoreToAutomaticFailed }
-        if leases.unconfirmedHandbacks.contains(index) { return .handbackUnconfirmed }
-        if leases.handbacksInFlight.contains(index) { return .releaseInProgress }
-        return nil
+    /// Step 5 is asked first and step 6 second only because step 5's manual arm is the one answer
+    /// stated over step 6; every other arm defers to it inside `reportingForeignControl`. That
+    /// function returns the fan untouched or states a reason the read path never gives, so an
+    /// answer that changed is step 5's.
+    private static func firstRefusal(
+        of fan: FanState, observedMode: FirmwareFanMode?, given leases: LeaseAccountability,
+        reconciliation baseline: ReconciliationBaseline
+    ) -> ManualControlAvailability {
+        let readPath = fan.manualControlAvailability
+        let index = fan.index
+        // Steps 5 and 6: `refuseIfWritePathNotBuilt`, with step 5's manual arm alone over it, and
+        // `refuseIfForeignManualControl`.
+        let judged = reportingForeignControl(
+            of: fan, observedMode: observedMode, heldByAeolus: leases.accountableFans,
+            awaitingConfirmation: leases.restoresAwaitingConfirmation, reconciliation: baseline
+        ).manualControlAvailability
+        if judged != readPath { return judged }
+        if readPath == .unavailable(.writePathNotBuilt) { return readPath }
+        // Step 8: `refuseIfBoundsImplausible`, over the fans step 5 did not exempt.
+        let accountable = leases.accountableFans.contains(index)
+        if !accountable, readPath == .unavailable(.boundsImplausible) { return readPath }
+        // Steps 1, 2, 10 and 3: the straight-line region's guards, in its order.
+        if leases.abandonedHandbacks.contains(index) {
+            return .unavailable(.restoreToAutomaticFailed)
+        }
+        if leases.unconfirmedHandbacks.contains(index) { return .unavailable(.handbackUnconfirmed) }
+        if leases.machineWideRestoreInFlight { return .unavailable(.releaseInProgress) }
+        if leases.handbacksInFlight.contains(index) { return .unavailable(.releaseInProgress) }
+        // Step 9: `.available`, or step 8's answer for a fan under lease.
+        return readPath
     }
 
     /// One fan with one field replaced, and every other field passed through untouched.
