@@ -70,14 +70,16 @@ import Foundation
 ///
 /// - Note: since [#128](https://github.com/blamechris/Aeolus/issues/128)'s third pass `held`,
 ///   `finalising` and `registrations` are `Registry`'s, a value type this actor holds
-///   `private`, and the per-reading judgement is `HeldFan.judge(_:)`'s. What is left below
+///   `private`, and the per-reading judgement is `HeldFan.judge(_:)`'s; #366 added `givenUp` there
+///   and the episode to the record. What is left below
 ///   awaits, re-fetches after an `await` or acts, over `registry`, `log`, `ledger`, `writer`,
 ///   `sensing`, `leases` or `latch`, so none of it can move to another file without widening
 ///   that state or adding a suspension point. The splits taken, and the rationale relocated
 ///   out of this file's doc comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
-///   The body is 301 code lines against `type_body_length`'s error at 350, and the file 867
-///   lines against `file_length`'s at 1000. New § 5 state belongs in `Registry`, tested as a
+///   The body is 306 code lines against `type_body_length`'s error at 350, `examine(fanAt:)` 50
+///   against `function_body_length`'s warning at 50, and the file 883 lines against
+///   `file_length`'s at 1000. New § 5 state belongs in `Registry`, tested as a
 ///   value, and new behaviour in the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
 actor ReclamationWatchdog<Plane: FanControlPlane> {
@@ -113,10 +115,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
 
     private let log: SafetyLog
 
-    /// `held`, `finalising` and `registrations`, with every synchronous decision made over them,
-    /// in `ReclamationRegistry.swift` (#128). A value type, so no transition on it can suspend;
-    /// `private`; and reached only through its members, never copied out across an `await` —
-    /// `ReclamationWatchdogAccessTests` and `ReclamationRegistryAccessTests` hold all three.
+    /// `held`, `finalising`, `givenUp` and `registrations`, with every synchronous decision made
+    /// over them, in `ReclamationRegistry.swift` (#128, #366). A value type, so no transition on
+    /// it can suspend; `private`; and reached only through its members, never copied out across
+    /// an `await` — `ReclamationWatchdogAccessTests` and `ReclamationRegistryAccessTests` hold all
+    /// three.
     private var registry = Registry()
 
     /// `sensing` is an existential rather than `some FanStateSensing`, unlike
@@ -178,26 +181,35 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// ## Under the lease the engagement ran under, which must be live
     ///
     /// One lease hop, then a straight-line decision (#357): a lease that is not live or does not
-    /// cover the fan, a fan released or registered while the question was out, or one § 5's
-    /// terminal action is giving up for this same lease, is refused with `.leaseNotLive` and
-    /// touches nothing; a current, live one keeps its own record and replaces an ended lease's.
-    /// Acquire, then engage, then register.
+    /// cover the fan, a fan released or registered while the question was out, or the lease the
+    /// terminal action has given this fan up for, while it runs or after (#366), is refused with
+    /// `.leaseNotLive` and touches nothing; a current, live one keeps its own record and replaces
+    /// an ended lease's. Acquire, then engage, then register.
     /// reclamation-watchdog.md § *"Every act is for the lease the fan was registered under"*.
     ///
-    /// An accepted registration clears any reclamation recorded against this fan, whatever this
-    /// registry held: something has just taken it off automatic control, so the ledger's claim
-    /// that the system holds it is false. A refused one clears nothing — it is evidence of no
-    /// engagement — so a mark the terminal action kept stands.
+    /// An accepted registration clears any reclamation recorded against this fan: something has
+    /// just taken it off automatic control, so the ledger's claim that the system holds it is
+    /// false. **Except a registration under the record's own lease while § 5's episode for the
+    /// fan is in flight** (#366): that is the holder re-applying while § 5 contests the fan, and
+    /// the mark is the episode's. It goes on the next cycle that reads the target held, stays
+    /// through the terminal action, or goes with a record dropped or replaced first:
+    /// `restoreAndForget` (§ 3's yield, `.leaseLapsed`, a re-assert that yields), `release`, or a
+    /// newer lease's registration. A refused one clears nothing — it is evidence of no engagement
+    /// — so a mark the terminal action kept stands.
     func manualControlEngaged(_ fan: CommandableFan, under lease: UUID) async throws {
         let index = fan.index
         let generation = registry.generation(ofFan: index)
         let live = await leases.hasLiveLease(id: lease, coveringFan: index)
         let registration = registry.register(lease, fanAt: index, live: live, since: generation)
-        guard case .accepted(let replacedEndedLease) = registration else {
+        guard case .accepted(let replacedEndedLease, let mayClearTheMark) = registration else {
             log.reclamationRegistrationRefused(fan: index, whileReleasedOrRegistered: live)
             throw EngagementRefusal.leaseNotLive(fan: index)
         }
         if replacedEndedLease { log.reclamationReplacedEndedLeaseRecord(fan: index) }
+        guard mayClearTheMark else {
+            log.reclamationMarkLeftToItsEpisode(fan: index)
+            return
+        }
         await clearReclamationMark(fanAt: index)
     }
 
@@ -422,8 +434,9 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         }
 
         // Primary first, and it is the only signal that reaches the terminal action; the
-        // secondary **reports and stops**; convergence clears the mark and, deliberately, does
-        // not refill the registration grace. `HeldFan.judge(_:)` moves the counters, with no
+        // secondary **reports and stops**. Every cycle whose primary converges clears the mark,
+        // `.short` included, because the firmware holds Aeolus's target (#119, #366), and none
+        // refills the registration grace. `HeldFan.judge(_:)` moves the counters, with no
         // suspension point, and says which — its doc comment carries each branch's reason.
         switch registry.judge(state, ofFan: index) {
         case .diverged(let primary):
@@ -435,11 +448,12 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
             // `==` and not `>=`: one line per episode — `HeldFan.judge(_:)`.
             log.reclamationFanNotReachingTarget(
                 fan: index, actual: actual, commanded: commanded, dwellCycles: dwell)
-        case .converged:
             await clearReclamationMark(fanAt: index)
-        case .graced, .short, nil:
-            // A graced cycle after the first, and a dwell short of or past its report, say
-            // nothing. `nil` is unreachable: the record was fetched above, nothing suspended.
+        case .short, .converged:
+            await clearReclamationMark(fanAt: index)
+        case .graced, nil:
+            // A graced cycle after the first says nothing. `nil` is unreachable: the record was
+            // fetched above, nothing suspended.
             return
         }
     }
@@ -796,7 +810,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
     /// The restore is attempted whatever else failed. The ledger entry for `index` is **kept**,
     /// as `.systemReclaimed` or `.supervisorBlind` depending on the caller (#140) — and kept
     /// through this call's own revocation, whose release notice skips its clear while this runs:
-    /// the mark stays until a later release or engagement (#346).
+    /// the mark stays until a later release, or an engagement under another lease, since one
+    /// under `lease` is refused from the entry on (#346, #366).
     /// reclamation-watchdog.md § *"The ledger entry `finaliseRelease` keeps"*.
     ///
     /// ## For the lease the fan was held under, and no other (#353)
@@ -822,7 +837,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane> {
         // teardown landing during the hand-back sends the same notice about a fan § 5 has
         // already judged. The generation moves here too, so a registration already in flight
         // resumes refused rather than clearing the mark this keeps (#361's review, C3); one
-        // under `lease` arriving during the hand-back is refused by the entry itself.
+        // under `lease`, arriving during the hand-back or resuming after this returns, is refused
+        // by the `givenUp` entry this sets (#366).
         guard registry.beginFinalising(fanAt: index, for: lease) else {
             log.reclamationLeftToAnotherLease(fan: index)
             return

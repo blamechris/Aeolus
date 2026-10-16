@@ -24,7 +24,7 @@ extension ReclamationLeaseIdentityTests {
     ///
     /// **Mutation:** drop the generation half of the refusal in
     /// `ReclamationWatchdog.Registry.register(_:fanAt:live:since:)`, leaving `guard live,
-    /// finalising[index] != lease`. Run: red in all three.
+    /// givenUp[index] != lease`. Run: red in all three.
     /// **Mutation:** delete the `registrations[index, default: 0] &+= 1` in
     /// `Registry.register(_:fanAt:live:since:)`, after `held[index] = HeldFan.registering(…)`.
     /// Run: red when L2 registers unannounced.
@@ -87,18 +87,20 @@ extension ReclamationLeaseIdentityTests {
     /// mark the terminal action keeps (#346): the fan handed back, its lease revoked, and the
     /// user told the system no longer holds it — rule 6.
     ///
-    /// Two guards refuse it, and each resumption point needs a different one. Inside the
-    /// hand-back, the same-lease `finalising` refusal and the generation bump at the terminal
-    /// action's entry both do. Afterwards, only the bump does: `finalising` is clear again and no
-    /// notice moved the generation. The ledger is what the snapshot's `isReclaimedBySystem`
-    /// reads; the composed helper has no lease-hop seam, so this asserts the ledger itself.
+    /// Two guards refuse it, and since #366 both do at each resumption point: the generation bump
+    /// at the terminal action's entry, and the same-lease `givenUp` refusal, which outlives the
+    /// call. Before #366 the same-lease refusal was `finalising`'s, clear again once the call
+    /// returned, so only the bump refused the resumption after it. The ledger is what the
+    /// snapshot's `isReclaimedBySystem` reads; the composed helper has no lease-hop seam, so this
+    /// asserts the ledger itself.
     ///
-    /// **Mutation:** delete the `registrations[index, default: 0] &+= 1` beside
-    /// `finalising[index] = lease` in `Registry.beginFinalising(fanAt:for:)`, the terminal
-    /// action's entry in `finaliseRelease(fanAt:heldUnder:because:)`. Run: red on the resumption
-    /// after the terminal action: the refusal, the ledger and the "resolved" line. With
-    /// `finalising[index] != lease` dropped from `Registry.register`'s refusal as well: red on
-    /// both.
+    /// **Mutation:** delete the `registrations[index, default: 0] &+= 1` in
+    /// `Registry.beginFinalising(fanAt:for:)`, the terminal action's entry in
+    /// `finaliseRelease(fanAt:heldUnder:because:)`, **and** drop `givenUp[index] != lease` from
+    /// `Registry.register`'s refusal. Run: red on both resumptions' refusal, and after the terminal
+    /// action on the ledger, the "resolved" line and the registry too. Inside the hand-back the
+    /// registration lands mid-episode, so the episode still leaves the mark kept (#366). Either
+    /// mutation alone leaves this green, because the other refuses.
     @Test(
         "A registration in flight when the terminal action begins clears nothing",
         arguments: [true, false])

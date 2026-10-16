@@ -349,9 +349,10 @@ struct FinaliseReleaseLedgerTests {
     /// and this test is the same rule. The refusal is A6's engagement failure, so `apply` hands
     /// the fan back too, which matches the revocation.
     ///
-    /// **Mutation:** drop `finalising[index] != lease` from the refusal in
-    /// `ReclamationWatchdog.Registry.register(_:fanAt:live:since:)`. Run: red on the refusal, the
-    /// ledger, the snapshot and the "resolved" line.
+    /// **Mutation:** drop `givenUp[index] != lease` from the refusal in
+    /// `ReclamationWatchdog.Registry.register(_:fanAt:live:since:)`. Run: red on the refusal. The
+    /// ledger, the snapshot and the "resolved" line stay green since #366: the registration lands
+    /// mid-episode, and an accepted one there leaves the mark to the episode.
     @Test("A registration under the lease being given up is refused, and the mark is kept")
     func aSameLeaseRegistrationDuringTheHandBackIsRefusedAndKeepsTheMark() async throws {
         let held = try await Self.holdingThroughInterference()

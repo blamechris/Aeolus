@@ -56,6 +56,15 @@ extension ReclamationWatchdog {
         var actualDwellCycles = 0
         /// Re-asserts issued for the current episode. Reset by convergence.
         var reassertAttempts = 0
+        /// Whether a reclamation episode is in flight for this record: from a readable cycle whose
+        /// primary signal diverged outside the registration grace to the next readable cycle whose
+        /// primary converges, or until the record is dropped or replaced (#366). The terminal
+        /// action drops it, and so do `restoreAndForget` (§ 3's yield, `.leaseLapsed`, a re-assert
+        /// that yields) and `release`; a newer lease's registration replaces it. A cycle that
+        /// cannot read ends nothing. While it is set, a registration under this record's lease
+        /// leaves the ledger's mark to the episode. Kept by `registering(_:over:)` with the rest of
+        /// a same-lease record.
+        var episodeInFlight = false
 
         /// Gives back an attempt booked for a write that never reached the firmware —
         /// `reassert`'s cancellation exit. Decremented rather than assigned, and floored at
@@ -109,6 +118,15 @@ extension ReclamationWatchdog {
         /// reach the terminal action; then the secondary, which reports and stops; then
         /// convergence.
         ///
+        /// ## The episode: `episodeInFlight`
+        ///
+        /// Opened by every `.diverged`, the grace's included once it runs out, and never by
+        /// `.graced`; closed by the next cycle whose primary converges, `.short` as well as
+        /// `.converged`, because that cycle is the one the actor clears the ledger's mark on
+        /// (#366). The terminal action ends the episode by dropping the record, as does anything
+        /// else that drops or replaces it (`episodeInFlight`); a cycle that cannot read ends
+        /// nothing.
+        ///
         /// It absorbs what were `ReclamationWatchdog`'s `gracedBeforeItsFirstCommand(_:of:fanAt:)`
         /// and `reportShortfall(_:fanAt:)`, with their reasons, below. Both were synchronous so
         /// that no suspension point fell between reading a counter and writing it back, and a
@@ -142,7 +160,9 @@ extension ReclamationWatchdog {
         /// ## The secondary signal reports, and does nothing else: `.short`
         ///
         /// The fan has been short of its commanded speed for `dwell` cycles. The caller says so
-        /// when the dwell is reached, and stops.
+        /// when the dwell is reached, and stops. The cycle's primary converged, so the caller also
+        /// clears any mark the ledger holds for the fan, as on `.converged` (#366): the mark
+        /// follows the primary signal, and the shortfall itself changes nothing.
         ///
         /// ## Why this no longer reaches the terminal action
         ///
@@ -172,16 +192,24 @@ extension ReclamationWatchdog {
         mutating func judge(_ state: FanControlState) -> Judgement {
             if let primary = ReclamationWatchdog.primaryDivergence(of: state, against: commanded) {
                 actualDwellCycles = 0
-                guard commanded == nil else { return .diverged(primary) }
-
-                uncommandedDivergentCycles += 1
-                guard uncommandedDivergentCycles < ReclamationLimits.blindCyclesBeforeDivergence
-                else { return .diverged(primary) }
-
-                // Log the transition, not the state — #124's forward constraint, and
-                // `cycleCouldNotSee(fanAt:heldUnder:detail:)`'s rule for the same reason.
-                return .graced(primary, firstCycle: uncommandedDivergentCycles == 1)
+                if commanded == nil {
+                    uncommandedDivergentCycles += 1
+                    // Log the transition, not the state — #124's forward constraint, and
+                    // `cycleCouldNotSee(fanAt:heldUnder:detail:)`'s rule for the same reason.
+                    if uncommandedDivergentCycles < ReclamationLimits.blindCyclesBeforeDivergence {
+                        return .graced(primary, firstCycle: uncommandedDivergentCycles == 1)
+                    }
+                }
+                // Before the actor's `diverged` reaches the ledger, so a registration landing in
+                // any of its hops finds the episode open (#366). Only the re-assert's envelope read
+                // is exercised by a test; the latch and ledger hops have no seam to land one in.
+                episodeInFlight = true
+                return .diverged(primary)
             }
+
+            // The primary converged: the firmware holds Aeolus's target, so whatever the secondary
+            // says, nothing is reclaimed and no episode is in flight (#366).
+            episodeInFlight = false
 
             if let shortfall = ReclamationWatchdog.actualShortfall(of: state, against: commanded) {
                 actualDwellCycles += 1

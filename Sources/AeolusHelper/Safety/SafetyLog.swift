@@ -1649,18 +1649,35 @@ extension SafetyLog {
 
     /// A registration arrived under a lease that is no longer live, or does not cover the fan —
     /// or the fan was released or registered again while § 5 was asking about it, so the answer
-    /// no longer described the fan — and § 5 recorded nothing. Its caller owns the hand-back of
+    /// no longer described the fan, or § 5's terminal action has given the fan up for that lease
+    /// (#366) — and § 5 recorded nothing. Its caller owns the hand-back of
     /// what it engaged (ADR 0014's 2026-10-15 amendment, A6's contract).
     func reclamationRegistrationRefused(fan: Int, whileReleasedOrRegistered: Bool) {
         let reason =
             whileReleasedOrRegistered
-            ? "§ 5 is giving it up, or it was released or registered while § 5 asked its lease"
+            ? "§ 5 has given it up, or it was released or registered while § 5 asked its lease"
             : "the lease it was engaged under is no longer live, or does not cover it"
         emit(
             .notice,
             """
             § 5 refused to register fan \(fan): \(reason). Nothing is recorded, and the \
             engagement's caller hands the fan back.
+            """
+        )
+    }
+
+    /// A registration under the lease a fan is held for was accepted while § 5's reclamation
+    /// episode for the fan is in flight, so it cleared nothing (#366). It is the holder
+    /// re-applying while § 5 contests the fan: the mark stays until a cycle reads the fan's target
+    /// held, or the terminal action gives the fan up and keeps it. `.notice`: nothing about the fan
+    /// changed.
+    func reclamationMarkLeftToItsEpisode(fan: Int) {
+        emit(
+            .notice,
+            """
+            Fan \(fan) was registered with § 5 again under the lease it is held for, while § 5 \
+            is contesting a reclamation of it. It stays reported as reclaimed until § 5 reads its \
+            target held, or gives the fan up and keeps it.
             """
         )
     }

@@ -1,5 +1,5 @@
-// Who § 5 is watching, under which lease, and the two marks that let a registration tell whether
-// its lease answer still describes the fan — with every synchronous decision made over them.
+// Who § 5 is watching, under which lease, and the marks that let a registration tell whether its
+// lease answer still describes the fan — with every synchronous decision made over them.
 // Split from `ReclamationWatchdog.swift` by
 // [#128](https://github.com/blamechris/Aeolus/issues/128)'s third pass, when that actor's body
 // stood four code lines under `type_body_length`'s error and three issues each needed § 5 code.
@@ -29,8 +29,9 @@ import Foundation
 
 extension ReclamationWatchdog {
 
-    /// § 5's registry: every held fan's record, the fan the terminal action is giving up, and
-    /// how many times each fan has been released, registered or given up.
+    /// § 5's registry: every held fan's record, the fan the terminal action is giving up, the
+    /// lease it last gave each fan up for, and how many times each fan has been released,
+    /// registered or given up.
     ///
     /// Every transition is synchronous, closure-free, and named for what `ReclamationWatchdog`
     /// does with it. One on a fan that is not held does nothing, through optional chaining —
@@ -52,10 +53,16 @@ extension ReclamationWatchdog {
 
         /// The fan `finaliseRelease(fanAt:heldUnder:because:)` is giving up right now, and the
         /// lease it is giving it up for. A release notification must not clear that fan's
-        /// ledger entry (#346) — see `manualControlReleased(fanAt:)` — and a registration under
-        /// that lease is refused (#361). One sweep runs at a time, so it never holds more than
-        /// one fan.
+        /// ledger entry (#346) — see `manualControlReleased(fanAt:)`. One sweep runs at a time,
+        /// so it never holds more than one fan. The refusal of a registration under that lease
+        /// is `givenUp`'s since #366, which outlives the call.
         private var finalising: [Int: UUID] = [:]
+
+        /// The lease the terminal action last gave each fan up for (#366). Set at its entry beside
+        /// `finalising` and, unlike it, never cleared: the same call ends that lease, and an ended
+        /// lease is never live again, so a registration under it holds a stale answer whenever it
+        /// began and is refused whenever it resumes.
+        private var givenUp: [Int: UUID] = [:]
 
         /// How many times each fan has been released, registered or given up, so a
         /// registration can tell whether its lease answer still describes the fan when it
@@ -91,22 +98,32 @@ extension ReclamationWatchdog {
         /// and the generation read before it was asked.
         ///
         /// Refused when `live` is false, when the generation moved while the lease was asked —
-        /// a release, a registration or the terminal action's entry — or while the terminal
-        /// action is giving the fan up for this same lease. An accepted one keeps a record of
-        /// the same lease, so its counters are not rearmed, and replaces another lease's with
-        /// a fresh one (`HeldFan.registering(_:over:)`); either way the generation moves.
+        /// a release, a registration or the terminal action's entry — or when the terminal
+        /// action has given the fan up for this same lease, while it runs or after (`givenUp`,
+        /// #366). An accepted one keeps a record of the same lease, so its counters are not
+        /// rearmed, and replaces another lease's with a fresh one
+        /// (`HeldFan.registering(_:over:)`); either way the generation moves.
+        ///
+        /// One under the record's own lease while its episode is in flight
+        /// (`HeldFan.episodeInFlight`) is accepted and may not clear the ledger's mark: the
+        /// episode decides it, on the next cycle whose primary converges or at the terminal
+        /// action, or the record goes first (`HeldFan.episodeInFlight` lists what drops or replaces
+        /// it), so a re-apply can neither erase the mark nor postpone the terminal action.
+        /// One under any other lease may: one live lease covers a fan, so a newer engagement
+        /// holds it.
         ///
         /// - Returns: `.refused`, having touched nothing, or `.accepted`.
         mutating func register(
             _ lease: UUID, fanAt index: Int, live: Bool, since generation: UInt64
         ) -> Registration {
-            guard live, registrations[index, default: 0] == generation, finalising[index] != lease
+            guard live, registrations[index, default: 0] == generation, givenUp[index] != lease
             else { return .refused }
             let existing = held[index]
             let replacesEndedLease = existing != nil && existing?.lease != lease
+            let midEpisode = existing?.lease == lease && existing?.episodeInFlight == true
             held[index] = HeldFan.registering(lease, over: existing)
             registrations[index, default: 0] &+= 1
-            return .accepted(replacedEndedLease: replacesEndedLease)
+            return .accepted(replacedEndedLease: replacesEndedLease, mayClearTheMark: !midEpisode)
         }
 
         /// Forgets a fan that has gone back to automatic control on purpose, and moves its
@@ -130,20 +147,22 @@ extension ReclamationWatchdog {
             return true
         }
 
-        /// The terminal action's entry: marks the fan as being given up for `lease` and moves
-        /// its generation, so a registration already in flight resumes refused (#361's review,
-        /// C3) and one under `lease` arriving meanwhile is refused by the mark itself.
+        /// The terminal action's entry: marks the fan as being given up for `lease`, records
+        /// `lease` in `givenUp`, and moves the generation. A registration under `lease` is then
+        /// refused whenever it began or resumes (#366), and one under another lease already in
+        /// flight resumes refused (#361's review, C3).
         ///
         /// - Returns: `false`, having touched nothing, when the fan's record now belongs to
         ///   another lease (#353).
         mutating func beginFinalising(fanAt index: Int, for lease: UUID) -> Bool {
             if let record = held[index], record.lease != lease { return false }
             finalising[index] = lease
+            givenUp[index] = lease
             registrations[index, default: 0] &+= 1
             return true
         }
 
-        /// The terminal action's exit, whichever way it leaves.
+        /// The terminal action's exit, whichever way it leaves. `givenUp` stays.
         mutating func endFinalising(fanAt index: Int) {
             finalising[index] = nil
         }
@@ -213,10 +232,12 @@ extension ReclamationWatchdog {
     enum Registration: Sendable, Equatable {
         /// Nothing was recorded and nothing evicted: the lease was not live or did not cover the
         /// fan, the fan was released or registered while the lease was asked, or the terminal
-        /// action is giving it up for this same lease.
+        /// action has given it up for this same lease.
         case refused
         /// Recorded. `replacedEndedLease` is whether the record it replaced was another lease's,
-        /// which the actor logs.
-        case accepted(replacedEndedLease: Bool)
+        /// which the actor logs. `mayClearTheMark` is `false` for a registration under the
+        /// record's own lease while its episode is in flight, which leaves the ledger's mark to
+        /// the episode (#366).
+        case accepted(replacedEndedLease: Bool, mayClearTheMark: Bool)
     }
 }

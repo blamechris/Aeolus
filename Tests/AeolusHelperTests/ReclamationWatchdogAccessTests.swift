@@ -15,9 +15,10 @@ import Testing
 ///   collaborator beside it.
 /// - **The actor's internal surface is exactly what it was.** The five seam members and the two
 ///   static classifiers, and nothing a sibling file could call to reach `registry`.
-/// - **The registry's own stores stay `private`, and are exactly three.** An instance outside the
-///   actor governs nothing, and a fourth store is a decision — #366's episode mark and #368's
-///   token will each update `ReclamationRegistryAccessTests.registryStores` on purpose.
+/// - **The registry's own stores stay `private`, and are exactly the acknowledged four.** An
+///   instance outside the actor governs nothing, and a new store is a decision: #366 added
+///   `givenUp` to `ReclamationRegistryAccessTests.registryStores` on purpose, and put its episode
+///   on the record instead of in a store; #368's token, if it lands here, will do the same.
 /// - **Nothing in the registry can suspend.** The compiler refuses a *mutating* `async` call on
 ///   an actor's stored struct, and does not refuse a non-mutating one, which would answer from a
 ///   copy taken before its own suspension. So no `async` and no `await`, anywhere in the file.

@@ -139,10 +139,15 @@ actor ReclamationLedger {
     /// stopped asking for it. Clears whichever cause was recorded, because a fan in either
     /// of those states is neither reclaimed nor one this mechanism is blind on.
     ///
-    /// Called when a re-assert lands and when a fan is released to automatic control on
-    /// purpose. **Not** called by a cycle that merely failed to read: a fan whose state
-    /// cannot be seen is not a fan known to be fine, and clearing on an unreadable cycle
-    /// would flip the user's display back to "in control" on exactly the machine that has
+    /// Called on every readable cycle whose primary signal converges, `.short` included,
+    /// because the firmware is then holding Aeolus's target (#119, #366); on an accepted
+    /// engagement, except a re-apply under the fan's own lease while § 5's episode for it is in
+    /// flight, which leaves the mark to that episode; and when a fan is released to automatic
+    /// control on purpose. **Not** when a re-assert's write returns: a returned write is not
+    /// the firmware holding it — `.reverted` firmware accepts writes and discards them — so the
+    /// next readable cycle decides. **Not** called by a cycle that merely failed to read: a fan
+    /// whose state cannot be seen is not a fan known to be fine, and clearing on an unreadable
+    /// cycle would flip the user's display back to "in control" on exactly the machine that has
     /// stopped answering. That is `ThermalEmergency`'s failure asymmetry — a mechanism that
     /// cannot see never releases — applied to the reporting bit.
     ///

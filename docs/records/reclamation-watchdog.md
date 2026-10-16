@@ -120,6 +120,14 @@ the actor of a few lines each. Three other routes were weighed and refused:
 - **Pushing the re-fetches out through callbacks.** Adds a suspension point between each check
   and the act it guards.
 
+**#366 spent five: 306 code lines, and about 44 left; file 883** (SwiftLint 0.65.1). It added a
+fourth store to `Registry`, `givenUp`, and put the reclamation episode on the record
+(`HeldFan.episodeInFlight`) rather than in a store keyed by fan: five transitions end a record,
+and each would have had to remember to end the episode too. The actor's share is the binding of
+`mayClearTheMark` and its guard in `manualControlEngaged`, and the `.short` clears in `examine`.
+`examine(fanAt:)` is now exactly 50 code lines, `function_body_length`'s warning, so the next line
+it needs takes a split first.
+
 ## Every act is for the lease the fan was registered under
 
 *Added by [#353](https://github.com/blamechris/Aeolus/issues/353) and
@@ -193,24 +201,29 @@ are held by `ReclamationLeaseIdentityTests.aRegistrationAcceptedAfterAnUnannounc
 (#365), which asserts the acceptance as well as the hand-back, so closing the residual turns it
 red and this record gets updated with it.
 
-**After the terminal action, the revocation's notice refuses it.** The terminal action's
-revocation restores through the lease core, and the shipping restorer (`HelperFanRestorer`)
-sends § 5 `manualControlReleased(fanAt:)` for every fan before every lease-core restore, which
-moves the generation. So a re-apply under the lease being given up that began during the
-hand-back is refused on whichever side of the revocation it resumes: before it, by `finalising`
-(`aRegistrationInFlightAtTheTerminalActionClearsNothing`); after it, by the moved generation
-(`aReapplyThatBeganInTheHandBackIsRefusedAfterTheRevocationsNotice`, which delivers the notice
-inside the revocation as the restorer does). The mark the terminal action keeps (#346) stays.
+**After the terminal action, a registration under the lease it gave up is refused.** A re-apply
+under the lease being given up that began during the hand-back is refused on whichever side of
+the revocation it resumes, by `givenUp`: the terminal action's entry records the lease there and
+nothing clears it (#366). The same call ends that lease, and an ended lease is never live again,
+so any answer about it is stale whenever the registration began. In the shipping composition the
+revocation's notice refuses it too: the restorer (`HelperFanRestorer`) sends § 5
+`manualControlReleased(fanAt:)` for every fan before every lease-core restore, which moves the
+generation (`aReapplyThatBeganInTheHandBackIsRefusedAfterTheRevocationsNotice`, which delivers the
+notice inside the revocation as the restorer does). The mark the terminal action keeps (#346)
+stays. `givenUp` is per fan: a re-apply of a sibling fan under the same lease is refused by that
+notice, and with the notice lost it is accepted and handed back as `.leaseLapsed` on the next
+cycle.
 
-**Without the notice it is accepted, and clears the mark.** A notice is a hint (ADR 0009 D2),
-and `RecordingFanRestorer` sends none. With it lost, a registration that began during the
-hand-back and resumes after the terminal action returned finds nothing moved the generation and
-`finalising` closed, so it is accepted, records the fan under the lease the terminal action
-revoked and, because an accepted registration clears unconditionally, erases the
-`.systemReclaimed` mark the terminal action kept. The next examination hands the fan back as
-`.leaseLapsed`. `aRegistrationAcceptedAfterTheTerminalActionWithItsNoticeLostIsHandedBack` holds
-the acceptance and the hand-back, and does not assert the clear: a pinned clear would endorse a
-mark erased for a fan the system did reclaim. #366 owns the mark's handling around an episode.
+**Without the notice it was accepted, and cleared the mark — closed by #366.** A notice is a hint
+(ADR 0009 D2), and `RecordingFanRestorer` sends none. With it lost, a registration that began
+during the hand-back and resumed after the terminal action returned found nothing had moved the
+generation and `finalising` closed, so it was accepted: it recorded the fan under the lease the
+terminal action had revoked and erased the `.systemReclaimed` mark the terminal action kept, and
+the next examination handed the fan back as `.leaseLapsed`. Keeping the clear alone would not
+have been enough, because that hand-back's `restoreAndForget` clears the mark as well; the
+registration has to be refused. `givenUp` refuses it whatever notice was sent or lost, and the
+mark stays. `aRegistrationResumingAfterTheTerminalActionIsRefusedAndKeepsTheMark` asserted the
+acceptance until #366 turned it red, and now asserts the refusal.
 
 **The terminal action moves it too** (the same review, its C3). The generation did not move when
 § 5 itself began giving the fan up. A registration under the same lease — a re-apply — told its
@@ -220,13 +233,17 @@ revocation, was accepted and cleared the `.systemReclaimed` mark the terminal ac
 `finaliseRelease` now moves the generation in the same straight-line region as
 `finalising[index] = lease`, before its first suspension, so such a registration resumes refused and
 touches nothing, and the terminal action completes as it would have — it revokes that lease
-anyway.
+anyway. Since #366 `givenUp` refuses a same-lease registration from the entry on as well, so the
+bump stays for another lease's registration in flight across the entry, and the hop test's recipe
+is the pair of mutations.
 
 **A registration that begins during the hand-back, under the lease being given up, is refused
-too.** `finalising` records the lease the terminal action is giving each fan up for, and a
-registration under that lease is refused while it does, and keeps the mark. This reverses what
-#346 pinned — that such an engagement clears the mark — and the reversal is deliberate, decided
-in #361. The reason is rule 6 and consistency with C3, not identity: the terminal action revoked
+too.** `givenUp` records the lease the terminal action gave each fan up for, set at its entry
+beside `finalising` and never cleared (#366; until then the refusal was `finalising`'s, and closed
+with the call), and a registration under that lease is refused from the entry on, and keeps the
+mark. This reverses what #346 pinned — that such an engagement clears the mark — and the reversal
+is deliberate, decided in #361. The reason is rule 6 and consistency with C3, not identity: the
+terminal action revoked
 that lease before identity too (`revokeEveryLease` included it), so the revocation in the same
 call has always undone such an engagement and dropped its record, and clearing the mark has
 always told the user the system no longer holds a fan it did reclaim. C3 is that outcome by
@@ -243,7 +260,51 @@ off automatic control. That was true only of a registration § 5 accepted. A ref
 evidence of no engagement § 5 can stand behind, and clearing on it erased a `.systemReclaimed`
 mark the terminal action had kept, so the snapshot told the user the system no longer held a
 fan nothing had taken back. The clear now follows acceptance; on an accepted registration it is
-still unconditional, whatever this registry held.
+unconditional, whatever this registry held, except a re-apply mid-episode (the next paragraph).
+
+**A re-apply mid-episode leaves the mark to the episode** (#366, from #361's § 5 reviewer, demo A).
+§ 5 marks a fan reclaimed when its primary signal diverges, then re-asserts. A registration under
+the same lease during the re-assert's envelope read was accepted — the lease was live and nothing
+had moved the generation — and cleared the mark; the envelope then failed, and the terminal action
+gave the fan up as `.systemReclaimed` with no mark left. `HeldFan.judge(_:)` now opens an episode
+on every `.diverged`, before `diverged(_:fanAt:heldUnder:)` reaches the ledger, and the next
+readable cycle whose primary converges closes it. While it is open, a registration under the
+record's own lease is accepted, keeps the record and moves the generation, but answers
+`mayClearTheMark: false`, and `manualControlEngaged` logs a notice and clears nothing. For one
+lease the cases split cleanly:
+
+| When the registration lands | What happens to it |
+|---|---|
+| Before the diverging judgement | Accepted, and it clears the mark |
+| From that judgement to the terminal action's entry | Accepted, and it clears nothing |
+| From the entry onwards | Refused (`givenUp`) |
+
+The second row holds only while the episode is open: once a cycle that reads the target held has
+closed it, a registration behaves as in the first. None of it relies on a release notice. A registration under any other lease still clears: one
+live lease covers a fan, so it means a newer engagement holds the fan. Three alternatives were
+refused. Stopping § 5 whenever the generation moves lets a client that re-applies every cycle
+postpone the terminal action indefinitely, the contest the budget bounds. Refusing a same-lease
+registration for the whole episode makes A6 hand the refused engagement back, which supersedes
+§ 5's own re-assert (ADR 0014 D4), and § 5 then reads its own client's hand-back as a reclamation.
+A rule in the ledger learns of the episode after a hop that nothing orders against the
+registration's clear, and gives the snapshot a second definition of "reclaimed".
+`ReclamationEpisodeMarkTests` holds the actor's half and `ReclamationRegistryTests` the value's,
+in `ReclamationRegistryEpisodeTests.swift`. What stays open:
+
+1. A same-lease re-apply that engages the fan mid-episode leaves `isReclaimedBySystem` true until
+   the next readable cycle: one cycle, or at most `blindCyclesBeforeDivergence` if reads fail,
+   after which blindness takes over.
+2. A clear queued just before the judgement can land after the mark if the actor runs jobs out of
+   order by priority, which Swift's actors do not promise against. The window is one latch hop
+   plus one ledger hop, and `main` had it unchanged.
+3. The blind path opens no episode. A same-lease registration inside `cycleCouldNotSee`'s
+   `markSupervisorBlind` hop clears the `.supervisorBlind` entry: one ledger hop with no seam to
+   test it, and the entry is not on the wire (#355). Closing it costs an actor line no
+   deterministic test can kill.
+4. The re-assert acts on the target and mode it judged before its envelope read, so a re-apply
+   inside that read is overwritten — for a diverged target the old number is re-commanded over
+   the client's, and for a reclaimed mode the re-assert logs a failed re-engage and spends an
+   attempt. That is [#381](https://github.com/blamechris/Aeolus/issues/381), an A6 precondition.
 
 **Why a refusal never leaves a fan off automatic control with nothing watching it.** A
 registration follows its engagement, and the driver returned only after its after-check found
@@ -286,10 +347,12 @@ a newer lease's engagement and before that lease registers the fan. On its first
 newer record reads `.modeReclaimed` and re-asserts its own target: one false "Reclamation
 detected" line and a false `isReclaimedBySystem`. The re-assert takes one cycle and fails safe,
 and escalates to revoking the newer lease only if the firmware refuses three re-asserts, when the
-blame on the system is true. The mark lasts longer: only a cycle converged on both signals clears
-it, and a fan still short of its new target takes the shortfall branch, which returns before that
-clear — so it stands while the fan ramps, and indefinitely if the fan cannot reach the target
-([#366](https://github.com/blamechris/Aeolus/issues/366)).
+blame on the system is true. The mark lasts one cycle too: the next readable cycle reads the
+re-asserted target held and clears it, `.short` included, because the mark follows the primary
+signal ([#366](https://github.com/blamechris/Aeolus/issues/366)). Until #366 only a cycle
+converged on both signals cleared it, so it stood while the fan ramped, and indefinitely if the
+fan could not reach the target. Blind cycles clear nothing, and after
+`blindCyclesBeforeDivergence` of them blindness takes over.
 
 **What the re-fetch rule has a test for, and what it does not (#365, #344).** Every re-fetch
 after an `await` has a test that lands a registration under a newer lease in that suspension
@@ -469,8 +532,9 @@ make them worse.
 *Added by #128's third pass; not relocated from a doc comment.* Two more were taken after that
 note was written, and the first is the only split of this file to move state:
 
-- **`Registry`, in `ReclamationRegistry.swift`**: `held`, `finalising` and `registrations`, each
-  `private` to it, and every synchronous decision over them as a named transition — `register`,
+- **`Registry`, in `ReclamationRegistry.swift`**: `held`, `finalising` and `registrations`, and
+  `givenUp` since #366, each `private` to it, and every synchronous decision over them as a named
+  transition — `register`,
   `release`, `forget`, `beginFinalising`, `endFinalising`, `dropLease`, and the per-record
   `command`, `recordReassertedTarget`, `resetReadFailures`, `recordReadFailure`, `judge`,
   `spendReassertAttempt` and `refundReassertAttempt`. The actor holds one, `private`, and
@@ -486,8 +550,9 @@ What keeps that safe is held by `ReclamationWatchdogAccessTests` and
 and its internal surface is exactly what it was; its internal properties, and the registry's,
 are get-only views; no other file reaches the registry by a `typealias` or a dotted extension;
 no declaration binds two names past the scan; the registry's
-stores stay private and are exactly three; nothing in `ReclamationRegistry.swift` is `async` or
-`await`s, because the compiler refuses a mutating `async` call on an actor's stored struct and
+stores stay private and are exactly the acknowledged four (#366 added `givenUp`); nothing in
+`ReclamationRegistry.swift` is `async` or `await`s, because the compiler refuses a mutating
+`async` call on an actor's stored struct and
 not a non-mutating one, which would answer from a stale copy; no registry method takes a
 closure, because one that reaches the actor's `registry` while a transition is mutating it traps
 at run time; and the actor never uses `registry` as a whole value, because a copy taken before an
@@ -779,7 +844,8 @@ closes.
 **What still clears it, so it is not frozen.** An accepted `manualControlEngaged(_:under:)`
 clears, because an engagement is a statement about the world. #346 pinned that it also clears
 during the call (`anEngagementDuringTheHandBackStillClears`); #361 reversed that for a
-registration under the lease the call is giving up, which is now refused and keeps the mark —
+registration under the lease the call is giving up, which is now refused and keeps the mark, and
+#366 kept it refused after the call returns —
 "Every act is for the lease the fan was registered under" above has why. The guard is per fan,
 so the revocation's notice still clears any other fan's mark the revoked lease covered
 (`anotherFansMarkIsClearedByTheRevocation`). Once `finaliseRelease` returns, every release

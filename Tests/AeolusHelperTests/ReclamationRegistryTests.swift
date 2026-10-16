@@ -11,36 +11,38 @@ import Testing
 /// decision § 5 makes over its registry out of the actor, so each can be asserted where it is
 /// stated, against a value a test constructs directly. The actor suites still drive the same
 /// rules through `cycle()` and the notices, with every interleaving they script; this suite is
-/// what says which half of a failure is the bookkeeping and which the orchestration, and it is
-/// where #366's episode mark and #368's token are meant to be tested when they land here.
+/// what says which half of a failure is the bookkeeping and which the orchestration. #366's
+/// episode and its given-up lease are tested in this suite too, in
+/// `ReclamationRegistryEpisodeTests.swift`, and #368's token is meant to be when it lands.
 ///
 /// Every assertion names the mutation it kills, and each was run.
 @Suite("§ 5's registry and per-reading judgement, as values")
 struct ReclamationRegistryTests {
 
-    private typealias Watchdog = ReclamationWatchdog<ScriptedControlPlane>
-    private typealias Registry = Watchdog.Registry
+    // Internal rather than `private`, for `ReclamationRegistryEpisodeTests.swift` (#366).
+    typealias Watchdog = ReclamationWatchdog<ScriptedControlPlane>
+    typealias Registry = Watchdog.Registry
 
-    private let lease = UUID()
-    private let other = UUID()
+    let lease = UUID()
+    let other = UUID()
 
     /// A cycle whose `F0Tg` did not read: divergence on any fan, graced on an uncommanded one.
-    private let unreadable = FanControlState(
+    let unreadable = FanControlState(
         index: 0, mode: .manual, target: .unreadable(reason: "F0Tg: no answer"),
         actualRPM: .rpm(2_400))
 
     /// A cycle that converges on both signals against 2,400 RPM commanded, or nothing.
-    private let converged = FanControlState(
+    let converged = FanControlState(
         index: 0, mode: .manual, target: .rpm(2_400), actualRPM: .rpm(2_400))
 
     /// A cycle whose target reads back the 2,400 commanded while the fan turns at 1,000.
-    private let short = FanControlState(
+    let short = FanControlState(
         index: 0, mode: .manual, target: .rpm(2_400), actualRPM: .rpm(1_000))
 
-    private let target = CommandedTarget(fanIndex: 0, rpm: 2_400)
+    let target = CommandedTarget(fanIndex: 0, rpm: 2_400)
 
     /// A registry holding fan 0, and fans 1 and 2 where asked, under `lease`.
-    private func holding(_ fans: [Int] = [0], under lease: UUID) -> Registry {
+    func holding(_ fans: [Int] = [0], under lease: UUID) -> Registry {
         var registry = Registry()
         for fan in fans {
             _ = registry.register(
@@ -75,10 +77,10 @@ struct ReclamationRegistryTests {
         #expect(registry.fans.isEmpty)
     }
 
-    /// The mark refuses the lease it names, and only that one: a newer lease's engagement is
-    /// what holds the fan then.
+    /// The terminal action's entry refuses the lease it gives the fan up for, and only that one:
+    /// a newer lease's engagement is what holds the fan then.
     ///
-    /// **Mutation:** drop `finalising[index] != lease` from `register`'s guard. Run: red.
+    /// **Mutation:** drop `givenUp[index] != lease` from `register`'s guard. Run: red.
     @Test("A registration under the lease being given up is refused while it is")
     func theLeaseBeingGivenUpIsRefused() {
         var registry = holding(under: lease)
@@ -89,11 +91,10 @@ struct ReclamationRegistryTests {
         let newerLease = registry.register(other, fanAt: 0, live: true, since: generation)
         #expect(entered)
         #expect(sameLease == .refused)
-        #expect(newerLease == .accepted(replacedEndedLease: true))
+        #expect(newerLease == .accepted(replacedEndedLease: true, mayClearTheMark: true))
     }
 
-    /// **Mutation:** make `register` report `.accepted(replacedEndedLease: false)` always.
-    /// Run: red.
+    /// **Mutation:** make `register` report `replacedEndedLease: false` always. Run: red.
     @Test("Replacing another lease's record is reported, and nothing else is")
     func replacingAnEndedLeasesRecordIsReported() {
         var registry = Registry()
@@ -101,9 +102,9 @@ struct ReclamationRegistryTests {
         let first = registry.register(lease, fanAt: 0, live: true, since: 0)
         let again = registry.register(lease, fanAt: 0, live: true, since: 1)
         let replacing = registry.register(other, fanAt: 0, live: true, since: 2)
-        #expect(first == .accepted(replacedEndedLease: false))
-        #expect(again == .accepted(replacedEndedLease: false))
-        #expect(replacing == .accepted(replacedEndedLease: true))
+        #expect(first == .accepted(replacedEndedLease: false, mayClearTheMark: true))
+        #expect(again == .accepted(replacedEndedLease: false, mayClearTheMark: true))
+        #expect(replacing == .accepted(replacedEndedLease: true, mayClearTheMark: true))
         #expect(registry.isHeld(0, under: other))
         #expect(registry.isHeld(0, under: lease) == false, "presence was taken for identity")
     }
@@ -126,7 +127,7 @@ struct ReclamationRegistryTests {
 
         #expect(judged != nil)
         #expect(failures == 1)
-        #expect(accepted == .accepted(replacedEndedLease: false))
+        #expect(accepted == .accepted(replacedEndedLease: false, mayClearTheMark: true))
         #expect(record.commanded == target)
         #expect(record.uncommandedDivergentCycles == 1)
         #expect(record.consecutiveReadFailures == 1)
@@ -171,7 +172,7 @@ struct ReclamationRegistryTests {
         #expect(registry.generation(ofFan: 0) == generation, "a refused entry moved the mark")
         let unmarked = registry.register(lease, fanAt: 0, live: true, since: generation)
         #expect(
-            unmarked == .accepted(replacedEndedLease: true),
+            unmarked == .accepted(replacedEndedLease: true, mayClearTheMark: true),
             "a refused entry left the lease it named marked as being given up")
 
         let before = registry.generation(ofFan: 0)
