@@ -1509,10 +1509,9 @@ teardown taking seconds. The ruling is the architect's #364/#347 consult, run on
 This amendment corrects clauses of a Proposed ADR rather than the decisions they sit under.
 **Status stays Proposed.**
 
-## Amendment (2026-10-15, [#128](https://github.com/blamechris/Aeolus/issues/128), [#270](https://github.com/blamechris/Aeolus/issues/270), [#269](https://github.com/blamechris/Aeolus/issues/269)) — § 5's registry is a value type, the grant reads the bounds, and the snapshot states the sleep seal and § 3's blindness
+## Amendment (2026-10-15, [#128](https://github.com/blamechris/Aeolus/issues/128)) — § 5's registry leaves the actor as a value type it holds privately
 
-Three A6 enablers. The first changes no behaviour; the other two are unreachable on every build on
-`main`, where a `.notBuilt` seam answers `.writePathNotBuilt` before either.
+An A6 enabler, and it changes no behaviour.
 
 ### #128 — § 5's registry leaves the actor as a value type it holds privately
 
@@ -1527,14 +1526,19 @@ order. Nothing the actor holds is widened: the new surface is `Registry`, the tw
 are (`Registration`, `Judgement`) and `HeldFan`'s new methods, and an instance outside the actor
 governs nothing. The compiler refuses a mutating `async` call on an actor's stored struct; the
 registry also has no `async` member and no function-typed parameter — a closure that reaches the
-registry while it is being mutated traps at run time — and `ReclamationWatchdogAccessTests` holds
-both, the actor's state private, its internal members exactly acknowledged, its use of `registry`
-member-only, and its file set read off the tree. Measured under SwiftLint 0.65.1: 301 code lines,
+registry while it is being mutated traps at run time — and `ReclamationWatchdogAccessTests` and
+`ReclamationRegistryAccessTests` hold both, the actor's state private, its internal members exactly
+acknowledged and its views get-only, its use of `registry` member-only, its file set read off the
+tree, and no other file reaching the registry by an alias or a dotted extension. Measured under SwiftLint 0.65.1: 301 code lines,
 867 lines. New § 5 state lands in `Registry`, tested as a value.
 
 **Not taken.** Extensions in the same file: SwiftLint since 0.57 excludes extensions from
 `type_body_length` by default, so they retire the bound rather than meet it, and leave `file_length`
 where it was. A helper holding the ledger and driver: every call becomes a hop, so scheduling moves.
+
+**No `AeolusXPCVersion` bump:** nothing on the wire changes. The ruling is the architect's #128
+consult, run on Opus. This amendment corrects a clause of a Proposed ADR rather than the decision it
+sits under. **Status stays Proposed.**
 
 ## Assumptions and what would invalidate them
 

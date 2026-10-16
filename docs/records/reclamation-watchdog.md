@@ -41,7 +41,8 @@ Three escapes were available and all three were refused.
   `ReclamationSignals.swift` and `ReclamationHeldFan.swift`, listed in
   [The splits already taken](#the-splits-already-taken). Everything left reads or writes
   `held`, `log`, `ledger`, `writer`, `sensing`, `leases` or `latch`. A throwaway extension in
-  another file that moved `reportShortfall(_:fanAt:)` verbatim failed to compile with `'held'
+  another file that moved `reportShortfall(_:fanAt:)` (now part of `HeldFan.judge(_:)`)
+  verbatim failed to compile with `'held'
   is inaccessible due to 'private' protection level`, and the same for `log`. D36 is that
   stored state stays `private`, and `held` is exactly what makes `examine(fanAt:)`'s
   read-then-mutate reasoning checkable.
@@ -99,8 +100,8 @@ own file — and not in this actor's body, which should keep only what has to to
 were not room for any of them. The registry's transitions are synchronous, named and
 closure-free, and `HeldFan.judge(_:)` moves one record's counters for one readable cycle; the
 actor keeps every `await`, every re-fetch after one and every act, in the order it had.
-`ReclamationWatchdogAccessTests` holds the trade, and `ReclamationRegistryTests` tests the
-registry as a value.
+`ReclamationWatchdogAccessTests` and `ReclamationRegistryAccessTests` hold the trade, and
+`ReclamationRegistryTests` tests the registry as a value.
 
 About 49 lines of headroom is the honest floor rather than a step towards the 250 warning. What
 is left is the reentrancy-sensitive orchestration — each `await`, the re-fetch after it, and the
@@ -299,8 +300,8 @@ caller who can rearm this way is one granted a new lease, which a release must p
 >   caller re-registering a fan every other cycle held it off automatic control
 >   indefinitely and the terminal action was never reached — twenty registrations bought
 >   forty divergent cycles, no restore, and a lease still live. That is the budget
->   `gracedBeforeItsFirstCommand(_:of:fanAt:)` exists to bound, refillable on demand by
->   the very caller it is meant to bound.
+>   the registration grace (`HeldFan.judge(_:)` since #128) exists to bound, refillable on
+>   demand by the very caller it is meant to bound.
 > - **`commanded` was wiped.** `primaryDivergence(of:against:)` reaches
 >   `.targetDiverged` only behind `guard let commanded`, so a re-registered fan Aeolus
 >   *had* commanded became unjudgeable on that case until the next `commandedTarget(_:)`
@@ -429,8 +430,11 @@ note was written, and the first is the only split of this file to move state:
   and `reportShortfall`, and the converged branch's reset, as one mutating method on the record.
   The actor acts on its answer.
 
-What keeps that safe is held by `ReclamationWatchdogAccessTests` rather than by this paragraph:
-the actor's state stays private and its internal surface is exactly what it was; the registry's
+What keeps that safe is held by `ReclamationWatchdogAccessTests` and
+`ReclamationRegistryAccessTests` rather than by this paragraph: the actor's state stays private
+and its internal surface is exactly what it was; its internal properties, and the registry's,
+are get-only views; no other file reaches the registry by a `typealias` or a dotted extension;
+no declaration binds two names past the scan; the registry's
 stores stay private and are exactly three; nothing in `ReclamationRegistry.swift` is `async` or
 `await`s, because the compiler refuses a mutating `async` call on an actor's stored struct and
 not a non-mutating one, which would answer from a stale copy; no registry method takes a
@@ -479,7 +483,7 @@ one unreadable `F<n>Tg`, reached the same whole-machine revocation from the orde
 this comment mandates. A write returning successfully and a read reflecting it are
 different facts, and the lag between them is unmeasured on Apple Silicon.
 
-`gracedBeforeItsFirstCommand(_:of:fanAt:)` closes that window — #147's second remedy,
+`HeldFan.judge(_:)`'s registration grace closes that window — #147's second remedy,
 implemented rather than declined — by giving a fan with nothing commanded on it
 `ReclamationLimits.blindCyclesBeforeDivergence` cycles before the primary signal
 reaches the terminal action. So the ordering above is what this method requires, and
@@ -546,7 +550,7 @@ no commanded target there is no such speed.** Nothing Aeolus picked is on the wi
 so the pinned-fan hazard the asymmetry is built around does not exist, and what
 over-firing costs instead is the whole-machine revocation above — losing control that
 is in fact still held, which is rule 6 in the direction people forget.
-`reportShortfall(_:fanAt:)` declines the terminal action on the same grounds.
+`HeldFan.judge(_:)`'s `.short` answer declines the terminal action on the same grounds.
 
 So the tolerance is granted **only while `commanded` is `nil`**. The first
 `commandedTarget(_:)` ends it for the rest of that registration, and a commanded fan
