@@ -1310,8 +1310,13 @@ lease is judged against the permit's own fan at every examination. No write verb
    under the lease § 5's terminal action gave the fan up for is refused, while the terminal
    action runs or after: the revocation in the same call undoes that engagement. One accepted
    mid-episode leaves the fan reported as reclaimed until § 5 reads its target held, or gives the
-   fan up and keeps the mark (#366).
-3. Report each commanded target with `commandedTarget(_:under:)`.
+   fan up as reclaimed and keeps the mark; an episode that escalates through blind cycles ends
+   `.supervisorBlind` instead (#366). Register each fan before this `apply`'s first command write
+   to it, a fan already engaged under the lease included. A registration accepted while § 5 is
+   examining the fan leaves that examination's re-assert to this engagement (#381).
+3. Report each commanded target with `commandedTarget(_:under:)`, after the write returns and never
+   before. § 5 re-asserts the target last reported, and a report that arrives during its own
+   command write wins the record (#381).
 4. Ask `heldLease(id:from:)` again before replying, so the reply never says *applied* under a
    lease that has ended.
 5. Map a superseded step to `.releaseInProgress`, unless the lease itself has gone. Map a
@@ -1743,8 +1748,9 @@ build on `main`, where a `.notBuilt` plane grants no lease, and all three are re
 - **The mark follows the primary signal.** Every readable cycle whose primary signal converges
   clears the mark, `.short` included, because reaching the secondary signal means the firmware is
   holding Aeolus's target (#119). This makes the identity amendment's "one cycle" true again, as
-  the next readable cycle: cycles that cannot read clear nothing. The re-assert budget is unchanged and still refills only on a cycle converged on both signals: the
-  budget bounds a contest, and the mark says who holds the fan.
+  the next readable cycle: cycles that cannot read clear nothing. The re-assert budget is unchanged
+  and still refills only on a cycle converged on both signals: the budget bounds a contest, and the
+  mark says who holds the fan.
 - **A re-apply mid-episode leaves the mark to the episode.** `judge(_:)` sets
   `HeldFan.episodeInFlight` on every `.diverged`, before `diverged(_:fanAt:heldUnder:)` reaches the
   ledger, and the next readable cycle whose primary converges clears it. While it is set, a
@@ -1770,7 +1776,8 @@ build on `main`, where a `.notBuilt` plane grants no lease, and all three are re
 The second row holds only while the episode is open: once a cycle that reads the target held has
 closed it, a registration behaves as in the first. The refusal is per fan: a sibling fan's re-apply
 under the same lease is refused by the revocation's release notice, and with that notice lost falls
-to `.leaseLapsed` on the next cycle. The entry's generation bump stays, for another lease's registration in flight across the entry.
+to `.leaseLapsed` on the next cycle. The entry's generation bump stays, for another lease's
+registration in flight across the entry.
 Mid-episode the registration is accepted rather than refused, because a refusal makes A6 hand the
 fan back, and that restore supersedes § 5's own re-assert (D4).
 
@@ -1778,7 +1785,9 @@ fan back, and that restore supersedes § 5's own re-assert (D4).
 
 - Item 2 gains two sentences. A registration under the lease a terminal action gave the fan up for
   is refused, while the terminal action runs or after. One accepted mid-episode leaves the fan
-  reported as reclaimed until § 5 reads its target held, or gives the fan up and keeps the mark.
+  reported as reclaimed until § 5 reads its target held, or gives the fan up as reclaimed and keeps
+  the mark. An episode that escalates through blind cycles ends `.supervisorBlind` instead, because
+  the ledger's last diagnosis wins, and the fan is then not reported as reclaimed.
 - Item 5 is unchanged. After the terminal action the lease is gone, so `.leaseNotLive` maps to the
   lease fault.
 
@@ -1791,9 +1800,9 @@ fan back, and that restore supersedes § 5's own re-assert (D4).
   on `main`.
 - The blind path opens no episode. A same-lease registration inside its `markSupervisorBlind` hop
   clears the `.supervisorBlind` entry: one ledger hop, which is not on the wire (#355).
-- The re-assert acts on the target and mode it judged before its envelope read. A re-apply inside
-  that read is overwritten (target) or logged as a failed write (mode). This is tracked as #381, an
-  A6 precondition.
+- The re-assert acted on the target and mode it judged before its envelope read, so a re-apply
+  inside that read was overwritten (target) or logged as a failed write (mode). Closed by #381: see
+  the amendment below.
 
 **Alternatives considered.**
 
@@ -1807,8 +1816,8 @@ fan back, and that restore supersedes § 5's own re-assert (D4).
   cycle's `.leaseLapsed` hand-back clears the mark anyway.
 - *A rule in the ledger.* The ledger learns of an episode after a hop that nothing orders against
   the registration's clear.
-- *The episode as a `Registry` store keyed by fan.* Five transitions end a record, and each would
-  also have to end the episode.
+- *The episode as a `Registry` store keyed by fan.* Four transitions end a record (`register`
+  replacing it, `release`, `forget` and `dropLease`), and each would also have to end the episode.
 - *Re-mark at the terminal action's entry.* It adds a suspension, and logs a "resolved" and a second
   "detected" line for one event (#346).
 - *Clear when the re-assert's write returns.* A returned write is not the firmware holding it (U4,
@@ -1830,6 +1839,106 @@ The ruling is the architect's #366 consult, run on Opus.
 
 This amendment corrects clauses of a Proposed ADR rather than the decisions they sit under. **Status
 stays Proposed.**
+
+## Amendment (2026-10-15, [#381](https://github.com/blamechris/Aeolus/issues/381)) — § 5's re-assert writes the fan as it stands, and leaves a fan its own lease re-engaged to that engagement
+
+An A6 precondition, found by the architect's #366 consult. Unreachable on every build on `main`,
+where a `.notBuilt` plane grants no lease. It is `CLAUDE.md` rule 6 in the direction that claims
+control Aeolus is not honouring as asked: on every route the fan stays bounded and inside its lease.
+
+**The defect.** § 5 decided what to write before its suspensions and wrote it after them.
+`diverged(_:fanAt:heldUnder:)` read the record's target before its ledger hop and passed it to
+`reassert`, whose re-engage was decided from the cycle's reading. A re-apply under the same lease is
+accepted inside any of those suspensions, because a same-lease registration keeps the record (#180).
+Then:
+
+1. *Target diverged.* The re-assert commanded the old target over the client's new one and recorded
+   it.
+2. *Mode reclaimed.* The mode write found the fan already manual, the driver refused it as
+   `.notAutomatic`, and § 5 logged a `.fault` that it could not re-engage the fan and spent an
+   attempt.
+3. *During the command write.* A report that arrived during § 5's own write was overwritten in the
+   record. If the client's write landed last, the next cycle read it as diverged and re-asserted the
+   old target over it.
+
+**Decision.**
+
+- **The examination stamps the record.** `Registry.beginExamination(ofFan:)` records the fan's
+  registration generation on `HeldFan.examinedAtGeneration` before the control-state read. A
+  same-lease registration keeps the record and moves the generation, so the two differ.
+- **A same-lease registration since the stamp stands the re-assert down.**
+  `Registry.reassertTarget(ofFan:under:)` answers `nil`. The re-fetches after the envelope read and
+  after the first step stop there: § 5 writes nothing more for that examination and says so. The
+  attempt booked in `diverged` stays spent, because that engagement's writes are this round's. The
+  mark is left to the episode (#366).
+- **The target is the record's as it stands after the last suspension before the write.** `reassert`
+  no longer takes one.
+- **The record keeps a newer report.** `recordReassertedTarget(_:decidedOn:ofFan:)` records § 5's
+  write only over the target it was decided on.
+- **Only the writes stand down.** A re-apply stops neither the judgement, the budget check, the
+  envelope-failure branch nor any terminal action. A client re-applying every cycle still meets the
+  terminal action when the budget runs out (#180, #366).
+
+| When the same-lease re-apply lands | What § 5 does with that examination |
+|---|---|
+| Before the stamp | Judges a reading that includes it |
+| Stamp to the first-step re-fetch, registering | Writes nothing more; the attempt stays spent; the mark is left to the episode |
+| Stamp to the first-step re-fetch, report only | Re-asserts the reported target |
+| During § 5's command write | The record keeps the report; the firmware keeps whichever write landed last |
+
+**A6's contract.** Its shape is unchanged.
+
+- Item 2 gains: *Register each fan before this `apply`'s first command write to it, a fan already
+  engaged under the lease included. A registration accepted while § 5 is examining the fan leaves
+  that examination's re-assert to this engagement.*
+- Item 3 gains: *Report after the write returns, never before. § 5 re-asserts the target last
+  reported, and a report that arrives during its own command write wins the record.*
+- A control-loop step that only commands is covered by the re-fetch, not the stand-down.
+- Item 5 is unchanged.
+
+**What remains.**
+
+- *A client write issued during § 5's command write can land first.* The fan then holds § 5's
+  re-fetched target, which is older than the client's, until the next readable cycle reads it as
+  diverged and re-asserts the client's: one cycle, one more attempt, and the mark kept for that
+  cycle. Only mutual exclusion over the write closes it.
+- *Two engagements of one fan under one lease remain an A6 precondition.* The plane's in-progress
+  record is still per fan. A same-lease engagement that completes during § 5's own mode write now
+  stands § 5 down rather than being commanded over.
+- *A same-lease re-apply just before a genuine re-reclamation stands that cycle's re-assert down.*
+  It costs one cycle and one attempt, in the direction of giving the fan up sooner.
+- *The judgement's own view is not covered.* A target reported between § 5's read and its judgement
+  is compared against a reading that predates it; tracked as
+  [#383](https://github.com/blamechris/Aeolus/issues/383).
+
+**Alternatives considered.**
+
+- *A6 serialises a fan's engagements across § 5's whole re-assert.* Engagements are not writes, so a
+  target-only re-assert still races the client's command. A turn taken at the re-assert meets a
+  judgement made before it, so the re-fetch and the stand-down are needed under it anyway. A shared
+  turn parks § 5's whole sequential sweep behind any holder that never releases, and D_cycle watches
+  § 3, not § 5.
+- *Re-read the target after the envelope read.* It leaves the mode half as it was and the driver's
+  steps open. Recording over a newer report re-creates the overwrite one cycle later.
+- *Stop § 5 whenever the generation moves.* A client re-applying every cycle postpones the terminal
+  action indefinitely.
+- *Refund the attempt on a stand-down.* The same unbounded contest. The cancellation refund is for a
+  round in which no write reached the wire, and here the client's did.
+- *Stamp at the judgement.* It misses a re-apply during the read or the lease hop, and the mode half
+  still reports a failed write.
+- *A per-fan command epoch checked inside the plane's write turn.* Exact, but it needs reports
+  before writes and changes a write verb across every conformer (ADR 0008).
+
+**Revisit if:**
+
+- A6 adds a per-fan forward-write turn: § 5's re-assert then takes it from the stamp to the record;
+- A6 or #17 reports a target before writing it;
+- leases that can overlap on a fan are proposed;
+- a hardware run shows the write race landing.
+
+The ruling is the architect's #381 consult, run on Opus. **No `AeolusXPCVersion` bump:** nothing
+crosses the boundary. This amendment corrects clauses of a Proposed ADR rather than the decisions
+they sit under. **Status stays Proposed.**
 
 ## Assumptions and what would invalidate them
 
