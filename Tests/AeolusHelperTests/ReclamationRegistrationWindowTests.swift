@@ -59,7 +59,7 @@ struct ReclamationRegistrationWindowTests {
 
         // Asserted first, because everything below it is an absence. Without this the test
         // cannot tell "examined and found converged" from "never looked at the fan at all",
-        // and a tightened entry guard in `examine(fanAt:)` would pass it unnoticed.
+        // and a tightened entry guard in `examine(fanAt:inBound:)` would pass it unnoticed.
         #expect(
             await machine.attempts.contains(.readControlState(fan: 0)),
             "the fan was never examined, so the assertions below prove nothing")
@@ -87,8 +87,8 @@ struct ReclamationRegistrationWindowTests {
     /// fabricated number.
     ///
     /// Mutation-checked: making `HeldFan.judge(_:)` answer `.diverged(primary)` where it answers
-    /// `.graced(…)` — the grace removed, as deleting its guard from `examine(fanAt:)` once did —
-    /// turns the lease, restore, registry and ledger assertions red together.
+    /// `.graced(…)` — the grace removed, as deleting its guard from `examine(fanAt:inBound:)` once
+    /// did — turns the lease, restore, registry and ledger assertions red together.
     @Test("An unreadable target before the first command does not cost the client its lease")
     func anUnreadableTargetBeforeTheFirstCommandKeepsTheLease() async throws {
         let machine = ReclamationMachine(
@@ -125,8 +125,8 @@ struct ReclamationRegistrationWindowTests {
     /// own bound from.
     ///
     /// One log line for the whole grace, not one per cycle: #124's constraint on a 1 Hz
-    /// supervisor, and the reason `HeldFan.judge(_:)` reports `firstCycle` and `examine(fanAt:)`
-    /// logs only that transition rather than the state.
+    /// supervisor, and the reason `HeldFan.judge(_:)` reports `firstCycle` and
+    /// `examine(fanAt:inBound:)` logs only that transition rather than the state.
     @Test("The grace before the first command runs out, and the fan is handed back")
     func theGraceBeforeTheFirstCommandIsBounded() async throws {
         let machine = ReclamationMachine(
@@ -157,8 +157,8 @@ struct ReclamationRegistrationWindowTests {
     ///
     /// `HeldFan.judge(_:)`'s converged branch resets the dwell and the re-assert attempts and
     /// deliberately leaves `uncommandedDivergentCycles` alone. Nothing asserted that: adding
-    /// `uncommandedDivergentCycles = 0` beside those two (in `examine(fanAt:)`, before #128 moved
-    /// the branch) left the whole suite green, so the property was true of the code and
+    /// `uncommandedDivergentCycles = 0` beside those two (in `examine(fanAt:inBound:)`, before #128
+    /// moved the branch) left the whole suite green, so the property was true of the code and
     /// unclaimed by the tests.
     ///
     /// It matters because the fan it describes is a real one. A `F<n>Tg` that is merely

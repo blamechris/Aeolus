@@ -323,8 +323,8 @@ struct ReclamationWatchdogTests {
     /// `ReclamationWatchdogRecoveryTests` needs `blindCyclesBeforeDivergence` blind cycles **in a
     /// row**. Nothing asserted that until #128's review deleted the reset with the suite green.
     ///
-    /// **Mutation:** delete `registry.resetReadFailures(ofFan: index)` from `examine(fanAt:)`.
-    /// Run: red.
+    /// **Mutation:** delete `registry.resetReadFailures(ofFan: index)` from
+    /// `examine(fanAt:inBound:)`. Run: red.
     @Test("Alternating blind and readable cycles never add up to persistent blindness")
     func alternatingBlindnessNeverEscalates() async throws {
         let rounds = ReclamationLimits.blindCyclesBeforeDivergence + 1

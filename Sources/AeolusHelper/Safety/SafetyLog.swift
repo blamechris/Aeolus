@@ -1763,6 +1763,48 @@ extension SafetyLog {
     }
 }
 
+// MARK: - docs/SAFETY.md § 5 — the examination gate (ADR 0014's A6 amendment)
+
+extension SafetyLog {
+
+    /// § 5 waited `bound` for a fan's examination gate and its holder had not left: a contract
+    /// breach, since `FanExaminationGate.examinationWait` is the longest a step that keeps A6's
+    /// contract can keep § 5 waiting, a step queued ahead of § 5 and then granted included. The
+    /// one exception is a wait that spans a system sleep, which the bound counts: the line is
+    /// then a false breach, and diagnostic only. `.fault`, once per holder: later examinations
+    /// against the same holder do not wait and say nothing more. They examine without the gate,
+    /// judging, marking and restoring, and writing nothing away from automatic control.
+    func examinationGateOutwaited(fan: Int, after bound: Duration) {
+        emit(
+            .fault,
+            """
+            § 5 waited \(bound) for fan \(fan)'s examination gate, and its holder has not left. \
+            § 5 examines the fan without the gate until that holder leaves: it judges, marks and \
+            restores as before, and writes nothing that takes the fan away from automatic control.
+            """
+        )
+    }
+
+    /// A re-assert stood down at `moment`, writing nothing more: `pastTheBound` when the
+    /// examination ran past the gate's bound, and otherwise for a registration under the same
+    /// lease since the examination began, which `reclamationReassertLeftToItsEngagement(fan:at:)`
+    /// says (#381).
+    func reclamationReassertStoodDown(fan: Int, at moment: String, pastTheBound: Bool) {
+        guard pastTheBound else {
+            return reclamationReassertLeftToItsEngagement(fan: fan, at: moment)
+        }
+        emit(
+            .notice,
+            """
+            § 5 examined fan \(fan) without its examination gate, past the gate's bound, and \
+            found that at \(moment), so it wrote nothing that would take the fan away from \
+            automatic control. The attempt stays spent; the next cycle's read-back decides \
+            whether the fan is held.
+            """
+        )
+    }
+}
+
 /// `FanControlPlaneValue.wholeRPM(_:)`, the one total RPM-to-text conversion every line here uses:
 /// `Int(_:)` traps on a value that is not a number, and a log line may never kill the helper.
 private func wholeRPM(_ value: Double) -> String { FanControlPlaneValue.wholeRPM(value) }

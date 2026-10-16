@@ -73,9 +73,10 @@ struct ReclamationWatchdogAccessTests {
 
     /// Every member of the actor whose privacy is load-bearing, spelled as declared.
     ///
-    /// The nine stored members first: the read seam, the ungoverned writer, the engagement
-    /// driver, the lease role, the latch role, the ledger role, the log, the registry and the
-    /// sweep flag; what each role carries is `ReclamationRoleTripwireTests`' (#380). Then every
+    /// The ten stored members first: the read seam, the ungoverned writer, the engagement
+    /// driver, the lease role, the latch role, the ledger role, the log, the examination gate, the
+    /// registry and the sweep flag; what each role carries is `ReclamationRoleTripwireTests`'
+    /// (#380), and where the gate may be named and entered `ExaminationGateRouteTests`'. Then every
     /// method that acts on a held fan — each one awaits, re-fetches and acts in an order the
     /// re-fetch rule depends on, and an internal one is callable from every file in
     /// `AeolusHelper` with `registry` in scope — and the two hand-back steps #128 lifted out.
@@ -87,9 +88,10 @@ struct ReclamationWatchdogAccessTests {
         "let latch: any ThermalLatchRole",
         "let ledger: any ReclamationLedgerRole",
         "let log: SafetyLog",
+        "let gate: FanExaminationGate",
         "var registry = Registry()",
         "var isSweeping = false",
-        "func examine(fanAt index: Int) async {",
+        "func examine(fanAt index: Int, inBound: Bool) async {",
         "func diverged(",
         "func reassert(",
         "func commandWriteFailed(",
@@ -218,7 +220,7 @@ struct ReclamationWatchdogAccessTests {
     /// and swift-format writes chains that way; and `registry.self` is refused, because it is
     /// the whole value spelled as a member.
     ///
-    /// **Mutations:** add `let before = registry` to `examine(fanAt:)`; add
+    /// **Mutations:** add `let before = registry` to `examine(fanAt:inBound:)`; add
     /// `registry = Registry()` to `cycle()`. Run: red on each.
     @Test("The watchdog reaches its registry only through the registry's members")
     func registryIsOnlyReachedThroughItsMembers() throws {

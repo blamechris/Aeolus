@@ -28,7 +28,7 @@ import Testing
 /// `hold(fan:commanding:)` and `holdWithoutCommanding(fan:)` take a lease over every fan the
 /// machine has when none is live, which is what E3's control plane will have done before it
 /// registers anything. Until #180 a fan could be registered with no lease at all and § 5
-/// never noticed; now `examine(fanAt:)` asks the lease table before either firmware signal,
+/// never noticed; now `examine(fanAt:inBound:)` asks the lease table before either firmware signal,
 /// and an unleased fan is `.leaseLapsed` on its first cycle — so a scenario about anything
 /// else has to start leased, and one about D2 ends the lease on purpose: `endLease()`, or
 /// `leaseClock` advanced past the deadline.
@@ -65,6 +65,14 @@ struct ReclamationMachine<Writes: FanControlPlane> {
     let latchHops: ParkableThermalLatch?
     let ledgerHops: ParkableReclamationLedger?
 
+    /// The fans' examination gate § 5 takes before each examination, and the clock it bounds the
+    /// wait on (ADR 0014's A6 amendment). Its own `ManualClock` rather than `leaseClock`:
+    /// `TestClock`'s sleep jumps to its deadline, so every contended wait would run out the moment
+    /// it began. The composition hands the gate the lease core's clock; no scenario here depends on
+    /// the two being one, and one about the bound moves this clock alone.
+    let gateClock = ManualClock()
+    let gate: FanExaminationGate
+
     /// § 3, on the same plane and latch, so that the registration the driver owes it (#181) is
     /// observable and its latched cycle can bridge what § 5 left registered. No test cycles it
     /// unless it is about that: its stages read no temperature, so a cycle is blind, and a
@@ -94,6 +102,7 @@ struct ReclamationMachine<Writes: FanControlPlane> {
         latchHops = parkingSafetyHops ? ParkableThermalLatch(latch) : nil
         ledgerHops = parkingSafetyHops ? ParkableReclamationLedger(ledger) : nil
         let log = SafetyLog(recording: { [safetyLog] in safetyLog.append($0, $1) })
+        gate = FanExaminationGate(clock: gateClock, log: log)
         let telemetry = CuratedCriticalTemperatures(plane: writes, set: .mac16x5)
         emergency = ThermalEmergency(
             telemetry: telemetry,
@@ -113,6 +122,7 @@ struct ReclamationMachine<Writes: FanControlPlane> {
             leases: leaseHops ?? leases,
             latch: latchHops ?? latch,
             ledger: ledgerHops ?? ledger,
+            gate: gate,
             log: log
         )
     }
@@ -560,7 +570,8 @@ actor InterferingFanStateSensing: FanControlPlane {
 
     /// Which read or write the effect happens inside.
     enum Moment: Sendable {
-        /// Inside `readControlState(ofFan:)` — the suspension `examine(fanAt:)` resumes from.
+        /// Inside `readControlState(ofFan:)` — the suspension `examine(fanAt:inBound:)` resumes
+        /// from.
         case controlStateRead
         /// Inside `readControlState(ofFan:)`, once the plane has answered and before the answer is
         /// returned: the reading § 5 resumes with predates the effect, as a production read's

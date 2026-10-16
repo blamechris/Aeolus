@@ -32,16 +32,16 @@ struct ReclamationReassertTargetValueTests {
     /// lease keeps the record and moves the generation, so the re-fetch withholds the target until
     /// the next examination stamps the record again.
     ///
-    /// **Mutation (a):** delete the stamp in `HeldFan.beginExamination(atGeneration:)`. **(b):**
-    /// drop the generation comparison from `Registry.reassertTarget(ofFan:under:)`. **(c):** make
-    /// `Registry.register` restamp the record it keeps with the generation it moves to. **(d):**
-    /// drop `record.lease == lease` from `reassertTarget(ofFan:under:)`. **(e):** delete the call
-    /// to `HeldFan.beginExamination(atGeneration:)` from `Registry.beginExamination(ofFan:)`. Run:
-    /// red on each.
+    /// **Mutation (a):** delete the stamp in `HeldFan.beginExamination(atGeneration:inBound:)`.
+    /// **(b):** drop the generation comparison from `Registry.reassertTarget(ofFan:under:)`.
+    /// **(c):** make `Registry.register` restamp the record it keeps with the generation it moves
+    /// to. **(d):** drop `record.lease == lease` from `reassertTarget(ofFan:under:)`. **(e):**
+    /// delete the call to `HeldFan.beginExamination(atGeneration:inBound:)` from
+    /// `Registry.beginExamination(ofFan:inBound:)`. Run: red on each.
     @Test("The re-assert target follows reports, and is withheld after a same-lease registration")
     func theTargetFollowsReportsAndIsWithheldAfterARegistration() {
         var registry = holding(under: lease)
-        let examined = registry.beginExamination(ofFan: 0)
+        let examined = registry.beginExamination(ofFan: 0, inBound: true)
         #expect(examined == lease)
         #expect(registry.reassertTarget(ofFan: 0, under: lease) == decided)
         #expect(registry.reassertTarget(ofFan: 0, under: other) == nil, "presence for identity")
@@ -55,8 +55,30 @@ struct ReclamationReassertTargetValueTests {
             registry.reassertTarget(ofFan: 0, under: lease) == nil,
             "a same-lease registration since the examination began did not withhold the target")
 
-        _ = registry.beginExamination(ofFan: 0)
+        _ = registry.beginExamination(ofFan: 0, inBound: true)
         #expect(registry.reassertTarget(ofFan: 0, under: lease) == reported, "a new examination")
+    }
+
+    /// An examination past the gate's bound is stamped out of bound, and its re-assert is given no
+    /// target: it writes nothing away from automatic control (ADR 0014's A6 amendment). The next
+    /// examination inside the bound is given one again, and the stamp survives a report.
+    ///
+    /// **Mutation (a):** drop `record.examinedInBound` from
+    /// `Registry.reassertTarget(ofFan:under:)`. **(b):** delete `examinedInBound = inBound` from
+    /// `HeldFan.beginExamination(atGeneration:inBound:)`. Run: (a) red on the examination past the
+    /// bound; (b) red on the one inside it after it.
+    @Test("An examination past the gate's bound is given no target to re-assert")
+    func anUngatedExaminationIsGivenNoTarget() {
+        var registry = holding(under: lease)
+        #expect(registry.beginExamination(ofFan: 0, inBound: false) == lease)
+        #expect(
+            registry.reassertTarget(ofFan: 0, under: lease) == nil,
+            "an examination without the gate was given a target to write")
+        _ = registry.command(reported, ofFan: 0)
+        #expect(registry.reassertTarget(ofFan: 0, under: lease) == nil, "a report undid the stamp")
+
+        _ = registry.beginExamination(ofFan: 0, inBound: true)
+        #expect(registry.reassertTarget(ofFan: 0, under: lease) == reported)
     }
 
     /// What the write returned is recorded over the target it was decided on, which it need not

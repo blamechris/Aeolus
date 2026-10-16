@@ -95,15 +95,18 @@ extension ReclamationWatchdog {
         // MARK: - One examination
 
         /// Begins one examination of `index`: stamps its record with the fan's generation, before
-        /// the control-state read, through `HeldFan.beginExamination(atGeneration:)`, so a
-        /// registration under the same lease during the examination is visible to its re-assert
+        /// the control-state read, through `HeldFan.beginExamination(atGeneration:inBound:)`, so
+        /// a registration under the same lease during the examination is visible to its re-assert
         /// (#381). A same-lease registration keeps the record and moves the generation, so the two
-        /// then differ.
+        /// then differ. `inBound` is `false` only for an examination past the gate's bound, whose
+        /// re-assert then stands down (ADR 0014's A6 amendment); a wait cancelled inside the bound
+        /// is `true` without holding the gate. `cycle()` takes the gate before calling this, never
+        /// after.
         ///
         /// - Returns: the lease the record was registered under, or `nil` when it is not held.
-        mutating func beginExamination(ofFan index: Int) -> UUID? {
+        mutating func beginExamination(ofFan index: Int, inBound: Bool) -> UUID? {
             let generation = registrations[index, default: 0]
-            held[index]?.beginExamination(atGeneration: generation)
+            held[index]?.beginExamination(atGeneration: generation, inBound: inBound)
             return held[index]?.lease
         }
 
@@ -111,11 +114,12 @@ extension ReclamationWatchdog {
         /// stands, not the one the re-assert was decided on (#381). A report alone moves no
         /// generation, so it is followed.
         ///
-        /// - Returns: `nil` when the record is gone or another lease's, or when the fan has been
+        /// - Returns: `nil` when the record is gone or another lease's, when the fan has been
         ///   registered again under `lease` since its examination began: that engagement is
-        ///   commanding it.
+        ///   commanding it; or when the examination runs past the gate's bound, which writes
+        ///   nothing away from automatic control.
         func reassertTarget(ofFan index: Int, under lease: UUID) -> CommandedTarget? {
-            guard let record = held[index], record.lease == lease,
+            guard let record = held[index], record.lease == lease, record.examinedInBound,
                 record.examinedAtGeneration == registrations[index, default: 0]
             else { return nil }
             return record.commanded
@@ -254,7 +258,7 @@ extension ReclamationWatchdog {
         /// the envelope read that suspends.
         ///
         /// Assigned rather than incremented, as it always was: `attempt` is counted from the
-        /// record `diverged(_:fanAt:heldUnder:)` fetched before its ledger hop.
+        /// record `diverged(_:fanAt:heldUnder:)` re-fetched after its ledger hop.
         mutating func spendReassertAttempt(_ attempt: Int, ofFan index: Int) {
             held[index]?.reassertAttempts = attempt
         }
