@@ -41,14 +41,24 @@ import os
 /// it decided and do nothing. That bookkeeping is `Lanes`, a value type tested as a value.
 final class FanExaminationGate: Sendable {
 
-    /// How long § 5 waits for a fan's gate: `UnlockLimits.yieldBudget` plus two
-    /// `WatchdogLimits.roundTrip`, 13.5 s.
+    /// How long § 5 waits for a fan's gate: `UnlockLimits.yieldBudget`, two
+    /// `WatchdogLimits.roundTrip` and `stepWait`, 14.5 s.
     ///
-    /// The longest hold A6's contract allows a level-6 step before ADR 0012 ends the helper: one
-    /// engagement's polling, its last step's turn, then its undo's turn or its command's. Level 6's
-    /// hand-back runs outside the gate. A wait that runs out therefore means the contract was
-    /// broken, by a pass never released for instance, and § 5 examines without the gate.
-    static let examinationWait: Duration = UnlockLimits.yieldBudget + WatchdogLimits.roundTrip * 2
+    /// The longest a step that keeps A6's contract can keep § 5 waiting before ADR 0012 ends the
+    /// helper. A step holds the gate for at most one engagement's polling, its last step's turn,
+    /// then its undo's turn or its command's: 13.5 s. A step queued ahead of § 5 is granted within
+    /// `stepWait` of arriving or refused, so the last one ahead is granted at most `stepWait` after
+    /// § 5 arrives, and may then hold for its 13.5 s. Level 6's hand-back runs outside the gate. A
+    /// wait that runs out therefore means the contract was broken, by a pass never released for
+    /// instance, and § 5 examines without the gate.
+    ///
+    /// Measured on the composition's clock, which counts time the machine spends asleep (ADR 0007;
+    /// unverified on this machine). A wait that spans a sleep can run out on wake while its holder
+    /// is inside a lawful hold, and its `.fault` is then a false breach. That is diagnostic only:
+    /// past the bound § 5 writes nothing away from automatic control, and once that holder leaves
+    /// the next examination waits again.
+    static let examinationWait: Duration =
+        UnlockLimits.yieldBudget + WatchdogLimits.roundTrip * 2 + stepWait
 
     /// How long level 6 waits for a fan's gate before its step is refused: 1 s.
     ///
@@ -187,6 +197,10 @@ final class FanExaminationGate: Sendable {
             do {
                 try await clock.sleep(until: deadline)
             } catch {
+                // Cancelled, the timer ends without deciding. A clock that throws for any other
+                // reason ends the wait as its bound would, rather than leaving it to a grant that
+                // may never come.
+                if !Task.isCancelled { self.decide(ticket, fanAt: fan, .expired) }
                 return
             }
             guard !Task.isCancelled else { return }
@@ -209,15 +223,19 @@ final class FanExaminationGate: Sendable {
     }
 
     /// Ends `ticket`'s wait with `outcome`, unless it was decided already.
+    ///
+    /// The outwaited holder is logged before the parked examination is resumed, both outside the
+    /// lock, so what that examination does next comes after the line, and so does anything that
+    /// watches it end.
     private func decide(_ ticket: UInt64, fanAt fan: Int, _ outcome: Outcome) {
         let (withdrawal, parked) = state.withLock { state -> (Withdrawal, Resumption?) in
             let withdrawal = state.lanes.withdraw(ticket, fanAt: fan, because: outcome)
             return (withdrawal, withdrawal.resumes ? state.parked.removeValue(forKey: ticket) : nil)
         }
-        parked?.resume(returning: outcome)
         if withdrawal.outwaitedHolder {
             log.examinationGateOutwaited(fan: fan, after: Self.examinationWait)
         }
+        parked?.resume(returning: outcome)
     }
 }
 
