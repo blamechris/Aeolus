@@ -149,7 +149,11 @@ struct LeaseApplierExaminationTests {
             rpm += 200
             await hops.parkNextAnswer()
             let sweep = observing { await machine.watchdog.cycle() }
-            _ = await yieldUntil("the lease check to park") { await hops.isParked }
+            // Or the sweep ended without one: with the lease revoked, § 5 holds nothing to examine.
+            _ = await yieldUntil("the lease check to park, or the sweep to find nothing") {
+                if await hops.isParked { return true }
+                return await sweep.isFinished.isSet
+            }
             let target = rpm
             let step = observing { try await levelSix.apply(fixed((0, target)), under: lease) }
             _ = await yieldUntil("the re-apply to wait for the gate, or to land without it") {
