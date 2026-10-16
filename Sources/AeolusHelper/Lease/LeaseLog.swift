@@ -513,6 +513,30 @@ extension LeaseLog {
         )
     }
 
+    /// A grant was refused because a requested fan's firmware bounds fail `docs/SAFETY.md`
+    /// § 2's plausibility gate, or did not read
+    /// ([#270](https://github.com/blamechris/Aeolus/issues/270)).
+    ///
+    /// `.notice`, for `refusedForeignManualControl`'s reason: it is the line a user reaches for
+    /// after finding the slider inert, and `.info` is not persisted. It names **which check
+    /// failed**, in `FanBoundsImplausibility`'s value-free vocabulary, so a byte-order fault and
+    /// firmware declaring a maximum below the floor can be told apart afterwards — and, for a
+    /// read that threw, what the read said.
+    func refusedImplausibleBounds(
+        _ connection: ConnectionID, fan: Int, failure: FanBoundsImplausibility, unread: String?
+    ) {
+        log.notice(
+            """
+            Connection \(connection.logDescription, privacy: .public) asked for manual \
+            control of fan \(fan, privacy: .public). Refused: boundsImplausible — \
+            \(failure.description, privacy: .public)\
+            \(unread.map { " (\($0))" } ?? "", privacy: .public). No target can be produced \
+            for a fan whose firmware bounds fail the plausibility gate, so no lease over it \
+            is granted — see docs/SAFETY.md § 2.
+            """
+        )
+    }
+
     /// A client asked for a fan while `docs/SAFETY.md` § 4's sleep window was open.
     ///
     /// `.notice`, and it is the line that distinguishes the two ways a lease can go missing

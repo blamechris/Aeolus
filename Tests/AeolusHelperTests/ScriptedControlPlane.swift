@@ -104,6 +104,24 @@ actor ScriptedControlPlane: FanControlPlane {
         /// read of the key — `PlaneBackedProvider`, through `firmwareMode(ofFan:)` — fails on
         /// exactly the fans the plane's reads do.
         var unreadableModes: Set<Int>
+        /// What `F<n>Mx` reads this stage for a fan whose read is not its declared
+        /// `FanCondition.maximumRPM` ([#270](https://github.com/blamechris/Aeolus/issues/270)):
+        /// a byte-swapped value, or a key that does not answer.
+        ///
+        /// A property of the firmware's reads rather than of the fan's control state, for
+        /// `unreadableModes`' reason: the snapshot's own read of the key — `PlaneBackedProvider`,
+        /// through `firmwareBound(_:ofFan:)` — and the grant's `readEnvelope(ofFan:)` then read
+        /// the **one** value, so an agreement test asserts that two reads agree rather than that
+        /// two scripts do. And a stage, so a fan can be leased under plausible bounds and read
+        /// implausible ones afterwards, which is how a fan in a handback register is scripted.
+        var maximumReads: [Int: BoundRead]
+        /// `maximumReads`' counterpart for `F<n>Mn`, so the grant's judgement of the minimum is
+        /// scripted too: without it, a gate that judged a constant minimum stayed green.
+        ///
+        /// Defaulted rather than an `init` parameter, and set on a built stage
+        /// (`AvailabilityFixture.fanZeroMinimum(_:)`), so the actor's own body stays inside
+        /// `type_body_length`'s warning.
+        var minimumReads: [Int: BoundRead] = [:]
 
         init(
             temperatures: [String: Double] = [:],
@@ -113,7 +131,8 @@ actor ScriptedControlPlane: FanControlPlane {
                 reason: "the SMC did not come back; see SMCFanControlPlane.reconnect()"),
             targetWrites: WriteBehaviour? = nil,
             forceKeyWrites: WriteBehaviour? = nil,
-            unreadableModes: Set<Int> = []
+            unreadableModes: Set<Int> = [],
+            maximumReads: [Int: BoundRead] = [:]
         ) {
             self.temperatures = temperatures
             self.reads = reads
@@ -122,6 +141,7 @@ actor ScriptedControlPlane: FanControlPlane {
             self.targetWrites = targetWrites
             self.forceKeyWrites = forceKeyWrites
             self.unreadableModes = unreadableModes
+            self.maximumReads = maximumReads
         }
 
         /// A stage where the SMC answers and the machine reads as given.
@@ -460,14 +480,13 @@ actor ScriptedControlPlane: FanControlPlane {
 
     func readEnvelope(ofFan index: Int) async throws -> FanEnvelope {
         attempts.append(.readEnvelope(fan: index))
-        try requireReadable(context: "fan \(index) envelope")
-        let fan = try condition(ofFan: index)
-
         let minimum = try FanControlPlaneValue.finite(
-            fan.minimumRPM, describing: SMCFanEnumeration.minimumKey(forFan: index)
+            try boundReadable(.minimum, ofFan: index),
+            describing: SMCFanEnumeration.minimumKey(forFan: index)
         ).get()
         let maximum = try FanControlPlaneValue.finite(
-            fan.maximumRPM, describing: SMCFanEnumeration.maximumKey(forFan: index)
+            try boundReadable(.maximum, ofFan: index),
+            describing: SMCFanEnumeration.maximumKey(forFan: index)
         ).get()
 
         return FanEnvelope(index: index, minimumRPM: minimum, maximumRPM: maximum)
@@ -608,6 +627,63 @@ extension ScriptedControlPlane {
             throw FanControlPlaneError.readFailed(detail: "\(context): F\(index)Md did not answer")
         }
         return fan
+    }
+}
+
+// MARK: - The firmware's own answer for F<n>Mn and F<n>Mx (#270)
+
+// An extension in this file for the mode extension's reason above.
+extension ScriptedControlPlane {
+
+    /// Which of a fan's two declared bounds a read asks for.
+    enum Bound: Sendable, Hashable {
+        case minimum
+        case maximum
+    }
+
+    /// What one bound key reads on a stage, when it is not the fan's declaration — see
+    /// `Stage.maximumReads` and `Stage.minimumReads`. Declared here rather than beside `Stage`, so
+    /// the actor's own body stays inside `type_body_length`.
+    enum BoundRead: Sendable, Hashable {
+        /// The key answers this value — `1e14` is the shape of a byte-swapped `flt`.
+        case reads(Double)
+        /// The key does not answer.
+        case fails
+    }
+
+    /// What `F<n>Mn` or `F<n>Mx` reads for fan `index` this stage, **recording no attempt**: the
+    /// snapshot's own read of the key, which `PlaneBackedProvider` serves from here, for
+    /// `firmwareMode(ofFan:)`'s reason.
+    ///
+    /// Raw, as the provider hands it on. Each side checks finiteness on its own path: the seam's
+    /// in `readEnvelope(ofFan:)`, and the snapshot's in `SMCFanEnumeration`, which turns a
+    /// non-finite read into `.notDecodable` and so a `.notMeasured` bound. Two checks, one
+    /// outcome: § 2's gate answers `.boundsImplausible` on both sides.
+    func firmwareBound(_ bound: Bound, ofFan index: Int) throws -> Double {
+        try boundReadable(bound, ofFan: index)
+    }
+
+    /// The one rule every read of a bound key answers by — `readEnvelope(ofFan:)` and
+    /// `firmwareBound(_:ofFan:)`: the SMC answers this stage, the fan exists, and the stage's
+    /// `minimumReads` and `maximumReads` override the declared bounds.
+    fileprivate func boundReadable(_ bound: Bound, ofFan index: Int) throws -> Double {
+        try requireReadable(context: "fan \(index) envelope")
+        let fan = try condition(ofFan: index)
+        let isMinimum = bound == .minimum
+        guard let read = (isMinimum ? stage.minimumReads : stage.maximumReads)[index] else {
+            return isMinimum ? fan.minimumRPM : fan.maximumRPM
+        }
+        switch read {
+        case .reads(let value):
+            return value
+        case .fails:
+            let key =
+                isMinimum
+                ? SMCFanEnumeration.minimumKey(forFan: index)
+                : SMCFanEnumeration.maximumKey(forFan: index)
+            throw FanControlPlaneError.readFailed(
+                detail: "fan \(index) envelope: \(key) did not answer")
+        }
     }
 }
 

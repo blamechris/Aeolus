@@ -10,6 +10,9 @@ import Testing
 /// behind a restore-only body restores exactly as the role does. So it is asserted against the
 /// source, three ways, and each was evaded once before it took its present shape (the review
 /// and delta review of #349). `PanicPathScopeTripwireTests` holds what the panic verb *calls*.
+///
+/// The conversion ban binds the lease core's files too, since `LeaseAuthority` holds `envelopes`
+/// as an existential over the plane (#270): `theLeaseCoreConvertsNoRole`.
 @Suite("The panic verb's type holds two roles, and nothing wider")
 struct AuthorityRoleTripwireTests {
 
@@ -58,11 +61,53 @@ struct AuthorityRoleTripwireTests {
         // conversion need not name a type the denylist knows: `keystone as? SomeAlias`, or
         // `if case let wider as any SomeProtocol = keystone`. The file has no `as` today, so the
         // token itself is refused, along with the two conversions that do not spell it.
-        let conversions = try [#"\bas\b"#, #"\bunsafeBitCast\b"#, #"\bunsafeDowncast\b"#]
-            .filter { try !Self.matches(of: $0, in: code).isEmpty }
+        let conversions = try Self.conversions(in: code)
         #expect(
             conversions.isEmpty,
             "SupervisedFanAuthority.swift converts a value's type with \(conversions)")
+    }
+
+    /// The lease core's files convert no value's type, outside a `catch` clause's error binding
+    /// ([#270](https://github.com/blamechris/Aeolus/issues/270)).
+    ///
+    /// `LeaseAuthority` holds `envelopes` as `any FanEnvelopeReading`, which in production is the
+    /// plane itself (`envelopes: plane`), as `writeCapability` is. One conversion back hands the
+    /// lease core `commandTarget(_:)` while every behavioural test stays green, and
+    /// `LeaseAuthorityAccessTests.theLeaseCoreMintsNoPermit` sees only `commandable`. So these
+    /// files take the ban above. The one shape exempt is `catch let <name> as <Type> {`, which
+    /// binds a thrown error and converts no role. Comments are stripped and literals kept.
+    ///
+    /// **Mutation:** add `if case let wider as any FanControlPlane = envelopes { _ = wider }` to
+    /// `refuseIfBoundsImplausible(_:wanting:)`. Run: red here, while every behavioural test stays
+    /// green.
+    @Test("The lease core converts no role it holds back to the plane")
+    func theLeaseCoreConvertsNoRole() throws {
+        let named = try SeamScanner.swiftFiles(under: "AeolusHelper").map(\.lastPathComponent)
+            .filter { $0.hasPrefix("LeaseAuthority") && $0.hasSuffix(".swift") }
+        let files = try Set(named).union(
+            MemberAccessScan.filesDeclaring("LeaseAuthority", inTarget: "AeolusHelper").members
+        ).sorted()
+        let errorBinding = try NSRegularExpression(pattern: #"\bcatch\s+let\s+\w+\s+as\s+\w+\s*\{"#)
+
+        var held = ""
+        var offences: [String] = []
+        for file in files {
+            let code = SeamScanner.strippingAllComments(
+                try MemberAccessScan.strippedSource(of: file))
+            held += code
+            let converting = errorBinding.stringByReplacingMatches(
+                in: code, range: NSRange(code.startIndex..., in: code), withTemplate: "")
+            offences += try Self.conversions(in: converting).map { "\(file): \($0)" }
+        }
+        // Coverage: the scan read the files that hold the role, not an empty set.
+        #expect(files.contains("LeaseAuthorityRefusals.swift"), "the scan covers \(files)")
+        #expect(held.contains("any FanEnvelopeReading"), "the envelope role is not held")
+        #expect(
+            offences.isEmpty,
+            """
+            \(offences): the lease core converts a value's type. It holds narrow roles so that it \
+            cannot command a fan, and a conversion back to the plane undoes exactly that.
+            """)
     }
 
     /// The authority's file declares exactly these `let`/`var` lines outside function bodies,
@@ -166,6 +211,12 @@ struct AuthorityRoleTripwireTests {
 
     // MARK: - Parsing
 
+    /// Which of the three spellings of a type conversion `code` contains.
+    private static func conversions(in code: String) throws -> [String] {
+        try [#"\bas\b"#, #"\bunsafeBitCast\b"#, #"\bunsafeDowncast\b"#]
+            .filter { try !Self.matches(of: $0, in: code).isEmpty }
+    }
+
     private static func authoritySource() throws -> String {
         let url = try #require(
             try SeamScanner.swiftFiles().first {
@@ -190,8 +241,9 @@ struct AuthorityRoleTripwireTests {
             .filter { $0.range(of: #"\b(let|var)\b"#, options: .regularExpression) != nil }
     }
 
-    /// Every match of `pattern` in `code`, as text.
-    private static func matches(of pattern: String, in code: String) throws -> [String] {
+    /// Every match of `pattern` in `code`, as text. `internal` for
+    /// `LeaseBindingRaceTests.nothingSuspendsBelowTheMarker`, rather than a second copy.
+    static func matches(of pattern: String, in code: String) throws -> [String] {
         try NSRegularExpression(pattern: pattern)
             .matches(in: code, range: NSRange(code.startIndex..., in: code))
             .compactMap { Range($0.range, in: code).map { String(code[$0]) } }

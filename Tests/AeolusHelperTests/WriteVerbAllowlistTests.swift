@@ -454,7 +454,10 @@ struct WriteVerbAllowlistTests {
         "FanAuthority.swift: snapshot()",
         "FanControlPlane.swift: readControlState(ofFan: Int)",
         "FanControlPlane.swift: readCriticalTemperatures(_: [SMCKey])",
-        "FanControlPlane.swift: readEnvelope(ofFan: Int)",
+        // #270 moved this requirement into a role of its own, refined by `FanStateSensing`
+        // unchanged, so the lease core can hold the one read verb. Re-pinned, not relaxed: it
+        // returns the declared bounds and writes nothing.
+        "FanEnvelopeReading.swift: readEnvelope(ofFan: Int)",
         "FanControlPlane.swift: reconnect()",
         "FanModeSensing.swift: modes(ofFans: [Int])",
         "FanModeSensing.swift: readMode(ofFan: Int)",
@@ -488,6 +491,11 @@ struct WriteVerbAllowlistTests {
         "LeaseAuthority.swift: revokeLeases(coveringFan: Int, because: FanRestoreCause)",
         "LeaseAuthorityRefusals.swift: refuseIfBlind(_: ConnectionID)",
         "LeaseAuthorityRefusals.swift: refuseIfForeignManualControl(_: ConnectionID, "
+            + "wanting: Set<Int>)",
+        // #270's bounds gate: a read through `FanEnvelopeReading` and a refusal. It names no
+        // permit, restorer or plane, and `LeaseAuthorityAccessTests.theLeaseCoreMintsNoPermit`
+        // holds that it never turns what it reads into one.
+        "LeaseAuthorityRefusals.swift: refuseIfBoundsImplausible(_: ConnectionID, "
             + "wanting: Set<Int>)",
         "LeaseClock.swift: sleep(until: ContinuousClock.Instant)",
         "LeaseExpirySupervisor.swift: run(authority: LeaseAuthority, "

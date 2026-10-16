@@ -360,11 +360,15 @@ something less true than what was available.
    others retries — past the other client's release, past the handback window — into this
    refusal in the end.
 
-   It is not the first refusal in the method, and that is not an inconsistency.
-   `refuseIfThermalEmergencyActive` and `refuseIfBlind` run above the marker, both transient,
-   because both need a suspension point and everything in the region is below every await by
-   construction — the same *"a consequence rather than a choice"* `refuseIfBlind` documents
-   about its own position relative to `validateFanIndices`.
+   It is not the first refusal in the method, and that is not an inconsistency. Four refusals
+   run above the marker — `refuseIfThermalEmergencyActive`, `refuseIfBlind`,
+   `refuseIfForeignManualControl(_:wanting:)` and, since
+   [#270](https://github.com/blamechris/Aeolus/issues/270), `refuseIfBoundsImplausible(_:wanting:)`
+   — because each needs a suspension point and everything in the region is below every await by
+   construction: the same *"a consequence rather than a choice"* `refuseIfBlind` documents about
+   its own position relative to `validateFanIndices`. The first two are transient; § 6's durable
+   refusals and § 2's bounds are not, and they are above the marker anyway, for the same
+   reason. Durability orders the region, not the method.
 
 2. **`handbackUnconfirmed` → `.handbackUnconfirmed`.** A fan whose handback is unconfirmed is
    also mid-`releasing` by that set's own invariant, so without this check the
@@ -401,7 +405,9 @@ something less true than what was available.
    ([#311](https://github.com/blamechris/Aeolus/issues/311)). The foreign-control step above
    the marker exempts every fan in `fansAeolusIsAccountableFor` and never reads it, on the
    argument that one of the four refusals here answers for it. It then suspends — on the
-   reconciliation actor, and once per fan it does read — so a handback can land in between.
+   reconciliation actor, and once per fan it does read — and the bounds read after it suspends
+   once per fan it reads too ([#270](https://github.com/blamechris/Aeolus/issues/270)), so a
+   handback can land anywhere in that window.
    The fan's `releasing` entry clears, item 4 no longer sees it, and until #311 nothing refused
    it however it read: a lease over a fan in manual that nothing had read since its restore.
    `refuseIfExemptionLapsed(_:exempted:)` refuses a requested fan that was exempted and is no
@@ -727,9 +733,10 @@ declined seal, and after a wake the teardown outlived, the snapshot and the gran
 `.releaseInProgress`. During a sealed teardown before the wake the grant says `.systemSleeping` and
 the snapshot `.releaseInProgress`, where it said `.available`:
 [#269](https://github.com/blamechris/Aeolus/issues/269)'s gap, narrower in availability and
-different in reason. When #269 gives `.systemSleeping` a rung, it goes below step 5 and above step
-10, in the grant's order: `acquireLease` checks the sleep seal after its fresh read, which step 5
-mirrors, and before this seal.
+different in reason. When #269 gives `.systemSleeping` a rung, it goes below step 8, and so below
+step 5, and above step 10, in the grant's order: `acquireLease` checks the sleep seal after its
+fresh read, which step 5 mirrors, after its bounds read since #270, which step 8 mirrors, and
+before this seal.
 
 **Why two tests were inverted.** `UnconfirmedHandbackTests.aWedgedHandbackDropsTheLeaseFirstAndLeavesTheFanUnconfirmed`
 and `SleepCycleSurvivalTests.aHandbackThatNeverReturnsIsStillRefusedAfterASecondWake` granted fan 1
@@ -864,9 +871,11 @@ grant seal took it to 278, leaving 72, and the file to 885 lines of its 1000.
 [#357](https://github.com/blamechris/Aeolus/issues/357)'s identity query and
 `revokeLease` took it to 290, leaving 60, and the file to 912.
 [#368](https://github.com/blamechris/Aeolus/issues/368)'s outwait took it to 304, leaving 46, and
-the file to 948. `file_length` has not gone away either. At this file's present density, about
-3.1 lines per code line, it would error after roughly 17 new code lines, so which of the two
-limits is reached first depends on how much comment the new code carries.
+the file to 948. [#270](https://github.com/blamechris/Aeolus/issues/270)'s bounds gate took it to
+308, leaving 42, and the file to 956; the refusal itself and its prose went to
+`LeaseAuthorityRefusals.swift`. `file_length` has not gone away either. At this file's present
+density, about 3.1 lines per code line, it would error after roughly 14 new code lines, so which
+of the two limits is reached first depends on how much comment the new code carries.
 
 New behaviour for #9's A4 and A6 belongs in the `EngagementDriver` that
 [ADR 0014](../ADR/0014-apple-silicon-unlock.md) specifies, and in value types beside
@@ -880,12 +889,16 @@ same advice are recorded for `ReclamationWatchdog` in
 
 *From the documentation of the type.*
 
-The third arrived with #124 and is the only one that reads. It is worth stating plainly
+The third arrived with #124 and was, when it arrived, the only one that read. It is no
+longer the only one: `foreignControl` reads each requested fan's mode afresh, and since
+[#270](https://github.com/blamechris/Aeolus/issues/270) `envelopes` reads its bounds, and the
+type asks six things of the machine in all. It is worth stating plainly
 here, because `acquireLease`'s `// ---- No await below this line ----` marker can only be
 reasoned about correctly by somebody who knows how many suspension points that method
 has: an earlier version of this paragraph said the type "cannot enumerate a fan, read a
 sensor, or write a value" and named only two dependencies, which would have hidden the
-slowest of the three from exactly that analysis.
+slowest of the three from exactly that analysis. `LeaseBindingRaceTests` now holds the
+marker to its word in source, so a suspension added below it fails a test.
 
 It was `CriticalTemperatureSensing` until #134, and the swap is not a rename. A read is
 still what happens when there is no fresh evidence; what changed is that the grant path
@@ -966,14 +979,20 @@ believes is asleep is not.
    already lapsed — so the single-lease check below is made against live leases only,
    and a previous lease's fans are back on automatic before new ones are taken — then
    refusing if § 3 is latched, then proving the helper can still see a temperature at
-   all, and finally asking § 6's baseline whether anything outside Aeolus is holding
-   a requested fan. The sweep runs **before** all of those deliberately: a lapsed
-   lease's fans go back to automatic whether or not this machine is blind and whether
-   or not it is too hot, and neither is a machine on which to skip a restore. The
-   foreign-control question comes last of the four things suspended on — the
-   enumeration, § 3's latch, the telemetry read and it, three of which are refusals —
-   because it is the only one whose cost scales with the number of fans asked for.
-   See `refuseIfForeignManualControl(_:wanting:)`.
+   all, then asking § 6's baseline whether anything outside Aeolus is holding a
+   requested fan, and finally — since [#270](https://github.com/blamechris/Aeolus/issues/270)
+   — reading both bounds of every requested fan that question did not exempt as Aeolus's
+   own, and refusing `.boundsImplausible` for one `docs/SAFETY.md` § 2's gate rejects. The
+   sweep runs **before** all of those deliberately: a lapsed lease's fans go back to
+   automatic whether or not this machine is blind and whether or not it is too hot, and
+   neither is a machine on which to skip a restore. The foreign-control question and the
+   bounds read come last of the five things suspended on — the enumeration, § 3's latch, the
+   telemetry read, it and the bounds read, four of which are refusals — because they are the
+   only ones whose cost scales with the number of fans asked for. The bounds read is after the
+   foreign-control question, so a fan whose mode will not read is told `.supervisorBlind`, as
+   the snapshot's step 5 tells it, and so an accountable fan is answered by its register below
+   the marker, never by its bounds. See `refuseIfForeignManualControl(_:wanting:)` and
+   `refuseIfBoundsImplausible(_:wanting:)`.
 
 ### `expireLapsedLeases`: no instant, and no shared path
 

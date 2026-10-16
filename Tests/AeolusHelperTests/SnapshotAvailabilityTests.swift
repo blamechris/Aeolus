@@ -109,32 +109,36 @@ struct SnapshotAvailabilityTests {
                 == .unavailable(.writePathNotBuilt))
     }
 
-    /// A `.built` seam does not shortcut § 2's bounds gate.
+    /// A `.built` seam does not shortcut § 2's bounds gate, and the grant refuses the fan for
+    /// the reason the snapshot states ([#270](https://github.com/blamechris/Aeolus/issues/270)).
     ///
     /// #194's third acceptance criterion, and the reason the capability could not simply be
     /// mapped to `.available`: a fan whose declared maximum is ~1e14 — the shape of a
     /// byte-swapped `flt` — has no envelope to clamp into, so no target could ever be minted
-    /// for it however capable the build is.
+    /// for it however capable the build is. Until #270 only the snapshot said so, and the grant
+    /// handed out a lease nothing could use. The firmware scripts `F0Mx` once, and the
+    /// snapshot's provider and the grant's `readEnvelope(ofFan:)` both read that value.
     ///
     /// **Mutation:** in `availability(writeCapabilityIs:bounds:)`, delete the `bounds` arm so a
-    /// `.built` seam falls straight through to `.available`. Run: red.
-    @Test("A bounds-implausible fan is refused for its bounds even on a seam that can write")
+    /// `.built` seam falls straight through to `.available`. Run: red on the agreement.
+    /// **Mutation:** delete `try await refuseIfBoundsImplausible(connection, wanting:
+    /// wanting.subtracting(exempted))` from `LeaseAuthority.acquireLease`. Run: red — "the grant
+    /// path granted a lease over fan 0 rather than refusing".
+    @Test("A bounds-implausible fan is refused for its bounds by the snapshot and the grant")
     func aBoundsImplausibleFanIsStillRefusedOnABuiltSeam() async throws {
         let helper = Fixture.composed(
-            fanCount: 1,
-            extraKeys: [
-                SMCFanEnumeration.maximumKey(forFan: 0): .reading(
-                    SMCFanEnumeration.maximumKey(forFan: 0), 1e14)
-            ])
+            afterwards: [Fixture.fanZeroMaximum(Fixture.byteSwappedMaximum)])
+        await helper.plane.advance()
 
         let snapshot = try await helper.authority.snapshot()
+        let refusal = await Fixture.refusalForGrant(over: 0, from: helper.leases)
 
+        #expect(refusal == .boundsImplausible)
         #expect(
-            try Fixture.availability(ofFanAt: 0, in: snapshot)
-                == .unavailable(.boundsImplausible),
+            try Fixture.availability(ofFanAt: 0, in: snapshot) == .unavailable(refusal),
             """
-            a fan whose firmware bounds cannot be trusted is being offered for manual control \
-            on the strength of the build alone. Nothing could ever mint a target for it.
+            a fan whose firmware bounds cannot be trusted is offered for manual control by one \
+            side while the other refuses it. Nothing could ever mint a target for it.
             """)
     }
 

@@ -113,15 +113,10 @@ enum ReadOnlyFanReport {
     /// `FanState.controlEnvelope` — E5's § 2 gate, whose failures all map to
     /// `.boundsImplausible` through `FanBoundsImplausibility.manualControlAvailability`, so no
     /// second vocabulary is invented here. It was deliberately not consulted while the answer
-    /// above was unconditional.
-    ///
-    /// - Warning: `acquireLease` has **no** bounds gate, so on a `.built` build a
-    ///   bounds-implausible fan is reported unavailable here and would nonetheless be granted a
-    ///   lease — a divergence from this type's own agreement rule, in the safe direction
-    ///   (claiming less control than the helper has). It is not resolved by dropping the check:
-    ///   such a fan has no envelope, so `apply` could never mint an `AuthorisedFanTarget` for
-    ///   it and the lease could never be used. The grant path is the half that should move, and
-    ///   that is [#270](https://github.com/blamechris/Aeolus/issues/270)'s.
+    /// above was unconditional. Since [#270](https://github.com/blamechris/Aeolus/issues/270)
+    /// `acquireLease` reads the same two keys afresh and judges them with the same static
+    /// `FanState.controlEnvelope(declaredMinimum:declaredMaximum:)`, so the grant refuses what
+    /// this reports.
     ///
     /// ## § 5's ledger is history, and is not read here
     ///
