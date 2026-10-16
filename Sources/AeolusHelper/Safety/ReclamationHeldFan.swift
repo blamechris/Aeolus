@@ -113,6 +113,9 @@ extension ReclamationWatchdog {
         /// A fresh command resets the secondary dwell: the fan is being asked for something
         /// new, and cycles spent short of the *previous* target say nothing about this one.
         mutating func command(_ target: CommandedTarget) {
+            // A speed no plane can write is no report: the record keeps the last one.
+            let writable = target.rpm.isFinite && target.rpm >= FanSafetyLimits.minimumManualRPM
+            guard writable else { return }
             commanded = target
             actualDwellCycles = 0
         }

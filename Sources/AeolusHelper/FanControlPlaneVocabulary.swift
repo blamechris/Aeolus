@@ -247,6 +247,13 @@ enum FanControlPlaneValue {
         return .success(value)
     }
 
+    /// `value` as whole RPM for a log line, total over every `Double`. `Int(_:)` traps on a value
+    /// that is not a number or does not fit, which in a root daemon is the helper dying on a log
+    /// line; this names such a value instead, and never as zero.
+    static func wholeRPM(_ value: Double) -> String {
+        Int(exactly: value.rounded()).map(String.init) ?? describe(value)
+    }
+
     private static func describe(_ value: Double) -> String {
         guard !value.isFinite else { return String(value) }
         return value.isNaN ? "NaN" : (value > 0 ? "Infinity" : "-Infinity")
