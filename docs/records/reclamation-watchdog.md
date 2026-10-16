@@ -137,6 +137,14 @@ three private helpers for where they stop — `reassertStopped`, `reassertStoppe
 and `reengageRefused` for a first step refused because a same-lease engagement took the fan first
 — which keep `reassert`'s cyclomatic complexity at 10 where inline guards would have made it 13.
 
+**#383 spent four: 327 code lines, and about 23 left; file 961** (SwiftLint 0.65.1). The verb
+`commandAnnounced(_:under:)` is the actor's whole share. The stamp's target rides on #381's stamp,
+inside `HeldFan.beginExamination(atGeneration:)`, and the excuse lives in `HeldFan.judge(_:)`, so
+`examine(fanAt:)` stays at exactly 50 code lines with no split and `reassert`'s cyclomatic
+complexity stays at 10. Its reasoning is in this document, under *"Judged against what the fan
+could have been holding"*, rather than in the actor's file, which stays clear of `file_length`'s
+error.
+
 ## Every act is for the lease the fan was registered under
 
 *Added by [#353](https://github.com/blamechris/Aeolus/issues/353) and
@@ -417,6 +425,81 @@ at the second, the old lease's copy of the record would go on to book its attemp
 newer lease's record, which can send that lease's first real divergence straight to the terminal
 action. The re-assert itself is stopped before any write, by the envelope read's re-fetch.
 
+## Judged against what the fan could have been holding
+
+*Added by [#383](https://github.com/blamechris/Aeolus/issues/383); not relocated from a doc
+comment. `HeldFan.judge(_:)` cites it, and ADR 0014's #383 amendment is the ruling.*
+
+`examine(fanAt:)` reads a fan, then suspends on the lease check, and judges the reading only after
+it. The record's target moves only on a report, and a report comes after its write, so the reading
+and the record can describe different instants, in either order. *Forward:* the read samples the
+fan before a same-lease step lands and the step's report arrives during the lease check, so an
+ordinary 2,400 → 2,000 step read as `.targetDiverged`. *Reverse:* the step lands before the read
+and its report arrives after the judgement, so the reading is newer than the record; § 5 marked the
+fan and re-asserted the old target over the new one, and the report then made the next cycle
+diverge too. A first step reported during an examination did the same, outside the registration
+grace. A curve loop on the supervisor's 1 Hz cadence keeps its phase against § 5's sweep, so a
+window one cycle falls into, every cycle can.
+
+Nothing that sees only after-the-write reports can reach the reverse order: the reading is newer
+than every report and every stamp, so something has to reach § 5 before the write. Level 6
+therefore announces a step before it writes it, with `commandAnnounced(_:under:)`, which sets
+`HeldFan.announced`, and still reports it after the write returns, with `commandedTarget(_:under:)`,
+which closes it. The examination's stamp, `HeldFan.beginExamination(atGeneration:)`, records the
+target last reported (`HeldFan.examinedCommanded`) beside #381's generation, before the read.
+`HeldFan.couldHaveBeenHolding(_:)` asks whether a reading reads back either of the two, through
+`primaryDivergence(of:against:)` per candidate so that there is no second tolerance rule, and
+`judge(_:)` makes a `.targetDiverged` reading that does no divergence. An examination that began
+with nothing commanded judges no target, as a cycle with nothing commanded judges none.
+
+| The step's write lands | Its report arrives | The read sees | § 5 judges it |
+|---|---|---|---|
+| Before the stamp | Before the stamp | The step | Held, against the record |
+| After the read | During the examination | The old target | Held, against the stamp's target |
+| Before the read | During the examination | The step | Held, against the record |
+| Before the read | After the judgement | The step | Held, against the announced step |
+| Never: discarded | During the examination | The old target | Held this cycle; the next cycle diverges |
+
+**Why it does not reopen the contest #180 and #366 bounded.** Nothing but a `.targetDiverged` is
+excused: a reclaimed mode, an unreadable target and any other target diverge as before. Every
+target that can excuse a reading is one the lease holder chose, so no number of reports excuses a
+target the system chose, and a client stepping inside every examination while the firmware
+discards every write still meets the terminal action on the cycle after the budget is spent. An
+excused cycle is one whose primary converged: it closes the episode and clears the mark, and it
+refills the budget only through `.converged` on both signals, so only where #366 would have refilled
+it had the report been instantaneous. An announcement moves no registration generation, so it never
+stands a re-assert down; one that did would let a loop announcing every cycle stand § 5 down on
+every one.
+
+**Rejected,** each for a reason ADR 0014's #383 amendment gives in full. Reporting before the write
+makes the record lead the firmware for the write's latency, and leaves a client write § 5's own
+re-assert overwrote with nothing to correct it. Judging against the target captured with the read
+covers the forward order only, and judged against the capture alone a step reported before the
+read's sample reads as a reclamation. A report epoch that stands the judgement down covers the
+forward order only, and a client reporting inside every examination then postpones the terminal
+action indefinitely. A second-cycle confirmation is either the same contest or fires under a
+phase-locked loop, and delays every genuine target reclamation by a cycle. A re-read before marking
+shrinks the reverse window without closing it. The plane's own last-written target, returned with
+the read in one scheduler turn, is exact, but it changes `FanControlState` and the read verb across
+every conformer and fixes a design for E4's unbuilt write plane; it is kept for if a residual below
+is observed, or A6 cannot announce.
+
+What stays open:
+
+1. Two steps of one fan completed inside one examination: the read can sample the first while the
+   record holds the second and the stamp the one before both. It needs a client stepping faster
+   than one examination's read and lease check, a few milliseconds, and the cost falls on that
+   lease, in the safe direction: a false mark, an attempt, and at the budget the terminal action.
+2. A write that was not announced is covered in the forward order and not the reverse. Only
+   level 6 commands a fan under a lease while § 5 examines it, and ADR 0014 A6 item 3 binds it.
+3. A step the firmware discards is held for the cycle its report lands in, and diverges on the
+   next.
+4. A system-written target within 1 RPM of the stamp's or of the announced step is held for that
+   cycle, at a speed the lease holder asked for.
+
+`ReclamationJudgementViewTests` holds the actor's half, each step landed around a real read, and
+`ReclamationJudgementViewValueTests` the record's.
+
 ## Built once per registration, per lease
 
 *From the doc comment of `HeldFan`, relocated by #357, with the per-lease rule added. The
@@ -562,7 +645,8 @@ note was written, and the first is the only split of this file to move state:
   `givenUp` since #366, each `private` to it, and every synchronous decision over them as a named
   transition — `register`,
   `release`, `forget`, `beginFinalising`, `endFinalising`, `dropLease`, and the per-record
-  `beginExamination` (#381's stamp), `command`, `recordReassertedTarget`, `resetReadFailures`,
+  `beginExamination` (#381's stamp, which carries #383's target), `command`, `announce` (#383),
+  `recordReassertedTarget`, `resetReadFailures`,
   `recordReadFailure`, `judge`, `spendReassertAttempt` and `refundReassertAttempt` — and the
   queries over them, among them #381's re-fetch `reassertTarget`. The actor holds one, `private`,
   and reaches it only through those members. It widens no state, because the state moved inside a

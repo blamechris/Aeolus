@@ -1314,9 +1314,13 @@ lease is judged against the permit's own fan at every examination. No write verb
    `.supervisorBlind` instead (#366). Register each fan before this `apply`'s first command write
    to it, a fan already engaged under the lease included. A registration accepted while § 5 is
    examining the fan leaves that examination's re-assert to this engagement (#381).
-3. Report each commanded target with `commandedTarget(_:under:)`, after the write returns and never
-   before. § 5 re-asserts the target last reported, and a report that arrives during its own
-   command write wins the record (#381).
+3. Announce each step with `commandAnnounced(_:under:)` before its command write is issued, with
+   the target that write will carry, the one `CommandableFan.target(for:)` produced. Report it with
+   `commandedTarget(_:under:)` after the write returns, never before. Keep one write in flight per
+   fan: announce the next step only once the previous one is reported or its write has thrown.
+   § 5 re-asserts the target last reported, a report that arrives during its own command write
+   wins the record (#381), and a fan read holding the announced step, or the target reported when
+   its examination began, is held (#383).
 4. Ask `heldLease(id:from:)` again before replying, so the reply never says *applied* under a
    lease that has ended.
 5. Map a superseded step to `.releaseInProgress`, unless the lease itself has gone. Map a
@@ -1928,9 +1932,9 @@ Then:
   it: one cycle and one attempt, in the same safe direction. Requiring A6 to engage such a fan
   would close it; it is listed rather than required, because the direction is safe and the next
   cycle bounds it.
-- *The judgement's own view is not covered.* A target reported between § 5's read and its judgement
-  is compared against a reading that predates it; tracked as
-  [#383](https://github.com/blamechris/Aeolus/issues/383), an A6 precondition.
+- *The judgement's own view.* A target reported between § 5's read and its judgement was compared
+  against a reading that predates it. Closed by
+  [#383](https://github.com/blamechris/Aeolus/issues/383): see the amendment below.
 
 **Alternatives considered.**
 
@@ -1960,6 +1964,129 @@ Then:
 The ruling is the architect's #381 consult, run on Opus. **No `AeolusXPCVersion` bump:** nothing
 crosses the boundary. This amendment corrects clauses of a Proposed ADR rather than the decisions
 they sit under. **Status stays Proposed.**
+
+## Amendment (2026-10-16, [#383](https://github.com/blamechris/Aeolus/issues/383)) — § 5 judges a reading against what the fan could have been holding, and level 6 announces a step before writing it
+
+An A6 precondition, and one before a control loop (#12, #17), found by the architect's #381 consult.
+Unreachable on every build on `main`, where a `.notBuilt` plane grants no lease. It is `CLAUDE.md`
+rule 6 in the direction of a false fault: the snapshot says the system took a fan that Aeolus is
+holding, and an attempt is spent on it.
+
+**The defect.** § 5 reads a fan's control state and then suspends on the lease check before it
+judges the reading against the record's target. The record moves only on a report, and a report
+comes after its write. So the reading and the record can describe different instants, in either
+order:
+
+1. *Forward.* The read samples the fan before a same-lease step lands, and the step's report arrives
+   during the lease check. An ordinary 2,400 → 2,000 step reads as `.targetDiverged`. The fan is
+   marked reclaimed, "Reclamation detected" is logged at `.fault`, and an attempt is spent.
+2. *Reverse.* The step lands before the read, and its report arrives after the judgement. The
+   reading is newer than the record. § 5 marks the fan and re-asserts the old target over the new
+   one, and the report then makes the next cycle diverge too.
+
+A first step after registration does the same: reported during the examination, it is judged outside
+the registration grace against a reading that predates it. A curve loop on the supervisor's 1 Hz
+cadence keeps its phase relative to § 5's sweep, so a window one cycle falls into, every cycle can.
+
+**Decision.**
+
+- **Level 6 announces a step before writing it.** `commandAnnounced(_:under:)` records the step
+  about to be handed to `commandTarget(_:)` on the fan's record (`HeldFan.announced`). The step's
+  report closes it, the next announcement replaces it, and it goes with the record. It is ignored
+  for a fan not held under that lease, as a report is.
+- **The examination's stamp carries the target.** The stamp #381 takes before the control-state read
+  also records the target last reported (`HeldFan.examinedCommanded`).
+- **A target the fan could have been holding is no divergence.** A `.targetDiverged` reading
+  converges if it reads back, within `targetToleranceRPM`, the target reported when the examination
+  began or the step announced and not yet reported (`HeldFan.couldHaveBeenHolding(_:)`). An
+  examination that began with nothing commanded judges no target, as a cycle with nothing commanded
+  judges none. The cycle is a converged cycle in every respect #366 gives one.
+- **Nothing else is excused.** A reclaimed mode, an unreadable target and any other target diverge
+  as before, whatever was reported during the examination. The budget, the episode and every
+  terminal action are untouched. Every target that can excuse a reading is one the lease holder
+  chose, so no number of reports excuses a target the system chose. A client stepping inside every
+  examination still meets the terminal action when the budget runs out (#180, #366).
+
+| The step's write lands | Its report arrives | The read sees | § 5 judges it |
+|---|---|---|---|
+| Before the stamp | Before the stamp | The step | Held, against the record |
+| After the read | During the examination | The old target | Held, against the stamp's target |
+| Before the read | During the examination | The step | Held, against the record |
+| Before the read | After the judgement | The step | Held, against the announced step |
+| Never: discarded | During the examination | The old target | Held this cycle; the next cycle diverges |
+
+**A6's contract.** Its shape is unchanged.
+
+- Item 3 becomes: *Announce each step with `commandAnnounced(_:under:)` before its command write is
+  issued, with the target that write will carry, the one `CommandableFan.target(for:)` produced.
+  Report it with `commandedTarget(_:under:)` after the write returns, never before. Keep one write
+  in flight per fan: announce the next step only once the previous one is reported or its write has
+  thrown. § 5 re-asserts the target last reported, a report that arrives during its own command
+  write wins the record (#381), and a fan read holding the announced step, or the target reported
+  when its examination began, is held (#383).*
+- `GovernedFanWriter` computes the step inside `command(towards:of:since:)`, so A6 needs the step
+  before the write. The writer gains a way to hand over the step it will write; the shape is A6's,
+  the order is not.
+- A write that throws needs no withdrawal. Its announcement stays until the next announcement, the
+  next report or the record's end, and it admits only a target the lease holder asked for.
+- Items 2, 4 and 5 are unchanged.
+
+**#381's amendment.** Its last "What remains" bullet, the judgement's own view, is closed by this
+amendment. Its "Revisit if" bullet, *A6 or #17 reports a target before writing it*, stands: an
+announcement is not a report, and § 5's re-assert still re-fetches the target last reported.
+
+**What remains.**
+
+- *Two steps of one fan completed inside one examination.* The read can sample the first while the
+  record holds the second and the stamp the one before both. It needs a client stepping faster than
+  one examination's read and lease check, a few milliseconds; a loop at the supervisor's cadence
+  cannot. The cost falls on that lease, in the safe direction: a false mark, an attempt, and at the
+  budget the terminal action.
+- *An unannounced write* is covered in the forward order and not the reverse. Only level 6 commands
+  a fan under a lease while § 5 examines it, and the contract binds it.
+- *A step the firmware discards* is held for the cycle its report lands in, and diverges on the
+  next.
+- *A system-written target within 1 RPM of the stamp's or the announced step* is held for that
+  cycle. The fan is at a speed its lease holder asked for.
+
+**Alternatives considered.**
+
+- *A6 reports before it writes.* The record then leads the firmware for the write's latency, and
+  § 5's read contends for the same SMC turn, so a read served first samples the old target against
+  the new record. Excusing it means keeping the superseded target acceptable until something shows
+  the write landed. Without a report after the write nothing does, so a client write that § 5's
+  re-assert overwrote (#381's first residual) leaves the fan at the old target with nothing to
+  correct it.
+- *Judge against the target captured with the read.* It covers the forward order only: in the
+  reverse order the reading is newer than both the capture and the record. Judged against the
+  capture alone, a step reported before the read's sample reads as a reclamation.
+- *A report epoch that stands the judgement down.* Forward order only. A client reporting inside
+  every examination stands every judgement down, so a reclamation is never acted on (#180, #366).
+  Bounding the stand-downs restores the false fault under a phase-locked loop.
+- *Confirm a target divergence on a second cycle.* Reset by a report, it is the same contest; not
+  reset, a phase-locked loop fires it on the second cycle. It delays every genuine target
+  reclamation by a cycle.
+- *Re-read the fan before marking it.* It shrinks the reverse window without closing it, and spends
+  a supervisor read on every divergence.
+- *The plane's own last-written target, returned with the read in one scheduler turn.* Exact for any
+  writer and any number of steps, and it needs nothing of A6. It changes `FanControlState` and the
+  read verb across every conformer, needs a hook inside the scheduler's read turn, moves the primary
+  signal's reference out of § 5's record, and fixes a design for E4's unbuilt write plane. Kept for
+  if a residual above is observed, or if A6 cannot announce.
+
+**Revisit if:**
+
+- A6 or #17 steps a fan faster than one examination's read and lease check;
+- a writer other than level 6 commands a fan under a lease;
+- A6 cannot hand over a step before writing it;
+- U4 fails as a quantised or slewed `F<n>Tg` read-back;
+- leases that can overlap on a fan are proposed.
+
+The ruling is the architect's #383 consult, run on Opus. **No `AeolusXPCVersion` bump:** nothing
+crosses the boundary, and `commandAnnounced(_:under:)` is internal to the helper. This amendment
+corrects clauses of a Proposed ADR rather than the decisions they sit under. **Status stays
+Proposed.**
+
 
 ## Assumptions and what would invalidate them
 

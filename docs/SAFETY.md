@@ -951,6 +951,28 @@ today marked as such.
 `F<n>Tg` no longer holding what was put there, or the mode key no longer reading manual. A
 persistent divergence means the system has taken the fans back despite our request.
 
+**A reading is judged against what the fan could have been holding**
+([#383](https://github.com/blamechris/Aeolus/issues/383)). An examination reads the fan and then
+suspends, on the lease check and the hops after it, before it judges the reading, and a lease
+holder's report can land in any of those suspensions. So a step reported after the read was judged
+against a reading that predates it, and a step that landed before the read with its report still to
+come was judged against a record older than the reading. Either way an ordinary control-loop step
+read as `.targetDiverged`: the fan was marked reclaimed, "Reclamation detected" was logged at
+`.fault`, an attempt was spent, and in the second order § 5 re-asserted the old target over the new
+one. Level 6 therefore announces each step before it writes it and still reports it after the write
+returns, and the examination's stamp, taken before the read, records the target last reported. A
+target that diverges from the record is held if it reads back, within the primary signal's own
+tolerance, the target reported when the examination began or a step announced and not yet reported,
+and an examination that began with nothing commanded judges no target, as a cycle with nothing
+commanded judges none. A cycle whose reading is held this way is one whose primary signal converged,
+with everything #366 gives one: the episode closes and the mark clears, and the budget refills only
+if the secondary signal converges too. **Nothing else is excused:** a reclaimed mode, an unreadable
+target and any other target diverge as before, whatever was reported during the examination. Every
+target that can excuse a reading is one the lease holder chose, so no number of reports excuses a
+target the system chose, and a client stepping inside every examination still meets the terminal
+action when the budget runs out (#180, #366). An announcement moves no registration generation, so
+it never stands a re-assert down (#381).
+
 **Actual RPM against target is a secondary signal, it is only read behind a dwell time, and
 it reports without acting.** This section named it the primary one until #119. As a primary
 signal it specifies the exact defect the watchdog exists to avoid: `F<n>Ac` legitimately lags
@@ -1194,9 +1216,18 @@ during § 5's yield wait re-admits § 5's next step as a first step, which is re
 after § 5's driver has written. The driver hands the fan back, and § 5 logs the stand-down, whose
 line says nothing was written. The fan ends on automatic control and the mark is kept, so the
 snapshot is truthful; the log line is not, and the client's engagement believes it holds a fan it
-does not. A target reported between
-§ 5's read and its judgement is compared against a reading that predates it, so an ordinary step
-can read as diverged; that is [#383](https://github.com/blamechris/Aeolus/issues/383).
+does not.
+
+Judging a reading against what the fan could have been holding leaves four cases open (#383), each
+in the safe direction or bounded by a cycle. Two steps of one fan completed inside one examination
+can leave the read sampling the first while the record holds the second and the stamp the one before
+both; that needs a client stepping faster than one examination's read and lease check, a few
+milliseconds, which a loop at the supervisor's cadence cannot, and the cost falls on that lease: a
+false mark, an attempt, and at the budget the terminal action. A write that was not announced is
+covered in the forward order and not the reverse; only level 6 commands a fan under a lease while
+§ 5 examines it, and its contract binds it. A step the firmware discards is held for the cycle its
+report lands in and diverges on the next. A system-written target within 1 RPM of the stamp's or of
+the announced step is held for that cycle, at a speed the lease holder asked for.
 
 The order is deliberate. The fan's own lease is asked *after* the read because every teardown
 drops its lease before it restores, so a read that saw that restore land is followed by a
@@ -1234,6 +1265,13 @@ re-assert writing the fan as it stands: a same-lease re-apply landed in each of 
 before its first step and once the control-state read has sampled included, a first step refused
 after its mode write or after a release, and the stamp, the re-fetch and the record as values,
 #381),
+the `ReclamationJudgementViewTests` suite and `ReclamationJudgementViewValueTests` (a reading
+judged against what the fan could have been holding: a step reported during the lease check, one
+landed before the read with its report after the judgement, one reported before the read's sample,
+one the firmware discards, and a first step; a system target, a reclaimed mode and another lease's
+announcement excused by nothing; a client stepping inside every examination still meeting the
+terminal action; an announcement standing no re-assert down; and the stamp's target and the
+announced step as values, #383),
 `ReclamationRefetchIdentityTests.swift` and `ReclamationLateRegistrationTests.swift` (the
 identity half of each reachable re-fetch, and the registrations the generation lets through:
 accepted after a lapse or a lost release notice, and refused under the lease the terminal action
