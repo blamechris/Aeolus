@@ -147,7 +147,10 @@ error.
 
 **#390 spent none: 327 code lines; `examine(fanAt:)` 50; file 961.** `commandAnnounced(_:under:)`
 changed its parameter, not its length, and `.held` joined the pattern `.graced, nil` already had.
-The credit and the held judgement live in `HeldFan` (struct body 65 → 78).
+The held judgement lives in `HeldFan` (struct body 65 → 78).
+
+**#390's re-ruling spent none: 327 code lines; `examine(fanAt:)` 50; file 961.** The settle and the
+bar live in `HeldFan` (struct body 78 → 93).
 
 ## Every act is for the lease the fan was registered under
 
@@ -462,9 +465,9 @@ nothing commanded judges none, and a judgement with no examination's stamp holds
 | Before the stamp | Before the stamp | The step | Held, against the record |
 | After the read | During the examination | The old target | Held, against the stamp's target |
 | Before the read | During the examination | The step | Held, against the record |
-| Before the read | After the judgement | The step | Held, against the announced step, once until its report |
+| Before the read | After the judgement | The step | Held, against the announced step, if the next examination begins with it as the record |
 | Never: discarded | During the examination | The old target | Held this cycle; the next cycle diverges |
-| Never: the write threw | Never | A system target equal to the step | Held once; diverges on every cycle after, until an announced step is reported |
+| Never: the write threw | Never | A system target equal to the step | Held once; its target barred until an examination converges on the record |
 
 **Why it does not reopen the contest #180 and #366 bounded.** Nothing but a `.targetDiverged` is
 held: a reclaimed mode, an unreadable target and any other target diverge as before. As #383 first
@@ -475,16 +478,23 @@ system held the fan at that step, most plausibly at the envelope's bounds, every
 the mark cleared and the terminal action never came. Two rules close it. **A held cycle concludes
 nothing** (`Judgement.held`): no counter moves, no episode opens or closes, nothing is spent or
 refilled, and the actor leaves the ledger's mark as it stands, so a held cycle can neither clear a
-mark nor refill the budget. **An announcement holds one reading on credit**
-(`HeldFan.announcementSpent`): holding a reading at the announced step spends it, and only a report
-of that same step, within `targetToleranceRPM`, gives it back; a fresh announcement does not, and a
-report of another target closes the announcement without giving it back. The target reported when
-the examination began spends nothing: it was reported, so its write returned. A coincidence with a
-step that never lands therefore postpones the terminal action by one cycle and never clears a mark,
-however often the step is announced again, and a client stepping inside every examination while the
-firmware discards every write still meets the terminal action when the budget runs out. An
-announcement moves no registration generation, so it never stands a re-assert down; one that did
-would let a loop announcing every cycle stand § 5 down on every one.
+mark nor refill the budget. **The next examination settles every hold**
+(`HeldFan.settleLastHold()`): one at an announced step is vindicated if that examination begins with
+the step as the record, and any other leaves its target barred, held by no reading until an
+examination converges on the record. A report alone vindicates nothing, because a step announced is
+not a step landed and a report can be followed by another before § 5 looks again: one whose write
+threw, or returned and was discarded, can coincide with a target the system wrote, most plausibly at
+the envelope's bounds. A target the system holds is therefore held by at most two examinations
+between two that converge on the record, so the terminal action comes at most two cycles late and no
+hold clears a mark, whatever level 6 announces or reports, and a client stepping inside every
+examination while the firmware discards every write still meets the terminal action when the budget
+runs out. The rule this replaced, #390's first fold, held one reading at an announced step on credit
+and gave the credit back on a report of that step, and the review of that fold found the credit
+renewable by a report: a lease holder that wrote, reported and superseded the system's own target
+every cycle, or one on A6's contract that fell back to the record after a step that never landed,
+renewed it on every cycle, and the terminal action never came. An announcement moves no registration
+generation, so it never stands a re-assert down; one that did would let a loop announcing every
+cycle stand § 5 down on every one.
 
 **Rejected,** each for a reason ADR 0014's #383 amendment gives in full. Reporting before the write
 makes the record lead the firmware for the write's latency, and leaves a client write § 5's own
@@ -501,7 +511,12 @@ is observed, or A6 cannot announce. #390's review rejected three more, for reaso
 amendment gives: ageing an announcement by one stamp, which every fresh announcement resets; a
 withdrawal verb, which would rest § 5's bound on level 6 reaching it on every throwing and cancelled
 path; and judging a held cycle's secondary signal against the target that held it, which keeps a
-refill route open through whatever holds the reading.
+refill route open through whatever holds the reading. Its re-ruling rejected five more: the credit
+renewed by a report, which a report followed by another renews on every cycle; a credit per value,
+which a lease holder reporting the very value renews; renewing only on a converged cycle, which
+marks every step of a reverse-phase ramp after its first; at most one step between judgements, which
+misses a loop alternating phase at one step a sweep; and lifting the bar on any judgement that holds
+nothing, under which the terminal action comes at twice the budget.
 
 What stays open:
 
@@ -513,15 +528,13 @@ What stays open:
    level 6 commands a fan under a lease while § 5 examines it, and ADR 0014 A6 item 3 binds it.
 3. A step the firmware discards is held for the cycle its report lands in, and diverges on the
    next.
-4. A system-written target within 1 RPM of the stamp's target, or of an announced step whose credit
-   is unspent, is held for that cycle, and nothing is concluded from it: a mark already set stays
-   set and the terminal action comes one cycle later. The announced step's case is the one a write
-   that never lands can reach, at most once between confirming reports.
-5. A report delayed past a whole sweep after its step landed, or a plane whose report differs from
-   the target it was handed by more than 1 RPM, leaves the credit spent, so a later step read before
-   its report is marked and re-asserted over, in the safe direction. The second rests on E4's plane
-   returning the target it was handed, which `ScriptedControlPlane` does and E4's write plane is not
-   yet built to do.
+4. A system-written target within 1 RPM of a target the fan could have been holding is held by at
+   most two examinations between two that converge on the record, once at an announced step the next
+   examination vindicates and once more at the stamp's target, and nothing is concluded from either:
+   a mark already set stays set and the terminal action comes up to two cycles later (#390).
+5. A level 6 that steps a fan more than once between two examinations can have the fan read a target
+   a second time before the record catches up with it; that reading is barred and marked, in the
+   safe direction. A6's contract keeps one step per fan per sweep.
 6. A write that lands and then throws leaves the fan at a target nothing reports. It is held once
    and then diverges: § 5 marks the fan, blames the system and re-asserts the record, which restores
    agreement within two cycles. The fault line misattributes Aeolus's own write, in the safe
@@ -529,10 +542,14 @@ What stays open:
 7. A held cycle concludes nothing, so an episode stays open and marked while every examination reads
    a step not yet reported, as a ramp phase-locked to the sweep can, until the first cycle that
    reads the record. A false fault, in the safe direction.
+8. A lease holder that reports the system's own target before § 5 looks, alternating with another
+   step, is honest on every cycle that converges and not on the at most two held cycles between them
+   (#119).
 
 `ReclamationJudgementViewTests` holds the actor's half, each step landed around a real read,
-`ReclamationAnnouncementCreditTests` the announcement's credit and the held cycle at the actor, and
-`ReclamationJudgementViewValueTests` the record's.
+`ReclamationAnnouncementCreditTests` a step that never lands and the held cycle at the actor,
+`ReclamationHoldSettlementTests` the settled hold, the ignored report and the written-out RPM at the
+actor, and `ReclamationJudgementViewValueTests` the record's.
 
 ## Built once per registration, per lease
 
