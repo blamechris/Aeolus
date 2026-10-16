@@ -49,8 +49,8 @@ struct ReclamationWatchdogStalenessTests {
     /// it, no registry entry to notice it, and nothing left to restore it. `CLAUDE.md`
     /// rule 2 — *manual control is a lease, never a setting* — with the lease gone.
     ///
-    /// Delete the `guard held[index] != nil` after the envelope read and this goes red on
-    /// the first two assertions.
+    /// Delete the `guard isHeld(index, under: lease)` re-fetch after the envelope read in
+    /// `reassert` and this goes red on the first two assertions.
     @Test("A fan released during its envelope read is never written to")
     func aFanReleasedDuringTheEnvelopeReadIsNotWritten() async throws {
         let plane = ScriptedControlPlane(fans: [0: .held(at: 1_800)])
@@ -120,8 +120,8 @@ struct ReclamationWatchdogStalenessTests {
     /// The stale copy carries a stale **commanded target**, and that is the hazard the
     /// earliest re-fetch actually exists for.
     ///
-    /// A release followed by a fresh engagement inside the same read leaves `held[index]` non-`nil`
-    /// — so `diverged(_:fanAt:heldUnder:)`'s re-fetch, which catches the plain-release case, finds
+    /// A release followed by a fresh engagement inside the same read leaves the fan a record —
+    /// so `diverged(_:fanAt:heldUnder:)`'s re-fetch, which catches the plain-release case, finds
     /// an entry and carries on. What it finds is a **new episode**: a new permit, and no commanded
     /// target, because nothing has written to this fan yet.
     ///
@@ -247,9 +247,10 @@ struct ReclamationWatchdogStalenessTests {
     /// automatic control with nothing watching it. The lease core's own restore may have
     /// landed *before* this write did, so § 5 is the only thing that can put it back.
     ///
-    /// **Mutation:** restore `held[index]?.commanded = recommanded` in place of the
-    /// `guard var fan = held[index]` after the command write. Run: red on the restore, the
-    /// re-assert log and the release log.
+    /// **Mutation:** replace the `guard isHeld(index, under: lease)` after the command write with
+    /// an unconditional `registry.recordReassertedTarget(recommanded, ofFan: index)`, which does
+    /// nothing to a released fan, as `held[index]?.commanded = recommanded` did. Run: red on the
+    /// restore, the re-assert log and the release log.
     @Test("A fan released during the re-assert's command write is restored, not re-asserted")
     func aFanReleasedDuringTheCommandWriteIsRestored() async throws {
         let plane = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)])
@@ -320,7 +321,7 @@ struct ReclamationWatchdogStalenessTests {
     /// lease is still live — a hint without the lease ending — so the driver's after-check
     /// passes, and the `held` re-fetch is what stops the command.
     ///
-    /// **Mutation:** delete the `guard held[index] != nil` between the first write and
+    /// **Mutation:** delete the `guard isHeld(index, under: lease)` between the first write and
     /// `command` in `reassert`. Run: red on the command assertion and the release log; the
     /// restore assertion stays green, because the re-fetch after the command write catches the
     /// same release one write later.

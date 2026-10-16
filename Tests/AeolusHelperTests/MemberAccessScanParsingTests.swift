@@ -233,4 +233,55 @@ struct MemberAccessScanParsingTests {
             sites.members.contains("HelperConnectionSessionGates.swift"),
             "an extension is where a member can be written, which is the whole point of #236")
     }
+
+    // MARK: - Declarations that bind more than one name
+
+    /// The spellings #128's review landed past `ReclamationWatchdogAccessTests`, and the two a
+    /// line-bound reader would miss: a list continued after a multi-line value, and one behind
+    /// an attribute with a space in it.
+    @Test("A tuple pattern or a comma list at member indent is reported")
+    func aDeclarationBindingTwoNamesIsReported() {
+        let fixture = """
+            struct Probe {
+                private var (hiddenA, hiddenB) = (0, 0)
+                private var finalising: [Int: UUID] = [:], hiddenStore: [Int: UUID] = [:]
+                var leak = [
+                    1
+                ], second = 2
+                @available(macOS 26.0, *) private let first = 0, other = 1
+            }
+            """
+
+        #expect(
+            MemberAccessScan.multipleBindings(inSource: fixture) == [
+                "private var (hiddenA, hiddenB) = (0, 0)",
+                "private var finalising: [Int: UUID] = [:], hiddenStore: [Int: UUID] = [:]",
+                "var leak = [",
+                "@available(macOS 26.0, *) private let first = 0, other = 1",
+            ])
+    }
+
+    /// Commas inside a type, a value, a closure, a string, a trailing comment or an accessor
+    /// block are not a second binding, and neither is anything below member indent.
+    @Test("One name is not reported, whatever commas its type, value or body contain")
+    func oneNameIsNotReported() {
+        let fixture = """
+            struct Probe {
+                private var held: [Int: HeldFan] = [:]
+                private let table: Dictionary<Int, UUID> = [1: UUID(), 2: UUID()]
+                private let write: (Int, Double) -> Void = { _, _ in }
+                private let name = "a, b"  // c, d
+                var view: Set<Int> { Set([1, 2]) }
+                var spread: Int {
+                    max(1, 2)
+                }
+                func work(first: Int, second: Int) {
+                    let (a, b) = (first, second)
+                    _ = (a, b)
+                }
+            }
+            """
+
+        #expect(MemberAccessScan.multipleBindings(inSource: fixture).isEmpty)
+    }
 }

@@ -157,9 +157,9 @@ struct FinaliseReleaseLedgerTests {
     /// commanded and then the terminal action with `.systemReclaimed` — no speed to re-assert.
     /// The entry is asserted on the ledger and on the field the user reads.
     ///
-    /// **Mutation:** delete `guard finalising[index] == nil else { return }` from
-    /// `ReclamationWatchdog.manualControlReleased(fanAt:)`. Run: red on the ledger, the
-    /// snapshot and the "resolved" assertions.
+    /// **Mutation:** make `ReclamationWatchdog.Registry.release(fanAt:)` return `true` while the
+    /// fan is being finalised — the skip `manualControlReleased(fanAt:)` guards on. Run: red on
+    /// the ledger, the snapshot and the "resolved" assertions.
     @Test("A reclamation § 5 gave up on is still reported after its own revocation")
     func aSystemReclamationSurvivesTheRevocation() async throws {
         let (helper, log) = try await Self.holding()
@@ -221,7 +221,7 @@ struct FinaliseReleaseLedgerTests {
     /// already giving up. The revocation then finds no lease. The guard has to be open by then,
     /// so it is opened before the hand-back's suspension rather than around the revocation.
     ///
-    /// **Mutation:** move `finalising[index] = lease` and its `defer` in
+    /// **Mutation:** move the `registry.beginFinalising(fanAt:for:)` guard and its `defer` in
     /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` to just above
     /// `leases.revokeLease(id:forFan:because:)`. Run: red on the ledger and the "resolved"
     /// assertions.
@@ -265,7 +265,7 @@ struct FinaliseReleaseLedgerTests {
     /// § 3 is cycled before the second grant so its read-back confirms the terminal action's
     /// hand-back, which is what the grant's foreign-control step waits for (#303).
     ///
-    /// **Mutation:** delete `defer { finalising[index] = nil }` from
+    /// **Mutation:** delete `defer { registry.endFinalising(fanAt: index) }` from
     /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)`. Run: red on the ledger and
     /// the "resolved" assertions.
     @Test("A later, ordinary lease release still clears the kept entry")
@@ -299,9 +299,9 @@ struct FinaliseReleaseLedgerTests {
     /// notice is the only thing that clears fan 1's mark: a fan Aeolus stopped asking for is not a
     /// fan the system took.
     ///
-    /// **Mutation (M4):** replace `guard finalising[index] == nil` with
-    /// `guard finalising.isEmpty` in `manualControlReleased(fanAt:)`. Run: red on fan 1's mark
-    /// and its "resolved" line.
+    /// **Mutation (M4):** replace `return finalising[index] == nil` with
+    /// `return finalising.isEmpty` in `ReclamationWatchdog.Registry.release(fanAt:)`. Run: red
+    /// on fan 1's mark and its "resolved" line.
     @Test("The terminal action's revocation still clears another fan's kept mark")
     func anotherFansMarkIsClearedByTheRevocation() async throws {
         let log = RecordedLog()
@@ -349,8 +349,9 @@ struct FinaliseReleaseLedgerTests {
     /// and this test is the same rule. The refusal is A6's engagement failure, so `apply` hands
     /// the fan back too, which matches the revocation.
     ///
-    /// **Mutation:** drop `finalising[index] != lease` from `manualControlEngaged(_:under:)`'s
-    /// refusal. Run: red on the refusal, the ledger, the snapshot and the "resolved" line.
+    /// **Mutation:** drop `finalising[index] != lease` from the refusal in
+    /// `ReclamationWatchdog.Registry.register(_:fanAt:live:since:)`. Run: red on the refusal, the
+    /// ledger, the snapshot and the "resolved" line.
     @Test("A registration under the lease being given up is refused, and the mark is kept")
     func aSameLeaseRegistrationDuringTheHandBackIsRefusedAndKeepsTheMark() async throws {
         let held = try await Self.holdingThroughInterference()

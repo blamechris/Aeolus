@@ -533,6 +533,12 @@ struct WriteVerbAllowlistTests {
         "ReclamationWatchdog.swift: reassert(_: CommandedTarget, fanAt: Int, heldUnder: UUID, "
             + "attempt: Int, reengaging: Bool)",
         "ReclamationWatchdog.swift: restoreAndForget(fanAt: Int, heldUnder: UUID)",
+        // #128's two, the blocks `restoreAndForget` and `finaliseRelease` shared, lifted into
+        // private methods on the same actor. `handBack(fanAt:)` takes an index and reaches a
+        // write only through `EngagementDriver.handBack(fanAt:)`, acknowledged below;
+        // `clearReclamationMark(fanAt:)` asks the ledger and writes nothing.
+        "ReclamationWatchdog.swift: handBack(fanAt: Int)",
+        "ReclamationWatchdog.swift: clearReclamationMark(fanAt: Int)",
         "SMCFanControlPlane.swift: readControlState(ofFan: Int)",
         "SMCFanControlPlane.swift: readCriticalTemperatures(_: [SMCKey])",
         "SMCFanControlPlane.swift: readEnvelope(ofFan: Int)",

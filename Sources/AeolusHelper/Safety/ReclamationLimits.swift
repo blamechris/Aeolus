@@ -21,8 +21,8 @@
 /// Aeolus commanded. Reaching the secondary signal at all *means* the firmware is holding our
 /// target — `ReclamationWatchdog.examine(fanAt:)` returns early on any primary divergence —
 /// so a shortfall is a fan that cannot reach its speed, not a fan that was taken.
-/// `ReclamationWatchdog.reportShortfall(_:fanAt:)` carries it, it emits its own log line,
-/// and it never constructs one of these. Removing the case is what stops the two ever
+/// `ReclamationWatchdog.HeldFan.judge(_:)` carries it, the actor emits its own log line,
+/// and neither constructs one of these. Removing the case is what stops the two ever
 /// sharing a path again.
 enum ReclamationDivergence: Sendable, Hashable {
 
@@ -170,7 +170,7 @@ enum ReclamationLimits {
     ///
     /// **Two consumers, one question.**
     /// `ReclamationWatchdog.cycleCouldNotSee(fanAt:heldUnder:detail:)` counts cycles that could not
-    /// read the fan at all; `ReclamationWatchdog.gracedBeforeItsFirstCommand(_:of:fanAt:)` counts
+    /// read the fan at all; `ReclamationWatchdog.HeldFan.judge(_:)`'s registration grace counts
     /// cycles that read it but could not yet see it as manual-with-a-target, in the window between
     /// `engageManualControl` and the first `F<n>Tg` write. Both are "this mechanism cannot confirm
     /// the fan is ours", and both spend the same currency — a fan held for a bounded number of

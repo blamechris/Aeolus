@@ -1160,7 +1160,10 @@ worse than a UI that reports an error, because the user acts on it.
 `FinaliseReleaseLedgerTests.swift`, `FinaliseReleaseRevocationTests.swift`,
 `TerminalActionTeardownRaceTests.swift`, `LeaseRevocationTests.swift`,
 `LeaseRevocationOutwaitTests.swift`, `ReclamationLimitsTests.swift`, `ReclamationLedgerTests.swift`,
-`ReclamationSupervisorTests.swift` and `ReclamationEmergencyRegistrationTests.swift`, with the
+`ReclamationSupervisorTests.swift`, `ReclamationEmergencyRegistrationTests.swift`,
+`ReclamationRegistryTests.swift` (the registry and the per-reading judgement as values, #128)
+and `ReclamationWatchdogAccessTests.swift` with `ReclamationRegistryAccessTests.swift` (their
+access), with the
 engagement driver the re-assert engages through in `EngagementDriverTests.swift` and
 `EngagementEpochTests.swift` — mostly through `ScriptedControlPlane`, with five bespoke
 seams in `ReclamationWatchdogFixture.swift` for what its stages cannot express: a refused

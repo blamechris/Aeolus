@@ -65,8 +65,9 @@ extension FinaliseReleaseLedgerTests {
     /// before it registered. It is refused, and it must not clear the mark first: nothing took
     /// the fan off automatic control, so the user is still owed `isReclaimedBySystem`.
     ///
-    /// **Mutation:** in `manualControlEngaged(_:under:)`, move the `ledger.clearReclaimed` block
-    /// above the refusal's `guard`. Run: red on the ledger, the snapshot and the "resolved" line.
+    /// **Mutation:** in `manualControlEngaged(_:under:)`, move
+    /// `await clearReclamationMark(fanAt: index)` above the refusal's `guard`. Run: red on the
+    /// ledger, the snapshot and the "resolved" line.
     @Test("A refused late registration keeps the terminal action's reclamation mark")
     func aRefusedLateRegistrationKeepsTheMark() async throws {
         let (helper, log) = try await Self.holding()
