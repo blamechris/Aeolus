@@ -70,7 +70,7 @@ struct ReclamationReassertViewTests {
         rpm: Double, engaging: Bool = false, registering: Bool = true, reporting: Bool = true
     ) async {
         do {
-            if engaging { _ = try await machine.plane.engageManualControl(of: permit) }
+            if engaging { _ = try await machine.plane.ticketedStep(of: permit) }
             if registering { try await machine.watchdog.manualControlEngaged(permit, under: lease) }
             let written = try await GovernedFanWriter(plane: machine.plane)
                 .command(towards: rpm, of: permit, since: .zero)

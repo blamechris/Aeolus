@@ -17,7 +17,7 @@ struct PlaneWriteLedgerTests {
     private static func engage(
         _ index: Int, on plane: ScriptedControlPlane, limit: Int = 6
     ) async throws -> EngagementStep {
-        plane.ledger.beginEngagement(fanAt: index)
+        plane.beginEngagement(fanAt: index)
         var last = EngagementStep.awaitingYield
         for _ in 0..<limit {
             last = try await plane.engageManualControl(of: fan(index))
@@ -100,9 +100,8 @@ struct PlaneWriteLedgerTests {
     @Test("A fan whose mode write was not confirmed is still written machine-wide")
     func anUnconfirmedModeWriteIsTouched() async throws {
         let plane = await Self.unprepared(unlock: .readsBack(rawMode: 3))
-        plane.ledger.beginEngagement(fanAt: 0)
         await #expect(throws: FanControlPlaneError.self) {
-            try await plane.engageManualControl(of: Self.fan(0))
+            try await plane.ticketedStep(of: Self.fan(0))
         }
 
         await #expect(throws: FanControlPlaneError.fanSetUnknown(refusedWrite: nil)) {
@@ -163,9 +162,8 @@ struct PlaneWriteLedgerTests {
         let plane = ScriptedControlPlane(fans: [0: .nominal], unlock: .naive)
         await plane.setMode(.manual, ofFan: 0)
         for _ in 0..<2 {
-            plane.ledger.beginEngagement(fanAt: 0)
             await #expect(throws: FanControlPlaneError.notAutomatic(index: 0, rawMode: 1)) {
-                try await plane.engageManualControl(of: Self.fan(0))
+                try await plane.ticketedStep(of: Self.fan(0))
             }
         }
         #expect(await plane.keyWrites.isEmpty, "the second attempt wrote over someone else's fan")
@@ -176,10 +174,9 @@ struct PlaneWriteLedgerTests {
     @Test("Engaging an already engaged fan reads the pre-state again")
     func anEngagedFanIsNotInProgress() async throws {
         let plane = ScriptedControlPlane(fans: [0: .nominal], unlock: .naive)
-        #expect(try await Self.engage(0, on: plane) == .engaged)
-        plane.ledger.beginEngagement(fanAt: 0)
+        #expect(try await plane.ticketedStep(of: Self.fan(0)) == .engaged)
         await #expect(throws: FanControlPlaneError.notAutomatic(index: 0, rawMode: 1)) {
-            try await plane.engageManualControl(of: Self.fan(0))
+            try await plane.ticketedStep(of: Self.fan(0))
         }
     }
 
@@ -192,9 +189,8 @@ struct PlaneWriteLedgerTests {
             fans: [0: .nominal],
             stages: [.nominal(forceKeyWrites: .refused(reason: "Ftst refused"))],
             unlock: .heldUntilForced(stepsToYield: 0))
-        plane.ledger.beginEngagement(fanAt: 0)
         await #expect(throws: FanControlPlaneError.self) {
-            try await plane.engageManualControl(of: Self.fan(0))
+            try await plane.ticketedStep(of: Self.fan(0))
         }
         #expect(plane.ledger.isForceKeySet == false, "a refused Ftst = 1 was recorded as set")
     }

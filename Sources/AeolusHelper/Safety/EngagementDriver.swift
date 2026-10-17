@@ -179,6 +179,9 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
     /// whatever the plane threw for its; in both cases the undo, if one was owed, has run.
     func engageManualControl(of fan: CommandableFan) async throws {
         let index = fan.index
+        // The ticket, then the entitlement, with no suspension between them: a restore requested
+        // after the entitlement answered is then one the first step's admission sees.
+        writer.beginEngagement(fanAt: index)
         try await requireEntitlement(for: fan)
 
         let began = clock.now
@@ -228,13 +231,14 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
     /// The first step, retried **once** when the plane's admission answers `.superseded`.
     ///
     /// `.superseded` is thrown only by the step's admission, before it reads or writes anything,
-    /// so the first step wrote nothing. And it can be superseded there only by a record an
-    /// earlier engagement of this fan left behind — that engagement's undo is itself a restore —
-    /// because this one has no record of its own yet. The retry is safe because the entitlement
-    /// is asked again first: a restore that was real ended the lease (immediately before or
-    /// right after the restore: a lease teardown, § 4, § 7, § 6's exit, § 5's `finaliseRelease`)
-    /// or came with § 3's latch, and either refuses here. A second `.superseded` is a restore
-    /// requested during the retry itself, and stops the engagement with nothing written.
+    /// so the first step wrote nothing. A first step is superseded there when a restore of any fan
+    /// was requested after its ticket, or when the plane is sealed for exit; the stale record an
+    /// earlier engagement's undo left no longer does it, because the ticket clears it (ADR 0014's
+    /// #410 amendment). The retry takes a fresh ticket, then asks the entitlement again, in that
+    /// order: a restore that was real ended the lease (immediately before or right after the
+    /// restore: a lease teardown, § 4, § 7, § 6's exit, § 5's `finaliseRelease`) or came with
+    /// § 3's latch, and either refuses here. A second `.superseded` is a restore requested during
+    /// the retry itself, or the exit's seal, and stops the engagement with nothing written.
     ///
     /// **`.supersededAfterWrite` is never retried.** It is found after the step's mode write,
     /// which may have landed, so it goes to the undo like any other refusal of a step that wrote.
@@ -243,6 +247,7 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
             return try await writer.engageManualControl(of: fan)
         } catch FanControlPlaneError.superseded {
             log.engagementFirstStepRetried(fan: fan.index)
+            writer.beginEngagement(fanAt: fan.index)
             try await requireEntitlement(for: fan)
             return try await writer.engageManualControl(of: fan)
         }

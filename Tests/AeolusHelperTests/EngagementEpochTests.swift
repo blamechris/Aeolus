@@ -4,8 +4,10 @@ import Testing
 @testable import AeolusHelper
 
 /// The restore epoch around the driver (ADR 0014 D4): which restores supersede an engagement,
-/// the first-step retry that makes a fresh engagement possible after an undo, and the residual
-/// the epoch cannot see.
+/// the engagement's ticket that makes a restore before its first step one the step's admission
+/// sees, and the first-step retry (ADR 0014's #410 amendment). The ticket's own scenarios — the
+/// handback before it, the retry's fresh one, and the after-check it leaves standing — are
+/// `EngagementTicketTests`'.
 @Suite("The engagement driver and the restore epoch", .timeLimit(.minutes(1)))
 struct EngagementEpochTests {
 
@@ -97,12 +99,15 @@ struct EngagementEpochTests {
 
     // MARK: - The first step, and its retry
 
-    /// An engagement's undo is a restore, so a fresh engagement of the same fan finds the
-    /// earlier one's record out of date. Its first step is superseded having written nothing,
-    /// and the driver asks the entitlement again and retries it once.
+    /// An engagement's undo is a restore, so it leaves the fan's record out of date; the next
+    /// engagement's ticket clears it, and that engagement's first step is admitted with no retry
+    /// (ADR 0014's #410 amendment). Until the ticket, the driver's retry was what made a fresh
+    /// engagement possible here, and this test expected one retry line.
     ///
-    /// **Mutation:** make `EngagementDriver.firstStep(of:)` call the step once, with no retry.
-    /// Run: red — the second engagement is refused `.superseded` before it starts.
+    /// **Mutation:** in `PlaneWriteLedger.beginEngagement(fanAt:)`, skip the clear of the fan's
+    /// in-progress record. Run: red, at the retry line: the fresh step meets the stale record, is
+    /// superseded and is retried. The old mutation — make `firstStep(of:)` call the step once,
+    /// with no retry — no longer turns this red, because nothing here is retried.
     @Test("A fresh engagement after an undo is not superseded by that undo")
     func aFreshEngagementAfterAnUndoProceeds() async throws {
         let rig = try await EngagementRig(unlock: .heldUntilForced(stepsToYield: 100))
@@ -111,40 +116,54 @@ struct EngagementEpochTests {
                 try await rig.driver.engageManualControl(of: rig.fan(0))
             }
         }
-        // The retried attempt is logged as one (D3 logs every step's attempt), and the steps that
-        // ran are counted as before: the superseded attempt wrote nothing.
-        #expect(rig.log.lines(containing: "retrying it once (attempt 2)").count == 1)
+        #expect(
+            rig.log.lines(containing: "retrying it once").isEmpty,
+            "the second engagement met the first one's stale record")
     }
 
     /// The retry asks the entitlement first, so a restore that was real — it came with § 3's
-    /// latch — refuses it, with nothing written and nothing to undo.
+    /// latch — refuses it, with nothing written and nothing to undo. The restore is of another
+    /// fan: any restore requested after the ticket supersedes the first step.
     ///
     /// **Mutation:** delete the `try await requireEntitlement(for: fan)` in
     /// `EngagementDriver.firstStep(of:)`. Run: red — the retry engages above the ceiling.
     @Test("A superseded first step is retried only if the entitlement still holds")
     func theFirstStepRetryAsksTheEntitlement() async throws {
-        let rig = try await EngagementRig(unlock: .heldUntilForced(stepsToYield: 100))
-        await #expect(throws: EngagementRefusal.self) {
-            try await rig.driver.engageManualControl(of: rig.fan(0))
+        let rig = try await EngagementRig(
+            unlock: .heldUntilForced(stepsToYield: 100), fans: [0, 1])
+        await rig.writes.interfere(beforeEngageStep: 1) {
+            await rig.engageThermalEmergency()
+            _ = try? await rig.plane.restoreToAutomatic(.fan(1))
         }
-        let before = await rig.plane.keyWrites.count
-        await rig.writes.interfere(beforeEngageStep: 36) { await rig.engageThermalEmergency() }
 
         await #expect(throws: EngagementRefusal.preempted(fan: 0, by: .thermalEmergency)) {
             try await rig.driver.engageManualControl(of: rig.fan(0))
         }
 
         #expect(await rig.writes.didFire, "the scenario never arranged the interleaving")
-        #expect(await rig.plane.keyWrites.count == before, "the retry wrote above the ceiling")
+        #expect(
+            await rig.plane.keyWrites == [.mode(fan: 1, value: 0)],
+            "the retry wrote above the ceiling")
+        #expect(rig.log.lines(containing: "retrying it once (attempt 2)").count == 1)
     }
 
-    /// **The residual the epoch cannot see** (ADR 0009 D1): a restore requested before the
-    /// first step's turn is not recorded against an engagement that has not begun, so the
-    /// first step writes. A real restore ends the lease (immediately before or right after the
-    /// restore) or latches § 3, and the driver's check
-    /// after the step catches it and undoes — acting and then checking, as D1 prescribes.
-    @Test("A real restore before the first step's turn is caught by the check after the step")
-    func aRestoreBeforeTheFirstStepIsCaughtAfterIt() async throws {
+    // MARK: - A restore before the first step's turn (ADR 0014's #410 amendment)
+
+    /// A real restore — it came with § 3's latch — requested after the engagement took its ticket
+    /// and before the first step's turn supersedes the step at its admission. The retry's
+    /// entitlement refuses on the latch, and nothing is written or undone.
+    ///
+    /// Until the ticket this was ADR 0009 D1's residual,
+    /// `aRestoreBeforeTheFirstStepIsCaughtAfterIt`: the epoch was recorded *at* the first step, so
+    /// the step wrote and the after-check undid it.
+    /// `EngagementTicketTests.theAfterCheckStillUndoesALatchAfterAdmission` keeps the after-check
+    /// covered, since this no longer reaches it.
+    ///
+    /// **Mutation:** in `PlaneWriteLedger.admitStep(fanAt:)`, admit a first step whatever its
+    /// ticket, recording the epoch at admission — the rule before the ticket. Run: red, at the
+    /// forward-write assertion.
+    @Test("A real restore before the first step's turn is refused at the step's admission")
+    func aRestoreBeforeTheFirstStepIsRefusedAtItsAdmission() async throws {
         let rig = try await EngagementRig(unlock: .naive)
         await rig.writes.interfere(beforeEngageStep: 1) {
             await rig.engageThermalEmergency()
@@ -155,24 +174,33 @@ struct EngagementEpochTests {
             try await rig.driver.engageManualControl(of: rig.fan(0))
         }
 
-        #expect(await rig.plane.keyWrites.contains(.mode(fan: 0, value: 1)), "D1's residual")
+        #expect(await rig.writes.didFire, "the scenario never arranged the interleaving")
+        #expect(
+            await rig.plane.keyWrites == [.mode(fan: 0, value: 0)],
+            "a step was written after a restore requested since its ticket")
         #expect(try await rig.plane.readControlState(ofFan: 0).mode == .automatic)
-        #expect(await rig.registry.engaged == [0])
-        #expect(await rig.registry.accepted == [0])
+        #expect(await rig.registry.engaged.isEmpty, "a fan nothing engaged was registered")
+        #expect(await rig.registry.accepted.isEmpty, "an engagement that wrote nothing was undone")
+        #expect(rig.log.lines(containing: "Nothing was written").count == 1)
     }
 
     // MARK: - The lease the engagement runs under (#357)
 
-    /// The lease ends and another is granted over the fan before the first step's turn: the
-    /// release's restore is requested before the step's admission, so the epoch never sees it
-    /// (ADR 0009 D1's residual). D4 discharged it with "the driver's next check sees the lease
-    /// gone" — which a coverage question answered by the new lease defeated. Asked about the
-    /// engagement's own lease, the check before step 2 refuses, and the step taken is undone.
+    /// The lease ends and another is granted over the fan before the first step's turn. The
+    /// release's restore is requested after the engagement took its ticket, so the first step is
+    /// superseded at its admission; the retry asks about the engagement's own lease, which has
+    /// ended, and refuses with nothing written (ADR 0014's #410 amendment). A coverage question
+    /// would be answered by the new lease, which is why the entitlement names the lease (#357).
     ///
-    /// **Mutation:** make `requireEntitlement(for:)` ignore the bound lease — ask whether any
-    /// live lease covers the fan. Run: red: the engagement runs on to `.engaged` and returns.
-    @Test("A release and re-grant before the first step is refused at the next step")
-    func aReleaseAndRegrantBeforeTheFirstStepIsRefusedAtTheNextStep() async throws {
+    /// Until the ticket this was `aReleaseAndRegrantBeforeTheFirstStepIsRefusedAtTheNextStep`:
+    /// the first step wrote, the check before step 2 refused, and the step was undone.
+    ///
+    /// **Mutation:** the rule before the ticket, as above. Run: red, at the forward-write
+    /// assertion. **Mutation:** make `requireEntitlement(for:)` ignore the bound lease — ask
+    /// whether any live lease covers the fan. Run: red: the retry is admitted under the new lease,
+    /// writes, and the engagement runs on to `.engaged` and returns.
+    @Test("A release and re-grant before the first step is refused at the step's admission")
+    func aReleaseAndRegrantBeforeTheFirstStepIsRefusedAtItsAdmission() async throws {
         let rig = try await EngagementRig(unlock: .heldUntilForced(stepsToYield: 2))
         await rig.writes.interfere(beforeEngageStep: 1) {
             await Self.releaseAndRegrant(fan: 0, on: rig)
@@ -183,26 +211,28 @@ struct EngagementEpochTests {
         }
 
         #expect(await rig.writes.didFire, "the scenario never arranged the interleaving")
-        let writes = await rig.plane.keyWrites
         #expect(
-            writes.filter { $0 == .mode(fan: 0, value: 1) }.count == 1,
-            "a step was written after the lease the engagement ran under had ended: \(writes)")
-        #expect(writes.suffix(2) == [.mode(fan: 0, value: 0), .forceKey(0)], "nothing was undone")
+            await rig.plane.keyWrites == [.mode(fan: 0, value: 0)],
+            "a step was written after the lease the engagement ran under had ended")
         #expect(try await rig.plane.readControlState(ofFan: 0).mode == .automatic)
-        #expect(await rig.registry.engaged == [0], "the fan was not registered before its undo")
-        #expect(await rig.registry.accepted == [0])
+        #expect(await rig.registry.engaged.isEmpty, "a fan nothing engaged was registered")
+        #expect(await rig.registry.accepted.isEmpty, "an engagement that wrote nothing was undone")
     }
 
-    /// The same release and re-grant before a naive firmware's one and only step. The step
-    /// writes and answers `.engaged`; the after-check asks about the engagement's own lease,
-    /// refuses, and the fan is undone rather than reported engaged to a caller whose lease
-    /// has ended.
+    /// The same release and re-grant before a naive firmware's one and only step: superseded at
+    /// its admission, and the retry refused on the engagement's own lease, so nothing is written
+    /// and nothing reported engaged to a caller whose lease has ended.
     ///
-    /// **Mutation (a):** as above. Run: red — the engagement returns.
-    /// **Mutation (b):** delete the after-check, the `try await requireEntitlement(for: fan)`
-    /// after `emergency.manualControlEngaged(fan)`. Run: red — the engagement returns.
-    @Test("A release and re-grant before a naive step is undone by the after-check")
-    func aReleaseAndRegrantBeforeANaiveStepIsUndoneByTheAfterCheck() async throws {
+    /// Until the ticket this was `aReleaseAndRegrantBeforeANaiveStepIsUndoneByTheAfterCheck`, and
+    /// it was what held the after-check: deleting it then turned this red. The ticket refuses the
+    /// step first, so that mutation now survives here, and
+    /// `EngagementTicketTests.theAfterCheckStillUndoesALatchAfterAdmission` is what holds it.
+    ///
+    /// **Mutation:** the rule before the ticket. Run: red, at the forward-write assertion.
+    /// **Mutation:** make `requireEntitlement(for:)` ignore the bound lease. Run: red — the retry
+    /// writes and the engagement returns.
+    @Test("A release and re-grant before a naive step writes nothing")
+    func aReleaseAndRegrantBeforeANaiveStepWritesNothing() async throws {
         let rig = try await EngagementRig(unlock: .naive)
         await rig.writes.interfere(beforeEngageStep: 1) {
             await Self.releaseAndRegrant(fan: 0, on: rig)
@@ -213,10 +243,12 @@ struct EngagementEpochTests {
         }
 
         #expect(await rig.writes.didFire, "the scenario never arranged the interleaving")
-        #expect(await rig.plane.keyWrites.contains(.mode(fan: 0, value: 1)), "D1's residual")
+        #expect(
+            await rig.plane.keyWrites == [.mode(fan: 0, value: 0)],
+            "a step was written after the lease the engagement ran under had ended")
         #expect(try await rig.plane.readControlState(ofFan: 0).mode == .automatic)
-        #expect(await rig.registry.engaged == [0])
-        #expect(await rig.registry.accepted == [0])
+        #expect(await rig.registry.engaged.isEmpty)
+        #expect(await rig.registry.accepted.isEmpty)
     }
 
     /// The composed driver is bound to no lease, and refuses every step — even with a live

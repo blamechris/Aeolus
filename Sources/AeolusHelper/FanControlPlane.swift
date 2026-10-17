@@ -229,6 +229,18 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
 
     // MARK: - Manual control
 
+    /// An engagement of fan `index` begins: the plane takes its ticket, the restore epoch now, and
+    /// admits the engagement's first step only if no restore is requested before it
+    /// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s #410 amendment).
+    ///
+    /// Synchronous, index-only and write-free, so `EngagementDriver` takes it with no suspension
+    /// before the entitlement, and its retry takes a fresh one; nothing else calls it, which
+    /// `EngagementTicketTripwireTests` holds. A plane that can write forwards it to its
+    /// `PlaneWriteLedger`, and one that cannot does nothing. Every conformer states it: there is no
+    /// default. It takes no permit and is not `async`, so it reaches no write and is outside
+    /// `WriteVerbAllowlistTests`' population by that suite's own rules.
+    func beginEngagement(fanAt index: Int)
+
     /// Takes one fan off the system's thermal management: `F<n>Md`, plus whatever unlock
     /// the platform needs. The opposite direction to `restoreToAutomatic(_:)`, and
     /// deliberately not the same operation — this one is allowed to fail and be refused,

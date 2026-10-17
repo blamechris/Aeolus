@@ -735,6 +735,20 @@ extension ScriptedControlPlane {
             enumeratedFans: enumerated, forceKey: forceKey, machineWideRestore: restore)
     }
 
+    /// The engagement's ticket, taken on `ledger` as B1's plane takes it (ADR 0014's #410
+    /// amendment): `nonisolated`, because the verb is synchronous and the ledger is a lock rather
+    /// than this actor's state. Records no attempt, because it reaches no firmware.
+    nonisolated func beginEngagement(fanAt index: Int) {
+        ledger.beginEngagement(fanAt: index)
+    }
+
+    /// A first step as the driver takes one, for a test that steps this plane directly: the
+    /// ticket, then the step. A first step with no ticket is refused `.superseded`.
+    func ticketedStep(of fan: CommandableFan) async throws -> EngagementStep {
+        beginEngagement(fanAt: fan.index)
+        return try await engageManualControl(of: fan)
+    }
+
     /// One step of the unlock model: D3, decided by `EngagementRules` and recorded in `ledger`.
     func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
         attempts.append(.engageManualControl(fan: fan.index))

@@ -13,11 +13,10 @@ struct PlaneRestoreContractTests {
         try commandableFan(index, declaring: .nominal)
     }
 
-    /// Engages `fans` on `plane` the way the driver does, a ticket and then step by step, until
-    /// each reads back.
+    /// Engages `fans` on `plane` the way the driver does: a ticket, then steps until it reads back.
     private static func engage(_ fans: [Int], on plane: ScriptedControlPlane) async throws {
         for index in fans {
-            plane.ledger.beginEngagement(fanAt: index)
+            plane.beginEngagement(fanAt: index)
             while try await plane.engageManualControl(of: fan(index)) == .awaitingYield {}
         }
     }
@@ -91,8 +90,7 @@ struct PlaneRestoreContractTests {
     @Test("Undoing an engagement that never joined clears the key it set")
     func anEmptyEngagedSetClearsTheKey() async throws {
         let plane = ScriptedControlPlane(fans: [0: .nominal], unlock: .neverYields)
-        plane.ledger.beginEngagement(fanAt: 0)
-        #expect(try await plane.engageManualControl(of: Self.fan(0)) == .awaitingYield)
+        #expect(try await plane.ticketedStep(of: Self.fan(0)) == .awaitingYield)
 
         try await plane.restoreToAutomatic(.fan(0))
 

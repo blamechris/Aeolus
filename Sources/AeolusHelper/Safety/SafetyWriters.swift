@@ -148,6 +148,12 @@ struct SafetyActorWriter<Plane: FanControlPlane>: KeystoneRestoring {
     func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
         try await plane.engageManualControl(of: fan)
     }
+
+    /// The engagement's ticket, forwarded to the plane: synchronous and write-free, taken by the
+    /// driver before it asks the entitlement (`FanControlPlane.beginEngagement(fanAt:)`).
+    func beginEngagement(fanAt index: Int) {
+        plane.beginEngagement(fanAt: index)
+    }
 }
 
 /// The writer for actor level 6, the control loop under a lease — and the **only** holder

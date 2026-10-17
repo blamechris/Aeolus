@@ -248,6 +248,10 @@ struct SMCFanControlPlane: FanControlPlane {
         throw FanControlPlaneError.controlPathNotBuilt
     }
 
+    /// Does nothing: a plane that cannot write admits no step, so it has no ticket to take. B1's
+    /// write path forwards this to its `PlaneWriteLedger` (ADR 0014's #410 amendment).
+    func beginEngagement(fanAt index: Int) {}
+
     func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
         throw FanControlPlaneError.controlPathNotBuilt
     }
