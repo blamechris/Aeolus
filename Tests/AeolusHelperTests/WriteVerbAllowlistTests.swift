@@ -233,6 +233,10 @@ struct WriteVerbAllowlistTests {
     ///   admission's `.superseded`, which is thrown before anything is written; a
     ///   `.supersededAfterWrite` is never retried. `manualControlEngaged(_:)` is § 3's registration
     ///   role (#181), the requirement `ThermalEmergency`'s entry above already witnesses.
+    ///   `reAdopted(_:)` hands that role the permit of a fan level 6 holds again without an
+    ///   engagement, and writes nothing: the permit goes only to § 3's registration, so the
+    ///   emergency bridges every fan level 6 commands (ADR 0014's #410 refused-hand-back
+    ///   amendment).
     private static let permitBearingVerbs: Set<String> = [
         "FanControlPlane.swift: commandTarget(_: AuthorisedFanTarget)",
         "FanControlPlane.swift: engageManualControl(of: CommandableFan)",
@@ -254,6 +258,7 @@ struct WriteVerbAllowlistTests {
         "EngagementDriver.swift: requireEntitlement(for: CommandableFan)",
         "EngagementDriver.swift: firstStep(of: CommandableFan)",
         "EngagementDriver.swift: manualControlEngaged(_: CommandableFan)",
+        "EngagementDriver.swift: reAdopted(_: CommandableFan)",
     ]
 
     /// The keystone verbs, which take no authorisation of any kind and must not start.
@@ -578,7 +583,8 @@ struct WriteVerbAllowlistTests {
         // them. `undo` reaches a write only through the driver's `handBack(fanAt:)`, and
         // `refusal` asks the lease core and writes nothing.
         "LeaseApplier.swift: apply(_: [FanSetting], leaseID: UUID, from: ConnectionID)",
-        "LeaseApplier.swift: step(_: Double, toFanAt: Int, under: UUID, engaging: inout [Int])",
+        "LeaseApplier.swift: step(_: Double, toFanAt: Int, under: UUID, "
+            + "engaging: inout ApplyEngagements)",
         "LeaseApplier.swift: undo(_: [Int], under: UUID)",
         "LeaseApplier.swift: refusal(for: any Error, leaseID: UUID, from: ConnectionID)",
         // The role the authority reaches level 6 through (ADR 0014's A6 PR-3 amendment): the
@@ -643,6 +649,10 @@ struct WriteVerbAllowlistTests {
         // write only through `restoreToAutomatic(.everyFan)` (D5): no new verb and no new scope.
         "EngagementDriver.swift: handBack(fanAt: Int)",
         "EngagementDriver.swift: handbackAccepted(fanAt: Int)",
+        // #406's: § 5's re-assert engages through it, so its one catch reads a refused undo's
+        // cause. It takes no permit and names no writer: the engagement it runs is the closure
+        // `reassert` hands it, whose step is the driver's, acknowledged above.
+        "EngagementUndoRefused.swift: throwingTheCause(of: @Sendable () async throws -> Void)",
         "FanControlPlane.swift: prepareWritePath(enumerating: any FanEnumerating)",
         "SMCFanControlPlane.swift: prepareWritePath(enumerating: any FanEnumerating)",
         "HelperComposition.swift: prepareWritePath()",

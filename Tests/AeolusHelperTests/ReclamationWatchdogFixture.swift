@@ -593,6 +593,10 @@ actor InterferingFanStateSensing: FanControlPlane {
         /// rethrown: the suspension the re-assert's half-landed catch resumes from (#353). Its
         /// own moment, so `.commandWrite`'s "the write landed, then the world moved" is unchanged.
         case refusedCommandWrite
+        /// Inside `engageManualControl(of:)`, once the plane has **refused** the step, before the
+        /// error is rethrown: the suspension the driver's undo follows (#406). Its own moment, so
+        /// `.engageWrite`'s "the write landed, then the world moved" is unchanged.
+        case refusedEngageStep
         /// Inside `restoreToAutomatic(_:)`, once the restore has landed — the instant a
         /// scenario can ask what § 5 had recorded about a fan as it handed it back.
         case restoreWrite
@@ -738,7 +742,13 @@ actor InterferingFanStateSensing: FanControlPlane {
             await pending.effect()
             didFire = true
         }
-        let step = try await plane.engageManualControl(of: fan)
+        let step: EngagementStep
+        do {
+            step = try await plane.engageManualControl(of: fan)
+        } catch {
+            if moment == .refusedEngageStep { await fireOnce() }
+            throw error
+        }
         if moment == .engageWrite { await fireOnce() }
         return step
     }

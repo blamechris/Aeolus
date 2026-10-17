@@ -1144,7 +1144,9 @@ covers a latch after that is the check *after* the writes, which restores the fa
 direction — acting and then checking, because the check cannot be made atomic with the act
 across two actors. The undo is itself a restore and can be refused; what covers that is the
 driver registering the fan with § 3 before its after-check, so a fan whose undo was refused
-stays in the registry § 3's next latched cycle bridges, until a read confirms it automatic.
+stays in the registry § 3's next latched cycle bridges, until a read confirms it automatic. The
+driver then throws `EngagementUndoRefused`, carrying the step's own refusal, and § 5 routes that
+cause exactly as it routed the unwrapped error (ADR 0014's #410 refused-hand-back amendment).
 ADR 0009's "As built, and what did not land" section is the audit of which parts of that ruling
 are in the tree.
 
@@ -1280,28 +1282,35 @@ gate, so no hand-back waits on a holder; the engagement driver and the writers n
 because § 5's re-engage runs through them while § 5 holds it.
 
 **Level 6's `apply`, as built** (ADR 0014's A6 PR-2 amendment). `LeaseApplier` takes each fan's gate
-for the whole of that fan's step: it engages the fan if this lease has not, registers it with § 5,
-asks the entitlement, writes the fixed target whole and reports what the write returned, one fan at
-a time and one gate at a time, after reading the fan's envelope outside the gate. Any refusal on
-the way undoes what this `apply` engaged, dropping § 5's record first and then handing the fan back,
-outside the gate and without waiting for one. Before it replies it asks the lease and § 3's latch
-again. It admits one `apply` at a time, whatever the lease or connection, and refuses a second
-before it reads anything: a refused `apply`'s undo takes no gate, so it must never meet another
-`apply` that has commanded the fan since. It answers applied only for reports § 5 recorded. A fan
-whose hand-back throws stays in its engaged set, registered with § 3 until a restore of it is
-confirmed and restored by the lease's teardown, and the next `apply` under the lease that names it
-puts it back under § 5's watch. The exceptions are a fan whose report § 5 answered `.notHeld`,
-which has already left the set, and a hand-back that threw after the fan's mode write landed: that
-fan is on automatic and still kept, so its next re-apply is answered applied on an automatic fan
-for one § 5 cycle, which falsely marks it reclaimed by the system and spends an attempt before
-re-asserting it (ADR 0014's A6 PR-2 amendment). Since A6's third step the composition builds exactly
-one, from the one gate and the § 5 its supervisor cycles, and `SupervisedFanAuthority.apply`
+for the whole of that fan's step: it engages the fan unless this lease holds it engaged, registers
+it with § 5, asks the entitlement, writes the fixed target whole and reports what the write
+returned, one fan at a time and one gate at a time, after reading the fan's envelope outside the
+gate. Any refusal on the way undoes what this `apply` engaged, dropping § 5's record first and then
+handing the fan back, outside the gate and without waiting for one. Before it replies it asks the
+lease and § 3's latch again. It admits one `apply` at a time, whatever the lease or connection, and
+refuses a second before it reads anything: a refused `apply`'s undo takes no gate, so it must never
+meet another `apply` that has commanded the fan since. It answers applied only for reports § 5
+recorded. A fan whose hand-back throws — level 6's own, or the driver's undo of an engagement that
+issued a write, even a refused one — is kept under its lease as one whose hand-back was refused,
+registered with § 3 until a restore of it is confirmed, and restored by the lease's teardown. A
+first step that fails before it issues any write is not undone and opens no account. The next
+`apply` under the lease that names a kept fan does not assume what it is doing: it runs the driver,
+whose first step reads the fan's raw mode in its own turn. A fan back on automatic is engaged
+afresh. One reading the value Aeolus's engagement writes is held again, registered with § 3 and § 5
+and commanded with nothing written to its mode; the value cannot say whose write it was, which is a
+contest § 5's budget bounds. One reading any other value is someone else's, and its account ends.
+The account also ends at every other refusal of the re-apply, a driver hand-back that returns
+included, except two: a refused undo keeps it, and a first step that failed before writing leaves
+it standing (ADR 0014's #410 refused-hand-back amendment). A fan whose report § 5 answered
+`.notHeld` has already left the set, and is kept again only if this
+`apply` engaged it and its hand-back then throws. Since A6's third step the composition builds
+exactly one, from the one gate and the § 5 its supervisor cycles, and `SupervisedFanAuthority.apply`
 reaches it through `LeaseApplying`, a role with one verb and no permit, after the authority's
 shutdown refusal (ADR 0014's A6 PR-3 amendment). The connection's sequencer carries `apply`, so a
 client's two applies on one connection never meet the claim; an `apply` under a lease that has
-ended, as across a reconnect, can still meet one under the lease granted since, and is refused.
-On a `.notBuilt` build it writes nothing, because no lease is granted, and every answer is the one
-it was before, in the same order.
+ended, as across a reconnect, can still meet one under the lease granted since, and is refused. On a
+`.notBuilt` build it writes nothing, because no lease is granted, and every answer is the one it was
+before, in the same order.
 
 **The record refuses a target no plane can write.** A target that is not a number, or is below the
 floor every permit is clamped to, is not recorded, whether a report or a re-assert's write returned
@@ -1371,10 +1380,17 @@ the timer is cancelled only once its wait is decided. Level 6's `apply` is teste
 `LeaseApplier` suites (`LeaseApplierTests.swift` and its siblings: item 0's checks, the item 5
 table row by row, the undo's order and that it never waits for a gate, one hold per fan, one
 `apply` at a time and the claim given up on every exit, the report's receipt, a refused hand-back
-keeping the fan's account, the registration and the report under the gate, index order, the ramp
-reset, § 5's bound outlasting a lawful hold at the design point, and #383's and #389's acceptance
-with the real level 6), with `manualControlHandedBack` in `ReclamationHandedBackTests.swift`, the
-engaged set as a value in `LeaseEngagementsTests.swift`, the governed writer's whole write in
+keeping the fan's account and its next re-apply reading the fan through the driver
+(`LeaseApplierHandBackTests.swift`, `LeaseApplierKeptFanTests.swift`), which engagements open an
+account (`LeaseApplierIssuedWriteTests.swift`), when one ends (`LeaseApplierAccountEndTests.swift`),
+every kept fan held by § 3 and each re-adopted by its own index
+(`LeaseApplierReAdoptionTests.swift`), the registration and the report under the gate, index order,
+the ramp reset, § 5's bound outlasting a lawful hold at the design point, and #383's and #389's
+acceptance with the real level 6), with
+`manualControlHandedBack` in `ReclamationHandedBackTests.swift`, level 6's two accounts as a value
+in `LeaseEngagementsTests.swift`, the driver's refused undo said and routed by its cause in
+`EngagementUndoRefusedTests.swift`, with a first step that failed before its first write, the
+plane's own split in `ScriptedControlPlaneModeReadTests.swift`, the governed writer's whole write in
 `GovernedFanWriterHoldTests.swift`, the driver's own level in `EngagementDriverLevelTests.swift`,
 and what the level-6 file names in `LeaseApplierTripwireTests.swift`. § 5's access is held by
 `ReclamationWatchdogAccessTests.swift` with `ReclamationRegistryAccessTests.swift`, and

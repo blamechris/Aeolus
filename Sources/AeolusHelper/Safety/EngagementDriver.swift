@@ -119,11 +119,19 @@ enum EngagementAftermath: Sendable, Hashable {
 /// ## The undo
 ///
 /// On any throw once a step may have written, the fan is registered with § 3 and handed back
-/// (`handBack(fanAt:)`) — `.supersededAfterWrite` included, whose mode write may have landed. A
-/// throw before any step answered gets neither when nothing was written: the entitlement
-/// refused before the first step or its retry, a first step superseded at its admission twice,
-/// or a first step refused as `.notAutomatic` — the fan was someone else's, and writing it back
-/// to automatic would be ADR 0011's contest.
+/// (`handBack(fanAt:)`) — `.supersededAfterWrite` and a refused mode write included, because a
+/// write that was issued may have taken effect whatever it answered. A throw before any step
+/// answered gets neither when nothing was written: the entitlement refused before the first step or
+/// its retry, a first step superseded at its admission twice, a first step refused as
+/// `.notAutomatic` — the fan was someone else's, and writing it back to automatic would be ADR
+/// 0011's contest — or one that failed before its first write (`.failedBeforeFirstWrite`), whose
+/// fan was never read, which the same contest forbids writing to.
+///
+/// A refused undo is thrown as `EngagementUndoRefused`, carrying the step's own refusal, so the
+/// caller keeps an account of a fan that may still be off automatic control. Every router reads the
+/// cause (ADR 0014's #410 refused-hand-back amendment). An undo that landed throws the step's
+/// refusal bare, as does a refusal that wrote nothing; level 6 tells them apart by the refusal
+/// (`LeaseEngagements.read`).
 struct EngagementDriver<Plane: FanControlPlane>: Sendable {
 
     private let writer: SafetyActorWriter<Plane>
@@ -181,7 +189,8 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
     ///
     /// Returns once the plane answered `.engaged`, the fan is registered with § 3, and the
     /// entitlement still holds. Throws `EngagementRefusal` for the driver's own refusals and
-    /// whatever the plane threw for its; in both cases the undo, if one was owed, has run.
+    /// whatever the plane threw for its; in both cases the undo, if one was owed, has run. When
+    /// that undo was refused, the refusal is thrown inside `EngagementUndoRefused`, and only then.
     func engageManualControl(of fan: CommandableFan) async throws {
         let index = fan.index
         // The ticket, then the entitlement: the order is what holds. A restore requested after the
@@ -229,7 +238,8 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
             }
             log.engagementRefused(
                 fan: index, steps: steps, detail: String(describing: error), aftermath: aftermath)
-            throw error
+            guard aftermath == .undoRefused else { throw error }
+            throw EngagementUndoRefused(fan: index, cause: error)
         }
         log.engagementEngaged(fan: index, steps: steps, waited: began.duration(to: clock.now))
     }
@@ -260,14 +270,24 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
     }
 
     /// Whether a throw before any step answered left nothing of this engagement's written: the
-    /// retry's entitlement refusal, or a first step refused before its write — at its admission
-    /// (`.superseded`) or at its pre-state (`.notAutomatic`). `.supersededAfterWrite` is not one.
+    /// retry's entitlement refusal, or a first step refused before its first write — at its
+    /// admission (`.superseded`), at its pre-state (`.notAutomatic`), or failing before it issued
+    /// one (`.failedBeforeFirstWrite`). `.supersededAfterWrite` and `.firmwareRefusedControl` are
+    /// not: their write was issued, and may have taken effect.
     private static func wroteNothing(_ error: any Error) -> Bool {
         if error is EngagementRefusal { return true }
         switch error as? FanControlPlaneError {
-        case .superseded?, .notAutomatic?: return true
+        case .superseded?, .notAutomatic?, .failedBeforeFirstWrite?: return true
         default: return false
         }
+    }
+
+    /// A fan level 6 holds again without an engagement: its first step read the value an engagement
+    /// writes on a fan whose hand-back was refused. Registers it with § 3, as a returning
+    /// engagement is registered, so the emergency bridges every fan level 6 commands whatever its
+    /// account's history. Writes nothing; the caller asks the entitlement after it.
+    func reAdopted(_ fan: CommandableFan) async {
+        await emergency.manualControlEngaged(fan)
     }
 
     /// The undo, and the hand-back § 5 issues for a fan it gives up: restore, then tell § 3 the

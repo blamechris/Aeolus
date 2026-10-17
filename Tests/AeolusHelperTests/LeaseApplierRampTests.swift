@@ -78,4 +78,51 @@ struct LeaseApplierRampTests {
         #expect(
             await levelSix.writer.lastCommanded(ofFan: 0) == nil, "the undo kept the ramp memory")
     }
+
+    /// **A re-adopted fan's reset** (ADR 0014's #410 refused-hand-back amendment). Fan 0 is
+    /// commanded 2,400, fan 1's command is refused, and both hand-backs are refused, so fan 0 is
+    /// kept in manual with its ramp memory. Its re-apply reads it as still the lease's, with
+    /// nothing written, and resets the memory as an engagement does: inside its command write the
+    /// writer remembers nothing.
+    ///
+    /// **Mutation:** in `LeaseApplier.step`, reset the memory only after an engagement that
+    /// returned, not after a re-adoption. Run: red, 2,400 remembered as the ramp origin.
+    @Test("A kept fan read as still the lease's has its ramp memory reset")
+    func aReAdoptedFansRampMemoryIsReset() async throws {
+        let machine = ReclamationMachine(
+            stages: [
+                .nominal(), .nominal(targetWrites: .refused(reason: "F1Tg refused")),
+                .nominal(writes: .refused(reason: "restores refused")), .nominal(),
+            ],
+            fans: [0: .automatic(at: 1_800), 1: .automatic(at: 1_800)])
+        let lease = try await machine.lease(fans: [0, 1]).id
+        let writes = InterferingFanStateSensing(machine.plane, during: .refusedCommandWrite)
+        await writes.interfere(beforeCommandTarget: 2) { await machine.plane.advance() }
+        await writes.interfere { await machine.plane.advance() }
+        let levelSix = machine.levelSix(writingThrough: writes)
+
+        await #expect(
+            throws: AeolusXPCFault.helperFailed(detail: LeaseApplyRules.Detail.firmwareRefused)
+        ) {
+            try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: lease)
+        }
+        #expect(await writes.didFire)
+        #expect(try await machine.plane.firmwareMode(ofFan: 0) == .manual, "fan 0 was handed back")
+        #expect(
+            await levelSix.writer.lastCommanded(ofFan: 0) == 2_400,
+            "fan 0 kept no memory, so nothing is tested")
+
+        await machine.plane.advance()
+        let remembered = Sightings<Double?>()
+        await writes.interfere(beforeCommandTarget: 3) {
+            await remembered.record(await levelSix.writer.lastCommanded(ofFan: 0))
+        }
+        try await levelSix.apply(fixed((0, 2_000)), under: lease)
+
+        #expect(machine.safetyLog.lines(containing: KeptFan.reAdopted).count == 1)
+        #expect(
+            await remembered.seen == [nil],
+            "the re-adopted fan kept the target written before its refused hand-back as its origin")
+        #expect(await levelSix.writer.lastCommanded(ofFan: 0) == 2_000)
+    }
 }

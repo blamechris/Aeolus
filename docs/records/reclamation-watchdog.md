@@ -178,6 +178,17 @@ behaviour can tell § 5's level from level 6's. The role level 6 reaches § 5 th
 and each requirement is witnessed by the method it names. The file now has six lines before its
 error, so the next § 5 change that adds lines here takes a split, or a relocation, first.
 
+**#410's items 2 and 3 spent none: 341 code lines, and about 9 left; `examine(fanAt:inBound:)` 50;
+file 996** (SwiftLint 0.65.1). The engagement driver now throws `EngagementUndoRefused` when its own
+undo is refused ([#406](https://github.com/blamechris/Aeolus/issues/406), ADR 0014's #410
+refused-hand-back amendment), and § 5 must route that wrapper's cause exactly as it routed the
+unwrapped error. Unwrapping in the catch would have taken a nested `do` or a second arm. Instead the
+re-engage runs through `throwingTheCause`, which lives beside the wrapper in
+`EngagementUndoRefused.swift` and throws the cause in the wrapper's place, so the one catch is
+unchanged and the watchdog's change is one line, in place. `EngagementUndoRefusedTests` holds both
+routes: a yielding cause hands the fan back through `restoreAndForget`, and any other is a refused
+re-engage with its attempt spent.
+
 ## Level 6's hand-back notice
 
 *Added by A6's second PR ([ADR 0014](../ADR/0014-apple-silicon-unlock.md)'s A6 PR-2 amendment);

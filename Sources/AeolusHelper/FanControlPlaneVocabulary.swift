@@ -201,9 +201,19 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
     /// may have landed: unlike `.superseded`, this is never retried and always undone.
     case supersededAfterWrite
 
-    /// The fan's raw `F<n>Md` was not `0` before the first write, so it is not Aeolus's to take
-    /// (D3 step 1). Nothing was written.
+    /// The fan's raw `F<n>Md` was not `0` before the first write, so the plane does not take it (D3
+    /// step 1). Nothing was written. Thrown only by a first step. The plane does not say whose the
+    /// fan is: level 6 reads the raw value against its own account (ADR 0014's #410
+    /// refused-hand-back amendment), and with none it is `foreignManualControl`.
     case notAutomatic(index: Int, rawMode: UInt8)
+
+    /// An engagement's first step was admitted, then failed before it issued any write: its
+    /// pre-state read of `F<n>Md`, or a read the mode write needs, did not answer (ADR 0014's #410
+    /// refused-hand-back amendment). Nothing was written, so nothing is undone. Thrown only by a
+    /// first step: once a step has been answered the engagement has written, and a later step's
+    /// failure is thrown as it is. A write that was issued and refused is
+    /// `.firmwareRefusedControl`, never this.
+    case failedBeforeFirstWrite(index: Int, detail: String)
 
     /// The mode write was accepted and raw `F<n>Md` did not read back `1` (D3 step 2): `0` is
     /// accepted-not-applied ([#291](https://github.com/blamechris/Aeolus/issues/291)); any

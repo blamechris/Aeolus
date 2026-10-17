@@ -1810,11 +1810,12 @@ extension SafetyLog {
 
 extension SafetyLog {
 
-    /// An `apply` was refused inside its per-fan loop, and its undo has run over every fan whose
-    /// engagement had returned. `.notice`: a refusal is an ordinary answer, and what the undo
-    /// handed back is the part worth finding afterwards. A fan whose hand-back was refused is named
-    /// apart, and has a `.fault` line of its own; so does a step the driver could not undo itself
-    /// (#406), which this line does not see.
+    /// An `apply` was refused inside its per-fan loop, and its undo has run over every fan it had
+    /// come to hold as engaged, by an engagement that returned or a kept fan re-adopted. `.notice`:
+    /// a refusal is an ordinary answer, and what the undo handed back is the part worth finding
+    /// afterwards. A fan whose hand-back was refused is named apart, and has a `.fault` line of its
+    /// own: one the undo could not hand back, and one whose step the driver could not undo itself
+    /// (#406).
     func controlLoopApplyRefused(handedBack fans: [Int], refused: [Int], detail: String) {
         var undone: [String] = []
         if !fans.isEmpty {
@@ -1843,6 +1844,21 @@ extension SafetyLog {
             Could not hand fan \(fan) back after level 6's apply was refused: \(detail). The fan \
             may still be off automatic control. It stays registered with § 3, which bridges it in \
             the next thermal emergency, until a restore of it is confirmed.
+            """
+        )
+    }
+
+    /// A fan whose hand-back was refused reads the raw mode Aeolus's engagement writes, so level 6
+    /// holds it again, with nothing written (ADR 0014's #410 refused-hand-back amendment). It says
+    /// only what was read: the value cannot say whose write it was. `.notice`: the account was kept
+    /// for exactly this.
+    func controlLoopKeptFanReAdopted(fan: Int, rawMode: UInt8) {
+        emit(
+            .notice,
+            """
+            Fan \(fan), whose hand-back level 6 could not confirm, reads raw mode \(rawMode), the \
+            value Aeolus's engagement writes. Level 6 holds it again under this lease with nothing \
+            written to its mode; the value cannot say whose write it was.
             """
         )
     }
