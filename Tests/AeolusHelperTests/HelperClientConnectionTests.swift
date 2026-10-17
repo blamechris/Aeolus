@@ -63,7 +63,7 @@ struct HelperClientConnectionTests {
     /// The reply block is dropped by libxpc and only the error handler runs, which is the
     /// case `AeolusXPCProtocol` calls the one that matters most.
     ///
-    /// **Mutation:** in `HelperClient.exchange(on:within:_:)`, take the proxy with bare
+    /// **Mutation:** in `HelperClient.exchange(_:on:within:_:)`, take the proxy with bare
     /// `remoteObjectProxy` instead of `remoteObjectProxyWithErrorHandler`. Run: red — the
     /// error handler never runs, so the call fails with `helperNeverAnswered` after the
     /// deadline instead.
@@ -110,7 +110,7 @@ struct HelperClientConnectionTests {
     /// than on the code: keying on the code alone would tell a user with no helper at all
     /// that theirs had restarted.
     ///
-    /// **Mutation:** in `HelperClient.exchange(on:within:_:)`, take the proxy with bare
+    /// **Mutation:** in `HelperClient.exchange(_:on:within:_:)`, take the proxy with bare
     /// `remoteObjectProxy`, so nothing reports the transport failure. Run: red —
     /// `helperNeverAnswered` after the deadline, which is the "it hung" answer this
     /// expectation exists to exclude.

@@ -386,10 +386,10 @@ struct HelperClientTeardownTests {
     /// verb queues behind it, hits its **own** deadline, and discards then. One extra timeout
     /// on a genuinely wedged helper is the correct price for never tearing down a healthy one.
     ///
-    /// **Mutation:** in `HelperClient.exchange(on:within:_:)`, build the latch with
-    /// `PendingReply(ifNothingArrives:)` so cancellation and the deadline share one fallback
-    /// again. Run: red on `health`, which reads `.unresponsive`, and on `negotiated`, which
-    /// is `nil`.
+    /// **Mutation:** in `InFlightMessages.admit`, which builds each message's latch since #413,
+    /// build it with `PendingReply(ifNothingArrives:)` so cancellation and the deadline share one
+    /// fallback again. Run: red on `health`, which reads `.unresponsive`, and on `negotiated`,
+    /// which is `nil`.
     @Test("A cancelled caller does not tear down the connection")
     func aCancelledCallerDoesNotTearDownTheConnection() async throws {
         let gate = AsyncSignal()
