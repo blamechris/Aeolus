@@ -1299,9 +1299,10 @@ whose first step reads the fan's raw mode in its own turn. A fan back on automat
 afresh. One reading the value Aeolus's engagement writes is held again, registered with § 3 and § 5
 and commanded with nothing written to its mode; the value cannot say whose write it was, which is a
 contest § 5's budget bounds. One reading any other value is someone else's, and its account ends.
-The account also ends when the driver hands the fan back and the hand-back returns, and at every
-refusal but a first step that failed before writing (ADR 0014's #410 refused-hand-back amendment). A
-fan whose report § 5 answered `.notHeld` has already left the set, and is kept again only if this
+The account also ends at every other refusal of the re-apply, a driver hand-back that returns
+included, except two: a refused undo keeps it, and a first step that failed before writing leaves
+it standing (ADR 0014's #410 refused-hand-back amendment). A fan whose report § 5 answered
+`.notHeld` has already left the set, and is kept again only if this
 `apply` engaged it and its hand-back then throws. Since A6's third step the composition builds
 exactly one, from the one gate and the § 5 its supervisor cycles, and `SupervisedFanAuthority.apply`
 reaches it through `LeaseApplying`, a role with one verb and no permit, after the authority's

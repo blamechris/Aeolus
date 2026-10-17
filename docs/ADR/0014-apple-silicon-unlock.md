@@ -3089,12 +3089,14 @@ closes both.
   the driver's `.notAutomatic` refusal is read as the engagement returning, with nothing written, and
   the fan is re-adopted. Any other value: someone else's fan, and the account ends.
 - **A re-adopted fan is registered with § 3 again** (`EngagementDriver.reAdopted(_:)`), before
-  anything that commands it, as a returning engagement is. While a lease is live every
-  `.handBackRefused` fan is already in § 3's registry: both routes that open the account leave it
-  registered, and every route by which § 3 forgets a fan ends the account (a hand-back of level 6's
-  or the driver's that returns) or every lease (a lease teardown, § 3's own bridge, § 4, § 6, § 7).
-  Registering it again means the emergency's reach does not depend on that history, and costs
-  over-firing at worst.
+  anything that commands it, as a returning engagement is. Both routes that open a
+  `.handBackRefused` account leave the fan in § 3's registry, and most routes by which § 3 forgets
+  a fan end the account (a hand-back of level 6's or the driver's that returns) or every lease (a
+  lease teardown, § 3's own bridge, § 4, § 6, § 7). One ends neither: a hand-back of the same fan
+  by § 5 that lands while the lease is live, before or after level 6's refused undo of it — § 5's
+  re-engage undone by its own driver, or its `restoreAndForget`. § 3 confirms it and forgets the
+  fan while the account stands. So the emergency's reach over a re-adopted fan rests on
+  registering it again, not on the account's history, and costs over-firing at worst.
 - **The wrapper ends at the answer.** Level 6's step throws the driver's refusal as it came, and
   `refusal(for:)` answers a wrapper by its cause and never returns one, so no `EngagementUndoRefused`
   reaches the boundary.
@@ -3104,9 +3106,10 @@ closes both.
 
 **What remains.**
 - **A contest.** A kept fan that is no longer Aeolus's when it is re-applied, because its restore
-  landed after the refusal or the write its engagement issued never took effect, and to which another
-  program has written the engaged value, is re-adopted, registered with § 3 and commanded. § 5's
-  budget bounds the contest (ADR 0011), and the notice says only what was read.
+  landed after the refusal, a hand-back of it by § 5 landed while the lease was live, or the write
+  its engagement issued never took effect, and to which another program has written the engaged
+  value, is re-adopted, registered with § 3 and commanded. § 5's budget bounds the contest (ADR
+  0011), and the notice says only what was read.
 - **A false "foreign", closed.** A kept fan whose re-apply's first step is superseded twice by
   restores that do not end the lease (in production, § 5's undo of another fan's re-engage) loses its
   account with nothing written. Its next re-apply answers `foreignManualControl` about a fan Aeolus
@@ -3151,8 +3154,9 @@ closes both.
 - *A second wrapper for an undo that landed.* Exact, but it changes the driver's throw for every
   undone refusal at both routers and in every test that expects one, and a router matching the bare
   type would misroute it. The one case it would disambiguate, `.superseded`, is decided closed.
-- *Rely on the invariant for § 3.* It holds, but a future route that broke it would leave a fan
-  Aeolus commands outside the emergency's reach.
+- *Rely on the account's history for § 3.* It does not hold: a hand-back of the fan by § 5 that
+  lands beside level 6's refused undo leaves the account standing after § 3 has forgotten the fan,
+  and without the registration that fan would be commanded outside the emergency's reach.
 - *Give level 6 § 3's registration role.* A second § 3 handle beside its latch; the driver already
   holds the role, and registration is part of what an engagement owes § 3.
 - *Level 6 throws the cause.* `refusal(for:)` then returned the wrapper for a cause the table leaves

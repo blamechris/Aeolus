@@ -15,12 +15,15 @@ import Foundation
 /// driver's entitlement refuses it. A fan a teardown, § 3 or § 5 handed back under a lease that is
 /// still live stays here: #381's one-cycle residual.
 ///
-/// **While its lease is live, every `.handBackRefused` fan is in § 3's registry.** Both routes that
-/// open the account leave it registered, because the driver registers before any undo and a refused
-/// restore tells § 3 nothing. Every route by which § 3 forgets a fan ends the account (a hand-back
-/// of level 6's or the driver's that returns) or every lease (a lease teardown, § 3's own bridge,
-/// § 4, § 6, § 7). A re-adoption registers the fan with § 3 again all the same, so the bridge does
-/// not rest on this.
+/// **§ 3's reach over a re-adopted fan rests on registering it again, not on the account's
+/// history.** Both routes that open the account leave the fan in § 3's registry, because the
+/// driver registers before any undo and a refused restore tells § 3 nothing, and most routes by
+/// which § 3 forgets a fan end the account (a hand-back of level 6's or the driver's that returns)
+/// or every lease (a lease teardown, § 3's own bridge, § 4, § 6, § 7). One does neither: a
+/// hand-back of the same fan by § 5 that lands while the lease is live, before or after level 6's
+/// refused undo of it — § 5's re-engage undone by its own driver, or its `restoreAndForget`. § 3
+/// confirms it and forgets the fan while the account stands, so a re-adoption registers the fan
+/// with § 3 again (`EngagementDriver.reAdopted(_:)`) before anything commands it.
 struct LeaseEngagements: Sendable {
 
     /// What level 6 holds of one fan under one lease.
