@@ -11,10 +11,11 @@ import Testing
 @Suite("The helper names the branch it was built from")
 struct HelperBuildStringTests {
 
-    /// This pins the value, not the idea. **Changing the string at the E4 merge is a deliberate
-    /// edit to this test as well as to `AeolusHelperMain.build`**: a merge that takes the branch's
-    /// string by accident, or drops it by accident, fails here instead of shipping a helper that
-    /// misreports what it is.
+    /// This pins the value, not the idea, and it guards one direction only. A sync from `main`
+    /// that resolves the constant to `main`'s string fails here. The E4 merge does not: the
+    /// constant and this test arrive on `main` together, still agreeing. So reverting `build` to
+    /// a release value and deleting this test is a named step of the E4 merge (#9), not something
+    /// this test enforces.
     ///
     /// **Mutation:** in `AeolusHelperMain`, set `build` back to `"0.0.0 (E2)"`. Run: red here.
     @Test("The branch build says it is the E4 bring-up build")
