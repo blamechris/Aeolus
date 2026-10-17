@@ -171,10 +171,14 @@ struct KeptFan {
     let writes: InterferingFanStateSensing
     let levelSix: LevelSix<InterferingFanStateSensing>
     let lease: UUID
+    /// What the `apply` that kept the fan was answered.
+    var refusal: (any Error)?
+
+    /// Every fan's condition before anything is written.
+    static let automatic = ScriptedControlPlane.FanCondition.automatic(at: 1_800)
 
     /// What `SafetyLog.controlLoopKeptFanReAdopted(fan:rawMode:)` says for fan 0 at raw `1`.
-    static let reAdopted =
-        "Fan 0, whose hand-back level 6 could not confirm, still reads raw mode 1"
+    static let reAdopted = "Fan 0, whose hand-back level 6 could not confirm, reads raw mode 1"
 
     /// The writes among `attempts`: every engagement step, command and restore.
     static func writes(
@@ -188,17 +192,26 @@ struct KeptFan {
         }
     }
 
-    static func inManual() async throws -> KeptFan {
+    /// A fan whose command was refused and whose undo's restore was refused too, under level 6's
+    /// own undo: in manual, kept. The machine's stages are those, `later` after them; the firmware
+    /// takes writes again once this returns. With `order`, the driver's § 3 registrations are
+    /// recorded there, through `RecordingRegistration`, before they reach § 3.
+    static func inManual(
+        then later: [ScriptedControlPlane.Stage] = [], recordingInto order: Sightings<String>? = nil
+    ) async throws -> KeptFan {
         let machine = ReclamationMachine(
             stages: [
                 .nominal(targetWrites: .refused(reason: "F0Tg refused")),
                 .nominal(writes: .refused(reason: "F0Md refused")), .nominal(),
-            ],
+            ] + later,
             fans: [0: .automatic(at: 1_800)])
         let lease = try await machine.lease(fans: [0]).id
         let writes = InterferingFanStateSensing(machine.plane, during: .refusedCommandWrite)
         await writes.interfere { await machine.plane.advance() }
-        let levelSix = machine.levelSix(writingThrough: writes)
+        let registration = order.map {
+            RecordingRegistration(forwardingTo: machine.emergency, recordingInto: $0)
+        }
+        let levelSix = machine.levelSix(writingThrough: writes, registration: registration)
 
         await #expect(
             throws: AeolusXPCFault.helperFailed(detail: LeaseApplyRules.Detail.firmwareRefused)
@@ -209,5 +222,119 @@ struct KeptFan {
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .manual, "the restore landed")
         await machine.plane.advance()
         return KeptFan(machine: machine, writes: writes, levelSix: levelSix, lease: lease)
+    }
+
+    /// A fan kept on automatic: engaged under the force key, its command refused, and its undo's
+    /// restore landing `F0Md = 0` while the force key's clear is refused, so the hand-back threw
+    /// and level 6 kept fan 0. `fans` are leased, and every stage reads `temperatures`; the
+    /// firmware takes writes again once this returns.
+    static func onAutomatic(
+        of fans: [Int] = [0],
+        unlock: ScriptedControlPlane.UnlockBehaviour = .heldUntilForced(stepsToYield: 0),
+        temperatures: [String: Double] = [:]
+    ) async throws -> KeptFan {
+        let conditions = Dictionary(uniqueKeysWithValues: fans.map { ($0, Self.automatic) })
+        let plane = ScriptedControlPlane(
+            fans: conditions,
+            stages: [
+                .nominal(temperatures: temperatures, targetWrites: .refused(reason: "F0Tg")),
+                .nominal(temperatures: temperatures, forceKeyWrites: .refused(reason: "Ftst")),
+                .nominal(temperatures: temperatures),
+            ],
+            unlock: unlock)
+        let machine = ReclamationMachine(plane: plane, fans: conditions)
+        let lease = try await machine.lease(fans: fans).id
+        let writes = InterferingFanStateSensing(plane, during: .refusedCommandWrite)
+        await writes.interfere { await plane.advance() }
+        let levelSix = machine.levelSix(writingThrough: writes)
+
+        await #expect(
+            throws: AeolusXPCFault.helperFailed(detail: LeaseApplyRules.Detail.firmwareRefused)
+        ) {
+            try await levelSix.apply(fixed((0, 2_400)), under: lease)
+        }
+        #expect(await writes.didFire, "the command was never refused")
+        #expect(try await plane.firmwareMode(ofFan: 0) == .automatic, "the restore's mode write")
+        await plane.advance()
+        return KeptFan(machine: machine, writes: writes, levelSix: levelSix, lease: lease)
+    }
+
+    /// A fan the driver could not hand back itself (#406): its mode write lands, its read-back
+    /// answers `0`, and the firmware refuses the driver's undo, so it is in manual and kept. Fan
+    /// `index` of `fans`, all leased; the firmware takes writes again once this returns.
+    static func keptByTheDriver(fan index: Int = 0, of fans: [Int] = [0]) async throws -> KeptFan {
+        let machine = ReclamationMachine(
+            stages: [
+                .nominal(), .nominal(writes: .refused(reason: "F\(index)Md refused")), .nominal(),
+            ],
+            fans: Dictionary(uniqueKeysWithValues: fans.map { ($0, .automatic(at: 1_800)) }))
+        let lease = try await machine.lease(fans: fans).id
+        let writes = InterferingFanStateSensing(machine.plane, during: .refusedEngageStep)
+        await writes.interfere { await machine.plane.advance() }
+        await machine.plane.setRawMode(0, ofFan: index)
+        let levelSix = machine.levelSix(writingThrough: writes)
+
+        let refusal = await LeaseApplierAnswerTests.answer {
+            try await levelSix.apply(fixed((index, 2_400)), under: lease)
+        }
+        #expect(refusal != nil, "the apply that should have kept fan \(index) was applied")
+        #expect(await writes.didFire, "the step was never refused")
+        #expect(try await machine.plane.firmwareMode(ofFan: index) == .manual, "the undo landed")
+        await machine.plane.setRawMode(nil, ofFan: index)
+        await machine.plane.advance()
+        return KeptFan(
+            machine: machine, writes: writes, levelSix: levelSix, lease: lease, refusal: refusal)
+    }
+
+    /// A fan whose report § 5 answered `.notHeld`, and whose hand-back the firmware then refused:
+    /// § 5 is told fan 0 was released while its command lands, and the undo's restore is refused.
+    /// In manual, kept; the firmware takes writes again once this returns.
+    static func keptAfterNotHeld() async throws -> KeptFan {
+        let machine = ReclamationMachine(
+            stages: [
+                .nominal(), .nominal(writes: .refused(reason: "restore refused")), .nominal(),
+            ],
+            fans: [0: .automatic(at: 1_800)])
+        let lease = try await machine.lease(fans: [0]).id
+        let writes = InterferingFanStateSensing(machine.plane, during: .commandWrite)
+        await writes.interfere {
+            await machine.watchdog.manualControlReleased(fanAt: 0)
+            await machine.plane.advance()
+        }
+        let levelSix = machine.levelSix(writingThrough: writes)
+
+        await #expect(
+            throws: AeolusXPCFault.manualControlUnavailable(reason: .releaseInProgress)
+        ) {
+            try await levelSix.apply(fixed((0, 2_400)), under: lease)
+        }
+        #expect(await writes.didFire, "§ 5 was never told the fan was released")
+        #expect(try await machine.plane.firmwareMode(ofFan: 0) == .manual, "the hand-back landed")
+        await machine.plane.advance()
+        return KeptFan(machine: machine, writes: writes, levelSix: levelSix, lease: lease)
+    }
+}
+
+/// § 3's registration role as level 6's driver reaches it: each registration recorded in `order`,
+/// then forwarded to § 3, so a scenario can place it beside the commands it records there too.
+actor RecordingRegistration: ThermalEmergencyRegistering {
+    private let forwarding: any ThermalEmergencyRegistering
+    private let order: Sightings<String>
+
+    init(
+        forwardingTo forwarding: any ThermalEmergencyRegistering,
+        recordingInto order: Sightings<String>
+    ) {
+        self.forwarding = forwarding
+        self.order = order
+    }
+
+    func manualControlEngaged(_ fan: CommandableFan) async {
+        await order.record("registered \(fan.index)")
+        await forwarding.manualControlEngaged(fan)
+    }
+
+    func handbackAccepted(fanAt index: Int) async {
+        await forwarding.handbackAccepted(fanAt: index)
     }
 }

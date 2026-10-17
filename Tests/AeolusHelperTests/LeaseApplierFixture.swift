@@ -35,18 +35,22 @@ extension ReclamationMachine {
     ///   - reclamation: § 5 as level 6 sees it; the machine's watchdog unless a scenario wraps it.
     ///   - envelopes: where envelopes are read; `writes` unless a scenario refuses them.
     ///   - capability: what the write path reports; `writes` unless a scenario asks `.notBuilt`.
+    ///   - registration: § 3's registration role as level 6's driver reaches it; the machine's § 3
+    ///     unless a scenario records what the driver tells it.
     /// - Returns: level 6, wired to this machine.
     func levelSix<Applies: FanControlPlane>(
         writingThrough writes: Applies,
         reclamation: (any ReclamationRegistrationRole)? = nil,
         envelopes: (any FanEnvelopeReading)? = nil,
-        capability: (any FanWriteCapabilityReporting)? = nil
+        capability: (any FanWriteCapabilityReporting)? = nil,
+        registration: (any ThermalEmergencyRegistering)? = nil
     ) -> LevelSix<Applies> {
         let log = SafetyLog(recording: { [safetyLog] in safetyLog.append($0, $1) })
         let writer = GovernedFanWriter(plane: writes)
         let driver = EngagementDriver(
             writer: SafetyActorWriter(plane: writes, level: .leaseExpiry), leases: leases,
-            latch: latch, emergency: emergency, clock: leaseClock, level: .controlLoop, log: log)
+            latch: latch, emergency: registration ?? emergency, clock: leaseClock,
+            level: .controlLoop, log: log)
         let applier = LeaseApplier(
             writer: writer, engagement: driver, gate: gate, envelopes: envelopes ?? writes,
             reclamation: reclamation ?? watchdog, leases: leases, latch: latch,

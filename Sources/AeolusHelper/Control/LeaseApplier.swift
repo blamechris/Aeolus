@@ -150,9 +150,7 @@ actor LeaseApplier<Plane: FanControlPlane>: LeaseApplying {
             }
         } catch {
             let kept = await undo(fans.engaged, under: lease)
-            log.controlLoopApplyRefused(
-                handedBack: fans.engaged.filter { !kept.contains($0) },
-                refused: kept + fans.keptByTheDriver, detail: String(describing: error))
+            fans.sayRefused(because: error, keptByTheUndo: kept, to: log)
             throw await refusal(for: error, leaseID: lease, from: connection)
         }
 
@@ -162,7 +160,8 @@ actor LeaseApplier<Plane: FanControlPlane>: LeaseApplying {
 
     /// One fan's step: the envelope and the permit, then the gate, and under it the engagement
     /// unless this lease holds the fan `.engaged`, § 5's registration, the entitlement, the whole
-    /// write and its report. A refusal of the driver's is read by the account (`LeaseEngagements`).
+    /// write and its report. A refusal of the driver's is read by the account (`LeaseEngagements`),
+    /// and a fan it re-adopts is registered with § 3 again before anything commands it.
     ///
     /// `fans.engaged` gains the fan once it is held as engaged, so a refusal after it undoes it
     /// with the rest: item 2, and a half-landed engagement, a newly engaged fan whose command
@@ -205,6 +204,7 @@ actor LeaseApplier<Plane: FanControlPlane>: LeaseApplying {
                 try await driver.engageManualControl(of: permit)
             } catch {
                 try engagements.read(error, of: index, under: lease, into: &fans, log: log)
+                await driver.reAdopted(permit)
             }
             engagements.insert(index, under: lease, into: &fans)
             await writer.fanReturnedToAutomatic(index: index)
