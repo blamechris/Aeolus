@@ -4,7 +4,7 @@ import Testing
 @testable import AeolusHelper
 
 /// `GovernedFanWriter.hold(_:of:)`: how level 6 writes a `.fixed(rpm:)` setting, whole, in one
-/// write of the clamped goal (ADR 0014's A6 amendments, risk 2 of the architect's A6 consult).
+/// write of the clamped goal (ADR 0014's A6 and A6 PR-2 amendments).
 ///
 /// The ramp memory that `command(towards:of:since:)` steps from is what makes this matter. It is
 /// per fan and lives as long as the writer, so a fixed setting written as one governed step from a

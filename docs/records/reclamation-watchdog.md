@@ -216,7 +216,7 @@ is the driver's, through `restoreToAutomatic(_:)`. `WriteVerbAllowlistTests` fil
 sent from inside a `releasing` handback, which is what makes its index safe there (the assumption
 row "every lease-core restore notice … precedes any grant over it"). Level 6's undo runs outside
 the lease core's registers and under a lease that may be live, so an index-keyed release from it
-could erase a newer lease's record, which is why the architect's A6 consult rejected it.
+could erase a newer lease's record, which is why A6's plan rejected it.
 
 ## Every act is for the lease the fan was registered under
 
@@ -400,12 +400,14 @@ value's, in `ReclamationRegistryEpisodeTests.swift`. What stays open:
    automatic stands that cycle's re-assert down, as does one landing just before a genuine
    re-reclamation. The fan stays on automatic until the next cycle re-engages it: one cycle and
    one attempt, in the direction of giving the fan up sooner (#381).
-6. Two engagements of one fan under one lease can overlap. One that completes during § 5's yield
-   wait re-admits § 5's next step as a first step, which is refused `.notAutomatic` after § 5's
-   driver has written; the driver hands the fan back, and `reengageRefused`, which routes on the
-   error type, logs the stand-down, whose line says nothing was written. The fan ends on automatic
-   control and the mark is kept, so the snapshot is truthful and the log line is not. An A6
-   precondition, tracked as [#389](https://github.com/blamechris/Aeolus/issues/389).
+6. Two engagements of one fan under one lease could overlap. One that completed during § 5's yield
+   wait re-admitted § 5's next step as a first step, which was refused `.notAutomatic` after § 5's
+   driver had written; the driver handed the fan back, and `reengageRefused`, which routes on the
+   error type, logged the stand-down, whose line said nothing was written. Closed by the
+   examination gate ([#389](https://github.com/blamechris/Aeolus/issues/389), ADR 0014's A6 PR-2
+   amendment): level 6 engages only under the fan's gate, which § 5 holds through its re-assert,
+   so such an engagement waits for § 5 to finish. It comes back only with an engagement that
+   bypasses the gate, a contract breach.
 
 Until #381 the re-assert acted on the target and mode it judged before its envelope read, so a
 re-apply inside that read was overwritten — for a diverged target the old number was re-commanded

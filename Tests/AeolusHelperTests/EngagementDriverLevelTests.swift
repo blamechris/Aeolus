@@ -3,7 +3,7 @@ import Testing
 @testable import AeolusHelper
 
 /// The engagement driver's arbiter level is its own, stored at composition, and never its
-/// writer's (ADR 0014's A6 amendments, risk 1 of the architect's A6 consult).
+/// writer's (ADR 0014's A6 and A6 PR-2 amendments).
 ///
 /// Level 6's driver steps through a `SafetyActorWriter`, whose level is one of the five that bypass
 /// § 8; asked about that, the arbiter would judge the control loop as a safety actor. With § 3's

@@ -130,7 +130,7 @@ struct LeaseApplierExaminationTests {
         #expect(machine.gate.isIdle)
     }
 
-    /// **#383's ramp, as thirteen re-applies** (risk 15). A6 builds no loop that steps on its own,
+    /// **#383's ramp item, held as thirteen re-applies.** A6 builds no loop that steps on its own,
     /// so a `fanctl set` from 50 to 100 percent is thirteen re-applies 200 RPM apart, each landing
     /// while § 5 holds the fan in its lease check: phase-locked to the sweep, the worst phase there
     /// is. None is judged a reclamation and the terminal action never comes; without the gate the
@@ -178,8 +178,8 @@ struct LeaseApplierExaminationTests {
         #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 5_777)
     }
 
-    /// **A level-6 write that bypasses the gate costs at most a false fault.** Fan 0 holds level
-    /// 6's 2,400, and a write and report of 2,600 are made around the gate by hand, with the
+    /// **A level-6 write that bypasses the gate costs a false divergence at most.** Fan 0 holds
+    /// level 6's 2,400, and a write and report of 2,600 are made around the gate by hand, with the
     /// writer and the report level 6 uses, inside § 5's lease check. § 5 judges the 2,400 it read
     /// against the 2,600 recorded: a false fault, a mark and one spent attempt, and the re-assert
     /// writes the record's own 2,600, never a target level 6 did not report.
@@ -187,8 +187,8 @@ struct LeaseApplierExaminationTests {
     /// **Mutation:** in `ReclamationWatchdog.primaryDivergence(of:against:)`, answer `nil` for a
     /// target that diverged, an excuse. Run: red, nothing re-asserted while § 5 records a target
     /// the fan is not holding.
-    @Test("A write around the gate costs a false fault at most")
-    func aWriteAroundTheGateCostsAFalseFaultAtMost() async throws {
+    @Test("A write around the gate costs a false divergence at most")
+    func aWriteAroundTheGateCostsAFalseDivergenceAtMost() async throws {
         let machine = ReclamationMachine(fans: [0: .automatic(at: 1_800)], parkingLeaseHops: true)
         let levelSix = machine.levelSix()
         let lease = try await machine.lease(fans: [0]).id

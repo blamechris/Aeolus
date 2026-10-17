@@ -241,7 +241,8 @@ struct ReclamationExaminationGateTests {
 
     // MARK: - Past the bound
 
-    /// **Past the bound, a divergence marks the fan and writes nothing.** Fan 0 is held at 2,400
+    /// **Past the bound, a divergence marks the fan and writes nothing away from automatic
+    /// control.** Fan 0 is held at 2,400
     /// while the firmware holds 1,800, and level 6 holds the gate and never leaves. § 5 waits
     /// `examinationWait`, then examines without the gate: it judges, marks and reports, and its
     /// re-assert stands down, attempt spent. The next cycles do not wait at all, and when the

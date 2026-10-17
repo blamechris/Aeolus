@@ -61,9 +61,9 @@ struct LeaseApplierUndoTests {
         #expect(await machine.ledger.isReclaimed(fanAt: 0) == false)
     }
 
-    /// **Risk 7, half-landed.** Fan 1's mode write lands and its command is refused: every fan this
-    /// `apply` engaged, fan 1 with fan 0, is undone, rather than fan 1 being left in manual at
-    /// whatever target the firmware held.
+    /// **A half-landed engagement.** Fan 1's mode write lands and its command is refused: every
+    /// fan this `apply` engaged, fan 1 with fan 0, is undone, rather than fan 1 being left in
+    /// manual at whatever target the firmware held.
     ///
     /// **Mutation:** in `LeaseApplier.step`, append the fan to `engaged` only after its command
     /// returns. Run: red, fan 1 left in manual and held by § 5.
@@ -201,8 +201,8 @@ struct LeaseApplierUndoTests {
 
     // MARK: - The entitlement before each command
 
-    /// **Risk 6.** § 3 latches between the engagement and the command, while § 5 asks the lease
-    /// core about the registration: no command is written, the fan is undone, and the answer is
+    /// **§ 3 between the engagement and the command.** § 3 latches while § 5 asks the lease core
+    /// about the registration: no command is written, the fan is undone, and the answer is
     /// `.thermalEmergencyActive`.
     ///
     /// **Mutation:** delete `requireEntitlement(for:)` from `LeaseApplier.step`. Run: red, 2,400

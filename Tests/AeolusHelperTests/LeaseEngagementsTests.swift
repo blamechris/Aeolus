@@ -4,7 +4,8 @@ import Testing
 @testable import AeolusHelper
 
 /// `LeaseEngagements`, level 6's account of which fans it engaged under which lease, as a value:
-/// risk 14's authority for "this lease has engaged the fan" (ADR 0014's A6 PR-2 amendment).
+/// the engaged set, the authority for "this lease has engaged the fan" (ADR 0014's A6 PR-2
+/// amendment).
 @Suite("Level 6's engaged set, as a value", .timeLimit(.minutes(1)))
 struct LeaseEngagementsTests {
 

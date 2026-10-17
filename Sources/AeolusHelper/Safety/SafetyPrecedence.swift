@@ -71,11 +71,12 @@ enum SafetyActorLevel: Int, Sendable, Hashable, CaseIterable, Comparable {
     /// `GovernedFanWriter`. Every level above it writes through `SafetyActorWriter`, which
     /// holds no `RampGovernor` and has no property one could be assigned to.
     ///
-    /// It engages through an `EngagementDriver` of its own, composed at this level (ADR 0014's A6
-    /// amendments). That driver steps through a `SafetyActorWriter` for the mode write and the
-    /// undo alone and has no target verb, so the control loop holds no writer it can command a
-    /// target through but the governed one. Until E8a's loop shapes the steps a control loop
-    /// takes, a fixed target is written whole (`GovernedFanWriter.hold(_:of:)`).
+    /// It will engage through an `EngagementDriver` of its own, composed at this level (ADR 0014's
+    /// A6 amendments): `LeaseApplier`'s, built by tests until A6's next step wires it. That driver
+    /// steps through a `SafetyActorWriter` for the mode write and the undo alone and has no target
+    /// verb, so the control loop will hold no writer it can command a target through but the
+    /// governed one. Until E8a's loop shapes the steps a control loop takes, a fixed target is
+    /// written whole (`GovernedFanWriter.hold(_:of:)`).
     case controlLoop = 6
 
     /// Whether this level pre-empts `other`.

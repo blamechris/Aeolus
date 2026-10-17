@@ -6,7 +6,7 @@ import Testing
 @testable import AeolusHelper
 
 /// Level 6 writes a fixed setting whole, and its writer's ramp memory is reset at every engagement
-/// and hand-back it makes (ADR 0014's A6 PR-2 amendment, risk 2 of the architect's A6 consult).
+/// and hand-back it makes (ADR 0014's A6 PR-2 amendment).
 ///
 /// The memory lives as long as the writer, so without the resets the target one lease left behind
 /// is the origin of the next lease's first step: run 1b's "100 %" after "50 %" commanded as 3,764
