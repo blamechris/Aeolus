@@ -9,7 +9,7 @@ import Testing
 /// amendments): a fan whose hand-back returned leaves it, so the next `apply` engages it again; a
 /// fan whose hand-back the firmware refused is kept as one whose hand-back was refused, the refusal
 /// is said at `.fault`, and the next `apply` under the lease reads it through the driver instead of
-/// assuming where it is. H1 and H2 of the amendment's tests are here; H3 to H5 are
+/// assuming where it is. A fan with no account, or one reading another program's value, is
 /// `LeaseApplierKeptFanTests`'.
 ///
 /// Every scenario runs the real `LeaseApplier` over a `ReclamationMachine`. Each test names the
@@ -60,7 +60,7 @@ struct LeaseApplierHandBackTests {
         #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_400)
     }
 
-    /// **H2: a kept fan still in manual is re-adopted, with nothing written.** Fan 0 is engaged,
+    /// **A kept fan still in manual is re-adopted, with nothing written.** Fan 0 is engaged,
     /// its command is refused, and then the undo's restore is refused too: the fan stays in manual,
     /// level 6 keeps it as one whose hand-back was refused, and the refusal is said at `.fault`.
     /// The refused `apply`'s own line never says that fan was handed back. Once the firmware takes
@@ -103,7 +103,7 @@ struct LeaseApplierHandBackTests {
         #expect(await machine.watchdog.fansUnderManualControl == [0])
     }
 
-    /// **H1: a kept fan whose restore's mode write landed is engaged again.** The fan is engaged
+    /// **A kept fan whose restore's mode write landed is engaged again.** The fan is engaged
     /// under the force key and its command is refused; the undo's restore lands `F0Md = 0`, and
     /// then the force key's clear is refused, so the hand-back throws with the fan on automatic and
     /// level 6 keeps it as one whose hand-back was refused. The next re-apply runs the driver,

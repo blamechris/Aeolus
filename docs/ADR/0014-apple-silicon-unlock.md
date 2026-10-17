@@ -2465,7 +2465,8 @@ building them decided.
   authorisation instead, an `apply` whose lease ended between `heldLease` answering and its
   resumption would erase the set of the lease granted since, whose next re-apply would re-engage its
   own fans and be refused `.notAutomatic`. A stale `apply` cannot engage, because its driver's
-  entitlement refuses it.
+  entitlement refuses it. (Extended by #410's refused-hand-back amendment: `keep` opens a
+  `.handBackRefused` account, and `read` ends one.)
 - **Item 5's residue.** The table's rows stand as written, and two join them: an `apply` in flight
   and a report § 5 did not record (both below). `CancellationError` is rethrown, the envelope
   read's included, because it says nothing about the machine. Any other error the table does not
@@ -2625,9 +2626,10 @@ next re-apply runs the driver, which reads where the fan is instead of assuming 
   commanded without a re-engage: #381's one-cycle residual. So is a fan kept after a hand-back
   that threw once its mode write had landed: its next re-apply is answered applied on an automatic
   fan, and § 5's next cycle falsely marks it reclaimed by the system and spends an attempt before
-  re-asserting it. `LeaseApplierHandBackTests` pins that cycle and its self-correction. *(The second
-  half is closed by #410's refused-hand-back amendment below: the kept fan's re-apply runs the
-  driver, which engages it again. The first half, #381's twin, stands.)*
+  re-asserting it. `LeaseApplierHandBackTests.aKeptFanWhoseModeWriteLandedIsEngagedAgain` pins that
+  the cycle no longer happens. *(The second half is closed by #410's refused-hand-back amendment
+  below: the kept fan's re-apply runs the driver, which engages it again. The first half, #381's
+  twin, stands.)*
 - *A step the driver could not undo itself* (an engagement that threw after its mode write landed,
   then a refused restore) leaves the fan in manual outside the engaged set and § 5's watch, held by
   § 3 alone, and the next `apply` that names it answers `foreignManualControl`. The refusal's
@@ -3039,36 +3041,135 @@ the lease answers `foreignManualControl` about Aeolus's own fan
 ([#406](https://github.com/blamechris/Aeolus/issues/406)). And a hand-back that throws after
 `F<n>Md = 0` landed keeps a fan level 6 believes engaged: its next re-apply is answered applied on an
 automatic fan, and § 5 then marks it reclaimed by the system and spends an attempt (the A6 PR-2
-amendment's "What remains").
+amendment's "What remains"). As first stated, the rule kept a fan for every refused undo and ended an
+account only on level 6's own hand-back; review showed both a refused undo of a step that wrote
+nothing and a driver hand-back that returned leaving a fan re-adoptable, and the Decision below
+closes both.
 
 **Decision.**
 - **The driver says when its undo was refused.** It throws `EngagementUndoRefused(fan:cause:)`,
-  carrying the step's own refusal. Every router reads the cause: § 5's re-assert routes it exactly as
-  before, and level 6 keeps the fan and answers by the cause.
-- **Level 6 holds two accounts per lease:** `.engaged`, when the driver's engagement returned, and
-  `.handBackRefused`, when level 6's undo or the driver's was refused. A hand-back that returns
-  removes the fan.
+  carrying the step's own refusal, when the undo of an engagement that issued a write was refused,
+  and only then. Every router reads the cause: § 5's re-assert routes it exactly as before, and level
+  6 keeps the fan, its answer chosen by the cause.
+- **Issued, not landed, is the line.** A write is issued when the plane makes the firmware call,
+  whatever the firmware answers. Neither answer says whether it took effect: acceptance is not
+  application (#291), and a refusal or a lost answer does not prove the register unchanged. So an
+  engagement that issued a write is undone, a refused mode write included, and a refused undo of it
+  keeps the fan's account.
+- **A first step that issues nothing says so.** Once admitted, a first step that fails before it
+  issues any write, because its pre-state read of `F<n>Md` or a read the write needs did not answer,
+  throws `FanControlPlaneError.failedBeforeFirstWrite(index:detail:)`. With `.superseded` (its
+  admission) and `.notAutomatic` (its pre-state), these are the only refusals of a first step that
+  issued nothing. The driver neither undoes, registers with § 3, nor wraps any of them, so it never
+  writes `F<n>Md = 0` to a fan it has not read (ADR 0011). Only a first step throws it. Its answer is
+  `.readFailed`'s, so no new reason crosses the boundary (D3).
+- **Level 6 holds two accounts per lease:** `.engaged`, when the driver's engagement returned or a
+  kept fan was re-adopted, and `.handBackRefused`, when level 6's undo, or the driver's undo of an
+  engagement that issued a write, was refused.
+- **An account survives a refusal only when the refusal shows the fan untouched and unread.** For a
+  fan level 6 holds no `.engaged` account of:
+
+  | The driver | No account | `.handBackRefused` |
+  |---|---|---|
+  | returned | `.engaged` | `.engaged` |
+  | `EngagementUndoRefused` | `.handBackRefused` | `.handBackRefused` |
+  | `.notAutomatic`, the engaged value | none: `foreignManualControl` | re-adopted, then `.engaged` |
+  | `.notAutomatic`, any other value | none: `foreignManualControl` | ended: `foreignManualControl` |
+  | `.failedBeforeFirstWrite` | none | unchanged |
+  | anything else | none | ended |
+
+  "Anything else" is a refusal after an undo that landed, which is the hand-back returning; the
+  entitlement refused before the first step, which comes only with a lease that is ending or § 3's
+  latch; or `.superseded`, which also follows an undo that landed when a later step was superseded,
+  and so ends the account. A hand-back that returns, level 6's or the driver's, removes the fan.
 - **An `.engaged` fan is re-applied without the driver**, as before. #381's residual stands.
 - **A `.handBackRefused` fan is re-applied through the driver,** whose first step reads its raw mode
   in its own turn. `0`: the restore landed, or the system took the fan, and it is engaged afresh.
   The value D3 confirms engagement by (`EngagementRules.isEngagedMode`, shared with the read-back):
-  the restore never landed, the fan is still this lease's, and the driver's `.notAutomatic` refusal is
-  read as the engagement returning, with nothing written. Any other value: `foreignManualControl`.
+  the driver's `.notAutomatic` refusal is read as the engagement returning, with nothing written, and
+  the fan is re-adopted. Any other value: someone else's fan, and the account ends.
+- **A re-adopted fan is registered with § 3 again** (`EngagementDriver.reAdopted(_:)`), before
+  anything that commands it, as a returning engagement is. While a lease is live every
+  `.handBackRefused` fan is already in § 3's registry: both routes that open the account leave it
+  registered, and every route by which § 3 forgets a fan ends the account (a hand-back of level 6's
+  or the driver's that returns) or every lease (a lease teardown, § 3's own bridge, § 4, § 6, § 7).
+  Registering it again means the emergency's reach does not depend on that history, and costs
+  over-firing at worst.
+- **The wrapper ends at the answer.** Level 6's step throws the driver's refusal as it came, and
+  `refusal(for:)` answers a wrapper by its cause and never returns one, so no `EngagementUndoRefused`
+  reaches the boundary.
 - **Why read rather than infer.** A write's acceptance is not its application (#291), so which of a
   restore's writes landed does not say where the fan is. The pre-state read is in the turn that would
-  write, and inside the hold `lawfulHold` already counts.
+  write, and inside the hold `lawfulHold` already counts. The § 3 registration adds no SMC turn.
 
 **What remains.**
-- A kept fan whose mode landed, then taken by another program that writes the same raw value before
-  the next re-apply, is re-adopted: a contest bounded by § 5's budget.
-- The plane's engaged set does not hold a re-adopted fan, so a per-fan restore of another can clear
-  the force key under it. § 5 reads a reclamation and re-engages it: one cycle and one attempt.
-- #381's twin, a fan the system took back that level 6 still counts `.engaged`, is unchanged.
+- **A contest.** A kept fan that is no longer Aeolus's when it is re-applied, because its restore
+  landed after the refusal or the write its engagement issued never took effect, and to which another
+  program has written the engaged value, is re-adopted, registered with § 3 and commanded. § 5's
+  budget bounds the contest (ADR 0011), and the notice says only what was read.
+- **A false "foreign", closed.** A kept fan whose re-apply's first step is superseded twice by
+  restores that do not end the lease (in production, § 5's undo of another fan's re-engage) loses its
+  account with nothing written. Its next re-apply answers `foreignManualControl` about a fan Aeolus
+  may still hold. Nothing is commanded, § 3 still holds the fan, and the lease's teardown restores it.
+- **The force key under a re-adopted fan.** A re-adoption reads the mode and nothing else, and the
+  plane's engaged set does not hold a re-adopted fan. So the fan can be held with `Ftst = 0`: a
+  per-fan restore of another fan clears the key, or the fan's own refused hand-back did, with
+  `F<n>Md = 0` refused and `Ftst = 0` accepted, because a restore attempts every write. If the
+  firmware then takes the fan back where § 5 can see it, § 5 re-engages it: one cycle and one
+  attempt. If it keeps the mode and ignores the target, § 5 re-commands it up to its budget. Which
+  happens is U6.
+- **#381's twin**, a fan level 6 still counts `.engaged` after something else handed it back, is
+  unchanged. That includes a fan whose § 5 re-engage was undone, or half-undone, by its own driver:
+  level 6's next re-apply is answered applied on a fan that may be automatic, and § 5's next cycle
+  marks it reclaimed and spends an attempt on a hand-back that was Aeolus's own.
+- **The plane's contract.** That only a first step throws `.failedBeforeFirstWrite`, and that a
+  first step that issued nothing throws nothing but the three refusals above, is the plane's to keep.
+  A plane that broke the first would leave a stale account after an undo that landed; the § 3
+  re-registration bounds that to the contest above.
+- **One engagement of a fan at a time.** `.notAutomatic` comes only from a first step, which holds
+  while the examination gate admits one engagement of a fan (#389).
 
-**No `AeolusXPCVersion` bump.** No field, case or method crosses the boundary. The wrapper and level
-6's two accounts are inside the helper, and no client can name either: every answer a client can
-receive is one item 5's table already gave, chosen by the same cause, and a re-adopted fan is
-answered as an engaged one is. On every shipped build each verb answers what it answered, in the same
+**Alternatives considered.**
+- *Keep the account for every refused undo.* A first step whose pre-state read failed was undone as
+  one that wrote; when that undo was refused, which is likely together on a connection that has gone
+  stale, the fan gained an account its lease never earned, and another program's later write of the
+  engaged value made it Aeolus's.
+- *Do not keep on a read failure.* It breaks the converse: a read-back that fails after the mode
+  write landed, with the undo refused, leaves Aeolus's fan in manual and unaccounted. Only the plane
+  knows whether its failing read came before its write.
+- *The driver says on the wrapper whether a write was issued.* It needs the plane's distinction
+  anyway, and still undoes, and registers with § 3, a fan whose mode it never read.
+- *Accept the never-written case.* Its trigger is correlated rather than rare, and it lets the raw
+  value alone make a fan Aeolus's.
+- *Landed rather than issued.* A refused mode write that did take effect would get no undo, no § 3
+  registration and no account: a fan off automatic control that no emergency bridges.
+- *End the account on every bare refusal.* It also ends it on `.failedBeforeFirstWrite`, so a kept
+  fan whose re-apply could not read it is answered `foreignManualControl` once the SMC recovers:
+  #406's false answer again.
+- *Keep the account on `.superseded`.* `.superseded` also follows an undo that landed, and keeping
+  the account there leaves it stale on a fan § 3 then forgets.
+- *A second wrapper for an undo that landed.* Exact, but it changes the driver's throw for every
+  undone refusal at both routers and in every test that expects one, and a router matching the bare
+  type would misroute it. The one case it would disambiguate, `.superseded`, is decided closed.
+- *Rely on the invariant for § 3.* It holds, but a future route that broke it would leave a fan
+  Aeolus commands outside the emergency's reach.
+- *Give level 6 § 3's registration role.* A second § 3 handle beside its latch; the driver already
+  holds the role, and registration is part of what an engagement owes § 3.
+- *Level 6 throws the cause.* `refusal(for:)` then returned the wrapper for a cause the table leaves
+  unchanged, a cancellation, so the answer's first arm was not the defence it was said to be.
+
+**Revisit if:**
+- B1's plane cannot tell a first step's failure before its first write from one after it;
+- run 1 shows a refusal code that reliably means a write did not take effect;
+- run 4 shows another program writing the engaged value to Aeolus's fans;
+- `foreignManualControl` is seen after supersessions under a live lease;
+- the examination gate admits two engagements of one fan.
+
+**No `AeolusXPCVersion` bump.** No field, case or method crosses the boundary. The wrapper, level
+6's two accounts, `.failedBeforeFirstWrite` and `reAdopted(_:)` are inside the helper, and no client
+can name any of them: every answer a client can receive is one item 5's table already gave, chosen by
+the same cause, the new refusal answers as `.readFailed` did, and a re-adopted fan is answered as an
+engaged one is. On every shipped build each verb answers what it answered, in the same
 order. This amendment corrects clauses of a Proposed ADR rather than the decisions they sit under.
 **Status stays Proposed.**
 
@@ -3081,7 +3182,7 @@ order. This amendment corrects clauses of a Proposed ADR rather than the decisio
 | U1 | A naive `F<n>Md = 1` succeeds when the system is not actively asserting control, and is refused with `0x82` when it is | Reported. `0x82` has been seen here only on reads of function keys | **Accepted and applied under load:** no force key is needed on this machine; recorded. **Accepted, then taken back within § 5's cycles:** write `Ftst` before the mode write, a conformer-internal change. **Another code:** treated as "held" only after architect review |
 | U2 | `Ftst = 1` is accepted, and the mode write after it | Reported | No unlock by this route. E4 stops, the snapshot says manual control is unavailable and why, the matrix says so, and it goes back to the architect. Never coded around |
 | U3 | The yield arrives within 3.5 s | Reported at about 3 s; budgets of about 30 s suggest a tail | Raise the budget and give `apply` its own client deadline. Beyond about 4 s, asynchronous engagement before merge |
-| U4 | An accepted `F<n>Md` reads back raw `1`, and `F<n>Tg` reads back within `ReclamationLimits.targetToleranceRPM` (1 RPM) of what was written | Unobserved. § 5's primary signal rests on the second half | **Mode:** D3 refuses, which is correct. **Target:** re-derive the 1 RPM tolerance from the observed quantum before merge — a safety-limit change — or every § 5 cycle reports a reclamation |
+| U4 | An accepted `F<n>Md` reads back raw `1`, and `F<n>Tg` reads back within `ReclamationLimits.targetToleranceRPM` (1 RPM) of what was written | Unobserved. § 5's primary signal rests on the second half | **Mode:** D3 refuses, which is correct. The re-adoption of a kept fan reads the same predicate. **Target:** re-derive the 1 RPM tolerance from the observed quantum before merge — a safety-limit change — or every § 5 cycle reports a reclamation |
 | U5 | The reverse-order restore is accepted for a fan the plane engaged | Unobserved | The retry already runs the other order. If only that one lands, D5's order flips, in one place. A refused keystone in any run goes to the architect with #343's decision (ADR 0009, 2026-10-15) before the next run |
 | U5b | `F<n>Md = 0` written to a fan already in automatic is accepted, with or without the force key, whatever the thermal manager is doing | Unobserved. Tested by 1b′ and by every `.everyFan` | Refusal accounting changes before run 2 (Consequences). A refused keystone in any run goes to the architect with #343's decision (ADR 0009, 2026-10-15) before the next run |
 | U6 | With `Ftst = 1` and every raw `F<n>Md = 0`, Apple's management drives the fans | Unknown | D5's gate goes: every restore clears the key, and every engagement re-sets it. § 4's never-issued keystone becomes a priority residual |

@@ -11,16 +11,17 @@ import Testing
 /// is read as still the lease's. A fan with no account, or a kept fan holding any other value, is
 /// someone else's. And a refused undo inside the driver keeps the fan's account (#406).
 ///
-/// H3 to H5 of the amendment's tests, and the `.notBuilt` pin; H1 and H2 are
-/// `LeaseApplierHandBackTests`'. Every scenario runs the real `LeaseApplier` over a
-/// `ReclamationMachine`, and each test names the mutation it kills.
+/// The kept fans a re-apply re-adopts are `LeaseApplierHandBackTests`'; which refusals open and end
+/// an account are `LeaseApplierIssuedWriteTests`' and `LeaseApplierAccountEndTests`'. Every
+/// scenario runs the real `LeaseApplier` over a `ReclamationMachine`, and each test names the
+/// mutation it kills.
 @Suite("Level 6 reads a fan it does not hold engaged", .timeLimit(.minutes(1)))
 struct LeaseApplierKeptFanTests {
 
-    /// What `EngagementDriver.engagementUndoRefused(fan:detail:)` says for fan 0.
+    /// What `SafetyLog.engagementUndoRefused(fan:detail:)` says for fan 0.
     static let undoRefused = "Could not undo the engagement of fan 0"
 
-    /// **H3: a fan with no account that reads manual is someone else's.** Fan 0 is leased on
+    /// **A fan with no account that reads manual is someone else's.** Fan 0 is leased on
     /// automatic, and another program takes it before level 6 ever engages it. The `apply` runs the
     /// driver, whose first step reads raw `1` and refuses with nothing written; with no account
     /// under the lease, level 6 answers `.foreignManualControl`, registers nothing and writes
@@ -50,7 +51,7 @@ struct LeaseApplierKeptFanTests {
         #expect(machine.safetyLog.lines(containing: KeptFan.reAdopted).isEmpty)
     }
 
-    /// **H4: a kept fan reading any other raw value is someone else's.** Fan 0 is kept in manual;
+    /// **A kept fan reading any other raw value is someone else's.** Fan 0 is kept in manual;
     /// before its re-apply, another program leaves its raw mode at `2`, a value no engagement of
     /// Aeolus's writes. The driver's first step refuses `.notAutomatic` with nothing written, and
     /// level 6 answers `.foreignManualControl`: only `EngagementRules.isEngagedMode`, the
@@ -83,7 +84,7 @@ struct LeaseApplierKeptFanTests {
         #expect(machine.safetyLog.lines(containing: KeptFan.reAdopted).isEmpty)
     }
 
-    /// **H5 (#406): a driver undo the firmware refused keeps the fan's account.** Fan 0's
+    /// **#406: a driver undo the firmware refused keeps the fan's account.** Fan 0's
     /// engagement writes `F0Md = 1`, which lands, and its read-back answers `0`, so the step throws
     /// `.engagementNotConfirmed`; then the firmware stops taking writes, and the driver's own undo
     /// is refused. The `apply` is answered by that cause, and its notice names fan 0 as not handed
@@ -92,8 +93,8 @@ struct LeaseApplierKeptFanTests {
     ///
     /// **Mutation:** in `EngagementDriver.engageManualControl(of:)`, throw the bare `error` for a
     /// refused undo. Run: red, the notice says no engagement returned and the re-apply is answered
-    /// `.foreignManualControl`. **Mutation:** in `LeaseEngagements.read`, take the wrapper's cause
-    /// without calling `keep`. Run: red on the re-apply, the same.
+    /// `.foreignManualControl`. **Mutation:** in `LeaseEngagements.read`, throw the wrapper without
+    /// calling `keep`. Run: red on the re-apply, the same.
     @Test("A driver undo the firmware refused keeps the fan's account for its re-apply")
     func aDriverUndoTheFirmwareRefusedKeepsTheFansAccount() async throws {
         let machine = ReclamationMachine(

@@ -27,7 +27,7 @@ struct EngagementUndoRefusedTests {
         return index == fan
     }
 
-    // MARK: - The driver (H6)
+    // MARK: - The driver
 
     /// **Only a refused undo is wrapped.** Three refusals of one engagement each: § 3 latching
     /// after the write with the undo then refused, which throws the wrapper carrying the latch's
@@ -116,7 +116,7 @@ struct EngagementUndoRefusedTests {
             "the refusal's line said: \(refusal)")
     }
 
-    // MARK: - § 5 (H7)
+    // MARK: - § 5
 
     /// **(a) A cause that yields the fan hands it back.** § 5 re-engages a reclaimed fan; its mode
     /// write lands, then the lease ends and the firmware stops taking writes, so the driver's
@@ -203,7 +203,7 @@ struct EngagementUndoRefusedTests {
             "the refused re-engage's attempt was not spent")
     }
 
-    // MARK: - Level 6's answer (H8)
+    // MARK: - Level 6's answer
 
     /// **The table answers a wrapper by its cause.** Level 6's step throws the driver's refusal as
     /// it came, so a refused undo reaches the table as the wrapper (ADR 0014's #410

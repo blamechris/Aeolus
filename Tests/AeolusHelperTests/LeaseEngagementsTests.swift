@@ -5,7 +5,7 @@ import Testing
 
 /// `LeaseEngagements`, level 6's account of which fans it holds under which lease, as a value: the
 /// authority for "this lease has engaged the fan" (ADR 0014's A6 PR-2 amendment), with the two
-/// accounts the #410 refused-hand-back amendment gives it, `.engaged` and `.handBackRefused` (H9).
+/// accounts the #410 refused-hand-back amendment gives it, `.engaged` and `.handBackRefused`.
 @Suite("Level 6's accounts, as a value", .timeLimit(.minutes(1)))
 struct LeaseEngagementsTests {
 
