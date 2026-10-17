@@ -205,7 +205,7 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
         var answered = false
         var registered = false
         do {
-            var answer = try await firstStep(of: fan)
+            var (answer, attempt) = try await firstStep(of: fan)
             answered = true
             while answer == .awaitingYield {
                 let next = clock.now + UnlockLimits.pollInterval
@@ -216,6 +216,8 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
                 try Task.checkCancellation()
                 try await requireEntitlement(for: fan)
                 steps += 1
+                attempt += 1
+                log.engagementStepAttempted(fan: index, attempt: attempt)
                 answer = try await writer.engageManualControl(of: fan)
             }
             await emergency.manualControlEngaged(fan)
@@ -258,14 +260,19 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
     ///
     /// **`.supersededAfterWrite` is never retried.** It is found after the step's mode write,
     /// which may have landed, so it goes to the undo like any other refusal of a step that wrote.
-    private func firstStep(of fan: CommandableFan) async throws -> EngagementStep {
+    ///
+    /// Each step is logged with its attempt index before the plane is asked for it (D3), and the
+    /// index the first step answered on is returned beside its answer, so later steps continue it.
+    private func firstStep(of fan: CommandableFan) async throws -> (EngagementStep, attempt: Int) {
         do {
-            return try await writer.engageManualControl(of: fan)
+            log.engagementStepAttempted(fan: fan.index, attempt: 1)
+            return (try await writer.engageManualControl(of: fan), 1)
         } catch FanControlPlaneError.superseded {
             log.engagementFirstStepRetried(fan: fan.index)
             writer.beginEngagement(fanAt: fan.index)
             try await requireEntitlement(for: fan)
-            return try await writer.engageManualControl(of: fan)
+            log.engagementStepAttempted(fan: fan.index, attempt: 2)
+            return (try await writer.engageManualControl(of: fan), 2)
         }
     }
 

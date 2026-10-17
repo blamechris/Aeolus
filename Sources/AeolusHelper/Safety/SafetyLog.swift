@@ -1569,6 +1569,14 @@ extension SafetyLog {
         )
     }
 
+    /// The driver is about to ask the plane for one step of an engagement, and this is its attempt
+    /// index: every step the engagement asks for counts, the retried first step included, which is
+    /// attempt 2 (ADR 0014 D3). D3's per-step record — the key, the value, the answer, the raw
+    /// values and the duration — is the plane's, and the step's own lines follow this one.
+    func engagementStepAttempted(fan: Int, attempt: Int) {
+        emit(.notice, "Fan \(fan)'s engagement asks the plane for one step: attempt \(attempt).")
+    }
+
     /// An engagement was refused — by the entitlement, the plane or the yield budget — and what
     /// became of what it wrote. A refused undo is reported at `.fault` by its own line too.
     func engagementRefused(
@@ -1654,11 +1662,15 @@ extension SafetyLog {
         }
         var refused = false
         if case .refused? = report.machineWideRestore { refused = true }
+        let sizes = report.declaredSizes.sorted { $0.key.rawValue < $1.key.rawValue }
+            .map { "\($0.key.rawValue) \($0.value)" }
         emit(
             report.enumeratedFans == nil || refused ? .fault : .notice,
             """
             The write path's preparation step \(enumeration), found the force key \
-            \(report.forceKey), and \(restore).
+            \(report.forceKey), recorded the restore keys' declared sizes in bytes \
+            [\(sizes.joined(separator: ", "))] (any other is written one zero byte), and \
+            \(restore).
             """
         )
     }

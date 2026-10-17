@@ -32,7 +32,9 @@ enum EngagementRules {
     }
 
     /// Steps 2 to 4. `firstStep` is the engagement's first; a later one is a Y-write, whose
-    /// `0x82` only means the yield has not arrived yet.
+    /// `0x82` only means the yield has not arrived yet. A write with no answer throws on every
+    /// step: it is never read as `0x82`, so never retried and never a reason to set the key, and
+    /// the driver undoes it as a write that may have landed (ADR 0014's B1 amendment).
     static func afterModeWrite(
         _ answer: FirmwareWriteAnswer, firstStep: Bool, forceKey: ForceKeyPresence,
         forceKeySet: Bool
@@ -51,6 +53,9 @@ enum EngagementRules {
         case .refused(let code):
             throw FanControlPlaneError.firmwareRefusedControl(
                 detail: "the mode write answered \(hex(code)); D3 retries no such answer")
+        case .unanswered(let detail):
+            throw FanControlPlaneError.firmwareRefusedControl(
+                detail: "the mode write was not answered (\(detail)); D3 retries no such write")
         }
     }
 
@@ -67,7 +72,9 @@ enum EngagementRules {
         return .engaged
     }
 
-    /// Step 3's force-key write: accepted sets the plane's flag; anything else is refused.
+    /// Step 3's force-key write: accepted awaits the yield; anything else is thrown, an unanswered
+    /// write included. The plane records the answer first (`PlaneWriteLedger.recordForceKeyWrite`),
+    /// whose flag an unanswered write also sets, so the undo clears a key it may have set.
     static func afterForceKeyWrite(_ answer: FirmwareWriteAnswer) throws -> EngagementStep {
         guard answer == .accepted else {
             throw FanControlPlaneError.firmwareRefusedControl(

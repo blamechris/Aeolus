@@ -33,6 +33,11 @@ enum FirmwareWriteAnswer: Sendable, Hashable {
     /// Anything else, including the codes this machine has returned to reads (`0x89`, `0xc7`,
     /// `0xcb`, `0xd8`). D3 retries none of them.
     case refused(code: UInt8)
+    /// No answer: the call failed in the kernel, or its reply was cut short. The write was
+    /// issued and may have landed (ADR 0014's #410 refused-hand-back amendment, "issued, not
+    /// landed"), so it is never retried and never read as `0x82`: it is thrown, and the driver
+    /// undoes it.
+    case unanswered(detail: String)
 }
 
 /// The restore epoch, the engaged set, the touched set, the force-key flag and what the
@@ -49,8 +54,10 @@ enum FirmwareWriteAnswer: Sendable, Hashable {
 /// - **The touched set** holds every addressable fan this plane issued a mode write to or
 ///   restored by index, and never shrinks: a machine-wide restore writes it whatever the
 ///   enumeration knew.
-/// - **The force-key flag** is set when this plane's `Ftst = 1` is accepted and cleared when a
-///   restore issues `Ftst = 0`.
+/// - **The force-key flag** is set when this plane's `Ftst = 1` is accepted or goes unanswered,
+///   and cleared when a restore issues `Ftst = 0`.
+/// - **The declared sizes** are each restore key's, as the preparation step's key-info reads
+///   answered: what a restore writes zeros of (`restorePayload(for:)`).
 ///
 /// **What the epoch cannot see.** An engagement's epoch is taken before its entitlement
 /// (`beginEngagement(fanAt:)`), so a restore requested after the engagement began supersedes its
@@ -81,25 +88,53 @@ final class PlaneWriteLedger: Sendable {
         /// `nil` until the preparation step enumerated the fans, and after it failed to.
         var enumerated: Set<Int>?
         var forceKey: ForceKeyPresence
+        /// Each restore key's declared size, by key. A key with none is written one zero byte.
+        var declaredSizes: [SMCKey: Int]
     }
 
     private let state: OSAllocatedUnfairLock<State>
 
     /// A ledger as the preparation step left it. The defaults are a plane nothing has prepared:
-    /// no fan set and an unknown key, so a machine-wide restore writes what it was touched with
-    /// and the key, and says the rest is unknown.
-    init(enumerated: Set<Int>? = nil, forceKey: ForceKeyPresence = .unknown) {
+    /// no fan set, an unknown key and no sizes, so a machine-wide restore writes what it was
+    /// touched with and the key, one zero byte each, and says the rest is unknown.
+    init(
+        enumerated: Set<Int>? = nil, forceKey: ForceKeyPresence = .unknown,
+        declaredSizes: [SMCKey: Int] = [:]
+    ) {
         state = OSAllocatedUnfairLock(
-            initialState: State(enumerated: enumerated, forceKey: forceKey))
+            initialState: State(
+                enumerated: enumerated, forceKey: forceKey, declaredSizes: declaredSizes))
     }
 
     // MARK: - What the preparation step recorded
 
-    func recordPreparation(enumerated: Set<Int>?, forceKey: ForceKeyPresence) {
+    /// What the preparation step found (D5 steps 1 and 2): the fan set, the force key's presence,
+    /// and the declared size of each restore key whose key-info read answered — every enumerated
+    /// `F<n>Md`, and `Ftst` when it is present (`WritePathPreparation.declaredSizes`).
+    func recordPreparation(
+        enumerated: Set<Int>?, forceKey: ForceKeyPresence, declaredSizes: [SMCKey: Int]
+    ) {
         state.withLock {
             $0.enumerated = enumerated
             $0.forceKey = forceKey
+            $0.declaredSizes = declaredSizes
         }
+    }
+
+    /// The bytes a restore writes for `write`: zeros, as many as the preparation step recorded
+    /// for its key, or one when it recorded none (D5, D7; ADR 0014's B1 amendment). Pure: no read,
+    /// and never `encode`, because zero is all-zero bytes in every numeric type and either byte
+    /// order, so the keystone gains no way to fail. A recorded size no SMC payload can carry,
+    /// outside one to 32 bytes, is not a size a write can be made with, and is taken as unknown.
+    func restorePayload(for write: RestorePlan.Write) -> [UInt8] {
+        let key: SMCKey?
+        switch write {
+        case .mode(let index): key = SMCKey.fanMode(index)
+        case .forceKey: key = SMCKey.forceTest
+        }
+        let recorded = state.withLock { state in key.flatMap { state.declaredSizes[$0] } }
+        guard let size = recorded, (1...32).contains(size) else { return [0] }
+        return Array(repeating: 0, count: size)
     }
 
     var forceKey: ForceKeyPresence { state.withLock { $0.forceKey } }
@@ -178,9 +213,14 @@ final class PlaneWriteLedger: Sendable {
         state.withLock { _ = $0.inProgress.removeValue(forKey: index) }
     }
 
-    /// This plane's `Ftst = 1` was accepted.
-    func recordForceKeyAccepted() {
-        state.withLock { $0.forceKeySet = true }
+    /// This plane's `Ftst = 1` was answered, recorded before D3 decides on the answer. Accepted, or
+    /// unanswered — issued and possibly landed — sets the flag, so the restore that undoes the
+    /// engagement clears the key it may have set (D5; ADR 0014's B1 amendment). A refusal does not.
+    func recordForceKeyWrite(answered answer: FirmwareWriteAnswer) {
+        switch answer {
+        case .accepted, .unanswered: state.withLock { $0.forceKeySet = true }
+        case .heldBySystem, .refused: break
+        }
     }
 
     // MARK: - Restores
@@ -318,6 +358,10 @@ struct WritePathPreparation: Sendable, Hashable {
     let forceKey: ForceKey
     /// `nil` when none was issued, which on a quiescent machine is the ordinary case.
     let machineWideRestore: MachineWideRestore?
+    /// Each restore key's declared size, as its key-info read answered (D5 step 2): what a
+    /// restore writes zeros of. A key whose read failed, or a fan the enumeration did not find,
+    /// is absent, and a restore writes it one zero byte (`PlaneWriteLedger.restorePayload(for:)`).
+    var declaredSizes: [SMCKey: Int] = [:]
 
     /// D5 step 4: one machine-wide restore when the key reads set, is unknown, or will not
     /// read. An absent key is never read or written again, and one reading `0` needs nothing.

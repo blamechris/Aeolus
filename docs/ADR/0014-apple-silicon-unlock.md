@@ -3246,6 +3246,75 @@ before. It lands on `main` before run 1.
 version-1 meanings stand; a non-nil `targetRPM` carries v1's meaning and `nil` is a value every client
 renders. This amendment corrects clauses of a Proposed ADR. **Status stays Proposed.**
 
+## Amendment (2026-10-17, B1) — one job per turn, a plane that cannot write unless the daemon asks, and restores that encode nothing
+
+Cited elsewhere as the B1 amendment.
+
+B1 is the first code at or below rule 1's line, built on `e4/bring-up` only. This amendment decides
+what D1–D7 left to the conformer.
+
+**Decision.**
+- **A step, a command or a restore is one synchronous job on the connection's actor, inside one
+  scheduler write turn.**
+  - `SMCReadScheduler.withWriteTurn(_:)` takes a `.supervisor` turn and never waits for a discovery
+    walk. A write closes no handle, and D4 bounds a restore's wait to the turns ahead of it.
+  - The turn function takes an `isolated` channel. Its first statement is the ledger's admission,
+    and nothing inside it suspends.
+  - So U15 holds by construction, a `CancellationError` cannot arise after admission, and
+    `RestorePlan.attemptEvery` and `EngagementRules` serve both planes unchanged.
+- **The seam is the helper's.**
+  - `SMCWriteChannel: Actor` is declared in the helper, and `SMCConnection` conforms through an
+    empty extension.
+  - SMCCore gains one public read, `freshKeyInfo(for:)`. Its SPI members stay at two.
+  - No SMCCore protocol carries `write`, because a public requirement witnessed by the SPI member
+    would let every client name the write.
+- **Write capability is what the plane holds.**
+  - `.built` means the plane holds a channel.
+  - `HelperComposition.production` withholds the channel unless the caller passes `writePath:
+    .connection`, and only `AeolusHelperMain` does.
+  - So every test composition, hardware-gated or not, is `.notBuilt` unless it names a fake. A wrong
+    default in either direction fails safe.
+- **A restore writes zero bytes of the size the preparation step recorded**, or one byte when that
+  size is unknown. It never goes through `encode`.
+- **Forward writes:**
+  - fresh key info, then the raw pre-state read;
+  - the declared types must be the observed ones;
+  - an unanswered write counts as issued;
+  - a command reads its target back within `targetToleranceRPM` and returns the permit's rpm, or
+    throws `.targetNotConfirmed`.
+- **`Ftst` is absent only on the firmware's not-found answer.**
+- **The branch is never rewritten.** It takes `main` by merge-commit PRs, runs CI on its own PRs,
+  and is protected like `main` except for linear history.
+
+**What remains.**
+- A test written deliberately to pass a real connection as a channel is caught only by a tripwire
+  that looks for the two in the same file.
+- The real write body meets the plane first at run 1.
+- `.built` on a platform without `F<n>Md` is decided before the merge (#360's revisit clause).
+- Restore turns on machines with more than four fans exceed `writeTurnRoundTrips`.
+
+**Alternatives considered.**
+- *An async turn of several hops.* It works, but it needs a second, async `attemptEvery`. That would
+  be the drift between the double and production that `RestorePlan` exists to prevent, and it puts
+  suspensions inside an admitted step.
+- *A fake at the IOKit call, as a kernel closure in SMCCore.* It is the most faithful option, but it
+  puts a substitution point at the one call site the round-trip watchdog stamps.
+- *An identity or parent-PID guard in the write body.* It is structural, but it is a runtime mode.
+  Orphan reparenting defeats the parent-PID check, and an identity check couples SMCCore to the
+  helper. Kept as the fallback.
+- *Using `withExclusiveAccess` for writes.* A keystone would wait behind a walk of 5.9–24.9 s.
+- *`encode(0)` for restores.* It adds an encoder failure to the keystone and gains nothing.
+- *Two plane types, or a read-only factory for tests.* The hardware tests would then exercise a
+  graph that never ships.
+
+**Revisit if:**
+- any write from a test process is observed;
+- P1 or run 1 contradicts U0–U7, U14 or U15;
+- the `isolated` form will not build;
+- a second production plane, or a second caller of `write`, is proposed.
+
+**No `AeolusXPCVersion` bump**: nothing crosses the boundary. **Status stays Proposed.**
+
 ## Assumptions and what would invalidate them
 
 | # | Assumption | Basis | If it fails |
