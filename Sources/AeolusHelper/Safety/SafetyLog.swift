@@ -1558,13 +1558,15 @@ extension SafetyLog {
 
 extension SafetyLog {
 
-    /// An engagement reached `.engaged`, registered with § 3, and kept its entitlement.
-    func engagementEngaged(fan: Int, steps: Int, waited: Duration) {
+    /// An engagement reached `.engaged`, registered with § 3, and kept its entitlement. `attempts`
+    /// is the last attempt index its step lines gave (`engagementStepAttempted(fan:attempt:)`),
+    /// counting a retried first step's two.
+    func engagementEngaged(fan: Int, attempts: Int, waited: Duration) {
         emit(
             .notice,
             """
-            Fan \(fan) came off automatic control after \(steps) step(s), \(waited) after its \
-            first. It is registered with § 3, whose next emergency bridges it.
+            Fan \(fan) came off automatic control after \(attempts) attempt(s), \(waited) after \
+            its first. It is registered with § 3, whose next emergency bridges it.
             """
         )
     }
@@ -1579,8 +1581,9 @@ extension SafetyLog {
 
     /// An engagement was refused — by the entitlement, the plane or the yield budget — and what
     /// became of what it wrote. A refused undo is reported at `.fault` by its own line too.
+    /// `attempts` counts as `engagementEngaged(fan:attempts:waited:)`'s does.
     func engagementRefused(
-        fan: Int, steps: Int, detail: String, aftermath: EngagementAftermath
+        fan: Int, attempts: Int, detail: String, aftermath: EngagementAftermath
     ) {
         let outcome: String
         switch aftermath {
@@ -1593,7 +1596,7 @@ extension SafetyLog {
         emit(
             .notice,
             """
-            The engagement of fan \(fan) was refused after \(steps) step(s): \(detail). \
+            The engagement of fan \(fan) was refused after \(attempts) attempt(s): \(detail). \
             \(outcome)
             """
         )

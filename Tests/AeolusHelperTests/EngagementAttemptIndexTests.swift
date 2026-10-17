@@ -17,7 +17,8 @@ struct EngagementAttemptIndexTests {
         }
     }
 
-    /// A held fan engaged on its fourth step logs attempts 1 to 4, one per step, before each.
+    /// A held fan engaged on its fourth step logs attempts 1 to 4, one per step, before each, and
+    /// its closing line counts the same four.
     ///
     /// **Mutation:** in `EngagementDriver.engageManualControl(of:)`, log a constant —
     /// `attempt: 1` in the poll loop's line. Run: red, `[1, 1, 1, 1]`.
@@ -34,13 +35,16 @@ struct EngagementAttemptIndexTests {
             rig.log.levels(containing: "asks the plane for one step") == [
                 notice, notice, notice, notice,
             ])
+        #expect(rig.log.lines(containing: "after 4 attempt(s)").count == 1)
     }
 
     /// A first step superseded at its admission is retried as attempt 2, as its own line says, and
-    /// the steps after it continue from there.
+    /// the steps after it continue from there. The closing line counts the four attempts the step
+    /// lines showed, not the three steps.
     ///
     /// **Mutation:** in `EngagementDriver.firstStep(of:)`, log and return the retry as attempt 1.
-    /// Run: red, `[1, 1, 2, 3]`.
+    /// Run: red, `[1, 1, 2, 3]`. **Mutation:** pass `attempts: steps` to the driver's
+    /// `engagementEngaged`. Run: red on the closing line, which says 3.
     @Test("A retried first step is attempt 2, and later steps continue from it")
     func aRetriedFirstStepIsAttemptTwo() async throws {
         let rig = try await EngagementRig(unlock: .heldUntilForced(stepsToYield: 1), fans: [0, 1])
@@ -53,6 +57,30 @@ struct EngagementAttemptIndexTests {
         #expect(await rig.writes.didFire, "the scenario never arranged the interleaving")
         #expect(rig.log.lines(containing: "retrying it once (attempt 2)").count == 1)
         #expect(Self.attempts(in: rig.log) == [1, 2, 3, 4])
+        #expect(rig.log.lines(containing: "after 4 attempt(s)").count == 1)
         #expect(rig.plane.ledger.engagedFans == [0])
+    }
+
+    /// A retried first step that is refused counts its two attempts too: the closing line of an
+    /// engagement that wrote nothing says what its step lines showed.
+    ///
+    /// **Mutation:** pass `attempts: steps` to the driver's `.nothingWritten` refusal line.
+    /// Run: red.
+    @Test("A refused retry's closing line counts both attempts")
+    func aRefusedRetryCountsBothAttempts() async throws {
+        let rig = try await EngagementRig(unlock: .naive, fans: [0, 1])
+        await rig.writes.interfere(beforeEngageStep: 1) {
+            _ = try? await rig.plane.restoreToAutomatic(.fan(1))
+            await rig.plane.setMode(.manual, ofFan: 0)
+        }
+
+        await #expect(throws: FanControlPlaneError.notAutomatic(index: 0, rawMode: 1)) {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+
+        #expect(await rig.writes.didFire, "the scenario never arranged the interleaving")
+        #expect(Self.attempts(in: rig.log) == [1, 2])
+        #expect(rig.log.lines(containing: "refused after 2 attempt(s)").count == 1)
+        #expect(await rig.plane.keyWrites == [.mode(fan: 1, value: 0)], "fan 0 was written")
     }
 }

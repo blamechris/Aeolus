@@ -201,11 +201,16 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
 
         let began = clock.now
         let deadline = began + UnlockLimits.yieldBudget
-        var steps = 1
+        // The first step's outcome is returned, never thrown past, so its attempts are counted
+        // however it ended; its error is thrown inside the `do`. Every later step is one attempt,
+        // and the closing lines count attempts, as the step lines do.
+        let first = await firstStep(of: fan)
+        var attempts = first.attempts
+        var steps: Int { attempts - first.attempts + 1 }
         var answered = false
         var registered = false
         do {
-            var (answer, attempt) = try await firstStep(of: fan)
+            var answer = try first.outcome.get()
             answered = true
             while answer == .awaitingYield {
                 let next = clock.now + UnlockLimits.pollInterval
@@ -215,19 +220,18 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
                 try await clock.sleep(until: next)
                 try Task.checkCancellation()
                 try await requireEntitlement(for: fan)
-                steps += 1
-                attempt += 1
-                log.engagementStepAttempted(fan: index, attempt: attempt)
+                attempts += 1
+                log.engagementStepAttempted(fan: index, attempt: attempts)
                 answer = try await writer.engageManualControl(of: fan)
             }
             await emergency.manualControlEngaged(fan)
             registered = true
             try await requireEntitlement(for: fan)
         } catch {
+            let detail = String(describing: error)
             guard answered || !Self.wroteNothing(error) else {
                 log.engagementRefused(
-                    fan: index, steps: steps, detail: String(describing: error),
-                    aftermath: .nothingWritten)
+                    fan: index, attempts: attempts, detail: detail, aftermath: .nothingWritten)
                 throw error
             }
             if !registered { await emergency.manualControlEngaged(fan) }
@@ -239,11 +243,11 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
                 log.engagementUndoRefused(fan: index, detail: String(describing: undo))
             }
             log.engagementRefused(
-                fan: index, steps: steps, detail: String(describing: error), aftermath: aftermath)
+                fan: index, attempts: attempts, detail: detail, aftermath: aftermath)
             guard aftermath == .undoRefused else { throw error }
             throw EngagementUndoRefused(fan: index, cause: error)
         }
-        log.engagementEngaged(fan: index, steps: steps, waited: began.duration(to: clock.now))
+        log.engagementEngaged(fan: index, attempts: attempts, waited: clock.now - began)
     }
 
     /// The first step, retried **once** when the plane's admission answers `.superseded`.
@@ -262,17 +266,31 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
     /// which may have landed, so it goes to the undo like any other refusal of a step that wrote.
     ///
     /// Each step is logged with its attempt index before the plane is asked for it (D3), and the
-    /// index the first step answered on is returned beside its answer, so later steps continue it.
-    private func firstStep(of fan: CommandableFan) async throws -> (EngagementStep, attempt: Int) {
+    /// attempts made are returned beside the outcome rather than thrown past, so the closing line
+    /// counts what the step lines showed however the first step ended: answered, refused, or
+    /// retried and then refused. The caller rethrows the outcome's error unchanged.
+    private func firstStep(
+        of fan: CommandableFan
+    ) async -> (attempts: Int, outcome: Result<EngagementStep, any Error>) {
+        log.engagementStepAttempted(fan: fan.index, attempt: 1)
         do {
-            log.engagementStepAttempted(fan: fan.index, attempt: 1)
-            return (try await writer.engageManualControl(of: fan), 1)
+            return (1, .success(try await writer.engageManualControl(of: fan)))
         } catch FanControlPlaneError.superseded {
             log.engagementFirstStepRetried(fan: fan.index)
+        } catch {
+            return (1, .failure(error))
+        }
+        do {
             writer.beginEngagement(fanAt: fan.index)
             try await requireEntitlement(for: fan)
-            log.engagementStepAttempted(fan: fan.index, attempt: 2)
-            return (try await writer.engageManualControl(of: fan), 2)
+        } catch {
+            return (1, .failure(error))
+        }
+        log.engagementStepAttempted(fan: fan.index, attempt: 2)
+        do {
+            return (2, .success(try await writer.engageManualControl(of: fan)))
+        } catch {
+            return (2, .failure(error))
         }
     }
 

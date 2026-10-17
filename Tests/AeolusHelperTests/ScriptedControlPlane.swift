@@ -830,9 +830,7 @@ extension ScriptedControlPlane {
             guard ledger.isCurrent(fanAt: index) else {
                 throw FanControlPlaneError.supersededAfterWrite
             }
-            let answer = answerForceKeyWrite()
-            ledger.recordForceKeyWrite(answered: answer)
-            return try EngagementRules.afterForceKeyWrite(answer)
+            return try EngagementRules.afterForceKeyWrite(answerForceKeyWrite())
         case .awaitYield:
             return .awaitingYield
         }
@@ -895,9 +893,11 @@ extension ScriptedControlPlane {
         }
     }
 
-    /// `Ftst = 1`, answered as this stage's force-key behaviour says, or not at all.
+    /// `Ftst = 1`, recorded as issued whatever it answers, and answered as this stage's force-key
+    /// behaviour says, or not at all.
     private func answerForceKeyWrite() -> FirmwareWriteAnswer {
         keyWrites.append(.forceKey(1))
+        ledger.recordForceKeyIssued()
         if let unanswered = stage.unansweredForceKeyWrite {
             if unanswered == .landed { isForceKeySet = true }
             return .unanswered(detail: "Ftst = 1: the scripted firmware sent no reply")

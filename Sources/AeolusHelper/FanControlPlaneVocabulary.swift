@@ -181,8 +181,9 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
     ///
     /// Also what an engagement step throws for a write the firmware did not answer at all
     /// (`FirmwareWriteAnswer.unanswered`). Either way the write was issued and may have taken
-    /// effect, so it is never retried and is always undone (ADR 0014's #410 refused-hand-back
-    /// amendment, "issued, not landed").
+    /// effect (ADR 0014's #410 refused-hand-back amendment, "issued, not landed"), so it is never
+    /// retried, and the driver undoes it: the fan's mode at once, and a force key it may have set
+    /// once no engaged fan depends on the key (D5's gate; ADR 0014's B1 amendment).
     case firmwareRefusedControl(detail: String)
 
     /// A target command's in-turn read-back of `F<n>Tg` fell outside

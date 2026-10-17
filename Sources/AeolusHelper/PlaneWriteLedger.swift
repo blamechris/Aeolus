@@ -54,8 +54,9 @@ enum FirmwareWriteAnswer: Sendable, Hashable {
 /// - **The touched set** holds every addressable fan this plane issued a mode write to or
 ///   restored by index, and never shrinks: a machine-wide restore writes it whatever the
 ///   enumeration knew.
-/// - **The force-key flag** is set when this plane's `Ftst = 1` is accepted or goes unanswered,
-///   and cleared when a restore issues `Ftst = 0`.
+/// - **The force-key flag** is set when this plane issues `Ftst = 1`, whatever the firmware
+///   answers, and cleared when a restore issues `Ftst = 0`: a clear is owed for every key write
+///   that may have landed (ADR 0014's B1 amendment).
 /// - **The declared sizes** are each restore key's, as the preparation step's key-info reads
 ///   answered: what a restore writes zeros of (`restorePayload(for:)`).
 ///
@@ -213,14 +214,16 @@ final class PlaneWriteLedger: Sendable {
         state.withLock { _ = $0.inProgress.removeValue(forKey: index) }
     }
 
-    /// This plane's `Ftst = 1` was answered, recorded before D3 decides on the answer. Accepted, or
-    /// unanswered — issued and possibly landed — sets the flag, so the restore that undoes the
-    /// engagement clears the key it may have set (D5; ADR 0014's B1 amendment). A refusal does not.
-    func recordForceKeyWrite(answered answer: FirmwareWriteAnswer) {
-        switch answer {
-        case .accepted, .unanswered: state.withLock { $0.forceKeySet = true }
-        case .heldBySystem, .refused: break
-        }
+    /// This plane issued `Ftst = 1`, recorded as `recordModeWriteIssued(fanAt:)` is: before the
+    /// write call, whatever it then answers. An accepted, refused or unanswered write may each have
+    /// set the key — issued, not landed — so the restore that undoes the engagement clears it once
+    /// no engaged fan depends on it (ADR 0014's B1 amendment, superseding D5's "accepted").
+    ///
+    /// The flag also tells D3 the key is set (`EngagementRules.afterModeWrite`). So after a write
+    /// that did not land, while another engaged fan keeps the flag, a later held first step waits
+    /// under a clear key and is refused when the yield budget runs out. That fails safe.
+    func recordForceKeyIssued() {
+        state.withLock { $0.forceKeySet = true }
     }
 
     // MARK: - Restores

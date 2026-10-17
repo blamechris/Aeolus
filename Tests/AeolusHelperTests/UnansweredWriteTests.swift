@@ -5,7 +5,8 @@ import Testing
 /// A write the firmware does not answer (B1's P0, #9): `FirmwareWriteAnswer.unanswered`. B1's
 /// ruling, from the #410 refused-hand-back amendment's "issued, not landed": an unanswered write
 /// is counted as issued and possibly landed, never retried, never read as `0x82`, thrown, and
-/// undone. `EngagementRules` decides it for both planes; the scripted one stands in for B1's.
+/// undone. `EngagementRules` decides it for both planes; the scripted one stands in for B1's. The
+/// clear a force-key write is owed, whatever it answered, is `ForceKeyIssuedTests`'.
 @Suite("A write the firmware does not answer", .timeLimit(.minutes(1)))
 struct UnansweredWriteTests {
 
@@ -55,25 +56,6 @@ struct UnansweredWriteTests {
                         .unanswered(detail: "no reply"), firstStep: state.firstStep,
                         forceKey: state.forceKey, forceKeySet: state.forceKeySet)
                 })
-        }
-    }
-
-    /// An unanswered `Ftst = 1` may have set the key, so the ledger counts it as set and the
-    /// restore that undoes the engagement clears it. A refused one, and a held one, do not.
-    ///
-    /// **Mutation:** in `PlaneWriteLedger.recordForceKeyWrite(answered:)`, set the flag for
-    /// `.accepted` only. Run: red on the unanswered row.
-    @Test("An unanswered force-key write is counted as setting the key")
-    func anUnansweredForceKeyWriteSetsTheFlag() {
-        let answers: [(FirmwareWriteAnswer, Bool)] = [
-            (.accepted, true), (.unanswered(detail: "no reply"), true),
-            (.heldBySystem, false), (.refused(code: 0x85), false),
-        ]
-        for (answer, sets) in answers {
-            let ledger = PlaneWriteLedger(enumerated: [0], forceKey: .present)
-            ledger.recordForceKeyWrite(answered: answer)
-            #expect(ledger.isForceKeySet == sets, "\(answer)")
-            #expect(ledger.plan(for: .fan(0)).writes.contains(.forceKey) == sets, "\(answer)")
         }
     }
 
@@ -134,8 +116,9 @@ struct UnansweredWriteTests {
     /// The engagement's `Ftst = 1` goes unanswered, landed or not: the step throws, and the undo
     /// clears the key as well as the mode, because the key may have been set.
     ///
-    /// **Mutation:** in `PlaneWriteLedger.recordForceKeyWrite(answered:)`, set the flag for
-    /// `.accepted` only. Run: red — the undo writes no `Ftst = 0`, and a landed key stays set.
+    /// **Mutation:** in `ScriptedControlPlane`, record the force key only once `Ftst = 1` was
+    /// accepted — after `afterForceKeyWrite` returns. Run: red — the undo writes no `Ftst = 0`, and
+    /// a landed key stays set.
     @Test(
         "A force-key write left unanswered is undone with the key cleared",
         arguments: [ScriptedControlPlane.UnansweredWrite.landed, .lost])

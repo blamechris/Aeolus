@@ -73,8 +73,8 @@ enum EngagementRules {
     }
 
     /// Step 3's force-key write: accepted awaits the yield; anything else is thrown, an unanswered
-    /// write included. The plane records the answer first (`PlaneWriteLedger.recordForceKeyWrite`),
-    /// whose flag an unanswered write also sets, so the undo clears a key it may have set.
+    /// write included. The plane recorded the write as issued before making it
+    /// (`PlaneWriteLedger.recordForceKeyIssued()`), so the undo clears a key it may have set.
     static func afterForceKeyWrite(_ answer: FirmwareWriteAnswer) throws -> EngagementStep {
         guard answer == .accepted else {
             throw FanControlPlaneError.firmwareRefusedControl(
