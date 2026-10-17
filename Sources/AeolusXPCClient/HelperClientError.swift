@@ -83,6 +83,30 @@ public enum HelperClientError: Error, Sendable, Hashable {
     /// ([#325](https://github.com/blamechris/Aeolus/issues/325)).
     case helperNeverAnswered(after: Duration)
 
+    /// This client gave up on the connection this message was sent on before the helper answered
+    /// it, so the client's own discard is the answer
+    /// ([#413](https://github.com/blamechris/Aeolus/issues/413)).
+    ///
+    /// Three of the client's own decisions reach it. Another message on the connection ran out
+    /// its deadline (the health then reads `.unresponsive`). The caller asked for `disconnect()`
+    /// (`.idle`). Or the handshake failed in a way that costs the connection. Every message still
+    /// in flight goes with the connection, and each is answered with this before the connection is
+    /// invalidated.
+    ///
+    /// **A case of its own because no other case is true here.** The invalidation the client
+    /// issues comes back to a parked message as 4099, which reads as `helperUnreachable`: a
+    /// helper not installed or not approved, said of one that had accepted the message.
+    /// `helperNeverAnswered(after:)` says this message went unanswered for its deadline, and its
+    /// deadline may not have started. A `snapshot` sent behind an `apply` waits for its turn, so
+    /// when the `apply` is cut off the snapshot may have waited seconds of a deadline that never
+    /// began. After a `disconnect()` nothing ran out at all.
+    ///
+    /// **What it shares with `helperNeverAnswered` is the consequence.** The request may have
+    /// taken effect, and giving the connection up ends any manual control the caller held. For
+    /// an `apply` that is "may have applied; control ended", which is what a caller has to act
+    /// on: release, then read the safe state.
+    case connectionAbandoned
+
     /// The helper's answer could not be delivered, and **the connection is still alive**.
     ///
     /// `NSXPCConnectionReplyInvalid` (4101) is the one transport code that is about a
@@ -141,6 +165,14 @@ extension HelperClientError: LocalizedError {
                 Aeolus has given up on the connection, which ends any manual control it held; \
                 the helper returns those fans to automatic control when it handles that, and \
                 only a fresh status shows that it has.
+                """
+        case .connectionAbandoned:
+            return """
+                This copy of Aeolus gave up on its connection to the helper before the helper \
+                answered this request. Nothing can be said about whether it took effect. Giving \
+                up the connection ends any manual control it held; the helper returns those fans \
+                to automatic control when it handles that, and only a fresh status shows that it \
+                has.
                 """
         case .replyNotDelivered:
             return """

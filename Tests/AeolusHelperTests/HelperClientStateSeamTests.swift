@@ -47,9 +47,10 @@ struct HelperClientStateSeamTests {
     ///
     /// `Data` is here rather than on `scalars`, and it is the one entry that is not a type of
     /// the helper's own. It is the **wire form** of every one of them: each verb in
-    /// `HelperClientVerbs.swift` is `let data: Data = try await withHandshakenProxy { … }`
-    /// followed by a decode, so `private var lastSnapshotPayload: Data?` plus a re-decode in a
-    /// `catch` is #238's failure scenario with the type name filed off. It was accounted for by
+    /// `HelperClientVerbs.swift` is `let data: Data = try await withHandshakenProxy(.snapshot)
+    /// { … }`, with its own message, followed by a decode, so `private var lastSnapshotPayload:
+    /// Data?` plus a re-decode in a `catch` is #238's failure scenario with the type name filed
+    /// off. It was accounted for by
     /// `scalars` and forbidden by nothing.
     static let fanStateTypes = [
         "SystemSnapshot", "SensorSample",

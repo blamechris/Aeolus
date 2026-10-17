@@ -139,7 +139,8 @@ struct HelperCommandFailure: Error, Equatable, Sendable {
         switch error {
         case .clientCannotVerifyHelper, .helperUnreachable, .helperSignatureRejected:
             return .helperNotReachable
-        case .helperRestarted, .helperNeverAnswered, .replyNotDelivered, .protocolViolation:
+        case .helperRestarted, .helperNeverAnswered, .connectionAbandoned, .replyNotDelivered,
+            .protocolViolation:
             return .failure
         }
     }

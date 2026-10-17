@@ -60,6 +60,7 @@ struct FanctlExitCodeTests {
         (.helperSignatureRejected, .helperNotReachable),
         (.helperRestarted, .failure),
         (.helperNeverAnswered(after: .seconds(5)), .failure),
+        (.connectionAbandoned, .failure),
         (.replyNotDelivered, .failure),
         (.protocolViolation(detail: "x"), .failure),
     ]
