@@ -4,13 +4,14 @@ import Foundation
 /// the authority for "this lease has engaged the fan", as a value (ADR 0014's A6 PR-2 amendment).
 ///
 /// Keyed by lease. A fan joins when the driver's engagement returns under that lease, and leaves
-/// when the undo's hand-back returns or § 5 answers its report `.notHeld`; one whose hand-back was
-/// refused stays. The first engagement under a lease drops every other lease's fans: one live lease
-/// covers a fan at a time, so a lease that engages has outlived every other. Dropped when `apply`
-/// is authorised instead, a call whose lease ended between `heldLease` answering and its
-/// resumption would erase the account of the lease granted since, whose next re-apply would then
-/// re-engage its own fans and be refused `.notAutomatic`; a call under an ended lease cannot
-/// engage, because its driver's entitlement refuses it. A fan a teardown, § 3 or § 5 handed back
+/// when the undo's hand-back returns or § 5 answers its report `.notHeld`; one whose hand-back
+/// throws stays, unless a `.notHeld` answer has already taken it out. The first engagement under a
+/// lease drops every other lease's fans: one live lease covers a fan at a time, so a lease that
+/// engages has outlived every other. Dropped when `apply` is authorised instead, a call whose
+/// lease ended between `heldLease` answering and its resumption would erase the account of the
+/// lease granted since, whose next re-apply would then re-engage its own fans and be refused
+/// `.notAutomatic`; a call under an ended lease cannot engage, because its driver's entitlement
+/// refuses it. A fan a teardown, § 3 or § 5 handed back
 /// under a lease that is still live stays here: #381's one-cycle residual.
 struct LeaseEngagements: Sendable {
 

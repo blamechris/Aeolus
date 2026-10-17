@@ -227,10 +227,11 @@ actor LeaseApplier<Plane: FanControlPlane> {
     /// § 5's record first, under the lease, so § 5 never reads the restore as a reclamation and
     /// re-engages a fan the client was told was refused. Then the driver's hand-back, which
     /// restores the fan and tells § 3. Only once that returns, the ramp memory and the engaged
-    /// set. A fan whose hand-back is refused keeps both: § 3's registry holds it, the lease's
-    /// teardown restores it, and the next `apply` under the lease registers it with § 5 under its
-    /// gate without engaging it again, where forgetting it would send that `apply` to the
-    /// raw-mode check and an answer of `.foreignManualControl` about Aeolus's own fan.
+    /// set. A fan whose hand-back throws stays in the set, so the next `apply` under the lease that
+    /// names it registers it with § 5 without engaging it again, rather than answering
+    /// `.foreignManualControl` about Aeolus's own fan. If the throw came after the fan's mode write
+    /// landed, that `apply` is answered applied on an automatic fan for one § 5 cycle: a residual
+    /// ADR 0014's A6 PR-2 amendment records.
     private func undo(_ fans: [Int], under lease: UUID) async -> [Int] {
         var kept: [Int] = []
         for index in fans {

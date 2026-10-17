@@ -216,7 +216,7 @@ is the driver's, through `restoreToAutomatic(_:)`. `WriteVerbAllowlistTests` fil
 sent from inside a `releasing` handback, which is what makes its index safe there (the assumption
 row "every lease-core restore notice … precedes any grant over it"). Level 6's undo runs outside
 the lease core's registers and under a lease that may be live, so an index-keyed release from it
-could erase a newer lease's record, which is why A6's plan rejected it.
+could erase a newer lease's record.
 
 ## Every act is for the lease the fan was registered under
 

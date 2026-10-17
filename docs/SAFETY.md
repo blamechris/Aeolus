@@ -1263,8 +1263,13 @@ outside the gate and without waiting for one. Before it replies it asks the leas
 again. It admits one `apply` at a time, whatever the lease or connection, and refuses a second
 before it reads anything: a refused `apply`'s undo takes no gate, so it must never meet another
 `apply` that has commanded the fan since. It answers applied only for reports § 5 recorded. A fan
-whose hand-back the firmware refused stays in its engaged set, held by § 3 and the lease's
-teardown, and the next `apply` under the lease puts it back under § 5's watch. It is built by tests
+whose hand-back throws stays in its engaged set, registered with § 3 until a restore of it is
+confirmed and restored by the lease's teardown, and the next `apply` under the lease that names it
+puts it back under § 5's watch. The exceptions are a fan whose report § 5 answered `.notHeld`,
+which has already left the set, and a hand-back that threw after the fan's mode write landed: that
+fan is on automatic and still kept, so its next re-apply is answered applied on an automatic fan
+for one § 5 cycle, which falsely marks it reclaimed by the system and spends an attempt before
+re-asserting it (ADR 0014's A6 PR-2 amendment). It is built by tests
 only, and A6's next step wires it to the privilege boundary; on a `.notBuilt` build it is
 unreachable, because no lease is granted.
 

@@ -139,7 +139,8 @@ struct LeaseApplierAnswerTests {
     // MARK: - The gate, a superseded step, and the lease
 
     /// **Row 5, `stepWait`.** The fan's gate is held and `stepWait` passes: `.releaseInProgress`,
-    /// with nothing engaged or written, because level 6 never writes without the gate.
+    /// with nothing engaged or written, because level 6 never engages a fan or commands a target
+    /// without the gate.
     ///
     /// **Mutation:** in `LeaseApplier.step`, take the pass as optional and carry on without it
     /// when it is `nil`. Run: red, the fan engaged and commanded without its gate.

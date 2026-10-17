@@ -1809,10 +1809,11 @@ extension SafetyLog {
 
 extension SafetyLog {
 
-    /// An `apply` was refused inside its per-fan loop, and its undo has run over every fan it had
-    /// engaged. `.notice`: a refusal is an ordinary answer, and what the undo handed back is the
-    /// part worth finding afterwards. A fan whose hand-back was refused is named apart, and has a
-    /// `.fault` line of its own.
+    /// An `apply` was refused inside its per-fan loop, and its undo has run over every fan whose
+    /// engagement had returned. `.notice`: a refusal is an ordinary answer, and what the undo
+    /// handed back is the part worth finding afterwards. A fan whose hand-back was refused is named
+    /// apart, and has a `.fault` line of its own; so does a step the driver could not undo itself
+    /// (#406), which this line does not see.
     func controlLoopApplyRefused(handedBack fans: [Int], refused: [Int], detail: String) {
         var undone: [String] = []
         if !fans.isEmpty {
@@ -1820,9 +1821,14 @@ extension SafetyLog {
                 "The fans it had engaged, \(fans), were handed back to automatic control.")
         }
         if !refused.isEmpty {
-            undone.append("The hand-back of \(refused) was refused, and § 3 holds them.")
+            undone.append(
+                "The hand-back of \(refused) was refused; § 3 keeps them registered until a "
+                    + "restore of them is confirmed.")
         }
-        let text = undone.isEmpty ? "It had engaged no fan." : undone.joined(separator: " ")
+        let text =
+            undone.isEmpty
+            ? "No engagement of its had returned, so its undo handed back no fan."
+            : undone.joined(separator: " ")
         emit(.notice, "Level 6's apply was refused: \(detail). \(text)")
     }
 
@@ -1834,8 +1840,8 @@ extension SafetyLog {
             .fault,
             """
             Could not hand fan \(fan) back after level 6's apply was refused: \(detail). The fan \
-            may still be off automatic control. It is registered with § 3, which bridges it in the \
-            next thermal emergency.
+            may still be off automatic control. It stays registered with § 3, which bridges it in \
+            the next thermal emergency, until a restore of it is confirmed.
             """
         )
     }

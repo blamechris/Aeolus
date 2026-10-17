@@ -2531,12 +2531,21 @@ latch, and item 4 refuses those. This is for the next such path.
 
 **Decision: a refused hand-back keeps the fan's account.**
 
-§ 5's record is still dropped first. If the driver's hand-back is refused, the fan stays in the
-engaged set and its ramp memory is kept. § 3 holds the fan, the lease's teardown restores it, and
-the next `apply` under the lease registers it with § 5 under its gate without re-engaging.
-Forgetting it sent that re-apply to the raw-mode check, which answered `foreignManualControl` about
-Aeolus's own fan. The refused `apply`'s `.notice` names such a fan apart, and never says it was
-handed back.
+§ 5's record is still dropped first. If the driver's hand-back throws, the fan stays in the
+engaged set and its ramp memory is kept (nothing reads that memory until E8a's loop). § 3 keeps
+the fan registered until a restore of it is confirmed, the lease's teardown restores it, and the
+next `apply` under the lease that names the fan registers it with § 5 under its gate without
+re-engaging. Forgetting it sent that re-apply to the raw-mode check, which answered
+`foreignManualControl` about Aeolus's own fan. The refused `apply`'s `.notice` names such a fan
+apart, and never says it was handed back.
+
+Two conditions bound the rule. A fan this `apply` newly engaged whose report § 5 answered
+`.notHeld` has already left the engaged set before the undo, so a refused hand-back of it is not
+kept. And a hand-back can throw after the fan's mode write landed, as when `F<n>Md = 0` takes and
+the force key's clear is refused: the fan is then on automatic and still kept, so the next
+re-apply that names it is answered applied on an automatic fan for one § 5 cycle, which marks the
+fan reclaimed by the system and spends an attempt before its re-assert takes the fan back (What
+remains).
 
 **Corrections.**
 
@@ -2584,11 +2593,20 @@ handed back.
 - *§ 3 latching after the entitlement and before the command lands* lets one command write reach a
   fan § 3 is about to bridge. Item 4 refuses the reply, and § 3 takes the fan.
 - *A fan the system took back under a lease that still counts it engaged* is registered and
-  commanded without a re-engage: #381's one-cycle residual.
+  commanded without a re-engage: #381's one-cycle residual. So is a fan kept after a hand-back
+  that threw once its mode write had landed: its next re-apply is answered applied on an automatic
+  fan, and § 5's next cycle falsely marks it reclaimed by the system and spends an attempt before
+  re-asserting it. `LeaseApplierHandBackTests` pins that cycle and its self-correction.
+- *A step the driver could not undo itself* (an engagement that threw after its mode write landed,
+  then a refused restore) leaves the fan in manual outside the engaged set and § 5's watch, held by
+  § 3 alone, and the next `apply` that names it answers `foreignManualControl`. The refusal's
+  `.notice` no longer says the `apply` engaged no fan. Tracked as
+  [#406](https://github.com/blamechris/Aeolus/issues/406).
 - *A stuck holder costs § 5 32 s once,* and outside the design point the bound can run out inside a
   lawful hold.
 - *A stuck `apply` refuses every later one until it returns.* That fails closed: nothing is written.
-- *A fan whose hand-back was refused* is unwatched by § 5 until the next `apply` or the lease's end.
+- *A fan whose hand-back was refused* is unwatched by § 5 until the next `apply` that names it, or
+  the lease's end.
 - *A6's next step's:* the composed level-6 driver and the pin on its level, the shutdown refusal
   ahead of `LeaseApplier`, teardown with an `apply` in flight, and a test that the connection's
   sequencer still carries `apply`.
