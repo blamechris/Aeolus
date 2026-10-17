@@ -105,51 +105,65 @@ struct PendingReplyTests {
     /// `Task { … }; task.cancel()` would be a coin flip between the two orders and would let
     /// the defect through whenever the coin came up "attached first".
     ///
-    /// **The deadline is ten seconds, not sixty.** The assertion has to be the elapsed time
-    /// — a latch that waits out its deadline still returns the fallback eventually, so the
-    /// *value* proves nothing — and sixty would trip this suite's time limit before the
-    /// expectation could record, which is the weaker kill this repository keeps rejecting.
+    /// **The deadline cannot fire, so the test asks whether the caller came back and not how
+    /// long it took.** The latch's deadline is measured on a `ManualClock` nothing advances.
+    /// A latch that parks the cancelled caller is therefore parking it on something that will
+    /// never happen, and the caller never returns; a correct latch hands it the fallback at
+    /// once, and it returns and sets a flag. `waitUntil` watches that flag on its default
+    /// budget, which counts only the time the waiter ran, so a runner stall is added to the
+    /// wait instead of spent from it — and the defect, which no stall can cause, still runs
+    /// the budget out.
     ///
-    /// **The bound is five seconds, half the deadline.** It only has to tell a caller that
-    /// gave up at once, which returns in milliseconds, from one that waited out the deadline,
-    /// which takes ten. It was one second until CI showed what that was worth: on a three-core
-    /// runner the whole suite starts at once, the cooperative pool is three threads wide, and a
-    /// task that does nothing took 1.3 to 1.5 seconds to run, in about one run in six once
-    /// the liveness watchdog's suites were added. A bound that fails a correct latch for the
-    /// load of the machine is the wall-clock upper bound #319 rules out; this one fails only
-    /// for the defect.
+    /// **Why it is no longer timed.** It asserted the elapsed time: under one second until CI
+    /// showed that a loaded runner could take longer than that to run a task that does
+    /// nothing, then under five after #319 widened it — on the argument that a bound a busy
+    /// machine can reach is the wall-clock upper bound that issue rules out. Five seconds was
+    /// still one. A correct latch measured 5.2, 5.6 and 7.6 seconds on stalled runners (#421),
+    /// because elapsed time is the one quantity a stall changes without the latch having
+    /// done anything. The latch has no delay of its own to measure — it either hands the
+    /// caller the fallback or leaves it parked until something resumes it — so the test
+    /// asks which, on a clock that cannot answer for it.
+    ///
+    /// **A failure releases what it left parked.** When the caller did not return, the test
+    /// calls `expire()` so the value below can be read and the failure is `waitUntil`'s
+    /// record, naming the wait, instead of this test's one-minute time limit. That is after
+    /// the claim has been judged; it is not part of it.
     ///
     /// **Mutation:** in `PendingReply.giveUp()`, restore the early `return` that recorded
-    /// nothing when `continuation` was `nil`. Run: red on the elapsed-time expectation after
-    /// ten seconds, naming the wait.
+    /// nothing when `continuation` was `nil`. Run: red on the `waitUntil` after five
+    /// scheduled seconds, naming the wait — not on the time limit.
     @Test("A caller cancelled before it waits gives up at once", .timeLimit(.minutes(1)))
-    func aCallerCancelledBeforeItWaitsGivesUpAtOnce() async {
+    func aCallerCancelledBeforeItWaitsGivesUpAtOnce() async throws {
         let latch = PendingReply<String>(ifNothingArrives: "nothing arrived")
         let release = AsyncSignal()
+        let returned = CompletionFlag()
+        // Never advanced: the deadline below cannot run out, however long the runner stalls.
+        let clock = ManualClock()
 
         let waiting = Task { () -> String in
             try? await release.wait()
-            return await latch.answer(within: .seconds(10))
+            let answer = await latch.answer(within: .seconds(10), on: clock)
+            await returned.mark()
+            return answer
         }
         waiting.cancel()
         await release.signal()
 
-        let started = ContinuousClock.now
-        let answer = await waiting.value
-        let waited = started.duration(to: .now)
-
-        #expect(answer == "nothing arrived")
-        #expect(
-            waited < .seconds(5),
+        try await waitUntil(
             """
-            the cancelled caller waited \(waited). Cancellation arrived before anything was \
-            attached, so the give-up had nobody to hand the fallback to — and a latch that \
-            drops it there leaves the caller parked on a continuation nothing will revisit \
-            until the deadline it was cancelled out of. (The bound is half the ten-second \
-            deadline and not one second, because a bound that failed a correct latch for the \
-            load of the machine would be the wall-clock upper bound #319 rules out: it must \
-            fail for the defect and for nothing else.)
-            """)
+            the caller cancelled before it waited to come back. Cancellation arrived before \
+            anything was attached, so the give-up had nobody to hand the fallback to — and a \
+            latch that drops it there leaves the caller parked on a continuation nothing will \
+            revisit, with a deadline on a clock this test never moves
+            """
+        ) {
+            await returned.isSet
+        }
+
+        if await !returned.isSet {
+            latch.expire()
+        }
+        #expect(await waiting.value == "nothing arrived")
     }
 
     /// Many answers arriving at once still resolve the continuation exactly once.
