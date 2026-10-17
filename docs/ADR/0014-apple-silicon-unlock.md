@@ -3370,10 +3370,10 @@ for the branch, and none of that exists on `main`.
 - *`encode(0)` for restores.* It adds an encoder failure to the keystone and gains nothing.
 - *Two plane types, or a read-only factory for tests.* The hardware tests would then exercise a
   graph that never ships.
-- *Setting the force-key flag only on an accepted or unanswered `Ftst = 1`*, as this PR first proposed it. A
-  refused write that landed would then be left out of the undo, and the key would stay set until
-  the next machine-wide restore or the next start's preparation step, which is harmless only if U6
-  holds.
+- *Setting the force-key flag only on an accepted or unanswered `Ftst = 1`*, as this PR first
+  proposed it. A refused write that landed would then be left out of the undo, and the key would
+  stay set until the next machine-wide restore or the next start's preparation step, which is
+  harmless only if U6 holds.
 - *Splitting the flag* into "a clear is owed", read by the restore, and "accepted", read by D3. It
   removes the side effect above. Deferred: it fails safe as it stands.
 
