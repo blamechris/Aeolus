@@ -58,7 +58,7 @@ struct EngagementRig {
         let composed = EngagementDriver(
             writer: SafetyActorWriter(plane: writes, level: .reclamationWatchdog),
             leases: leases, latch: latch, emergency: registry, clock: clock,
-            log: SafetyLog(recording: { recording.append($0, $1) }))
+            level: .reclamationWatchdog, log: SafetyLog(recording: { recording.append($0, $1) }))
         unbound = composed
         if leased {
             let granted = try await leases.acquireLease(

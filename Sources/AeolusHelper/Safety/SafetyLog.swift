@@ -1767,13 +1767,13 @@ extension SafetyLog {
 
 extension SafetyLog {
 
-    /// § 5 waited `bound` for a fan's examination gate and its holder had not left: a contract
-    /// breach, since `FanExaminationGate.examinationWait` is the longest a step that keeps A6's
-    /// contract can keep § 5 waiting, a step queued ahead of § 5 and then granted included. The
-    /// one exception is a wait that spans a system sleep, which the bound counts: the line is
-    /// then a false breach, and diagnostic only. `.fault`, once per holder: later examinations
+    /// § 5 waited `bound` for a fan's examination gate and its holder had not left. Past
+    /// `FanExaminationGate.examinationWait` the contract was broken, or the helper is outside ADR
+    /// 0012's design point, where a queue that is moving can outlast G, or the wait spanned a
+    /// system sleep, which the bound counts. `.fault`, once per holder: later examinations
     /// against the same holder do not wait and say nothing more. They examine without the gate,
-    /// judging, marking and restoring, and writing nothing away from automatic control.
+    /// judging, marking and restoring, and writing nothing away from automatic control; a false
+    /// divergence among them still spends an attempt.
     func examinationGateOutwaited(fan: Int, after bound: Duration) {
         emit(
             .fault,
@@ -1800,6 +1800,48 @@ extension SafetyLog {
             found that at \(moment), so it wrote nothing that would take the fan away from \
             automatic control. The attempt stays spent; the next cycle's read-back decides \
             whether the fan is held.
+            """
+        )
+    }
+}
+
+// MARK: - Level 6's apply (ADR 0014's A6 PR-2 amendment)
+
+extension SafetyLog {
+
+    /// An `apply` was refused inside its per-fan loop, and its undo has run over every fan whose
+    /// engagement had returned. `.notice`: a refusal is an ordinary answer, and what the undo
+    /// handed back is the part worth finding afterwards. A fan whose hand-back was refused is named
+    /// apart, and has a `.fault` line of its own; so does a step the driver could not undo itself
+    /// (#406), which this line does not see.
+    func controlLoopApplyRefused(handedBack fans: [Int], refused: [Int], detail: String) {
+        var undone: [String] = []
+        if !fans.isEmpty {
+            undone.append(
+                "The fans it had engaged, \(fans), were handed back to automatic control.")
+        }
+        if !refused.isEmpty {
+            undone.append(
+                "The hand-back of \(refused) was refused; § 3 keeps them registered until a "
+                    + "restore of them is confirmed.")
+        }
+        let text =
+            undone.isEmpty
+            ? "No engagement of its had returned, so its undo handed back no fan."
+            : undone.joined(separator: " ")
+        emit(.notice, "Level 6's apply was refused: \(detail). \(text)")
+    }
+
+    /// The undo of a refused `apply` could not hand a fan back. `.fault`: the fan may be off
+    /// automatic control with nothing holding it. The driver registered it with § 3 when it
+    /// engaged it, and § 3 keeps it until a read confirms it automatic (#181).
+    func controlLoopHandBackRefused(fan: Int, detail: String) {
+        emit(
+            .fault,
+            """
+            Could not hand fan \(fan) back after level 6's apply was refused: \(detail). The fan \
+            may still be off automatic control. It stays registered with § 3, which bridges it in \
+            the next thermal emergency, until a restore of it is confirmed.
             """
         )
     }

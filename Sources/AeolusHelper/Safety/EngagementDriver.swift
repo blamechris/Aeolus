@@ -73,17 +73,26 @@ enum EngagementAftermath: Sendable, Hashable {
 ///
 /// ## Its sources are stored, never arguments
 ///
-/// The lease core, § 3's latch, its writer's level, and § 3's registration role are set at
+/// The lease core, § 3's latch, its arbiter level, and § 3's registration role are set at
 /// composition. The lease is the one exception: the caller binds it per engagement with
 /// `under(lease:)`, and the composed driver is bound to none, so it refuses every step (#357).
 /// Its verbs still take one permit and nothing else, and the lease is always judged against
 /// **the permit's own index**: the fan whose lease is checked cannot differ from the fan being
 /// written.
 ///
+/// ## Two drivers, one per caller, each at its own level
+///
+/// § 5's is composed at `.reclamationWatchdog` and level 6's at `.controlLoop` (ADR 0014's A6
+/// amendments). The level is the driver's own, passed in and stored, and never read from its
+/// writer: level 6's driver holds a `SafetyActorWriter`, whose level is one of the five that
+/// bypass § 8, for the step and the undo alone, and the arbiter must be asked about the control
+/// loop, not about whatever provenance that writer carries. The driver exposes no target verb, so
+/// the control loop holds no writer it can command a target through but `GovernedFanWriter`.
+///
 /// ## What it checks, and what is left
 ///
 /// Before each step, the bound lease must be live and cover the fan, and `SafetyArbiter` must
-/// permit the writer's level against § 3's latch. For § 5 the check before the first step is the
+/// permit the driver's level against § 3's latch. For § 5 the check before the first step is the
 /// pre-engage ruling #181 asks for. Inside each later step the plane checks its restore epoch,
 /// so no later step writes after a restore requested first. After `.engaged`, the fan is
 /// registered with § 3 and the entitlement asked again.
@@ -111,7 +120,8 @@ enum EngagementAftermath: Sendable, Hashable {
 struct EngagementDriver<Plane: FanControlPlane>: Sendable {
 
     private let writer: SafetyActorWriter<Plane>
-    private let level: SafetyActorLevel
+    /// The level `SafetyArbiter` is asked about: the caller's, stored at composition.
+    let level: SafetyActorLevel
     private let leases: LeaseAuthority
     private let latch: ThermalEmergencyLatch
     private let emergency: any ThermalEmergencyRegistering
@@ -122,13 +132,16 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
 
     /// - Parameters:
     ///   - writer: the writer whose step verb this drives, and whose restore is the undo. Its
-    ///     level is the one the arbiter is asked about.
+    ///     level is provenance only, and the arbiter is never asked about it.
     ///   - leases: the lease core, asked `hasLiveLease(id:coveringFan:)` about the bound lease
     ///     and the permit's fan.
     ///   - latch: § 3's latch, read for the arbiter's incumbent.
     ///   - emergency: § 3's registration role, told of every fan this engages and hands back.
     ///   - clock: what the poll interval and the yield budget are measured on. The composition's
     ///     own, so a test that moves the lease clock moves this one with it.
+    ///   - level: the level the arbiter is asked about before and after every step:
+    ///     `.reclamationWatchdog` for § 5, `.controlLoop` for level 6. Required, with no default,
+    ///     so no driver is composed at a level nobody chose (#362).
     ///   - log: where refusals, undo failures and engagements are reported.
     init(
         writer: SafetyActorWriter<Plane>,
@@ -136,10 +149,11 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
         latch: ThermalEmergencyLatch,
         emergency: any ThermalEmergencyRegistering,
         clock: any MonotonicClock,
+        level: SafetyActorLevel,
         log: SafetyLog = SafetyLog()
     ) {
         self.writer = writer
-        level = writer.level.level
+        self.level = level
         self.leases = leases
         self.latch = latch
         self.emergency = emergency

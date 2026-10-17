@@ -165,6 +165,59 @@ hop, and the copy kept a name of its own for the reclamation line. The review's 
 spent no code line here; one comment line in `cycle()` made the file 981. Level 6's hand-back verb,
 in A6's next PR, needs about four of the 16.
 
+**A6's second PR spent five: 339 code lines, and about 11 left; `examine(fanAt:inBound:)` 50;
+file 994** (SwiftLint 0.65.1). Level 6's hand-back notice,
+`manualControlHandedBack(fanAt:under:)`, is four: its signature, a `guard` on
+`Registry.handBack(fanAt:under:)`, the ledger's clear, and the closing brace. Its decision is the
+registry's, tested as a value, and its reasons are the section below rather than a doc comment,
+which is what kept the file inside `file_length`. The fifth is
+`engagementLevel`, a `nonisolated` view of the driver's arbiter level, so a test pins the
+composition's `.reclamationWatchdog` by property: with § 3's latch the only incumbent today, no
+behaviour can tell § 5's level from level 6's. The role level 6 reaches § 5 through,
+`ReclamationRegistrationRole`, costs no line here: the conformance is on the actor's declaration,
+and each requirement is witnessed by the method it names. The file now has six lines before its
+error, so the next § 5 change that adds lines here takes a split, or a relocation, first.
+
+## Level 6's hand-back notice
+
+*Added by A6's second PR ([ADR 0014](../ADR/0014-apple-silicon-unlock.md)'s A6 PR-2 amendment);
+not relocated from a doc comment. The source carries the summary and a pointer here.*
+
+`manualControlHandedBack(fanAt:under:)` is the first thing level 6's undo does for a fan it
+engaged, before the driver's hand-back restores the fan. Without it the order is wrong in the
+direction this mechanism exists to prevent: the restore lands while § 5 still holds a record under
+a live lease, the next examination reads `.modeReclaimed`, marks the fan, logs a reclamation the
+system did not cause, and re-engages a fan the client was told was refused. Dropping the record
+after the restore, rather than before it, leaves the same window for one examination, which is why
+`LeaseApplierUndoTests` checks the record at the instant the restore lands and not after it.
+
+**Only the record of the lease named.** A fan's record can belong to another lease by the time the
+undo runs: the lease the `apply` ran under can end mid-apply, and a newer lease can register the
+fan. The notice is then not about that record, and touches nothing:
+`Registry.handBack(fanAt:under:)` asks `isHeld(_:under:)`, identity rather than presence (#357),
+before it drops anything.
+
+**It moves the generation, as a release does.** It is `Registry.release(fanAt:)` for the lease's
+own record, so a registration whose lease question was in flight while the record went resumes
+refused rather than accepted on an answer about a fan that has since been handed back (#361's
+review, C3).
+
+**It clears the mark, as a release does, and keeps it while the terminal action runs.** A fan
+Aeolus handed back on purpose is not a fan the system took, so the ledger's mark goes. The
+exception is `release(fanAt:)`'s: while `finaliseRelease(fanAt:heldUnder:because:)` is giving
+the fan up, its entry is the record of a reclamation and stays (#346). A notice that drops nothing
+clears nothing, so a mark the terminal action kept stands, as it does for a refused registration.
+
+**Permit-free.** It takes an index and a lease and reaches no writer: the restore that follows it
+is the driver's, through `restoreToAutomatic(_:)`. `WriteVerbAllowlistTests` files it with
+`manualControlReleased(fanAt:)` for that reason.
+
+**Why not `manualControlReleased(fanAt:)`.** That notice is the lease core's, index-keyed, and
+sent from inside a `releasing` handback, which is what makes its index safe there (the assumption
+row "every lease-core restore notice … precedes any grant over it"). Level 6's undo runs outside
+the lease core's registers and under a lease that may be live, so an index-keyed release from it
+could erase a newer lease's record.
+
 ## Every act is for the lease the fan was registered under
 
 *Added by [#353](https://github.com/blamechris/Aeolus/issues/353) and
@@ -347,12 +400,14 @@ value's, in `ReclamationRegistryEpisodeTests.swift`. What stays open:
    automatic stands that cycle's re-assert down, as does one landing just before a genuine
    re-reclamation. The fan stays on automatic until the next cycle re-engages it: one cycle and
    one attempt, in the direction of giving the fan up sooner (#381).
-6. Two engagements of one fan under one lease can overlap. One that completes during § 5's yield
-   wait re-admits § 5's next step as a first step, which is refused `.notAutomatic` after § 5's
-   driver has written; the driver hands the fan back, and `reengageRefused`, which routes on the
-   error type, logs the stand-down, whose line says nothing was written. The fan ends on automatic
-   control and the mark is kept, so the snapshot is truthful and the log line is not. An A6
-   precondition, tracked as [#389](https://github.com/blamechris/Aeolus/issues/389).
+6. Two engagements of one fan under one lease could overlap. One that completed during § 5's yield
+   wait re-admitted § 5's next step as a first step, which was refused `.notAutomatic` after § 5's
+   driver had written; the driver handed the fan back, and `reengageRefused`, which routes on the
+   error type, logged the stand-down, whose line said nothing was written. Closed by the
+   examination gate ([#389](https://github.com/blamechris/Aeolus/issues/389), ADR 0014's A6 PR-2
+   amendment): level 6 engages only under the fan's gate, which § 5 holds through its re-assert,
+   so such an engagement waits for § 5 to finish. It comes back only with an engagement that
+   bypasses the gate, a contract breach.
 
 Until #381 the re-assert acted on the target and mode it judged before its envelope read, so a
 re-apply inside that read was overwritten — for a diverged target the old number was re-commanded
@@ -615,7 +670,8 @@ note was written, and the first is the only split of this file to move state:
 - **`Registry`, in `ReclamationRegistry.swift`**: `held`, `finalising` and `registrations`, and
   `givenUp` since #366, each `private` to it, and every synchronous decision over them as a named
   transition — `register`,
-  `release`, `forget`, `beginFinalising`, `endFinalising`, `dropLease`, and the per-record
+  `release`, `handBack` (level 6's notice, A6's second PR), `forget`, `beginFinalising`,
+  `endFinalising`, `dropLease`, and the per-record
   `beginExamination` (#381's stamp), `command`, `recordReassertedTarget`, `resetReadFailures`,
   `recordReadFailure`, `judge`, `spendReassertAttempt` and `refundReassertAttempt` — and the
   queries over them, among them #381's re-fetch `reassertTarget`. The actor holds one, `private`,

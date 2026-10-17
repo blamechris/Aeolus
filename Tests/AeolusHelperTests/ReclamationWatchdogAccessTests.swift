@@ -104,20 +104,22 @@ struct ReclamationWatchdogAccessTests {
         "func clearReclamationMark(fanAt index: Int) async {",
     ]
 
-    /// The one internal property of the actor: the registry's fan set, for tests and
-    /// diagnostics. A copy of the keys, and nothing reached through it can change who is held.
+    /// The two internal properties of the actor, both for tests and diagnostics: the registry's
+    /// fan set, a copy of the keys, and the level its driver asks the arbiter about, a value.
+    /// Nothing reached through either can change who is held.
     private static let acknowledgedInternalProperties: Set<String> = [
-        "fansUnderManualControl"
+        "fansUnderManualControl", "engagementLevel",
     ]
 
     /// The actor's seam, unchanged by #128: the three notices the lease core and the engagement
     /// path send, the supervisor's cycle, and the diagnostic read — plus the two static, pure
     /// classifiers in `ReclamationSignals.swift`, which reach no state because there is none
-    /// there to reach.
+    /// there to reach — and level 6's hand-back notice, A6's fourth, a forwarder into `Registry`.
     private static let acknowledgedInternalMethods: Set<String> = [
         "manualControlEngaged(_: CommandableFan, under: UUID)",
         "commandedTarget(_: CommandedTarget, under: UUID)",
         "manualControlReleased(fanAt: Int)",
+        "manualControlHandedBack(fanAt: Int, under: UUID)",
         "lastCommanded(ofFan: Int)",
         "cycle()",
         "primaryDivergence(of: FanControlState, against: CommandedTarget?)",

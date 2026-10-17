@@ -232,6 +232,28 @@ struct WatchdogLimitsTests {
         #expect(atTwentyOne > .milliseconds(10_605) && atTwentyOne < .milliseconds(10_606))
     }
 
+    /// G stands for one scheduler turn's whole slot, which is what the examination gate's
+    /// `lawfulHold` counts its turns in (ADR 0014's A6 PR-2 amendment): at the design point, the
+    /// longest legal supervisor wait plus the longest write turn, at the measured worst round trip,
+    /// stays under G for every curated set. The wait alone is the test above; the turn is this.
+    ///
+    /// **Mutation:** set `gateWaiterAlarm` to `.milliseconds(6_450)`. Run: red here: the wait
+    /// alone, 6.43 s, still clears it, and the slot, 6.48 s, does not.
+    @Test("G covers a turn's slot, its wait and its longest write, for every curated set")
+    func theGateBoundCoversAWholeTurn() {
+        let longestWriteTurn =
+            WatchdogLimits.measuredWorstRoundTrip * WatchdogLimits.writeTurnRoundTrips
+        for set in CriticalSensorSet.allCurated {
+            let slot =
+                WatchdogLimits.requiredGateBound(
+                    outstandingReads: Self.design, criticalReadKeys: set.keys.count)
+                + longestWriteTurn
+            #expect(
+                slot < WatchdogLimits.gateWaiterAlarm,
+                "\(set.provenance): a turn's slot at the design point is \(slot)")
+        }
+    }
+
     // MARK: - Every curated set
 
     /// Every curated set fits in one scheduler turn. The allowance counts the grant path's

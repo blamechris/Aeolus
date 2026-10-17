@@ -38,16 +38,19 @@ import Testing
 struct EngagementRouteTripwireTests {
 
     private static let verb = "engageManualControl"
-    private static let watchdogFile = "ReclamationWatchdog.swift"
+    /// The two files that engage through a driver: § 5's and level 6's (ADR 0014's A6 PR-2
+    /// amendment). Each may use the verb only through a `driver` bound to
+    /// `engagement.under(lease:)`.
+    private static let engagingFiles = ["ReclamationWatchdog.swift", "LeaseApplier.swift"]
 
     // MARK: - No use escapes
 
     /// Every use of the verb in `Sources/AeolusHelper` is one the receiver scan attributes.
     ///
     /// The count of attributed uses is a floor set at what the tree holds — three in the driver,
-    /// one in the watchdog, one in the writer's forward — so a scan that stopped reading, a
-    /// renamed directory or a regex that matched nothing cannot report a clean tree over
-    /// source nobody read.
+    /// one in the watchdog, one in level 6's `apply`, one in the writer's forward — so a scan that
+    /// stopped reading, a renamed directory or a regex that matched nothing cannot report a clean
+    /// tree over source nobody read.
     ///
     /// **Mutation:** in `ReclamationWatchdog.reassert`, before the driver's call, add `_ = try
     /// await [writer][0].engageManualControl(of: permit)`. Run: red here, and
@@ -76,11 +79,11 @@ struct EngagementRouteTripwireTests {
         }
 
         #expect(
-            attributed >= 5,
+            attributed >= 6,
             """
             the scan attributed \(attributed) uses of `\(Self.verb)` across the helper. It is \
-            supposed to find three in the driver, one in the watchdog and one in the writer's \
-            forward, so the assertion below is green over nothing.
+            supposed to find three in the driver, one in the watchdog, one in level 6's apply and \
+            one in the writer's forward, so the assertion below is green over nothing.
             """)
         #expect(
             escaped.isEmpty,
@@ -91,24 +94,26 @@ struct EngagementRouteTripwireTests {
             """)
     }
 
-    // MARK: - The name the watchdog is allowed
+    // MARK: - The name § 5 and level 6 are allowed
 
-    /// The watchdog's one use of the verb is through a `driver` bound to the lease-bound driver.
+    /// § 5's and level 6's one use each of the verb is through a `driver` bound to the
+    /// lease-bound driver.
     ///
-    /// `onlyTheDriverEngages` allows the receiver `driver` in `ReclamationWatchdog.swift`, and a
-    /// name proves nothing about what it is bound to. `let driver = engagement.under(lease:
-    /// lease)` is the only binding of that name in the file, so `let driver = writer` — which
-    /// would pass that test unchanged — is a failure here.
+    /// `onlyTheDriverEngages` allows the receiver `driver` in `ReclamationWatchdog.swift` and
+    /// `LeaseApplier.swift`, and a name proves nothing about what it is bound to. `let driver =
+    /// engagement.under(lease: lease)` is the only binding of that name in each file, so `let
+    /// driver = writer` — which would pass that test unchanged — is a failure here.
     ///
     /// **Mutation:** in `ReclamationWatchdog.reassert`, replace `engagement.under(lease: lease)`
     /// with `engagement`, the composed driver bound to no lease. Run: red here, and
     /// `onlyTheDriverEngages` stays green — the name is unchanged and the declaration is not.
-    @Test("The watchdog engages through the lease-bound driver")
-    func theWatchdogEngagesThroughTheBoundDriver() throws {
+    /// **Mutation:** the same in `LeaseApplier.step`. Run: red here, on the level-6 file.
+    @Test("§ 5 and level 6 engage through the lease-bound driver", arguments: engagingFiles)
+    func eachEngagesThroughTheBoundDriver(_ name: String) throws {
         let file = try #require(
             try SeamScanner.swiftFiles(under: "AeolusHelper")
-                .first { $0.lastPathComponent == Self.watchdogFile },
-            "\(Self.watchdogFile) is not in the source tree")
+                .first { $0.lastPathComponent == name },
+            "\(name) is not in the source tree")
         let source = try String(contentsOf: file, encoding: .utf8)
 
         #expect(try SeamScanner.receivers(of: Self.verb, inSource: source) == ["driver"])
@@ -116,11 +121,28 @@ struct EngagementRouteTripwireTests {
         #expect(
             bindings.introduced == 1 && bindings.toTheBoundDriver == 1,
             """
-            `driver` is introduced \(bindings.introduced) times in \(Self.watchdogFile), and \
+            `driver` is introduced \(bindings.introduced) times in \(name), and \
             \(bindings.toTheBoundDriver) of them bind it to `engagement.under(lease:)`. The \
             receiver name is what `onlyTheDriverEngages` allows; this is what makes the name \
             mean the driver.
             """)
+    }
+
+    /// The files the test above reads are every file that engages through a `driver`, and each
+    /// is in the tree: a file left off the list is one whose binding nothing checks.
+    ///
+    /// **Mutation:** drop `"LeaseApplier.swift"` from `engagingFiles`. Run: red here, and the test
+    /// above stays green over the one file left.
+    @Test("The bound-driver check reads every file that engages through a driver")
+    func theBoundDriverCheckReadsEveryEngagingFile() throws {
+        var engaging: [String] = []
+        for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            if try SeamScanner.receivers(of: Self.verb, inSource: source).contains("driver") {
+                engaging.append(file.lastPathComponent)
+            }
+        }
+        #expect(engaging.sorted() == Self.engagingFiles.sorted())
     }
 
     /// How a name is introduced in one file's code, and how many of those bind it to the

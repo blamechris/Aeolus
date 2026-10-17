@@ -17,7 +17,7 @@ import os
 /// ## Who takes it, and who never does
 ///
 /// § 5 takes it in `cycle()`, before the examination's stamp, and holds it to the examination's
-/// last act. Level 6 takes it for each step, in A6's next change. Nothing else names this type:
+/// last act. Level 6 takes it for each step, in `LeaseApplier`. Nothing else names this type:
 /// `EngagementDriver` and `SafetyActorWriter` never take it, because § 5's re-engage runs through
 /// them while § 5 holds it, and § 3's writes and every restore never take it, because a hand-back
 /// held up by a holder is a hand-back that does not happen. `ExaminationGateRouteTests` holds that
@@ -41,24 +41,42 @@ import os
 /// it decided and do nothing. That bookkeeping is `Lanes`, a value type tested as a value.
 final class FanExaminationGate: Sendable {
 
-    /// How long § 5 waits for a fan's gate: `UnlockLimits.yieldBudget`, two
-    /// `WatchdogLimits.roundTrip` and `stepWait`, 14.5 s.
+    /// How long § 5 waits for a fan's gate: `stepWait`, `lawfulHold` and `examinationMargin`, 32 s.
     ///
-    /// The longest a step that keeps A6's contract can keep § 5 waiting before ADR 0012 ends the
-    /// helper. A step holds the gate for at most one engagement's polling, its last step's turn,
-    /// then its undo's turn or its command's: 13.5 s. A step queued ahead of § 5 is granted within
-    /// `stepWait` of arriving or refused, so the last one ahead is granted at most `stepWait` after
-    /// § 5 arrives, and may then hold for its 13.5 s. Level 6's hand-back runs outside the gate. A
-    /// wait that runs out therefore means the contract was broken, by a pass never released for
-    /// instance, and § 5 examines without the gate.
+    /// The last step queued ahead of § 5 is granted within `stepWait` of § 5 arriving, or refused,
+    /// and may then hold for `lawfulHold`. The margin covers that step's timer waking late, and the
+    /// actor hops inside a hold. A wait that runs out means the contract was broken; or the helper
+    /// is outside ADR 0012's design point, where G's own alarm can fire for a queue that is moving;
+    /// or the wait spanned a system sleep, which this clock counts (ADR 0007; unverified here).
+    /// Each costs a `.fault` and an examination without the gate, whose re-assert stands down and
+    /// writes nothing away from automatic control; a false divergence there still marks the fan
+    /// for a cycle and spends an attempt, and at the budget takes the terminal action.
+    static let examinationWait: Duration = stepWait + lawfulHold + examinationMargin
+
+    /// The longest a step that keeps A6's contract holds a fan's gate at ADR 0012's design point,
+    /// 30 s: three scheduler turns, or `UnlockLimits.yieldBudget` and two. An engagement's first
+    /// step and its one retry, then the driver's undo or the command; or its last poll, then its
+    /// undo or its command. A re-apply holds one turn.
     ///
-    /// Measured on the composition's clock, which counts time the machine spends asleep (ADR 0007;
-    /// unverified on this machine). A wait that spans a sleep can run out on wake while its holder
-    /// is inside a lawful hold, and its `.fault` is then a false breach. That is diagnostic only:
-    /// past the bound § 5 writes nothing away from automatic control, and once that holder leaves
-    /// the next examination waits again.
-    static let examinationWait: Duration =
-        UnlockLimits.yieldBudget + WatchdogLimits.roundTrip * 2 + stepWait
+    /// A turn is its wait at the scheduler's gate plus several stamped round trips, and ADR 0012
+    /// ends the helper for neither: D bounds one round trip, and G only logs. G exceeds the longest
+    /// legal wait plus the longest write turn at the design point for every curated set
+    /// (`WatchdogLimitsTests`), so G stands for a turn. This is the design point, not ADR 0012's
+    /// enforcement: held to what ends the helper, a turn could last two § 3 gaps (ADR 0014's A6
+    /// PR-2 amendment).
+    static let lawfulHold: Duration = max(
+        UnlockLimits.yieldBudget + WatchdogLimits.gateWaiterAlarm * 2,
+        WatchdogLimits.gateWaiterAlarm * 3)
+
+    /// What § 5's bound allows past `stepWait` and `lawfulHold`: 1 s, for two things no SMC
+    /// deadline bounds. Timers wake late: a step granted at the instant its own wait ran out, the
+    /// grant winning that tie, starts its hold later than the bound allows for. And the actor hops
+    /// inside a hold are not round trips: level 6's registration with § 5, its entitlement's latch
+    /// and lease-core questions, its ramp reset and its report; and the driver's entitlement around
+    /// every step, its registration with § 3 and its after-check. Both are assumed and unmeasured;
+    /// run 1 measures them (ADR 0014 D8). With no margin, that tie ran § 5's wait out as a lawful
+    /// hold ended: one `.fault`, and an examination without the gate.
+    static let examinationMargin: Duration = .seconds(1)
 
     /// How long level 6 waits for a fan's gate before its step is refused: 1 s.
     ///
@@ -193,6 +211,8 @@ final class FanExaminationGate: Sendable {
         let deadline = clock.now + bound
         // The timer is cancelled however the wait ends. A clock that honours that ends its sleep
         // at once; one that does not wakes later to a ticket already decided, and does nothing.
+        // So the two cancellation guards below are defence, not behaviour: removing either leaves
+        // the wait decided as before, and no test claims them (ADR 0014's A6 PR-2 amendment).
         let timer = Task { [clock] in
             do {
                 try await clock.sleep(until: deadline)

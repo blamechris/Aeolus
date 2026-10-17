@@ -2,28 +2,27 @@ import Testing
 
 @testable import AeolusHelper
 
-/// `FanExaminationGateTests`' cases about § 5's bound itself: what it must outlast, and what ends
-/// a wait whose clock fails. An extension of the same suite, in a file of its own so the suite's
-/// body stays under `type_body_length`, on the suite's own `ManualClock`, `gate(_:log:)`,
-/// `settle()` and `expectNothingLeft(_:on:)`.
+/// `FanExaminationGateTests`' cases about § 5's bound itself: what it must outlast, the margin
+/// included, and what ends a wait whose clock fails. An extension of the same suite, in a file of
+/// its own so the suite's body stays under `type_body_length`, on the suite's own `ManualClock`,
+/// `gate(_:log:)`, `settle()` and `expectNothingLeft(_:on:)`.
 extension FanExaminationGateTests {
 
     /// **§ 5's bound outlasts a lawful hold by a step queued ahead of it.** Step A holds fan 0's
     /// gate and step B waits behind it; § 5 arrives 0.05 s later. A leaves at 0.95 s, inside B's
-    /// `stepWait`, so B is granted then and may hold for as long as A6's contract lets a step
-    /// hold, 13.5 s, to 14.45 s. § 5 is still waiting at that instant, says nothing, and is
-    /// granted when B leaves: its bound, from 0.05 s, runs to 14.55 s. With the bound A6's first
-    /// change had, 13.5 s with no `stepWait` in it, § 5 ran out at 13.55 s and examined without
-    /// the gate inside a lawful step, logging a contract breach that was not one.
+    /// `stepWait`, so B is granted then and may hold for `FanExaminationGate.lawfulHold`, as long
+    /// as A6's contract lets a step hold, to 30.95 s. § 5 is still waiting at that instant, says
+    /// nothing, and is granted when B leaves: its bound, from 0.05 s, runs to 32.05 s. With no
+    /// `stepWait` in the bound, § 5 ran out 0.95 s inside B's lawful hold.
     ///
-    /// **Mutation:** drop `+ stepWait` from `examinationWait`. Run: red on "ran out inside B's
-    /// lawful hold", and in `theBoundsAreDerived`.
+    /// **Mutation:** drop `stepWait` and `examinationMargin` from `examinationWait`. Run: red on
+    /// "ran out inside B's lawful hold", and in `theBoundsAreDerived`.
     @Test("§ 5's wait outlasts a lawful hold by a step that queued ahead of it")
     func theBoundCoversAStepQueuedAhead() async throws {
         let clock = ManualClock()
         let log = RecordedLog()
         let gate = Self.gate(clock, log: log)
-        let lawfulHold = UnlockLimits.yieldBudget + WatchdogLimits.roundTrip * 2
+        let lawfulHold = FanExaminationGate.lawfulHold
 
         let stepA = try #require(await gate.enterForStep(fanAt: 0))
         let stepB = observing { await gate.enterForStep(fanAt: 0) }
@@ -42,6 +41,53 @@ extension FanExaminationGateTests {
         #expect(
             await examination.isFinished.isSet == false,
             "§ 5's wait ran out inside B's lawful hold")
+        #expect(log.lines(containing: "examination gate").isEmpty, "a lawful hold was a breach")
+        gate.leave(passB)
+        let granted = try #require(try await finished("§ 5's grant once B left", examination))
+        #expect(granted.isHeld && !granted.isPastTheBound)
+        gate.leave(granted)
+        await Self.expectNothingLeft(gate, on: clock)
+    }
+
+    /// **§ 5's bound outlasts the worst lawful path: a step granted at the instant its own wait
+    /// ran out, then holding three turns** (ADR 0014's A6 PR-2 amendment). Step A holds fan 0's
+    /// gate, and step B and § 5 queue behind it at the same instant. A leaves at the exact instant
+    /// B's `stepWait` ends, before B's timer has run, so the grant wins that tie. B then holds its
+    /// worst path, three turns each taken at G: a first step superseded at its admission, its one
+    /// retry, and the driver's undo, `FanExaminationGate.lawfulHold` in all, to 31 s after § 5
+    /// arrived. With no margin § 5's bound ran out at that same instant: one `.fault`, and one
+    /// examination without the gate inside a lawful hold. With `examinationMargin`, § 5 is still
+    /// waiting then, says nothing, and is granted when B leaves.
+    ///
+    /// **Mutation:** set `examinationMargin` to `.zero`. Run: red on "ran out at the instant B's
+    /// lawful hold ended", and on the breach line.
+    @Test("§ 5's wait outlasts a step granted at the instant its own wait ran out")
+    func theBoundCoversAStepGrantedAtTheEndOfItsWait() async throws {
+        let clock = ManualClock()
+        let log = RecordedLog()
+        let gate = Self.gate(clock, log: log)
+        let lawfulHold = FanExaminationGate.lawfulHold
+
+        let stepA = try #require(await gate.enterForStep(fanAt: 0))
+        let stepB = observing { await gate.enterForStep(fanAt: 0) }
+        #expect(await yieldUntil("step B's timer") { clock.sleepers == 1 })
+        let examination = observing { await gate.enterForExamination(fanAt: 0) }
+        #expect(await yieldUntil("§ 5's timer, at B's instant") { clock.sleepers == 2 })
+
+        // B's wait runs out now, and no timer has run: A leaving grants B first.
+        clock.move(by: FanExaminationGate.stepWait)
+        gate.leave(stepA)
+        let grantedB = try await finished("step B's grant, at the end of its stepWait", stepB)
+        let passB = try #require(grantedB.flatMap { $0 }, "the tie went to B's timer")
+        #expect(await yieldUntil("step B's timer to end") { clock.sleepers == 1 })
+
+        let turn = WatchdogLimits.gateWaiterAlarm
+        #expect(turn * 3 == lawfulHold, "the worst path is no longer three turns at G")
+        for _ in 1...3 { clock.advance(by: turn) }
+        await Self.settle()
+        #expect(
+            await examination.isFinished.isSet == false,
+            "§ 5's wait ran out at the instant B's lawful hold ended")
         #expect(log.lines(containing: "examination gate").isEmpty, "a lawful hold was a breach")
         gate.leave(passB)
         let granted = try #require(try await finished("§ 5's grant once B left", examination))

@@ -118,7 +118,7 @@ struct ReclamationMachine<Writes: FanControlPlane> {
             writer: writer,
             engagement: EngagementDriver(
                 writer: writer, leases: leases, latch: latch, emergency: emergency,
-                clock: leaseClock, log: log),
+                clock: leaseClock, level: .reclamationWatchdog, log: log),
             leases: leaseHops ?? leases,
             latch: latchHops ?? latch,
             ledger: ledgerHops ?? ledger,

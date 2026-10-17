@@ -170,7 +170,7 @@ struct TeardownRaceGraph: Sendable {
             writer: writer,
             engagement: EngagementDriver(
                 writer: writer, leases: leases, latch: latch, emergency: emergency,
-                clock: clock, log: log),
+                clock: clock, level: .reclamationWatchdog, log: log),
             leases: hops,
             latch: latch,
             ledger: ledger,

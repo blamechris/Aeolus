@@ -115,10 +115,11 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     let thermalEmergency: ThermalEmergency<Plane>
     let reclamationWatchdog: ReclamationWatchdog<Plane>
 
-    /// The fans' examination gate: **one instance**, held by § 5 and, in A6's next change, by
-    /// level 6 (ADR 0014's A6 amendment). Two gates would be two exclusions that exclude nothing
-    /// from each other. Stored so that level 6 can be handed this same one, and so a composed test
-    /// can hold a pass on it; `ExaminationGateRouteTests` holds where it may be named and entered.
+    /// The fans' examination gate: **one instance**, held by § 5 and, once A6's next step composes
+    /// `LeaseApplier`, by level 6 (ADR 0014's A6 amendments). Two gates would be two exclusions
+    /// that exclude nothing from each other. Stored so that level 6 can be handed this same one,
+    /// and so a composed test can hold a pass on it; `ExaminationGateRouteTests` holds where it
+    /// may be named and entered.
     let examinationGate: FanExaminationGate
 
     /// Where the write path's preparation step reports what it found (ADR 0014 D5).
@@ -367,15 +368,17 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         let examinationGate = FanExaminationGate(clock: clock, log: safetyLog)
         self.examinationGate = examinationGate
         // § 5's writer, shared with the driver it engages through: the driver's step verb and
-        // its undo are this writer's, and so is the level the arbiter is asked about. The driver
-        // registers every fan it engages with § 3 (#181), so it is built after § 3.
+        // its undo are this writer's. The level the arbiter is asked about is the driver's own,
+        // § 5's. The driver registers every fan it engages with § 3 (#181), so it is built after
+        // § 3.
         let reclamationWriter = SafetyActorWriter(plane: plane, level: .reclamationWatchdog)
         let reclamationWatchdog = ReclamationWatchdog(
             sensing: plane,
             writer: reclamationWriter,
             engagement: EngagementDriver(
                 writer: reclamationWriter, leases: leases, latch: latch,
-                emergency: thermalEmergency, clock: clock, log: safetyLog),
+                emergency: thermalEmergency, clock: clock, level: .reclamationWatchdog,
+                log: safetyLog),
             leases: leases,
             latch: latch,
             ledger: ledger,

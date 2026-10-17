@@ -174,7 +174,8 @@ from the head of `e4/bring-up` and installs it over the current one. It is drive
   permit's own index. The fan whose lease is checked cannot differ from the fan being written.
 
   How `WriteVerbAllowlistTests` classifies the new functions:
-  - The driver's engage and `engageUnderLease(of:)` join `permitBearingVerbs`.
+  - The driver's engage and `engageUnderLease(of:)` join `permitBearingVerbs`. *(`engageUnderLease`
+    is withdrawn, and `GovernedFanWriter.hold(_:of:)` joins instead: the A6 PR-2 amendment.)*
   - **The driver's undo takes the fan's index, never the permit.** It joins `permitFreeFunctions`,
     because it reaches a write only through `restoreToAutomatic`.
 
@@ -517,7 +518,9 @@ nothing more.
 4. It reads each target back.
 
 If any fan's engagement fails, every fan that `apply` engaged is restored, and the call is
-refused.
+refused. *(All or nothing for the fans an `apply` engages. A re-apply refused part-way may already
+have re-commanded fans an earlier `apply` engaged, and those are not undone: the A6 PR-2
+amendment's "What remains". The client contract for that is A6's next step's.)*
 
 - **A lease that is never applied never takes a fan off automatic control.**
 - **A post-wake re-acquire re-runs the unlock with no special case,** because § 4's `.everyFan`
@@ -736,6 +739,9 @@ and fan 0's mode and availability cleared in ADR 0013's sense.
 - **Fan 1 and the force key:** fan 1 under the force key (U7), and the force key's state at every
   point.
 - **The client:** `apply`'s and each heartbeat's client round trip (#325).
+- **The examination gate:** how long each hold lasts, the actor hops made under a hold, and how
+  late the gate's timers wake: what `FanExaminationGate.examinationMargin` assumes (the A6 PR-2
+  amendment).
 - **Exclusion:** that no third-party SMC client was present.
 
 **Abort.** The maintainer runs `fanctl reset --all` at once on any of these:
@@ -901,8 +907,11 @@ Each run's findings are recorded, and the branch revised, before the next.
   - The plane verb, the driver and `GovernedFanWriter.engageUnderLease(of:)` each take one permit;
     the plane verb gains a return value.
   - In `WriteVerbAllowlistTests`, the driver's engage and `engageUnderLease(of:)` join
-    `permitBearingVerbs` — as built, with the driver's `firstStep(of:)` and
+    `permitBearingVerbs` *(`engageUnderLease` is withdrawn, and `hold(_:of:)` joins instead: the A6
+    PR-2 amendment)* — as built, with the driver's `firstStep(of:)` and
     `requireEntitlement(for:)` and § 3's role requirement `manualControlEngaged(_:)` (D2).
+    *(`engageUnderLease(of:)` is withdrawn by the A6 amendment below. `GovernedFanWriter.hold(_:of:)`
+    joins `permitBearingVerbs` instead, with the A6 PR-2 amendment.)*
   - Joining `permitFreeFunctions`, because each reaches a write only through `restoreToAutomatic`:
     the driver's undo, which takes an index and never the permit, and the preparation step's
     requirement and its conformer — as built, with § 3's `handbackAccepted(fanAt:)` and the
@@ -2011,7 +2020,9 @@ Then:
   truthful, but the log line is not, and the client's engagement believes it holds a fan it does
   not. Tracked as [#389](https://github.com/blamechris/Aeolus/issues/389), an A6 precondition.
   Routing on whether the driver wrote would change the driver's error vocabulary, which level 6 also
-  maps, so that choice is #389's.
+  maps, so that choice is #389's. *(Closed by the A6 PR-2 amendment below: level 6 engages only
+  under the fan's examination gate, which § 5 holds through its re-assert, so a same-lease
+  engagement attempted during § 5's yield wait waits for it. The driver's vocabulary is unchanged.)*
 - *A same-lease re-apply just before a genuine re-reclamation stands that cycle's re-assert down.*
   It costs one cycle and one attempt, in the direction of giving the fan up sooner.
 - *So does a re-apply that registers without engaging a fan the system has taken back.* Item 2
@@ -2085,8 +2096,10 @@ to § 5's sweep does this on consecutive cycles and reaches the terminal action 
   both orders. The same gate keeps a client step out of § 5's re-assert (#381) and keeps two
   engagements of one fan apart (#389).
 - **§ 5 never waits long on level 6.** Its wait for the gate is bounded; past the bound it examines
-  without the gate, and because it excuses nothing, the cost is a false fault at most. § 3's writes,
-  the terminal action's restore and every other restore never take the gate.
+  without the gate, and because it excuses nothing, the cost is a false fault at most. *(Corrected by
+  the A6 PR-2 amendment: a false divergence past the bound also spends an attempt, and at the budget
+  takes the terminal action.)* § 3's writes, the terminal action's restore and every other restore
+  never take the gate.
 - **The record refuses a target that is not a number or is below the floor every permit is clamped
   to, a target that is not a number diverges, and every RPM a log line states is written out by one
   conversion that cannot trap** (#395). Both writers of the record, a report and a re-assert's
@@ -2098,9 +2111,9 @@ to § 5's sweep does this on consecutive cycles and reaches the terminal action 
 |---|---|---|
 | Under the gate, before the examination | Written and reported | Against the record, which is the step |
 | Under the gate, after the examination | Written and reported | At the next examination, against the record |
-| Without the gate, a contract breach | Anywhere | Against the record: possibly a false fault, never a hold |
+| Without the gate, a contract breach | Anywhere | Against the record: possibly a false divergence, with its mark and a spent attempt *(corrected by the A6 PR-2 amendment)*, never a hold |
 | Its write throws | Not reported | Against the record, which the fan still holds |
-| Past § 5's bound | In flight | Without the gate: possibly a false fault |
+| Past § 5's bound | In flight | Without the gate: possibly a false divergence, which spends an attempt and at the budget takes the terminal action. With the A6 PR-2 bound, only once the contract is broken, the helper is outside ADR 0012's design point, or the wait spans a system sleep |
 
 **A6's contract.**
 
@@ -2133,7 +2146,8 @@ resolved by A6's ordering, not by excuse, under this amendment.
 **What remains.**
 
 - *A level-6 write that bypasses the gate* can land around an examination as before: a false fault,
-  in the safe direction.
+  in the safe direction. *(Corrected by the A6 PR-2 amendment: a false divergence, with its mark and
+  a spent attempt.)*
 - *A step that lands and then throws* leaves the fan at a target nothing reports: a false fault, and
   the re-assert restores the record.
 - *A report no plane can write, below the floor or not a number, is treated as no report.* The fan
@@ -2142,7 +2156,8 @@ resolved by A6's ordering, not by excuse, under this amendment.
   a defect on the write path. A report above a fan's maximum is recorded, because the record holds
   no envelope; every permit clamps to it, so only a defective plane returns one.
 - *A system target equal to the record* is read as Aeolus's, as it always was (#119).
-- *Until A6*, nothing takes the gate, and nothing steps.
+- *Until A6*, nothing takes the gate, and nothing steps. *(From the A6 PR-2 amendment, level 6's
+  `apply` takes it for every step. It is built by tests until A6's next step wires it.)*
 
 **Alternatives considered.**
 
@@ -2173,7 +2188,8 @@ resolved by A6's ordering, not by excuse, under this amendment.
 - *Withdraw the excuse and order nothing.* The false faults are in the safe direction, but a loop
   phase-locked to § 5's sweep diverges on consecutive cycles: a `fanctl set` from 50 to 100 percent,
   about thirteen governed steps at 200 RPM a second, would be handed back after four. Ordering is an
-  A6 precondition, not an option.
+  A6 precondition, not an option. *(A6 builds no loop that steps on its own, so the A6 PR-2
+  amendment holds this as thirteen re-applies 200 RPM apart, each landing inside an examination.)*
 - *Run level 6's steps on the supervisor's tick, after § 5's cycle.* No new primitive, but an
   `apply` arriving between ticks either waits up to a sweep for its first write, or races the
   examination.
@@ -2193,7 +2209,7 @@ This amendment corrects clauses of a Proposed ADR rather than the decisions they
 
 ## Amendment (2026-10-16, A6, [#383](https://github.com/blamechris/Aeolus/issues/383), [#389](https://github.com/blamechris/Aeolus/issues/389)) — the examination gate as built, and level 6's `apply`
 
-A6's plan, from the architect's A6 consult. Unreachable on every build on `main`, where a
+A6's plan. Unreachable on every build on `main`, where a
 `.notBuilt` plane grants no lease, so § 5's registry is always empty and its cycle returns before
 it reaches the gate. A6 lands in steps. This amendment arrives with the first, which builds the
 gate and has § 5 take it; level 6's `apply` takes it in the next.
@@ -2217,20 +2233,24 @@ gate and has § 5 take it; level 6's `apply` takes it in the next.
   the examination and never inside it. Taken after the stamp, a registration made under the gate
   would stand § 5's re-assert down.
 - **§ 5's wait is bounded by `examinationWait`:** `UnlockLimits.yieldBudget`, two
-  `WatchdogLimits.roundTrip` and `stepWait`, 14.5 s.
+  `WatchdogLimits.roundTrip` and `stepWait`, 14.5 s. *(Re-derived by the A6 PR-2 amendment below:
+  `stepWait`, `lawfulHold` and `examinationMargin`, 32 s.)*
   - 13.5 s of it is the longest hold item 3 allows level 6 before ADR 0012 ends the helper: one
     engagement's polling, its last step's turn, then its undo's turn or its command's. Level 6's
-    hand-back runs outside the gate.
+    hand-back runs outside the gate. *(Wrong: it took a turn as one round trip. The A6 PR-2
+    amendment re-derives the bound from G: 32 s, with what running out now means.)*
   - `stepWait` is there because a step queued ahead of § 5 is granted within `stepWait` of
     arriving or refused, so the last step ahead of § 5 is granted at most `stepWait` after § 5
     arrives, and may then hold for 13.5 s. This amendment first had the bound without it, 13.5 s,
     and that ran out inside a lawful hold: § 5 examined without the gate during a step and logged a
-    breach that was not one. A `ManualClock` test pins the sequence.
+    breach that was not one. A `ManualClock` test pins the sequence. *(The hold it may then make is
+    `lawfulHold`, 30 s: the A6 PR-2 amendment.)*
   - So a wait that runs out means the contract was broken, for example by a pass never released,
     with one exception. The bound is measured on the composition's clock, which counts time asleep
     (ADR 0007; unverified on this machine), so a wait that spans a system sleep can run out on wake
     inside a lawful hold. That `.fault` is a false breach, and diagnostic only: past the bound § 5
-    writes nothing away from automatic control.
+    writes nothing away from automatic control. *(Wrong: it took a turn as one round trip. The A6
+    PR-2 amendment re-derives the bound from G: 32 s, with what running out now means.)*
   - A clock whose sleep fails for any reason but cancellation ends the wait as the bound would,
     rather than leaving it to a grant that may never come.
   - The first expiry against a holder is logged at `.fault` and remembered. Later examinations
@@ -2247,14 +2267,17 @@ gate and has § 5 take it; level 6's `apply` takes it in the next.
   down. The cancellation guard before the re-assert's first write still refunds the attempt (#144).
   It is stamped in bound though it holds nothing: the stamp names the bound, not the gate. Its
   examination runs without the gate, so a step can land inside it, and its judgement can then
-  mark the fan and log a false `.fault`. It writes nothing, because that guard stops it, and the
-  next converged cycle clears the mark (#366's episode).
+  mark the fan and log a false `.fault`. It writes nothing away from automatic control, because that
+  guard stops its re-assert's writes, and the next converged cycle clears the mark (#366's episode).
+  A restore and a revocation, through `finaliseRelease`, it can still make, as any examination can.
 - **`diverged` decides on the live record.** Whether anything was commanded, and the attempt
   count, are read from the record re-fetched after the ledger hop, not from the copy taken before
   it. Under the gate no step can land in that hop. Past the bound one can, and the copy would give
   up a fan whose first command had just been reported, revoking a healthy lease (#383's ledger-hop
   window).
-- **Level 6 waits at most `stepWait`, 1 s, and never writes without the gate.**
+- **Level 6 waits at most `stepWait`, 1 s, and never engages a fan or commands a target without the
+  gate.** *(Corrected by the A6 PR-2 amendment, from "never writes": its undo's hand-back is a
+  restore, and takes none.)*
   `UnlockLimits.yieldBudget` plus `stepWait` stays under `HelperClientDeadlines.gatedVerb`'s 5 s,
   leaving room for the envelope read, the command write and its report. Past it the fan's step is
   refused. The figure is provisional:
@@ -2262,7 +2285,8 @@ gate and has § 5 take it; level 6's `apply` takes it in the next.
 
 With these in place, the #383 amendment's "the cost is a false fault at most" is true. Past the
 bound, a contract breach costs one bound and false faults, and every act § 5 takes is toward
-automatic control.
+automatic control. *(Not so: the A6 PR-2 amendment states what a false divergence past the bound
+also costs, an attempt, and at the budget the terminal action, which revokes a healthy lease.)*
 
 **Decision: level 6's `apply`, for A6's next steps.** The items are numbered as in the #353/#357
 amendment.
@@ -2281,6 +2305,8 @@ amendment.
   - Under the fan's gate: engage (only if this lease has not engaged the fan), register, ask the
     entitlement, write and report. Then release it.
   - Nothing else is done under it: no envelope read, no other fan, no second gate and no hand-back.
+    *(But the driver's own: an engagement that throws is undone inside it, under the hold. The A6
+    PR-2 amendment.)*
   - Fans are taken one at a time, in index order. Each fan's envelope is read and its permit minted
     before its gate is taken.
   - Each `.fixed` setting is written whole, through `GovernedFanWriter.hold(_:of:)`, and the
@@ -2308,8 +2334,8 @@ amendment.
   only for the step and the undo, with its arbiter level passed explicitly (`init(…, level:)`):
   `.controlLoop` for level 6, `.reclamationWatchdog` for § 5. The control loop then holds no writer
   it can command through, because its driver exposes no target verb.
-- **D3: the new reason cases wait for R1.** Until those outcomes are observed, they answer
-  `helperFailed`. R1 also logs the raw `F<n>Tg` in the turn that reads `.engaged`.
+- **D3: the new reason cases wait for run 1 (D8).** Until those outcomes are observed, they answer
+  `helperFailed`. Run 1 also logs the raw `F<n>Tg` in the turn that reads `.engaged`.
 - **D6: per fan, in index order, as item 3 says.** The read-back is the plane's.
 
 **What remains.**
@@ -2317,18 +2343,24 @@ amendment.
 - *A contract breach costs one bound and false faults.* A pass never released makes § 5 wait one
   `examinationWait`, logged at `.fault`, and then examine without the gate until the holder leaves.
   That is possibly a false fault each cycle, in the safe direction, and a fan reclaimed meanwhile is
-  given up once its budget is spent.
+  given up once its budget is spent. *(A false divergence spends an attempt too, so a healthy fan
+  can be given up the same way: the A6 PR-2 amendment.)*
 - *A write that bypasses the gate* is judged against the record, as the #383 amendment says: a
-  false fault at most, with #381's re-fetches still answering it.
+  false fault at most, with #381's re-fetches still answering it. *(Corrected by the A6 PR-2
+  amendment: a false divergence, with its mark and a spent attempt.)*
 - *A cancelled examination's judgement* can leave a false mark and a false `.fault`, and never a
-  write: the next converged cycle clears the mark. § 5's wait is cancelled when its loop is stopped.
+  write away from automatic control: the next converged cycle clears the mark. § 5's wait is
+  cancelled when its loop is stopped.
 - *A wait that spans a system sleep* can run out on wake inside a lawful hold: a false breach
-  `.fault` and one examination without the gate, diagnostic only.
+  `.fault` and one examination without the gate, diagnostic only. *(Not diagnostic only: a false
+  divergence in that examination spends an attempt. The A6 PR-2 amendment.)*
 - *A fan the system took back before a re-apply* is #381's one-cycle residual.
 - *The bounds rest on U3's 3.5 s yield,* and routine holds are assumed to last milliseconds.
-  Neither is measured.
+  Neither is measured. *(Run 1 (D8) measures both, with the actor hops under a hold and how late
+  the gate's timers wake: the A6 PR-2 amendment.)*
 - *Until level 6 takes the gate,* it excludes nothing but § 5 from itself, and the assumption row
-  "One engagement per fan at a time" stays as written.
+  "One engagement per fan at a time" stays as written. *(Superseded by the A6 PR-2 amendment below:
+  level 6 takes the gate, and the row now reads "enforced by the gate".)*
 
 **Alternatives considered.**
 
@@ -2346,16 +2378,275 @@ amendment.
 
 **Revisit if:**
 
-- R1 shows routine gate waits much longer than milliseconds, or `stepWait` refusing ordinary
+- run 1 (D8) shows routine gate waits much longer than milliseconds, or `stepWait` refusing ordinary
   applies. Then `apply` needs its own client deadline (#325);
 - a step must write several fans in one transaction;
 - a client that re-applies ships before E8a's loop;
 - leases that can overlap on a fan are proposed;
 - any trigger the #383 amendment lists fires.
 
-The ruling is the architect's A6 consult, run on Opus. **No `AeolusXPCVersion` bump:** no field,
-case or method changes, and `apply`'s version-1 meaning is unchanged. This amendment corrects
+**No `AeolusXPCVersion` bump:** no field, case or method changes, and `apply`'s version-1 meaning is unchanged. This amendment corrects
 clauses of a Proposed ADR rather than the decisions they sit under. **Status stays Proposed.**
+
+## Amendment (2026-10-16, A6 PR-2, [#383](https://github.com/blamechris/Aeolus/issues/383), [#389](https://github.com/blamechris/Aeolus/issues/389)) — level 6's `apply` as built and one at a time, § 5's bound re-derived, and what a cancelled examination writes
+
+A6's second step builds level 6's `apply` as `LeaseApplier`, tested and not yet wired:
+`HelperComposition` does not build it, `SupervisedFanAuthority.apply` still refuses
+`.writePathNotBuilt`, and A6's next step wires it to the privilege boundary. Unreachable on every
+build on `main` either way. A `.notBuilt` plane grants no lease, and `apply` asks
+`heldLease(id:from:)` before anything else, so it answers the faults it answers today, in the same
+order after the authority's shutdown refusal, and never enters the gate. The shutdown refusal stays
+the authority's: A6's next step keeps `refuseIfShuttingDown` ahead of `LeaseApplier`.
+
+**Decision: `apply`, as built.** The A6 amendment's items 0 and 2–5 stand. This records what
+building them decided.
+
+- **The order.** `heldLease(id:from:)`, then the claim (one `apply` at a time, below), then the
+  write capability (`.writePathNotBuilt`), then item 0, before anything is read or written. Then
+  each fan in index order: its envelope read and its permit, then its gate (`enterForStep(fanAt:)`).
+  Under that one hold: engage if this lease has not engaged the fan, register with § 5,
+  `requireEntitlement(for:)`, `GovernedFanWriter.hold(_:of:)`, and report the `CommandedTarget` that
+  write returned. Then leave. Then item 4: `heldLease(id:from:)` and § 3's latch again.
+- **Item 0's checks,** in this order: an empty list; then, setting by setting, `.automatic`,
+  `.curve`, a fan the lease does not cover, and a fan named twice. Each answers
+  `invalidParameter(name: "settings")` with a fixed detail that quotes nothing the client sent.
+- **Level 6's driver is its own,** at `.controlLoop`, now that `engageUnderLease(of:)` is
+  withdrawn. `EngagementDriver.init(…, level:)` takes the arbiter level as a required, stored
+  parameter, and the driver no longer reads its writer's. § 5's is composed at
+  `.reclamationWatchdog` and level 6's at `.controlLoop`. Level 6's driver holds a
+  `SafetyActorWriter` for the step and the undo alone; the level-6 file never names that type in
+  code, and the driver has no target verb. `apply` binds the driver to the lease it authorised, per
+  call.
+- **§ 5 through a role.** `ReclamationRegistrationRole` carries registration, the report and
+  `manualControlHandedBack(fanAt:under:)`, and nothing else; the report answers what § 5 did with it
+  (below). `ReclamationWatchdog` is its one conformer. The hand-back notice drops a fan's record only
+  if that lease holds it, and clears the ledger's mark as a release does, unless the terminal action
+  is giving the fan up.
+- **The undo (item 2 and the half-landed engagement).** Any refusal inside the per-fan loop undoes
+  every fan this `apply` engaged, in index order, after the gate is left, and without entering any
+  gate. § 5's record is dropped first, under the lease, so § 5 never reads the restore as a
+  reclamation; then the driver's `handBack(fanAt:)` restores the fan; and only once that returns do
+  the ramp memory and the engaged set forget it (a refused hand-back keeps both, below). A
+  half-landed engagement, a newly engaged fan whose command throws, is undone like a failed
+  engagement, because the firmware may hold it at any target. The driver registered the fan with
+  § 3, which keeps one whose restore is refused. A fan an earlier `apply` under the lease engaged is
+  not undone. A refusal at item 4 undoes nothing: every step completed, so each fan already has an
+  owner for what follows. A lease that ended is restored by its own teardown, and with § 3's latch
+  set § 3 bridges every fan the driver registered.
+- **The engaged set** is a value type keyed by lease. A fan joins it when the driver's engagement
+  returns, the first engagement under another lease drops every other lease's entry, and the fan
+  leaves it when the undo's hand-back returns or § 5 answers its report `.notHeld`. Dropped at
+  authorisation instead, an `apply` whose lease ended between `heldLease` answering and its
+  resumption would erase the set of the lease granted since, whose next re-apply would re-engage its
+  own fans and be refused `.notAutomatic`. A stale `apply` cannot engage, because its driver's
+  entitlement refuses it.
+- **Item 5's residue.** The table's rows stand as written, and two join them: an `apply` in flight
+  and a report § 5 did not record (both below). `CancellationError` is rethrown, the envelope
+  read's included, because it says nothing about the machine. Any other error the table does not
+  name answers `helperFailed` with a fixed detail. A gate wait ended by cancellation takes the
+  `stepWait` row.
+- **The ramp memory,** which lasts the helper's life, so a fixed setting is written whole and the
+  memory is reset at each engagement and hand-back. `hold(_:of:)` writes the clamped goal whole, in
+  one write, and records it as the target last written. The memory is reset for a fan at every
+  engagement `apply` makes and for every fan its undo hands back, once the hand-back returns. A fan
+  a lease's own teardown handed back is reset at the next engagement, which comes before any write
+  under a newer lease. Nothing reads the memory but `command(towards:of:since:)`, which nothing
+  calls until E8a's loop.
+
+**Decision: § 5's bound is re-derived from what ADR 0012 bounds.** This replaces this amendment's
+first draft, which added a margin to 14.5 s.
+
+- **What the A6 amendment got wrong.** Its 13.5 s took each turn of a step as one
+  `WatchdogLimits.roundTrip`. D bounds one stamped round trip, not a turn. A command turn is three
+  round trips: key info, the write and the read-back. An engagement's force-key first step is five
+  (`writeTurnRoundTrips`). The wait for a turn comes before it, and ADR 0012 ends the helper for no
+  wait: G logs and ends nothing.
+- **It ran out inside a lawful hold.** At ADR 0012's design point, 12 supervisor readers at the
+  measured worst round trip, a supervisor-priority waiter may wait 6.43 s for each turn. An
+  engagement whose last step queued at 3.4 s, followed by its command, held the gate about 16.4 s,
+  and § 5's 15.5 s ran out inside that lawful hold.
+- **One turn's slot is taken at G.** A slot is the wait plus the turn. G exceeds the longest legal
+  wait plus the longest write turn at the design point, for every curated set, and
+  `WatchdogLimitsTests` holds that.
+- **A hold is at most three slots, or the yield budget and two:**
+  - an engagement's first step, its one retry, then its undo or its command;
+  - or its last poll, which starts inside `yieldBudget`, then its undo or its command.
+
+  A re-apply holds one. `lawfulHold` = max(`yieldBudget` + 2·G, 3·G) = 30 s.
+- **The bound.** `examinationWait` = `stepWait` + `lawfulHold` + `examinationMargin` = 32 s.
+  `stepWait` is the longest a step queued ahead of § 5 waits for its grant. The margin covers that
+  step's timer waking late, and the actor hops inside a hold: level 6's registration, entitlement,
+  ramp reset and report, and the driver's own entitlement around each step, its registration with
+  § 3 and its after-check. Neither is measured; run 1 measures both (D8).
+- **What a wait that runs out means.** The contract was broken; or the helper is outside ADR 0012's
+  design point (more than 20 readers, or round trips slower than measured), where G's own alarm can
+  fire for a queue that is moving; or the wait spanned a system sleep, which the composition clock
+  counts. Each costs what an expiry costs:
+  - a `.fault`;
+  - an examination without the gate, whose re-assert stands down;
+  - possibly a false divergence: the fan is marked for a cycle and an attempt is spent, which the
+    next converged cycle resets. At the budget, that divergence takes the terminal action.
+- **What a stuck holder costs.** One `examinationWait`, 32 s in which § 5 examines no fan, once per
+  holder.
+- **Not the bound ADR 0012 enforces.** Held to what actually ends the helper, a turn queued behind
+  § 3's read ends before § 3's next completion, so a slot can last two § 3 gaps, about 34 s, and a
+  hold about 103 s. That bound is rejected below.
+- **Nothing else bounds § 5's cycle below 32 s.** The wait holds no scheduler turn and stamps no
+  round trip, so ADR 0012's round-trip trigger does not see it. Its cycle trigger counts § 3's
+  completions, not § 5's, and its gate-waiter alarm watches the scheduler's gate, not this one. No
+  caller awaits § 5's cycle under a deadline.
+
+**Decision: one `apply` at a time.**
+
+- `LeaseApplier` admits one `apply` at a time, whatever its lease or connection. The claim is taken
+  after `heldLease(id:from:)`, with no suspension between the check and the claim. It is given up
+  when `apply` returns or throws, its undo and item 4 included.
+- A second `apply` is refused before anything is read or written, and is never queued:
+  - **under the same lease:** `helperFailed`, with fixed text;
+  - **otherwise:** the `apply` in flight is unwinding a lease that has ended, so the answer is item
+    5's `releaseInProgress` row, unless the caller's lease has gone.
+- **Why.** A refused `apply` undoes what it engaged without taking a gate, and its hand-back cannot
+  tell whether another `apply` has since commanded the fan.
+  - Under one lease, the second `apply`'s report then reached no record, and it was answered applied
+    for a fan on automatic.
+  - Under two leases, the undo of an `apply` whose lease had ended restored a fan the newer lease had
+    just engaged and commanded. That `apply` was answered applied, and § 5 then marked the fan
+    reclaimed.
+- **What XPC contains, and what it does not.** XPC keeps two applies under one lease apart: a lease
+  is bound to one connection, and that connection's `MessageSequencer` starts an `apply` only after
+  the one before it has replied. That is ordering, not this guarantee, and it does nothing for two
+  leases.
+- **Consequence for ADR 0012's reader count.** Level 6 is now at most one outstanding supervisor
+  reader, whatever the number of connections.
+
+**Decision: `apply` answers applied only for a report § 5 recorded.**
+
+`commandedTarget(_:under:)` answers `.recorded`, `.notHeld` or `.refused`.
+- **`.notHeld`:** the fan leaves the engaged set and the step is refused, with the
+  `releaseInProgress` row unless the lease has gone.
+- **`.refused`:** a target no permit can produce. `helperFailed`, and the step is refused.
+
+Under one `apply` at a time, every other path that drops a record ends the lease or sets § 3's
+latch, and item 4 refuses those. This is for the next such path.
+
+**Decision: a refused hand-back keeps the fan's account.**
+
+§ 5's record is still dropped first. If the driver's hand-back throws, the fan stays in the
+engaged set and its ramp memory is kept (nothing reads that memory until E8a's loop). § 3 keeps
+the fan registered until a restore of it is confirmed, the lease's teardown restores it, and the
+next `apply` under the lease that names the fan registers it with § 5 under its gate without
+re-engaging. Forgetting it sent that re-apply to the raw-mode check, which answered
+`foreignManualControl` about Aeolus's own fan. The refused `apply`'s `.notice` names such a fan
+apart, and never says it was handed back.
+
+Two conditions bound the rule. A fan this `apply` newly engaged whose report § 5 answered
+`.notHeld` has already left the engaged set before the undo, so a refused hand-back of it is not
+kept. And a hand-back can throw after the fan's mode write landed, as when `F<n>Md = 0` takes and
+the force key's clear is refused: the fan is then on automatic and still kept, so the next
+re-apply that names it is answered applied on an automatic fan for one § 5 cycle, which marks the
+fan reclaimed by the system and spends an attempt before its re-assert takes the fan back (What
+remains).
+
+**Corrections.**
+
+- **What a cancelled examination writes.** The cancellation guard stops the re-assert's writes, and
+  only those. A cancelled examination can still restore and revoke, through `finaliseRelease`. "It
+  writes nothing" and "never a write" above now say "away from automatic control".
+- **What past the bound costs.** The #383 amendment's table said "possibly a false fault". Past the
+  bound, a false divergence also spends an attempt, and at the budget it takes the terminal action,
+  revoking a healthy lease. Reaching the bound takes a broken contract, the helper outside ADR
+  0012's design point, or a wait that spans a sleep. The rows, and the #383 amendment's other "a
+  false fault" sites, now say so.
+- **What a write that bypasses the gate costs.** A false divergence, with its mark, its `.fault`
+  and its spent attempt, and a re-assert of the record's own target: never a target the system
+  chose. Repeated on every cycle, it reaches the terminal action. A test holds the first half, with
+  level 6's writer and report used around the gate by hand.
+- **The A6 amendment's bound.** Its "13.5 s of it is…" and "So a wait that runs out…" bullets are
+  marked wrong, and its "a false fault at most", "diagnostic only" and "never writes without the
+  gate" sites are corrected where they stand.
+- **Not claimed.** The two cancellation guards in the gate's timer, in its `catch` and after its
+  sleep, are equivalent mutants: removing either leaves every gate test green, because the timer is
+  cancelled only once its wait is decided, and a decision that arrives late finds it decided. They
+  stay as defence, and no test claims them.
+- **#383's ramp item, held as thirteen re-applies.** A6 builds no loop that steps on its own, so
+  #383's "a ramp phase-locked to § 5's sweep" is thirteen re-applies 200 RPM apart, each landing
+  inside an examination. None reaches the terminal action.
+- **"One engagement per fan at a time"** is enforced by the gate, and #389 is closed by it. A
+  same-lease engagement attempted during § 5's yield wait waits for the gate, so neither engagement
+  undoes the other, and no line says nothing was written when something was. *(Not for two applies,
+  as this amendment first stood: a refused `apply`'s undo takes no gate, so it could restore a fan
+  another `apply` had engaged and commanded since. One `apply` at a time closes that, and the
+  assumption row says so.)*
+- **D6 and the Consequences.** `engageUnderLease(of:)` is withdrawn, and `hold(_:of:)` joins
+  `permitBearingVerbs`; `manualControlHandedBack(fanAt:under:)` joins `permitFreeFunctions`. D6's
+  "all or nothing" holds for the fans an `apply` engages, not for a re-apply's earlier fans (What
+  remains).
+- **`docs/SAFETY.md`.** § 5's bound is replaced by the one above. § 8 says that a fixed target is
+  written whole until E8a's loop shapes a control loop's steps; Precedence says the control loop
+  will hold no writer it can command a target through but `GovernedFanWriter`.
+
+**What remains.**
+
+- *A re-apply refused part-way* may have re-commanded the fans an earlier `apply` engaged, at the
+  targets it reported for them before the refusal. Only what it engaged is undone, and the client is
+  told only that it was refused. Whether `apply`'s client contract says so is A6's next step's.
+- *§ 3 latching after the entitlement and before the command lands* lets one command write reach a
+  fan § 3 is about to bridge. Item 4 refuses the reply, and § 3 takes the fan.
+- *A fan the system took back under a lease that still counts it engaged* is registered and
+  commanded without a re-engage: #381's one-cycle residual. So is a fan kept after a hand-back
+  that threw once its mode write had landed: its next re-apply is answered applied on an automatic
+  fan, and § 5's next cycle falsely marks it reclaimed by the system and spends an attempt before
+  re-asserting it. `LeaseApplierHandBackTests` pins that cycle and its self-correction.
+- *A step the driver could not undo itself* (an engagement that threw after its mode write landed,
+  then a refused restore) leaves the fan in manual outside the engaged set and § 5's watch, held by
+  § 3 alone, and the next `apply` that names it answers `foreignManualControl`. The refusal's
+  `.notice` no longer says the `apply` engaged no fan. Tracked as
+  [#406](https://github.com/blamechris/Aeolus/issues/406).
+- *A stuck holder costs § 5 32 s once,* and outside the design point the bound can run out inside a
+  lawful hold.
+- *A stuck `apply` refuses every later one until it returns.* That fails closed: nothing is written.
+- *A fan whose hand-back was refused* is unwatched by § 5 until the next `apply` that names it, or
+  the lease's end.
+- *A6's next step's:* the composed level-6 driver and the pin on its level, the shutdown refusal
+  ahead of `LeaseApplier`, teardown with an `apply` in flight, and a test that the connection's
+  sequencer still carries `apply`.
+- *The client's deadline.* A fan's step can take `stepWait` and an engagement's yield budget, so an
+  `apply` that engages several fans can outlast `gatedVerb`'s 5 s. #325 decides it.
+
+**Alternatives considered.**
+
+- *Reset the engaged set at authorisation.* The stale-`apply` erasure above.
+- *Use § 5's records as the engaged set.* § 5 drops a record at its own hand-backs and keeps it
+  through a reclamation, so it answers a different question.
+- *Map the outcomes the table does not name to new reasons.* D3's reasons wait for run 1 (D8).
+- *Undo at item 4.* Every step completed, so item 4 has nothing left to own: an undo would repeat a
+  teardown that already ran, or restore a fan § 3 is bridging and tell § 3 the hand-back was
+  accepted. *(Corrected: the first draft gave the race with § 3's bridge as the reason, but the
+  loop's own undo runs that race when § 3 latches inside a step.)*
+- *The bound ADR 0012 enforces, about 105 s.* It silences only expiries outside the design point,
+  and triples what a stuck holder costs on every fan.
+- *Turns × (G + operations × D).* This mixes regimes: when round trips approach D, G is suppressed
+  and bounds no wait.
+- *A hold budget on level 6's side.* The turn already in flight, and the driver's undo, cannot be
+  refused.
+- *An expiry that follows holder progress.* SMC progress cannot tell a leaked pass from a lawful
+  wait.
+- *Deferring a held fan to the next cycle, with a breach on the holder's age.* Kept as the next
+  step.
+- *Queueing a second `apply`.* It would outlive `gatedVerb`.
+- *A token per `apply`, or an ownership check before the hand-back.* Neither closes a restore racing
+  a newer lease's engagement without the plane's help.
+
+**Revisit if:**
+
+- #332 or D8 moves G or the design point;
+- run 1 measures holds, hops or timer wakes longer than assumed;
+- an outwaited `.fault` is ever logged, which would argue for deferral;
+- E8a needs concurrent applies, or `apply` leaves the sequencer.
+
+**No `AeolusXPCVersion` bump:** every answer is an existing case, no field, case or method changes,
+and `apply`'s version-1 meaning is unchanged and still unreachable. This amendment corrects clauses
+of a Proposed ADR rather than the decisions they sit under. **Status stays Proposed.**
 
 ## Assumptions and what would invalidate them
 
@@ -2378,7 +2669,7 @@ clauses of a Proposed ADR rather than the decisions they sit under. **Status sta
 | U12 | Sleep resets `Ftst` | Reported. Not depended on (D5) | Only the never-issued-keystone residual widens |
 | U13 | Apple's controller never commands above the declared `F<n>Mx` | The highest fan speed recorded under Apple's control is 3,683 RPM, against 5,777 declared (2026-08-20; key not recorded). The highest recorded `F0Tg` is 2,195 RPM. The pre-flight records `F<n>Tg` through a load and its soak | 1b's "at or above demand" fails by the excess. Aborts 9 and 1 catch it |
 | — | The preparation step can enumerate the fans and record both restore keys' types | `FNum`, `F<n>Md` and `Ftst` have read on every capture. Both are `ui8`, one byte, on 27.0.1 | `.everyFan` writes the touched set's fans and the force key, then throws `.fanSetUnknown`. An unknown key is written as one zero byte (D5, D7). Start 0 stops |
-| — | One engagement per fan at a time | True today: § 5 is the driver's only caller and its sweep is single-entrant. **Assumed and not enforced** — the ledger keeps one in-progress record per fan index, and a first-step retry that removes a stale record could remove a concurrent engagement's | An A6 precondition: before level 6 engages beside § 5, serialise engagements per fan or key the record per engagement. Also: § 5's `finaliseRelease` restores and then revokes the leases, so for that window a genuine restore has not yet ended the lease; harmless while § 5 is the only caller, and its order matters once A6 adds a concurrent one. Across leases, a second engagement now fails safe (the 2026-10-15 identity amendment): the stale one's next check asks about its own ended lease and undoes, and the undo supersedes the other. Under one lease this remains an A6 precondition |
+| — | One engagement per fan at a time | **Enforced by the gate** (the A6 PR-2 amendment): § 5 re-engages only inside an examination, which holds the fan's examination gate, and level 6 engages only under that gate, one holder at a time. *(It was false for two applies until the same amendment admitted one `apply` at a time: a refused `apply`'s undo takes no gate, so it could restore a fan another `apply` had engaged and commanded since, under the same lease or a newer one. The claim closes that.)* The ledger still keeps one in-progress record per fan index, and a first-step retry that removes a stale record could remove a concurrent engagement's, which the gate keeps from existing | An engagement that bypasses the gate, a contract breach, brings back #389's overlap: key the record per engagement. Also: § 5's `finaliseRelease` restores and then revokes the leases, so for that window a genuine restore has not yet ended the lease; level 6's driver then finds the lease live, and its after-check or the restore's epoch catches the engagement. Across leases, a second engagement fails safe (the 2026-10-15 identity amendment): the stale one's next check asks about its own ended lease and undoes, and the undo supersedes the other |
 | — | One lease-table entry, one production plane | True today | Concurrent leases or a second plane: re-check D4's epoch scope and D5's gate. Since the 2026-10-15 amendment, no lease is granted while § 7's panic verb or § 4's handback runs (`sealingGrants(during:)`). The seal is machine-wide, so concurrent leases or a second plane re-check that it still covers every restore that can undo a grant. |
 | — | A re-grant after § 5's terminal action is a client's request | `AeolusXPCClient` and ADR 0013 D1 never re-acquire; the app has no control UI yet | A self-re-acquiring client makes the contest with the system unbounded: a measured, time-limited ledger refusal, mirrored in the snapshot |
 | — | At most one live lease covers a fan | One lease at a time (`.leaseHeldByAnotherClient`) | Overlapping leases: § 5's records keyed per (fan, lease), and registration's arbitration re-decided |
