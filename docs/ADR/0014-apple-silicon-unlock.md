@@ -250,6 +250,9 @@ twelve-way load while Apple's controller ramps `F<n>Tg`, then through the heat s
       nothing: a fan that is not automatic is not Aeolus's to take.
    3. Resolve `F<n>Md`'s type and order from a fresh `READ_KEYINFO` (ADR 0004).
    4. Write `F<n>Md = 1`.
+
+   *(Superseded in part by the B1 amendment: B1 will take the fresh key info before the pre-state
+   read. Both come before the first write; the amendment says what the order changes.)*
 2. **On `0x00`**, read raw `F<n>Md` in the same turn:
    - **`1`** → `.engaged`, with the force key untouched. This is evidence of engagement only
      because the same turn read `0` immediately before the write. When the system is not actively
@@ -261,7 +264,9 @@ twelve-way load while Apple's controller ramps `F<n>Tg`, then through the heat s
 3. **On `0x82`**, it depends on the force key's state:
    - **`Ftst` recorded present, and the plane's force-key flag (D5) clear:** in the same turn,
      re-check the epoch, take a fresh `READ_KEYINFO`, and write `Ftst = 1`. `0x00` sets the flag
-     and returns `.awaitingYield`; anything else throws.
+     and returns `.awaitingYield`; anything else throws. *(Superseded in part by the B1 amendment:
+     every issued `Ftst = 1` sets the flag, whatever it answers, because a refusal does not prove
+     the key unset. `0x00` still alone returns `.awaitingYield`.)*
    - **The flag is already set** (for example, a second fan engaging while the first holds the key):
      write no key and return `.awaitingYield`. This fan waits for its own yield under the key
      already set.
@@ -384,9 +389,11 @@ queued ahead of it at `.supervisor` (D7).
   restored by index in this process. It lives in memory beside the engaged set, and is never read
   from the SMC.
 - **A force-key flag.** It is set when this plane's `Ftst = 1` is accepted, and cleared when a
-  restore **issues** `Ftst = 0`. Between the key's acceptance and the first fan joining, the engaged
-  set is empty while the flag is set. So a `.fan(n)` restore in that window — the undo of an
-  engagement that never joined — clears the key, which is correct.
+  restore **issues** `Ftst = 0`. *(Superseded in part by the B1 amendment: it is set when this plane
+  issues `Ftst = 1`, accepted, refused or unanswered — issued, not landed.)* Between the key's
+  write and the first fan joining, the engaged set is empty while the flag is set. So a
+  `.fan(n)` restore in that window — the undo of an engagement that never joined — clears the key,
+  which is correct.
 - **Restore is the unlock reversed: every `F<n>Md = 0` in scope, then `Ftst = 0`.** Each write is
   issued in the force-key state in which its forward write was accepted. Clearing the key first
   would issue the mode writes in exactly the state the report says refuses them. A refusal there
@@ -562,9 +569,10 @@ has no source in ADR 0007, and is restated to match.
   turn covers a fresh `READ_KEYINFO` (ADR 0004), the write and its read-back.
 - **`restoreToAutomatic` takes one `.supervisor` turn per call and issues no read.** It encodes
   `F<n>Md = 0` and `Ftst = 0` from the types and sizes the preparation step recorded (D5), and
-  writes them. Both keys are `ui8`, one byte, so there is no byte order for ADR 0004 to resolve. A
-  key recorded absent is not written. A key recorded unknown gets one zero byte, and the restore
-  reports what the firmware said.
+  writes them. *(Superseded in part by the B1 amendment: a restore writes zero bytes of the recorded
+  size and never goes through `encode`.)* Both keys are `ui8`, one byte, so there is no byte order
+  for ADR 0004 to resolve. A key recorded absent is not written. A key recorded unknown gets one
+  zero byte, and the restore reports what the firmware said.
 
   This keeps three things unchanged:
   - `SMCFanControlPlane`'s property that restore issues no read, asserted by
@@ -3245,6 +3253,138 @@ before. It lands on `main` before run 1.
 **No `AeolusXPCVersion` bump:** no field, case or method changes; `apply`'s and `snapshot`'s
 version-1 meanings stand; a non-nil `targetRPM` carries v1's meaning and `nil` is a value every client
 renders. This amendment corrects clauses of a Proposed ADR. **Status stays Proposed.**
+
+## Amendment (2026-10-17, B1) — one job per turn, a plane that cannot write unless the daemon asks, and restores that encode nothing
+
+Cited elsewhere as the B1 amendment.
+
+B1 is the first code at or below rule 1's line, built on `e4/bring-up` only. This amendment decides
+what D1–D7 left to the conformer. The write seam's design is the architect's ruling for B1,
+summarised on [#9](https://github.com/blamechris/Aeolus/issues/9#issuecomment-6236891320). The
+amendment lands on `main` with P0, the vocabulary both planes share; the rest of what it decides is
+for the branch, and none of that exists on `main`.
+
+**Decided for B1, built on `e4/bring-up`.**
+- **A step, a command or a restore will be one synchronous job on the connection's actor, inside one
+  scheduler write turn.**
+  - `SMCReadScheduler.withWriteTurn(_:)` will take a `.supervisor` turn and never wait for a
+    discovery walk. A write closes no handle, and D4 bounds a restore's wait to the turns ahead of
+    it.
+  - The turn function will take an `isolated` channel. Its first statement will be the ledger's
+    admission, and nothing inside it will suspend.
+  - So U15 will hold by construction, a `CancellationError` will not be able to arise after
+    admission, and `RestorePlan.attemptEvery` and `EngagementRules` will serve both planes
+    unchanged.
+- **The seam will be the helper's.**
+  - `SMCWriteChannel: Actor` will be declared in the helper, and `SMCConnection` will conform
+    through an empty extension.
+  - SMCCore will gain one public read, `freshKeyInfo(for:)`. Its SPI members stay at two.
+  - No SMCCore protocol will carry `write`, because a public requirement witnessed by the SPI member
+    would let every client name the write.
+- **Write capability will be what the plane holds.**
+  - `.built` will mean the plane holds a channel.
+  - `HelperComposition.production` will withhold the channel unless the caller passes `writePath:
+    .connection`, and only `AeolusHelperMain` will.
+  - So every test composition, hardware-gated or not, will be `.notBuilt` unless it names a fake. A
+    wrong default in either direction fails safe.
+- **B1's restore will write `restorePayload(for:)`** (built here, below), never `encode`'s output.
+- **Forward writes:**
+  - fresh key info, then the raw pre-state read (what this amends, below);
+  - the declared types must be the observed ones;
+  - a command will read its target back within `targetToleranceRPM` and return the permit's rpm, or
+    throw `.targetNotConfirmed`.
+- **`Ftst` will be absent only on the firmware's not-found answer.**
+- **The branch is never rewritten.** It takes `main` by merge-commit PRs and runs CI on its own PRs.
+  It is to be protected like `main` except for linear history, a repository setting that is the
+  owner's to apply. Until it is, every PR into it is gated by hand: its three checks and its thread
+  resolution, verified before the merge.
+
+**Built here (P0, on `main`).**
+- `FanControlPlaneError.targetNotConfirmed(index:commandedRPM:readBackRPM:)`, the error B1's command
+  turn throws. Level 6 answers it as it answers `.engagementNotConfirmed`.
+- `FirmwareWriteAnswer.unanswered(detail:)`. **An unanswered write counts as issued:**
+  `EngagementRules` throws for it on every step, it is never retried and never read as `0x82`, and
+  the driver undoes it.
+- **The force-key flag is set on every issued `Ftst = 1`**, whether it is accepted, refused or
+  unanswered (`PlaneWriteLedger.recordForceKeyIssued()`), not only on an accepted one.
+  - *Why:* issued, not landed. Neither a refusal nor a lost answer proves the register unchanged
+    (the #410 refused-hand-back amendment), so the restore that undoes the engagement owes the key
+    a clear.
+  - D5's gate still decides when. A `.fan(n)` restore clears the key only with no engaged fan left
+    and no engagement in progress under the current epoch, so the key is never cleared under
+    another fan.
+  - *The cost* is one more `Ftst = 0` in such an undo, written zero over zero when the write did not
+    land (U14).
+  - *The side effect, accepted:* after a write that did not land, while another fan stays engaged,
+    the flag says the key is set over a clear key. A later first step answered `0x82` then waits
+    under it, by D3 step 3's second branch, and is refused when `yieldBudget` runs out. That fails
+    safe, under a reason that names the yield.
+- **The restore payload.** The preparation step records each restore key's declared size, and
+  `restorePayload(for:)` answers zeros of that size, or one zero byte when it is unknown.
+  - A recorded size outside 1–32 bytes, which no SMC payload carries, is taken as unknown, so the
+    restore write is still attempted.
+  - Zero is all-zero bytes in every numeric type and either byte order, so the keystone gains no
+    way to fail.
+- **The scripted double:**
+  - a `.reverted` target write is held at the in-turn read-back and discarded after it;
+  - a stage can hold a target nowhere, so the command throws `.targetNotConfirmed`;
+  - an engagement's writes can go unanswered, landed or lost.
+- **The driver** logs each step's attempt index, with the retried first step as attempt 2. Its
+  closing lines state attempts, the retried first step included; a yield timeout's detail also
+  states steps, which leave the retried first step out.
+
+**What this amends.**
+- **D5's force-key flag bullet and D3 step 3's first branch**, which set the flag on an accepted
+  `Ftst = 1` alone, by the rule above.
+- **D7's restore bullet**, "It encodes `F<n>Md = 0` and `Ftst = 0` from the types and sizes": a
+  restore writes zero bytes of the recorded size and never goes through `encode` (see the
+  alternatives). The sizes are still the preparation step's, and nothing is read at restore time.
+- **D3 step 1's order**, the pre-state read and then the fresh `READ_KEYINFO`: B1 will take the key
+  info first.
+  - Both come after admission and before the first write, so `.failedBeforeFirstWrite` covers a
+    failure of either and nothing is written.
+  - One classification moves. A failing key-info read now takes precedence over `.notAutomatic`: a
+    kept fan whose key info cannot be read keeps its account that tick (`.failedBeforeFirstWrite`)
+    instead of being re-adopted, and is read again on the next. That fails safe.
+  - Taking the key info first will make every turn take the same number of round trips, whatever
+    the cache holds, within `writeTurnRoundTrips`.
+
+**What remains.**
+- A test written deliberately to pass a real connection as a channel will be caught only by the
+  tripwire B1 adds, which looks for the two in the same file.
+- The real write body meets the plane first at run 1.
+- `.built` on a platform without `F<n>Md` is decided before the merge (#360's revisit clause).
+- Restore turns on machines with more than four fans exceed `writeTurnRoundTrips`.
+- The branch's protection is the owner's to apply (above).
+
+**Alternatives considered.**
+- *An async turn of several hops.* It works, but it needs a second, async `attemptEvery`. That would
+  be the drift between the double and production that `RestorePlan` exists to prevent, and it puts
+  suspensions inside an admitted step.
+- *A fake at the IOKit call, as a kernel closure in SMCCore.* It is the most faithful option, but it
+  puts a substitution point at the one call site the round-trip watchdog stamps.
+- *An identity or parent-PID guard in the write body.* It is structural, but it is a runtime mode.
+  Orphan reparenting defeats the parent-PID check, and an identity check couples SMCCore to the
+  helper. Kept as the fallback.
+- *Using `withExclusiveAccess` for writes.* A keystone would wait behind a walk of 5.9–24.9 s.
+- *`encode(0)` for restores.* It adds an encoder failure to the keystone and gains nothing.
+- *Two plane types, or a read-only factory for tests.* The hardware tests would then exercise a
+  graph that never ships.
+- *Setting the force-key flag only on an accepted or unanswered `Ftst = 1`*, as this PR first
+  proposed it. A refused write that landed would then be left out of the undo, and the key would
+  stay set until the next machine-wide restore or the next start's preparation step, which is
+  harmless only if U6 holds.
+- *Splitting the flag* into "a clear is owed", read by the restore, and "accepted", read by D3. It
+  removes the side effect above. Deferred: it fails safe as it stands.
+
+**Revisit if:**
+- any write from a test process is observed;
+- P1 or run 1 contradicts U0–U7, U14 or U15;
+- the `isolated` form will not build;
+- a second production plane, or a second caller of `write`, is proposed;
+- run 1 shows a refusal code that reliably means a write did not take effect.
+
+**No `AeolusXPCVersion` bump**: nothing crosses the boundary. **Status stays Proposed.**
 
 ## Assumptions and what would invalidate them
 

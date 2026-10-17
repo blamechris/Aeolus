@@ -387,7 +387,7 @@ enum LeaseApplyRules {
                 return .fault(.manualControlUnavailable(reason: .foreignManualControl))
             case .firmwareRefusedControl:
                 return .fault(.helperFailed(detail: Detail.firmwareRefused))
-            case .engagementNotConfirmed:
+            case .engagementNotConfirmed, .targetNotConfirmed:
                 return .fault(.helperFailed(detail: Detail.notConfirmed))
             default:
                 return .fault(.helperFailed(detail: Detail.unexpected))

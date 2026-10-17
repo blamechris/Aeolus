@@ -53,7 +53,7 @@ struct PlaneWriteLedgerTests {
         let ledger = PlaneWriteLedger(enumerated: [0, 1], forceKey: .present)
         ledger.beginEngagement(fanAt: 0)
         #expect(try ledger.admitStep(fanAt: 0) == .first)
-        ledger.recordForceKeyAccepted()
+        ledger.recordForceKeyIssued()
         ledger.recordEngaged(fanAt: 0)
         ledger.beginEngagement(fanAt: 1)
         #expect(try ledger.admitStep(fanAt: 1) == .first)
@@ -81,7 +81,7 @@ struct PlaneWriteLedgerTests {
         ledger.restoreRequested(.fan(0))
         ledger.beginEngagement(fanAt: 1)
         #expect(try ledger.admitStep(fanAt: 1) == .first)
-        ledger.recordForceKeyAccepted()
+        ledger.recordForceKeyIssued()
 
         let plan = ledger.plan(for: .fan(0))
 
@@ -182,9 +182,14 @@ struct PlaneWriteLedgerTests {
 
     // MARK: - The force key
 
-    /// A refused `Ftst = 1` is a refusal, and the plane does not believe it set the key.
-    @Test("A refused force-key write is not recorded as set")
-    func aRefusedForceKeyWriteIsNotBelieved() async throws {
+    /// A refused `Ftst = 1` is a refusal, and still a write that was issued: a refusal does not
+    /// prove the register unchanged, so the plane records the key as one a restore must clear
+    /// (ADR 0014's B1 amendment, superseding D5's "accepted").
+    ///
+    /// **Mutation:** in `ScriptedControlPlane.answerForceKeyWrite()`, record the key only when the
+    /// stage honours the write. Run: red.
+    @Test("A refused force-key write is recorded as one a restore must clear")
+    func aRefusedForceKeyWriteIsOwedAClear() async throws {
         let plane = ScriptedControlPlane(
             fans: [0: .nominal],
             stages: [.nominal(forceKeyWrites: .refused(reason: "Ftst refused"))],
@@ -192,7 +197,7 @@ struct PlaneWriteLedgerTests {
         await #expect(throws: FanControlPlaneError.self) {
             try await plane.ticketedStep(of: Self.fan(0))
         }
-        #expect(plane.ledger.isForceKeySet == false, "a refused Ftst = 1 was recorded as set")
+        #expect(plane.ledger.isForceKeySet, "a refused Ftst = 1 was not recorded as owed a clear")
     }
 
     /// A force key whose key info would not read is treated as present (D3 step 3).
