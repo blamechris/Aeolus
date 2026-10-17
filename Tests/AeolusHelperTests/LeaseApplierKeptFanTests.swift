@@ -88,13 +88,16 @@ struct LeaseApplierKeptFanTests {
     /// engagement writes `F0Md = 1`, which lands, and its read-back answers `0`, so the step throws
     /// `.engagementNotConfirmed`; then the firmware stops taking writes, and the driver's own undo
     /// is refused. The `apply` is answered by that cause, and its notice names fan 0 as not handed
-    /// back. Level 6 kept the fan: once the firmware takes writes again, a re-apply re-adopts it as
-    /// a fan still in manual, with nothing written, and is applied.
+    /// back, with the cause as its detail rather than the wrapper that carried it. Level 6 kept the
+    /// fan: once the firmware takes writes again, a re-apply re-adopts it as a fan still in manual,
+    /// with nothing written, and is applied.
     ///
     /// **Mutation:** in `EngagementDriver.engageManualControl(of:)`, throw the bare `error` for a
     /// refused undo. Run: red, the notice says no engagement returned and the re-apply is answered
     /// `.foreignManualControl`. **Mutation:** in `LeaseEngagements.read`, throw the wrapper without
-    /// calling `keep`. Run: red on the re-apply, the same.
+    /// calling `keep`. Run: red on the re-apply, the same. **Mutation:** in
+    /// `ApplyEngagements.sayRefused`, log `String(describing: error)` in place of the cause. Run:
+    /// red, the notice's detail is the wrapper.
     @Test("A driver undo the firmware refused keeps the fan's account for its re-apply")
     func aDriverUndoTheFirmwareRefusedKeepsTheFansAccount() async throws {
         let machine = ReclamationMachine(
@@ -121,6 +124,11 @@ struct LeaseApplierKeptFanTests {
         #expect(
             notice.allSatisfy { $0.contains("The hand-back of [0] was refused") },
             "the refusal's notice did not name fan 0 as not handed back: \(notice)")
+        let cause = String(
+            describing: FanControlPlaneError.engagementNotConfirmed(index: 0, rawMode: 0))
+        #expect(
+            notice.allSatisfy { $0.contains(cause) && !$0.contains("EngagementUndoRefused") },
+            "the refusal's notice detail was not the cause, \(cause): \(notice)")
         #expect(try await machine.plane.firmwareMode(ofFan: 0) == .manual, "the undo landed")
 
         await machine.plane.setRawMode(nil, ofFan: 0)

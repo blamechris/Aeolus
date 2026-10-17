@@ -166,4 +166,125 @@ struct LeaseApplierReAdoptionTests {
         #expect(kept.machine.safetyLog.lines(containing: KeptFan.reAdopted).count == 1)
         #expect(await kept.machine.watchdog.fansUnderManualControl == [0])
     }
+
+    /// **A kept fan that § 3 forgot is registered with § 3 again before it is commanded.** This is
+    /// the route `LeaseEngagements`' header names: a hand-back of the same fan by § 5 that lands
+    /// while the lease is live. A two-fan `apply` engages and commands fan 0. The firmware takes
+    /// fan 0 back, § 5 re-engages it, and § 5's own driver undoes that engagement, the undo
+    /// landing. Fan 1's envelope read then fails, and level 6's undo of fan 0 is refused, so fan 0
+    /// is kept. A sighted § 3 cycle reads fan 0 automatic and forgets it, with the lease live and
+    /// the account still `.handBackRefused`. Another program writes raw `1`, and the re-apply is
+    /// answered applied: it re-adopted the fan, and § 3's registry held fan 0 when the command
+    /// was issued.
+    ///
+    /// It is the one scenario in which deleting `reAdopted` under-fires. On every other route the
+    /// fan is still in § 3's registry when it is re-adopted, so the registration repeats one.
+    ///
+    /// **Mutation:** delete `await driver.reAdopted(permit)` from `LeaseApplier.step`. Run: red at
+    /// the registry assertion, `atTheCommand == [[0]]`: fan 0 commanded with § 3's registry empty.
+    @Test("A kept fan that § 3 forgot is registered with § 3 again before it is commanded")
+    func aKeptFanTheEmergencyForgotIsRegisteredAgainBeforeItIsCommanded() async throws {
+        let (machine, envelopes) = try await Self.fanZeroTakenBackDuringFanOnesEnvelopeRead()
+        let lease = try await machine.leaseID()
+        let (plane, emergency) = (machine.plane, machine.emergency)
+        let writes = InterferingFanStateSensing(plane, during: .commandWrite)
+        let atTheCommands = Sightings<Set<Int>>()
+        await writes.interfere(beforeCommandTarget: 2) {
+            await atTheCommands.record(await emergency.fansUnderManualControl)
+        }
+        let levelSix = machine.levelSix(writingThrough: writes, envelopes: envelopes)
+
+        let first = await LeaseApplierAnswerTests.answer {
+            try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: lease)
+        }
+        #expect(await envelopes.didFire, "fan 1's envelope read never failed")
+        #expect(
+            first as? AeolusXPCFault == .manualControlUnavailable(reason: .supervisorBlind),
+            "the first apply was answered \(first as Any)")
+        #expect(try await plane.firmwareMode(ofFan: 0) == .automatic, "§ 5's undo landed")
+        #expect(await emergency.fansUnderManualControl == [0], "the refusal left fan 0 outside § 3")
+        await plane.advance()
+        _ = await emergency.cycle()
+        #expect(await machine.leases.hasLiveLease(id: lease, coveringFan: 0), "the lease ended")
+        #expect(
+            await emergency.fansUnderManualControl.isEmpty,
+            "§ 3 still holds fan 0, so the route under test was not reached")
+
+        await plane.setMode(.manual, ofFan: 0)
+        let reApplied = await LeaseApplierAnswerTests.answer {
+            try await levelSix.apply(fixed((0, 2_000)), under: lease)
+        }
+
+        #expect(reApplied == nil, "the re-apply was answered \(reApplied as Any)")
+        #expect(
+            machine.safetyLog.lines(containing: KeptFan.reAdopted).count == 1,
+            "the account did not stand, so nothing was re-adopted")
+        #expect(await writes.didFire, "the re-apply never reached its command")
+        let atTheCommand = await atTheCommands.seen
+        #expect(atTheCommand == [[0]], "§ 3's registry when fan 0 was commanded: \(atTheCommand)")
+    }
+
+    /// Two automatic fans under one lease, `machine.leaseID()`, on three cool stages so that § 3's
+    /// cycles are sighted, the second refusing every write. The returned envelope reader fails fan
+    /// 1's read, outside every gate, and first moves the world: the firmware takes fan 0 back, § 5
+    /// re-engages it and its own driver's undo lands, and the plane advances to the stage that
+    /// refuses every write.
+    private static func fanZeroTakenBackDuringFanOnesEnvelopeRead() async throws -> (
+        machine: ReclamationMachine<ScriptedControlPlane>, envelopes: EnvelopeFailingAfterAnEffect
+    ) {
+        let cool = ["TPD0": 50.0]
+        let fans: [Int: ScriptedControlPlane.FanCondition] = [
+            0: .automatic(at: 1_800), 1: .automatic(at: 1_800),
+        ]
+        let plane = ScriptedControlPlane(
+            fans: fans,
+            stages: [
+                .nominal(temperatures: cool),
+                .nominal(temperatures: cool, writes: .refused(reason: "restores refused")),
+                .nominal(temperatures: cool),
+            ])
+        let machine = ReclamationMachine(plane: plane, fans: fans)
+        let watchdog = machine.watchdog
+        let envelopes = EnvelopeFailingAfterAnEffect(over: plane, failingFan: 1)
+        await envelopes.arm {
+            await plane.setMode(.automatic, ofFan: 0)
+            await plane.setRawMode(0, ofFan: 0)
+            await watchdog.cycle()
+            await plane.setRawMode(nil, ofFan: 0)
+            await plane.advance()
+        }
+        _ = try await machine.lease(fans: [0, 1])
+        return (machine, envelopes)
+    }
+}
+
+/// `FanEnvelopeReading` whose read of one fan runs an effect once, outside every gate, and then
+/// fails: the world moving while level 6 reads that fan's bounds. Every other read, and that fan's
+/// once the effect has run, is `inner`'s.
+private actor EnvelopeFailingAfterAnEffect: FanEnvelopeReading {
+    private let inner: any FanEnvelopeReading
+    private let failingFan: Int
+    private var effect: (@Sendable () async -> Void)?
+    private(set) var didFire = false
+
+    init(over inner: any FanEnvelopeReading, failingFan: Int) {
+        self.inner = inner
+        self.failingFan = failingFan
+    }
+
+    /// Sets what happens inside the failing fan's read, which is assigned after construction
+    /// because the effect needs the machine this read feeds.
+    func arm(_ effect: @escaping @Sendable () async -> Void) {
+        self.effect = effect
+    }
+
+    func readEnvelope(ofFan index: Int) async throws -> FanEnvelope {
+        guard index == failingFan, let effect else {
+            return try await inner.readEnvelope(ofFan: index)
+        }
+        self.effect = nil
+        didFire = true
+        await effect()
+        throw FanControlPlaneError.readFailed(detail: "fan \(index) envelope: the read failed")
+    }
 }
