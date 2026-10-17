@@ -222,14 +222,23 @@ extension ReadOnlyFanReport {
     }
 
     /// One fan with one field replaced, and every other field passed through untouched.
+    private static func restating(
+        _ fan: FanState, as availability: ManualControlAvailability
+    ) -> FanState {
+        restating(fan, as: availability, target: fan.targetRPM)
+    }
+
+    /// One fan with its availability and its target replaced, and every other field passed
+    /// through untouched: the one re-assembly, which `statingHeldTarget` also states the target
+    /// through (`HeldTargetReport.swift`, #410).
     ///
     /// `FanState.manualControlAvailability` is a `let` with no default — deliberately, so no
     /// producer can forget to state it — so a re-statement is a re-assembly. Written once here
     /// rather than at each call site: two copies of this initialiser call are two
     /// places a field can be dropped or transposed, and a transposed `minimumRPM`/`maximumRPM`
     /// would be a silent change to what the bounds gate judges.
-    private static func restating(
-        _ fan: FanState, as availability: ManualControlAvailability
+    static func restating(
+        _ fan: FanState, as availability: ManualControlAvailability, target: Double?
     ) -> FanState {
         FanState(
             index: fan.index,
@@ -237,7 +246,7 @@ extension ReadOnlyFanReport {
             actualRPM: fan.actualRPM,
             minimumRPM: fan.minimumRPM,
             maximumRPM: fan.maximumRPM,
-            targetRPM: fan.targetRPM,
+            targetRPM: target,
             mode: fan.mode,
             isReclaimedBySystem: fan.isReclaimedBySystem,
             manualControlAvailability: availability

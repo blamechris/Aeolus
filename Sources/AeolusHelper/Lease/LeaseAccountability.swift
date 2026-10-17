@@ -24,8 +24,12 @@ import FanKit
 /// union in this type would be a second definition of the set the **grant path** judges
 /// against, which is the disagreement that union's own documentation records: the snapshot
 /// once named a fan Aeolus could not hand back as another program's doing while the gate
-/// refused it correctly. The fans under lease are deliberately not a field of their own, so
-/// nothing here can be tempted to re-derive it.
+/// refused it correctly. `leasedFans` is the one exception, and it is not narrower: the lease core
+/// holds one lease at a time, so today it equals the union's lease term. It is a field so the
+/// snapshot's held-target rule can read the shown lease's coverage in the same hop as the lease
+/// (#410). With it, every term of the union is a field here, and that is the hazard: the
+/// availability ladder keeps reading `accountableFans`, and never rebuilds the union from this
+/// type's fields, which would part from the grant path the day the union gains a term (#187).
 ///
 /// ## What is missing, and why
 ///
@@ -44,6 +48,12 @@ struct LeaseAccountability: Sendable {
 
     /// The lease a client is shown, lapsed ones already swept.
     let lease: Lease?
+
+    /// The fans `lease` covers, from the same table entry in the same hop; empty when there is
+    /// none. The wire's `Lease` does not carry them, and the snapshot states a fan's target only
+    /// for a fan the lease it reports covers (ADR 0014's #410 snapshot-target amendment). Read
+    /// by that rule alone; the ladder reads `accountableFans` (the type's header says why).
+    let leasedFans: Set<Int>
 
     /// Every fan the lease core answers for — `fansAeolusIsAccountableFor`, verbatim. A fan in
     /// here is never reported as foreign manual control. Not every fan Aeolus left in manual:

@@ -69,22 +69,17 @@ import Foundation
 /// starts it. No lease can be granted in this build, so nothing registers a fan here and every
 /// cycle returns at once. Level 6's `apply` registers fans and reports what it commanded.
 ///
-/// - Note: since [#128](https://github.com/blamechris/Aeolus/issues/128)'s third pass `held`,
-///   `finalising` and `registrations` are `Registry`'s, a value type this actor holds
-///   `private`, and the per-reading judgement is `HeldFan.judge(_:)`'s; #366 added `givenUp` there
-///   and the episode to the record, #381 the examination's stamp, A6 the gate
-///   (`FanExaminationGate`) and the stamp's `inBound`, and A6's second step level 6's hand-back
-///   notice, a forwarder into `Registry`, and the role it reaches § 5 through. What is left below
-///   awaits, re-fetches after an `await` or acts, over `registry`, `log`, `ledger`, `writer`,
-///   `sensing`, `leases`, `latch` or `gate`, so none of it can move to another file without
-///   widening that state or adding a suspension point. The splits taken, and the rationale
+/// - Note: what has moved to `Registry` and beside this actor since
+///   [#128](https://github.com/blamechris/Aeolus/issues/128)'s third pass, and the rationale
 ///   relocated out of this file's doc comments, are recorded in
-///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
-///   The body is 341 code lines against `type_body_length`'s error at 350,
-///   `examine(fanAt:inBound:)` 50 against `function_body_length`'s warning at 50, and the file
-///   996 lines against `file_length`'s at 1000. New § 5 state belongs in `Registry`, tested as a
-///   value, and new behaviour in the `EngagementDriver`
-///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
+///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md). What is
+///   left below awaits, re-fetches after an `await` or acts, over `registry`, `log`, `ledger`,
+///   `writer`, `sensing`, `leases`, `latch` or `gate`, so none of it can move to another file
+///   without widening that state or adding a suspension point. The body is 344 code lines against
+///   `type_body_length`'s error at 350, `examine(fanAt:inBound:)` 50 against
+///   `function_body_length`'s warning at 50, and the file 996 lines against `file_length`'s at
+///   1000. New § 5 state belongs in `Registry`, tested as a value, and new behaviour in the
+///   `EngagementDriver` ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not here.
 actor ReclamationWatchdog<Plane: FanControlPlane>: ReclamationRegistrationRole {
 
     /// The read half of the seam. **Not a `FanControlPlane`**, so this actor cannot
@@ -281,6 +276,11 @@ actor ReclamationWatchdog<Plane: FanControlPlane>: ReclamationRegistrationRole {
     /// What this instance last recorded as commanded for a fan, for tests and diagnostics.
     func lastCommanded(ofFan index: Int) -> CommandedTarget? {
         registry.record(ofFan: index)?.commanded
+    }
+
+    /// `ReclamationReporting`'s getter, the snapshot's read: `Registry.recordedTargets(under:)`.
+    func recordedTargets(under lease: UUID) -> [Int: Double] {
+        registry.recordedTargets(under: lease)
     }
 
     /// The level `engagement` asks the arbiter about, `.reclamationWatchdog`, for the test that

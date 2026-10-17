@@ -2807,7 +2807,9 @@ A6 PR-2 amendment's open question, answered in the documentation alone.
 - `isReclaimedBySystem` is `false`.
 - `targetRPM` stays `nil`. `ReadOnlyFanReport.fanState` states it unconditionally, so on a `.built`
   plane the snapshot says the fan is in manual and asking for nothing while level 6 is commanding a
-  target. The end-to-end test pins it as it is, and #410's item 5 decides it.
+  target. The end-to-end test pins it as it is, and #410's item 5 decides it. *(Decided by #410's
+  snapshot-target amendment below: the snapshot states the target § 5 holds, and the end-to-end
+  test pins that.)*
 
 **What remains ([#410](https://github.com/blamechris/Aeolus/issues/410)).** Each item is reachable
 only once B1 makes the plane `.built`, and #410's rulings say when each lands:
@@ -2827,7 +2829,7 @@ only once B1 makes the plane `.built`, and #410's rulings say when each lands:
   1 and before #324 merges. Its client half has landed (#414, the amendment below); #325 stays open
   for run 1's hardware row.
 - **Item 5, the snapshot's `targetRPM` after `apply`** (above): before run 1 if possible, and
-  required before E4 merges.
+  required before E4 merges. *(Closed by #410's snapshot-target amendment below.)*
 
 E8a's obligations to level 6 are on [#12](https://github.com/blamechris/Aeolus/issues/12): the
 real loop re-runs #383's ramp item, takes the gate for each step, never runs beside a client's
@@ -3176,6 +3178,73 @@ the same cause, the new refusal answers as `.readFailed` did, and a re-adopted f
 engaged one is. On every shipped build each verb answers what it answered, in the same
 order. This amendment corrects clauses of a Proposed ADR rather than the decisions they sit under.
 **Status stays Proposed.**
+
+## Amendment (2026-10-17, [#410](https://github.com/blamechris/Aeolus/issues/410) item 5, the snapshot-target amendment) — the snapshot states the target § 5 holds
+
+Cited elsewhere as the #410 snapshot-target amendment. The fifth and last of the five items A6 left
+for before B1 builds the Apple Silicon write plane. It is unreachable on every build on `main`: a
+`.notBuilt` plane grants no lease, so § 5 records no target and every fan's `targetRPM` is `nil`, as
+before. It lands on `main` before run 1.
+
+### The snapshot states the target § 5 holds
+
+**The defect.** `ReadOnlyFanReport` states `targetRPM: nil` unconditionally. After `apply` on a
+`.built` plane, the snapshot would say a fan is in manual and asking for nothing.
+
+**Decision.**
+- A fan's `targetRPM` is the target § 5 recorded for it under the snapshot's live lease, reported
+  only when the same snapshot read the fan's `F<n>Md` as manual, § 5's ledger carries no
+  `.systemReclaimed` mark for it, and no thermal emergency is active. Otherwise `nil`. So it is never
+  set beside `isReclaimedBySystem`, `isThermalEmergencyActive` or an automatic mode. *(The thermal
+  emergency condition was added in #426's review: § 3 holds the fan at maximum and outranks level 6
+  (ADR 0007), and the lease outlives the latch until `fire` revokes it.)*
+- **Reclaimed:** no target, the mode as read, and the mark once § 5 has judged it. The target returns
+  when § 5's re-assert converges.
+- **What makes the record confirmation:** a forward write's turn reads its target back and aborts on
+  a mismatch (ADR 0004; D7). B1's command turn keeps that within `targetToleranceRPM` (U4), so a
+  returned `CommandedTarget` is a register that held it.
+- **No wire change.** A non-nil value means what v1 says; `nil`, which every v1 client already
+  renders, also covers a target the snapshot cannot confirm the fan is holding.
+
+**As built.**
+- The rule is `ReadOnlyFanReport.heldTarget`, a pure function with one guard per condition: the
+  live lease covers the fan; § 5 holds a record of it under that lease's id, with a target; the same
+  snapshot read `F<n>Md` as manual; § 5's ledger carries no `.systemReclaimed` cause for it; and the
+  same snapshot's `isThermalEmergencyActive` is false. The mode, the mark and the latch come from
+  the one machine read the fan was built from, never a second hop.
+- **A condition the implementation added: § 3's latch.** `ThermalEmergency.fire` writes each held
+  fan to maximum and then restores it, and revokes every lease only after the last fan, so until
+  then the lease view lists the lease and the other four conditions can hold for a fan held at
+  maximum, its restore refused included. A fifth necessary condition only narrows the claim.
+- `SupervisedFanAuthority` holds § 5 as `ReclamationReporting`, a role with one synchronous getter,
+  `recordedTargets(under:)`, and no verb. The snapshot asks it once, after `activeLeaseView()`, and
+  only when the view reports a lease. Any hop order only under-claims, because the filter is on the
+  lease id.
+- The wire's `Lease` does not carry its fans, so `activeLeaseView()` carries them beside it, from the
+  same table entry in the same hop, as `LeaseAccountability.leasedFans`.
+- **Not yet a confirmation.** The record is one only once B1's command turn reads the target back
+  and throws outside `targetToleranceRPM` ([#9](https://github.com/blamechris/Aeolus/issues/9)).
+  Until then `ScriptedControlPlane.commandTarget` returns the requested value even for a write its
+  firmware discarded, so the tests here pin the rule, not the read-back.
+
+**What remains.**
+- **A target-only reclamation is stated until § 5 judges it.** The rule reads `F<n>Md`, not
+  `F<n>Tg`. If the system rewrites `F<n>Tg` while `F<n>Md` stays manual, the snapshot states § 5's
+  record until § 5's next examination marks the fan, at most one § 5 period. The same holds for one
+  hop after a re-apply's command lands and before it is reported, and after a re-command of an
+  engaged fan throws, which leaves the record standing. Closing it, for example by reading `F<n>Tg`
+  as a confirming condition, needs a further ruling.
+
+**Alternatives considered.**
+- *`F<n>Tg`, the request, or level 6's memory as the snapshot's target.* The first changes v1's
+  meaning; the other two miss § 5's re-asserts and the clamp.
+
+**Revisit if:**
+- U4 fails in either half.
+
+**No `AeolusXPCVersion` bump:** no field, case or method changes; `apply`'s and `snapshot`'s
+version-1 meanings stand; a non-nil `targetRPM` carries v1's meaning and `nil` is a value every client
+renders. This amendment corrects clauses of a Proposed ADR. **Status stays Proposed.**
 
 ## Assumptions and what would invalidate them
 

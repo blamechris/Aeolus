@@ -304,13 +304,13 @@ struct ReadOnlyFanAuthorityModeTests {
         return (provider, recorder)
     }
 
-    /// The other half of #148's title, and the one that stays a literal — deliberately.
+    /// The other half of #148's title, and the one that stays a literal on the read path —
+    /// deliberately.
     ///
-    /// `FanState.targetRPM` is documented as *"the speed the helper is currently asking
-    /// for"*, and this build asks for nothing: `SMCConnection.write(_:to:)` is `package` and
-    /// throws, and no write selector exists anywhere in `Sources`. So `nil` here is a
-    /// build-level fact of the same kind as `activeLease: nil`, not an unconfirmed
-    /// observation. Sourcing it from `F<n>Tg` would report the firmware's own target — set by
+    /// The read path is not where a target is stated: on a `.notBuilt` seam no fan is ever
+    /// commanded, and on a `.built` one the supervised snapshot states the target § 5 holds for
+    /// the live lease (ADR 0014's #410 snapshot-target amendment, `HeldTargetCompositionTests`).
+    /// Sourcing it here from `F<n>Tg` would report the firmware's own target — set by
     /// Apple's thermal manager on an automatic fan — as something Aeolus is asking for, which
     /// changes what a v1 field *means* and is a protocol bump by
     /// `AeolusXPCVersion`'s own policy.

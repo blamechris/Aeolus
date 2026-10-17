@@ -426,10 +426,13 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         // A whole plane here would put `commandTarget(_:)` one `await` from a client message.
         // `telemetry` is the one cache the lease core proves grants against (#269), so the
         // snapshot's blindness and the grant's are one reading, and a cold one is read once.
+        // `reclamation` is the § 5 its supervisor cycles and level 6 reports to, as the one-getter
+        // role, so the target the snapshot states is the one § 5 holds (#410).
         let authority = SupervisedFanAuthority(
             reading: reading, leases: leases, reconciliation: reconciliation,
             keystone: SafetyActorWriter(plane: plane, level: .panicRestore),
-            writeCapability: plane, telemetry: sightings, control: leaseApplier, log: log)
+            writeCapability: plane, telemetry: sightings, control: leaseApplier,
+            reclamation: reclamationWatchdog, log: log)
         self.authority = authority
 
         // § 4, at ADR 0007's level 4 and through `SafetyActorWriter` like every other

@@ -685,13 +685,29 @@ note was written, and the first is the only split of this file to move state:
   `endFinalising`, `dropLease`, and the per-record
   `beginExamination` (#381's stamp), `command`, `recordReassertedTarget`, `resetReadFailures`,
   `recordReadFailure`, `judge`, `spendReassertAttempt` and `refundReassertAttempt` — and the
-  queries over them, among them #381's re-fetch `reassertTarget`. The actor holds one, `private`,
+  queries over them, among them #381's re-fetch `reassertTarget` and #410's snapshot read
+  `recordedTargets`. The actor holds one, `private`,
   and reaches it only through those members. It widens no state, because the state moved inside a
   value rather than being reached from another file: a `Registry` constructed anywhere else
   governs nothing.
 - **`HeldFan.judge(_:)`**, in `ReclamationHeldFan.swift`: what were `gracedBeforeItsFirstCommand`
   and `reportShortfall`, and the converged branch's reset, as one mutating method on the record.
   The actor acts on its answer.
+
+*From the `- Note:` that closes the type's documentation, relocated by #410's item 5; the note now
+points here.* Since [#128](https://github.com/blamechris/Aeolus/issues/128)'s third pass `held`,
+`finalising` and `registrations` are `Registry`'s, a value type this actor holds `private`, and the
+per-reading judgement is `HeldFan.judge(_:)`'s; #366 added `givenUp` there and the episode to the
+record, #381 the examination's stamp, A6 the gate (`FanExaminationGate`) and the stamp's `inBound`,
+and A6's second step level 6's hand-back notice, a forwarder into `Registry`, and the role it
+reaches § 5 through.
+
+*Added by #410's item 5.* The snapshot's read of § 5 is one more forwarder,
+`recordedTargets(under:)` into `Registry.recordedTargets(under:)`, and one more role,
+`ReclamationReporting`, the one the snapshot holds § 5 as. Its conformance is declared in the role's
+own file, which therefore joins the files `ReclamationWatchdogAccessTests` scans; it declares no
+member there. The note's history moved here to make room for the forwarder: the file stays at 996
+lines.
 
 What keeps that safe is held by `ReclamationWatchdogAccessTests` and
 `ReclamationRegistryAccessTests` rather than by this paragraph: the actor's state stays private

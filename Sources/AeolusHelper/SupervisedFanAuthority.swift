@@ -37,16 +37,9 @@ import Foundation
 /// froze this seam to prevent — see `FanControlPlane` and `FanStateSensing` for the same argument
 /// made twice already. A restore is the one write this file can name, and § 7 issues it only on
 /// a `.built` plane; what a client's `apply` writes is level 6's, behind the role.
-/// `AuthorityRoleTripwireTests` and `LeaseApplyingTripwireTests` hold this file to those roles.
-///
-/// **The capability reporter is back, and this time something reads it.** An earlier draft of
-/// this file stored one and documented it as *"why `apply` refuses"*, while `apply`'s own
-/// documentation said the opposite two screens below: the refusal is **not** sourced from the
-/// seam, because there is no control loop here for a capable seam to reach. A stored property
-/// no method read, carrying a doc comment that asserted a gate, was the same defect as the
-/// literal this file replaced, so it was removed as decoration. It returned for § 7, whose
-/// panic verb reads it before the machine-wide restore. `apply` does not read it: level 6 asks
-/// the plane's own, after the lease.
+/// `AuthorityRoleTripwireTests` and `LeaseApplyingTripwireTests` hold this file to those roles. § 5
+/// is held as `ReclamationReporting`, one getter and no verb, for the snapshot's target (#410).
+/// Why the capability reporter is held: supervised-fan-authority.md § *"The capability reporter"*.
 ///
 /// The capability gate that stops a forward write lives one layer down, in
 /// `LeaseAuthority.acquireLease`, where a refusal still stops a write from being attempted, and
@@ -54,7 +47,7 @@ import Foundation
 ///
 /// ## The composition, in one line each
 ///
-/// - `snapshot` — the read path, plus the lease the lease core reports.
+/// - `snapshot` — the read path, the lease the lease core reports, and the target § 5 holds.
 /// - `acquireLease` / `renewLease` / `releaseLease` / `connectionDidInvalidate` — the lease
 ///   core, verbatim. Every signature already matched, which is what `LeaseAuthority`'s own
 ///   documentation predicted: *"every method below carries a `FanAuthority` signature
@@ -109,17 +102,12 @@ struct SupervisedFanAuthority: FanAuthority {
     /// nothing wider (ADR 0014's A6 PR-3 amendment), and asked only after `refuseIfShuttingDown`.
     private let control: any LeaseApplying
 
-    /// E5.4d's teardown gate, closed by `SignalTeardown` before it hands the fans back.
-    ///
-    /// **Owned here and exposed, rather than injected**, which is the opposite of the rule
-    /// `LeaseAuthority` states about its latch — *"a defaulted latch would compile and
-    /// report a bit nothing sets"* — and the difference is worth stating rather than
-    /// leaving to be re-derived. That hazard is a *second instance*: two mechanisms each
-    /// holding a private latch, one setting a bit the other cannot see. Here there is
-    /// exactly one gate, it is the one the refusals below read, and `HelperComposition`
-    /// hands *this* instance to the teardown. A constructor parameter would let a caller
-    /// build an authority whose gate nothing closes, which is the same defect through the
-    /// other door.
+    /// § 5, for the snapshot's `targetRPM` (ADR 0014's #410 snapshot-target amendment): the
+    /// watchdog the supervisor cycles and level 6 reports to, as a role with one getter, no verb.
+    private let reclamation: any ReclamationReporting
+
+    /// E5.4d's teardown gate, closed by `SignalTeardown` before it hands the fans back. Owned here
+    /// and exposed, rather than injected: supervised-fan-authority.md § *"The teardown gate"*.
     ///
     /// It is deliberately not `private`: the composition root has to reach it, and a gate
     /// nothing outside this type could close would be a gate that never closes.
@@ -127,10 +115,11 @@ struct SupervisedFanAuthority: FanAuthority {
 
     private let log: HelperLog
 
-    /// `keystone`, `writeCapability`, `telemetry` and `control` are required, for
+    /// `keystone`, `writeCapability`, `telemetry`, `control` and `reclamation` are required, for
     /// `reconciliation`'s reason: a default would compile and build a panic verb that never
     /// restores, one that never asks, a snapshot that offers control on a machine the grant
-    /// refuses as blind, or an `apply` behind a level 6 nothing else consults.
+    /// refuses as blind, an `apply` behind a level 6 nothing else consults, or a snapshot that
+    /// asks a § 5 nothing reports to.
     init(
         reading: ReadOnlyFanAuthority, leases: LeaseAuthority,
         reconciliation: some ReconciliationBaselineReporting,
@@ -138,6 +127,7 @@ struct SupervisedFanAuthority: FanAuthority {
         writeCapability: some FanWriteCapabilityReporting,
         telemetry: some SightednessProving,
         control: some LeaseApplying,
+        reclamation: some ReclamationReporting,
         log: HelperLog
     ) {
         self.reading = reading
@@ -147,6 +137,7 @@ struct SupervisedFanAuthority: FanAuthority {
         self.writeCapability = writeCapability
         self.telemetry = telemetry
         self.control = control
+        self.reclamation = reclamation
         self.log = log
     }
 
@@ -194,13 +185,14 @@ struct SupervisedFanAuthority: FanAuthority {
     /// mid-handback from one view of the lease core and accountable-to-nobody from another
     /// would be one instant's report built from two.
     ///
-    /// **The re-statement touches one field of one fan and nothing else.** The whole ordering
-    /// is in `ReadOnlyFanReport` — see `AvailabilityRestatement.swift` for the ladder and
-    /// `restatingAvailability(of:observedMode:given:reconciliation:blind:)` for the entry point.
-    /// Since [#355](https://github.com/blamechris/Aeolus/issues/355) no rung exempts a fan § 5
-    /// gave up: its ledger is reported on `isReclaimedBySystem`, never as an availability. The
-    /// other three snapshot fields are the read path's own and are passed through untouched:
-    /// this re-assembles the value rather than producing a second opinion about any of them.
+    /// **The re-statement touches two fields of one fan and nothing else**: the availability,
+    /// by the ladder in `AvailabilityRestatement.swift`, then the target, by
+    /// `ReadOnlyFanReport.statingHeldTarget`'s five conditions, from § 5's records asked once
+    /// after the lease and only under one (#410). Since
+    /// [#355](https://github.com/blamechris/Aeolus/issues/355) no rung exempts a fan § 5 gave up:
+    /// its ledger is reported on `isReclaimedBySystem`, never as an availability. The other
+    /// snapshot fields are the read path's own and are passed through untouched: this
+    /// re-assembles the value rather than producing a second opinion about any of them.
     ///
     /// **The machine read is `observe()`, not `snapshot()`**
     /// ([#360](https://github.com/blamechris/Aeolus/issues/360)): it hands back each fan's
@@ -210,14 +202,19 @@ struct SupervisedFanAuthority: FanAuthority {
         let blind = try await isBlind()
         let machine = try await reading.observe()
         let view = await leases.activeLeaseView()
+        // § 5's targets for the lease the view reports: after it, once, and only under one.
+        var recorded: [Int: Double] = [:]
+        if let lease = view.lease { recorded = await reclamation.recordedTargets(under: lease.id) }
         // Its own hop, and that is safe for a reason the lease view does not share: the
         // baseline is fixed before the listener resumes, so no two reads of it can differ.
         let baseline = await reconciliation.baseline()
         return SystemSnapshot(
             fans: machine.snapshot.fans.map {
-                ReadOnlyFanReport.restatingAvailability(
-                    of: $0, observedMode: machine.modes[$0.index], given: view,
-                    reconciliation: baseline, blind: blind)
+                ReadOnlyFanReport.statingHeldTarget(
+                    of: ReadOnlyFanReport.restatingAvailability(
+                        of: $0, observedMode: machine.modes[$0.index], given: view,
+                        reconciliation: baseline, blind: blind),
+                    in: machine, given: view, recorded: recorded)
             },
             sensors: machine.snapshot.sensors,
             activeLease: view.lease,

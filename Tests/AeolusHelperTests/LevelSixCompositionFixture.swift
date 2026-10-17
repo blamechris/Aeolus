@@ -24,23 +24,24 @@ struct LevelSixMachine: Sendable {
 
     /// `moment` is where `writes.interfere(with:)`'s effect runs; nothing runs there unless a
     /// scenario sets one. `stages` is the firmware's scenario, nominal and cool unless one says
-    /// otherwise; the first must let a lease be granted.
+    /// otherwise; the first must let a lease be granted. `fans` are the machine's, fan 0 alone
+    /// unless a scenario needs more, numbered from 0.
     init(
         unlock: ScriptedControlPlane.UnlockBehaviour = .naive,
         during moment: InterferingFanStateSensing.Moment = .restoreWrite,
         clock: some MonotonicClock = TestClock(),
         stages: [ScriptedControlPlane.Stage] = [
             .nominal(temperatures: LeaseFixture.nominalDieTemperatures)
-        ]
+        ],
+        fans: [Int: ScriptedControlPlane.FanCondition] = [0: .automatic(at: 1_800)]
     ) async {
-        let firmware = ScriptedControlPlane(
-            fans: [0: .automatic(at: 1_800)], stages: stages, unlock: unlock)
+        let firmware = ScriptedControlPlane(fans: fans, stages: stages, unlock: unlock)
         let writes = InterferingFanStateSensing(firmware, during: moment)
         let journal = TeardownJournal()
         let lines = RecordedLog()
         helper = HelperComposition(
             plane: writes,
-            snapshotProvider: PlaneBackedProvider(over: firmware, fanCount: 1),
+            snapshotProvider: PlaneBackedProvider(over: firmware, fanCount: fans.count),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
             clock: clock,
@@ -56,9 +57,10 @@ struct LevelSixMachine: Sendable {
         await helper.bindSafetyRegistries()
     }
 
-    /// A lease over fan 0, acquired through the authority on `holder`.
-    func lease() async throws -> UUID {
-        try await helper.authority.acquireLease(LeaseFixture.request(fans: [0]), from: holder).id
+    /// A lease over `fans`, fan 0 unless a scenario says otherwise, acquired through the authority
+    /// on `holder`.
+    func lease(fans: [Int] = [0]) async throws -> UUID {
+        try await helper.authority.acquireLease(LeaseFixture.request(fans: fans), from: holder).id
     }
 
     /// `apply` through the composed authority, as the session hands it a decoded message.

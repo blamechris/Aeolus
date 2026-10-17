@@ -64,9 +64,13 @@ struct ReclamationWatchdogAccessTests {
 
     /// Every file `ReclamationWatchdog`'s members are written in, **sorted**, and checked against
     /// the tree by `theScannedFilesAreEveryFileTheActorIsIn` rather than trusted.
+    ///
+    /// `ReclamationReporting.swift` declares only the watchdog's conformance to the snapshot's
+    /// role, with no member (#410); its getter is written in `ReclamationWatchdog.swift`.
     private static let watchdogFiles = [
         "ReclamationHeldFan.swift",
         "ReclamationRegistry.swift",
+        "ReclamationReporting.swift",
         "ReclamationSignals.swift",
         "ReclamationWatchdog.swift",
     ]
@@ -114,13 +118,16 @@ struct ReclamationWatchdogAccessTests {
     /// The actor's seam, unchanged by #128: the three notices the lease core and the engagement
     /// path send, the supervisor's cycle, and the diagnostic read — plus the two static, pure
     /// classifiers in `ReclamationSignals.swift`, which reach no state because there is none
-    /// there to reach — and level 6's hand-back notice, A6's fourth, a forwarder into `Registry`.
+    /// there to reach — and level 6's hand-back notice, A6's fourth, a forwarder into `Registry`;
+    /// and the snapshot's read (#410), another, synchronous and returning values, so nothing read
+    /// through it can change who is held.
     private static let acknowledgedInternalMethods: Set<String> = [
         "manualControlEngaged(_: CommandableFan, under: UUID)",
         "commandedTarget(_: CommandedTarget, under: UUID)",
         "manualControlReleased(fanAt: Int)",
         "manualControlHandedBack(fanAt: Int, under: UUID)",
         "lastCommanded(ofFan: Int)",
+        "recordedTargets(under: UUID)",
         "cycle()",
         "primaryDivergence(of: FanControlState, against: CommandedTarget?)",
         "actualShortfall(of: FanControlState, against: CommandedTarget?)",
