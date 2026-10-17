@@ -1592,9 +1592,9 @@ extension SafetyLog {
     }
 
     /// An engagement's first step was superseded at its admission — by a restore requested after
-    /// its ticket, or by the orderly exit's seal (ADR 0014's #410 amendment) — and wrote nothing,
-    /// so it is retried once (attempt 2) under a fresh ticket, after the entitlement is asked
-    /// again. D3 logs every step's attempt; this is the retried one's.
+    /// its ticket, or by the orderly exit's seal (ADR 0014's #410 ticket-and-seal amendment) — and
+    /// wrote nothing, so it is retried once (attempt 2) under a fresh ticket, after the entitlement
+    /// is asked again. D3 logs every step's attempt; this is the retried one's.
     func engagementFirstStepRetried(fan: Int) {
         emit(
             .notice,

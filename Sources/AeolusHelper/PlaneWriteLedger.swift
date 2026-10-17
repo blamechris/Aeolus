@@ -178,8 +178,8 @@ final class PlaneWriteLedger: Sendable {
 
     // MARK: - Engagement
 
-    /// An engagement of `index` begins: its ticket is the current epoch (ADR 0014's #410
-    /// amendment), taken synchronously before the entitlement. It clears the fan's in-progress
+    /// An engagement of `index` begins: its ticket is the current epoch, taken before the
+    /// entitlement (ADR 0014's #410 ticket-and-seal amendment). It clears the fan's in-progress
     /// record, which under the fan's gate can only be one an earlier engagement's undo left.
     func beginEngagement(fanAt index: Int) {
         state.withLock {

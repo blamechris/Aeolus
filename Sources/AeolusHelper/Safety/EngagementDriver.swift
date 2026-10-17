@@ -96,11 +96,12 @@ enum EngagementAftermath: Sendable, Hashable {
 /// Before each step, the bound lease must be live and cover the fan, and `SafetyArbiter` must
 /// permit the driver's level against § 3's latch. For § 5 the check before the first step is the
 /// pre-engage ruling #181 asks for. The ticket comes first, with no suspension before the
-/// entitlement: the engagement takes the plane's restore epoch (`beginEngagement(fanAt:)`), so the
-/// first step is admitted only if no restore was requested since, and inside each later step the
-/// plane checks the epoch again, so no step writes after a restore requested first (ADR 0014's
-/// #410 amendment). After `.engaged`, the fan is registered with § 3 and the entitlement asked
-/// again.
+/// entitlement — the order is what holds; a suspension there would only make the ticket older,
+/// which refuses more. The engagement takes the plane's restore epoch (`beginEngagement(fanAt:)`),
+/// so the first step is admitted only if no restore was requested since, and inside each later step
+/// the plane checks the epoch again, so no step writes after a restore requested first (ADR 0014's
+/// #410 ticket-and-seal amendment). After `.engaged`, the fan is registered with § 3 and the
+/// entitlement asked again.
 ///
 /// **The checks are not atomic with the write, and saying the window is closed would be the more
 /// dangerous spelling** (ADR 0009 D1): a lease can end, or § 3 latch, between a check and the
@@ -183,8 +184,9 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
     /// whatever the plane threw for its; in both cases the undo, if one was owed, has run.
     func engageManualControl(of fan: CommandableFan) async throws {
         let index = fan.index
-        // The ticket, then the entitlement, with no suspension between them: a restore requested
-        // after the entitlement answered is then one the first step's admission sees.
+        // The ticket, then the entitlement: the order is what holds. A restore requested after the
+        // ticket is one the first step's admission sees, so an entitlement that passed was asked
+        // after it; a suspension here would only make the ticket older, which refuses more.
         writer.beginEngagement(fanAt: index)
         try await requireEntitlement(for: fan)
 
@@ -234,15 +236,15 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
 
     /// The first step, retried **once** when the plane's admission answers `.superseded`.
     ///
-    /// `.superseded` is thrown only by the step's admission, before it reads or writes anything,
-    /// so the first step wrote nothing. A first step is superseded there when a restore of any fan
-    /// was requested after its ticket, or when the plane is sealed for exit; the stale record an
+    /// `.superseded` is thrown only by the step's admission, before it reads or writes anything, so
+    /// the first step wrote nothing. A first step is superseded there when a restore of any fan was
+    /// requested after its ticket, or when the plane is sealed for exit; the stale record an
     /// earlier engagement's undo left no longer does it, because the ticket clears it (ADR 0014's
-    /// #410 amendment). The retry takes a fresh ticket, then asks the entitlement again, in that
-    /// order: a restore that was real ended the lease (immediately before or right after the
-    /// restore: a lease teardown, § 4, § 7, § 6's exit, § 5's `finaliseRelease`) or came with
-    /// § 3's latch, and either refuses here. A second `.superseded` is a restore requested during
-    /// the retry itself, or the exit's seal, and stops the engagement with nothing written.
+    /// #410 ticket-and-seal amendment). The retry takes a fresh ticket, then asks the entitlement
+    /// again, in that order: a restore that was real ended the lease (immediately before or right
+    /// after the restore: a lease teardown, § 4, § 7, § 6's exit, § 5's `finaliseRelease`) or came
+    /// with § 3's latch, and either refuses here. A second `.superseded` is a restore requested
+    /// during the retry itself, or the exit's seal, and stops the engagement with nothing written.
     ///
     /// **`.supersededAfterWrite` is never retried.** It is found after the step's mode write,
     /// which may have landed, so it goes to the undo like any other refusal of a step that wrote.

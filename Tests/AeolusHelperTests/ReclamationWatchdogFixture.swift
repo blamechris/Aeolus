@@ -613,7 +613,8 @@ actor InterferingFanStateSensing: FanControlPlane {
     private var engageSteps = 0
 
     /// An effect run before the plane is asked for the `ordinal`th target command — after the
-    /// caller's entitlement and before the command's turn (ADR 0014's #410 amendment).
+    /// caller's entitlement and before the command's turn (ADR 0014's #410 ticket-and-seal
+    /// amendment).
     private var beforeCommandTarget: (ordinal: Int, effect: @Sendable () async -> Void)?
     private var commands = 0
 
@@ -665,7 +666,8 @@ actor InterferingFanStateSensing: FanControlPlane {
     func misreport(commandedRPM rpm: Double) { misreportedRPM = rpm }
 
     /// Runs `effect` inside the next `beginEngagement(fanAt:)`, before the ticket is taken: the
-    /// instant just before an engagement asks the plane for its epoch (ADR 0014's #410 amendment).
+    /// instant just before an engagement asks the plane for its epoch (ADR 0014's #410
+    /// ticket-and-seal amendment).
     ///
     /// Not an `interfere` overload: a trailing closure with a synchronous body would bind to this
     /// one, and every `interfere { … }` whose effect never awaits would silently move here.

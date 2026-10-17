@@ -188,11 +188,11 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
     /// `SMCFanControlPlane` answers with this until those epics land.
     case controlPathNotBuilt
 
-    /// A restore was requested after this engagement's first step, so it writes nothing more
-    /// (ADR 0014 D4's restore epoch) — a restore of any fan, this one's and a machine-wide one
-    /// included — or its ticket predates a restore, or the plane is sealed for exit (ADR 0014's
-    /// #410 amendment). Thrown only at an admission, before anything is read or written: a step's,
-    /// or, once sealed, a target command's (`PlaneWriteLedger.admitCommand()`). The same
+    /// A restore was requested after this engagement's first step, so it writes nothing more (ADR
+    /// 0014 D4's restore epoch) — a restore of any fan, this one's and a machine-wide one included
+    /// — or its ticket predates a restore, or the plane is sealed for exit (ADR 0014's #410
+    /// ticket-and-seal amendment). Thrown only at an admission, before anything is read or written:
+    /// a step's, or, once sealed, a target command's (`PlaneWriteLedger.admitCommand()`). The same
     /// discovery after a write is `.supersededAfterWrite`.
     case superseded
 

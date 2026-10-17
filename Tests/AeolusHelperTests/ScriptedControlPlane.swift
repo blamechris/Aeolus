@@ -242,7 +242,7 @@ actor ScriptedControlPlane: FanControlPlane {
         /// `Ftst = value`.
         case forceKey(UInt8)
         /// `F<n>Tg = rpm`: a target command the plane admitted, so the write itself is observed
-        /// rather than only the attempt (ADR 0014's #410 amendment).
+        /// rather than only the attempt (ADR 0014's #410 ticket-and-seal amendment).
         case target(fan: Int, rpm: Double)
     }
 
@@ -556,9 +556,9 @@ actor ScriptedControlPlane: FanControlPlane {
         try ledger.plan(for: scope).attemptEvery { write in try applyRestoreWrite(write) }
     }
 
-    /// A target command, admitted first in its turn: once the exit's restore has been requested
-    /// the ledger refuses it with `.superseded` before anything is written (ADR 0014's #410
-    /// amendment). The attempt is still recorded, because it was made.
+    /// A target command, admitted first in its turn: once the exit's restore has been requested the
+    /// ledger refuses it with `.superseded` before anything is written (ADR 0014's #410
+    /// ticket-and-seal amendment). The attempt is still recorded, because it was made.
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
         let index = target.fanIndex
@@ -740,8 +740,8 @@ extension ScriptedControlPlane {
     }
 
     /// The engagement's ticket, taken on `ledger` as B1's plane takes it (ADR 0014's #410
-    /// amendment): `nonisolated`, because the verb is synchronous and the ledger is a lock rather
-    /// than this actor's state. Records no attempt, because it reaches no firmware.
+    /// ticket-and-seal amendment): `nonisolated`, because the verb is synchronous and the ledger is
+    /// a lock rather than this actor's state. Records no attempt, because it reaches no firmware.
     nonisolated func beginEngagement(fanAt index: Int) {
         ledger.beginEngagement(fanAt: index)
     }

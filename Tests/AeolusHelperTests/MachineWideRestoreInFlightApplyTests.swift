@@ -6,7 +6,7 @@ import Testing
 @testable import AeolusHelper
 
 /// § 4's sleep handback and § 7's panic verb with level 6's `apply` in flight, composed (ADR 0014's
-/// #410 amendment, item 1a).
+/// #410 ticket-and-seal amendment, item 1a).
 ///
 /// Each machine-wide path ends every lease before it requests its restore. An engagement whose
 /// entitlement answered before that took its ticket before the entitlement, so its first step,
@@ -103,8 +103,8 @@ struct MachineWideRestoreInFlightApplyTests {
     /// The panic verb arrives while an `apply` is past its entitlement and before its engagement's
     /// first step. It releases every lease, issues `.everyFan` on this `.built` plane, and reads
     /// back; the first step that follows is refused at its admission, so nothing is written after
-    /// the restore, no undo follows, and fan 0 stays automatic (ADR 0014's #410 amendment: § 7's
-    /// transient does not happen).
+    /// the restore, no undo follows, and fan 0 stays automatic (ADR 0014's #410 ticket-and-seal
+    /// amendment: § 7's transient does not happen).
     ///
     /// **Mutation:** the rule before the ticket, as above. Run: red, at the forward-write
     /// assertion and the undo assertion, on both paths: the step writes and the after-check undoes

@@ -297,7 +297,7 @@ struct SupervisedFanAuthority: FanAuthority {
     /// 2. **`restoreToAutomatic(.everyFan)`, if and only if `writeCapability` is `.built`**
     ///    ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D5). It reaches what the
     ///    sweep cannot: a fan another tool pinned under no lease, one reconciliation recorded
-    ///    as `handbackRefused`, and the force key, which only `.everyFan` clears. On
+    ///    as `handbackRefused`, and the force key, which only a machine-wide scope clears. On
     ///    `.notBuilt`, which is every build on `main` today, it is not issued: the plane would
     ///    throw `.controlPathNotBuilt`, and a build that cannot write cannot have put a fan into
     ///    manual.

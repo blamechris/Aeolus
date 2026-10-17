@@ -197,21 +197,20 @@ symbol, for the reason the D2 entries below are:
 - **Verify after acting** stays, for the latch that arrives after the last ruling:
   `itUndoesAReassertWhenTheEmergencyLatchesMidWrite` now latches during the command write.
 
-What remains is D1's own residual, stated as D1 requires: the checks are not atomic with the
-write. It is no longer permanent on a refused undo, because §3 holds the fan until a read
-confirms it automatic. One instance of it is worth naming: ADR 0014's restore epoch is recorded
-*at* an engagement's first step, so a restore requested between the driver's check and that
-step's turn does not supersede it. Every genuine restore ends the lease (immediately before or
-right after the restore) or latches §3, and the
-driver asks both again after the step and undoes —
+What remains is D1's own residual, stated as D1 requires: the checks are not atomic with the write.
+It is no longer permanent on a refused undo, because §3 holds the fan until a read confirms it
+automatic. One instance of it is worth naming: ADR 0014's restore epoch is recorded *at* an
+engagement's first step, so a restore requested between the driver's check and that step's turn does
+not supersede it. Every genuine restore ends the lease (immediately before or right after the
+restore) or latches §3, and the driver asks both again after the step and undoes —
 `EngagementEpochTests.aRestoreBeforeTheFirstStepIsCaughtAfterIt` is that case. *(Narrowed by ADR
-0014's #410 amendment: an engagement now takes the epoch before its entitlement, so a restore
-requested after that supersedes the first step at its admission, and that test, now
+0014's #410 ticket-and-seal amendment: an engagement now takes the epoch before its entitlement, so
+a restore requested after that supersedes the first step at its admission, and that test, now
 `aRestoreBeforeTheFirstStepIsRefusedAtItsAdmission`, expects the step refused with nothing written.
-What is left is a lease that ends with its restore not yet
-requested when the step is admitted: the restore that follows covers the write, and the after-check
-undoes it, as `EngagementEpochTests.theAfterCheckStillUndoesALatchAfterAdmission` holds.)* At the
-orderly exit, D1's residual is closed rather than discharged: ADR 0014's #410 amendment seals the
+What is left is a lease that ends with its restore not yet requested when the step is admitted: the
+restore that follows covers the write, and the after-check undoes it, as
+`EngagementTicketTests.theAfterCheckStillUndoesALatchAfterAdmission` holds.)* At the orderly exit,
+D1's residual is closed rather than discharged: ADR 0014's #410 ticket-and-seal amendment seals the
 plane there, because the exit leaves no process to discharge it.
 
 **D2 landed in [#342](https://github.com/blamechris/Aeolus/pull/342)
@@ -386,8 +385,10 @@ writes (*"Two findings from building it"*, above). A fan whose lease-end handbac
 - **bridged above the ceiling**: the restorer marks only accepted fans, so it stays in § 3's
   registry, and § 3's next firing bridges it to maximum and restores it;
 - **retried by every machine-wide restore**: § 7's panic verb, § 4's sleep handback and SIGTERM's
-  teardown each run `releaseEveryLease()`, which sweeps the register (#189), then `.everyFan` on a
-  plane that can write; § 7 reads the fan back and lifts the refusal (#291);
+  teardown each run `releaseEveryLease()`, which sweeps the register (#189), then the machine-wide
+  restore on a plane that can write — `.everyFan`, and for the teardown `.everyFan` then the exit's
+  `.forExit` (ADR 0014's #410 ticket-and-seal amendment); § 7 reads the fan back and lifts the
+  refusal (#291);
 - **reconciled by the next process** (§ 6).
 
 What the bonus would add is one more attempt about a cycle later, then forget: `.leaseLapsed` is

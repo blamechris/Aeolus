@@ -824,7 +824,8 @@ and its keystone has nothing to undo. An `apply` already in flight when the gate
 matter, and not harmless on a plane that can write (ADR 0014's A6 PR-3 amendment); it is closed by
 the [#410](https://github.com/blamechris/Aeolus/issues/410) amendment. The engagement's ticket,
 taken before its entitlement, refuses its first step once the teardown's restores are requested,
-and the exit's `.forExit` seals the plane against every later step and target command.
+and the exit's final keystone, `.forExit`, seals the plane against every later step and target
+command once the supervisors have stopped.
 
 **Tested by** `SleepGrantSealTests`: a grant during a declined seal's teardown, with the keystone
 or the sweep parked; a keystone parked across its wake; and a sweep parked across its wake — each

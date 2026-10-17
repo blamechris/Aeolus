@@ -52,9 +52,9 @@ struct SMCFanControlPlaneTests {
     /// and implements none of it; a stubbed success here would be a lease that controls
     /// nothing wearing a different name.
     ///
-    /// The engagement's ticket (ADR 0014's #410 amendment) changes none of it: taking one reaches
-    /// nothing, the step after it still refuses, and the exit's scope is refused like the others,
-    /// so the teardown's exit code is `.nothingToRestore` as before.
+    /// The engagement's ticket (ADR 0014's #410 ticket-and-seal amendment) changes none of it:
+    /// taking one reaches nothing, the step after it still refuses, and the exit's scope is refused
+    /// like the others, so the teardown's exit code is `.nothingToRestore` as before.
     @Test("Every write verb refuses, because this build has no write path")
     func everyWriteVerbRefuses() async throws {
         let provider = FakeSensorProvider(keyedResults: [:])
