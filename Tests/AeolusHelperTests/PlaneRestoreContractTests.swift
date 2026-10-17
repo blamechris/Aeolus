@@ -100,10 +100,8 @@ struct PlaneRestoreContractTests {
             ])
     }
 
-    /// The restore epoch moves on the request itself, before any write, and supersedes every
-    /// engagement in progress — a restore of a different fan included.
-    ///
-    /// **Mutation:** delete `state.epoch &+= 1` from `restoreRequested(_:)`. Run: red.
+    /// A request moves the epoch, before any write, and supersedes any engagement in progress,
+    /// whichever fan. **Mutation:** delete `state.epoch &+= 1` from `restoreRequested(_:)`. Red.
     @Test("Any restore request supersedes an engagement in progress")
     func aRestoreRequestMovesTheEpoch() throws {
         let ledger = PlaneWriteLedger(enumerated: [0, 1], forceKey: .present)

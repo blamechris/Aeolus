@@ -108,12 +108,11 @@ enum EngagementRules {
 /// preparation step recorded (D4, D5), lock-guarded under `SMCRoundTripMonitor`'s discipline so a
 /// plane that is a `struct` can hold it.
 ///
-/// - **The epoch** moves when a restore is *requested* (`restoreRequested(_:)`), synchronously,
-///   before the restore waits for its turn. An engagement takes it as its ticket before its
-///   entitlement (`beginEngagement(fanAt:)`), and no step is admitted under an older one
-///   (`admitStep(fanAt:)`) — whichever fan the restore covered: the mismatch supersedes it.
-/// - **The seal** is set when `.forExit` is requested, in the same lock, and never cleared: no
-///   step and no target command is admitted after it, and every restore still is.
+/// - **The epoch** moves when a restore is *requested* (`restoreRequested(_:)`), before it waits
+///   for its turn. An engagement takes it as its ticket before its entitlement, and no step is
+///   admitted under an older one, whichever fan the restore covered (`admitStep(fanAt:)`).
+/// - **The seal** is set when `.forExit` is requested, and never cleared: no step or target
+///   command is admitted after it, and every restore still is.
 /// - **The engaged set** holds a fan from its confirmed read-back until a restore covering it
 ///   is *issued* — inside the restore's turn, whatever the firmware then answers.
 /// - **The touched set** holds every addressable fan this plane issued a mode write to or
@@ -122,12 +121,12 @@ enum EngagementRules {
 /// - **The force-key flag** is set when this plane's `Ftst = 1` is accepted and cleared when a
 ///   restore issues `Ftst = 0`.
 ///
-/// **What the epoch cannot see: an engagement's first step.** The epoch is recorded *at* that
-/// step, so a restore requested between the driver's entitlement check and the first step's
-/// turn does not supersede it. That is ADR 0009 D1's residual — the check is not atomic with the
-/// write — and it is discharged the way D1 prescribes: every genuine restore path either ends
-/// the lease (immediately before or right after the restore) or latches § 3, and the driver
-/// asks both again after the step and undoes.
+/// **What the epoch cannot see.** An engagement's epoch is taken before its entitlement
+/// (`beginEngagement(fanAt:)`), so a restore requested after the engagement began supersedes its
+/// first step at admission. What is left is ADR 0009 D1's narrower residual: a lease that ends with
+/// its restore not yet requested when the step is admitted. The restore that follows covers that
+/// write, and the driver's after-check undoes it. At the exit the plane is also sealed: see
+/// `.forExit`.
 final class PlaneWriteLedger: Sendable {
 
     /// How a step was admitted: an engagement's first step records the epoch it runs under.
@@ -180,9 +179,8 @@ final class PlaneWriteLedger: Sendable {
     // MARK: - Engagement
 
     /// An engagement of `index` begins: its ticket is the current epoch (ADR 0014's #410
-    /// amendment). Synchronous and write-free, so the driver takes it with no suspension before the
-    /// entitlement. It clears the fan's in-progress record, which under the fan's gate can only be
-    /// one an earlier engagement's undo left, so a fresh engagement needs no retry for it.
+    /// amendment), taken synchronously before the entitlement. It clears the fan's in-progress
+    /// record, which under the fan's gate can only be one an earlier engagement's undo left.
     func beginEngagement(fanAt index: Int) {
         state.withLock {
             $0.inProgress[index] = nil
@@ -190,10 +188,9 @@ final class PlaneWriteLedger: Sendable {
         }
     }
 
-    /// Admits one step for `index`, or throws `.superseded`, first in the step's turn so a refused
-    /// step has written nothing. Sealed: refused, clearing the ticket and the record. In progress:
-    /// continued unless a restore was requested since its first step. Otherwise the ticket is
-    /// consumed, and only a current one admits `.first`; a missing or stale one records nothing.
+    /// Admits one step for `index`, or throws `.superseded`, first in the step's turn. Sealed:
+    /// refused. In progress: continued unless a restore was requested since its first step.
+    /// Otherwise the ticket is consumed, and only a current one admits `.first`, recorded.
     func admitStep(fanAt index: Int) throws -> Admission {
         try state.withLock { state in
             guard !state.sealed else {
@@ -216,9 +213,8 @@ final class PlaneWriteLedger: Sendable {
         }
     }
 
-    /// Admits one target command, or throws `.superseded` once `.forExit` has been requested, first
-    /// in the command's turn so a refused one has written nothing. No ticket: a command after an
-    /// ordinary restore writes a target to an automatic fan and moves no mode.
+    /// Admits one target command, first in its turn, or throws `.superseded` once `.forExit` was
+    /// requested. No ticket: after an ordinary restore a command moves no fan's mode.
     func admitCommand() throws {
         try state.withLock { state in
             guard !state.sealed else { throw FanControlPlaneError.superseded }
@@ -258,9 +254,8 @@ final class PlaneWriteLedger: Sendable {
 
     // MARK: - Restores
 
-    /// A restore of `scope` was requested: the epoch moves, superseding every engagement and ticket
-    /// before it, and `.forExit` seals, in one lock. Called synchronously when `restoreToAutomatic`
-    /// is called, before it waits for a turn. What it writes is decided when issued (`plan(for:)`).
+    /// A restore of `scope` was requested, synchronously, before it waits for a turn: the epoch
+    /// moves, and `.forExit` seals, in one lock. What it writes is decided when issued.
     func restoreRequested(_ scope: FanRestoreScope) {
         state.withLock { state in
             state.epoch &+= 1
@@ -271,9 +266,8 @@ final class PlaneWriteLedger: Sendable {
         }
     }
 
-    /// Issues a restore of `scope` inside its turn, and is never refused, sealed or not: `.fan(n)`
-    /// is the per-fan restore, `.everyFan` and `.forExit` the machine-wide one. Every plane decides
-    /// by this, so no two can come to disagree.
+    /// Issues a restore of `scope` inside its turn, never refused, sealed or not: every plane
+    /// decides by this, so no two disagree. `.everyFan` and `.forExit` are the machine-wide one.
     func plan(for scope: FanRestoreScope) -> RestorePlan {
         switch scope {
         case .fan(let index): return issueRestore(fanAt: index)

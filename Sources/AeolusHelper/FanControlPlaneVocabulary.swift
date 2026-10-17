@@ -190,9 +190,10 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
 
     /// A restore was requested after this engagement's first step, so it writes nothing more
     /// (ADR 0014 D4's restore epoch) — a restore of any fan, this one's and a machine-wide one
-    /// included. Thrown only by the step's admission, before it reads or writes anything; the
-    /// same discovery after a write is `.supersededAfterWrite`. A restore requested before the
-    /// first step's turn is not seen by the epoch; `PlaneWriteLedger` states that residual.
+    /// included — or its ticket predates a restore, or the plane is sealed for exit (ADR 0014's
+    /// #410 amendment). Thrown only at an admission, before anything is read or written: a step's,
+    /// or, once sealed, a target command's (`PlaneWriteLedger.admitCommand()`). The same
+    /// discovery after a write is `.supersededAfterWrite`.
     case superseded
 
     /// A restore was requested during this step's turn, **after its mode write was issued** —

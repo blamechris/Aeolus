@@ -2721,6 +2721,9 @@ unchanged. `WatchdogLimitsTests.theBoundsAreDerivedAndConstant` was re-run and n
 build stays at N = 3: on `.notBuilt`, `apply` refuses before it reads.
 
 **Decision: teardown with an `apply` in flight is ruling D19's residual, which level 6 inherits.**
+*(Closed by the #410 amendment: the engagement's ticket refuses the first step at its admission, and
+the exit's `.forExit` seal refuses it and the command below inside their own turns.
+`SignalTeardownInFlightApplyTests` now holds that nothing is written after the keystone.)*
 `SignalTeardown`'s control gate refuses an `apply` that arrives, and one already in flight runs on:
 
 - Every step whose entitlement is asked after `releaseEveryLease()` has emptied the table refuses on
@@ -2764,7 +2767,8 @@ landing with item 1b in one change on `main` **before B1's first `.built` commit
 
 This step only documents and pins the residual: `SignalTeardownInFlightApplyTests` parks the
 step past the recorded exit, so the after-check's undo runs in the test; in production the race is
-between `exit()` finishing and the step's write.
+between `exit()` finishing and the step's write. *(Closed by the #410 amendment, which inverts that
+test: the step is refused at its admission and writes nothing.)*
 
 **Decision: the client contract.** `apply`'s documentation in `AeolusXPCProtocol` says what a
 refused re-apply means: it may already have re-commanded fans an earlier `apply` engaged, at the
@@ -2785,7 +2789,8 @@ A6 PR-2 amendment's open question, answered in the documentation alone.
 only once B1 makes the plane `.built`, and #410's rulings say when each lands:
 
 - **Items 1, 1a and 1b, teardown with an `apply` in flight** (above), and the same window across a
-  system sleep: one change, before B1's first `.built` commit.
+  system sleep: one change, before B1's first `.built` commit. *(Closed by the #410 amendment
+  below.)*
 - **Items 2 and 3**, in one change after #405 and before run 1:
   - [#406](https://github.com/blamechris/Aeolus/issues/406), a refused undo inside the engagement
     driver losing level 6's account of the fan;

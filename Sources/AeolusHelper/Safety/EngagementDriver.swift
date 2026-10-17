@@ -95,21 +95,25 @@ enum EngagementAftermath: Sendable, Hashable {
 ///
 /// Before each step, the bound lease must be live and cover the fan, and `SafetyArbiter` must
 /// permit the driver's level against § 3's latch. For § 5 the check before the first step is the
-/// pre-engage ruling #181 asks for. Inside each later step the plane checks its restore epoch,
-/// so no later step writes after a restore requested first. After `.engaged`, the fan is
-/// registered with § 3 and the entitlement asked again.
+/// pre-engage ruling #181 asks for. The ticket comes first, with no suspension before the
+/// entitlement: the engagement takes the plane's restore epoch (`beginEngagement(fanAt:)`), so the
+/// first step is admitted only if no restore was requested since, and inside each later step the
+/// plane checks the epoch again, so no step writes after a restore requested first (ADR 0014's
+/// #410 amendment). After `.engaged`, the fan is registered with § 3 and the entitlement asked
+/// again.
 ///
 /// **The checks are not atomic with the write, and saying the window is closed would be the more
 /// dangerous spelling** (ADR 0009 D1): a lease can end, or § 3 latch, between a check and the
-/// step's turn — and the epoch, which an engagement records *at* its first step, does not see a
-/// restore requested before that turn. That residual is discharged by acting and then checking:
-/// every genuine restore ends the lease (immediately before or right after the restore) or latches
-/// § 3, the entitlement is asked again after the step, and the fan is undone. It asks about the
-/// engagement's own lease, so one granted over the fan once that restore returned does not answer
-/// for it (ADR 0014's 2026-10-15 amendment). The undo is a write the firmware can refuse, so the
-/// fan is registered with § 3 **before** it — after `.engaged`, before the after-check; otherwise
-/// just before the undo — and stays in the registry § 3's next latched cycle bridges, until a read
-/// confirms it automatic.
+/// step's turn with no restore yet requested, which the epoch cannot see. For § 4, § 6 and § 7 it
+/// is closed, because each ends every lease, or latches, before it requests a restore; elsewhere
+/// it narrows to writes a later restore covers. That residual is discharged by acting and then
+/// checking: every genuine restore ends the lease (immediately before or right after the restore)
+/// or latches § 3, the entitlement is asked again after the step, and the fan is undone. It asks
+/// about the engagement's own lease, so one granted over the fan once that restore returned does
+/// not answer for it (ADR 0014's 2026-10-15 amendment). The undo is a write the firmware can
+/// refuse, so the fan is registered with § 3 **before** it — after `.engaged`, before the
+/// after-check; otherwise just before the undo — and stays in the registry § 3's next latched cycle
+/// bridges, until a read confirms it automatic.
 ///
 /// ## The undo
 ///

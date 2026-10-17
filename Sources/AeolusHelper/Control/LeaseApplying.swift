@@ -25,22 +25,19 @@ import Foundation
 /// - every step whose entitlement is asked after the teardown has emptied the lease table refuses
 ///   on the lease: an engagement, § 5's registration, a command, and the reply's check;
 /// - its undo's hand-back is a restore, redundant after the keystone, and takes no gate;
-/// - a command whose entitlement was answered first can land on a fan the keystone restored;
-/// - an engagement whose entitlement was answered first can have its first step admitted after the
-///   final keystone, because the plane records the restore epoch at that step (ADR 0009 D1's
-///   residual; `PlaneWriteLedger`). It writes `F<n>Md = 1`, and `Ftst = 1` on the force-key path,
-///   and only the driver's after-check undoes it, after the teardown's process-end call.
+/// - a command whose entitlement was answered first is refused in its own turn by the exit's
+///   `.forExit` seal, before it writes a target;
+/// - an engagement whose entitlement was answered first took its ticket before that, so its first
+///   step, admitted after the teardown's restores were requested, is refused at its admission
+///   before it writes, and the seal refuses it as well.
 ///
-/// The last is the residual ruling D19 on [#197](https://github.com/blamechris/Aeolus/pull/197)
-/// accepts for § 5's re-assert (`SignalTeardown`'s step 5, `docs/SAFETY.md` § 6), which level 6
-/// inherits, at most once per teardown. In the daemon, on the force-key path, the after-check sits
-/// behind the driver's poll sleep, which an exiting process does not outlive, so if the step's
-/// writes land, `Ftst = 1` is in practice left set with exit 0; on the naive path the undo races
-/// the exit. Nothing outside the process reconciles that, so D19's acceptance does not extend to a
-/// plane that can write. The fix is [#410](https://github.com/blamechris/Aeolus/issues/410)'s
-/// items 1 and 1a, a `.forExit` restore scope that seals the plane against every forward write and
-/// an engagement ticket taken before the entitlement, which land on `main` with item 1b before
-/// B1's first `.built` commit. `SignalTeardownInFlightApplyTests` pins the residual until then.
+/// The last was the residual ruling D19 on [#197](https://github.com/blamechris/Aeolus/pull/197)
+/// accepted, which level 6 inherited (ADR 0014's A6 PR-3 amendment): a first step admitted after
+/// the final keystone wrote `F<n>Md = 1`, and `Ftst = 1` on the force-key path, with its undo left
+/// to a process that was ending; the command before it wrote a target to a restored fan. Both are
+/// closed by the #410 amendment — the engagement's ticket and the exit's seal — and
+/// `SignalTeardownInFlightApplyTests` holds that an engagement, a command and a re-assert in flight
+/// at the exit write nothing after the keystone.
 protocol LeaseApplying: Sendable {
 
     /// Writes `settings` under `lease`, or refuses having undone what it engaged: `LeaseApplier`'s
