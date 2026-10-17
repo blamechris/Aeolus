@@ -113,10 +113,10 @@ public actor SMCConnection {
     private var knownKeys: Set<SMCKey>?
 
     /// Counts each `READ_KEYINFO` attempt actually issued — cache misses only, since a
-    /// cache hit in `keyInfo(for:)` never reaches `call(key:selector:data32:dataSize:)`
-    /// at all. Not `private`, so `@testable import SMCCore` can prove the cache actually
-    /// skips the round trip it claims to, without needing an open hardware connection to
-    /// observe it — see `SMCConnectionCacheTests`. Not `public`: no real caller has a
+    /// cache hit in `keyInfo(for:)` never reaches `call(_:)` at all. Not `private`, so
+    /// `@testable import SMCCore` can prove the cache actually skips the round trip it claims
+    /// to, without needing an open hardware connection to observe it — see
+    /// `SMCConnectionCacheTests`. Not `public`: no real caller has a
     /// legitimate reason to read call-count telemetry through the public API.
     private(set) var readKeyInfoAttempts = 0
 
@@ -140,12 +140,17 @@ public actor SMCConnection {
     private static let offsetBytes = 48
 
     /// The `bytes[32]` payload field. Any key whose declared `dataSize` exceeds this
-    /// cannot be read through a single `READ_BYTES` call — see `read(_:)`.
+    /// cannot be read through a single `READ_BYTES` call — see `read(_:)` — and no write
+    /// may carry more than this either — see `write(_:to:)`.
     private static let maxPayloadBytes = 32
 
-    // Read-only selectors. No write selector is defined here: this project's write path
-    // is entirely out of scope for E1 and lives behind `write(_:to:)` below, unimplemented.
+    // The command codes, carried in `data8`. The three read codes are exercised on `Mac16,5`.
+    // The write code, `WRITE_BYTES` (6), is documented, not observed: two public sources give
+    // it, and no Aeolus tool has issued it — see `docs/SMC-RESEARCH.md`, "The write command
+    // code 6 is documented, not observed". `write(_:to:)` is its only user, and nothing in the
+    // helper calls that. `WritePathAbsenceTests` pins this set at exactly these four.
     private static let selectorReadBytes: UInt8 = 5
+    private static let selectorWriteBytes: UInt8 = 6
     private static let selectorReadIndex: UInt8 = 8
     private static let selectorReadKeyInfo: UInt8 = 9
     private static let kernelIndexSMC: UInt32 = 2
@@ -469,7 +474,7 @@ public actor SMCConnection {
             throw SMCError.invalidIndex(index)
         }
         readIndexAttempts += 1
-        let reply = try call(key: 0, selector: Self.selectorReadIndex, data32: index32)
+        let reply = try call(.readIndex(index32))
         guard let key = SMCKey(fourCharCode: reply.key) else {
             throw SMCError.malformedKeyCode(reply.key)
         }
@@ -493,7 +498,7 @@ public actor SMCConnection {
             return cached
         }
         readKeyInfoAttempts += 1
-        let reply = try call(key: key.fourCharCode, selector: Self.selectorReadKeyInfo)
+        let reply = try call(.readKeyInfo(key.fourCharCode))
         let info = SMCKeyInfo(
             key: key,
             type: SMCKeyType(fourCharCode: reply.dataType),
@@ -541,16 +546,13 @@ public actor SMCConnection {
             return SMCValue(key: key, type: info.type, bytes: [], byteOrder: byteOrder)
         }
 
-        let reply = try call(
-            key: key.fourCharCode,
-            selector: Self.selectorReadBytes,
-            dataSize: UInt32(info.dataSize))
+        let reply = try call(.readBytes(key.fourCharCode, dataSize: UInt32(info.dataSize)))
 
         // A short read is an error, never a silently truncated value. `bytes` is sized
         // from what this call requested (already validated against the 32-byte payload
         // above), not from the response's own `dataSize` field — observed on `Mac16,5`
         // to read back as 0 on a `READ_BYTES` reply even on success. Only `READ_KEYINFO`
-        // populates that field reliably; see `call(key:selector:data32:dataSize:)`.
+        // populates that field reliably; see `call(_:)`.
         guard reply.bytes.count == info.dataSize else {
             throw SMCError.sizeMismatch(
                 key: key, declared: info.type, reportedBytes: reply.bytes.count)
@@ -622,10 +624,31 @@ public actor SMCConnection {
 
     // MARK: - Write path (helper-only)
 
-    /// Writes raw bytes to a key.
+    /// Writes raw bytes to a key: one `WRITE_BYTES` round trip, `data8 = 6`, through the one
+    /// stamped `IOConnectCallStructMethod` site in `call(_:)`.
     ///
-    /// - Important: Requires root. Every caller must be inside `AeolusHelper`, and every
-    ///   fan-speed write must already have been clamped and rate-limited. See E5.
+    /// What it does, all of it:
+    /// - It refuses a payload that is empty or longer than the 32-byte `bytes` field, with
+    ///   `SMCError.notPermitted`, **before any round trip**: nothing is stamped and nothing is
+    ///   sent.
+    /// - It builds the request with `Request.writeBytes(_:payload:)` and sends it. The key is
+    ///   at offset 0, `dataSize` at 28 is the payload's length, `data8` at 42 is 6, and the
+    ///   payload starts at 48 — the layout every read already uses (see the note on this type).
+    /// - A kernel error throws `connectionFailed`, a short reply `truncatedReply`, and a
+    ///   non-zero SMC result `firmware(code:)`, which is how a `0x82` reaches the caller. A
+    ///   write that throws after its round trip began may still have landed.
+    ///
+    /// What it does not do is as much a part of the contract:
+    /// - It reads nothing. There is no `READ_KEYINFO` and no read-back, so it neither consults
+    ///   nor fills the key-info cache, and a write is exactly one round trip.
+    /// - It does not check `bytes` against the key's declared type or size, and does not
+    ///   encode, retry, or decide what an answer means. Those are the caller's, which takes
+    ///   fresh key info for the key first (ADR 0004; ADR 0014 D7).
+    ///
+    /// - Important: Meant to be called as root from inside `AeolusHelper` only, and every
+    ///   fan-speed write must already have been clamped and rate-limited. See E5. Whether the
+    ///   kernel refuses a caller that is not root is **not observed**: nothing here checks the
+    ///   caller, and what keeps clients from naming this is the SPI gate below, not the kernel.
     ///
     ///   The clamp is **not** `[F0Mn, F0Mx]`, and this comment said it was until E5 wave 1
     ///   corrected it. Firmware may declare `F0Mn = 0` — fans stopping at idle is normal on
@@ -645,18 +668,32 @@ public actor SMCConnection {
     ///   `AeolusHelper.WriteSeamReachability` for the probe that proves the level in the
     ///   build that ships the helper.
     ///
-    ///   The body still throws and no write path is built. Widening this — to plain
-    ///   `public`, or by adding a third member to the group — is a safety review under
-    ///   `docs/SAFETY.md`, not a refactor.
+    ///   Nothing in the helper calls this: the helper's write capability is still `.notBuilt`,
+    ///   and `WritePathAbsenceTests.helperNeverCallsWrite` holds it to that. Widening this —
+    ///   to plain `public`, or by adding a third member to the group — is a safety review
+    ///   under `docs/SAFETY.md`, not a refactor.
     @_spi(FanWrite) public func write(_ bytes: [UInt8], to key: SMCKey) throws {
-        throw SMCError.notPermitted
+        guard !bytes.isEmpty, bytes.count <= Self.maxPayloadBytes else {
+            Self.logger.fault(
+                """
+                Refused a write of \(bytes.count, privacy: .public) bytes to \
+                \(key.rawValue, privacy: .public) before any round trip: a write carries 1 to \
+                \(Self.maxPayloadBytes, privacy: .public) bytes.
+                """
+            )
+            throw SMCError.notPermitted
+        }
+        _ = try call(.writeBytes(key.fourCharCode, payload: bytes))
     }
 
     // MARK: - Wire-level call
 
-    /// One `IOConnectCallStructMethod` round trip. Every field of the response the rest
-    /// of this type needs is decoded here and copied out as plain Swift values — no raw
-    /// pointer escapes this function.
+    /// One `IOConnectCallStructMethod` round trip, sending `request.bytes` exactly. Every
+    /// field of the response the rest of this type needs is decoded here and copied out as
+    /// plain Swift values — no raw pointer escapes this function.
+    ///
+    /// Reads and the write share this function, and so share its stamp, its reply-length
+    /// check and its result-byte check: a write is not a second path to the kernel.
     ///
     /// - Note: The response's `keyInfo.dataSize` field (offset 28) is only reliable on a
     ///   `READ_KEYINFO` reply. Observed on `Mac16,5`: a `READ_BYTES` reply reports that
@@ -664,20 +701,15 @@ public actor SMCConnection {
     ///   payload using the *requested* `dataSize` rather than the response's. The payload
     ///   here is sized the same way, from what every caller already knows from a prior
     ///   `READ_KEYINFO`, not from the response.
-    private func call(
-        key: FourCharCode, selector: UInt8, data32: UInt32 = 0, dataSize: UInt32 = 0
-    ) throws -> RawSMCReply {
+    private func call(_ request: Request) throws -> RawSMCReply {
         guard connection != 0 else {
             throw SMCError.connectionFailed(kernReturn: kIOReturnNotOpen)
         }
 
+        let wire = request.bytes
         let input = UnsafeMutableRawPointer.allocate(byteCount: Self.structSize, alignment: 8)
         defer { input.deallocate() }
-        input.initializeMemory(as: UInt8.self, repeating: 0, count: Self.structSize)
-        input.storeBytes(of: key, toByteOffset: Self.offsetKey, as: UInt32.self)
-        input.storeBytes(of: selector, toByteOffset: Self.offsetData8, as: UInt8.self)
-        input.storeBytes(of: data32, toByteOffset: Self.offsetData32, as: UInt32.self)
-        input.storeBytes(of: dataSize, toByteOffset: Self.offsetDataSize, as: UInt32.self)
+        input.copyMemory(from: wire, byteCount: Self.structSize)
 
         let output = UnsafeMutableRawPointer.allocate(byteCount: Self.structSize, alignment: 8)
         defer { output.deallocate() }
@@ -685,13 +717,14 @@ public actor SMCConnection {
         var outputSize = Self.structSize
 
         // The one `IOConnectCallStructMethod` in the tree: every SMC read the project makes
-        // goes through it, and a write, if one is ever built, must too. The stamp is taken on
-        // this thread immediately before the call and cleared in a `defer` when it returns or
-        // throws, so a call that never returns is visible to `roundTrips.inFlight()` from
-        // outside this actor (ADR 0012 I1). Keep it the only one, and keep it inside the
-        // bracket: `RoundTripStampTripwireTests` reads this file and fails on a second site.
+        // goes through it, and so does the write. The stamp is taken on this thread
+        // immediately before the call and cleared in a `defer` when it returns or throws, so
+        // a call that never returns is visible to `roundTrips.inFlight()` from outside this
+        // actor (ADR 0012 I1). It names the request's own key and selector, so a write stamps
+        // `.call(key:, selector: 6)`. Keep it the only one, and keep it inside the bracket:
+        // `RoundTripStampTripwireTests` reads this file and fails on a second site.
         let handle = connection
-        let kernResult = roundTrips.bracket(.call(key: key, selector: selector)) {
+        let kernResult = roundTrips.bracket(.call(key: request.key, selector: request.selector)) {
             IOConnectCallStructMethod(
                 handle, Self.kernelIndexSMC, input, Self.structSize, output, &outputSize)
         }
@@ -718,7 +751,7 @@ public actor SMCConnection {
         let outDataType = output.load(fromByteOffset: Self.offsetDataType, as: UInt32.self)
         let outAttributes = output.load(fromByteOffset: Self.offsetAttributes, as: UInt8.self)
 
-        let payloadCount = min(Int(dataSize), Self.maxPayloadBytes)
+        let payloadCount = min(Int(request.dataSize), Self.maxPayloadBytes)
         var bytes: [UInt8] = []
         bytes.reserveCapacity(payloadCount)
         for offset in 0..<payloadCount {
@@ -732,6 +765,85 @@ public actor SMCConnection {
         return RawSMCReply(
             key: outKey, dataSize: outDataSize, dataType: outDataType, attributes: outAttributes,
             bytes: bytes)
+    }
+}
+
+// MARK: - The request
+
+extension SMCConnection {
+    /// One `SMCKeyData_t` request: the fields this project sets, and nothing else.
+    ///
+    /// `bytes` is the request exactly as `call(_:)` hands it to `IOConnectCallStructMethod`,
+    /// built by a pure function at the offsets in the layout note on `SMCConnection`. Every
+    /// request is built here, reads and the write alike, so a write cannot be laid out
+    /// differently from the reads `Mac16,5` has answered, and a test can check the bytes a
+    /// write sends, one by one, with no connection at all.
+    ///
+    /// Internal, so `@testable import SMCCore` reaches it and no client does. It confers
+    /// nothing: building a request sends nothing, and only `call(_:)` sends one.
+    struct Request: Sendable, Equatable {
+        let key: FourCharCode
+        let selector: UInt8
+        let data32: UInt32
+        let dataSize: UInt32
+        let payload: [UInt8]
+
+        /// `READ_KEYINFO` (9): the key's declared type, size and attributes.
+        static func readKeyInfo(_ key: FourCharCode) -> Request {
+            Request(
+                key: key, selector: SMCConnection.selectorReadKeyInfo, data32: 0, dataSize: 0,
+                payload: [])
+        }
+
+        /// `READ_INDEX` (8): the key at `index` in the table. Key 0, which is not a key.
+        static func readIndex(_ index: UInt32) -> Request {
+            Request(
+                key: 0, selector: SMCConnection.selectorReadIndex, data32: index, dataSize: 0,
+                payload: [])
+        }
+
+        /// `READ_BYTES` (5): `dataSize` bytes of the key's value, the size a prior
+        /// `READ_KEYINFO` declared.
+        static func readBytes(_ key: FourCharCode, dataSize: UInt32) -> Request {
+            Request(
+                key: key, selector: SMCConnection.selectorReadBytes, data32: 0,
+                dataSize: dataSize, payload: [])
+        }
+
+        /// `WRITE_BYTES` (6): `payload` written to the key. `dataSize` is the payload's own
+        /// length, so the two cannot disagree. `write(_:to:)` has already refused a payload
+        /// that is empty or longer than 32 bytes.
+        static func writeBytes(_ key: FourCharCode, payload: [UInt8]) -> Request {
+            Request(
+                key: key, selector: SMCConnection.selectorWriteBytes, data32: 0,
+                dataSize: UInt32(payload.count), payload: payload)
+        }
+
+        /// The 80 bytes sent: zero everywhere but the key, `dataSize`, `data8` (the selector),
+        /// `data32`, and the payload from offset 48. Integers are stored in the host's byte
+        /// order, as the read path always has.
+        ///
+        /// A payload longer than the 32-byte field is a programming error here, not a
+        /// request: it traps rather than being cut short, because a truncated write is a
+        /// different write. `write(_:to:)` refuses one before it can reach this.
+        var bytes: [UInt8] {
+            precondition(
+                payload.count <= SMCConnection.maxPayloadBytes,
+                "an SMC request carries at most \(SMCConnection.maxPayloadBytes) payload bytes")
+            var buffer = [UInt8](repeating: 0, count: SMCConnection.structSize)
+            buffer.withUnsafeMutableBytes { raw in
+                raw.storeBytes(of: key, toByteOffset: SMCConnection.offsetKey, as: UInt32.self)
+                raw.storeBytes(
+                    of: dataSize, toByteOffset: SMCConnection.offsetDataSize, as: UInt32.self)
+                raw.storeBytes(
+                    of: selector, toByteOffset: SMCConnection.offsetData8, as: UInt8.self)
+                raw.storeBytes(
+                    of: data32, toByteOffset: SMCConnection.offsetData32, as: UInt32.self)
+            }
+            let start = SMCConnection.offsetBytes
+            buffer.replaceSubrange(start..<start + payload.count, with: payload)
+            return buffer
+        }
     }
 }
 

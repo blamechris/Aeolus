@@ -3,7 +3,8 @@ import Testing
 
 // `write(_:to:)` is `@_spi(FanWrite) public` — see the 2026-09-06 amendment in
 // docs/ADR/0008-write-authorisation.md. `@testable` widens *internal* access and does
-// nothing for an SPI group, so `writeStaysRefused` below needs the opt-in by name.
+// nothing for an SPI group, so `anUnopenedWriteIssuesNoRoundTrip` below needs the opt-in
+// by name. Because it has that opt-in, this file never obtains an opened connection.
 @_spi(FanWrite) @testable import SMCCore
 
 // swiftlint:disable force_unwrapping
@@ -88,12 +89,18 @@ struct SMCConnectionUnopenedTests {
         }
     }
 
-    @Test("The write path stays refused; E1 adds no write selector")
-    func writeStaysRefused() async {
+    /// The inversion of what this test asserted before the write had a body: then every write
+    /// threw `notPermitted` whatever the handle. Now a well-formed write is no longer refused
+    /// by SMCCore's own rule — it reaches the connection, and an unopened one refuses it as
+    /// not open before anything is stamped or sent.
+    @Test("write(_:to:) on an unopened connection is refused as unopened, with no round trip")
+    func anUnopenedWriteIssuesNoRoundTrip() async {
         let connection = SMCConnection()
-        await #expect(throws: SMCError.notPermitted) {
+        await #expect(throws: SMCError.connectionFailed(kernReturn: kIOReturnNotOpen)) {
             try await connection.write([0x00], to: SMCKey("F0Md")!)
         }
+        #expect(connection.roundTrips.issuedCount == 0)
+        #expect(connection.roundTrips.lastBegunOperation == nil)
     }
 }
 
@@ -103,7 +110,7 @@ struct SMCConnectionUnopenedTests {
 /// behaviour on a connection that is deliberately never opened. If a lookup returns
 /// without throwing `SMCError.connectionFailed`, or `readKeyInfoAttempts`/
 /// `readIndexAttempts` stays at 0, that lookup could not have reached IOKit — the guard
-/// at the top of `call(key:selector:data32:dataSize:)` throws immediately on an unopened
+/// at the top of `call(_:)` throws immediately on an unopened
 /// connection, before any wire call, so the only way to avoid that is a cache hit.
 @Suite("SMC connection, read cache")
 struct SMCConnectionCacheTests {
