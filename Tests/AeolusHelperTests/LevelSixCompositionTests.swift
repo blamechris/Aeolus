@@ -130,6 +130,11 @@ struct LevelSixCompositionTests {
     /// nobody advances, an engagement waiting for its yield sleeps on that clock, and moving it
     /// lets the `apply` finish applied.
     ///
+    /// The clock is moved one poll interval at a time, and only once the driver is seen asleep on
+    /// it, with a bounded wait for that between moves. Moved blind, it could pass the unlock's
+    /// 3.5 s yield budget before the driver reached its next step, and correct wiring would be
+    /// refused `yieldDidNotArrive`.
+    ///
     /// **Mutation (G5):** in `HelperComposition.init`, compose level 6's driver with `clock:
     /// SystemMonotonicClock()`. Run: red, no sleeper on the composed clock.
     @Test("Level 6's driver polls on the composition's clock")
@@ -142,11 +147,19 @@ struct LevelSixCompositionTests {
         let polled = await yieldUntil("level 6's poll to sleep on the composed clock") {
             clock.sleepers == 1
         }
+        // Each move waits, bounded, for the driver to park on the clock or for the apply to end,
+        // and moves only past a parked sleeper. `advance(by:)` ends that sleep before it returns,
+        // so the next wait is for the driver's next poll.
+        let done = applying.isFinished
         var advances = 0
-        while await !applying.isFinished.isSet, advances < 50 {
+        while advances < 10 {
+            _ = await pollUntil {
+                if clock.sleepers == 1 { return true }
+                return await done.isSet
+            }
+            guard clock.sleepers == 1, await !done.isSet else { break }
             clock.advance(by: UnlockLimits.pollInterval)
             advances += 1
-            await Task.yield()
         }
         try await finished("the apply", applying)
 

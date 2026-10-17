@@ -141,7 +141,8 @@ struct LeaseApplyingTripwireTests {
     /// the literals. **Mutation:** in `blankingProse(of:hashes:)`, blank an interpolation's code
     /// as prose. Run: red here, on the interpolated calls. **Mutation:** in
     /// `blankingStringLiterals(_:)`, count no `#` (`let hashes = 0`). Run: red here, the call after
-    /// the raw literal blanked.
+    /// the raw literal blanked. **Mutation:** skip no raw escape when looking for the literal's end
+    /// (`step` always 1). Run: red here, the call after `\#"` blanked.
     @Test("The verb census blanks string literals and keeps every call")
     func theVerbCensusReadsCodeNotProse() {
         let source = ###"""
@@ -157,6 +158,8 @@ struct LeaseApplyingTripwireTests {
             try await sneaky.apply(settings)
             let prose = ##"an "# apply"##
             let rawNote = #"\#(try await rawHidden.apply(settings)) and \(apply) as text"#
+            let escaped = #"say \#"# hi"#
+            try await sneakier.apply(settings)
             """###
         let found = RoleCensus.occurrences(
             inSource: Self.blankingStringLiterals(RoleCensus.code(of: source)), path: "Probe.swift",
@@ -168,10 +171,12 @@ struct LeaseApplyingTripwireTests {
                 "try await control . apply", "let detail = try await other.apply",
                 "let note = try await hidden.apply", "let raw = try await sneaky.apply",
                 "let rawNote = try await rawHidden.apply",
+                "let escaped = try await sneakier.apply",
             ],
             "the census read \(found.map(\.statement))")
         #expect(
-            found.map(\.line) == [5, 7, 8, 10, 12], "a blanked literal moved the lines: \(found)")
+            found.map(\.line) == [5, 7, 8, 10, 12, 14],
+            "a blanked literal moved the lines: \(found)")
     }
 
     /// Every spelling of `apply` in `target`'s code, string literals blanked, by path and then
@@ -196,7 +201,9 @@ struct LeaseApplyingTripwireTests {
     /// An ordinary literal's end is found by `SeamScanner.copyDelimited`, the walker every scan
     /// here shares, with its limit: a `"` inside an interpolation ends the literal early, and what
     /// follows is read as code. A raw literal, `#"…"#`, `##"…"##` and their `"""` forms, ends only
-    /// at its quotes followed by as many `#` as opened it, so a `"` inside it hides nothing.
+    /// at its quotes followed by as many `#` as opened it, so a `"` inside it hides nothing, and a
+    /// raw escape, a `\` with those `#` and one character after (`\#"` in a `#` literal), is text
+    /// and never its end.
     static func blankingStringLiterals(_ code: String) -> String {
         var output = ""
         var index = code.startIndex
@@ -218,9 +225,11 @@ struct LeaseApplyingTripwireTests {
                 output += Self.blankingProse(of: literal)
             } else {
                 let closing = delimiter + String(repeating: "#", count: hashes)
+                let escape = "\\" + String(repeating: "#", count: hashes)
                 var end = code.index(quote, offsetBy: delimiter.count)
                 while end < code.endIndex, !code[end...].hasPrefix(closing) {
-                    end = code.index(after: end)
+                    let step = code[end...].hasPrefix(escape) ? escape.count + 1 : 1
+                    end = code.index(end, offsetBy: step, limitedBy: code.endIndex) ?? code.endIndex
                 }
                 end =
                     code.index(end, offsetBy: closing.count, limitedBy: code.endIndex)
