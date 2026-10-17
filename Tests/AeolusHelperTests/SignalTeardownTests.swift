@@ -107,9 +107,10 @@ struct SignalTeardownTests {
     /// Gate, then release, then the machine-wide restore, then the supervisors, then exit.
     ///
     /// A lease is held, so `releaseEveryLease()` has real work: fan 0's own restore is the
-    /// `.fan(0)` entry, and the `.everyFan` entry after it is the keystone this path issues
-    /// unconditionally. Both carry the gate's state at the write, which is what pins step 1
-    /// ahead of step 2.
+    /// `.fan(0)` entry, and the `.forExit` entry after it is the keystone this path issues
+    /// unconditionally — the exit's own scope since ADR 0014's #410 amendment, which writes what
+    /// `.everyFan` writes and seals the plane. Both carry the gate's state at the write, which is
+    /// what pins step 1 ahead of step 2.
     ///
     /// The keystone appears **twice**: once at step 3 and once at step 5, ruling D19's, after
     /// the supervisors have stopped. Both are in the journal, and their positions either side
@@ -133,9 +134,9 @@ struct SignalTeardownTests {
         #expect(
             await journal.events == [
                 .restored(.fan(0), gateClosed: true),
-                .restored(.everyFan, gateClosed: true),
+                .restored(.forExit, gateClosed: true),
                 .supervisorsStopped,
-                .restored(.everyFan, gateClosed: true),
+                .restored(.forExit, gateClosed: true),
                 .exited(.restored),
             ],
             """
@@ -166,7 +167,7 @@ struct SignalTeardownTests {
         await helper.signalTeardown.run(stoppingSupervisorsWith: Self.stopRecorder(journal))
 
         #expect(
-            await journal.restoreScopes == [.everyFan, .everyFan],
+            await journal.restoreScopes == [.forExit, .forExit],
             """
             the machine-wide restore is conditional on something this process knows about, \
             so a fan the previous helper left in manual is never handed back.
@@ -187,9 +188,16 @@ struct SignalTeardownTests {
     /// The assertion is on the firmware's own state rather than on the journal alone: the
     /// point of the ruling is not that a second write was issued, it is that the fan is back.
     ///
-    /// **Mutation:** delete the second `keystone()` call from
-    /// `SignalTeardown.run(stoppingSupervisorsWith:)` and return the first one's outcome.
-    /// Run: red — fan 0 is `.manual` at exit.
+    /// **Two things cover this window since ADR 0014's #410 amendment, and the test claims
+    /// neither over the other.** The step takes its ticket as the driver would, so it is current;
+    /// the first keystone's `.forExit` seal refuses it at its admission, and the second keystone
+    /// would restore it if the seal did not. Sealing at the first keystone or the second is
+    /// equivalent for the exit — the amendment's "Not claimed" — so the end state is the claim.
+    ///
+    /// **Mutation:** delete the seal check at the top of `PlaneWriteLedger.admitStep(fanAt:)`,
+    /// **and** the second `keystone()` call from `SignalTeardown.run(stoppingSupervisorsWith:)`,
+    /// returning the first one's outcome. Run: red — fan 0 is `.manual` at exit. Either alone:
+    /// green, because the other still covers the window.
     @Test("A fan put into manual while the supervisors are stopping is still handed back")
     func theKeystoneCoversTheWindowAfterTheSupervisorsStop() async throws {
         let journal = TeardownJournal()
@@ -199,7 +207,9 @@ struct SignalTeardownTests {
 
         await helper.signalTeardown.run(stoppingSupervisorsWith: {
             await journal.record(.supervisorsStopped)
-            // What a § 5 re-assert does, at the one moment it can still do it.
+            // What a § 5 re-assert does, at the one moment it can still do it: its ticket, under
+            // the current epoch, then its first step.
+            plane.beginEngagement(fanAt: fan.index)
             _ = try? await plane.engageManualControl(of: fan)
         })
 
@@ -225,7 +235,7 @@ struct SignalTeardownTests {
     /// plane is asked for fan 0 again with the gate already closed. No lease is held at that
     /// point, so nothing but the register names it.
     ///
-    /// Counted on `.fan(0)` and not on `.everyFan`, which the teardown issues twice whether or
+    /// Counted on `.fan(0)` and not on `.forExit`, which the teardown issues twice whether or
     /// not the sweep reached the fan. The journal is read before and after, so the setup's own
     /// attempts are not the ones counted.
     ///
@@ -260,7 +270,7 @@ struct SignalTeardownTests {
             `restoreAbandoned` hands the next process a fan still in manual.
             """)
         #expect(
-            atTeardown.contains(.everyFan),
+            atTeardown.contains(.forExit),
             "the teardown never reached its keystone, so the count above describes another path")
         #expect(
             await helper.leases.fansWithAbandonedHandbacks == [0],
@@ -512,7 +522,7 @@ struct SignalTeardownTests {
         await signals.fire()
         #expect(await journal.waitForExit(), "the teardown never reached its exit")
 
-        #expect(await journal.restoreScopes == [.everyFan, .everyFan])
+        #expect(await journal.restoreScopes == [.forExit, .forExit])
         #expect(await journal.events.last == .exited(.restored))
     }
 
@@ -569,9 +579,9 @@ struct SignalTeardownTests {
 
         #expect(
             await journal.events == [
-                .restored(.everyFan, gateClosed: true),
+                .restored(.forExit, gateClosed: true),
                 .supervisorsStopped,
-                .restored(.everyFan, gateClosed: true),
+                .restored(.forExit, gateClosed: true),
                 .exited(.restored),
             ],
             "the teardown ran twice, so the process was told to exit twice")

@@ -32,7 +32,7 @@ import Foundation
 /// test can execute it. See `TeardownExit`.
 enum TeardownOutcome: Sendable, Hashable, CaseIterable {
 
-    /// Every lease released and `restoreToAutomatic(.everyFan)` accepted by the firmware.
+    /// Every lease released and `restoreToAutomatic(.forExit)` accepted by the firmware.
     case restored
 
     /// The keystone was refused with `.controlPathNotBuilt`: this build has no write path,
@@ -215,12 +215,14 @@ actor DispatchSignalSources: SignalSourcing {
 ///    emptied synchronously and each dropped lease's fans then go back through
 ///    `HelperFanRestorer`, so both safety registries are told rather than left describing a
 ///    machine that has moved.
-/// 3. **`restoreToAutomatic(.everyFan)`, unconditionally.** ADR 0007's keystone at its
-///    widest. It takes no reading, no bound and no lease, so there is nothing for a helper
-///    on its way out to fail to gather — which is the whole reason the keystone is defined
-///    the way it is. It covers what step 2 cannot: a fan engaged by a lease granted in the
-///    gap between the gate closing and the release (the gate covers arrival, not flight),
-///    and a fan the previous process left behind.
+/// 3. **`restoreToAutomatic(.forExit)`, unconditionally.** ADR 0007's keystone at its
+///    widest: everything `.everyFan` writes, and from the moment it is requested the plane
+///    admits no forward write for the rest of the process (ADR 0014's #410 amendment). It
+///    takes no reading, no bound and no lease, so there is nothing for a helper on its way out
+///    to fail to gather — which is the whole reason the keystone is defined the way it is. It
+///    covers what step 2 cannot: a fan engaged by a lease granted in the gap between the gate
+///    closing and the release (the gate covers arrival, not flight), and a fan the previous
+///    process left behind.
 /// 4. **Stop the supervisors**, after the writes rather than before them. A supervisor
 ///    stopped first is § 3 and § 5 not watching while the last two writes of the process's
 ///    life are issued.
@@ -229,17 +231,14 @@ actor DispatchSignalSources: SignalSourcing {
 ///    supervisors; it does not await a cycle already in flight. A § 5 re-assert that began
 ///    before step 4 can therefore land its `engageManualControl` write *after* step 3 has run,
 ///    and the process would then exit `0` — "every fan is back" — over a fan it had just put
-///    into manual. (§ 3's fire never engages: it commands the maximum, then restores.) The
-///    keystone takes no reading, no bound and no lease, so re-issuing it is idempotent and
-///    cheap, and it narrows the window — a write landing between this restore and the exit is
-///    still possible — without reordering anything A4 fixed. Level 6's `apply` in flight
-///    inherits that window, and on a plane that can write it is not acceptable: an engagement's
-///    first step admitted after this restore leaves `Ftst = 1` with exit `0` on the force-key
-///    path. [#410](https://github.com/blamechris/Aeolus/issues/410)'s items 1 and 1a, the
-///    `.forExit` seal and the engagement's ticket, close it before B1's first `.built` commit
-///    (ADR 0014's A6 PR-3 amendment). Step 3 is not redundant with it: a restore issued only
-///    after the supervisors stop is a restore that has not happened while § 3 and § 5 are
-///    still running, which is the ordering step 4's own paragraph exists to protect.
+///    into manual. (§ 3's fire never engages: it commands the maximum, then restores.) Both
+///    keystones are `.forExit`, which seals the write path when it is requested, so from step 3
+///    on no step or command lands after a restore, however it was in flight (ADR 0014's #410
+///    amendment, closing what this ruling accepted). Re-issuing still costs nothing: a second
+///    attempt after the supervisors stop, whose answer is the exit code. Step 3 is not redundant
+///    with it: a restore issued only after the supervisors stop is a restore that has not
+///    happened while § 3 and § 5 are still running, which is the ordering step 4's own
+///    paragraph exists to protect.
 /// 6. **Exit**, `0` if the final restore landed or there was nothing to restore, and
 ///    non-zero if it failed. See `TeardownOutcome`.
 ///
@@ -353,7 +352,10 @@ actor SignalTeardown<Plane: FanControlPlane> {
         seams.termination.end(outcome)
     }
 
-    /// `restoreToAutomatic(.everyFan)`, and what its answer means for the exit code.
+    /// `restoreToAutomatic(.forExit)`, and what its answer means for the exit code. The scope is
+    /// the exit's own, and no other file in the helper names it: `.everyFan`'s writes and the seal
+    /// on every later forward write (ADR 0014's #410 amendment). A `.notBuilt` plane refuses it
+    /// `.controlPathNotBuilt` exactly as it refuses `.everyFan`, so the exit codes are unchanged.
     ///
     /// The `.controlPathNotBuilt` clause is ruling D15's, and it is sourced from the thrown
     /// case: this is a build with no write path, so the refusal is proof there is nothing to
@@ -362,7 +364,7 @@ actor SignalTeardown<Plane: FanControlPlane> {
     /// be here on the E3 build where the same refusal means the firmware said no.
     private func keystone() async -> TeardownOutcome {
         do {
-            try await restore.restoreToAutomatic(.everyFan)
+            try await restore.restoreToAutomatic(.forExit)
             return .restored
         } catch FanControlPlaneError.controlPathNotBuilt {
             log.teardownFoundNothingToRestore()

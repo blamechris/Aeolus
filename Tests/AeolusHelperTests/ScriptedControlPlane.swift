@@ -241,6 +241,9 @@ actor ScriptedControlPlane: FanControlPlane {
         case mode(fan: Int, value: UInt8)
         /// `Ftst = value`.
         case forceKey(UInt8)
+        /// `F<n>Tg = rpm`: a target command the plane admitted, so the write itself is observed
+        /// rather than only the attempt (ADR 0014's #410 amendment).
+        case target(fan: Int, rpm: Double)
     }
 
     /// One fan as the firmware currently has it. Mutated by writes the firmware honours.
@@ -562,6 +565,7 @@ actor ScriptedControlPlane: FanControlPlane {
         attempts.append(.commandTarget(fan: index, rpm: target.rpm))
         try ledger.admitCommand()
         _ = try condition(ofFan: index)
+        keyWrites.append(.target(fan: index, rpm: target.rpm))
         try applyWrite(behaviour: stage.targetWrites ?? stage.writes) { fans in
             fans[index]?.targetRPM = target.rpm
         }

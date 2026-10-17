@@ -612,6 +612,11 @@ actor InterferingFanStateSensing: FanControlPlane {
     private var beforeEngageStep: (ordinal: Int, effect: @Sendable () async -> Void)?
     private var engageSteps = 0
 
+    /// An effect run before the plane is asked for the `ordinal`th target command — after the
+    /// caller's entitlement and before the command's turn (ADR 0014's #410 amendment).
+    private var beforeCommandTarget: (ordinal: Int, effect: @Sendable () async -> Void)?
+    private var commands = 0
+
     /// What `commandTarget(_:)` returns in place of the plane's answer once set, after the plane
     /// has taken the write: a write path returning a target no plane can write (#395).
     private var misreportedRPM: Double?
@@ -646,6 +651,13 @@ actor InterferingFanStateSensing: FanControlPlane {
         beforeEngageStep ordinal: Int, with effect: @escaping @Sendable () async -> Void
     ) {
         beforeEngageStep = (ordinal, effect)
+    }
+
+    /// Runs `effect` before the `ordinal`th target command, counting from one.
+    func interfere(
+        beforeCommandTarget ordinal: Int, with effect: @escaping @Sendable () async -> Void
+    ) {
+        beforeCommandTarget = (ordinal, effect)
     }
 
     /// Makes every later `commandTarget(_:)` return `rpm` for the fan it wrote. Independent of
@@ -735,6 +747,12 @@ actor InterferingFanStateSensing: FanControlPlane {
 
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
+        commands += 1
+        if let pending = beforeCommandTarget, pending.ordinal == commands {
+            beforeCommandTarget = nil
+            await pending.effect()
+            didFire = true
+        }
         let commanded: CommandedTarget
         do {
             commanded = try await plane.commandTarget(target)
