@@ -45,6 +45,51 @@ struct HelperClientDeadlineTests {
             "the handshake deadline is no longer the sum its own documentation states")
     }
 
+    /// `apply`'s per-fan figure is the helper's own bound on one fan's engagement, and the copy
+    /// cannot drift from it silently.
+    ///
+    /// The handshake's shape, for its reason: `FanExaminationGate.examinationWait` and
+    /// `WatchdogLimits.gateWaiterAlarm` are the root daemon's, so the client restates their sum as
+    /// `HelperClientDeadlines.applyPerFan`, and only this target can hold the two to each other
+    /// ([#325](https://github.com/blamechris/Aeolus/issues/325), ADR 0014's #410 amendment).
+    ///
+    /// - **The copy moves**, or never followed: the first expectation.
+    /// - **The helper's bounds move**: the second, against the 52 s the figure's documentation,
+    ///   ADR 0014 and the 57 s and 109 s below state. Without it, a change to G or `lawfulHold`
+    ///   reddens only the first, which copying the new sum fixes while every stated figure stays
+    ///   wrong.
+    ///
+    /// **Mutation:** set `HelperClientDeadlines.applyPerFan` to `.seconds(5)`, `gatedVerb`'s figure
+    /// copied. Run: red on the first expectation and on the 57 s and 109 s lines. **Mutation:** in
+    /// a scratch build, set `WatchdogLimits.gateWaiterAlarm` to `roundTrip * 3`, or
+    /// `FanExaminationGate.lawfulHold` to `WatchdogLimits.gateWaiterAlarm * 4`. Run: red on the
+    /// first two expectations, the literal's included.
+    @Test("The apply deadline is derived from the helper's own bounds")
+    func theApplyDeadlineIsDerivedFromTheHelpersOwnBounds() {
+        let helpersBound = FanExaminationGate.examinationWait + WatchdogLimits.gateWaiterAlarm * 2
+        #expect(
+            HelperClientDeadlines.applyPerFan == helpersBound,
+            """
+            the client allows \(HelperClientDeadlines.applyPerFan) per fan for an `apply` the \
+            helper may lawfully spend \(helpersBound) on — `examinationWait` plus two \
+            `gateWaiterAlarm` turns. Below it, the client cuts off an `apply` the helper is still \
+            honouring and its lease ends (#325); the copy exists only because this target may \
+            not link the daemon.
+            """)
+        #expect(
+            helpersBound == .seconds(52),
+            """
+            the helper's bound for one fan's engagement is now \(helpersBound), not the 52 s \
+            `applyPerFan`'s documentation, ADR 0014 and the deadlines below state.
+            """)
+        #expect(HelperClientDeadlines.default.applyPerFan == HelperClientDeadlines.applyPerFan)
+
+        let oneFan = [FanSetting(fanIndex: 0, control: .fixed(rpm: 2_000))]
+        let twoFans = oneFan + [FanSetting(fanIndex: 1, control: .fixed(rpm: 2_000))]
+        #expect(HelperClientDeadlines.default.applyDeadline(naming: oneFan) == .seconds(57))
+        #expect(HelperClientDeadlines.default.applyDeadline(naming: twoFans) == .seconds(109))
+    }
+
     /// The handshake is allowed longer than a verb on a connection that already exists.
     ///
     /// The defect C1 named: `gatedVerb` was the handshake's deadline too, at exactly

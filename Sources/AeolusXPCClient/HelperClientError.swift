@@ -73,8 +73,14 @@ public enum HelperClientError: Error, Sendable, Hashable {
     /// `NSXPCConnection` has no per-message timeout, so without this a helper that accepts
     /// a message and never answers holds its caller forever — which on the wedged
     /// `io_connect_t` of `docs/SAFETY.md` § 4 is the expected case rather than an exotic
-    /// one. The deadline is a client-side invention and is **unmeasured**; see
-    /// `HelperClientDeadlines`.
+    /// one. The deadline is a client-side invention, a guess for most verbs and derived from
+    /// the helper's own bounds for `hello` and `apply`; see `HelperClientDeadlines`.
+    ///
+    /// **The connection goes with it**, and the description says so. The request may still
+    /// have taken effect, but this client has invalidated the connection, and the helper
+    /// releases a connection's leases when it handles that: any manual control the caller held
+    /// has ended, and only a fresh status shows the fans back on automatic control
+    /// ([#325](https://github.com/blamechris/Aeolus/issues/325)).
     case helperNeverAnswered(after: Duration)
 
     /// The helper's answer could not be delivered, and **the connection is still alive**.
@@ -131,7 +137,10 @@ extension HelperClientError: LocalizedError {
         case .helperNeverAnswered(let deadline):
             return """
                 The Aeolus helper accepted this request and did not answer within \
-                \(deadline). Nothing can be said about whether it took effect.
+                \(deadline). Nothing can be said about whether it took effect. This copy of \
+                Aeolus has given up on the connection, which ends any manual control it held; \
+                the helper returns those fans to automatic control when it handles that, and \
+                only a fresh status shows that it has.
                 """
         case .replyNotDelivered:
             return """

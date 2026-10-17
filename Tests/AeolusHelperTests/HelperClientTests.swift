@@ -409,9 +409,10 @@ struct HelperClientTests {
     /// way and the two are not the same failure.
     ///
     /// **Mutation:** in `HelperClient.exchange(on:within:_:)`, replace
-    /// `pending.answer(within: deadline)` with `pending.answer(within: .seconds(600))`. Run:
-    /// red on the suite's time limit rather than on this expectation, which is the weaker
-    /// kill and is why the expectation is on the error value.
+    /// `pending.answer(within: deadline, on: clock)` with
+    /// `pending.answer(within: .seconds(600), on: clock)`. Run: red on the suite's time limit
+    /// rather than on this expectation, which is the weaker kill and is why the expectation is
+    /// on the error value.
     @Test("A message nobody answers becomes helperNeverAnswered")
     func aMessageNobodyAnswersHasItsOwnError() async throws {
         let gate = AsyncSignal()

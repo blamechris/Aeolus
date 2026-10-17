@@ -2809,6 +2809,45 @@ version-1 meaning is unchanged: on every shipped build it answers what it answer
 order. Its documentation gains one sentence about a refused re-apply. This amendment corrects
 clauses of a Proposed ADR rather than the decisions they sit under. **Status stays Proposed.**
 
+## Amendment (2026-10-17, [#410](https://github.com/blamechris/Aeolus/issues/410), [#325](https://github.com/blamechris/Aeolus/issues/325)) — `apply`'s client waits as long as the helper may
+
+The fourth of the five items A6 left for before B1 builds the Apple Silicon write plane, landed on
+its own. It is unreachable on every build on `main`, where a `.notBuilt` plane grants no lease, and
+it lands on `main` before run 1. Only the client's own deadline and its error text change.
+
+**The defect.** [#325](https://github.com/blamechris/Aeolus/issues/325): `gatedVerb`'s 5 s bounds
+every gated verb. An `apply` that engages fans can lawfully take a gate wait, a yield and several
+turns per fan, so a first `apply` of two fans outlasts it with nothing wrong. Cut off, it discards the
+connection: the helper ends the lease, and the client reports an unresponsive helper that was inside
+its contract.
+
+**Decision.**
+- `HelperClientDeadlines.applyPerFan` is `FanExaminationGate.examinationWait` plus two
+  `WatchdogLimits.gateWaiterAlarm`, 52 s: the envelope read's turn before the gate, the gate wait and
+  hold § 5's bound already counts, and one undo's turn after it, each turn taken at G. It is copied
+  into the client and held by a test that imports both modules.
+- `apply`'s deadline is `gatedVerb` plus `applyPerFan` for each distinct fan its settings name: 57 s
+  for one, 109 s for two. Every other verb keeps its own.
+- **Derived, not measured,** as `handshakeVerb` is: it states what the helper may lawfully take.
+  Cutting an `apply` below that ends a lease the helper was honouring and misreports it.
+- **Past it, the client says what is true.** The connection is discarded as before, because the
+  helper is then outside its contract. `helperNeverAnswered` says the request may have taken effect,
+  and that abandoning the connection ended any manual control this client held.
+- `UnlockLimits.yieldBudget` is no longer sized to the client. The helper's bounds set the client's
+  deadline, so D8's and U3's "give `apply` a client deadline of its own" is met in advance.
+
+**What remains.**
+- A helper hung where ADR 0012 cannot see it answers an `apply`'s caller only at the deadline. Its
+  fans stay under § 3, § 5 and the lease's TTL meanwhile.
+- A sequenced verb sent behind an `apply` on one connection waits for it at the helper while its own
+  deadline runs from its send. No client pipelines one today; before any does, a sequenced verb's
+  deadline runs from when the sequenced verbs sent before it have settled
+  ([#413](https://github.com/blamechris/Aeolus/issues/413)).
+
+**No `AeolusXPCVersion` bump:** the wire is unchanged. No field, case or method changes, and
+`helperNeverAnswered` is an existing client-side case; only the client's own deadline and its error
+text move. **Status stays Proposed.**
+
 ## Assumptions and what would invalidate them
 
 | # | Assumption | Basis | If it fails |
