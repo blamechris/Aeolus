@@ -2571,7 +2571,9 @@ kept. And a hand-back can throw after the fan's mode write landed, as when `F<n>
 the force key's clear is refused: the fan is then on automatic and still kept, so the next
 re-apply that names it is answered applied on an automatic fan for one § 5 cycle, which marks the
 fan reclaimed by the system and spends an attempt before its re-assert takes the fan back (What
-remains).
+remains). *(Both conditions changed with #410's refused-hand-back amendment below: every fan whose
+hand-back throws is kept as one whose hand-back was refused, the `.notHeld` fan included, and its
+next re-apply runs the driver, which reads where the fan is instead of assuming it.)*
 
 **Corrections.**
 
@@ -2623,12 +2625,15 @@ remains).
   commanded without a re-engage: #381's one-cycle residual. So is a fan kept after a hand-back
   that threw once its mode write had landed: its next re-apply is answered applied on an automatic
   fan, and § 5's next cycle falsely marks it reclaimed by the system and spends an attempt before
-  re-asserting it. `LeaseApplierHandBackTests` pins that cycle and its self-correction.
+  re-asserting it. `LeaseApplierHandBackTests` pins that cycle and its self-correction. *(The second
+  half is closed by #410's refused-hand-back amendment below: the kept fan's re-apply runs the
+  driver, which engages it again. The first half, #381's twin, stands.)*
 - *A step the driver could not undo itself* (an engagement that threw after its mode write landed,
   then a refused restore) leaves the fan in manual outside the engaged set and § 5's watch, held by
   § 3 alone, and the next `apply` that names it answers `foreignManualControl`. The refusal's
   `.notice` no longer says the `apply` engaged no fan. Tracked as
-  [#406](https://github.com/blamechris/Aeolus/issues/406).
+  [#406](https://github.com/blamechris/Aeolus/issues/406). *(Closed by #410's refused-hand-back
+  amendment below: the driver throws `EngagementUndoRefused`, and level 6 keeps the fan.)*
 - *A stuck holder costs § 5 32 s once,* and outside the design point the bound can run out inside a
   lawful hold.
 - *A stuck `apply` refuses every later one until it returns.* That fails closed: nothing is written.
@@ -2814,6 +2819,8 @@ only once B1 makes the plane `.built`, and #410's rulings say when each lands:
   - the landed-mode kept-entry residual (#405's comment): a hand-back that throws after
     `F<n>Md = 0` landed keeps a fan level 6 believes engaged, and its next re-apply is answered
     applied on an automatic fan for one § 5 cycle.
+
+  *(Both closed by #410's refused-hand-back amendment below.)*
 - **Item 4, [#325](https://github.com/blamechris/Aeolus/issues/325)'s client deadline**, before run
   1 and before #324 merges. Its client half has landed (#414, the amendment below); #325 stays open
   for run 1's hardware row.
@@ -3015,6 +3022,55 @@ plane-level tests or tripwire "What remains" names.
 shipped build each verb answers what it answered, in the same order, and the exit codes are
 unchanged. This amendment corrects clauses of a Proposed ADR rather than the decisions they sit
 under. **Status stays Proposed.**
+
+## Amendment (2026-10-17, [#410](https://github.com/blamechris/Aeolus/issues/410) items 2 and 3, [#406](https://github.com/blamechris/Aeolus/issues/406), the refused-hand-back amendment) — a refused hand-back is read, not assumed
+
+Cited elsewhere as the #410 refused-hand-back amendment. The second and third of the five items A6
+left for before B1 builds the Apple Silicon write plane, landed together because they share level
+6's accounts. All of it is unreachable on every build on `main`: a `.notBuilt` plane grants no
+lease, so level 6 never engages, keeps or re-reads a fan, and no driver undo is ever issued. It
+lands on `main` before run 1.
+
+### A refused hand-back is read, not assumed
+
+**The defects.** When the engagement driver's own undo is refused, it rethrows the step's error,
+and level 6, which records a fan only when the engagement returns, loses it: the next `apply` under
+the lease answers `foreignManualControl` about Aeolus's own fan
+([#406](https://github.com/blamechris/Aeolus/issues/406)). And a hand-back that throws after
+`F<n>Md = 0` landed keeps a fan level 6 believes engaged: its next re-apply is answered applied on an
+automatic fan, and § 5 then marks it reclaimed by the system and spends an attempt (the A6 PR-2
+amendment's "What remains").
+
+**Decision.**
+- **The driver says when its undo was refused.** It throws `EngagementUndoRefused(fan:cause:)`,
+  carrying the step's own refusal. Every router reads the cause: § 5's re-assert routes it exactly as
+  before, and level 6 keeps the fan and answers by the cause.
+- **Level 6 holds two accounts per lease:** `.engaged`, when the driver's engagement returned, and
+  `.handBackRefused`, when level 6's undo or the driver's was refused. A hand-back that returns
+  removes the fan.
+- **An `.engaged` fan is re-applied without the driver**, as before. #381's residual stands.
+- **A `.handBackRefused` fan is re-applied through the driver,** whose first step reads its raw mode
+  in its own turn. `0`: the restore landed, or the system took the fan, and it is engaged afresh.
+  The value D3 confirms engagement by (`EngagementRules.isEngagedMode`, shared with the read-back):
+  the restore never landed, the fan is still this lease's, and the driver's `.notAutomatic` refusal is
+  read as the engagement returning, with nothing written. Any other value: `foreignManualControl`.
+- **Why read rather than infer.** A write's acceptance is not its application (#291), so which of a
+  restore's writes landed does not say where the fan is. The pre-state read is in the turn that would
+  write, and inside the hold `lawfulHold` already counts.
+
+**What remains.**
+- A kept fan whose mode landed, then taken by another program that writes the same raw value before
+  the next re-apply, is re-adopted: a contest bounded by § 5's budget.
+- The plane's engaged set does not hold a re-adopted fan, so a per-fan restore of another can clear
+  the force key under it. § 5 reads a reclamation and re-engages it: one cycle and one attempt.
+- #381's twin, a fan the system took back that level 6 still counts `.engaged`, is unchanged.
+
+**No `AeolusXPCVersion` bump.** No field, case or method crosses the boundary. The wrapper and level
+6's two accounts are inside the helper, and no client can name either: every answer a client can
+receive is one item 5's table already gave, chosen by the same cause, and a re-adopted fan is
+answered as an engaged one is. On every shipped build each verb answers what it answered, in the same
+order. This amendment corrects clauses of a Proposed ADR rather than the decisions they sit under.
+**Status stays Proposed.**
 
 ## Assumptions and what would invalidate them
 
