@@ -198,7 +198,94 @@ struct HeldTargetCompositionTests {
         #expect(registry.recordedTargets(under: UUID()).isEmpty)
     }
 
+    // MARK: - § 3's latch (#426's review)
+
+    /// **P1.** § 3 latches with fan 0 held at 1,400 under a live lease, and a snapshot is taken
+    /// inside `fire`, after its maximum has landed and before its restore. The lease is still
+    /// listed, because `fire` revokes it only after its last fan; § 5 still records 1,400; `F0Md`
+    /// reads manual; nothing is marked. Only the latch withholds the target, and the snapshot
+    /// states none beside `isThermalEmergencyActive`, while the fan is held at 5,777.
+    ///
+    /// **Mutation:** delete `heldTarget`'s guard on `thermalEmergencyActive`. Run: red here, the
+    /// snapshot states 1,400.
+    @Test("No target is stated while § 3's latch holds the fan at maximum")
+    func noTargetWhileTheLatchHoldsTheFanAtMaximum() async throws {
+        let machine = await LevelSixMachine(
+            during: .commandWrite,
+            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures), .at(96)])
+        let lease = try await machine.lease()
+        try await machine.apply(rpm: 1_400, under: lease)
+        let seen = SnapshotSeen()
+        await machine.writes.interfere {
+            await seen.record(try? await machine.helper.authority.snapshot())
+        }
+
+        await machine.firmware.advance()
+        await machine.helper.thermalEmergency.cycle()
+
+        #expect(await machine.writes.didFire, "§ 3's maximum never landed")
+        #expect(await Self.commanded(fan: 0, on: machine) == [1_400, 5_777])
+        let snapshot = try #require(await seen.snapshot, "the snapshot inside § 3's bridge threw")
+        try Self.expectWithheldByTheLatchAlone(fan: 0, in: snapshot, under: lease)
+    }
+
+    /// **P2.** Two fans, and the hot stage refuses every mode write, so § 3's restore of fan 0 is
+    /// refused after its maximum lands. A snapshot taken while fan 1 is being bridged states no
+    /// target for fan 0, which is held at 5,777 in manual under the lease that is still listed.
+    ///
+    /// **Mutation:** delete `heldTarget`'s guard on `thermalEmergencyActive`. Run: red here, fan 0
+    /// stated at 1,400.
+    @Test("No target is stated for a fan § 3 could not restore while it bridges the next")
+    func noTargetForAFanSectionThreeCouldNotRestore() async throws {
+        let refusing = ScriptedControlPlane.Stage.nominal(
+            temperatures: ScriptedControlPlane.Stage.temperatures(96),
+            writes: .refused(reason: "F<n>Md refused"), targetWrites: .honoured)
+        let machine = await LevelSixMachine(
+            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures), refusing],
+            fans: [0: .automatic(at: 1_800), 1: .automatic(at: 1_800)])
+        let lease = try await machine.lease(fans: [0, 1])
+        let applied = await LevelSixMachine.answer {
+            try await machine.helper.authority.apply(
+                Self.settings([0: 1_400, 1: 1_400]), leaseID: lease, from: machine.holder)
+        }
+        #expect(applied == nil, "the apply was answered \(String(describing: applied))")
+        let seen = SnapshotSeen()
+        // Commands 1 and 2 are the apply's; 3 is § 3's maximum for fan 0; 4 is fan 1's.
+        await machine.writes.interfere(beforeCommandTarget: 4) {
+            await seen.record(try? await machine.helper.authority.snapshot())
+        }
+
+        await machine.firmware.advance()
+        await machine.helper.thermalEmergency.cycle()
+
+        #expect(await machine.writes.didFire, "§ 3 never reached fan 1")
+        #expect(await Self.commanded(fan: 0, on: machine) == [1_400, 5_777])
+        let snapshot = try #require(await seen.snapshot, "the snapshot inside § 3's bridge threw")
+        try Self.expectWithheldByTheLatchAlone(fan: 0, in: snapshot, under: lease)
+    }
+
     // MARK: - Fixtures
+
+    /// Every RPM `fan` was commanded on `machine`'s firmware, in order.
+    private static func commanded(fan: Int, on machine: LevelSixMachine) async -> [Double] {
+        await machine.firmware.attempts.compactMap { attempt -> Double? in
+            if case .commandTarget(fan: fan, let rpm) = attempt { return rpm }
+            return nil
+        }
+    }
+
+    /// Fan `index` in `snapshot` meets every condition but the latch, and states no target.
+    private static func expectWithheldByTheLatchAlone(
+        fan index: Int, in snapshot: SystemSnapshot, under lease: UUID
+    ) throws {
+        let fan = try #require(snapshot.fans.first { $0.index == index })
+        #expect(snapshot.isThermalEmergencyActive, "§ 3's latch was not set in the snapshot")
+        #expect(snapshot.activeLease?.id == lease, "the lease was already revoked")
+        #expect(fan.mode == .manualFixed, "fan \(index) was already restored")
+        #expect(!fan.isReclaimedBySystem)
+        let stated = String(describing: fan.targetRPM)
+        #expect(fan.targetRPM == nil, "fan \(index) states \(stated) while § 3 holds it at maximum")
+    }
 
     /// Fan `index` in a fresh snapshot of `machine`'s authority.
     private static func fan(_ index: Int, of machine: LevelSixMachine) async throws -> FanState {
@@ -211,6 +298,13 @@ struct HeldTargetCompositionTests {
             FanSetting(fanIndex: $0.key, control: .fixed(rpm: $0.value))
         }
     }
+}
+
+/// The snapshot a test took from inside a write, or `nil` when it threw.
+private actor SnapshotSeen {
+    private(set) var snapshot: SystemSnapshot?
+
+    func record(_ snapshot: SystemSnapshot?) { self.snapshot = snapshot }
 }
 
 /// § 5 as the snapshot's role, answering nothing and counting each lease it is asked about.

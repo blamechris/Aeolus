@@ -187,7 +187,7 @@ struct SupervisedFanAuthority: FanAuthority {
     ///
     /// **The re-statement touches two fields of one fan and nothing else**: the availability,
     /// by the ladder in `AvailabilityRestatement.swift`, then the target, by
-    /// `ReadOnlyFanReport.statingHeldTarget`'s four conditions, from § 5's records asked once
+    /// `ReadOnlyFanReport.statingHeldTarget`'s five conditions, from § 5's records asked once
     /// after the lease and only under one (#410). Since
     /// [#355](https://github.com/blamechris/Aeolus/issues/355) no rung exempts a fan § 5 gave up:
     /// its ledger is reported on `isReclaimedBySystem`, never as an availability. The other
@@ -214,7 +214,7 @@ struct SupervisedFanAuthority: FanAuthority {
                     of: ReadOnlyFanReport.restatingAvailability(
                         of: $0, observedMode: machine.modes[$0.index], given: view,
                         reconciliation: baseline, blind: blind),
-                    observedMode: machine.modes[$0.index], given: view, recorded: recorded)
+                    in: machine, given: view, recorded: recorded)
             },
             sensors: machine.snapshot.sensors,
             activeLease: view.lease,
