@@ -35,11 +35,11 @@ import SMCCore
 /// ## What this build can and cannot do
 ///
 /// It serves `snapshot` from real hardware and refuses everything that would need a write.
-/// `SMCConnection.write(_:to:)` is still SPI-gated and still throws, and no write
-/// selector exists anywhere in `Sources/` — the read selectors are 5, 8, and 9. **E2's
-/// strongest safety property is structural: it cannot fail open into a write, because
-/// there is no write to fail into.** Adding one "ready for E5" would spend that property
-/// for nothing.
+/// `SMCConnection.write(_:to:)` is SPI-gated and nothing in the helper calls it; the plane
+/// answers `.notBuilt`. **The helper's strongest safety property is structural: it cannot
+/// fail open into a write, because nothing in it calls one.** Calling one "ready for E5",
+/// ahead of the safe default and the plane's write turns, would spend that property for
+/// nothing.
 ///
 /// What changed in #163 is that the refusal is no longer a literal in the type serving
 /// clients. `SMCFanControlPlane` answers `FanWriteCapability.notBuilt`, `LeaseAuthority`

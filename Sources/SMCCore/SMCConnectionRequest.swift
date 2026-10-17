@@ -1,0 +1,80 @@
+import Foundation
+
+extension SMCConnection {
+    /// One `SMCKeyData_t` request: the fields this project sets, and nothing else.
+    ///
+    /// `bytes` is the request exactly as `call(_:)` hands it to `IOConnectCallStructMethod`,
+    /// built by a pure function at the offsets in the layout note on `SMCConnection`. Every
+    /// request is built here, reads and the write alike, so a write cannot be laid out
+    /// differently from the reads `Mac16,5` has answered, and a test can check the bytes a
+    /// write sends, one by one, with no connection at all.
+    ///
+    /// Internal, so `@testable import SMCCore` reaches it and no client does. It confers
+    /// nothing: building a request sends nothing, and only `call(_:)`, in
+    /// `SMCConnection.swift`, sends one. It lives in a file of its own only to keep that one
+    /// under the length limit; the offsets and command codes it uses are declared there.
+    struct Request: Sendable, Equatable {
+        let key: FourCharCode
+        let selector: UInt8
+        let data32: UInt32
+        let dataSize: UInt32
+        let payload: [UInt8]
+
+        /// `READ_KEYINFO` (9): the key's declared type, size and attributes.
+        static func readKeyInfo(_ key: FourCharCode) -> Request {
+            Request(
+                key: key, selector: SMCConnection.selectorReadKeyInfo, data32: 0, dataSize: 0,
+                payload: [])
+        }
+
+        /// `READ_INDEX` (8): the key at `index` in the table. Key 0, which is not a key.
+        static func readIndex(_ index: UInt32) -> Request {
+            Request(
+                key: 0, selector: SMCConnection.selectorReadIndex, data32: index, dataSize: 0,
+                payload: [])
+        }
+
+        /// `READ_BYTES` (5): `dataSize` bytes of the key's value, the size a prior
+        /// `READ_KEYINFO` declared.
+        static func readBytes(_ key: FourCharCode, dataSize: UInt32) -> Request {
+            Request(
+                key: key, selector: SMCConnection.selectorReadBytes, data32: 0,
+                dataSize: dataSize, payload: [])
+        }
+
+        /// `WRITE_BYTES` (6): `payload` written to the key. `dataSize` is the payload's own
+        /// length, so the two cannot disagree. `write(_:to:)` has already refused a payload
+        /// that is empty or longer than 32 bytes.
+        static func writeBytes(_ key: FourCharCode, payload: [UInt8]) -> Request {
+            Request(
+                key: key, selector: SMCConnection.selectorWriteBytes, data32: 0,
+                dataSize: UInt32(payload.count), payload: payload)
+        }
+
+        /// The 80 bytes sent: zero everywhere but the key, `dataSize`, `data8` (the selector),
+        /// `data32`, and the payload from offset 48. Integers are stored in the host's byte
+        /// order, as the read path always has.
+        ///
+        /// A payload longer than the 32-byte field is a programming error here, not a
+        /// request: it traps rather than being cut short, because a truncated write is a
+        /// different write. `write(_:to:)` refuses one before it can reach this.
+        var bytes: [UInt8] {
+            precondition(
+                payload.count <= SMCConnection.maxPayloadBytes,
+                "an SMC request carries at most \(SMCConnection.maxPayloadBytes) payload bytes")
+            var buffer = [UInt8](repeating: 0, count: SMCConnection.structSize)
+            buffer.withUnsafeMutableBytes { raw in
+                raw.storeBytes(of: key, toByteOffset: SMCConnection.offsetKey, as: UInt32.self)
+                raw.storeBytes(
+                    of: dataSize, toByteOffset: SMCConnection.offsetDataSize, as: UInt32.self)
+                raw.storeBytes(
+                    of: selector, toByteOffset: SMCConnection.offsetData8, as: UInt8.self)
+                raw.storeBytes(
+                    of: data32, toByteOffset: SMCConnection.offsetData32, as: UInt32.self)
+            }
+            let start = SMCConnection.offsetBytes
+            buffer.replaceSubrange(start..<start + payload.count, with: payload)
+            return buffer
+        }
+    }
+}

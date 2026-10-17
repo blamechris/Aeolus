@@ -45,9 +45,10 @@
 ///
 /// ## Why nothing here is ever called
 ///
-/// No write path exists in this tree. `write` throws `SMCError.notPermitted` and `encode`
-/// throws `SMCError.encodingNotImplemented(type:)`; E3 and E4 implement them behind the
-/// safety subsystem, and until then nothing may invoke either. `WritePathAbsenceTests`
+/// The helper has no write path. `write` and `encode` have bodies — one `WRITE_BYTES` round
+/// trip, and the `ui8`/`flt` encoder — but the plane answers `.notBuilt`, and until E3 and
+/// E4 put its write turns behind the safety subsystem nothing here may invoke either.
+/// `WritePathAbsenceTests`
 /// enforces precisely that: this is the one file under `Sources/AeolusHelper/` permitted
 /// to contain the text `write(`, and it is permitted zero *call sites* of it — a
 /// compound-name reference is allowed, an argument list is not.
