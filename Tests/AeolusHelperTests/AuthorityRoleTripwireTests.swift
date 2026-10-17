@@ -4,8 +4,10 @@ import Testing
 @testable import AeolusHelper
 
 /// `SupervisedFanAuthority` holds two narrow roles of the plane — `KeystoneRestoring` and
-/// `FanWriteCapabilityReporting` — beside the sightedness cache's read role (#269) and level 6's
-/// `LeaseApplying` (ADR 0014's A6 PR-3 amendment), and nothing that can command a fan
+/// `FanWriteCapabilityReporting` — beside the sightedness cache's read role (#269), level 6's
+/// `LeaseApplying` (ADR 0014's A6 PR-3 amendment) and § 5's `ReclamationReporting`, one getter for
+/// the snapshot's target (ADR 0014's #410 snapshot-target amendment), and nothing that can command
+/// a fan
 /// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D5). That is a
 /// claim about what a type *holds* and what its file can *name*, which no behavioural test
 /// observes: a whole plane behind a restore-only body restores exactly as the role does. So it is
@@ -41,6 +43,7 @@ struct AuthorityRoleTripwireTests {
         #expect(
             code.contains("any FanWriteCapabilityReporting"), "the capability role is not held")
         #expect(code.contains("any LeaseApplying"), "level 6's role is not held")
+        #expect(code.contains("any ReclamationReporting"), "§ 5's reporting role is not held")
 
         let types = try WatchdogTripwireTests.mentions(
             of: [
@@ -137,6 +140,7 @@ struct AuthorityRoleTripwireTests {
     /// `@usableFromInline let probe = 0`, or `nonisolated(unsafe) static var probe = 0`, to
     /// `SupervisedFanAuthority`. Run: red here. **Mutation:** add
     /// `private enum Hidden { static let probe = 0 }` inside it. Run: red here, on the type count.
+    /// **Mutation:** remove `reclamation` from `allowed` (#410). Run: red here.
     @Test("The panic verb's file declares exactly its allowed properties, and no other type")
     func theAuthorityStoresOnlyItsAllowedProperties() throws {
         let allowed: Set<String> = [
@@ -147,6 +151,7 @@ struct AuthorityRoleTripwireTests {
             "private let writeCapability: any FanWriteCapabilityReporting",
             "private let telemetry: any SightednessProving",
             "private let control: any LeaseApplying",
+            "private let reclamation: any ReclamationReporting",
             "let controlGate = ControlMessageGate()",
             "private let log: HelperLog",
             "private static let shuttingDown = AeolusXPCFault.helperFailed(",
@@ -212,6 +217,68 @@ struct AuthorityRoleTripwireTests {
         #expect(
             offences.isEmpty,
             "\(offences) name the plane or a commanding writer anew, or widen a role")
+    }
+
+    // MARK: - § 5's reporting role
+
+    /// Every statement under `Sources/` that may write the snapshot's role over § 5: its
+    /// declaration, the watchdog's conformance, and the authority's stored property and init
+    /// parameter (`RoleCensus`, #402).
+    static let reportingListings = [
+        RoleCensus.Listing(path: reportingPath, statement: "protocol ReclamationReporting: Actor"),
+        RoleCensus.Listing(
+            path: reportingPath, statement: "extension ReclamationWatchdog: ReclamationReporting"),
+        RoleCensus.Listing(
+            path: authorityPath, statement: "let reclamation: any ReclamationReporting"),
+        RoleCensus.Listing(
+            path: authorityPath, statement: "reclamation: some ReclamationReporting"),
+    ]
+
+    static let reportingPath = "AeolusHelper/Safety/ReclamationReporting.swift"
+    static let authorityPath = "AeolusHelper/SupervisedFanAuthority.swift"
+
+    /// The role the authority holds § 5 as declares one synchronous getter and no verb, refines
+    /// only `Actor`, and is named only where it is listed (ADR 0014's #410 snapshot-target
+    /// amendment). A second requirement, an extension, a refinement, a conformer or an alias is
+    /// one more thing a decoded client message is one `await` from doing to § 5.
+    ///
+    /// **Mutation:** add `func cycle() async` to the role. Run: red on the body. **Mutation:** add
+    /// `extension ReclamationReporting { func probe() {} }` to `FanAuthority.swift`. Run: red on
+    /// the census, at that line.
+    @Test("§ 5's reporting role declares one getter and is named only where it is listed")
+    func theReportingRoleDeclaresOneGetterAndIsNamedOnlyWhereListed() throws {
+        let code = SeamScanner.strippingAllComments(
+            try MemberAccessScan.strippedSource(of: "ReclamationReporting.swift"))
+        let declaration = try #require(
+            code.range(
+                of: #"protocol ReclamationReporting(?![A-Za-z0-9_])[^{]*\{[\s\S]*?\n\}"#,
+                options: .regularExpression),
+            "ReclamationReporting.swift does not declare the role")
+        let text = String(code[declaration])
+        let open = try #require(text.firstIndex(of: "{"))
+        let header = SeamScanner.collapsingWhitespace(String(text[..<open]))
+        let body = SeamScanner.collapsingWhitespace(
+            String(text[text.index(after: open)..<text.index(before: text.endIndex)]))
+        #expect(header == "protocol ReclamationReporting: Actor")
+        #expect(
+            body == "func recordedTargets(under lease: UUID) -> [Int: Double]",
+            "the role declares `\(body)`; it carries one synchronous getter and no verb")
+
+        let verdict = RoleCensus.reconcile(
+            try RoleCensus.occurrences(roles: ["ReclamationReporting"]),
+            with: Self.reportingListings)
+        #expect(
+            verdict.unlisted.isEmpty,
+            """
+            § 5's reporting role is named where it is not listed:\(Self.lines(verdict.unlisted))
+            An extension, a refinement, a conformer, an alias or a cast widens what the authority \
+            can do to § 5. Say why here and in the role's documentation.
+            """)
+        #expect(verdict.missing.isEmpty, "Listed and not found:\(Self.lines(verdict.missing))")
+    }
+
+    private static func lines(_ items: [some CustomStringConvertible]) -> String {
+        items.map { "\n  \($0)" }.joined()
     }
 
     // MARK: - Parsing

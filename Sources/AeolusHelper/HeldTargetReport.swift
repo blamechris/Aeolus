@@ -11,7 +11,29 @@
 // part worth reading on its own, it needs none of the authority's state, and
 // `SupervisedFanAuthority.swift` has no lines to hold it.
 
+import FanKit
+
 extension ReadOnlyFanReport {
+
+    /// One fan as the supervised snapshot states it, once the ladder has restated its
+    /// availability: the target `heldTarget` allows in place of the read path's `nil`, and every
+    /// other field as the read path and the ladder left it.
+    ///
+    /// The four inputs are the snapshot's own: `leases.leasedFans`, the fans of the lease the view
+    /// reports, read in its hop; `recorded`, § 5's answer for that lease's id, asked after it;
+    /// `observedMode`, the `F<n>Md` answer this fan was built from (`MachineObservation.modes`);
+    /// and the fan's own `isReclaimedBySystem`, read from § 5's ledger in the machine read.
+    /// `recorded` is **required, with no default**, for `observedMode`'s reason on the ladder: a
+    /// default of "nothing recorded" would compile and put back the unconditional `nil`.
+    static func statingHeldTarget(
+        of fan: FanState, observedMode: FirmwareFanMode?, given leases: LeaseAccountability,
+        recorded: [Int: Double]
+    ) -> FanState {
+        let target = heldTarget(
+            ofFan: fan.index, leasedFans: leases.leasedFans, recorded: recorded,
+            observedMode: observedMode, reclaimedBySystem: fan.isReclaimedBySystem)
+        return restating(fan, as: fan.manualControlAvailability, target: target)
+    }
 
     /// The target the supervised snapshot states for fan `index`, or `nil`.
     ///

@@ -25,7 +25,9 @@ struct ApplyEndToEndTests {
     /// rule 6): `mode` is `.manualFixed`, read from the firmware's own `F0Md`; `activeLease` is the
     /// lease; the availability is step 9's `.available`; `isReclaimedBySystem` is `false`. The
     /// target the helper commanded is what § 5 recorded and the firmware was written, and the
-    /// snapshot's `targetRPM` is `nil`, stated unconditionally by `ReadOnlyFanReport.fanState`.
+    /// snapshot's `targetRPM` is that target, through the real client (ADR 0014's #410
+    /// snapshot-target amendment). Until #410 it was `nil`, stated unconditionally by
+    /// `ReadOnlyFanReport.fanState`, and this test pinned it so.
     ///
     /// **Mutation:** in `SupervisedFanAuthority.apply`, restore the old body: `heldLease`, then
     /// `throw AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)`. Run: red at
@@ -71,8 +73,9 @@ struct ApplyEndToEndTests {
             try await client.snapshot().activeLease?.id == lease.id, "step 3: no lease reported")
         #expect(held.manualControlAvailability == .available)
         #expect(!held.isReclaimedBySystem)
-        // `targetRPM` is `nil` by a literal in `ReadOnlyFanReport.fanState`, pinned as it is: #410.
-        #expect(held.targetRPM == nil)
+        #expect(
+            held.targetRPM == expected,
+            "step 3: the snapshot states \(String(describing: held.targetRPM)) as the target")
 
         try await Self.releaseAndReadBack(lease.id, through: client, from: helper, over: firmware)
     }

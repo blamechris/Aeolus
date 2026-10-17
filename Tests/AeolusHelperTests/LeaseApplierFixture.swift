@@ -87,6 +87,12 @@ struct NoLevelSix: LeaseApplying {
     }
 }
 
+/// § 5 for an authority a test builds by hand with no § 5 behind it: no fan is held, so no target
+/// is recorded. The composition's authority holds the real watchdog (#410).
+actor NothingRecorded: ReclamationReporting {
+    func recordedTargets(under lease: UUID) -> [Int: Double] { [:] }
+}
+
 /// A write path that reports itself not built, for item 5's `.notBuilt` row. A state only a test
 /// can produce: a lease granted on a capability the write path does not share.
 struct NotBuiltWritePath: FanWriteCapabilityReporting {

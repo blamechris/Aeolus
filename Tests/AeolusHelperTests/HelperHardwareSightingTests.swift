@@ -126,11 +126,11 @@ private struct SightingRig {
         built = SupervisedFanAuthority(
             reading: reading, leases: leases, reconciliation: CompleteBaseline(),
             keystone: RefusingKeystone(), writeCapability: LeaseFixture.writePathBuilt(),
-            telemetry: timed, control: NoLevelSix(), log: log)
+            telemetry: timed, control: NoLevelSix(), reclamation: NothingRecorded(), log: log)
         notBuilt = SupervisedFanAuthority(
             reading: reading, leases: leases, reconciliation: CompleteBaseline(),
             keystone: RefusingKeystone(), writeCapability: LeaseFixture.writePathNotBuilt(),
-            telemetry: timed, control: NoLevelSix(), log: log)
+            telemetry: timed, control: NoLevelSix(), reclamation: NothingRecorded(), log: log)
     }
 
     /// A snapshot of each kind per round, alternating which goes first, each just after § 3's

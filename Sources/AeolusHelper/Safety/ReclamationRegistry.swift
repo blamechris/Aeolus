@@ -88,6 +88,14 @@ extension ReclamationWatchdog {
         /// is `false`: presence is not identity (#357).
         func isHeld(_ index: Int, under lease: UUID) -> Bool { held[index]?.lease == lease }
 
+        /// The target each fan held under `lease` was last commanded, by fan index: what the
+        /// snapshot reads of § 5 (`ReclamationReporting`). A record under another lease, or one
+        /// with nothing commanded yet, is absent, as `isHeld(_:under:)` answers: presence is not
+        /// identity (#357).
+        func recordedTargets(under lease: UUID) -> [Int: Double] {
+            held.filter { $0.value.lease == lease }.compactMapValues { $0.commanded?.rpm }
+        }
+
         /// The fan's registration generation, read before a registration's lease hop and
         /// compared after it.
         func generation(ofFan index: Int) -> UInt64 { registrations[index, default: 0] }

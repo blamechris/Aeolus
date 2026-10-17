@@ -678,8 +678,11 @@ actor LeaseAuthority: HeldLeaseRole {
         await expireLapsedLeases()
         // § 3 first, then this actor's fields with no await between them: see the field.
         let awaiting = await emergencyRestores?.fansAwaitingRestoreConfirmation ?? []
+        // One entry for both: the lease shown and the fans it covers (#410).
+        let shown = table.all.first
         return LeaseAccountability(
-            lease: table.all.first?.asLease(),
+            lease: shown?.asLease(),
+            leasedFans: shown?.fanIndices ?? [],
             accountableFans: fansAeolusIsAccountableFor,
             abandonedHandbacks: registers.abandonedHandbacks,
             unconfirmedHandbacks: registers.unconfirmedHandbacks,
