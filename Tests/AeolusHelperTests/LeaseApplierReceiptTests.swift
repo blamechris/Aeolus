@@ -56,6 +56,34 @@ struct LeaseApplierReceiptTests {
         #expect(await machine.watchdog.lastCommanded(ofFan: 0)?.rpm == 2_000)
     }
 
+    /// **`.notHeld` on a fan this `apply` engaged.** § 5 is told fan 0 was released while its
+    /// first command write lands, so the report is answered `.notHeld`: the step is refused
+    /// `.releaseInProgress`, and the undo still hands the fan back, though the `.notHeld` answer
+    /// has already taken it out of the engaged set.
+    ///
+    /// **Mutation:** in `LeaseApplier.undo`, open the loop with `guard
+    /// engagements.contains(index, under: lease) else { continue }`. Run: red, the fan left in
+    /// manual with nothing watching it.
+    @Test("A report not held on a newly engaged fan is refused, and the fan is handed back")
+    func aReportNotHeldOnANewlyEngagedFanIsHandedBack() async throws {
+        let machine = ReclamationMachine(fans: [0: .automatic(at: 1_800)])
+        let lease = try await machine.lease(fans: [0]).id
+        let writes = InterferingFanStateSensing(machine.plane, during: .commandWrite)
+        await writes.interfere { await machine.watchdog.manualControlReleased(fanAt: 0) }
+
+        let refused = await LeaseApplierAnswerTests.answer {
+            try await machine.levelSix(writingThrough: writes).apply(
+                fixed((0, 2_400)), under: lease)
+        }
+
+        #expect(await writes.didFire)
+        #expect(
+            refused as? AeolusXPCFault == .manualControlUnavailable(reason: .releaseInProgress),
+            "answered \(refused as Any)")
+        #expect(await machine.didRestore(fan: 0), "the fan was not handed back")
+        #expect(try await machine.plane.firmwareMode(ofFan: 0) == .automatic)
+    }
+
     /// **`.refused`.** The write returns 50 RPM, a target no permit can produce: § 5's record
     /// refuses it, so the `apply` answers `helperFailed` and the fan it engaged is undone.
     ///

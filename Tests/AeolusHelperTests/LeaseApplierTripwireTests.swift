@@ -127,18 +127,21 @@ struct LeaseApplierTripwireTests {
     /// The scan above, on code written to its edges: `.self` is the whole value, not a member.
     ///
     /// **Mutation:** in `wholeValueUses(in:)`, drop `, member != "self"`. Run: red here, at the
-    /// `.self` line.
+    /// `.self` lines. **Mutation:** drop the `.drop` that skips the spaces after the dot. Run: red
+    /// here, at the spaced `.self` line.
     @Test("The engaged-set scan counts `.self` as a whole value and a member call as none")
     func theEngagedSetScanCountsSelfAsAWholeValue() throws {
         let code = """
             let copy = engagements.self
             if engagements.contains(index, under: lease) {}
             engagements . remove(index, under: lease)
+            let spaced = engagements . self
             let before = engagements
             """
         #expect(
             try Self.wholeValueUses(in: code) == [
-                "let copy = engagements.self", "let before = engagements",
+                "let copy = engagements.self", "let spaced = engagements . self",
+                "let before = engagements",
             ])
     }
 
