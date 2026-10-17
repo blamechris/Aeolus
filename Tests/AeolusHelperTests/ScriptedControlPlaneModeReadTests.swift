@@ -47,10 +47,10 @@ struct ScriptedControlPlaneModeReadTests {
         let permit = try commandableFan(0, declaring: .nominal)
 
         #expect(
-            try await answered.engageManualControl(of: permit) == .engaged,
+            try await answered.ticketedStep(of: permit) == .engaged,
             "an engagement on a stage that answers did not engage, so the refusal says nothing")
         do {
-            let step = try await refused.engageManualControl(of: permit)
+            let step = try await refused.ticketedStep(of: permit)
             Issue.record("the engagement read a mode the stage leaves unanswered: \(step)")
         } catch FanControlPlaneError.readFailed(let detail) {
             #expect(detail.contains("F0Md did not answer"), "\(detail)")

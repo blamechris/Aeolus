@@ -23,15 +23,18 @@ struct LevelSixMachine: Sendable {
     let holder = ConnectionID()
 
     /// `moment` is where `writes.interfere(with:)`'s effect runs; nothing runs there unless a
-    /// scenario sets one.
+    /// scenario sets one. `stages` is the firmware's scenario, nominal and cool unless one says
+    /// otherwise; the first must let a lease be granted.
     init(
         unlock: ScriptedControlPlane.UnlockBehaviour = .naive,
         during moment: InterferingFanStateSensing.Moment = .restoreWrite,
-        clock: some MonotonicClock = TestClock()
+        clock: some MonotonicClock = TestClock(),
+        stages: [ScriptedControlPlane.Stage] = [
+            .nominal(temperatures: LeaseFixture.nominalDieTemperatures)
+        ]
     ) async {
         let firmware = ScriptedControlPlane(
-            fans: [0: .automatic(at: 1_800)],
-            stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)], unlock: unlock)
+            fans: [0: .automatic(at: 1_800)], stages: stages, unlock: unlock)
         let writes = InterferingFanStateSensing(firmware, during: moment)
         let journal = TeardownJournal()
         let lines = RecordedLog()

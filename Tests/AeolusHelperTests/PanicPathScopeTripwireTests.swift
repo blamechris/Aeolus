@@ -202,7 +202,9 @@ struct PanicPathScopeTripwireTests {
     /// § 4 seals the table before its teardown and runs the teardown inside `sealingGrants`, § 6's
     /// signal teardown closes the control gate before its first keystone, and § 7 issues
     /// `.everyFan` inside `sealingGrants`. Bring-up's fallback runs before the listener is
-    /// resumed, which `HelperCompositionTests` holds.
+    /// resumed, which `HelperCompositionTests` holds. § 4's restore is `.everyFan`; § 6's first
+    /// keystone is `.everyFan` and its last the exit's own `.forExit` (ADR 0014's #410
+    /// ticket-and-seal amendment), each checked by name where it is chosen.
     ///
     /// **§ 7's, § 4's and bring-up's interlocks are airtight; § 6's is narrower, and harmless.**
     /// Since [#364](https://github.com/blamechris/Aeolus/issues/364) every call of § 4's
@@ -215,10 +217,11 @@ struct PanicPathScopeTripwireTests {
     ///
     /// **Mutation:** delete `await leases.sealForSleep(generation: notification.generation)` from
     /// `SystemPowerResponder.allowSleepAfterHandback`. Run: red. **Mutation:** move
-    /// `await gate.close()` below the first `_ = await keystone()` in `SignalTeardown.run`. Run:
-    /// red. **Mutation:** the same, with that first call spelled `_ = await keystone ()` and the
-    /// second left after the close. Run: red. **Mutations (#364):** call `handBackEveryFan(` bare
-    /// in `allowSleepAfterHandback`; `sealingGrants {}` and then the bare call; the same with
+    /// `await gate.close()` below the first `_ = await keystone(.everyFan)` in
+    /// `SignalTeardown.run`. Run: red. **Mutation:** the same, with that call spelled
+    /// `_ = await keystone (.everyFan)` and the second left after the close. Run: red.
+    /// **Mutations (#364):** call `handBackEveryFan(` bare in `allowSleepAfterHandback`;
+    /// `sealingGrants {}` and then the bare call; the same with
     /// `// handBackEveryFan(reportingTo: acknowledgement)` inside the empty closure; and a second
     /// bare call elsewhere in the file. Run: red on each.
     @Test("Each runtime machine-wide restore is issued after its grant interlock")
@@ -226,17 +229,21 @@ struct PanicPathScopeTripwireTests {
         for site in [
             (
                 file: "SystemPowerResponder.swift", caller: "allowSleepAfterHandback",
-                interlock: #"(?<![A-Za-z0-9_])sealForSleep\s*\("#, issuer: "handBackEveryFan"
+                interlock: #"(?<![A-Za-z0-9_])sealForSleep\s*\("#, issuer: "handBackEveryFan",
+                scopes: [".everyFan"], chosenIn: "handBackEveryFan"
             ),
             (
                 file: "SignalTeardown.swift", caller: "run",
-                interlock: #"(?<![A-Za-z0-9_])gate\s*\.\s*close\s*\("#, issuer: "keystone"
+                interlock: #"(?<![A-Za-z0-9_])gate\s*\.\s*close\s*\("#, issuer: "keystone",
+                scopes: [".everyFan", ".forExit"], chosenIn: "run"
             ),
         ] {
-            let issuing = try Self.functionBody(of: site.issuer, inFile: site.file)
-            #expect(
-                issuing.contains(".everyFan"),
-                "\(site.file)'s \(site.issuer) no longer issues .everyFan; walk this tripwire")
+            let choosing = try Self.functionBody(of: site.chosenIn, inFile: site.file)
+            for scope in site.scopes {
+                #expect(
+                    choosing.contains(scope),
+                    "\(site.file)'s \(site.chosenIn) no longer issues \(scope); walk this tripwire")
+            }
 
             let code = HelperCompositionTests.strippingComments(try Self.source(of: site.file))
             let caller = try Self.functionBody(of: site.caller, inFile: site.file)
@@ -249,7 +256,7 @@ struct PanicPathScopeTripwireTests {
                 calls.count == Self.calls(of: site.issuer, in: code).count
                     && interlock.upperBound <= first.lowerBound,
                 """
-                \(site.file) issues .everyFan through \(site.issuer) somewhere its grant \
+                \(site.file) issues \(site.scopes) through \(site.issuer) somewhere its grant \
                 interlock does not precede, so a lease can be granted that the machine-wide \
                 restore undoes. docs/SAFETY.md § 1 says which call sites are interlocked.
                 """)
@@ -269,53 +276,99 @@ struct PanicPathScopeTripwireTests {
             of: sleep, in: "allowSleepAfterHandback")
     }
 
-    // MARK: - The machine-wide scope
+    // MARK: - The machine-wide scopes
 
-    /// `restoreToAutomatic(.everyFan)` is named in exactly four files under `Sources/`.
+    /// The machine-wide restore is named in exactly four call-site files under `Sources/`, and in
+    /// the one file that decides what each scope writes.
     ///
     /// This is what keeps the test above from being evadable by one indirection: the handler
     /// could call a free function, a new restorer type, or the lease core, and the body scan
-    /// would see nothing. `.everyFan` is the only scope that clears the Apple Silicon force key
-    /// (`FanControlPlane.FanRestoreScope`), so it has to be *named* wherever it is issued, and an
-    /// unlisted file naming it is a failure whatever reaches it.
+    /// would see nothing. The machine-wide scopes are the only ones that clear the Apple Silicon
+    /// force key (`FanControlPlane.FanRestoreScope`), so each has to be *named* wherever it is
+    /// issued, and an unlisted file naming one is a failure whatever reaches it.
     ///
     /// The four are `docs/SAFETY.md` § 1's list, verbatim, and none of them is a lease teardown:
-    /// § 4's sleep handback, § 6's orderly exit, § 6's startup-reconciliation fallback, and — on a
-    /// plane that can write — § 7's panic verb. On the E4 branch `SMCFanControlPlane.swift`
-    /// joins them (ADR 0014 D5): its restore branches on the scope and its preparation step
-    /// names it, and this scan, `code.contains(".everyFan")`, cannot tell either from a call
-    /// site. Comments are stripped first, for the reason `WritePathAbsenceTests` records — the
-    /// prose explaining these sites names the token repeatedly, and a tripwire that fires on the
-    /// sentence stating the rule is a tripwire nobody keeps.
+    /// § 4's sleep handback, § 6's startup-reconciliation fallback and — on a plane that can
+    /// write — § 7's panic verb name `.everyFan`; § 6's orderly exit names `.everyFan` at its first
+    /// keystone and its own `.forExit` at its last, which writes the same and seals the plane (ADR
+    /// 0014's #410 ticket-and-seal amendment), so it is counted through either token. The
+    /// fifth file is `PlaneWriteLedger.swift`, which names both to decide their plan and the seal:
+    /// it holds no plane and cannot issue a restore. On the E4 branch `SMCFanControlPlane.swift`
+    /// joins them (ADR 0014 D5): its preparation step names `.everyFan`, and this scan cannot
+    /// tell it from a call site. Comments are stripped first, for the reason
+    /// `WritePathAbsenceTests` records — the prose explaining these sites names the tokens
+    /// repeatedly, and a tripwire that fires on the sentence stating the rule is a tripwire nobody
+    /// keeps.
+    ///
+    /// `.forExit`'s name does not contain `.everyFan`, so neither substring scan counts the other.
     ///
     /// **Mutation:** add `let plane: (any FanControlPlane)? = nil` and
     /// `try await plane?.restoreToAutomatic(.everyFan)` to
     /// `ReadOnlyFanAuthority.restoreAllToAutomatic`. Run: red **here only** — the tests above
     /// stay green, which is what proves this one discriminates rather than echoing them.
-    @Test("The machine-wide restore is issued from exactly four known call sites")
+    /// **Mutation:** make `SignalTeardown.run`'s final keystone `.everyFan`. Run: red here, on the
+    /// exit scope's set.
+    @Test("The machine-wide restores are issued from exactly four known call sites")
     func everyMachineWideRestoreIsOneOfTheKnownCallSites() throws {
-        let expected: Set<String> = [
-            "SignalTeardown.swift",
-            "SystemPowerResponder.swift",
-            "StartupReconciliation.swift",
-            "SupervisedFanAuthority.swift",
+        let expected: [String: Set<String>] = [
+            ".everyFan": [
+                "SignalTeardown.swift", "SystemPowerResponder.swift", "StartupReconciliation.swift",
+                "SupervisedFanAuthority.swift", "PlaneWriteLedger.swift",
+            ],
+            ".forExit": ["SignalTeardown.swift", "PlaneWriteLedger.swift"],
         ]
 
-        var naming: Set<String> = []
+        var naming: [String: Set<String>] = [".everyFan": [], ".forExit": []]
         for file in try SeamScanner.swiftFiles() {
             let code = SeamScanner.strippingComments(
                 try String(contentsOf: file, encoding: .utf8))
-            if code.contains(".everyFan") { naming.insert(file.lastPathComponent) }
+            for scope in expected.keys where code.contains(scope) {
+                naming[scope, default: []].insert(file.lastPathComponent)
+            }
+        }
+
+        for (scope, files) in expected {
+            #expect(
+                naming[scope] == files,
+                """
+                \(scope) is named in \((naming[scope] ?? []).sorted()), not \(files.sorted()). \
+                A machine-wide restore also clears the Apple Silicon force key, so every call \
+                site is a machine-wide act: docs/SAFETY.md § 1 lists the four by name. A site \
+                added or removed here contradicts that sentence, and these say the same thing:
+                \(Self.checklist)
+                """)
+        }
+    }
+
+    /// The exit's scope is named only where it is declared, decided and issued:
+    /// `FanControlPlane.swift`, `PlaneWriteLedger.swift` and `SignalTeardown.swift` (ADR 0014's
+    /// #410 ticket-and-seal amendment).
+    ///
+    /// `.forExit` seals the plane for the rest of the process. A non-exit caller issuing it would
+    /// leave every later `apply` refused with a reason that is false, and § 4's handback issuing it
+    /// would seal the plane at every sleep. So the identifier is held, comments stripped, as a
+    /// whole word — the declaration has no dot in front of it.
+    ///
+    /// **Mutation:** make `SystemPowerResponder.handBackEveryFan(reportingTo:)` issue `.forExit`.
+    /// Run: red here, and on the census above.
+    @Test("The exit's scope is named only by the orderly exit, the scope and the ledger")
+    func theExitScopeIsNamedOnlyByTheOrderlyExit() throws {
+        let word = try NSRegularExpression(pattern: #"(?<![A-Za-z0-9_])forExit(?![A-Za-z0-9_])"#)
+        var naming: Set<String> = []
+        for file in try SeamScanner.swiftFiles() {
+            let code = SeamScanner.strippingAllComments(
+                try String(contentsOf: file, encoding: .utf8))
+            if word.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)) != nil {
+                naming.insert(file.lastPathComponent)
+            }
         }
 
         #expect(
-            naming == expected,
+            naming == ["FanControlPlane.swift", "PlaneWriteLedger.swift", "SignalTeardown.swift"],
             """
-            the machine-wide restore is named in \(naming.sorted()), not \(expected.sorted()). \
-            `.everyFan` additionally clears the Apple Silicon force key, so every call site is a \
-            machine-wide act: docs/SAFETY.md § 1 lists these four by name. A site added or \
-            removed here contradicts that sentence, and these say the same thing:
-            \(Self.checklist)
+            the exit's scope is named in \(naming.sorted()). It seals the write path for the rest \
+            of the process, so only the orderly exit may issue it, and only its declaration and \
+            the ledger that decides it may name it.
             """)
     }
 

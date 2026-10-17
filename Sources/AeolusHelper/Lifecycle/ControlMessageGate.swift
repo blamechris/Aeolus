@@ -21,14 +21,14 @@
 ///
 /// ## It covers arrival, not flight
 ///
-/// `HelperConnectionSession`'s own teardown gate says the same thing about the same shape,
-/// and the reasoning transfers verbatim: `SupervisedFanAuthority` reads this before it
-/// suspends into the lease core, so a verb that has not *started* when the gate closes is
-/// refused, and one already mid-`await` is not. What covers flight is the step after it —
-/// the unconditional `restoreToAutomatic(.everyFan)`, which puts back every fan whatever
-/// was granted in the gap. Calling this defence in depth rather than a guarantee is the
-/// honest description; a gate advertised as a guarantee would be `CLAUDE.md` rule 6 applied
-/// to a safety mechanism's own documentation.
+/// `HelperConnectionSession`'s own teardown gate says the same thing about the same shape, and the
+/// reasoning transfers verbatim: `SupervisedFanAuthority` reads this before it suspends into the
+/// lease core, so a verb that has not *started* when the gate closes is refused, and one already
+/// mid-`await` is not. What covers flight is the step after it — the unconditional
+/// `restoreToAutomatic(.everyFan)`, which puts back every fan whatever was granted in the gap, and
+/// the final keystone's `.forExit`, after which the plane admits no forward write. Calling this
+/// defence in depth rather than a guarantee is the honest description; a gate advertised as a
+/// guarantee would be `CLAUDE.md` rule 6 applied to a safety mechanism's own documentation.
 ///
 /// ## Why an actor
 ///

@@ -548,15 +548,15 @@ actor LeaseAuthority: HeldLeaseRole {
     /// is `.built` — there, not here: the decision, its gate and its order live at
     /// `SupervisedFanAuthority.restoreAllToAutomatic`. Read that before changing either.
     ///
-    /// **Releasing leases is not restoring the machine**, and this paragraph was present
-    /// indicative about the `.everyFan` call until
-    /// [#228](https://github.com/blamechris/Aeolus/issues/228). What reaches the plane from
-    /// here is one `restoreToAutomatic(.fan(index))` per fan in the sweep, through
-    /// `KeystoneRestoreAttempt`. A fan another tool left in manual under no live lease is not
-    /// touched, and on a plane that cannot write neither is the machine-wide `Ftst` force key —
-    /// `.everyFan` is the only scope that always clears it, and this is not one of its call
-    /// sites; the handler is. On a plane that can, a `.fan(index)` restore clears the key when it
-    /// hands back the last fan the plane engaged (ADR 0014 D5).
+    /// **Releasing leases is not restoring the machine**, and this paragraph was present indicative
+    /// about the `.everyFan` call until [#228](https://github.com/blamechris/Aeolus/issues/228).
+    /// What reaches the plane from here is one `restoreToAutomatic(.fan(index))` per fan in the
+    /// sweep, through `KeystoneRestoreAttempt`. A fan another tool left in manual under no live
+    /// lease is not touched, and on a plane that cannot write neither is the machine-wide `Ftst`
+    /// force key — the machine-wide scopes, `.everyFan` and the exit's `.forExit`, are the only
+    /// ones that always clear it, and this is not one of their call sites; the handler is. On a
+    /// plane that can, a `.fan(index)` restore clears the key when it hands back the last fan the
+    /// plane engaged (ADR 0014 D5).
     ///
     /// ## The sweep is the table **and** `restoreAbandoned`
     ///

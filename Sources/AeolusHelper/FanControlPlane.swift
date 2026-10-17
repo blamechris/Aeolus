@@ -172,17 +172,18 @@ protocol KeystoneRestoring: Sendable {
     /// takes no reading, no bound and no lease. It must stay that way: see `FanControlPlane`'s
     /// documentation.
     ///
-    /// `.everyFan` additionally clears the Apple Silicon force key. It resolves the fan set
-    /// from knowledge the conformer already holds — never from a read issued here, because
+    /// `.everyFan` and `.forExit` additionally clear the Apple Silicon force key. Each resolves the
+    /// fan set from knowledge the conformer already holds — never from a read issued here, because
     /// a restore that must first read cannot run while reading is what has failed.
     ///
     /// ## The contract a plane that can write keeps
     ///
     /// [ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D4, D5 and D7:
     ///
-    /// - **A call supersedes every engagement past its first step**, synchronously and before
-    ///   it waits for a turn, so no later step writes after a restore that was requested first.
-    ///   What the restore writes is decided when it is *issued*, inside its turn.
+    /// - **A call supersedes every engagement that took its ticket before it**, synchronously and
+    ///   before it waits for a turn, so no step writes after a restore that was requested first.
+    ///   `.forExit` also seals the plane against every later step and target command. What the
+    ///   restore writes is decided when it is *issued*, inside its turn (`PlaneWriteLedger`).
     /// - **One turn, no read.** The writes are encoded from what the preparation step recorded.
     /// - **The unlock reversed**: every `F<n>Md = 0` in scope, then `Ftst = 0`, each attempted
     ///   whatever the others answered; the call throws only after all of them were.
@@ -193,7 +194,10 @@ protocol KeystoneRestoring: Sendable {
     ///   it can name and throws `FanControlPlaneError.fanSetUnknown` after attempting it.
     ///
     /// `PlaneWriteLedger` holds that state and `RestorePlan` the order, so every such plane
-    /// keeps it by the same code.
+    /// keeps it by the same code: it calls `ledger.restoreRequested(scope)` before the restore's
+    /// turn, and builds the restore from `ledger.plan(for: scope)` inside it, never from a scope
+    /// switch of its own. A contract B1's plane implements (ADR 0014's #410 ticket-and-seal
+    /// amendment, "B1's obligations"); on this build nothing writes.
     func restoreToAutomatic(_ scope: FanRestoreScope) async throws
 }
 
@@ -229,6 +233,19 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
 
     // MARK: - Manual control
 
+    /// An engagement of fan `index` begins: the plane takes its ticket, the restore epoch now, and
+    /// admits the engagement's first step only if no restore is requested before it
+    /// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s #410 ticket-and-seal amendment).
+    ///
+    /// Synchronous, index-only and write-free. `EngagementDriver` takes it before the entitlement —
+    /// the order is what matters: a suspension between the two would only make the ticket older,
+    /// which refuses more, never less — and its retry takes a fresh one; nothing else calls it,
+    /// which `EngagementTicketTripwireTests` holds. A plane that can write forwards it to its
+    /// `PlaneWriteLedger`, and one that cannot does nothing. Every conformer states it: there is no
+    /// default. It takes no permit and is not `async`, so it reaches no write and is outside
+    /// `WriteVerbAllowlistTests`' population by that suite's own rules.
+    func beginEngagement(fanAt index: Int)
+
     /// Takes one fan off the system's thermal management: `F<n>Md`, plus whatever unlock
     /// the platform needs. The opposite direction to `restoreToAutomatic(_:)`, and
     /// deliberately not the same operation — this one is allowed to fail and be refused,
@@ -252,9 +269,14 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// undoes on any throw. The parameter list is still ADR 0008's: one permit and nothing
     /// beside it, so the fan whose lease the driver checks is the fan written.
     ///
-    /// A step under a restore epoch older than the current one throws
-    /// `FanControlPlaneError.superseded` and writes nothing. One that finds the epoch moved after
-    /// its mode write, before the force key's, throws `.supersededAfterWrite`.
+    /// **Its admission.** The plane calls `ledger.admitStep(fanAt:)` first inside the step's turn,
+    /// before any read or write, and keeps the admission and the step's writes in that one turn
+    /// (ADR 0014's U15). A first step is admitted only on a current ticket
+    /// (`beginEngagement(fanAt:)`), a later one only under the epoch its first recorded, and a
+    /// plane sealed for exit refuses every step; each refusal is `FanControlPlaneError.superseded`
+    /// with nothing written. One that finds the epoch moved after its mode write, before the force
+    /// key's, throws `.supersededAfterWrite`. A contract B1's plane implements (ADR 0014's #410
+    /// ticket-and-seal amendment); on this build nothing writes.
     func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep
 
     /// Commands a target speed, `F<n>Tg`.
@@ -269,6 +291,14 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// plus a separate index, so a target clamped through fan 0's envelope could be
     /// commanded to fan 1 whose declared maximum was lower. Removing the parameter is what
     /// makes the mismatch unrepresentable rather than merely discouraged.
+    ///
+    /// **Its admission.** The plane calls `ledger.admitCommand()` first inside the command's turn,
+    /// before key info or any write, and keeps the admission and the command's writes in that one
+    /// turn (ADR 0014's U15, D7): the seal's command half depends on it. Once `.forExit` has been
+    /// requested it refuses with `FanControlPlaneError.superseded`, having written nothing: the
+    /// exit's seal, and its only guard against a target written after the final keystone. A
+    /// contract B1's plane implements (ADR 0014's #410 ticket-and-seal amendment); on this build
+    /// nothing writes.
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget
 
@@ -301,4 +331,13 @@ enum FanRestoreScope: Sendable, Hashable {
     /// Every fan the bring-up enumeration found and every fan this process engaged or restored
     /// by index, plus the Apple Silicon force key (ADR 0014 D5). `SAFETY.md` §7's panic verb.
     case everyFan
+    /// The orderly exit's restore: everything `.everyFan` writes, and from the moment it is
+    /// requested the plane admits no forward write for the rest of the process — no engagement step
+    /// and no target command — while every restore is still issued (ADR 0014's #410 ticket-and-seal
+    /// amendment). `SignalTeardown`'s final keystone, after the supervisors stop, is its one
+    /// caller, and nothing unseals.
+    ///
+    /// Its name deliberately does not contain the other machine-wide scope's, so a substring scan
+    /// for one cannot count the other.
+    case forExit
 }
