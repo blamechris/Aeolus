@@ -14,6 +14,14 @@ import Testing
 /// not a fan in automatic, and `docs/SAFETY.md` § 5 is built on the difference. The plane
 /// below accepts the machine-wide write and leaves named fans in manual: the one firmware
 /// behaviour the old code could not see.
+///
+/// **Every case whose claim is not about the deadline passes a frozen `TestClock()`**
+/// ([#407](https://github.com/blamechris/Aeolus/issues/407)). Reconciliation checks its 5 s
+/// budget against the clock it is given, so on the system clock a runner stall longer than the
+/// budget runs it out mid-pass and the pass takes its keystone path. That is the right answer
+/// to an expired budget and the opposite of what these cases assert (CI run 38992018791). The
+/// three cases about time, `anExhaustedBudgetReadsNothingBack` and the two under "The deadline
+/// bounds the whole pass", move their own `TestClock` past the budget instead.
 @Suite("Startup reconciliation's keystone read-back", .timeLimit(.minutes(1)))
 struct StartupReconciliationReadBackTests {
 
@@ -44,7 +52,8 @@ struct StartupReconciliationReadBackTests {
         let plane = ReadBackScriptedPlane(
             wrapping: scripted, modeReadsFailingFirst: 1, keystoneMisses: [1])
         let reconciliation = LeaseFixture.reconciliation(
-            over: plane, enumeration: ScriptedFanEnumeration(indices: [0, 1]))
+            over: plane, enumeration: ScriptedFanEnumeration(indices: [0, 1]),
+            clock: TestClock())
 
         await reconciliation.reconcile()
 
@@ -85,7 +94,8 @@ struct StartupReconciliationReadBackTests {
             stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
         let reconciliation = LeaseFixture.reconciliation(
             over: ReadBackScriptedPlane(wrapping: scripted, modeReadsFailingFirst: 1),
-            enumeration: ScriptedFanEnumeration(indices: [0, 1]))
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]),
+            clock: TestClock())
 
         await reconciliation.reconcile()
 
@@ -113,7 +123,8 @@ struct StartupReconciliationReadBackTests {
             stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
         let reconciliation = LeaseFixture.reconciliation(
             over: ReadBackScriptedPlane(wrapping: scripted, keystoneMisses: [0]),
-            enumeration: RecoveringFanEnumeration(indices: [0, 1], failingFirst: 1))
+            enumeration: RecoveringFanEnumeration(indices: [0, 1], failingFirst: 1),
+            clock: TestClock())
 
         await reconciliation.reconcile()
 
@@ -186,7 +197,8 @@ struct StartupReconciliationReadBackTests {
             over: ReadBackScriptedPlane(
                 wrapping: scripted, unreadableModes: [1], keystoneMisses: [0],
                 perFanMisses: [0]),
-            enumeration: ScriptedFanEnumeration(indices: [0, 1]))
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]),
+            clock: TestClock())
 
         await reconciliation.reconcile()
 
@@ -219,7 +231,8 @@ struct StartupReconciliationReadBackTests {
             stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
         let reconciliation = LeaseFixture.reconciliation(
             over: ReadBackScriptedPlane(wrapping: scripted, perFanMisses: [0]),
-            enumeration: ScriptedFanEnumeration(indices: [0, 1]))
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]),
+            clock: TestClock())
 
         await reconciliation.reconcile()
 
@@ -254,7 +267,8 @@ struct StartupReconciliationReadBackTests {
             over: ReadBackScriptedPlane(
                 wrapping: scripted, unreadableModes: [1], perFanMisses: [0],
                 keystoneRefused: true),
-            enumeration: ScriptedFanEnumeration(indices: [0, 1]))
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]),
+            clock: TestClock())
 
         await reconciliation.reconcile()
 
@@ -277,7 +291,8 @@ struct StartupReconciliationReadBackTests {
             stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)])
         let reconciliation = LeaseFixture.reconciliation(
             over: ReadBackScriptedPlane(wrapping: scripted),
-            enumeration: ScriptedFanEnumeration(indices: [0, 1]))
+            enumeration: ScriptedFanEnumeration(indices: [0, 1]),
+            clock: TestClock())
 
         await reconciliation.reconcile()
 
@@ -373,6 +388,7 @@ struct StartupReconciliationReadBackTests {
             snapshotProvider: PlaneBackedProvider(over: scripted, fanCount: 3),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)
@@ -433,6 +449,7 @@ struct StartupReconciliationReadBackTests {
                 fanCount: 3, extraKeys: ["F1Md": .reading("F1Md", 1)]),
             criticalSensors: .mac16x5,
             roundTrips: idleRoundTrips(), watchdogTicks: ManualWatchdogTicks(),
+            clock: TestClock(),
             log: HelperRestorerTests.helperLog,
             leaseLog: LeaseFixture.log,
             safetyLog: Self.safetyLog)
