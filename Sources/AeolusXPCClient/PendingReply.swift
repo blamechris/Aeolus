@@ -87,23 +87,42 @@ final class PendingReply<Answer>: @unchecked Sendable {
     /// which substitutes one it moves by hand, so a deadline of nearly two minutes can be run
     /// out, or shown not to have run out, without waiting for it and without a runner stall
     /// running it out instead.
+    ///
+    /// `HelperClient` does not use this one. Its deadlines belong to the message rather than to
+    /// the wait, and start when the message's turn comes (`InFlightMessages`), so it waits with
+    /// `waitForAnswer()` and hands over the deadline's answer through `expire()`.
     func answer(
         within deadline: Duration = .seconds(10),
         on clock: any Clock<Duration> = ContinuousClock()
     ) async -> Answer {
         let deadlineTask = Task.detached { [self] in
             try? await clock.sleep(for: deadline)
-            giveUp(with: fallback)
+            expire()
         }
         defer { deadlineTask.cancel() }
+        return await waitForAnswer()
+    }
 
+    /// The deadline's answer, from whoever keeps the deadline.
+    ///
+    /// The deadline is kept outside the latch when it has to outlive the wait: a message's
+    /// deadline still runs after its caller was cancelled, because the messages behind it are
+    /// waiting for it to settle. A latch already answered, by a reply or by its caller's
+    /// cancellation, is left as it is.
+    func expire() {
+        giveUp(with: fallback)
+    }
+
+    /// Waits for the first answer, with no deadline of its own: a delivery, `expire()`, or this
+    /// caller's cancellation.
+    func waitForAnswer() async -> Answer {
         // Cancellation gives up too, and mutation testing is what put it here. Without it,
         // *removing* the deadline does not make a test fail — it makes the suite **hang**:
         // nothing else ever resumes the continuation, and a `.timeLimit` cancels the test's
         // task without ever reaching it. That is the one outcome a safety suite must not
         // have, and it is not only a test property: a caller cancelled mid-message would
         // otherwise stay parked on a deadline nobody is waiting for any more.
-        return await withTaskCancellationHandler {
+        await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 attach(continuation)
             }.value
@@ -131,7 +150,7 @@ final class PendingReply<Answer>: @unchecked Sendable {
     /// caller rather than an exotic interleaving. A `giveUp` that returned having recorded
     /// nothing would let `attach` store a continuation that cancellation is never going to
     /// revisit, and the caller would park for the whole deadline — the opposite of what
-    /// `answer(within:)` installs the handler for. The same order is reachable from the
+    /// `waitForAnswer()` installs the handler for. The same order is reachable from the
     /// deadline on a short enough one, and there the outcome was worse: the deadline task
     /// has already finished by then, so nothing at all would have resumed that caller.
     ///

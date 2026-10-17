@@ -44,6 +44,21 @@ struct HelperClientApplyDeadlineTests {
         FanSetting(fanIndex: index, control: .fixed(rpm: rpm))
     }
 
+    /// `task`'s value, with `task` cancelled if the test is.
+    ///
+    /// A `.timeLimit` cancels the test's own task, and awaiting an unstructured task's `value` does
+    /// not hear that. Under a mutation that leaves the client waiting for an answer that never
+    /// comes, a bare `value` hangs the whole run instead of failing one test: measured, when two of
+    /// #413's mutations ran into the harness's ceiling with no result printed. Cancelling the task
+    /// hands the client's wait its cancellation, so the test ends, red on the time limit.
+    static func answer<Value: Sendable>(of task: Task<Value, Error>) async throws -> Value {
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
     /// One client on a frozen clock, with an `apply` the helper has accepted and not answered.
     ///
     /// Built in an order that leaves exactly one deadline running: a `snapshot` first, so the
@@ -66,9 +81,15 @@ struct HelperClientApplyDeadlineTests {
         let generation: UInt64
         let apply: Task<Void, Error>
 
-        static func sending(_ settings: [FanSetting]) async throws -> ParkedApply {
+        /// `holdingRenewals`, when given, parks every `renewLease` the helper is sent until it
+        /// fires. The suite behind the `apply` (`HelperClientSequencedDeadlineTests`) uses it to
+        /// hold a heartbeat open beside the parked `apply`.
+        static func sending(
+            _ settings: [FanSetting], holdingRenewals: AsyncSignal? = nil
+        ) async throws -> ParkedApply {
             let release = AsyncSignal()
-            let authority = LeaseGrantingAuthority(lease: lease, applyGate: release)
+            let authority = LeaseGrantingAuthority(
+                lease: lease, applyGate: release, renewGate: holdingRenewals)
             let harness = ClientListenerHarness(authority: authority)
             let clock = ManualClock()
             let client = HelperClient(
@@ -103,7 +124,7 @@ struct HelperClientApplyDeadlineTests {
         func expectAnsweredOnTheSameConnection(
             sourceLocation: SourceLocation = #_sourceLocation
         ) async throws {
-            try await apply.value
+            try await HelperClientApplyDeadlineTests.answer(of: apply)
 
             let generation = await client.currentGeneration
             #expect(
@@ -202,8 +223,8 @@ struct HelperClientApplyDeadlineTests {
     ///
     /// **Mutation:** put `helperNeverAnswered`'s description back to its text before #325. Run:
     /// red on the description alone. **Mutation:** in `HelperClient.translate(_:on:)`, delete the
-    /// `discardConnection(generation, as: .unresponsive)` in the `.helperNeverAnswered` arm. Run:
-    /// red on the health, on the generation, and on the helper's sighting of the connection.
+    /// `discardConnection(generation, as: .unresponsive, …)` in the `.helperNeverAnswered` arm.
+    /// Run: red on the health, on the generation, and on the helper's sighting of the connection.
     @Test("An apply past its deadline says control ended")
     func anApplyPastItsDeadlineSaysControlEnded() async throws {
         let parked = try await ParkedApply.sending([Self.fan(0)])
@@ -212,7 +233,7 @@ struct HelperClientApplyDeadlineTests {
 
         parked.clock.advance(by: deadline)
         let error = await #expect(throws: HelperClientError.self) {
-            try await parked.apply.value
+            try await Self.answer(of: parked.apply)
         }
         #expect(error == .helperNeverAnswered(after: deadline))
 
@@ -254,7 +275,7 @@ struct HelperClientApplyDeadlineTests {
 
         parked.clock.advance(by: oneFan * 10)
         await #expect(throws: HelperClientError.helperNeverAnswered(after: oneFan)) {
-            try await parked.apply.value
+            try await Self.answer(of: parked.apply)
         }
         #expect(await parked.authority.applied == settings)
 

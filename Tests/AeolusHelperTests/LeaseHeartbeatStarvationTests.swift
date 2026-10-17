@@ -273,15 +273,7 @@ struct LeaseHeartbeatStarvationTests {
     /// ```
     @Test("Exactly the four pipelineable verbs are sequenced, and the three unlocks are not")
     func theSequencedVerbsAreTheOnesAClientPipelines() throws {
-        let file = try #require(
-            try SeamScanner.swiftFiles(under: "AeolusHelper")
-                .first { $0.lastPathComponent == "HelperXPCService.swift" },
-            "HelperXPCService.swift is not in the tree — the routes it declares are this test")
-        let collapsed = SeamScanner.collapsingWhitespace(
-            SeamScanner.strippingComments(try String(contentsOf: file, encoding: .utf8)))
-
-        let sequenced = Self.dispatchedVerbs(in: collapsed, through: #"sequencer\.enqueue"#)
-        let dispatched = Self.dispatchedVerbs(in: collapsed, through: #"Task"#)
+        let (sequenced, dispatched) = try Self.helperRoutes()
 
         #expect(
             sequenced == ["acquireLease", "apply", "hello", "snapshot"],
@@ -299,6 +291,25 @@ struct LeaseHeartbeatStarvationTests {
             of any of them is time the fans stay held by something nobody is checking (D27, \
             #229). Adding a fourth is a safety review; removing one reopens its issue.
             """)
+    }
+
+    /// `HelperXPCService`'s two dispatch routes, read off its source: the verbs it hands to its
+    /// `MessageSequencer`, and the verbs it dispatches on a `Task` of their own.
+    ///
+    /// Shared with `HelperClientSequencingCensusTests.theClientsSequencedListIsTheHelpersOwn`,
+    /// which holds the client's copy of the first list to this one. One reading of the helper's
+    /// routes, so the client's mirror cannot pass against a second scan that drifted from this.
+    static func helperRoutes() throws -> (sequenced: [String], dispatched: [String]) {
+        let file = try #require(
+            try SeamScanner.swiftFiles(under: "AeolusHelper")
+                .first { $0.lastPathComponent == "HelperXPCService.swift" },
+            "HelperXPCService.swift is not in the tree — the routes it declares are this test")
+        let collapsed = SeamScanner.collapsingWhitespace(
+            SeamScanner.strippingComments(try String(contentsOf: file, encoding: .utf8)))
+        return (
+            sequenced: dispatchedVerbs(in: collapsed, through: #"sequencer\.enqueue"#),
+            dispatched: dispatchedVerbs(in: collapsed, through: #"Task"#)
+        )
     }
 
     /// The `HelperConnectionSession` methods awaited inside a `route { [session] in … }` body,

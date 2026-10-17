@@ -85,14 +85,18 @@ import Foundation
 /// ## Why this is one long file, and where the split stops
 ///
 /// This file is over SwiftLint's 400-line `file_length` warning and stays that way on
-/// purpose. **246 of its lines are code**; the rest is the reasoning around them, and the
+/// purpose. **255 of its lines are code**; the rest is the reasoning around them, and the
 /// rule counts comment lines. The seventeen since this section was written are the clock the
 /// deadlines are measured on, the `internal` initialiser that names it, and the gate's choice of
-/// deadline (#325). The figure, 229 then, did not move when this section was added — the file
-/// grew by fifty-odd lines and by none of the thing the threshold is worth measuring, which
-/// is the whole argument in one measurement. The warning is deliberately **not** suppressed —
-/// no `swiftlint:disable`, no `file_length` override in `.swiftlint.yml` — because a file that
-/// grew by two hundred lines of *logic* should draw exactly the attention this one drew.
+/// deadline (#325). Nine more are the message each send names, the answer a discard gives what
+/// was still in flight, the refusal to send on a connection already given up, and the suite's
+/// count of running deadlines (#413); the bookkeeping behind them is `InFlightMessages`, which
+/// owns its state outright and so widens nothing here. The figure, 229 then, did not move when
+/// this section was added — the file grew by fifty-odd lines and by none of the thing the
+/// threshold is worth measuring, which is the whole argument in one measurement. The warning
+/// is deliberately **not** suppressed — no `swiftlint:disable`, no `file_length` override in
+/// `.swiftlint.yml` — because a file that grew by two hundred lines of *logic* should draw
+/// exactly the attention this one drew.
 ///
 /// The split was evaluated on [#242](https://github.com/blamechris/Aeolus/issues/242) and
 /// refused. Swift `private` is file-scoped, so every remaining seam needs a member of this
@@ -148,7 +152,11 @@ public actor HelperClient {
     private let pinning: any HelperConnectionPinning
     private let clientDescription: String
     private let deadlines: HelperClientDeadlines
-    private let clock: any Clock<Duration>
+
+    /// Every message in flight, and when each one's deadline starts: at its send, or for a
+    /// message the helper sequences, when the sequenced messages sent before it have settled
+    /// (#413). See `InFlightMessages`.
+    private let inFlight: InFlightMessages
 
     private var connection: NSXPCConnection?
     private var negotiatedReply: HelloReply?
@@ -233,7 +241,7 @@ public actor HelperClient {
         self.pinning = pinning
         self.clientDescription = clientDescription
         self.deadlines = deadlines
-        self.clock = clock
+        self.inFlight = InFlightMessages(clock: clock)
     }
 
     // MARK: - What a caller may ask about the connection
@@ -257,6 +265,15 @@ public actor HelperClient {
     /// could not name it could only assert them by accident. Nothing outside this module
     /// can see it and nothing inside it reads it except the guards themselves.
     var currentGeneration: UInt64 { generation }
+
+    /// How many messages have a deadline running, for a suite that moves a hand-wound clock.
+    ///
+    /// `internal`, like `currentGeneration`, and for the suite alone. A deadline's instant is read
+    /// when its timer first runs (`InFlightMessages`), so a test may move the clock only once every
+    /// running deadline has parked on it, and only this count says how many that is. It also
+    /// states the claim the sequenced deadlines turn on directly: behind a held `apply`, one
+    /// deadline is running, not two.
+    var deadlinesRunning: Int { inFlight.running }
 
     /// The same signal as a stream, for a client that renders it rather than polls it.
     ///
@@ -296,12 +313,17 @@ public actor HelperClient {
     /// to this file: a verb says which bound it needs and never holds the deadlines itself.
     /// Every verb but `apply` takes `gatedVerb`; `apply` takes its own, which grows with the
     /// fans it names (`HelperClientDeadlines.applyDeadline(naming:)`).
+    ///
+    /// `message` is the message `send` sends, and it decides when that bound starts to run: at
+    /// the send, or for a message the helper sequences, once the sequenced messages sent before
+    /// it have settled (`HelperMessage.sequenced`, #413).
     func withHandshakenProxy<Answer: Sendable>(
+        _ message: HelperMessage,
         within deadline: (HelperClientDeadlines) -> Duration = { $0.gatedVerb },
         _ send: (any AeolusXPCProtocol, @escaping @Sendable (Result<Answer, Error>) -> Void) -> Void
     ) async throws -> Answer {
         let live = try await handshakenConnection()
-        return try await exchange(on: live, within: deadline(deadlines), send)
+        return try await exchange(message, on: live, within: deadline(deadlines), send)
     }
 
     /// Runs one message on a live connection **without** a handshake.
@@ -312,11 +334,16 @@ public actor HelperClient {
     /// requires exactly two — this declaration and that one call. A second caller would be a
     /// verb quietly exempting itself from the gate on the client's side of a boundary whose
     /// whole design is that gates are not optional.
+    ///
+    /// `message` is named for the reason the other gate's is, and it is always
+    /// `.restoreAllToAutomatic`, which the helper never sequences: the panic path's deadline
+    /// starts at its send and waits for nothing sent before it.
     func withProxy(
+        _ message: HelperMessage,
         _ send: (any AeolusXPCProtocol, @escaping @Sendable (Result<Void, Error>) -> Void) -> Void
     ) async throws {
         let live = try liveConnection()
-        try await exchange(on: live, within: deadlines.panicVerb, send)
+        try await exchange(message, on: live, within: deadlines.panicVerb, send)
     }
 
     // MARK: - The connection
@@ -376,9 +403,10 @@ public actor HelperClient {
         defer { if self.generation == generation { handshake = nil } }
         _ = try await task.value
 
-        // The connection this handshake ran on, not whatever is current now. If it died in
-        // between, the message about to be sent on it fails through the error handler and is
-        // reported as what it was — there is no second attempt here.
+        // The connection this handshake ran on, not whatever is current now. If this client
+        // gave it up in between — a `disconnect()`, or another message's cut-off, both of which
+        // can run while this one waits to resume — `exchange` refuses to send on it and says
+        // so. There is no second attempt here.
         return live
     }
 
@@ -420,7 +448,7 @@ public actor HelperClient {
         )
         do {
             let data: Data = try await exchange(
-                on: live, within: deadlines.handshakeVerb
+                .hello, on: live, within: deadlines.handshakeVerb
             ) { proxy, resolve in
                 proxy.hello(request: request) { data, error in
                     resolve(HelperClientPayload.outcome(data, error))
@@ -443,7 +471,8 @@ public actor HelperClient {
             // handshake. See this function's own documentation for why that is fatal to the
             // connection rather than to the message.
             if generation == self.generation, self.connection != nil {
-                discardConnection(generation, as: Self.healthAfterFailedHandshake(for: error))
+                let health = Self.healthAfterFailedHandshake(for: error)
+                discardConnection(generation, as: health, answering: .connectionAbandoned)
             }
             throw error
         }
@@ -485,29 +514,38 @@ public actor HelperClient {
     /// connection itself fails, the block passed with the message is simply dropped and only
     /// this handler runs, so a client whose failure path lives only in the reply block has no
     /// failure path for the case that matters most.
+    ///
+    /// **Nothing is sent on a connection this client has already given up.** `live` is read
+    /// before a caller's last suspension, and a handshake waiter resumes after one: a discard can
+    /// land in between. Sent anyway, the message would reach a connection the client invalidated,
+    /// and its 4099 would read as a helper that is not installed. The check and the send are one
+    /// synchronous stretch on this actor, so nothing can move the generation between them.
+    ///
+    /// **The deadline belongs to the message, not to this wait.** `inFlight` starts it when the
+    /// message's turn comes and ends it when the message settles, which `sent.settle` does from
+    /// both blocks below.
+    /// A caller cancelled here leaves the message in flight with its deadline still running,
+    /// because the messages behind it are waiting for it to settle; see `InFlightMessages`.
     private func exchange<Answer: Sendable>(
+        _ message: HelperMessage,
         on live: ConnectionGeneration,
         within deadline: Duration,
         _ send: (any AeolusXPCProtocol, @escaping @Sendable (Result<Answer, Error>) -> Void) ->
             Void
     ) async throws -> Answer {
-        // Two fallbacks, because the two ways of giving up are different events and the
-        // deadline's is acted on. A caller that was cancelled has said nothing about the
-        // helper; see `translate(_:on:)`.
-        let pending = PendingReply<Result<Answer, Error>>(
-            ifNothingArrives: .failure(HelperClientError.helperNeverAnswered(after: deadline)),
-            ifCancelled: .failure(CancellationError())
-        )
-        let proxy = live.connection.remoteObjectProxyWithErrorHandler { error in
-            pending.deliver(.failure(error))
-        }
+        guard live.generation == generation else { throw HelperClientError.connectionAbandoned }
+        // The latch it is answered through, with its two fallbacks, is the message's too.
+        let sent = inFlight.admit(
+            message, on: live.generation, within: deadline, answering: Answer.self)
+        let proxy = live.connection.remoteObjectProxyWithErrorHandler { sent.settle(.failure($0)) }
         guard let typed = proxy as? any AeolusXPCProtocol else {
-            throw HelperClientError.protocolViolation(
-                detail: "the connection vended a proxy that does not speak this protocol")
+            throw sent.failing(
+                with: HelperClientError.protocolViolation(
+                    detail: "the connection vended a proxy that does not speak this protocol"))
         }
-        send(typed) { pending.deliver($0) }
+        send(typed, sent.settle)
 
-        switch await pending.answer(within: deadline, on: clock) {
+        switch await sent.answer() {
         case .success(let answer):
             return answer
         case .failure(let error):
@@ -543,10 +581,13 @@ public actor HelperClient {
         // because somebody changed tabs. It is thrown as itself, the way every other
         // cancelled `async` call in Swift reports.
         //
-        // The message stays at the head of the helper's queue and that is deliberate. The
-        // next verb queues behind it, hits its **own** deadline, and discards then — one
-        // extra timeout on a genuinely wedged helper, which is the right price for never
-        // tearing down a healthy one.
+        // The message stays at the head of the helper's queue and that is deliberate. Its
+        // deadline outlives its caller (`InFlightMessages`), so the next sequenced verb waits
+        // for it to settle: answered, or cut off by that deadline, which with nobody waiting
+        // discards nothing. The next verb then hits its **own** deadline and discards — one
+        // extra deadline on a genuinely wedged helper for each cancelled message ahead of it,
+        // which is the price of never tearing down a healthy one. Several orphans add up; #419
+        // is the design note the app's control UI settles before it pipelines.
         if error is CancellationError { return error }
         if let clientError = error as? HelperClientError {
             if case .helperNeverAnswered = clientError {
@@ -557,8 +598,15 @@ public actor HelperClient {
                 // connection's messages in the order they were sent — so every later gated
                 // verb would queue behind it and time out too, permanently. The connection
                 // goes; the next call builds another, once, when the caller asks again.
-                discardConnection(generation, as: .unresponsive)
+                //
+                // Everything else in flight on it goes too, and is told so: the client's own
+                // `invalidate()` would reach each of them as 4099, which reads as a helper
+                // that was never there (#413).
+                discardConnection(generation, as: .unresponsive, answering: .connectionAbandoned)
             }
+            // `connectionAbandoned` passes through here untouched, which is why a message a
+            // discard answered never counts as a second timeout: it moves no generation and
+            // publishes no health.
             return clientError
         }
         if let fault = AeolusXPCFault(nsError: error as NSError) { return fault }
@@ -591,14 +639,21 @@ public actor HelperClient {
             // cost nothing but a single answer.
             return HelperClientError.replyNotDelivered
         case XPCTransportCode.codeSigningRequirementFailure:
-            discardConnection(generation, as: .refused)
+            discardConnection(generation, as: .refused, answering: .helperSignatureRejected)
             return HelperClientError.helperSignatureRejected
         default:
             // Every other transport code, 4099 included: the connection failed and no
             // message was delivered. The code is carried rather than mapped, because a
             // reason this build has not heard of must still reach a log line.
-            discardConnection(generation, as: .invalidated)
-            return HelperClientError.helperUnreachable(code: nsError.code)
+            //
+            // The 4099 the client's **own** `invalidate()` produces does not arrive here. The
+            // discard answered every message on that connection first (`InFlightMessages`),
+            // so each latch already held its answer when the 4099 reached it (#413). What
+            // arrives is the transport's own report, and the messages still in flight beside
+            // the one that carried it are given the same answer.
+            let unreachable = HelperClientError.helperUnreachable(code: nsError.code)
+            discardConnection(generation, as: .invalidated, answering: unreachable)
+            return unreachable
         }
     }
 
@@ -619,8 +674,17 @@ public actor HelperClient {
     }
 
     /// The connection is dead. The next message builds another one — once.
+    ///
+    /// Anything still in flight on it is answered `helperUnreachable(code: 4099)`, which is what
+    /// libxpc reports for a dead connection's messages, and is usually what each has been told
+    /// already by its own error handler. Usually, not always: the order in which libxpc runs a
+    /// connection's error handlers and its invalidation handler is libxpc's, and after a 4102
+    /// signing failure the first answer to reach a message is the one it keeps.
+    /// `HelperClientConnectionTests.aPeerThatFailsTheRequirementIsNamedAsSuch` is what holds the
+    /// 4102 case to `helperSignatureRejected` in practice.
     func connectionWasInvalidated(_ generation: UInt64) {
-        discardConnection(generation, as: .invalidated)
+        let invalid = HelperClientError.helperUnreachable(code: XPCTransportCode.invalid)
+        discardConnection(generation, as: .invalidated, answering: invalid)
     }
 
     /// Tears this client's connection down, and forgets everything negotiated on it.
@@ -643,9 +707,12 @@ public actor HelperClient {
     /// ordinary outcome for an unsigned `fanctl` — moved its health from `.refused` to
     /// `.idle` and threw away the one diagnosis this client can give with confidence. That
     /// is the same erasure `liveConnection()` publishes `.refused` to prevent.
+    ///
+    /// A message still in flight when this is called is answered `connectionAbandoned`: the
+    /// client gave the connection up before the helper answered, and nothing else is known.
     public func disconnect() {
         guard connection != nil else { return }
-        discardConnection(generation, as: .idle)
+        discardConnection(generation, as: .idle, answering: .connectionAbandoned)
     }
 
     /// Gives up on a connection: **invalidates** it, drops it, and forgets what it
@@ -662,7 +729,18 @@ public actor HelperClient {
     /// connection's own handlers — including the invalidation handler this call is about to
     /// fire — name a generation that is already past, so they are ignored instead of
     /// tearing down whatever has been built since.
-    private func discardConnection(_ generation: UInt64, as health: HelperConnectionHealth) {
+    ///
+    /// **Every message still in flight on it is answered `verdict` first** (#413). The
+    /// `invalidate()` below reaches each of them as 4099, and `translate(_:on:)` reads a 4099
+    /// as a helper that is not installed or not yet approved — so a message this client killed
+    /// itself, answered by its own invalidation, would be misdiagnosed. Each caller says what
+    /// is true instead: `connectionAbandoned` when the client chose to give up, and the
+    /// transport's own verdict when the transport ended the connection. Answering them settles
+    /// them too, so no message stays waiting for a turn on a connection that is gone.
+    private func discardConnection(
+        _ generation: UInt64, as health: HelperConnectionHealth,
+        answering verdict: HelperClientError
+    ) {
         guard generation == self.generation else { return }
         let dying = connection
         self.generation &+= 1
@@ -671,6 +749,7 @@ public actor HelperClient {
         handshake = nil
         hasEverHandshaken = false
         publish(health)
+        inFlight.abandonAll(on: generation, answering: verdict)
         dying?.invalidate()
     }
 
