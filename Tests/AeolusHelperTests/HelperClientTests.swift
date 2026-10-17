@@ -408,9 +408,9 @@ struct HelperClientTests {
     /// deleted, because the enclosing `.timeLimit` would eventually record something either
     /// way and the two are not the same failure.
     ///
-    /// **Mutation:** in `HelperClient.exchange(on:within:_:)`, replace
-    /// `pending.answer(within: deadline, on: clock)` with
-    /// `pending.answer(within: .seconds(600), on: clock)`. Run: red on the suite's time limit
+    /// **Mutation:** in `HelperClient.exchange(_:on:within:_:)`, admit the message to `inFlight`
+    /// `within: .seconds(600)` instead of `within: deadline`; the deadline has been started there,
+    /// at the message's turn, since #413. Run: red on the suite's time limit
     /// rather than on this expectation, which is the weaker kill and is why the expectation is
     /// on the error value.
     @Test("A message nobody answers becomes helperNeverAnswered")

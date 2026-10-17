@@ -137,9 +137,12 @@ struct HelperClientSendPathSeamTests {
 
     /// How often `name` is **called** in `body`: the name followed by a `(` or a `{`.
     ///
-    /// The `{` is not optional. Every gated verb in `HelperClientVerbs.swift` is written `try
+    /// The `{` is not optional. Every gated verb in `HelperClientVerbs.swift` was written `try
     /// await withHandshakenProxy { proxy, resolve in … }`, a trailing closure with no parameter
-    /// list at all, so a `name\s*\(` pattern reaches none of them.
+    /// list at all, so a `name\s*\(` pattern reached none of them. Since #413 each names its
+    /// message, `withHandshakenProxy(.snapshot) { … }`, and is reached through its `(` as well.
+    /// The `{` stays, because a call whose only argument is a trailing closure is still spelled
+    /// without one, and a function called that way must not drop out of the population.
     private static func callCount(of name: String, in body: String) throws -> Int {
         let call = try NSRegularExpression(pattern: #"\b\#(name)\s*[({]"#)
         return call.numberOfMatches(

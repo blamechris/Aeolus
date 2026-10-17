@@ -85,14 +85,16 @@ import Foundation
 /// ## Why this is one long file, and where the split stops
 ///
 /// This file is over SwiftLint's 400-line `file_length` warning and stays that way on
-/// purpose. **246 of its lines are code**; the rest is the reasoning around them, and the
+/// purpose. **247 of its lines are code**; the rest is the reasoning around them, and the
 /// rule counts comment lines. The seventeen since this section was written are the clock the
 /// deadlines are measured on, the `internal` initialiser that names it, and the gate's choice of
-/// deadline (#325). The figure, 229 then, did not move when this section was added — the file
-/// grew by fifty-odd lines and by none of the thing the threshold is worth measuring, which
-/// is the whole argument in one measurement. The warning is deliberately **not** suppressed —
-/// no `swiftlint:disable`, no `file_length` override in `.swiftlint.yml` — because a file that
-/// grew by two hundred lines of *logic* should draw exactly the attention this one drew.
+/// deadline (#325). One more is the message each send names (#413); the deadline bookkeeping
+/// behind it is `InFlightMessages`, which owns its state outright and so widens nothing here.
+/// The figure, 229 then, did not move when this section was added — the file grew by fifty-odd
+/// lines and by none of the thing the threshold is worth measuring, which is the whole argument
+/// in one measurement. The warning is deliberately **not** suppressed — no `swiftlint:disable`,
+/// no `file_length` override in `.swiftlint.yml` — because a file that grew by two hundred
+/// lines of *logic* should draw exactly the attention this one drew.
 ///
 /// The split was evaluated on [#242](https://github.com/blamechris/Aeolus/issues/242) and
 /// refused. Swift `private` is file-scoped, so every remaining seam needs a member of this
@@ -148,7 +150,11 @@ public actor HelperClient {
     private let pinning: any HelperConnectionPinning
     private let clientDescription: String
     private let deadlines: HelperClientDeadlines
-    private let clock: any Clock<Duration>
+
+    /// Every message in flight, and when each one's deadline starts: at its send, or for a
+    /// message the helper sequences, when the sequenced messages sent before it have settled
+    /// (#413). See `InFlightMessages`.
+    private let inFlight: InFlightMessages
 
     private var connection: NSXPCConnection?
     private var negotiatedReply: HelloReply?
@@ -233,7 +239,7 @@ public actor HelperClient {
         self.pinning = pinning
         self.clientDescription = clientDescription
         self.deadlines = deadlines
-        self.clock = clock
+        self.inFlight = InFlightMessages(clock: clock)
     }
 
     // MARK: - What a caller may ask about the connection
@@ -296,12 +302,17 @@ public actor HelperClient {
     /// to this file: a verb says which bound it needs and never holds the deadlines itself.
     /// Every verb but `apply` takes `gatedVerb`; `apply` takes its own, which grows with the
     /// fans it names (`HelperClientDeadlines.applyDeadline(naming:)`).
+    ///
+    /// `message` is the message `send` sends, and it decides when that bound starts to run: at
+    /// the send, or for a message the helper sequences, once the sequenced messages sent before
+    /// it have settled (`HelperMessage.sequenced`, #413).
     func withHandshakenProxy<Answer: Sendable>(
+        _ message: HelperMessage,
         within deadline: (HelperClientDeadlines) -> Duration = { $0.gatedVerb },
         _ send: (any AeolusXPCProtocol, @escaping @Sendable (Result<Answer, Error>) -> Void) -> Void
     ) async throws -> Answer {
         let live = try await handshakenConnection()
-        return try await exchange(on: live, within: deadline(deadlines), send)
+        return try await exchange(message, on: live, within: deadline(deadlines), send)
     }
 
     /// Runs one message on a live connection **without** a handshake.
@@ -312,11 +323,16 @@ public actor HelperClient {
     /// requires exactly two — this declaration and that one call. A second caller would be a
     /// verb quietly exempting itself from the gate on the client's side of a boundary whose
     /// whole design is that gates are not optional.
+    ///
+    /// `message` is named for the reason the other gate's is, and it is always
+    /// `.restoreAllToAutomatic`, which the helper never sequences: the panic path's deadline
+    /// starts at its send and waits for nothing sent before it.
     func withProxy(
+        _ message: HelperMessage,
         _ send: (any AeolusXPCProtocol, @escaping @Sendable (Result<Void, Error>) -> Void) -> Void
     ) async throws {
         let live = try liveConnection()
-        try await exchange(on: live, within: deadlines.panicVerb, send)
+        try await exchange(message, on: live, within: deadlines.panicVerb, send)
     }
 
     // MARK: - The connection
@@ -420,7 +436,7 @@ public actor HelperClient {
         )
         do {
             let data: Data = try await exchange(
-                on: live, within: deadlines.handshakeVerb
+                .hello, on: live, within: deadlines.handshakeVerb
             ) { proxy, resolve in
                 proxy.hello(request: request) { data, error in
                     resolve(HelperClientPayload.outcome(data, error))
@@ -485,29 +501,32 @@ public actor HelperClient {
     /// connection itself fails, the block passed with the message is simply dropped and only
     /// this handler runs, so a client whose failure path lives only in the reply block has no
     /// failure path for the case that matters most.
+    ///
+    /// **The deadline belongs to the message, not to this wait.** `inFlight` starts it when the
+    /// message's turn comes and ends it when the message settles, which `sent.settle` does from
+    /// both blocks below.
+    /// A caller cancelled here leaves the message in flight with its deadline still running,
+    /// because the messages behind it are waiting for it to settle; see `InFlightMessages`.
     private func exchange<Answer: Sendable>(
+        _ message: HelperMessage,
         on live: ConnectionGeneration,
         within deadline: Duration,
         _ send: (any AeolusXPCProtocol, @escaping @Sendable (Result<Answer, Error>) -> Void) ->
             Void
     ) async throws -> Answer {
-        // Two fallbacks, because the two ways of giving up are different events and the
-        // deadline's is acted on. A caller that was cancelled has said nothing about the
-        // helper; see `translate(_:on:)`.
-        let pending = PendingReply<Result<Answer, Error>>(
-            ifNothingArrives: .failure(HelperClientError.helperNeverAnswered(after: deadline)),
-            ifCancelled: .failure(CancellationError())
-        )
-        let proxy = live.connection.remoteObjectProxyWithErrorHandler { error in
-            pending.deliver(.failure(error))
-        }
+        // The latch it is answered through, with its two fallbacks, is the message's too.
+        let sent = inFlight.admit(
+            message, on: live.generation, within: deadline, answering: Answer.self)
+        let proxy = live.connection.remoteObjectProxyWithErrorHandler { sent.settle(.failure($0)) }
         guard let typed = proxy as? any AeolusXPCProtocol else {
-            throw HelperClientError.protocolViolation(
+            let violation = HelperClientError.protocolViolation(
                 detail: "the connection vended a proxy that does not speak this protocol")
+            sent.settle(.failure(violation))
+            throw violation
         }
-        send(typed) { pending.deliver($0) }
+        send(typed, sent.settle)
 
-        switch await pending.answer(within: deadline, on: clock) {
+        switch await sent.answer() {
         case .success(let answer):
             return answer
         case .failure(let error):
@@ -543,8 +562,10 @@ public actor HelperClient {
         // because somebody changed tabs. It is thrown as itself, the way every other
         // cancelled `async` call in Swift reports.
         //
-        // The message stays at the head of the helper's queue and that is deliberate. The
-        // next verb queues behind it, hits its **own** deadline, and discards then — one
+        // The message stays at the head of the helper's queue and that is deliberate. Its
+        // deadline outlives its caller (`InFlightMessages`), so the next sequenced verb waits
+        // for it to settle: answered, or cut off by that deadline, which with nobody waiting
+        // discards nothing. The next verb then hits its **own** deadline and discards — one
         // extra timeout on a genuinely wedged helper, which is the right price for never
         // tearing down a healthy one.
         if error is CancellationError { return error }
