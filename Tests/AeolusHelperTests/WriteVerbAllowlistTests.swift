@@ -578,7 +578,8 @@ struct WriteVerbAllowlistTests {
         // them. `undo` reaches a write only through the driver's `handBack(fanAt:)`, and
         // `refusal` asks the lease core and writes nothing.
         "LeaseApplier.swift: apply(_: [FanSetting], leaseID: UUID, from: ConnectionID)",
-        "LeaseApplier.swift: step(_: Double, toFanAt: Int, under: UUID, engaging: inout [Int])",
+        "LeaseApplier.swift: step(_: Double, toFanAt: Int, under: UUID, "
+            + "engaging: inout ApplyEngagements)",
         "LeaseApplier.swift: undo(_: [Int], under: UUID)",
         "LeaseApplier.swift: refusal(for: any Error, leaseID: UUID, from: ConnectionID)",
         // The role the authority reaches level 6 through (ADR 0014's A6 PR-3 amendment): the

@@ -62,8 +62,8 @@ struct LeaseApplierReceiptTests {
     /// has already taken it out of the engaged set.
     ///
     /// **Mutation:** in `LeaseApplier.undo`, open the loop with `guard
-    /// engagements.contains(index, under: lease) else { continue }`. Run: red, the fan left in
-    /// manual with nothing watching it.
+    /// engagements.account(of: index, under: lease) != nil else { continue }`. Run: red, the fan
+    /// left in manual with nothing watching it.
     @Test("A report not held on a newly engaged fan is refused, and the fan is handed back")
     func aReportNotHeldOnANewlyEngagedFanIsHandedBack() async throws {
         let machine = ReclamationMachine(fans: [0: .automatic(at: 1_800)])

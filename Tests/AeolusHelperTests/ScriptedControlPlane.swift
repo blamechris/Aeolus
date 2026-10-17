@@ -389,6 +389,11 @@ actor ScriptedControlPlane: FanControlPlane {
     /// ledger records the clear as issued, which is the lingering key the preparation step finds.
     private(set) var isForceKeySet = false
 
+    /// Raw `F<n>Md` values the unlock model's reads answer in place of the fold of a fan's mode:
+    /// one `FirmwareFanMode` cannot hold, or a read-back that disagrees with a write that landed
+    /// (#406). Set by `setRawMode(_:ofFan:)`.
+    private var rawModes: [Int: UInt8] = [:]
+
     /// - Parameters:
     ///   - fans: The machine's fans and their state before anything is written. A fan
     ///     absent from this dictionary does not exist, and every operation naming it is
@@ -807,9 +812,19 @@ extension ScriptedControlPlane {
         }
     }
 
-    /// Raw `F<n>Md`, through the stage's read behaviour: `0` on automatic, `1` on manual.
+    /// Makes the unlock model's raw reads of fan `index`'s `F<n>Md` — a first step's pre-state and
+    /// a step's read-back — answer `raw`, or the fold of its mode again for `nil`, recording no
+    /// attempt, for `setMode`'s reason. The snapshot's read, `firmwareMode(ofFan:)`, still folds.
+    /// In this extension, so the actor's own body stays inside `type_body_length`'s warning.
+    func setRawMode(_ raw: UInt8?, ofFan index: Int) {
+        rawModes[index] = raw
+    }
+
+    /// Raw `F<n>Md`, through the stage's read behaviour: `0` on automatic, `1` on manual, unless
+    /// `setRawMode(_:ofFan:)` set another.
     private func readRawMode(ofFan index: Int) throws -> UInt8 {
-        try modeReadable(ofFan: index, context: "fan \(index) mode").mode == .automatic ? 0 : 1
+        let fan = try modeReadable(ofFan: index, context: "fan \(index) mode")
+        return rawModes[index] ?? (fan.mode == .automatic ? 0 : 1)
     }
 
     /// `F<n>Md = 1`, answered as this stage and `UnlockBehaviour` say. A refused stage refuses

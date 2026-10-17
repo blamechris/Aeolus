@@ -10,7 +10,8 @@ import os
 // `SMCFanControlPlane` from the E4 branch's B1 — and by nothing above it, which is how "above
 // the seam, nothing writes, reads or names `Ftst`" stays true while two conformers share one
 // set of rules. It takes fan indices rather than permits for the same reason: an index here
-// only decides what a restore covers, and a restore takes no permit.
+// only decides what a restore covers, and a restore takes no permit. Above it, level 6 reads one
+// rule, `EngagementRules.isEngagedMode`, a predicate on a value the driver's refusal carried.
 
 /// Whether the firmware declares the Apple Silicon force key, as the bring-up preparation step
 /// recorded it (D5).
@@ -81,10 +82,14 @@ enum EngagementRules {
         }
     }
 
-    /// Step 2's read-back: raw `1` is engagement, because the same turn read `0` before the
-    /// write (or an earlier step did, under the same epoch).
+    /// Raw `1`, the value an engagement writes (U4): what step 2 confirms it by, and what level 6
+    /// reads a fan whose hand-back was refused by (ADR 0014's #410 refused-hand-back amendment).
+    static func isEngagedMode(_ rawMode: UInt8) -> Bool { rawMode == 1 }
+
+    /// Step 2's read-back: `isEngagedMode(_:)` is engagement, because the same turn read `0`
+    /// before the write (or an earlier step did, under the same epoch).
     static func afterReadBack(rawMode: UInt8, fanAt index: Int) throws -> EngagementStep {
-        guard rawMode == 1 else {
+        guard isEngagedMode(rawMode) else {
             throw FanControlPlaneError.engagementNotConfirmed(index: index, rawMode: rawMode)
         }
         return .engaged

@@ -113,7 +113,7 @@ struct LeaseApplierTripwireTests {
     /// Every use of `engagements` in level 6's file is a member access, except its declaration.
     ///
     /// **Mutation:** in `LeaseApplier.step`, bind `let before = engagements` and ask
-    /// `before.contains(index, under: lease)`. Run: red here.
+    /// `before.account(of: index, under: lease)`. Run: red here.
     @Test("Level 6 reaches its engaged set only through its members")
     func levelSixReachesItsEngagedSetOnlyThroughItsMembers() throws {
         let code = SeamScanner.strippingAllComments(
@@ -133,7 +133,7 @@ struct LeaseApplierTripwireTests {
     func theEngagedSetScanCountsSelfAsAWholeValue() throws {
         let code = """
             let copy = engagements.self
-            if engagements.contains(index, under: lease) {}
+            if engagements.account(of: index, under: lease) == nil {}
             engagements . remove(index, under: lease)
             let spaced = engagements . self
             let before = engagements
