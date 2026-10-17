@@ -151,8 +151,9 @@ struct StartupReconciliationReadBackTests {
     /// The existing budget test refuses the keystone, so the read-back is never reached
     /// there. This one honours it: every fan would read back automatic, if anything read it.
     ///
-    /// **Mutation:** in `confirmKeystone(until:)`, delete the `guard clock.now < deadline`
-    /// block. Run: red — fans 1 and 2 are read and cleared past the deadline.
+    /// **Mutation:** in `readBack(_:until:)`, which `confirmKeystone(until:)` calls, delete the
+    /// `guard clock.now < deadline` block. Run: red — fans 1 and 2 are read and cleared past the
+    /// deadline.
     @Test("A keystone issued after the budget ran out reads nothing back and clears nothing")
     func anExhaustedBudgetReadsNothingBack() async throws {
         let clock = TestClock()
