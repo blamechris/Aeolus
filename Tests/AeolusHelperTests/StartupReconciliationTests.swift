@@ -19,13 +19,21 @@ struct StartupReconciliationTests {
     private static let safetyLog = SafetyLog(
         subsystem: "dev.aeolus.AeolusHelperTests", category: "Safety")
 
+    /// The real graph over the scripted firmware, on a **frozen clock unless a test passes its
+    /// own** ([#407](https://github.com/blamechris/Aeolus/issues/407)).
+    ///
+    /// Reconciliation checks its 5 s budget against this clock, so on the system clock a runner
+    /// stall longer than the budget runs it out mid-pass and the pass takes its keystone path
+    /// (CI run 38994751749). That is the right answer to an expired budget and not what any
+    /// case that goes through here is about. A case about the deadline passes a `TestClock`
+    /// it moves itself, as `anExhaustedBudgetStillReturnsAndRefusesDurably` does.
     private static func composed(
         fans: [Int: ScriptedControlPlane.FanCondition],
         stages: [ScriptedControlPlane.Stage] = [],
         writes: ScriptedControlPlane.WriteBehaviour = .honoured,
         fanCount: Int? = nil,
         extraKeys: [String: Result<SensorReading, SensorReadFailure>] = [:],
-        clock: some MonotonicClock = SystemMonotonicClock(),
+        clock: some MonotonicClock = TestClock(),
         budget: Duration = ReconciliationLimits.budget
     ) -> HelperComposition<ScriptedControlPlane> {
         HelperComposition(
