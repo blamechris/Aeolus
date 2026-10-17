@@ -2729,18 +2729,27 @@ build stays at N = 3: on `.notBuilt`, `apply` refuses before it reads.
   driver's after-check, and it runs after the teardown's process-end call, whose outcome is
   `.restored`.
 
-That is the residual `SignalTeardown`'s step 5 already accepts for § 3's fire and § 5's re-assert
-(ruling D19 on [#197](https://github.com/blamechris/Aeolus/pull/197); `docs/SAFETY.md` § 6). Level 6
-adds at most one such engagement per teardown: one `apply` at a time, the gate refuses arrivals
-once it is closed, and every later entitlement refuses on the emptied table.
+That is the residual ruling D19 on [#197](https://github.com/blamechris/Aeolus/pull/197) accepts for
+§ 5's re-assert, recorded in `SignalTeardown`'s step 5 and `docs/SAFETY.md` § 6. § 3's fire does
+not carry it: it commands the maximum and then restores, and never engages. Level 6 adds at most one
+such engagement per teardown: one `apply` at a time, the gate refuses arrivals once it is closed,
+and every later entitlement refuses on the emptied table.
 
-`SignalTeardownInFlightApplyTests` pins it. Its seam parks the step **past the recorded exit**, so
-the after-check's undo runs and restores the fan. In production the race is between `exit()`
-finishing and the step's write. If the write wins, the fan is left in manual control, exit code 0
-tells launchd not to restart the helper, and nothing reconciles the fan until the next launch. The
-design choice is #410's, before B1: the teardown waits for level 6's `apply` in flight, or the
-teardown's machine-wide restore seals the plane so that every later first step refuses, which
-would close D19's residual for § 3, § 5 and level 6 together. Neither is built here.
+**What it costs on a plane that can write.**
+
+- On the naive path, the after-check's undo races the exit.
+- On the force-key path, the first step answers `.awaitingYield`, and the after-check waits behind
+  the driver's 100 ms poll sleep, which an exiting process does not outlive. So if the step's
+  writes land, `Ftst = 1` is in practice left set, with exit code 0. That is not an occasional race.
+- Nothing outside the process reconciles it. Exit code 0 means launchd does not restart the helper,
+  and a bootout or an uninstall restarts nothing.
+
+So D19's acceptance does not extend to a plane that can write. The fix is #410's first item: a
+`.forExit` restore scope that seals the plane against every forward write, steps and commands, from
+every writer. It must land on `main` **before B1's first `.built` commit**. This step only
+documents and pins the residual: `SignalTeardownInFlightApplyTests` parks the step past the
+recorded exit, so the after-check's undo runs in the test; in production the race is between
+`exit()` finishing and the step's write.
 
 **Decision: the client contract.** `apply`'s documentation in `AeolusXPCProtocol` says what a
 refused re-apply means: it may already have re-commanded fans an earlier `apply` engaged, at the
@@ -2749,7 +2758,7 @@ A6 PR-2 amendment's open question, answered in the documentation alone.
 
 **What the snapshot reports after `apply`.**
 
-- `mode` is `.manual`, from the snapshot's own `F<n>Md` read.
+- `mode` is `.manualFixed`, from the snapshot's own `F<n>Md` read.
 - `activeLease` is the lease.
 - `manualControlAvailability` is `.available`, step 9's answer for a fan under lease.
 - `isReclaimedBySystem` is `false`.
@@ -2767,7 +2776,9 @@ decided before B1 makes the plane `.built`, and none is decided here:
   an automatic fan for one § 5 cycle.
 - **[#325](https://github.com/blamechris/Aeolus/issues/325):** the client deadline for a multi-fan
   first `apply`.
-- **Teardown with an `apply` in flight,** above.
+- **Teardown with an `apply` in flight,** above. #410's first item: a `.forExit` restore scope that
+  seals the plane against every forward write, steps and commands from every writer, on `main`
+  before B1's first `.built` commit.
 - **The snapshot's `targetRPM` after `apply`,** above.
 
 E8a's obligations to level 6 are on [#12](https://github.com/blamechris/Aeolus/issues/12): the
@@ -2782,8 +2793,9 @@ real loop re-runs #383's ramp item, takes the gate for each step, never runs bes
 - *Delegating before the shutdown refusal.* An `apply` arriving during the teardown would reach the
   claim and the lease core, and be answered by them: `applyInProgress` beside an `apply` in flight,
   where the truthful answer is that the helper is shutting down.
-- *A teardown wait, or a sealed plane, in this step.* Each changes what the teardown holds, or the
-  plane's rules for every writer. That is #410's choice, made with B1 in view.
+- *Closing the teardown residual in this step.* The fix, the `.forExit` seal, changes the plane's
+  rules for every writer, which is #410's first item, before B1's first `.built` commit. A teardown
+  that waited for level 6's `apply` instead would leave § 5's re-assert where D19 left it.
 
 **Revisit if:**
 

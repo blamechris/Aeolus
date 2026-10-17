@@ -286,7 +286,9 @@ import Foundation
     /// `id` is checked with `AeolusXPCValidation.validateLeaseID(_:)`, as for `renewLease`.
     func releaseLease(id: String, reply: @escaping @Sendable (Error?) -> Void)
 
-    /// Applies fan settings under an active lease.
+    /// Applies fan settings under an active lease. A refused re-apply may already have
+    /// re-commanded fans an earlier `apply` engaged, so a client that is refused re-reads the
+    /// snapshot rather than assuming what it last set still stands.
     ///
     /// - Parameters:
     ///   - settings: JSON-encoded `[FanSetting]`.
