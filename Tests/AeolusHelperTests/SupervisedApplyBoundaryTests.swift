@@ -4,6 +4,7 @@ import Foundation
 import Testing
 
 @testable import AeolusHelper
+@testable import AeolusXPCClient
 
 /// `apply` at the privilege boundary, since A6's third step wired it to level 6 (ADR 0014's A6
 /// PR-3 amendment): the authority's shutdown refusal first, and the answers through the listener.
@@ -124,7 +125,82 @@ struct SupervisedApplyBoundaryTests {
         #expect(writes.isEmpty, "a build that cannot write was asked to: \(writes)")
     }
 
+    // MARK: - Ordering
+
+    /// **Two applies pipelined on one connection are each answered on their merits.** The
+    /// connection's `MessageSequencer` starts the second only once the first has replied, so a
+    /// well-behaved client never meets `LeaseApplier`'s refusal of a second `apply` in flight
+    /// (ADR 0014's A6 PR-3 amendment). The first is held inside its engagement step while both are
+    /// in the connection; the second is not answered meanwhile, and once the first is let go both
+    /// are applied, in the order sent.
+    ///
+    /// The window in which the second must not be answered is `settle()`'s: a floor on how long
+    /// the absence was watched, never a bound on how long anything takes, so a stalled runner can
+    /// make this pass more easily and never fail it.
+    ///
+    /// **Mutation:** in `HelperXPCService.apply`, dispatch on `Task { [session] in … }` instead of
+    /// `sequencer.enqueue`. Run: red, the second answered `applyInProgress` while the first was
+    /// held.
+    @Test("Two applies pipelined on one connection are each answered on their merits")
+    func twoPipelinedAppliesAreEachAnsweredOnTheirMerits() async throws {
+        let machine = await LevelSixMachine()
+        let harness = AnonymousListenerHarness(authority: machine.helper.authority)
+        let lease = try await Self.handshakeAndLease(on: harness)
+        let engagement = HopParking()
+        await machine.writes.interfere(beforeEngageStep: 1) { await engagement.park() }
+        let first = try Self.settingsPayload(rpm: 2_400)
+        let second = try Self.settingsPayload(rpm: 2_600)
+        let replies = OrderRecord<String>()
+
+        let pending = harness.pipelinedAcknowledgements(
+            { proxy, reply in proxy.apply(settings: first, leaseID: lease, reply: reply) },
+            { proxy, reply in proxy.apply(settings: second, leaseID: lease, reply: reply) },
+            recordingInto: replies)
+        let parked = await pollUntil { await engagement.isParked }
+        await settle()
+        let answeredWhileHeld = replies.entries
+        await engagement.release()
+        let firstAnswer = await pending.first.answer()
+        let secondAnswer = await pending.second.answer()
+
+        #expect(parked, "the first apply never reached its engagement, so nothing was held")
+        #expect(
+            answeredWhileHeld.isEmpty,
+            """
+            \(answeredWhileHeld) answered while the first apply was in flight. One connection's \
+            applies run one at a time; a second that overtook would meet the claim.
+            """)
+        #expect(
+            firstAnswer == nil, "the first apply was answered \(String(describing: firstAnswer))")
+        #expect(
+            secondAnswer == nil, "the second apply was answered \(String(describing: secondAnswer))"
+        )
+        #expect(replies.entries == ["first", "second"])
+        let commanded = await machine.firmware.attempts.compactMap { attempt -> Double? in
+            if case .commandTarget(fan: 0, let rpm) = attempt { return rpm }
+            return nil
+        }
+        #expect(commanded == [2_400, 2_600], "the firmware was commanded \(commanded)")
+        #expect(await machine.helper.reclamationWatchdog.lastCommanded(ofFan: 0)?.rpm == 2_600)
+    }
+
     // MARK: - Fixtures
+
+    /// `hello`, then a lease over fan 0 on the harness's connection, whose ID is returned as the
+    /// string `apply` carries.
+    static func handshakeAndLease(on harness: AnonymousListenerHarness) async throws -> String {
+        let request = try helloPayload()
+        let hello = await harness.payloadMessage { proxy, reply in
+            proxy.hello(request: request, reply: reply)
+        }
+        #expect(hello.payload != nil, "the handshake failed")
+        let leaseRequest = try leasePayload()
+        let grant = await harness.payloadMessage { proxy, reply in
+            proxy.acquireLease(request: leaseRequest, reply: reply)
+        }
+        let granted = try #require(grant.payload, "no lease: \(String(describing: grant))")
+        return try AeolusXPCCoding.decoder().decode(Lease.self, from: granted).id.uuidString
+    }
 
     /// A composed helper over `firmware` behind a plane that answers `.notBuilt`, as every build
     /// on `main` does, bound as bring-up binds it.

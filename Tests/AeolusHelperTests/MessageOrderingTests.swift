@@ -216,27 +216,27 @@ struct MessageOrderingTests {
     /// `[session] in` capture and a single `await` of a `HelperConnectionSession` method
     /// delivered to `reply`, and nothing else in the body.
     ///
-    /// Four, not seven: `restoreAllToAutomatic` (D27), `renewLease` and `releaseLease` (#229)
-    /// keep their own `Task`s, and those spawn sites are visible to
-    /// `WriteVerbAllowlistTests` in the ordinary way.
+    /// **Four, not seven, and named** (ADR 0014's A6 PR-3 amendment): `restoreAllToAutomatic`
+    /// (D27), `renewLease` and `releaseLease` (#229) keep their own `Task`s, visible to
+    /// `WriteVerbAllowlistTests`; any four satisfy a count, so the four sequenced are named,
+    /// `apply` among them, whose route keeps a client's two applies off `LeaseApplier`'s claim.
     ///
-    /// **A count is all this is, and any four verbs satisfy it.** *Which* four take which route
-    /// is asserted by `LeaseHeartbeatStarvationTests.theSequencedVerbsAreTheOnesAClientPipelines`,
-    /// because a swap reopens #90 or #229 and leaves every number here unchanged.
-    ///
-    /// **Mutation:** add `sequencer.enqueue { }` to any file under `Sources/AeolusHelper`.
-    /// Run: red, naming the file. **Second mutation:** change one existing closure's body to
-    /// anything but the pinned shape. Run: red on the shape count with the count unchanged.
+    /// **Mutation:** add `sequencer.enqueue { }` to any file under `Sources/AeolusHelper`. Run:
+    /// red, naming the file. **Second:** one closure's body not the pinned shape. Run: red on the
+    /// shape count alone. **Third:** swap `apply`'s and `renewLease`'s routes. Red on the names.
     @Test("The message sequencer is called only from the XPC entry points")
     func theSequencerIsCalledOnlyFromTheXPCEntryPoints() throws {
         var sites: [String] = []
         var shaped = 0
+        var sequenced: [String] = []
         for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
             let code = SeamScanner.strippingComments(
                 try String(contentsOf: file, encoding: .utf8))
             let count = code.components(separatedBy: ".enqueue").count - 1
             if count > 0 { sites.append("\(file.lastPathComponent) x\(count)") }
             shaped += Self.handoffShapedEnqueueSites(inSource: code)
+            sequenced += LeaseHeartbeatStarvationTests.dispatchedVerbs(
+                in: SeamScanner.collapsingWhitespace(code), through: #"sequencer\.enqueue"#)
         }
 
         #expect(
@@ -255,6 +255,7 @@ struct MessageOrderingTests {
             running inside the one spawn site `WriteVerbAllowlistTests` cannot look into, \
             which is the containment its re-pin rests on.
             """)
+        #expect(sequenced.sorted() == ["acquireLease", "apply", "hello", "snapshot"])
     }
 
     /// Counts `sequencer.enqueue` call sites whose whole body is one hand-off to the

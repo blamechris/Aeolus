@@ -301,8 +301,10 @@ struct LeaseHeartbeatStarvationTests {
     ///
     /// Sorted rather than in declaration order: the assertion is about membership of the two
     /// routes, and making it fail when `swift format` or a reviewer moves a method would be a
-    /// tripwire on the wrong thing.
-    private static func dispatchedVerbs(in collapsed: String, through route: String) -> [String] {
+    /// tripwire on the wrong thing. `internal` for
+    /// `MessageOrderingTests.theSequencerIsCalledOnlyFromTheXPCEntryPoints`, rather than a second
+    /// copy of the route reader.
+    static func dispatchedVerbs(in collapsed: String, through route: String) -> [String] {
         let pattern = route + #" \{ \[session\] in await session\.([A-Za-z]+)\("#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return ["<no regex>"] }
         let range = NSRange(collapsed.startIndex..., in: collapsed)

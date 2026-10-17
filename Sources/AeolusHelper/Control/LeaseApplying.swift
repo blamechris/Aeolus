@@ -28,10 +28,16 @@ import Foundation
 ///   residual; `PlaneWriteLedger`). It writes `F<n>Md = 1`, and `Ftst = 1` on the force-key path,
 ///   and only the driver's after-check undoes it, after the teardown's process-end call.
 ///
-/// The last is ruling D19's residual, which § 3's fire and § 5's re-assert already carry and
-/// level 6 inherits, at most once per teardown. `SignalTeardownInFlightApplyTests` pins it with
-/// the step parked past the recorded exit; in production the race is between `exit()` finishing
-/// and the write. The design choice is [#410](https://github.com/blamechris/Aeolus/issues/410)'s.
+/// The last is the residual ruling D19 on [#197](https://github.com/blamechris/Aeolus/pull/197)
+/// accepts for § 5's re-assert (`SignalTeardown`'s step 5, `docs/SAFETY.md` § 6), which level 6
+/// inherits, at most once per teardown. In the daemon, on the force-key path, the after-check sits
+/// behind the driver's poll sleep, which an exiting process does not outlive, so if the step's
+/// writes land, `Ftst = 1` is in practice left set with exit 0; on the naive path the undo races
+/// the exit. Nothing outside the process reconciles that, so D19's acceptance does not extend to a
+/// plane that can write. The fix is [#410](https://github.com/blamechris/Aeolus/issues/410)'s
+/// first item, a `.forExit` restore scope that seals the plane against every forward write, and it
+/// must land on `main` before B1's first `.built` commit. `SignalTeardownInFlightApplyTests` pins
+/// the residual until then.
 protocol LeaseApplying: Sendable {
 
     /// Writes `settings` under `lease`, or refuses having undone what it engaged: `LeaseApplier`'s
