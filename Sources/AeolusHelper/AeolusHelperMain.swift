@@ -59,7 +59,11 @@ enum AeolusHelperMain {
     /// Advertised in `HelloReply.helperBuild`. Display-grade: never parsed to decide
     /// behaviour, because that would be a second version vocabulary competing with
     /// `helperProtocolRange`.
-    static let build = "0.0.0 (E2)"
+    ///
+    /// On `e4/bring-up` this names the branch, so a helper built from it says so in
+    /// `fanctl status` and in the listening line. `HelperBuildStringTests` pins the value, so
+    /// changing it at the E4 merge is an edit to both.
+    static let build = "0.0.0 (E4 bring-up)"
 
     static func main() {
         let log = HelperLog()

@@ -14,11 +14,13 @@ name: CI
 # request — including pull requests from forks, which must never have access to signing
 # material.
 
+# `e4/bring-up` is the long-lived Apple Silicon write-plane branch. It gets the same checks as
+# `main` on its own pull requests. Both `e4/bring-up` entries are removed at the E4 merge.
 on:
   push:
-    branches: [main]
+    branches: [main, e4/bring-up]
   pull_request:
-    branches: [main]
+    branches: [main, e4/bring-up]
   workflow_dispatch:
 
 concurrency:
