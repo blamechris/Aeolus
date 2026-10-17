@@ -1312,6 +1312,10 @@ ended, as across a reconnect, can still meet one under the lease granted since, 
 `.notBuilt` build it writes nothing, because no lease is granted, and every answer is the one it was
 before, in the same order.
 
+The snapshot states a fan's target only as § 5 holds it for the live lease, and only while the same
+snapshot reads the fan in manual and § 5 has not marked it reclaimed by the system. A reclaimed fan is
+reported with no target, its mode as read, and the mark once § 5 has judged it.
+
 **The record refuses a target no plane can write.** A target that is not a number, or is below the
 floor every permit is clamped to, is not recorded, whether a report or a re-assert's write returned
 it, and the refusal is logged at `.fault`; the record then keeps the

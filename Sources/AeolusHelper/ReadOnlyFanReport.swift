@@ -51,11 +51,8 @@ enum ReadOnlyFanReport {
             actualRPM: reading(for: fan.actual),
             minimumRPM: minimumRPM,
             maximumRPM: maximumRPM,
-            // "No target is set" rather than "the target could not be read": this helper is
-            // asking for nothing, and that is an answer — a build-level fact of the same kind
-            // as `activeLease: nil`, not an unconfirmed observation. `SMCConnection.write` is
-            // SPI-gated and throws and no write selector exists in `Sources`, so there is no
-            // configuration of this executable in which it asks a fan for a speed.
+            // Not this path's to state: on a `.notBuilt` seam no fan is ever commanded, and on a
+            // `.built` one the supervised snapshot states the target § 5 holds for the live lease.
             //
             // Deliberately **not** sourced from `F<n>Tg`, which #148 raised alongside the
             // mode. That register carries whatever Apple's thermal manager last asked for on

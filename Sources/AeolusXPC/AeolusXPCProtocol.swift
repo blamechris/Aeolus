@@ -287,7 +287,7 @@ import Foundation
 
     /// Applies fan settings under an active lease. A refused re-apply may already have
     /// re-commanded fans an earlier `apply` engaged, so a refused client re-reads the snapshot,
-    /// whose `targetRPM` stays `nil` until #410's item 5: the fan's mode is what it can confirm.
+    /// whose `targetRPM` is a fan's target only while the same snapshot shows it held (#410).
     ///
     /// - Parameters:
     ///   - settings: JSON-encoded `[FanSetting]`.
