@@ -251,8 +251,8 @@ twelve-way load while Apple's controller ramps `F<n>Tg`, then through the heat s
    3. Resolve `F<n>Md`'s type and order from a fresh `READ_KEYINFO` (ADR 0004).
    4. Write `F<n>Md = 1`.
 
-   *(Superseded in part by the B1 amendment: B1 takes the fresh key info before the pre-state read.
-   Both come before the first write, so the order is not load-bearing.)*
+   *(Superseded in part by the B1 amendment: B1 will take the fresh key info before the pre-state
+   read. Both come before the first write; the amendment says what the order changes.)*
 2. **On `0x00`**, read raw `F<n>Md` in the same turn:
    - **`1`** → `.engaged`, with the force key untouched. This is evidence of engagement only
      because the same turn read `0` immediately before the write. When the system is not actively
@@ -391,7 +391,7 @@ queued ahead of it at `.supervisor` (D7).
 - **A force-key flag.** It is set when this plane's `Ftst = 1` is accepted, and cleared when a
   restore **issues** `Ftst = 0`. *(Superseded in part by the B1 amendment: it is set when this plane
   issues `Ftst = 1`, accepted, refused or unanswered — issued, not landed.)* Between the key's
-  acceptance and the first fan joining, the engaged set is empty while the flag is set. So a
+  write and the first fan joining, the engaged set is empty while the flag is set. So a
   `.fan(n)` restore in that window — the undo of an engagement that never joined — clears the key,
   which is correct.
 - **Restore is the unlock reversed: every `F<n>Md = 0` in scope, then `Ftst = 0`.** Each write is
@@ -3329,8 +3329,9 @@ for the branch, and none of that exists on `main`.
   - a `.reverted` target write is held at the in-turn read-back and discarded after it;
   - a stage can hold a target nowhere, so the command throws `.targetNotConfirmed`;
   - an engagement's writes can go unanswered, landed or lost.
-- **The driver** logs each step's attempt index, with the retried first step as attempt 2, and its
-  closing line states both steps and attempts.
+- **The driver** logs each step's attempt index, with the retried first step as attempt 2. Its
+  closing lines state attempts, the retried first step included; a yield timeout's detail also
+  states steps, which leave the retried first step out.
 
 **What this amends.**
 - **D5's force-key flag bullet and D3 step 3's first branch**, which set the flag on an accepted
@@ -3338,12 +3339,15 @@ for the branch, and none of that exists on `main`.
 - **D7's restore bullet**, "It encodes `F<n>Md = 0` and `Ftst = 0` from the types and sizes": a
   restore writes zero bytes of the recorded size and never goes through `encode` (see the
   alternatives). The sizes are still the preparation step's, and nothing is read at restore time.
-- **D3 step 1's order**, the pre-state read and then the fresh `READ_KEYINFO`: B1 takes the key info
-  first.
-  - The order is not load-bearing. Both come after admission and before the first write, so
-    `.failedBeforeFirstWrite` covers a failure of either, and #423's classification is unchanged.
-  - Taking the key info first makes every turn take the same number of round trips, whatever the
-    cache holds, within `writeTurnRoundTrips`.
+- **D3 step 1's order**, the pre-state read and then the fresh `READ_KEYINFO`: B1 will take the key
+  info first.
+  - Both come after admission and before the first write, so `.failedBeforeFirstWrite` covers a
+    failure of either and nothing is written.
+  - One classification moves. A failing key-info read now takes precedence over `.notAutomatic`: a
+    kept fan whose key info cannot be read keeps its account that tick (`.failedBeforeFirstWrite`)
+    instead of being re-adopted, and is read again on the next. That fails safe.
+  - Taking the key info first will make every turn take the same number of round trips, whatever
+    the cache holds, within `writeTurnRoundTrips`.
 
 **What remains.**
 - A test written deliberately to pass a real connection as a channel will be caught only by the
@@ -3366,7 +3370,7 @@ for the branch, and none of that exists on `main`.
 - *`encode(0)` for restores.* It adds an encoder failure to the keystone and gains nothing.
 - *Two plane types, or a read-only factory for tests.* The hardware tests would then exercise a
   graph that never ships.
-- *Setting the force-key flag only on an accepted or unanswered `Ftst = 1`*, as first built here. A
+- *Setting the force-key flag only on an accepted or unanswered `Ftst = 1`*, as this PR first proposed it. A
   refused write that landed would then be left out of the undo, and the key would stay set until
   the next machine-wide restore or the next start's preparation step, which is harmless only if U6
   holds.
