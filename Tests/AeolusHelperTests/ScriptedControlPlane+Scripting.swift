@@ -4,8 +4,8 @@ import SMCCore
 
 // The parts of `ScriptedControlPlane`'s scripting that read none of the actor's private state, in
 // a file of their own so `ScriptedControlPlane.swift` stays inside `file_length`'s error. The
-// vocabulary is P0's of B1 (#9): the writes the scripted firmware can leave unanswered, and the
-// built stages that script them.
+// vocabulary is P0's of B1 (#9): what the scripted firmware declares for the restore keys, the
+// writes it can leave unanswered, and the built stages that script them.
 
 extension ScriptedControlPlane {
 
@@ -31,6 +31,27 @@ extension ScriptedControlPlane {
         case .success(let rpm): return .rpm(rpm)
         case .failure(let error): return .unreadable(reason: String(describing: error))
         }
+    }
+
+    /// What this firmware's key-info reads answer for the restore keys, as the preparation step
+    /// records them (D5 step 2): one byte for every enumerated fan's `F<n>Md`, and for `Ftst` when
+    /// it is present — `ui8`, as `Mac16,5` declares both. An unknown key, an absent one and a fan
+    /// the enumeration did not find have no size, so a restore writes them one zero byte.
+    static func declaredSizes(enumerated: Set<Int>?, forceKey: ForceKeyPresence) -> [SMCKey: Int] {
+        var sizes: [SMCKey: Int] = [:]
+        for key in (enumerated ?? []).compactMap(SMCKey.fanMode) { sizes[key] = 1 }
+        if forceKey == .present { sizes[SMCKey.forceTest] = 1 }
+        return sizes
+    }
+
+    /// The ledger `init(…, prepared: true)` starts with: what this plane's own preparation step
+    /// records on a healthy machine, every scripted fan enumerated.
+    static func preparedLedger(
+        enumerating fans: Set<Int>, forceKey: ForceKeyPresence
+    ) -> PlaneWriteLedger {
+        PlaneWriteLedger(
+            enumerated: fans, forceKey: forceKey,
+            declaredSizes: declaredSizes(enumerated: fans, forceKey: forceKey))
     }
 }
 

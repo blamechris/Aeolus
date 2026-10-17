@@ -1654,11 +1654,15 @@ extension SafetyLog {
         }
         var refused = false
         if case .refused? = report.machineWideRestore { refused = true }
+        let sizes = report.declaredSizes.sorted { $0.key.rawValue < $1.key.rawValue }
+            .map { "\($0.key.rawValue) \($0.value)" }
         emit(
             report.enumeratedFans == nil || refused ? .fault : .notice,
             """
             The write path's preparation step \(enumeration), found the force key \
-            \(report.forceKey), and \(restore).
+            \(report.forceKey), recorded the restore keys' declared sizes in bytes \
+            [\(sizes.joined(separator: ", "))] (any other is written one zero byte), and \
+            \(restore).
             """
         )
     }

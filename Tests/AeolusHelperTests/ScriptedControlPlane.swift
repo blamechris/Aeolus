@@ -426,9 +426,10 @@ actor ScriptedControlPlane: FanControlPlane {
     ///     read that fails while the key itself takes writes.
     ///   - unlock: how an honoured stage answers an engagement's mode writes.
     ///   - prepared: whether the plane starts as the preparation step leaves it on a healthy
-    ///     machine — every scripted fan enumerated and the key's presence recorded — which is
-    ///     what every scenario not about bring-up wants. `false` starts it unprepared: no fan
-    ///     set and an unknown key, until `prepareWritePath(enumerating:)` runs.
+    ///     machine — every scripted fan enumerated, the key's presence recorded, and each restore
+    ///     key's declared size — which is what every scenario not about bring-up wants. `false`
+    ///     starts it unprepared: no fan set, an unknown key and no sizes, until
+    ///     `prepareWritePath(enumerating:)` runs.
     init(
         fans: [Int: FanCondition], stages: [Stage] = [.nominal()],
         forceKey: ForceKeyPresence = .present, unlock: UnlockBehaviour = .naive,
@@ -441,7 +442,7 @@ actor ScriptedControlPlane: FanControlPlane {
         self.unlock = unlock
         ledger =
             prepared
-            ? PlaneWriteLedger(enumerated: Set(fans.keys), forceKey: forceKey)
+            ? Self.preparedLedger(enumerating: Set(fans.keys), forceKey: forceKey)
             : PlaneWriteLedger()
     }
 
@@ -735,11 +736,14 @@ extension ScriptedControlPlane {
                 forceKey = .reads(isForceKeySet ? 1 : 0)
             }
         }
-        ledger.recordPreparation(enumerated: enumerated, forceKey: forceKey.presence)
+        let sizes = Self.declaredSizes(enumerated: enumerated, forceKey: forceKey.presence)
+        ledger.recordPreparation(
+            enumerated: enumerated, forceKey: forceKey.presence, declaredSizes: sizes)
 
         guard WritePathPreparation.needsMachineWideRestore(forceKey) else {
             return WritePathPreparation(
-                enumeratedFans: enumerated, forceKey: forceKey, machineWideRestore: nil)
+                enumeratedFans: enumerated, forceKey: forceKey, machineWideRestore: nil,
+                declaredSizes: sizes)
         }
         let restore: WritePathPreparation.MachineWideRestore
         do {
@@ -749,7 +753,8 @@ extension ScriptedControlPlane {
             restore = .refused(detail: String(describing: error))
         }
         return WritePathPreparation(
-            enumeratedFans: enumerated, forceKey: forceKey, machineWideRestore: restore)
+            enumeratedFans: enumerated, forceKey: forceKey, machineWideRestore: restore,
+            declaredSizes: sizes)
     }
 
     /// The engagement's ticket, taken on `ledger` as B1's plane takes it (ADR 0014's #410
