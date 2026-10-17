@@ -324,8 +324,8 @@ struct HelperClientSequencedDeadlineTests {
     /// helper, and is told so. Health is `.idle`, because asking to disconnect is not a failure.
     ///
     /// **Mutation:** in `HelperClient.disconnect()`, answer with `.helperUnreachable(code:
-    /// XPCTransportCode.invalid)`. Run: red on the `apply`'s error and on the description's line
-    /// that rules out "not installed".
+    /// XPCTransportCode.invalid)`. Run: red on the `apply`'s error and on all three lines of its
+    /// description.
     @Test("An apply in flight at a disconnect says control ended")
     func anApplyInFlightAtADisconnectSaysControlEnded() async throws {
         let parked = try await Parked.sending(Self.oneFan)
