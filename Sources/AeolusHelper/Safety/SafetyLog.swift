@@ -1809,15 +1809,21 @@ extension SafetyLog {
 
 extension SafetyLog {
 
-    /// An `apply` was refused inside its per-fan loop, after it handed back every fan it had
-    /// engaged. `.notice`: a refusal is an ordinary answer, and what it handed back is the part
-    /// worth finding afterwards. A hand-back the firmware refused has a `.fault` line of its own.
-    func controlLoopApplyRefused(handingBack fans: [Int], detail: String) {
-        let undone =
-            fans.isEmpty
-            ? "It had engaged no fan."
-            : "The fans it had engaged, \(fans), were handed back to automatic control."
-        emit(.notice, "Level 6's apply was refused: \(detail). \(undone)")
+    /// An `apply` was refused inside its per-fan loop, and its undo has run over every fan it had
+    /// engaged. `.notice`: a refusal is an ordinary answer, and what the undo handed back is the
+    /// part worth finding afterwards. A fan whose hand-back was refused is named apart, and has a
+    /// `.fault` line of its own.
+    func controlLoopApplyRefused(handedBack fans: [Int], refused: [Int], detail: String) {
+        var undone: [String] = []
+        if !fans.isEmpty {
+            undone.append(
+                "The fans it had engaged, \(fans), were handed back to automatic control.")
+        }
+        if !refused.isEmpty {
+            undone.append("The hand-back of \(refused) was refused, and § 3 holds them.")
+        }
+        let text = undone.isEmpty ? "It had engaged no fan." : undone.joined(separator: " ")
+        emit(.notice, "Level 6's apply was refused: \(detail). \(text)")
     }
 
     /// The undo of a refused `apply` could not hand a fan back. `.fault`: the fan may be off

@@ -103,7 +103,8 @@ struct LeaseApplierTripwireTests {
             body
                 == """
                 func manualControlEngaged(_ fan: CommandableFan, under lease: UUID) async throws \
-                func commandedTarget(_ commanded: CommandedTarget, under lease: UUID) \
+                func commandedTarget(_ commanded: CommandedTarget, under lease: UUID) -> \
+                ReportReceipt \
                 func manualControlHandedBack(fanAt index: Int, under lease: UUID) async
                 """,
             "the role declares `\(body)`")

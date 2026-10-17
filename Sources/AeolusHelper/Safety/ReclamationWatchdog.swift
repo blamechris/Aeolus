@@ -80,9 +80,9 @@ import Foundation
 ///   widening that state or adding a suspension point. The splits taken, and the rationale
 ///   relocated out of this file's doc comments, are recorded in
 ///   [docs/records/reclamation-watchdog.md](../../../docs/records/reclamation-watchdog.md).
-///   The body is 339 code lines against `type_body_length`'s error at 350,
+///   The body is 341 code lines against `type_body_length`'s error at 350,
 ///   `examine(fanAt:inBound:)` 50 against `function_body_length`'s warning at 50, and the file
-///   994 lines against `file_length`'s at 1000. New § 5 state belongs in `Registry`, tested as a
+///   996 lines against `file_length`'s at 1000. New § 5 state belongs in `Registry`, tested as a
 ///   value, and new behaviour in the `EngagementDriver`
 ///   ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)), not in this actor.
 actor ReclamationWatchdog<Plane: FanControlPlane>: ReclamationRegistrationRole {
@@ -235,12 +235,14 @@ actor ReclamationWatchdog<Plane: FanControlPlane>: ReclamationRegistrationRole {
     /// A target commanded for a fan this actor is not watching **under `lease`** is ignored
     /// rather than registered: a `CommandedTarget` is an observation, and it is not evidence
     /// that anybody took the fan off automatic control — and one from an ended lease is not a
-    /// target the newer lease's record may be judged against (#357).
-    func commandedTarget(_ commanded: CommandedTarget, under lease: UUID) {
-        guard isHeld(commanded.fanIndex, under: lease) else { return }
+    /// target the newer lease's record may be judged against (#357). The receipt says which.
+    @discardableResult
+    func commandedTarget(_ commanded: CommandedTarget, under lease: UUID) -> ReportReceipt {
+        guard isHeld(commanded.fanIndex, under: lease) else { return .notHeld }
         // And resets the secondary dwell — see `HeldFan.command(_:)` — unless it is refused.
         let recorded = registry.command(commanded, ofFan: commanded.fanIndex)
         logRefusal(of: commanded, from: "the target reported for it", unless: recorded)
+        return recorded ? .recorded : .refused
     }
 
     /// Forgets a fan that has gone back to Apple's thermal management on purpose.
@@ -700,7 +702,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane>: ReclamationRegistrationRole {
             // management — or, if that undo was refused, registered with § 3, and the driver
             // said so at `.fault`. The attempt is spent and the budget is what bounds the trying.
             // A `.notAutomatic` refusal with a registration since the stamp is that engagement's
-            // fan and not a failure (#381), while one engagement of a fan runs at a time (#389):
+            // fan and not a failure (#381), while the gate keeps one engagement of a fan (#389):
             // `reengageRefused`.
             return reengageRefused(fanAt: index, heldUnder: lease, error: error)
         }
@@ -758,8 +760,8 @@ actor ReclamationWatchdog<Plane: FanControlPlane>: ReclamationRegistrationRole {
     /// now another lease's (#357), was registered again under its own lease since the
     /// examination began (#381), or is examined past the gate's bound, which writes nothing away
     /// from automatic control (ADR 0014's A6 amendment). Nothing of § 5's is left written, so
-    /// nothing is restored: either nothing was written, or, in the overlap `reengageRefused`
-    /// names (#389), the driver had already undone its own steps.
+    /// nothing is restored: either nothing was written, or, in the overlap the gate closes
+    /// (#389), the driver had already undone its own steps.
     private func reassertStopped(fanAt index: Int, heldUnder lease: UUID, during moment: String) {
         guard isHeld(index, under: lease) else {
             return log.reclamationFanReleasedMidExamination(fan: index, during: moment)
@@ -777,10 +779,10 @@ actor ReclamationWatchdog<Plane: FanControlPlane>: ReclamationRegistrationRole {
     /// error type, and the driver throws `.notAutomatic` in two places: at a first step, before
     /// any write, and, after a step answered, when a same-lease engagement of the same fan
     /// completed during § 5's yield wait, so the plane's shared per-fan record admitted § 5's next
-    /// step as a first step. The second is two engagements of one fan overlapping, an A6
-    /// precondition tracked as [#389](https://github.com/blamechris/Aeolus/issues/389). In that
-    /// overlap the driver has written and undone it, handing the fan back, and the stand-down line
-    /// misreports that as nothing written. Out of `reassert` for its complexity.
+    /// step as a first step. The second is two engagements of one fan overlapping, which the gate
+    /// closes ([#389](https://github.com/blamechris/Aeolus/issues/389)): level 6 engages only under
+    /// the fan's gate, and § 5 re-engages under its hold; were it to happen, the stand-down line
+    /// would say nothing was written. Out of `reassert` for its complexity.
     private func reengageRefused(fanAt index: Int, heldUnder lease: UUID, error: any Error) {
         guard case .notAutomatic? = error as? FanControlPlaneError,
             registry.reassertTarget(ofFan: index, under: lease) == nil

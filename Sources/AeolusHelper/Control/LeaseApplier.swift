@@ -17,42 +17,50 @@ import Foundation
 ///
 /// 1. `heldLease(id:from:)`, the ownership check: another connection's lease, or one that has
 ///    lapsed, never reaches the driver (item 1), and its faults are the client's answer.
-/// 2. The write capability, `.writePathNotBuilt`.
-/// 3. Item 0, `LeaseApplyRules.goals(of:coveredBy:)`: only `.fixed(rpm:)` is honoured, checked
+/// 2. The claim: one `apply` at a time, below.
+/// 3. The write capability, `.writePathNotBuilt`.
+/// 4. Item 0, `LeaseApplyRules.goals(of:coveredBy:)`: only `.fixed(rpm:)` is honoured, checked
 ///    before anything is read or written.
-/// 4. Each fan, in index order, through `step(_:toFanAt:under:engaging:)`: its envelope read and
+/// 5. Each fan, in index order, through `step(_:toFanAt:under:engaging:)`: its envelope read and
 ///    its permit, then its gate, and under that one hold the whole of its step.
-/// 5. Item 4: the lease and § 3's latch again, so the reply never says applied under a lease
+/// 6. Item 4: the lease and § 3's latch again, so the reply never says applied under a lease
 ///    that has ended or a latch that has set.
 ///
-/// A refusal in step 4 undoes what this `apply` engaged (`undo(_:under:)`), outside every gate,
+/// A refusal in step 5 undoes what this `apply` engaged (`undo(_:under:)`), outside every gate,
 /// and is answered by item 5's table (`refusal(for:leaseID:from:)`).
 ///
-/// ## One hold per fan, one gate at a time, and no hand-back under one
+/// ## One hold per fan, one gate at a time, and the undo outside every gate
 ///
 /// Under a fan's gate: engage it if this lease has not, register it with § 5, ask the entitlement,
 /// write its target whole, and report what the write returned. Nothing else: no envelope read, no
-/// other fan, no second gate and no hand-back. A registration under the gate is before any
-/// examination of the fan, never inside one, so it stands no re-assert down (#381); a report under
-/// it is what the next examination judges against, so the comparison is exact in both orders
-/// (#383); and an engagement under it cannot overlap § 5's re-engage, which runs under § 5's hold
-/// (#389). The undo runs after the gate is left and enters none, because a hand-back held up by a
-/// holder is a hand-back that does not happen.
+/// other fan and no second gate. The one hand-back under it is the driver's own, when an
+/// engagement it began throws. A registration under the gate is before any examination of the
+/// fan, never inside one, so it stands no re-assert down (#381); a report under it is what the
+/// next examination judges against, so the comparison is exact in both orders (#383); and an
+/// engagement under it cannot overlap § 5's re-engage, which runs under § 5's hold (#389). The
+/// undo of a refused `apply` runs after the gate is left and enters none, because a hand-back held
+/// up by a holder is a hand-back that does not happen.
 ///
 /// ## What it holds, and what it never names
 ///
 /// `GovernedFanWriter` for targets; an `EngagementDriver` of its own at `.controlLoop`, for the
 /// engagement, the entitlement and the undo; the gate; the envelope read; § 5 through
 /// `ReclamationRegistrationRole`; the lease core; and § 3's latch. It never names a
-/// `SafetyActorWriter`: its driver holds one and exposes no target verb, so the only target verb
-/// level 6 holds is the governed writer's. `LeaseApplierTripwireTests` holds that by census.
+/// `SafetyActorWriter` in code: its driver holds one and exposes no target verb, so the only
+/// target verb level 6 holds is the governed writer's. `LeaseApplierTripwireTests` holds that by
+/// census.
 ///
-/// ## Reentrancy
+/// ## One `apply` at a time
 ///
-/// An actor, and every `await` is a point another `apply` can run at. Its one piece of state is
-/// `engagements`, keyed by lease and reached only through its transitions, so an `apply` under a
-/// lease that has ended cannot disturb a newer lease's account. What one call needs, its lease,
-/// its bound driver and the fans it engaged, is local to the call.
+/// An actor, so every `await` is a point another call can run at, and a refused `apply` undoes
+/// what it engaged without taking a gate, unable to tell whether another `apply` has since
+/// commanded the fan, under this lease or a newer one. So this admits one `apply` at a time,
+/// whatever the lease or connection. The claim is taken after `heldLease(id:from:)`, with no
+/// suspension between the check and the claim, and given up when `apply` returns or throws. A
+/// second is refused before it reads anything, never queued. Through XPC, two applies under one
+/// lease never meet: a lease has one connection, and that connection's `MessageSequencer` runs
+/// one message at a time. That is ordering, not this type's guarantee, and it does not stop an
+/// `apply` under an ended lease meeting one under the lease granted since.
 actor LeaseApplier<Plane: FanControlPlane> {
 
     /// The only holder of a target verb here: `hold(_:of:)` writes each fixed setting whole.
@@ -82,9 +90,11 @@ actor LeaseApplier<Plane: FanControlPlane> {
 
     private let log: SafetyLog
 
-    /// Which fans this has engaged under which lease, and not handed back since: risk 14's
-    /// authority for "this lease has engaged the fan".
+    /// The engaged set: which fans this has engaged under which lease, and not handed back since.
     private var engagements = LeaseEngagements()
+
+    /// The lease of the one `apply` admitted, until it returns or throws: "One `apply` at a time".
+    private var applying: UUID?
 
     /// Every parameter is required, with no default (#362): a gate, a latch or a § 5 of its own
     /// would be one nothing else consults.
@@ -121,6 +131,13 @@ actor LeaseApplier<Plane: FanControlPlane> {
         _ settings: [FanSetting], leaseID lease: UUID, from connection: ConnectionID
     ) async throws {
         let record = try await leases.heldLease(id: lease, from: connection)
+        if let inFlight = applying {
+            throw await refusal(
+                for: LeaseApplyRules.ApplyInFlight(underTheSameLease: inFlight == lease),
+                leaseID: lease, from: connection)
+        }
+        applying = lease
+        defer { applying = nil }
         guard writeCapability.writeCapability == .built else {
             throw AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
         }
@@ -132,8 +149,10 @@ actor LeaseApplier<Plane: FanControlPlane> {
                 try await step(goal.rpm, toFanAt: goal.fan, under: lease, engaging: &engaged)
             }
         } catch {
-            await undo(engaged, under: lease)
-            log.controlLoopApplyRefused(handingBack: engaged, detail: String(describing: error))
+            let kept = await undo(engaged, under: lease)
+            log.controlLoopApplyRefused(
+                handedBack: engaged.filter { !kept.contains($0) }, refused: kept,
+                detail: String(describing: error))
             throw await refusal(for: error, leaseID: lease, from: connection)
         }
 
@@ -146,10 +165,16 @@ actor LeaseApplier<Plane: FanControlPlane> {
     /// and its report.
     ///
     /// `engaged` gains the fan as soon as the driver's engagement returns, so a refusal after it
-    /// undoes it with the rest (item 2, and risk 7's half-landed engagement). The ramp memory is
-    /// reset at the engagement, so nothing later ramps from a target written before the fan last
-    /// went back to automatic. The permit never leaves this function: a verb that took it beside
-    /// the lease would carry a value that can disagree with it (ADR 0008).
+    /// undoes it with the rest: item 2, and a half-landed engagement, a newly engaged fan whose
+    /// command throws, undone like a failed engagement because the firmware may hold it at any
+    /// target. The ramp memory is reset at the engagement, so nothing later ramps from a target
+    /// written before the fan last went back to automatic. The permit goes beside the lease only
+    /// to § 5's registration, the one verb the write-verb census keys an exemption to; nothing else
+    /// takes it with a value that can disagree with it (ADR 0008).
+    ///
+    /// The step is applied only when § 5 answers the report `.recorded`. `.notHeld` means § 5
+    /// dropped the fan's record since it was registered: the fan leaves the engaged set, and the
+    /// step is refused. `.refused` is a target no permit can produce, a plane defect.
     private func step(
         _ rpm: Double, toFanAt index: Int, under lease: UUID, engaging engaged: inout [Int]
     ) async throws {
@@ -184,32 +209,50 @@ actor LeaseApplier<Plane: FanControlPlane> {
         try await reclamation.manualControlEngaged(permit, under: lease)
         try await driver.requireEntitlement(for: permit)
         let commanded = try await writer.hold(rpm, of: permit)
-        await reclamation.commandedTarget(commanded, under: lease)
+        switch await reclamation.commandedTarget(commanded, under: lease) {
+        case .recorded:
+            return
+        case .notHeld:
+            engagements.remove(index, under: lease)
+            throw LeaseApplyRules.ReportNotRecorded.notHeld
+        case .refused:
+            throw LeaseApplyRules.ReportNotRecorded.refused
+        }
     }
 
     /// Hands back every fan in `fans`, the ones this `apply` engaged, in the order it engaged
-    /// them: § 5's record first, under the lease, so § 5 never reads the restore as a
-    /// reclamation and re-engages a fan the client was told was refused; then the driver's
-    /// hand-back, which restores the fan and tells § 3, and leaves one whose restore is refused in
-    /// § 3's registry; then the ramp memory and `engagements`. Outside every gate, and waiting for
-    /// none (items 2 and 7, risk 5).
-    private func undo(_ fans: [Int], under lease: UUID) async {
+    /// them, and answers the ones whose hand-back was refused. Outside every gate, and waiting for
+    /// none: item 2 and the half-landed engagement.
+    ///
+    /// § 5's record first, under the lease, so § 5 never reads the restore as a reclamation and
+    /// re-engages a fan the client was told was refused. Then the driver's hand-back, which
+    /// restores the fan and tells § 3. Only once that returns, the ramp memory and the engaged
+    /// set. A fan whose hand-back is refused keeps both: § 3's registry holds it, the lease's
+    /// teardown restores it, and the next `apply` under the lease registers it with § 5 under its
+    /// gate without engaging it again, where forgetting it would send that `apply` to the
+    /// raw-mode check and an answer of `.foreignManualControl` about Aeolus's own fan.
+    private func undo(_ fans: [Int], under lease: UUID) async -> [Int] {
+        var kept: [Int] = []
         for index in fans {
             await reclamation.manualControlHandedBack(fanAt: index, under: lease)
             do {
                 try await engagement.handBack(fanAt: index)
             } catch {
                 log.controlLoopHandBackRefused(fan: index, detail: String(describing: error))
+                kept.append(index)
+                continue
             }
             await writer.fanReturnedToAutomatic(index: index)
             engagements.remove(index, under: lease)
         }
+        return kept
     }
 
-    /// Item 5's answer to a refusal from the per-fan loop: `LeaseApplyRules.answer(to:)`, with the
-    /// one row that needs the lease core asked here. A superseded step, a gate not granted or a
-    /// lease that was not live is `.releaseInProgress` while the lease still stands, and otherwise
-    /// the fault `heldLease(id:from:)` throws now.
+    /// Item 5's answer to a refusal: `LeaseApplyRules.answer(to:)`, with the one row that needs the
+    /// lease core asked here. A superseded step, a gate not granted, a lease that was not live, a
+    /// report § 5 no longer held, or an `apply` in flight under another lease is
+    /// `.releaseInProgress` while the lease still stands, and otherwise the fault
+    /// `heldLease(id:from:)` throws now.
     private func refusal(
         for error: any Error, leaseID lease: UUID, from connection: ConnectionID
     ) async -> any Error {
@@ -240,6 +283,22 @@ enum LeaseApplyRules {
     /// was cancelled. Never crosses the boundary: `answer(to:)` maps it.
     struct GateNotGranted: Error, Sendable {}
 
+    /// What an `apply` answers when another is in flight: under the same lease, a breach inside
+    /// the helper, since XPC never lets two meet; under another, the one in flight is unwinding a
+    /// lease that has ended. Never crosses the boundary: `answer(to:)` maps it.
+    struct ApplyInFlight: Error, Sendable {
+        let underTheSameLease: Bool
+    }
+
+    /// What a fan's step answers when § 5 did not record its report. Never crosses the boundary:
+    /// `answer(to:)` maps it.
+    enum ReportNotRecorded: Error, Sendable {
+        /// § 5 no longer held the fan under the lease.
+        case notHeld
+        /// The report named a target no permit can produce.
+        case refused
+    }
+
     /// Item 5's table, for a refusal from the per-fan loop.
     enum Answer: Sendable, Hashable {
         /// Thrown as it is: a fault already in the client's vocabulary, or a cancellation, which
@@ -264,6 +323,7 @@ enum LeaseApplyRules {
         static let firmwareRefused = "the firmware refused a write to the fan"
         static let notConfirmed = "the firmware did not confirm manual control of the fan"
         static let unexpected = "the fan's write did not complete"
+        static let applyInProgress = "another apply under this lease has not finished"
     }
 
     /// Item 0: each fan's goal, in index order, or `invalidParameter(name: "settings")`.
@@ -294,15 +354,24 @@ enum LeaseApplyRules {
         .invalidParameter(name: "settings", detail: detail)
     }
 
-    /// Item 5's table, as a value. `.helperFailed` stands for the D3 outcomes R1 has not observed
-    /// yet, and for anything the table does not name: no new reason crosses the boundary before R1
-    /// (D3).
+    /// Item 5's table, as a value. `.helperFailed` stands for the D3 outcomes run 1 (D8) has not
+    /// observed yet, and for anything the table does not name: no new reason crosses the boundary
+    /// before run 1 (D3).
     static func answer(to error: any Error) -> Answer {
         switch error {
         case is AeolusXPCFault, is CancellationError:
             return .unchanged
         case is GateNotGranted:
             return .releaseInProgressUnlessTheLeaseHasGone
+        case let inFlight as ApplyInFlight:
+            return inFlight.underTheSameLease
+                ? .fault(.helperFailed(detail: Detail.applyInProgress))
+                : .releaseInProgressUnlessTheLeaseHasGone
+        case let report as ReportNotRecorded:
+            switch report {
+            case .notHeld: return .releaseInProgressUnlessTheLeaseHasGone
+            case .refused: return .fault(.helperFailed(detail: Detail.unexpected))
+            }
         case let refusal as EngagementRefusal:
             switch refusal {
             case .preempted: return .fault(.thermalEmergencyActive)
@@ -325,43 +394,5 @@ enum LeaseApplyRules {
         default:
             return .fault(.helperFailed(detail: Detail.unexpected))
         }
-    }
-}
-
-// MARK: - Which fans this lease has engaged
-
-/// Which fans level 6 has engaged under which lease, and not handed back since: risk 14's authority
-/// for "this lease has engaged the fan", as a value (ADR 0014's A6 PR-2 amendment).
-///
-/// Keyed by lease. A fan joins when the driver's engagement returns under that lease, and leaves
-/// when the undo hands it back. The first engagement under a lease drops every other lease's fans:
-/// one live lease covers a fan at a time, so a lease that engages has outlived every other. Dropped
-/// when `apply` is authorised instead, a call whose lease ended between `heldLease` answering and
-/// its resumption would erase the account of the lease granted since, whose next re-apply would
-/// then re-engage its own fans and be refused `.notAutomatic`; a call under an ended lease cannot
-/// engage, because its driver's entitlement refuses it. A fan a teardown, § 3 or § 5 handed back
-/// under a lease that is still live stays here: #381's one-cycle residual.
-struct LeaseEngagements: Sendable {
-
-    private var fans: [UUID: Set<Int>] = [:]
-
-    /// Whether `index` was engaged under `lease` and not handed back since.
-    func contains(_ index: Int, under lease: UUID) -> Bool {
-        fans[lease]?.contains(index) == true
-    }
-
-    /// The leases with a fan engaged, for tests.
-    var leases: Set<UUID> { Set(fans.keys) }
-
-    /// An engagement of `index` under `lease` returned.
-    mutating func insert(_ index: Int, under lease: UUID) {
-        fans = fans.filter { $0.key == lease }
-        fans[lease, default: []].insert(index)
-    }
-
-    /// `index` was handed back under `lease`.
-    mutating func remove(_ index: Int, under lease: UUID) {
-        fans[lease]?.remove(index)
-        if fans[lease]?.isEmpty == true { fans[lease] = nil }
     }
 }

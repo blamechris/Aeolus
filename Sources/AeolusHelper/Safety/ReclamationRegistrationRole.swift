@@ -23,9 +23,22 @@ protocol ReclamationRegistrationRole: Actor {
     /// `ReclamationWatchdog.manualControlEngaged(_:under:)`.
     func manualControlEngaged(_ fan: CommandableFan, under lease: UUID) async throws
 
-    /// `ReclamationWatchdog.commandedTarget(_:under:)`.
-    func commandedTarget(_ commanded: CommandedTarget, under lease: UUID)
+    /// `ReclamationWatchdog.commandedTarget(_:under:)`, with what became of the report: level 6
+    /// answers applied only for a report § 5 recorded.
+    func commandedTarget(_ commanded: CommandedTarget, under lease: UUID) -> ReportReceipt
 
     /// `ReclamationWatchdog.manualControlHandedBack(fanAt:under:)`.
     func manualControlHandedBack(fanAt index: Int, under lease: UUID) async
+}
+
+/// What § 5 did with a target level 6 reported (ADR 0014's A6 PR-2 amendment).
+enum ReportReceipt: Sendable, Hashable {
+    /// The record holds it: the next examination judges the fan against it.
+    case recorded
+    /// No record of the fan under that lease: it was released, given up or never registered, so
+    /// nothing judges the fan against the target.
+    case notHeld
+    /// The record refused it: not a number, or below the floor every permit is clamped to, which
+    /// no plane can write (#395).
+    case refused
 }

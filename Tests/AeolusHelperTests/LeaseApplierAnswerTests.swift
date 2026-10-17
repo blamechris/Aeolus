@@ -331,6 +331,16 @@ struct LeaseApplierAnswerTests {
                 FanControlPlaneError.engagementNotConfirmed(index: 0, rawMode: 0),
                 .fault(.helperFailed(detail: Rules.Detail.notConfirmed))
             ),
+            (
+                Rules.ApplyInFlight(underTheSameLease: true),
+                .fault(.helperFailed(detail: Rules.Detail.applyInProgress))
+            ),
+            (
+                Rules.ApplyInFlight(underTheSameLease: false),
+                .releaseInProgressUnlessTheLeaseHasGone
+            ),
+            (Rules.ReportNotRecorded.notHeld, .releaseInProgressUnlessTheLeaseHasGone),
+            (Rules.ReportNotRecorded.refused, unexpected),
             (FanControlPlaneError.readFailed(detail: "no"), unexpected),
             (FanControlPlaneError.controlPathNotBuilt, unexpected),
             (UnnamedFailure(), unexpected),
