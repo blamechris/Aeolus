@@ -199,6 +199,10 @@ struct EngagementDriverTests {
     /// After `.engaged`: the fan is registered with § 3 **before** the after-check, so an undo
     /// the firmware refuses leaves it where § 3's next emergency bridges it (#181).
     ///
+    /// The undo is refused, so the refusal is thrown inside `EngagementUndoRefused` (#406). That
+    /// only a refused undo is wrapped is held by
+    /// `EngagementUndoRefusedTests.theDriverWrapsOnlyARefusedUndo`.
+    ///
     /// **Mutation:** move `await emergency.manualControlEngaged(fan)` below the after-check.
     /// Run: red on the registry assertion. **Mutation:** delete the after-check. Run: red on
     /// the refusal.
@@ -214,10 +218,14 @@ struct EngagementDriverTests {
             await plane.advance()
         }
 
-        await #expect(throws: EngagementRefusal.preempted(fan: 0, by: .thermalEmergency)) {
+        let refused = await LeaseApplierAnswerTests.answer {
             try await rig.driver.engageManualControl(of: rig.fan(0))
         }
 
+        #expect(
+            refused.map(EngagementUndoRefused.cause(of:)) as? EngagementRefusal
+                == .preempted(fan: 0, by: .thermalEmergency),
+            "the engagement was answered \(refused as Any)")
         #expect(await interfering.didFire, "the scenario never arranged the interleaving")
         #expect(await rig.registry.engaged == [0], "the fan was not registered with § 3")
         #expect(await rig.registry.accepted.isEmpty, "a refused undo was reported accepted")

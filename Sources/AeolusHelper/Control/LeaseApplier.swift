@@ -355,11 +355,12 @@ enum LeaseApplyRules {
         .invalidParameter(name: "settings", detail: detail)
     }
 
-    /// Item 5's table, as a value. `.helperFailed` stands for the D3 outcomes run 1 (D8) has not
-    /// observed yet, and for anything the table does not name: no new reason crosses the boundary
-    /// before run 1 (D3).
+    /// Item 5's table, as a value: a refused undo by its cause (#406), and `.helperFailed` for the
+    /// D3 outcomes run 1 (D8) has not observed yet and for anything the table does not name, so no
+    /// new reason crosses the boundary before run 1 (D3).
     static func answer(to error: any Error) -> Answer {
         switch error {
+        case let undo as EngagementUndoRefused: return answer(to: undo.cause)
         case is AeolusXPCFault, is CancellationError:
             return .unchanged
         case is GateNotGranted:

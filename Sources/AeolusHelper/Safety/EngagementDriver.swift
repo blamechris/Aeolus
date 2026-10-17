@@ -124,6 +124,10 @@ enum EngagementAftermath: Sendable, Hashable {
 /// refused before the first step or its retry, a first step superseded at its admission twice,
 /// or a first step refused as `.notAutomatic` — the fan was someone else's, and writing it back
 /// to automatic would be ADR 0011's contest.
+///
+/// A refused undo is thrown as `EngagementUndoRefused`, carrying the step's own refusal, so the
+/// caller keeps an account of a fan that may still be off automatic control. Every router reads
+/// the cause (ADR 0014's #410 refused-hand-back amendment).
 struct EngagementDriver<Plane: FanControlPlane>: Sendable {
 
     private let writer: SafetyActorWriter<Plane>
@@ -181,7 +185,8 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
     ///
     /// Returns once the plane answered `.engaged`, the fan is registered with § 3, and the
     /// entitlement still holds. Throws `EngagementRefusal` for the driver's own refusals and
-    /// whatever the plane threw for its; in both cases the undo, if one was owed, has run.
+    /// whatever the plane threw for its; in both cases the undo, if one was owed, has run. When
+    /// that undo was refused, the refusal is thrown inside `EngagementUndoRefused`, and only then.
     func engageManualControl(of fan: CommandableFan) async throws {
         let index = fan.index
         // The ticket, then the entitlement: the order is what holds. A restore requested after the
@@ -229,7 +234,8 @@ struct EngagementDriver<Plane: FanControlPlane>: Sendable {
             }
             log.engagementRefused(
                 fan: index, steps: steps, detail: String(describing: error), aftermath: aftermath)
-            throw error
+            guard aftermath == .undoRefused else { throw error }
+            throw EngagementUndoRefused(fan: index, cause: error)
         }
         log.engagementEngaged(fan: index, steps: steps, waited: began.duration(to: clock.now))
     }

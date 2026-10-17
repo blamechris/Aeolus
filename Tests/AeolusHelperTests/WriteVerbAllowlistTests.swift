@@ -643,6 +643,10 @@ struct WriteVerbAllowlistTests {
         // write only through `restoreToAutomatic(.everyFan)` (D5): no new verb and no new scope.
         "EngagementDriver.swift: handBack(fanAt: Int)",
         "EngagementDriver.swift: handbackAccepted(fanAt: Int)",
+        // #406's: § 5's re-assert engages through it, so its one catch reads a refused undo's
+        // cause. It takes no permit and names no writer: the engagement it runs is the closure
+        // `reassert` hands it, whose step is the driver's, acknowledged above.
+        "EngagementUndoRefused.swift: throwingTheCause(of: @Sendable () async throws -> Void)",
         "FanControlPlane.swift: prepareWritePath(enumerating: any FanEnumerating)",
         "SMCFanControlPlane.swift: prepareWritePath(enumerating: any FanEnumerating)",
         "HelperComposition.swift: prepareWritePath()",

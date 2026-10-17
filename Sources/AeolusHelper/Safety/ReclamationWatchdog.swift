@@ -688,7 +688,7 @@ actor ReclamationWatchdog<Plane: FanControlPlane>: ReclamationRegistrationRole {
             // — #181's pre-engage ruling — and has undone any step it took by the time it
             // throws. A fan still in manual is asked the same entitlement before its command.
             if reengaging {
-                try await driver.engageManualControl(of: permit)
+                try await throwingTheCause { try await driver.engageManualControl(of: permit) }
             } else {
                 try await driver.requireEntitlement(for: permit)
             }
