@@ -269,7 +269,7 @@ extension Clock {
     /// reply the helper sent in time. The cost is that a deadline can run long by the stall, which
     /// is the direction a client that cannot see its helper should err in.
     ///
-    /// `HelperClientSequencedDeadlineTests.aDeadlineIsReadOnItsTimersOwnTask` pins where the
+    /// `HelperClientSendTimingTests.aDeadlineIsReadOnItsTimersOwnTask` pins where the
     /// instant is read. That a stall delays the read is the runtime's, and no test here can stall
     /// a pool on demand.
     ///

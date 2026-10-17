@@ -97,11 +97,18 @@ struct HelperClientSendTimingTests {
         let releaseHandshake = AsyncSignal()
         let harness = ClientListenerHarness(
             authority: RecordingFanAuthority(), holdingHandshakeReplies: releaseHandshake)
-        let client = harness.client()
+        // A clock nothing moves, so a stalled runner cannot run out the handshake's 15 s while the
+        // test holds its reply (#341's class). No deadline is meant to run out here at all.
+        let client = HelperClient(
+            transport: .endpoint(harness.endpoint), pinning: UnenforcedClientPinning(),
+            clientDescription: "test client", deadlines: ClientListenerHarness.defaultDeadlines,
+            clock: ManualClock())
         let record = GivingUpRecord()
 
         let first = Task { try await Self.send(on: client, recordingIn: record, as: "first") }
-        try await waitUntil("the handshake reached the helper and is being held") {
+        try await waitUntil(
+            "the handshake reached the helper and is being held", timeout: .seconds(30)
+        ) {
             harness.arrivals == ["hello"]
         }
         let secondStarted = AsyncSignal()

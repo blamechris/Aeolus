@@ -317,7 +317,9 @@ struct HelperClientSequencedDeadlineTests {
         let snapshot = try await Self.snapshotBehind(parked)
 
         parked.clock.advance(by: Self.applyDeadline)
-        try await waitUntil("the snapshot's turn came when the apply's deadline ran out") {
+        try await waitUntil(
+            "the snapshot's turn came when the apply's deadline ran out", timeout: .seconds(30)
+        ) {
             parked.clock.sleepers == 1
         }
         #expect(
