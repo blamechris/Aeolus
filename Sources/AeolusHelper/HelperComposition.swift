@@ -115,12 +115,18 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     let thermalEmergency: ThermalEmergency<Plane>
     let reclamationWatchdog: ReclamationWatchdog<Plane>
 
-    /// The fans' examination gate: **one instance**, held by § 5 and, once A6's next step composes
-    /// `LeaseApplier`, by level 6 (ADR 0014's A6 amendments). Two gates would be two exclusions
-    /// that exclude nothing from each other. Stored so that level 6 can be handed this same one,
-    /// and so a composed test can hold a pass on it; `ExaminationGateRouteTests` holds where it
-    /// may be named and entered.
+    /// The fans' examination gate: **one instance**, held by § 5 and by level 6 (ADR 0014's A6
+    /// amendments). Two gates would be two exclusions that exclude nothing from each other.
+    /// Stored so that a composed test can hold a pass on it; `ExaminationGateRouteTests` holds
+    /// where it may be named and entered, and that both § 5 and level 6 wait on this one.
     let examinationGate: FanExaminationGate
+
+    /// Level 6's `apply`: **one instance**, which the authority holds as `LeaseApplying` (ADR
+    /// 0014's A6 PR-3 amendment), built from the one gate, the § 5 the supervisor cycles, the
+    /// lease core and § 3. Stored so a composed test can pin its driver's level by property;
+    /// nothing in `Sources/` calls its verb but the authority, which `LeaseApplyingTripwireTests`
+    /// holds.
+    let leaseApplier: LeaseApplier<Plane>
 
     /// Where the write path's preparation step reports what it found (ADR 0014 D5).
     let safetyLog: SafetyLog
@@ -205,8 +211,8 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
     /// The order below is A1's, and it is the order of the dependencies rather than a
     /// preference: plane, then the latch and the ledger both the snapshot and the mechanisms
     /// read, then the sightings cache, then the restorer, then reconciliation, then the
-    /// lease core, then the two safety actors, then the loops, then the authority, then the
-    /// power responder, then the teardown.
+    /// lease core, then the two safety actors, then the loops, then level 6 and the authority
+    /// that holds it, then the power responder, then the teardown.
     ///
     /// `snapshotProvider` is the reader the client-facing snapshot takes its turns from, and
     /// it is the one parameter worth a paragraph. The fan read and the `F<n>Md` read are both
@@ -406,21 +412,23 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         // A whole plane here would put `commandTarget(_:)` one `await` from a client message.
         // `telemetry` is the one cache the lease core proves grants against (#269), so the
         // snapshot's blindness and the grant's are one reading, and a cold one is read once.
-        // `control` is level 6's `apply`, held as `LeaseApplying` and nothing wider (ADR 0014's A6
-        // PR-3 amendment): the one instance, wired to the one gate and the § 5 above.
+        // Level 6's `apply` (ADR 0014's A6 PR-3 amendment), the authority's `control` and nothing
+        // wider: the one gate, the § 5 the supervisor cycles, the lease core and § 3. Its driver is
+        // its own, at `.controlLoop`; the writer it steps through carries `.leaseExpiry` as
+        // provenance nothing reads, the lease being what level 6 writes under.
+        let leaseApplier = LeaseApplier(
+            writer: GovernedFanWriter(plane: plane),
+            engagement: EngagementDriver(
+                writer: SafetyActorWriter(plane: plane, level: .leaseExpiry), leases: leases,
+                latch: latch, emergency: thermalEmergency, clock: clock, level: .controlLoop,
+                log: safetyLog),
+            gate: examinationGate, envelopes: plane, reclamation: reclamationWatchdog,
+            leases: leases, latch: latch, writeCapability: plane, log: safetyLog)
+        self.leaseApplier = leaseApplier
         let authority = SupervisedFanAuthority(
             reading: reading, leases: leases, reconciliation: reconciliation,
             keystone: SafetyActorWriter(plane: plane, level: .panicRestore),
-            writeCapability: plane, telemetry: sightings,
-            control: LeaseApplier(
-                writer: GovernedFanWriter(plane: plane),
-                engagement: EngagementDriver(
-                    writer: SafetyActorWriter(plane: plane, level: .leaseExpiry), leases: leases,
-                    latch: latch, emergency: thermalEmergency, clock: clock, level: .controlLoop,
-                    log: safetyLog),
-                gate: examinationGate, envelopes: plane, reclamation: reclamationWatchdog,
-                leases: leases, latch: latch, writeCapability: plane, log: safetyLog),
-            log: log)
+            writeCapability: plane, telemetry: sightings, control: leaseApplier, log: log)
         self.authority = authority
 
         // § 4, at ADR 0007's level 4 and through `SafetyActorWriter` like every other

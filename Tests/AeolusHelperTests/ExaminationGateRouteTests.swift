@@ -1,3 +1,4 @@
+import FanKit
 import Foundation
 import Testing
 
@@ -13,7 +14,8 @@ import Testing
 /// to write its entry's name. Each statement found is matched against the listed ones and uses one
 /// up, so a second construction is unlisted as surely as a new file is. Level 6's file, where
 /// `LeaseApplier` holds the gate and enters it for each step, is on both lists since A6's second
-/// step (ADR 0014's A6 PR-2 amendment); the composition does not hand it the gate until the next.
+/// step (ADR 0014's A6 PR-2 amendment), and the composition hands it the one gate since the third
+/// (the A6 PR-3 amendment).
 ///
 /// What a restore path naming the gate would do is `ExaminationGateRestoreTests`': it would wait on
 /// a holder, and a hand-back held up by a holder is a hand-back that does not happen.
@@ -135,6 +137,41 @@ struct ExaminationGateRouteTests {
             })
         helper.examinationGate.leave(held)
         try await finished("the composed sweep", sweep)
+        #expect(helper.examinationGate.isIdle)
+    }
+
+    /// Level 6 waits on the same gate: a step pass held on `HelperComposition.examinationGate`
+    /// makes an `apply` through the composed authority wait for fan 0's gate, engaging nothing,
+    /// and leaving it lets the `apply` finish applied (ADR 0014's A6 PR-3 amendment). The clock is
+    /// a `ManualClock` nobody advances, so `stepWait` cannot run out during the wait (#407).
+    ///
+    /// **Mutation:** in `HelperComposition.init`, hand `LeaseApplier` a gate of its own,
+    /// `gate: FanExaminationGate(clock: clock, log: safetyLog)`. Run: red on the wait, and in
+    /// `theGateIsNamedOnlyWhereListed`.
+    @Test("The composed level 6 waits on the composition's gate")
+    func theComposedLevelSixWaitsOnTheComposedGate() async throws {
+        let helper = HelperRestorerTests.composed(clock: ManualClock())
+        await helper.bindSafetyRegistries()
+        let connection = ConnectionID()
+        let lease = try await helper.authority.acquireLease(
+            LeaseFixture.request(fans: [0]), from: connection)
+        let held = try #require(await helper.examinationGate.enterForStep(fanAt: 0))
+
+        let applying = observing {
+            try await helper.authority.apply(
+                [FanSetting(fanIndex: 0, control: .fixed(rpm: 2_400))], leaseID: lease.id,
+                from: connection)
+        }
+        #expect(
+            await yieldUntil("the composed level 6 to wait on the composed gate") {
+                helper.examinationGate.waiting(onFan: 0) == 1
+            })
+        let engagedWhileWaiting = await helper.plane.attempts.contains(.engageManualControl(fan: 0))
+        helper.examinationGate.leave(held)
+        try await finished("the composed apply", applying)
+
+        #expect(!engagedWhileWaiting, "level 6 engaged fan 0 while the gate was held")
+        #expect(try await helper.plane.firmwareMode(ofFan: 0) == .manual)
         #expect(helper.examinationGate.isIdle)
     }
 

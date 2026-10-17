@@ -6,8 +6,8 @@ import Testing
 @testable import AeolusHelper
 
 /// Level 6 on a `ReclamationMachine`: the real `LeaseApplier`, wired to the machine's lease core,
-/// § 3's latch, the fans' examination gate and § 5 as A6's next step will wire it in the
-/// composition, and writing through `writes`, the machine's own plane or a double over it.
+/// § 3's latch, the fans' examination gate and § 5 as `HelperComposition.init` wires it, and
+/// writing through `writes`, the machine's own plane or a double over it.
 ///
 /// Its driver is level 6's own, at `.controlLoop`, stepping through a `SafetyActorWriter` whose
 /// level is provenance nothing reads (`.leaseExpiry` here: the lease is what level 6 writes
