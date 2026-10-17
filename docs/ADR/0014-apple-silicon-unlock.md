@@ -307,13 +307,16 @@ callers.
   § 5 keeps its own `held` re-fetch around the call.
 - **Inside the step's turn**, the plane checks a restore epoch. Every `restoreToAutomatic` call
   increments the counter **synchronously, when it is called, before it waits for a turn**. An
-  engagement records the epoch at its first step. Once the epoch has moved, the engagement writes
-  nothing more and throws `.superseded`.
+  engagement takes the epoch before its entitlement and its first step is admitted under it (the
+  #410 amendment). Once the epoch has moved, the engagement writes nothing more and throws
+  `.superseded`.
 
   A turn is one indivisible occupation of the connection. So no forward write **after an
   engagement's first step** lands after a restore that was *requested* before that write's turn
   began. The first step itself is the exception: it records the epoch, so a restore requested
-  before its turn is not seen — ADR 0009 D1's residual, below.
+  before its turn is not seen — ADR 0009 D1's residual, below. *(Since the #410 amendment a first
+  step is admitted only under the epoch its engagement took before the entitlement, so a restore
+  requested after that is seen at its admission.)*
 - **After `.engaged`**, the driver registers the fan with § 3, then asks the entitlement again. If
   it has gone, the driver undoes.
 
@@ -331,7 +334,8 @@ calling the window closed "would be the more dangerous spelling".
   lease can end, or § 3 can latch, between the driver's check and the step's turn — and a restore
   requested before an engagement's first step is not seen by the epoch at all. Every genuine
   restore ends the lease (immediately before or right after the restore) or latches § 3, so the
-  driver's next check sees it.
+  driver's next check sees it. *(Closed for § 4, § 6 and § 7, and narrowed elsewhere to writes a
+  later restore covers: the #410 amendment.)*
 
   That residual is ADR 0009 D1's. It is discharged the way D1 prescribes, by acting and then
   checking: the after-check, then the undo. The undo is itself a write the firmware can refuse.
@@ -505,7 +509,8 @@ nothing more.
   clears the key, and it can err only toward leaving the key set.
 - **Every `.everyFan` removes the key.** That covers § 4 before sleep, § 6's teardown, § 7's panic
   verb, and reconciliation's fallback wherever its pass cannot see (ADR 0011 D3). The preparation
-  step removes it again at the next start.
+  step removes it again at the next start. *(§ 6's teardown issues `.forExit`, whose plan is
+  `.everyFan`'s, so it removes the key too: the #410 amendment.)*
 - **Whether a key left set with every fan automatic is harmless is U6.** If it is not, the gate
   goes.
 
@@ -951,7 +956,9 @@ Each run's findings are recorded, and the branch revised, before the next.
   - E4's "post-wake re-assertion" bullet.
   - Row 10, "`Ftst` semantics: whether sleep resets the Apple Silicon force key, and where the
     unlock must re-run". The restatement: § 4's handback leaves raw `F<n>Md = 0` and `Ftst = 0` at
-    wake, and a post-wake acquire re-runs the unlock.
+    wake, and a post-wake acquire re-runs the unlock. (It holds for an engagement in flight when the
+    handback begins since the #410 amendment: its first step is refused once the handback's
+    restores are requested.)
   - Row 18's last sentence. The restatement: the corrupted-helper-state case is carried by D8's
     scripted integration test, and row 18 on hardware is 1c's SSH reset.
   - E5's "the unlock is re-run as part of the grant (ADR 0007)" (D6).
@@ -2859,6 +2866,105 @@ its contract.
 `helperNeverAnswered` is an existing client-side case; only the client's own deadline and its error
 text move. **Status stays Proposed.**
 
+## Amendment (2026-10-17, [#410](https://github.com/blamechris/Aeolus/issues/410)) — an engagement proves its entitlement came after every restore, and the orderly exit seals the write path
+
+The first of the five items A6 left for before B1 builds the Apple Silicon write plane, with the
+two items #410 added to it: item 1, the exit seal; item 1a, the same first-step window across a system
+sleep and the panic verb; and item 1b, a test of the seal's command half. They land together, on
+`main`, **before B1's first `.built` commit**, because B1's plane implements `beginEngagement`,
+`admitStep`'s rule, `admitCommand` and `.forExit`. All of it is unreachable on every build on
+`main`: a `.notBuilt` plane grants no lease, `SMCFanControlPlane`'s writes throw
+`.controlPathNotBuilt`, and it refuses `.forExit` exactly as it refuses `.everyFan`.
+
+### An engagement proves its entitlement came after every restore, and the orderly exit seals the write path
+
+**The defects.** An engagement's first step recorded the restore epoch at its own turn, so a restore
+requested between the driver's entitlement and that turn did not supersede it (D4's residual).
+Every machine-wide path met it with an engagement in flight:
+- *§ 6, the exit.* Ruling D19 on [#197](https://github.com/blamechris/Aeolus/pull/197) accepted "a
+  write landing between this restore and the exit". A6's wiring showed level 6's `apply`, past its
+  entitlement, admitted after the final keystone and after the exit was called, writing
+  `F<n>Md = 1`, and on the force-key path `Ftst = 1`. Its undo was left to a process that was ending.
+- *§ 4, a sleep.* The same step, admitted after the handback's `.everyFan`, writes before the
+  acknowledgement. On the force-key path the after-check waits out a poll interval, so the machine
+  can sleep with the fan in manual and the force key set, and the undo runs at the first wake the
+  process gets. That falsified this ADR's restatement under maintainer question 3, that § 4's
+  handback leaves raw `F<n>Md = 0` and `Ftst = 0` at wake. § 5's re-engage, which shares the
+  driver, had the same window.
+- *§ 7, the panic verb.* The same step writes after the panic's `.everyFan` and is undone one poll
+  interval later: a safe transient, which its own read-back could still observe.
+
+**Decision: the ticket.**
+- The driver takes the engagement's epoch from the plane **before** it asks the entitlement:
+  `beginEngagement(fanAt:)`, synchronous and writing nothing, with no suspension between it and the
+  entitlement. The first-step retry takes a fresh one before its own entitlement.
+- `PlaneWriteLedger.admitStep(fanAt:)` admits a first step only if its ticket equals the current
+  epoch, and refuses a missing or stale one with `.superseded`, having recorded nothing. A ticket
+  clears the stale record an earlier engagement's undo left, so a fresh engagement no longer needs
+  its retry for that.
+- **Why this closes the machine-wide paths.** § 4, § 6 and § 7 end every lease, and § 3 latches,
+  before they request a restore. An entitlement that passed was therefore asked before that request,
+  and the ticket before the entitlement. A first step admitted after the request is refused inside
+  its own turn, before it writes. One admitted before it is in a turn that precedes the restore's
+  turn, which covers the fan (D5's touched set).
+- **What it does not close.** The entitlement is still a question asked of other actors. A lease
+  can end with its restore not yet requested when the step is admitted. That write is covered by the
+  restore that follows it, and the after-check still undoes it, so D1's residual narrows to writes a
+  later restore covers. The after-check, the § 3 registration and the undo all stay.
+- **Commands.** No ticket. A command landing after a restore writes `F<n>Tg` on an automatic fan
+  and moves no mode, so § 4's restatement holds. Every restore but the exit's accepts this already.
+
+**Decision: the exit seals the write path.**
+- `FanRestoreScope` gains `.forExit`: the plan `.everyFan` issues. From the moment it is requested,
+  synchronously and before it waits for a turn, the plane admits no forward write for the rest of the
+  process. `PlaneWriteLedger` holds the seal and decides by scope (`restoreRequested(_:)`,
+  `plan(for:)`). A sealed `admitStep` refuses before anything else, and `admitCommand()`, called
+  first in every command's turn, refuses a target command. Restores are never refused, and nothing
+  unseals.
+- `SignalTeardown`'s two keystones issue `.forExit`, and nothing else names it. The exit codes are
+  unchanged: on a `.notBuilt` plane `.forExit` is refused `.controlPathNotBuilt`, which is still
+  `.nothingToRestore`.
+- **Why the exit is sealed as well as ticketed.** D1's discharge needs a process that outlives the
+  write, and the exit's does not. Nothing outside the process reconciles it either: a zero exit is
+  not restarted, and `bootout`, `SMAppService.unregister()` and a shutdown restart nothing. So the
+  exit refuses target commands too, whose effect on an automatic fan is reported harmless on Apple
+  Silicon and untested on Intel. Its step half is a second line beside the ticket.
+- **Why `.superseded`.** Every caller already routes it toward automatic control with nothing
+  written.
+
+**What remains.**
+- A restore requested between a ticket and its admission supersedes the step for any fan. The one
+  retry takes a fresh ticket; a second refusal answers `releaseInProgress`, which fails closed.
+- A first step whose ticket a refused entitlement left behind is admissible only if no restore has
+  been requested since. The tripwire holds the ticket's callers to the driver.
+- A forward write from outside this process (D9).
+- *Not claimed:* sealing at the second keystone rather than the first, or at the issue rather than
+  the request. Both are equivalent for the exit.
+
+**Alternatives considered.**
+- *A sleep seal that reopens at wake.* It would need a second copy of #347's sleep-seal pairing
+  below the seam, or a lease core that drives the plane. A wake missed or mis-paired leaves the
+  plane sealed for the process's life, refusing every `apply` with a false reason; one that opens
+  early returns the residual. It also seals commands nothing needs sealed.
+- *§ 4 waiting for an in-flight `apply`.* The wait is bounded by the 5 s acknowledgement budget,
+  while a step may lawfully hold for 32 s at the design point, so the budget wins in exactly the
+  cold-unlock case. It leaves § 5's re-engage and § 7 open, and as a gate barrier it puts a restore
+  path on the gate, which a census forbids.
+- *Ask the entitlement before every poll sleep.* It narrows the force-key path's delay to a race,
+  and closes nothing.
+- *Restate the restatement.* It is the maintainer's accepted text, and the ticket makes it true.
+
+**B1's obligations** ([#9](https://github.com/blamechris/Aeolus/issues/9)): forward
+`beginEngagement(fanAt:)` to the ledger; call `ledger.restoreRequested(scope)` before a restore's
+turn; call `admitStep` and `admitCommand` first inside their turns; keep a step's admission and its
+writes in one exclusive turn (U15); and use `ledger.plan(for:)`.
+
+**No `AeolusXPCVersion` bump.** No field, case or method crosses the boundary. `.forExit` and
+`beginEngagement(fanAt:)` are below the seam, in the helper, and no client can name either. On every
+shipped build each verb answers what it answered, in the same order, and the exit codes are
+unchanged. This amendment corrects clauses of a Proposed ADR rather than the decisions they sit
+under. **Status stays Proposed.**
+
 ## Assumptions and what would invalidate them
 
 | # | Assumption | Basis | If it fails |
@@ -2879,6 +2985,7 @@ text move. **Status stays Proposed.**
 | U11 | A power cycle returns raw `F<n>Md` and `Ftst` to `0` | `RECOVERY.md` step 7 asserts that the force key resets. That `F<n>Md` does not persist is `docs/SAFETY.md` row 7's unverified assumption, and ADR 0011's | D8's recovery steps end in a loud fan and `RECOVERY.md` § 8. Run 1's target choice is what makes that acceptable |
 | U12 | Sleep resets `Ftst` | Reported. Not depended on (D5) | Only the never-issued-keystone residual widens |
 | U13 | Apple's controller never commands above the declared `F<n>Mx` | The highest fan speed recorded under Apple's control is 3,683 RPM, against 5,777 declared (2026-08-20; key not recorded). The highest recorded `F0Tg` is 2,195 RPM. The pre-flight records `F<n>Tg` through a load and its soak | 1b's "at or above demand" fails by the excess. Aborts 9 and 1 catch it |
+| U15 | A plane's step admission and its writes are one exclusive turn, and `beginEngagement` precedes the entitlement with no suspension between them | D7; ADR 0006 | The ticket and the exit seal narrow the window instead of closing it |
 | — | The preparation step can enumerate the fans and record both restore keys' types | `FNum`, `F<n>Md` and `Ftst` have read on every capture. Both are `ui8`, one byte, on 27.0.1 | `.everyFan` writes the touched set's fans and the force key, then throws `.fanSetUnknown`. An unknown key is written as one zero byte (D5, D7). Start 0 stops |
 | — | One engagement per fan at a time | **Enforced by the gate** (the A6 PR-2 amendment): § 5 re-engages only inside an examination, which holds the fan's examination gate, and level 6 engages only under that gate, one holder at a time. *(It was false for two applies until the same amendment admitted one `apply` at a time: a refused `apply`'s undo takes no gate, so it could restore a fan another `apply` had engaged and commanded since, under the same lease or a newer one. The claim closes that.)* The ledger still keeps one in-progress record per fan index, and a first-step retry that removes a stale record could remove a concurrent engagement's, which the gate keeps from existing | An engagement that bypasses the gate, a contract breach, brings back #389's overlap: key the record per engagement. Also: § 5's `finaliseRelease` restores and then revokes the leases, so for that window a genuine restore has not yet ended the lease; level 6's driver then finds the lease live, and its after-check or the restore's epoch catches the engagement. Across leases, a second engagement fails safe (the 2026-10-15 identity amendment): the stale one's next check asks about its own ended lease and undoes, and the undo supersedes the other |
 | — | One lease-table entry, one production plane | True today | Concurrent leases or a second plane: re-check D4's epoch scope and D5's gate. Since the 2026-10-15 amendment, no lease is granted while § 7's panic verb or § 4's handback runs (`sealingGrants(during:)`). The seal is machine-wide, so concurrent leases or a second plane re-check that it still covers every restore that can undo a grant. |

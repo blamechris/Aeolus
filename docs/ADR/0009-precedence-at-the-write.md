@@ -204,7 +204,15 @@ confirms it automatic. One instance of it is worth naming: ADR 0014's restore ep
 step's turn does not supersede it. Every genuine restore ends the lease (immediately before or
 right after the restore) or latches §3, and the
 driver asks both again after the step and undoes —
-`EngagementEpochTests.aRestoreBeforeTheFirstStepIsCaughtAfterIt` is that case.
+`EngagementEpochTests.aRestoreBeforeTheFirstStepIsCaughtAfterIt` is that case. *(Narrowed by ADR
+0014's #410 amendment: an engagement now takes the epoch before its entitlement, so a restore
+requested after that supersedes the first step at its admission, and that test, now
+`aRestoreBeforeTheFirstStepIsRefusedAtItsAdmission`, expects the step refused with nothing written.
+What is left is a lease that ends with its restore not yet
+requested when the step is admitted: the restore that follows covers the write, and the after-check
+undoes it, as `EngagementEpochTests.theAfterCheckStillUndoesALatchAfterAdmission` holds.)* At the
+orderly exit, D1's residual is closed rather than discharged: ADR 0014's #410 amendment seals the
+plane there, because the exit leaves no process to discharge it.
 
 **D2 landed in [#342](https://github.com/blamechris/Aeolus/pull/342)
 ([#180](https://github.com/blamechris/Aeolus/issues/180)), in every part this ADR names — and it
