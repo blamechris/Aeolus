@@ -369,8 +369,8 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             // uses, through the seam that does not log each throw — § 3 asks at 1 Hz.
             handbackReadBack: reconciliation,
             log: safetyLog)
-        // The one examination gate, on the lease core's clock. § 5 takes it before each
-        // examination; nothing on a restore path, § 3, the driver or the plane is handed it.
+        // The one examination gate, on the lease core's clock: § 5 takes it before each
+        // examination and level 6 for each step; no restore path, § 3, driver or plane holds it.
         let examinationGate = FanExaminationGate(clock: clock, log: safetyLog)
         self.examinationGate = examinationGate
         // § 5's writer, shared with the driver it engages through: the driver's step verb and
@@ -404,14 +404,6 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             watchdog: reclamationWatchdog, log: safetyLog)
         leaseExpirySupervisor = LeaseExpirySupervisor(authority: leases, log: leaseLog)
 
-        // § 7's two roles of the plane, and never the plane (ADR 0014 D5): the keystone, at the
-        // `.panicRestore` level every other machine-wide restore is issued at, and the same
-        // capability seam the lease core and the snapshot read. The level is provenance only:
-        // nothing reads `SafetyActorWriter.level` (see the restorer's note above). The writer
-        // can command a fan; the authority holds it only as `KeystoneRestoring`, which cannot.
-        // A whole plane here would put `commandTarget(_:)` one `await` from a client message.
-        // `telemetry` is the one cache the lease core proves grants against (#269), so the
-        // snapshot's blindness and the grant's are one reading, and a cold one is read once.
         // Level 6's `apply` (ADR 0014's A6 PR-3 amendment), the authority's `control` and nothing
         // wider: the one gate, the § 5 the supervisor cycles, the lease core and § 3. Its driver is
         // its own, at `.controlLoop`; the writer it steps through carries `.leaseExpiry` as
@@ -425,6 +417,15 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             gate: examinationGate, envelopes: plane, reclamation: reclamationWatchdog,
             leases: leases, latch: latch, writeCapability: plane, log: safetyLog)
         self.leaseApplier = leaseApplier
+
+        // § 7's two roles of the plane, and never the plane (ADR 0014 D5): the keystone, at the
+        // `.panicRestore` level every other machine-wide restore is issued at, and the same
+        // capability seam the lease core and the snapshot read. The level is provenance only:
+        // nothing reads `SafetyActorWriter.level` (see the restorer's note above). The writer
+        // can command a fan; the authority holds it only as `KeystoneRestoring`, which cannot.
+        // A whole plane here would put `commandTarget(_:)` one `await` from a client message.
+        // `telemetry` is the one cache the lease core proves grants against (#269), so the
+        // snapshot's blindness and the grant's are one reading, and a cold one is read once.
         let authority = SupervisedFanAuthority(
             reading: reading, leases: leases, reconciliation: reconciliation,
             keystone: SafetyActorWriter(plane: plane, level: .panicRestore),

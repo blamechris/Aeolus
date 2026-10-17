@@ -26,7 +26,7 @@ import Foundation
 /// — so the sentence above stays true of this build and stops being true of the build that can
 /// write, which is the whole point of it.
 ///
-/// ## It holds no plane, and the one write it can name is the keystone
+/// ## It holds no plane: the keystone is the one write it names, and level 6 is behind a role
 ///
 /// It holds the read path, the lease core, § 3's sightedness cache (#269), two narrow roles of
 /// the plane — `KeystoneRestoring`, whose one verb is `restoreToAutomatic(_:)`, and

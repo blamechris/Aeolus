@@ -143,7 +143,8 @@ struct ExaminationGateRouteTests {
     /// Level 6 waits on the same gate: a step pass held on `HelperComposition.examinationGate`
     /// makes an `apply` through the composed authority wait for fan 0's gate, engaging nothing,
     /// and leaving it lets the `apply` finish applied (ADR 0014's A6 PR-3 amendment). The clock is
-    /// a `ManualClock` nobody advances, so `stepWait` cannot run out during the wait (#407).
+    /// a `ManualClock` nobody advances, so `stepWait` cannot run out during the wait, as a
+    /// runner stall could on the wall clock (the shape #407 records).
     ///
     /// **Mutation:** in `HelperComposition.init`, hand `LeaseApplier` a gate of its own,
     /// `gate: FanExaminationGate(clock: clock, log: safetyLog)`. Run: red on the wait, and in

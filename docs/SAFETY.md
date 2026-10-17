@@ -121,7 +121,8 @@ table until the machine-wide restore returns — for § 4 whether its sleep seal
 because its wake was already answered, or lifted by a wake the teardown outlived — and bring-up
 reconciles before the listener is resumed, so none of the three can undo a lease. § 6's teardown
 closes the control gate first, but the gate refuses a grant on arrival, not one already in flight;
-such a grant can land, and `apply` is refused by the same gate before the process exits.
+such a grant can land, and an `apply` arriving after it is refused by the same gate. An `apply`
+already in flight is § 6's residual (ADR 0014's A6 PR-3 amendment, #410).
 `PanicPathScopeTripwireTests` holds the three runtime orderings, and § 7's and § 4's restores
 inside the seal, and `HelperCompositionTests` bring-up's.
 
@@ -1137,8 +1138,8 @@ lease's target under it, or give the fan up and revoke the newer lease blaming t
 system. A held fan whose own lease is no longer live is `.leaseLapsed`: restored and forgotten
 whatever covers the fan now, and never reported as a system reclamation. That restore can
 supersede an engagement the newer lease has in progress (ADR 0014 D4); that `apply` is refused,
-which is the safe direction. The check is dormant until something registers fans with § 5, which
-nothing in this build does.
+which is the safe direction. Level 6's `apply` registers fans with § 5, and on a `.notBuilt` build,
+which grants no lease, nothing does, so the check is dormant there.
 
 **Every act § 5 takes is taken for that lease and no other.** After every suspension § 5 re-fetches
 the fan's record and stops if it is gone *or belongs to another lease*. A record under a newer lease
@@ -1273,8 +1274,10 @@ re-asserting it (ADR 0014's A6 PR-2 amendment). Since A6's third step the compos
 one, from the one gate and the § 5 its supervisor cycles, and `SupervisedFanAuthority.apply`
 reaches it through `LeaseApplying`, a role with one verb and no permit, after the authority's
 shutdown refusal (ADR 0014's A6 PR-3 amendment). The connection's sequencer carries `apply`, so a
-client's two applies never meet the claim. On a `.notBuilt` build it writes nothing, because no
-lease is granted, and every answer is the one it was before, in the same order.
+client's two applies on one connection never meet the claim; an `apply` under a lease that has
+ended, as across a reconnect, can still meet one under the lease granted since, and is refused.
+On a `.notBuilt` build it writes nothing, because no lease is granted, and every answer is the one
+it was before, in the same order.
 
 **The record refuses a target no plane can write.** A target that is not a number, or is below the
 floor every permit is clamped to, is not recorded, whether a report or a re-assert's write returned
@@ -1433,8 +1436,9 @@ handler plus `atexit`" — and that one is undefined behaviour on the path it wa
   once more, then exit `0` — **or a non-zero exit if that last restore failed**, which is what
   makes the exit code the contract `KeepAlive = { SuccessfulExit = false }` reads. The restore
   is issued twice because stopping a supervisor does not await a cycle already in flight: a
-  § 3 fire or a § 5 re-assert can land after the first one, and the exit code is taken from
-  the write that comes after them. That narrows the window rather than closing it: a write
+  § 5 re-assert's engagement can land after the first one, and the exit code is taken from
+  the write that comes after it. (§ 3's fire never engages: it commands the maximum, then
+  restores.) That narrows the window rather than closing it: a write
   landing between that last restore and the exit is still possible, and nothing in this
   process is left to see it. **Level 6 inherits that window**, the residual ruling D19 on
   [#197](https://github.com/blamechris/Aeolus/pull/197) accepts for § 5's re-assert (ADR 0014's A6
@@ -1446,13 +1450,15 @@ handler plus `atexit`" — and that one is undefined behaviour on the path it wa
   outlive, so if the step's writes land, `Ftst = 1` is in practice left set with exit `0`. Nothing
   outside the process reconciles it: exit `0` means no launchd restart, and a bootout or an
   uninstall restarts nothing. So D19's acceptance does not extend to a plane that can write. The
-  fix is [#410](https://github.com/blamechris/Aeolus/issues/410)'s first item, a `.forExit` restore
-  scope that seals the plane against every forward write, steps and commands from every writer, and
-  it must land on `main` before B1's first `.built` commit. Until then
-  `SignalTeardownInFlightApplyTests` pins the residual, with the step parked past the recorded exit;
-  in production the race is between `exit()` finishing and the write. **A restore refused with
-  `controlPathNotBuilt` — this build, which has no SMC write path — exits `0`, because a helper that cannot write cannot
-  have left a fan in manual, and restarting it after every quit would tell the user nothing.**
+  fix is [#410](https://github.com/blamechris/Aeolus/issues/410)'s items 1 and 1a, landing with
+  its item 1b in one change on `main` before B1's first `.built` commit: a `.forExit` restore scope
+  that seals the plane against every forward write, steps and commands from every writer, and an
+  engagement ticket taken before the entitlement, so a first step admitted after a restore request
+  is refused before it writes. Until then `SignalTeardownInFlightApplyTests` pins the residual,
+  with the step parked past the recorded exit; in production the race is between `exit()`
+  finishing and the write. **A restore refused with `controlPathNotBuilt` — this build, which has
+  no SMC write path — exits `0`, because a helper that cannot write cannot have left a fan in
+  manual, and restarting it after every quit would tell the user nothing.**
   Built in E5.4d (#166): `Sources/AeolusHelper/Lifecycle/SignalTeardown.swift`.
 - **Orderly exits** — explicit teardown, and **no `atexit` belt**. This bullet used to offer
   one as "a cheap belt, since it too runs in normal context". Running in normal context was

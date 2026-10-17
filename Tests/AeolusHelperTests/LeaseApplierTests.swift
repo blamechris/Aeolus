@@ -259,9 +259,11 @@ struct LeaseApplierTests {
     /// **On a build that cannot write, `apply` fails at `heldLease(id:from:)` with the faults it
     /// answered before A6's third step, in the same order after the authority's shutdown refusal,
     /// and never enters the gate.** Composed over a plane that answers `.notBuilt`, no lease is
-    /// granted, so the composition's level 6 and the authority that delegates to it answer each
-    /// request alike: `.leaseUnknown`, before item 0 and before the capability, whatever the
-    /// settings say. `SupervisedApplyBoundaryTests` holds the same answers through the listener.
+    /// granted, so the composition's level 6, asked directly and through the authority, answers
+    /// `.leaseUnknown` before item 0 and before the capability, whatever the settings say. The
+    /// authority delegates to this same instance, so each answer is pinned to `.leaseUnknown`
+    /// rather than compared with the other. `SupervisedApplyBoundaryTests` holds the answers
+    /// through the listener.
     ///
     /// **Mutation:** in `LeaseApplier.apply`, check item 0 before `heldLease(id:from:)`. Run: red,
     /// an empty list answered `invalidParameter`. Moving the capability `guard` first is red the
@@ -288,14 +290,14 @@ struct LeaseApplierTests {
         let connection = ConnectionID()
         for settings in [fixed((0, 2_400)), [], fixed((0, 2_400), (0, 2_000))] {
             let lease = UUID()
-            let today = await LeaseApplierAnswerTests.answer {
+            let throughTheAuthority = await LeaseApplierAnswerTests.answer {
                 try await helper.authority.apply(settings, leaseID: lease, from: connection)
             }
             let levelSix = await LeaseApplierAnswerTests.answer {
                 try await helper.leaseApplier.apply(settings, leaseID: lease, from: connection)
             }
-            #expect(today as? AeolusXPCFault == .leaseUnknown)
-            #expect(levelSix as? AeolusXPCFault == today as? AeolusXPCFault, "\(settings)")
+            #expect(throughTheAuthority as? AeolusXPCFault == .leaseUnknown, "\(settings)")
+            #expect(levelSix as? AeolusXPCFault == .leaseUnknown, "\(settings)")
         }
         #expect(helper.examinationGate.entrants == 0, "the gate was entered on a shipped build")
         #expect(await firmware.attempts.isEmpty, "a shipped build's apply reached the firmware")

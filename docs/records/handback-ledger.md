@@ -822,7 +822,8 @@ airtight grant interlocks. § 6's is narrower, and harmless: its gate refuses a 
 rather than in flight, and `apply` is refused by the same gate, so a grant that lands never engages
 and its `.everyFan` has nothing to undo. An `apply` already in flight when the gate closes is
 another matter, and not harmless on a plane that can write: ADR 0014's A6 PR-3 amendment, and
-[#410](https://github.com/blamechris/Aeolus/issues/410) before B1.
+[#410](https://github.com/blamechris/Aeolus/issues/410)'s items 1 and 1a, before B1's first `.built`
+commit.
 
 **Tested by** `SleepGrantSealTests`: a grant during a declined seal's teardown, with the keystone
 or the sweep parked; a keystone parked across its wake; and a sweep parked across its wake — each

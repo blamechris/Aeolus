@@ -67,7 +67,7 @@ import Foundation
 ///
 /// `ReclamationSupervisor` is the loop: `HelperComposition` constructs it and `bringUp()`
 /// starts it. No lease can be granted in this build, so nothing registers a fan here and every
-/// cycle returns at once. E3 owns registering fans and telling this actor what it commanded.
+/// cycle returns at once. Level 6's `apply` registers fans and reports what it commanded.
 ///
 /// - Note: since [#128](https://github.com/blamechris/Aeolus/issues/128)'s third pass `held`,
 ///   `finalising` and `registrations` are `Registry`'s, a value type this actor holds

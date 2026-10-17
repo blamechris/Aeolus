@@ -83,9 +83,11 @@ struct SignalTeardownInFlightApplyTests {
     /// helper, and a bootout or an uninstall restarts nothing. This is the residual ruling D19 on
     /// [#197](https://github.com/blamechris/Aeolus/pull/197) accepts for § 5's re-assert
     /// (`SignalTeardown`'s step 5; `docs/SAFETY.md` § 6), and its acceptance does not extend to a
-    /// plane that can write. The fix is #410's first item: a `.forExit` restore scope that seals
-    /// the plane against every forward write, steps and commands, from every writer. It must land
-    /// on `main` before B1's first `.built` commit. When it does, this test inverts.
+    /// plane that can write. The fix is #410's items 1 and 1a: a `.forExit` restore scope that
+    /// seals the plane against every forward write, steps and commands, from every writer, and an
+    /// engagement ticket taken before the entitlement, so a first step admitted after a restore
+    /// request is refused before it writes. They land on `main` with item 1b, a test of the seal's
+    /// command half, before B1's first `.built` commit. When they do, this test inverts.
     ///
     /// **Mutation:** in `EngagementDriver.engageManualControl(of:)`, delete the undo's
     /// `try await handBack(fanAt: index)`. Run: red for both paths, the fan left in manual and, on

@@ -4,8 +4,9 @@ import Testing
 @testable import AeolusHelper
 
 /// `SupervisedFanAuthority` holds two narrow roles of the plane — `KeystoneRestoring` and
-/// `FanWriteCapabilityReporting` — beside the sightedness cache's read role (#269), and nothing
-/// that can command a fan ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D5). That is a
+/// `FanWriteCapabilityReporting` — beside the sightedness cache's read role (#269) and level 6's
+/// `LeaseApplying` (ADR 0014's A6 PR-3 amendment), and nothing that can command a fan
+/// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D5). That is a
 /// claim about what a type *holds* and what its file can *name*, which no behavioural test
 /// observes: a whole plane behind a restore-only body restores exactly as the role does. So it is
 /// asserted against the source, three ways, and each was evaded once before it took its present
@@ -14,7 +15,7 @@ import Testing
 ///
 /// The conversion ban binds the lease core's files too, since `LeaseAuthority` holds `envelopes`
 /// as an existential over the plane (#270): `theLeaseCoreConvertsNoRole`.
-@Suite("The panic verb's type holds two roles, and nothing wider")
+@Suite("The panic verb's type holds its narrow roles, and nothing wider")
 struct AuthorityRoleTripwireTests {
 
     /// `SupervisedFanAuthority.swift` names no plane, no writer that can command a fan, no
@@ -34,11 +35,12 @@ struct AuthorityRoleTripwireTests {
     func theAuthorityHoldsNoPlane() throws {
         let code = try Self.authoritySource()
 
-        // Coverage: the two roles are named, so the scan below is reading the file that holds
-        // them rather than an empty one.
+        // Coverage: the plane's two roles and level 6's are named, so the scan below is reading
+        // the file that holds them rather than an empty one.
         #expect(code.contains("any KeystoneRestoring"), "the keystone role is not held")
         #expect(
             code.contains("any FanWriteCapabilityReporting"), "the capability role is not held")
+        #expect(code.contains("any LeaseApplying"), "level 6's role is not held")
 
         let types = try WatchdogTripwireTests.mentions(
             of: [

@@ -7,12 +7,15 @@ import Foundation
 /// `SupervisedFanAuthority` holds this and nothing wider of level 6. Its one requirement takes
 /// what a decoded client message carries, the settings, the lease and the connection, so the
 /// authority's file names no plane, no writer and no permit, as `AuthorityRoleTripwireTests`
-/// holds. `LeaseApplier` is its one conformer, and the composition builds exactly one.
+/// holds. `LeaseApplier` is its one conformer under `Sources/`, and the composition builds exactly
+/// one; the test target's `NoLevelSix` is another, for authorities built to test something else.
 ///
 /// It refines `Sendable` and nothing else, and it is never extended, refined or converted: each
 /// would widen what a decoded message can reach. Its verb is called only from
-/// `SupervisedFanAuthority.swift`, after the shutdown refusal. `LeaseApplyingTripwireTests`
-/// holds all three by census.
+/// `SupervisedFanAuthority.swift`, after the shutdown refusal. `LeaseApplyingTripwireTests` holds
+/// the declaration, the name's sites and the verb's callers by census; the authority file's
+/// conversion ban is `AuthorityRoleTripwireTests.theAuthorityHoldsNoPlane`, and the refusal's
+/// order is `SupervisedApplyBoundaryTests`'.
 ///
 /// ## A teardown with an `apply` in flight
 ///
@@ -35,9 +38,9 @@ import Foundation
 /// writes land, `Ftst = 1` is in practice left set with exit 0; on the naive path the undo races
 /// the exit. Nothing outside the process reconciles that, so D19's acceptance does not extend to a
 /// plane that can write. The fix is [#410](https://github.com/blamechris/Aeolus/issues/410)'s
-/// first item, a `.forExit` restore scope that seals the plane against every forward write, and it
-/// must land on `main` before B1's first `.built` commit. `SignalTeardownInFlightApplyTests` pins
-/// the residual until then.
+/// items 1 and 1a, a `.forExit` restore scope that seals the plane against every forward write and
+/// an engagement ticket taken before the entitlement, which land on `main` with item 1b before
+/// B1's first `.built` commit. `SignalTeardownInFlightApplyTests` pins the residual until then.
 protocol LeaseApplying: Sendable {
 
     /// Writes `settings` under `lease`, or refuses having undone what it engaged: `LeaseApplier`'s

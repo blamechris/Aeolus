@@ -300,8 +300,8 @@ actor ReadOnlyFanAuthority: FanAuthority {
     /// [#194](https://github.com/blamechris/Aeolus/issues/194)**, which sourced the
     /// *availability* above. Not the same claim: this type has no lease table, no restorer and
     /// no control loop, so these verbs refuse because **there is nothing here to grant with**,
-    /// which no seam can change. Same argument at `SupervisedFanAuthority.apply`, pinned by
-    /// `supervisedApplyRefusesEvenWhenTheSeamCanWrite`.
+    /// which no seam can change. `SupervisedFanAuthority.apply` now reaches level 6, and on
+    /// `.notBuilt` answers as before: `onANotBuiltPlaneApplyAnswersAsBefore`.
     private static let noWritePath = AeolusXPCFault.manualControlUnavailable(
         reason: .writePathNotBuilt)
 

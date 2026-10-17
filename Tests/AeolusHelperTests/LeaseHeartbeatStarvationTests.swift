@@ -248,6 +248,11 @@ struct LeaseHeartbeatStarvationTests {
     /// leave the count at four**, which is why the membership is asserted separately rather
     /// than trusted to it.
     ///
+    /// **`apply`'s place on the queue carries a second claim since A6's third step** (ADR 0014's A6
+    /// PR-3 amendment): it is what keeps a client's two applies from meeting `LeaseApplier`'s
+    /// claim. `SupervisedApplyBoundaryTests.twoPipelinedAppliesAreEachAnsweredOnTheirMerits` holds
+    /// that through the listener, red when `apply` leaves the queue.
+    ///
     /// Read off the source rather than driven through the wire, because it is a claim about the
     /// *route*, and both routes reach the same method behind the same gates: nothing a client
     /// can observe distinguishes them except timing, which the tests above assert one verb at a
@@ -301,10 +306,8 @@ struct LeaseHeartbeatStarvationTests {
     ///
     /// Sorted rather than in declaration order: the assertion is about membership of the two
     /// routes, and making it fail when `swift format` or a reviewer moves a method would be a
-    /// tripwire on the wrong thing. `internal` for
-    /// `MessageOrderingTests.theSequencerIsCalledOnlyFromTheXPCEntryPoints`, rather than a second
-    /// copy of the route reader.
-    static func dispatchedVerbs(in collapsed: String, through route: String) -> [String] {
+    /// tripwire on the wrong thing.
+    private static func dispatchedVerbs(in collapsed: String, through route: String) -> [String] {
         let pattern = route + #" \{ \[session\] in await session\.([A-Za-z]+)\("#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return ["<no regex>"] }
         let range = NSRange(collapsed.startIndex..., in: collapsed)

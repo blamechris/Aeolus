@@ -2160,7 +2160,7 @@ resolved by A6's ordering, not by excuse, under this amendment.
   no envelope; every permit clamps to it, so only a defective plane returns one.
 - *A system target equal to the record* is read as Aeolus's, as it always was (#119).
 - *Until A6*, nothing takes the gate, and nothing steps. *(From the A6 PR-2 amendment, level 6's
-  `apply` takes it for every step. It is built by tests until A6's next step wires it.)*
+  `apply` takes it for every step, and from the A6 PR-3 amendment the composition builds it.)*
 
 **Alternatives considered.**
 
@@ -2615,8 +2615,8 @@ remains).
   ahead of `LeaseApplier`, teardown with an `apply` in flight, and a test that the connection's
   sequencer still carries `apply`. *(All four: the A6 PR-3 amendment.)*
 - *The client's deadline.* A fan's step can take `stepWait` and an engagement's yield budget, so an
-  `apply` that engages several fans can outlast `gatedVerb`'s 5 s. #325 decides it. *(Before B1:
-  the A6 PR-3 amendment's "What remains", on #410.)*
+  `apply` that engages several fans can outlast `gatedVerb`'s 5 s. #325 decides it. *(#410's item
+  4: landed client-side by #414's amendment below; #325 stays open for run 1's hardware row.)*
 
 **Alternatives considered.**
 
@@ -2658,8 +2658,8 @@ of a Proposed ADR rather than the decisions they sit under. **Status stays Propo
 A6's third step wires `LeaseApplier` to the privilege boundary. `HelperComposition` builds one, and
 `SupervisedFanAuthority.apply` delegates to it. Every build on `main` is still `.notBuilt`, and a
 `.notBuilt` plane grants no lease. So an `apply` answers exactly what it answered before, in the
-same order, and reaches no write. B1 is what makes it reachable, and what must be decided before
-then is on [#410](https://github.com/blamechris/Aeolus/issues/410).
+same order, and reaches no write. B1 is what makes it reachable, and what must land first, and
+when, is on [#410](https://github.com/blamechris/Aeolus/issues/410).
 
 **Decision: the role the authority holds.**
 
@@ -2696,8 +2696,9 @@ show that it waits on the gate § 5 examines. The authority holds it only as the
 
 **Decision: ordering.** `apply` stays on the connection's `MessageSequencer`.
 
-- `MessageOrderingTests`' pin now names the four sequenced verbs, `apply` among them. A count alone
-  stayed green when two verbs swapped routes.
+- `LeaseHeartbeatStarvationTests.theSequencedVerbsAreTheOnesAClientPipelines` already names the
+  four sequenced verbs, `apply` among them, and `MessageOrderingTests` counts them. `apply`'s place
+  on that list now carries this claim as well, and both say so.
 - A test pipelines two applies on one connection through the real listener. Each is answered on its
   merits, and neither meets the claim.
 - The sequencer is what keeps a well-behaved client from ever meeting `LeaseApplier`'s refusal of a
@@ -2744,12 +2745,19 @@ and every later entitlement refuses on the emptied table.
 - Nothing outside the process reconciles it. Exit code 0 means launchd does not restart the helper,
   and a bootout or an uninstall restarts nothing.
 
-So D19's acceptance does not extend to a plane that can write. The fix is #410's first item: a
-`.forExit` restore scope that seals the plane against every forward write, steps and commands, from
-every writer. It must land on `main` **before B1's first `.built` commit**. This step only
-documents and pins the residual: `SignalTeardownInFlightApplyTests` parks the step past the
-recorded exit, so the after-check's undo runs in the test; in production the race is between
-`exit()` finishing and the step's write.
+So D19's acceptance does not extend to a plane that can write. The fix is #410's items 1 and 1a,
+landing with item 1b in one change on `main` **before B1's first `.built` commit**:
+
+- item 1, a `.forExit` restore scope that seals the plane against every forward write, steps and
+  commands, from every writer;
+- item 1a, an engagement ticket taken before the entitlement, so that a first step admitted after
+  a restore request is refused before it writes. That also closes the same window across a system
+  sleep, and the panic verb's transient;
+- item 1b, a test of the seal's command half.
+
+This step only documents and pins the residual: `SignalTeardownInFlightApplyTests` parks the
+step past the recorded exit, so the after-check's undo runs in the test; in production the race is
+between `exit()` finishing and the step's write.
 
 **Decision: the client contract.** `apply`'s documentation in `AeolusXPCProtocol` says what a
 refused re-apply means: it may already have re-commanded fans an earlier `apply` engaged, at the
@@ -2764,22 +2772,24 @@ A6 PR-2 amendment's open question, answered in the documentation alone.
 - `isReclaimedBySystem` is `false`.
 - `targetRPM` stays `nil`. `ReadOnlyFanReport.fanState` states it unconditionally, so on a `.built`
   plane the snapshot says the fan is in manual and asking for nothing while level 6 is commanding a
-  target. The end-to-end test pins it as it is, and #410 decides it.
+  target. The end-to-end test pins it as it is, and #410's item 5 decides it.
 
-**What remains, gating B1 ([#410](https://github.com/blamechris/Aeolus/issues/410)).** Each must be
-decided before B1 makes the plane `.built`, and none is decided here:
+**What remains ([#410](https://github.com/blamechris/Aeolus/issues/410)).** Each item is reachable
+only once B1 makes the plane `.built`, and #410's rulings say when each lands:
 
-- **[#406](https://github.com/blamechris/Aeolus/issues/406):** a refused undo inside the engagement
-  driver loses level 6's account of the fan.
-- **The landed-mode kept-entry residual** (#405's comment): a hand-back that throws after
-  `F<n>Md = 0` landed keeps a fan level 6 believes engaged. Its next re-apply is answered applied on
-  an automatic fan for one § 5 cycle.
-- **[#325](https://github.com/blamechris/Aeolus/issues/325):** the client deadline for a multi-fan
-  first `apply`.
-- **Teardown with an `apply` in flight,** above. #410's first item: a `.forExit` restore scope that
-  seals the plane against every forward write, steps and commands from every writer, on `main`
-  before B1's first `.built` commit.
-- **The snapshot's `targetRPM` after `apply`,** above.
+- **Items 1, 1a and 1b, teardown with an `apply` in flight** (above), and the same window across a
+  system sleep: one change, before B1's first `.built` commit.
+- **Items 2 and 3**, in one change after #405 and before run 1:
+  - [#406](https://github.com/blamechris/Aeolus/issues/406), a refused undo inside the engagement
+    driver losing level 6's account of the fan;
+  - the landed-mode kept-entry residual (#405's comment): a hand-back that throws after
+    `F<n>Md = 0` landed keeps a fan level 6 believes engaged, and its next re-apply is answered
+    applied on an automatic fan for one § 5 cycle.
+- **Item 4, [#325](https://github.com/blamechris/Aeolus/issues/325)'s client deadline**, before run
+  1 and before #324 merges. Its client half has landed (#414, the amendment below); #325 stays open
+  for run 1's hardware row.
+- **Item 5, the snapshot's `targetRPM` after `apply`** (above): before run 1 if possible, and
+  required before E4 merges.
 
 E8a's obligations to level 6 are on [#12](https://github.com/blamechris/Aeolus/issues/12): the
 real loop re-runs #383's ramp item, takes the gate for each step, never runs beside a client's
@@ -2793,9 +2803,10 @@ real loop re-runs #383's ramp item, takes the gate for each step, never runs bes
 - *Delegating before the shutdown refusal.* An `apply` arriving during the teardown would reach the
   claim and the lease core, and be answered by them: `applyInProgress` beside an `apply` in flight,
   where the truthful answer is that the helper is shutting down.
-- *Closing the teardown residual in this step.* The fix, the `.forExit` seal, changes the plane's
-  rules for every writer, which is #410's first item, before B1's first `.built` commit. A teardown
-  that waited for level 6's `apply` instead would leave § 5's re-assert where D19 left it.
+- *Closing the teardown residual in this step.* The fix, #410's items 1 and 1a, changes the plane's
+  rules for every writer and the driver's order, and lands before B1's first `.built` commit. A
+  teardown that waited for level 6's `apply` instead would leave § 5's re-assert where D19 left
+  it.
 
 **Revisit if:**
 
