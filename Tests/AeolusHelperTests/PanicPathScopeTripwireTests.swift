@@ -202,8 +202,9 @@ struct PanicPathScopeTripwireTests {
     /// § 4 seals the table before its teardown and runs the teardown inside `sealingGrants`, § 6's
     /// signal teardown closes the control gate before its first keystone, and § 7 issues
     /// `.everyFan` inside `sealingGrants`. Bring-up's fallback runs before the listener is
-    /// resumed, which `HelperCompositionTests` holds. § 6's keystone is the exit's own scope,
-    /// `.forExit` (ADR 0014's #410 amendment), and § 4's is `.everyFan`, each checked by name.
+    /// resumed, which `HelperCompositionTests` holds. § 4's restore is `.everyFan`; § 6's first
+    /// keystone is `.everyFan` and its last the exit's own `.forExit` (ADR 0014's #410
+    /// ticket-and-seal amendment), each checked by name where it is chosen.
     ///
     /// **§ 7's, § 4's and bring-up's interlocks are airtight; § 6's is narrower, and harmless.**
     /// Since [#364](https://github.com/blamechris/Aeolus/issues/364) every call of § 4's
@@ -216,10 +217,11 @@ struct PanicPathScopeTripwireTests {
     ///
     /// **Mutation:** delete `await leases.sealForSleep(generation: notification.generation)` from
     /// `SystemPowerResponder.allowSleepAfterHandback`. Run: red. **Mutation:** move
-    /// `await gate.close()` below the first `_ = await keystone()` in `SignalTeardown.run`. Run:
-    /// red. **Mutation:** the same, with that first call spelled `_ = await keystone ()` and the
-    /// second left after the close. Run: red. **Mutations (#364):** call `handBackEveryFan(` bare
-    /// in `allowSleepAfterHandback`; `sealingGrants {}` and then the bare call; the same with
+    /// `await gate.close()` below the first `_ = await keystone(.everyFan)` in
+    /// `SignalTeardown.run`. Run: red. **Mutation:** the same, with that call spelled
+    /// `_ = await keystone (.everyFan)` and the second left after the close. Run: red.
+    /// **Mutations (#364):** call `handBackEveryFan(` bare in `allowSleepAfterHandback`;
+    /// `sealingGrants {}` and then the bare call; the same with
     /// `// handBackEveryFan(reportingTo: acknowledgement)` inside the empty closure; and a second
     /// bare call elsewhere in the file. Run: red on each.
     @Test("Each runtime machine-wide restore is issued after its grant interlock")
@@ -228,18 +230,20 @@ struct PanicPathScopeTripwireTests {
             (
                 file: "SystemPowerResponder.swift", caller: "allowSleepAfterHandback",
                 interlock: #"(?<![A-Za-z0-9_])sealForSleep\s*\("#, issuer: "handBackEveryFan",
-                scope: ".everyFan"
+                scopes: [".everyFan"], chosenIn: "handBackEveryFan"
             ),
             (
                 file: "SignalTeardown.swift", caller: "run",
                 interlock: #"(?<![A-Za-z0-9_])gate\s*\.\s*close\s*\("#, issuer: "keystone",
-                scope: ".forExit"
+                scopes: [".everyFan", ".forExit"], chosenIn: "run"
             ),
         ] {
-            let issuing = try Self.functionBody(of: site.issuer, inFile: site.file)
-            #expect(
-                issuing.contains(site.scope),
-                "\(site.file)'s \(site.issuer) no longer issues \(site.scope); walk this tripwire")
+            let choosing = try Self.functionBody(of: site.chosenIn, inFile: site.file)
+            for scope in site.scopes {
+                #expect(
+                    choosing.contains(scope),
+                    "\(site.file)'s \(site.chosenIn) no longer issues \(scope); walk this tripwire")
+            }
 
             let code = HelperCompositionTests.strippingComments(try Self.source(of: site.file))
             let caller = try Self.functionBody(of: site.caller, inFile: site.file)
@@ -252,7 +256,7 @@ struct PanicPathScopeTripwireTests {
                 calls.count == Self.calls(of: site.issuer, in: code).count
                     && interlock.upperBound <= first.lowerBound,
                 """
-                \(site.file) issues \(site.scope) through \(site.issuer) somewhere its grant \
+                \(site.file) issues \(site.scopes) through \(site.issuer) somewhere its grant \
                 interlock does not precede, so a lease can be granted that the machine-wide \
                 restore undoes. docs/SAFETY.md § 1 says which call sites are interlocked.
                 """)
@@ -285,8 +289,9 @@ struct PanicPathScopeTripwireTests {
     ///
     /// The four are `docs/SAFETY.md` § 1's list, verbatim, and none of them is a lease teardown:
     /// § 4's sleep handback, § 6's startup-reconciliation fallback and — on a plane that can
-    /// write — § 7's panic verb name `.everyFan`; § 6's orderly exit names its own scope,
-    /// `.forExit`, which writes the same and seals the plane (ADR 0014's #410 amendment). The
+    /// write — § 7's panic verb name `.everyFan`; § 6's orderly exit names `.everyFan` at its first
+    /// keystone and its own `.forExit` at its last, which writes the same and seals the plane (ADR
+    /// 0014's #410 ticket-and-seal amendment), so it is counted through either token. The
     /// fifth file is `PlaneWriteLedger.swift`, which names both to decide their plan and the seal:
     /// it holds no plane and cannot issue a restore. On the E4 branch `SMCFanControlPlane.swift`
     /// joins them (ADR 0014 D5): its preparation step names `.everyFan`, and this scan cannot
@@ -301,13 +306,13 @@ struct PanicPathScopeTripwireTests {
     /// `try await plane?.restoreToAutomatic(.everyFan)` to
     /// `ReadOnlyFanAuthority.restoreAllToAutomatic`. Run: red **here only** — the tests above
     /// stay green, which is what proves this one discriminates rather than echoing them.
-    /// **Mutation:** make `SignalTeardown.keystone()` issue `.everyFan`. Run: red here, on both
-    /// scopes' sets.
+    /// **Mutation:** make `SignalTeardown.run`'s final keystone `.everyFan`. Run: red here, on the
+    /// exit scope's set.
     @Test("The machine-wide restores are issued from exactly four known call sites")
     func everyMachineWideRestoreIsOneOfTheKnownCallSites() throws {
         let expected: [String: Set<String>] = [
             ".everyFan": [
-                "SystemPowerResponder.swift", "StartupReconciliation.swift",
+                "SignalTeardown.swift", "SystemPowerResponder.swift", "StartupReconciliation.swift",
                 "SupervisedFanAuthority.swift", "PlaneWriteLedger.swift",
             ],
             ".forExit": ["SignalTeardown.swift", "PlaneWriteLedger.swift"],
@@ -337,7 +342,7 @@ struct PanicPathScopeTripwireTests {
 
     /// The exit's scope is named only where it is declared, decided and issued:
     /// `FanControlPlane.swift`, `PlaneWriteLedger.swift` and `SignalTeardown.swift` (ADR 0014's
-    /// #410 amendment).
+    /// #410 ticket-and-seal amendment).
     ///
     /// `.forExit` seals the plane for the rest of the process. A non-exit caller issuing it would
     /// leave every later `apply` refused with a reason that is false, and § 4's handback issuing it

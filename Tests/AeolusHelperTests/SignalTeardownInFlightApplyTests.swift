@@ -6,7 +6,7 @@ import Testing
 @testable import AeolusHelper
 
 /// The orderly teardown with level 6's `apply` in flight (ADR 0014's A6 PR-3 and #410
-/// amendments).
+/// ticket-and-seal amendments).
 ///
 /// `SignalTeardown`'s control gate refuses an `apply` that arrives once it is closed, through the
 /// authority's shutdown refusal, and covers nothing already in flight. What covers flight is the
@@ -66,9 +66,10 @@ struct SignalTeardownInFlightApplyTests {
 
     /// A teardown that begins while an `apply` is mid-engagement — after the driver's ticket and
     /// entitlement, before the engagement's first step — leaves no forward write behind it. The
-    /// release ends the lease, the keystones request `.forExit`, and the first step is refused at
-    /// its admission; the retry's entitlement refuses on the ended lease, so nothing is written or
-    /// undone, and the process ends `.restored` with the fan automatic and the key clear.
+    /// release ends the lease, the keystones request `.everyFan` then `.forExit`, and the first
+    /// step is refused at its admission; the retry's entitlement refuses on the ended lease, so
+    /// nothing is written or undone, and the process ends `.restored` with the fan automatic and
+    /// the key clear.
     ///
     /// This inverts the residual the A6 PR-3 amendment pinned here, ruling D19's: until #410 the
     /// first step was admitted after the final keystone, wrote `F<n>Md = 1`, and on the force-key
@@ -160,6 +161,47 @@ struct SignalTeardownInFlightApplyTests {
             "a target was written after the exit's keystone: \(writes)")
         #expect(try await machine.firmware.firmwareMode(ofFan: 0) == .automatic)
         #expect(answer == .leaseUnknown, "the apply was answered \(String(describing: answer))")
+    }
+
+    /// § 3 between the two keystones. Fan 0 is engaged by an `apply` at 1,400 RPM, so § 3 has it
+    /// registered; then the machine runs hot, and the firmware refuses every mode write while it
+    /// honours target writes. The release's hand-back and the first keystone are refused, and § 3,
+    /// which runs until the supervisors stop, crosses the ceiling. Its bridge still commands the
+    /// maximum: the first keystone is `.everyFan`, which seals nothing, and only the last, after
+    /// `stop()`, is `.forExit` (ADR 0014's #410 ticket-and-seal amendment). That keystone is
+    /// refused too, so the exit is non-zero and launchd restarts the helper where it restarts.
+    ///
+    /// **Mutation:** make `SignalTeardown.run`'s first keystone `.forExit`, as both were before
+    /// this was ruled. Run: red, at the maximum's target-write assertion: the seal refuses § 3's
+    /// bridge, and fan 0 ends at 1,400 RPM.
+    @Test("A thermal emergency before the supervisors stop still commands the maximum")
+    func aThermalEmergencyBeforeTheSupervisorsStopStillCommandsTheMaximum() async throws {
+        let machine = await LevelSixMachine(stages: [
+            .nominal(temperatures: LeaseFixture.nominalDieTemperatures),
+            ScriptedControlPlane.Stage(
+                temperatures: ScriptedControlPlane.Stage.temperatures(96),
+                writes: .refused(reason: "the firmware holds every fan's mode"),
+                targetWrites: .honoured),
+        ])
+        let lease = try await machine.lease()
+        try await machine.apply(rpm: 1_400, under: lease)
+        await machine.firmware.advance()
+        let atStop = FirmwareAtExit()
+
+        await machine.helper.signalTeardown.run(stoppingSupervisorsWith: {
+            await atStop.record(machine.firmware)
+            await machine.helper.thermalEmergency.cycle()
+            await machine.helper.shutDown()
+        })
+
+        let afterFirstKeystone = await atStop.writesAfter(on: machine.firmware)
+        let fan = try await machine.firmware.readControlState(ofFan: 0)
+        #expect(
+            afterFirstKeystone.contains(.target(fan: 0, rpm: 5_777)),
+            "§ 3's bridge wrote no maximum after the first keystone: \(afterFirstKeystone)")
+        #expect(fan.mode == .manual && fan.target == .rpm(5_777), "fan 0 ended at \(fan)")
+        let exits = machine.journal.exitsNow
+        #expect(exits == [.restoreFailed], "the exit was \(exits)")
     }
 
     /// § 5's re-engage in flight at the exit: fan 0 is engaged by an `apply`, the system takes it
