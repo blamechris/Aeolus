@@ -252,15 +252,14 @@ actor LeaseApplier<Plane: FanControlPlane>: LeaseApplying {
     /// lease core asked here. A superseded step, a gate not granted, a lease that was not live, a
     /// report § 5 no longer held, or an `apply` in flight under another lease is
     /// `.releaseInProgress` while the lease still stands, and otherwise the fault
-    /// `heldLease(id:from:)` throws now.
+    /// `heldLease(id:from:)` throws now. It never returns an `EngagementUndoRefused`: a cause the
+    /// table leaves unchanged is returned unwrapped.
     private func refusal(
         for error: any Error, leaseID lease: UUID, from connection: ConnectionID
     ) async -> any Error {
         switch LeaseApplyRules.answer(to: error) {
-        case .unchanged:
-            return error
-        case .fault(let fault):
-            return fault
+        case .unchanged: return EngagementUndoRefused.cause(of: error)
+        case .fault(let fault): return fault
         case .releaseInProgressUnlessTheLeaseHasGone:
             do {
                 _ = try await leases.heldLease(id: lease, from: connection)
@@ -354,9 +353,10 @@ enum LeaseApplyRules {
         .invalidParameter(name: "settings", detail: detail)
     }
 
-    /// Item 5's table, as a value: a refused undo by its cause (#406), and `.helperFailed` for the
-    /// D3 outcomes run 1 (D8) has not observed yet and for anything the table does not name, so no
-    /// new reason crosses the boundary before run 1 (D3).
+    /// Item 5's table, as a value: a refused undo by its cause (#406), reached through `apply`
+    /// because the step throws the driver's refusal as it came, and `.helperFailed` for the D3
+    /// outcomes run 1 (D8) has not observed yet and for anything the table does not name, so no new
+    /// reason crosses the boundary before run 1 (D3).
     static func answer(to error: any Error) -> Answer {
         switch error {
         case let undo as EngagementUndoRefused: return answer(to: undo.cause)

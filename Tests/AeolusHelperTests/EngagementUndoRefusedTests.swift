@@ -205,9 +205,10 @@ struct EngagementUndoRefusedTests {
 
     // MARK: - Level 6's answer (H8)
 
-    /// **The table answers a wrapper by its cause.** Defence in depth: level 6's step rethrows the
-    /// cause before the table sees anything, so this is the arm that would answer a wrapper some
-    /// later path let through.
+    /// **The table answers a wrapper by its cause.** Level 6's step throws the driver's refusal as
+    /// it came, so a refused undo reaches the table as the wrapper (ADR 0014's #410
+    /// refused-hand-back amendment); `aDriverUndoRefusedOnFanOneKeepsFanOnesAccount` holds the arm
+    /// through `apply`.
     ///
     /// **Mutation:** delete `LeaseApplyRules.answer(to:)`'s first arm. Run: red, every wrapper
     /// answered `helperFailed` with `Detail.unexpected`.
@@ -228,5 +229,39 @@ struct EngagementUndoRefusedTests {
                     == LeaseApplyRules.answer(to: cause),
                 "\(cause)")
         }
+    }
+
+    /// **`apply` answers a refused undo by its cause, even a cancellation.** Fan 0's engagement is
+    /// cancelled while it waits for its yield, and the firmware then refuses the driver's undo, so
+    /// the driver throws the wrapper around a `CancellationError`: a cause the table answers
+    /// `.unchanged`. `refusal(for:)` returns the cause, so what leaves `apply` is the cancellation
+    /// and never the wrapper.
+    ///
+    /// **Mutation:** in `LeaseApplier.refusal(for:)`, return the raw error from the `.unchanged`
+    /// arm. Run: red, the wrapper itself thrown out of `apply`.
+    @Test("apply answers a refused undo by its cause, even a cancellation")
+    func applyAnswersARefusedUndoByItsCauseEvenACancellation() async throws {
+        let fans: [Int: ScriptedControlPlane.FanCondition] = [0: .automatic(at: 1_800)]
+        let plane = ScriptedControlPlane(
+            fans: fans,
+            stages: [.nominal(), .nominal(writes: .refused(reason: "F0Md refused")), .nominal()],
+            unlock: .heldUntilForced(stepsToYield: 2))
+        let machine = ReclamationMachine(plane: plane, fans: fans)
+        let lease = try await machine.lease(fans: [0]).id
+        let writes = InterferingFanStateSensing(plane, during: .engageWrite)
+        await writes.interfere {
+            await plane.advance()
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+        let levelSix = machine.levelSix(writingThrough: writes)
+
+        let answered = await LeaseApplierAnswerTests.answer {
+            try await levelSix.apply(fixed((0, 2_400)), under: lease)
+        }
+
+        #expect(await writes.didFire, "the engagement was never cancelled")
+        #expect(machine.safetyLog.levels(containing: Self.undoRefused) == [.fault])
+        #expect(answered is CancellationError, "apply answered \(answered as Any)")
+        #expect(answered is EngagementUndoRefused == false, "the wrapper left apply")
     }
 }
