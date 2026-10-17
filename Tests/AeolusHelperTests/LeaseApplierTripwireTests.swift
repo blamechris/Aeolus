@@ -118,21 +118,46 @@ struct LeaseApplierTripwireTests {
     func levelSixReachesItsEngagedSetOnlyThroughItsMembers() throws {
         let code = SeamScanner.strippingAllComments(
             try MemberAccessScan.strippedSource(of: Self.levelSixFile))
+        let uses = try Self.wholeValueUses(in: code)
+        #expect(
+            uses == ["private var engagements = LeaseEngagements()"],
+            "`engagements` is used as a whole value: \(uses)")
+    }
+
+    /// The scan above, on code written to its edges: `.self` is the whole value, not a member.
+    ///
+    /// **Mutation:** in `wholeValueUses(in:)`, drop `, member != "self"`. Run: red here, at the
+    /// `.self` line.
+    @Test("The engaged-set scan counts `.self` as a whole value and a member call as none")
+    func theEngagedSetScanCountsSelfAsAWholeValue() throws {
+        let code = """
+            let copy = engagements.self
+            if engagements.contains(index, under: lease) {}
+            engagements . remove(index, under: lease)
+            let before = engagements
+            """
+        #expect(
+            try Self.wholeValueUses(in: code) == [
+                "let copy = engagements.self", "let before = engagements",
+            ])
+    }
+
+    /// Every line of `code` that names `engagements` other than as `engagements.<member>`.
+    static func wholeValueUses(in code: String) throws -> [String] {
         let uses = try NSRegularExpression(pattern: #"\bengagements\b"#)
         var wholeValueUses: [String] = []
         for match in uses.matches(in: code, range: NSRange(code.startIndex..., in: code)) {
             guard let found = Range(match.range, in: code) else { continue }
             let after = code[found.upperBound...].drop { $0 == " " || $0 == "\n" }
-            let member = after.dropFirst().prefix { $0.isLetter || $0.isNumber || $0 == "_" }
+            let member = after.dropFirst().drop { $0 == " " || $0 == "\n" }
+                .prefix { $0.isLetter || $0.isNumber || $0 == "_" }
             if after.first == ".", member != "self" { continue }
             let lineStart = code[..<found.lowerBound].lastIndex(of: "\n") ?? code.startIndex
             let lineEnd = code[found.upperBound...].firstIndex(of: "\n") ?? code.endIndex
             wholeValueUses.append(
                 code[lineStart..<lineEnd].trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        #expect(
-            wholeValueUses == ["private var engagements = LeaseEngagements()"],
-            "`engagements` is used as a whole value: \(wholeValueUses)")
+        return wholeValueUses
     }
 
     private static func lines(_ items: [some CustomStringConvertible]) -> String {

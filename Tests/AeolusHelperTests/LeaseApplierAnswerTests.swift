@@ -92,6 +92,25 @@ struct LeaseApplierAnswerTests {
         await LeaseApplierTests.expectNothingTouched(machine)
     }
 
+    /// **Row 4, a read that was cancelled.** A cancellation says nothing about the machine: it is
+    /// thrown as it is, never answered `.supervisorBlind`.
+    ///
+    /// **Mutation:** in `LeaseApplier.step`, delete the envelope read's `catch let cancellation as
+    /// CancellationError` clause. Run: red, answered `.supervisorBlind`.
+    @Test("Row 4: an envelope read that was cancelled is thrown as a cancellation")
+    func rowFourACancelledEnvelopeRead() async throws {
+        let machine = ReclamationMachine(fans: [0: .automatic(at: 1_800)])
+        let lease = try await machine.lease(fans: [0]).id
+        let levelSix = machine.levelSix(
+            writingThrough: machine.plane, envelopes: CancelledEnvelopeRead())
+
+        let answered = await Self.answer {
+            try await levelSix.apply(fixed((0, 2_400)), under: lease)
+        }
+        #expect(answered is CancellationError, "answered \(answered as Any)")
+        await LeaseApplierTests.expectNothingTouched(machine)
+    }
+
     /// **Row 4, implausible bounds.** `boundsImplausible(fanIndex:detail:)` for the fan whose
     /// `F0Mx` reads byte-swapped after the grant, and the gate is never entered.
     ///
@@ -272,8 +291,8 @@ struct LeaseApplierAnswerTests {
             stage: .nominal(), detail: LeaseApplyRules.Detail.notConfirmed),
     ]
 
-    /// **Row 8.** The D3 outcomes R1 has not observed answer `.helperFailed` with a fixed detail,
-    /// once the driver has undone what it wrote, or said at `.fault` that it could not.
+    /// **Row 8.** The D3 outcomes run 1 (D8) has not observed answer `.helperFailed` with a fixed
+    /// detail, once the driver has undone what it wrote, or said at `.fault` that it could not.
     ///
     /// **Mutations, one per outcome, in `LeaseApplyRules.answer(to:)`:** map `.yieldDidNotArrive`,
     /// `.firmwareRefusedControl` and `.engagementNotConfirmed` each to `Detail.unexpected`. Run:
@@ -353,3 +372,8 @@ struct LeaseApplierAnswerTests {
 
 /// An error no row of the table names.
 private struct UnnamedFailure: Error {}
+
+/// An envelope read whose task was cancelled.
+private struct CancelledEnvelopeRead: FanEnvelopeReading {
+    func readEnvelope(ofFan index: Int) async throws -> FanEnvelope { throw CancellationError() }
+}

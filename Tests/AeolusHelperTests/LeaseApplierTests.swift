@@ -206,10 +206,59 @@ struct LeaseApplierTests {
         #expect(await machine.emergency.fansUnderManualControl.contains(0))
     }
 
+    /// **Item 4 undoes nothing.** § 3 latches during the command write, after the step's own
+    /// entitlement: the answer is `.thermalEmergencyActive`, and the fan the step engaged and
+    /// commanded is left where it is, for § 3's bridge and the lease's teardown. An undo here would
+    /// restore a fan § 3 holds, and tell § 3 the hand-back was accepted.
+    ///
+    /// **Mutation:** in `LeaseApplier.apply`, move item 4's two checks inside the `do` block. Run:
+    /// red, the fan restored and § 5's record dropped.
+    @Test("A refusal at item 4 undoes nothing")
+    func aRefusalAtItemFourUndoesNothing() async throws {
+        let machine = ReclamationMachine(fans: [0: .automatic(at: 1_800)])
+        let lease = try await machine.lease(fans: [0]).id
+        let writes = InterferingFanStateSensing(machine.plane, during: .commandWrite)
+        await writes.interfere { await machine.engageThermalEmergency() }
+
+        await #expect(throws: AeolusXPCFault.thermalEmergencyActive) {
+            try await machine.levelSix(writingThrough: writes).apply(
+                fixed((0, 2_400)), under: lease)
+        }
+        #expect(await writes.didFire)
+        #expect(await machine.didRestore(fan: 0) == false, "item 4's refusal undid the fan")
+        #expect(try await machine.plane.firmwareMode(ofFan: 0) == .manual)
+        #expect(await machine.watchdog.fansUnderManualControl == [0])
+        #expect(machine.safetyLog.lines(containing: "Level 6's apply was refused").isEmpty)
+    }
+
+    // MARK: - D6, in index order
+
+    /// **D6: each fan in index order**, whatever order the settings name them in.
+    ///
+    /// **Mutation:** in `LeaseApplyRules.goals(of:coveredBy:)`, return the goals in the order the
+    /// settings gave them (`settings.map { (fan: $0.fanIndex, rpm: goals[$0.fanIndex] ?? 0) }`).
+    /// Run: red, fan 1 engaged and commanded first.
+    @Test("Settings given out of order are applied in index order")
+    func settingsOutOfOrderAreAppliedInIndexOrder() async throws {
+        let machine = ReclamationMachine(
+            fans: [0: .automatic(at: 1_800), 1: .automatic(at: 1_800)])
+        let lease = try await machine.lease(fans: [0, 1]).id
+
+        try await machine.levelSix().apply(fixed((1, 2_600), (0, 2_400)), under: lease)
+
+        let engaged = await machine.attempts.compactMap { attempt -> Int? in
+            if case .engageManualControl(let fan) = attempt { return fan }
+            return nil
+        }
+        #expect(engaged == [0, 1])
+        #expect(await machine.commandedRPMs == [2_400, 2_600])
+    }
+
     // MARK: - A shipped build
 
     /// **On a build that cannot write, `apply` fails at `heldLease(id:from:)` with the faults it
-    /// answers today, in the same order, and never enters the gate.** Composed over a plane that
+    /// answers today, in the same order after the authority's shutdown refusal, and never enters
+    /// the gate.** Composed over a plane that
     /// answers `.notBuilt`, no lease is granted, so level 6's `apply` and the shipped
     /// `SupervisedFanAuthority.apply` answer each request alike: `.leaseUnknown`, before item 0
     /// and before the capability, whatever the settings say.

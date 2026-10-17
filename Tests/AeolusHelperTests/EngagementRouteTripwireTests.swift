@@ -128,6 +128,23 @@ struct EngagementRouteTripwireTests {
             """)
     }
 
+    /// The files the test above reads are every file that engages through a `driver`, and each
+    /// is in the tree: a file left off the list is one whose binding nothing checks.
+    ///
+    /// **Mutation:** drop `"LeaseApplier.swift"` from `engagingFiles`. Run: red here, and the test
+    /// above stays green over the one file left.
+    @Test("The bound-driver check reads every file that engages through a driver")
+    func theBoundDriverCheckReadsEveryEngagingFile() throws {
+        var engaging: [String] = []
+        for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            if try SeamScanner.receivers(of: Self.verb, inSource: source).contains("driver") {
+                engaging.append(file.lastPathComponent)
+            }
+        }
+        #expect(engaging.sorted() == Self.engagingFiles.sorted())
+    }
+
     /// How a name is introduced in one file's code, and how many of those bind it to the
     /// lease-bound driver.
     ///
