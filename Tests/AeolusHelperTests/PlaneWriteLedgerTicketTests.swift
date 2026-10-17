@@ -2,9 +2,9 @@ import Testing
 
 @testable import AeolusHelper
 
-// The ledger's engagement ticket and its exit seal (ADR 0014's #410 amendment): an extension of
-// `PlaneWriteLedgerTests`, so the rows stay in that suite, in a file of their own so the suite's
-// first file stays the sets and the first-step rule it was.
+// The ledger's engagement ticket and its exit seal (ADR 0014's #410 ticket-and-seal amendment): an
+// extension of `PlaneWriteLedgerTests`, so the rows stay in that suite, in a file of their own so
+// the suite's first file stays the sets and the first-step rule it was.
 extension PlaneWriteLedgerTests {
 
     /// A ledger with two enumerated fans and a present force key: what every row below starts from.
@@ -72,7 +72,8 @@ extension PlaneWriteLedgerTests {
     /// asked the plane for its epoch cannot prove its entitlement came after every restore.
     ///
     /// **Mutation:** in `admitStep(fanAt:)`, admit a step with no ticket by recording the epoch at
-    /// admission — the rule before the #410 amendment. Run: red, at the first `#expect(throws:)`.
+    /// admission — the rule before the #410 ticket-and-seal amendment. Run: red, at the first
+    /// `#expect(throws:)`.
     @Test("A first step with no ticket is refused")
     func aStepWithNoTicketIsRefused() throws {
         let ledger = Self.prepared()
@@ -110,6 +111,40 @@ extension PlaneWriteLedgerTests {
         ledger.beginEngagement(fanAt: 0)
 
         #expect(Self.admitted(ledger, fanAt: 0) == .first)
+    }
+
+    /// A ticket is consumed by the first step it admits: a later first step of the same fan, with
+    /// no ticket of its own and no restore requested since, is refused. So a ticket cannot be
+    /// reused by an engagement that never asked the plane for its epoch.
+    ///
+    /// **Mutation:** in `admitStep(fanAt:)`, read the ticket (`state.tickets[index]`) instead of
+    /// removing it. Run: red, at the `#expect(throws:)`: the old ticket is still current.
+    @Test("A ticket admits one first step and no more")
+    func aTicketIsSingleUse() throws {
+        let ledger = Self.prepared()
+        ledger.beginEngagement(fanAt: 0)
+        #expect(Self.admitted(ledger, fanAt: 0) == .first)
+        ledger.recordEngaged(fanAt: 0)
+
+        #expect(throws: FanControlPlaneError.superseded) { try ledger.admitStep(fanAt: 0) }
+    }
+
+    /// Every restore moves the epoch, the exit's included: the seal adds to supersession rather
+    /// than replacing it, because D3 step 3's in-turn re-check (`isCurrent(fanAt:)`) and the
+    /// force-key rule read the epoch alone (ADR 0014's #410 ticket-and-seal amendment).
+    ///
+    /// **Mutation:** in `restoreRequested(_:)`, skip the epoch bump for `.forExit`. Run: red, at
+    /// the `isCurrent` assertion, for the `.forExit` row only.
+    @Test(
+        "Every restore moves the epoch", arguments: [FanRestoreScope.fan(0), .everyFan, .forExit])
+    func everyRestoreMovesTheEpoch(_ scope: FanRestoreScope) throws {
+        let ledger = Self.prepared()
+        ledger.beginEngagement(fanAt: 0)
+        #expect(Self.admitted(ledger, fanAt: 0) == .first)
+
+        ledger.restoreRequested(scope)
+
+        #expect(ledger.isCurrent(fanAt: 0) == false, "the restore left the engagement current")
     }
 
     // MARK: - The exit seal (item 1)

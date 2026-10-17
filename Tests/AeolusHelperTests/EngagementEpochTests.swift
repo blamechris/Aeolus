@@ -3,10 +3,10 @@ import Testing
 
 @testable import AeolusHelper
 
-/// The restore epoch around the driver (ADR 0014 D4): which restores supersede an engagement,
-/// the engagement's ticket that makes a restore before its first step one the step's admission
-/// sees, and the first-step retry (ADR 0014's #410 amendment). The ticket's own scenarios — the
-/// handback before it, the retry's fresh one, and the after-check it leaves standing — are
+/// The restore epoch around the driver (ADR 0014 D4): which restores supersede an engagement, the
+/// engagement's ticket that makes a restore before its first step one the step's admission sees,
+/// and the first-step retry (ADR 0014's #410 ticket-and-seal amendment). The ticket's own scenarios
+/// — the handback before it, the retry's fresh one, and the after-check it leaves standing — are
 /// `EngagementTicketTests`'.
 @Suite("The engagement driver and the restore epoch", .timeLimit(.minutes(1)))
 struct EngagementEpochTests {
@@ -16,9 +16,11 @@ struct EngagementEpochTests {
     /// A restore of the engaging fan itself, while it waits for its yield, supersedes it: the
     /// next step writes nothing, and the engagement is undone.
     ///
-    /// **Mutation:** in `PlaneWriteLedger.issueRestore(fanAt:)`, erase the fan's in-progress
-    /// record (`state.inProgress[index] = nil`), as the first version did. Run: red — the next
-    /// step is admitted as a fresh first step and the fan is re-engaged.
+    /// **Mutation:** delete `state.epoch &+= 1` from `PlaneWriteLedger.restoreRequested(_:)`.
+    /// Run: red — the next step is admitted as a continuation and the fan is re-engaged. The first
+    /// version's mutation, erasing the fan's in-progress record in `issueRestore(fanAt:)`, is now
+    /// equivalent: the next step then finds no record and no ticket, which its first step
+    /// consumed, and is refused anyway (ADR 0014's #410 ticket-and-seal amendment).
     @Test("A restore of the same fan mid-poll supersedes the engagement")
     func aSameFanRestoreSupersedes() async throws {
         let rig = try await EngagementRig(unlock: .heldUntilForced(stepsToYield: 2))
@@ -36,8 +38,9 @@ struct EngagementEpochTests {
     /// A machine-wide restore mid-poll supersedes it too — § 4's order is the case: the leases
     /// are released, then `.everyFan`, and no step may write after the keystone.
     ///
-    /// **Mutation:** in `PlaneWriteLedger.issueMachineWideRestore()`, erase every in-progress
-    /// record (`state.inProgress.removeAll()`). Run: red.
+    /// **Mutation:** delete `state.epoch &+= 1` from `PlaneWriteLedger.restoreRequested(_:)`.
+    /// Run: red. Erasing every in-progress record in `issueMachineWideRestore()`, the mutation this
+    /// cited before the ticket, is now equivalent, for the reason the test above gives.
     @Test("A machine-wide restore mid-poll supersedes the engagement")
     func aMachineWideRestoreSupersedes() async throws {
         let rig = try await EngagementRig(unlock: .heldUntilForced(stepsToYield: 2))
@@ -97,12 +100,37 @@ struct EngagementEpochTests {
         #expect(rig.log.lines(containing: "retrying it once").isEmpty, "a written step was retried")
     }
 
+    /// The exit's restore requested inside the first step's turn, after its `0x82` mode write and
+    /// before its `Ftst = 1`, stops the step as any restore does: `.forExit` moves the epoch as
+    /// well as sealing, and D3 step 3's in-turn re-check reads the epoch alone (ADR 0014's #410
+    /// ticket-and-seal amendment). So the key is not written, and the undo, a restore the seal
+    /// never refuses, hands the fan back.
+    ///
+    /// **Mutation:** in `PlaneWriteLedger.restoreRequested(_:)`, skip the epoch bump for
+    /// `.forExit`. Run: red, at the key-write assertion: the re-check passes and `Ftst = 1` is
+    /// written.
+    @Test("The exit requested inside a step writes no force key")
+    func anExitRequestedInsideAStepWritesNoForceKey() async throws {
+        let rig = try await EngagementRig(unlock: .neverYields)
+        await rig.plane.duringNextModeWrite { rig.plane.ledger.restoreRequested(.forExit) }
+
+        await #expect(throws: FanControlPlaneError.supersededAfterWrite) {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+
+        let writes = await rig.plane.keyWrites
+        #expect(!writes.contains(.forceKey(1)), "the key was written after the exit: \(writes)")
+        #expect(writes == [.mode(fan: 0, value: 1), .mode(fan: 0, value: 0)], "nothing was undone")
+        #expect(await rig.registry.engaged == [0], "the fan was not registered before its undo")
+        #expect(await rig.registry.accepted == [0])
+    }
+
     // MARK: - The first step, and its retry
 
     /// An engagement's undo is a restore, so it leaves the fan's record out of date; the next
     /// engagement's ticket clears it, and that engagement's first step is admitted with no retry
-    /// (ADR 0014's #410 amendment). Until the ticket, the driver's retry was what made a fresh
-    /// engagement possible here, and this test expected one retry line.
+    /// (ADR 0014's #410 ticket-and-seal amendment). Until the ticket, the driver's retry was what
+    /// made a fresh engagement possible here, and this test expected one retry line.
     ///
     /// **Mutation:** in `PlaneWriteLedger.beginEngagement(fanAt:)`, skip the clear of the fan's
     /// in-progress record. Run: red, at the retry line: the fresh step meets the stale record, is
@@ -147,7 +175,7 @@ struct EngagementEpochTests {
         #expect(rig.log.lines(containing: "retrying it once (attempt 2)").count == 1)
     }
 
-    // MARK: - A restore before the first step's turn (ADR 0014's #410 amendment)
+    // MARK: - A restore before the first step's turn (ADR 0014's #410 ticket-and-seal amendment)
 
     /// A real restore — it came with § 3's latch — requested after the engagement took its ticket
     /// and before the first step's turn supersedes the step at its admission. The retry's
@@ -189,8 +217,9 @@ struct EngagementEpochTests {
     /// The lease ends and another is granted over the fan before the first step's turn. The
     /// release's restore is requested after the engagement took its ticket, so the first step is
     /// superseded at its admission; the retry asks about the engagement's own lease, which has
-    /// ended, and refuses with nothing written (ADR 0014's #410 amendment). A coverage question
-    /// would be answered by the new lease, which is why the entitlement names the lease (#357).
+    /// ended, and refuses with nothing written (ADR 0014's #410 ticket-and-seal amendment). A
+    /// coverage question would be answered by the new lease, which is why the entitlement names the
+    /// lease (#357).
     ///
     /// Until the ticket this was `aReleaseAndRegrantBeforeTheFirstStepIsRefusedAtTheNextStep`:
     /// the first step wrote, the check before step 2 refused, and the step was undone.

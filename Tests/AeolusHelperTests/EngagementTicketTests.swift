@@ -4,10 +4,10 @@ import Testing
 
 @testable import AeolusHelper
 
-/// The engagement's ticket around the driver (ADR 0014's #410 amendment): the driver takes the
-/// restore epoch from the plane before it asks the entitlement, and its first-step retry takes a
-/// fresh one before its own. `PlaneWriteLedgerTests` holds the ledger's rows; these hold the
-/// driver's order, and the after-check the ticket leaves standing.
+/// The engagement's ticket around the driver (ADR 0014's #410 ticket-and-seal amendment): the
+/// driver takes the restore epoch from the plane before it asks the entitlement, and its first-step
+/// retry takes a fresh one before its own. `PlaneWriteLedgerTests` holds the ledger's rows; these
+/// hold the driver's order, and the after-check the ticket leaves standing.
 @Suite("The engagement's ticket", .timeLimit(.minutes(1)))
 struct EngagementTicketTests {
 
@@ -73,6 +73,67 @@ struct EngagementTicketTests {
         #expect(rig.log.lines(containing: "retrying it once (attempt 2)").count == 1)
         #expect(rig.plane.ledger.engagedFans == [0])
         #expect(await rig.plane.keyWrites == [.mode(fan: 1, value: 0), .mode(fan: 0, value: 1)])
+    }
+
+    /// **The retry's order.** A restore of fan 1 supersedes fan 0's first step; then, just before
+    /// the retry takes its fresh ticket, § 4's handback lands — the lease ends and the machine-wide
+    /// restore is requested, synchronously, as `aHandbackBeforeTheTicketIsSeenByTheEntitlement`'s
+    /// hook runs them. The retry takes its ticket before it asks the entitlement, so the
+    /// entitlement sees the ended lease and nothing is written.
+    ///
+    /// **Mutation:** in `EngagementDriver.firstStep(of:)`, swap the retry's
+    /// `writer.beginEngagement(fanAt:)` and `requireEntitlement(for:)`. Run: red, at the key-write
+    /// assertion: the entitlement passes before the handback, the ticket after it is current, and
+    /// the retry writes.
+    @Test("The retry's ticket comes before its entitlement")
+    func theRetrysTicketComesBeforeItsEntitlement() async throws {
+        let rig = try await EngagementRig(unlock: .naive, fans: [0, 1])
+        let clock = rig.clock.base
+        let ledger = rig.plane.ledger
+        let writes = rig.writes
+        await rig.writes.interfere(beforeEngageStep: 1) {
+            _ = try? await rig.plane.restoreToAutomatic(.fan(1))
+            writes.runBeforeBeginEngagement {
+                clock.advance(by: .seconds(Lease.defaultTimeToLive + 1))
+                ledger.restoreRequested(.everyFan)
+            }
+        }
+
+        await #expect(throws: EngagementRefusal.leaseNotLive(fan: 0)) {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+
+        #expect(rig.writes.didFireBeforeBeginEngagement, "the handback never ran before the retry")
+        #expect(
+            await rig.plane.keyWrites == [.mode(fan: 1, value: 0)],
+            "the retry wrote after a handback its entitlement could have seen")
+    }
+
+    /// A first step superseded at its admission twice — a restore of another fan before it, and
+    /// another before its retry — stops the engagement having written nothing: no registration with
+    /// § 3, and no undo, which would restore a fan this process never touched (ADR 0011's contest).
+    ///
+    /// **Mutation:** drop `.superseded?` from `EngagementDriver.wroteNothing(_:)`. Run: red, at the
+    /// key-write assertion: the fan is registered and handed back.
+    @Test("A first step superseded twice writes nothing")
+    func aFirstStepSupersededTwiceWritesNothing() async throws {
+        let rig = try await EngagementRig(unlock: .naive, fans: [0, 1])
+        await rig.writes.interfere(beforeEngageStep: 1) {
+            _ = try? await rig.plane.restoreToAutomatic(.fan(1))
+            await rig.writes.interfere(beforeEngageStep: 2) {
+                _ = try? await rig.plane.restoreToAutomatic(.fan(1))
+            }
+        }
+
+        await #expect(throws: FanControlPlaneError.superseded) {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+
+        #expect(
+            await rig.plane.keyWrites == [.mode(fan: 1, value: 0), .mode(fan: 1, value: 0)],
+            "an engagement that wrote nothing was undone")
+        #expect(await rig.registry.engaged.isEmpty, "a fan nothing engaged was registered")
+        #expect(await rig.registry.accepted.isEmpty)
     }
 
     // MARK: - What the ticket leaves to the after-check

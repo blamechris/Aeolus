@@ -2,17 +2,23 @@ import Foundation
 import Testing
 
 /// The engagement's ticket is taken by the driver and by nothing else in the helper (ADR 0014's
-/// #410 amendment, the ruling's T1).
+/// #410 ticket-and-seal amendment).
 ///
 /// ## Why it is a tripwire
 ///
 /// `beginEngagement(fanAt:)` is synchronous and takes no permit, so `WriteVerbAllowlistTests`
-/// does not scan it, and it writes nothing. What makes a caller dangerous is not a write but a
-/// ticket: one taken anywhere but immediately before the entitlement is a ticket an engagement can
-/// be admitted under after a machine-wide path has ended its lease — the stale-ticket edge the
-/// amendment's "What remains" names. So its uses are held to the driver's two sites — the
-/// engagement's first statement and the first-step retry — and the writer's one-line forward, by
-/// census. Conformers declare it, and a declaration is not a use.
+/// does not scan it, and it writes nothing. What makes a stray caller dangerous is not a write but
+/// a ticket: one taken anywhere but just before an entitlement refreshes a fan's ticket to the
+/// current epoch, or clears an engagement's in-progress record, under an engagement that never
+/// asked — so a ticket taken before a machine-wide path ended its lease could be made current after
+/// it. So its uses are held to the driver's two sites — the engagement's first statement and the
+/// first-step retry — and the writer's one-line forward, by census. Conformers declare it, and a
+/// declaration is not a use. The other edge, a ticket a refused entitlement left behind, is held by
+/// the step verb's route: only the driver steps (`EngagementRouteTripwireTests`).
+///
+/// **When B1 builds the write plane**, `SMCFanControlPlane`'s forward to its ledger is a third use,
+/// through `ledger`, and the census below goes red until B1 adds it: by design, so the forward is
+/// acknowledged rather than assumed.
 @Suite("The engagement's ticket is taken only by the driver", .timeLimit(.minutes(1)))
 struct EngagementTicketTripwireTests {
 
