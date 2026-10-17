@@ -3193,9 +3193,11 @@ before. It lands on `main` before run 1.
 
 **Decision.**
 - A fan's `targetRPM` is the target § 5 recorded for it under the snapshot's live lease, reported
-  only when the same snapshot read the fan's `F<n>Md` as manual and § 5's ledger carries no
-  `.systemReclaimed` mark for it. Otherwise `nil`. So it is never set beside `isReclaimedBySystem` or
-  an automatic mode.
+  only when the same snapshot read the fan's `F<n>Md` as manual, § 5's ledger carries no
+  `.systemReclaimed` mark for it, and no thermal emergency is active. Otherwise `nil`. So it is never
+  set beside `isReclaimedBySystem`, `isThermalEmergencyActive` or an automatic mode. *(The thermal
+  emergency condition was added in #426's review: § 3 holds the fan at maximum and outranks level 6
+  (ADR 0007), and the lease outlives the latch until `fire` revokes it.)*
 - **Reclaimed:** no target, the mode as read, and the mark once § 5 has judged it. The target returns
   when § 5's re-assert converges.
 - **What makes the record confirmation:** a forward write's turn reads its target back and aborts on
@@ -3207,7 +3209,13 @@ before. It lands on `main` before run 1.
 **As built.**
 - The rule is `ReadOnlyFanReport.heldTarget`, a pure function with one guard per condition: the
   live lease covers the fan; § 5 holds a record of it under that lease's id, with a target; the same
-  snapshot read `F<n>Md` as manual; and § 5's ledger carries no `.systemReclaimed` cause for it.
+  snapshot read `F<n>Md` as manual; § 5's ledger carries no `.systemReclaimed` cause for it; and the
+  same snapshot's `isThermalEmergencyActive` is false. The mode, the mark and the latch come from
+  the one machine read the fan was built from, never a second hop.
+- **A condition the implementation added: § 3's latch.** `ThermalEmergency.fire` writes each held
+  fan to maximum and then restores it, and revokes every lease only after the last fan, so until
+  then the lease view lists the lease and the other four conditions can hold for a fan held at
+  maximum, its restore refused included. A fifth necessary condition only narrows the claim.
 - `SupervisedFanAuthority` holds § 5 as `ReclamationReporting`, a role with one synchronous getter,
   `recordedTargets(under:)`, and no verb. The snapshot asks it once, after `activeLeaseView()`, and
   only when the view reports a lease. Any hop order only under-claims, because the filter is on the
@@ -3218,6 +3226,14 @@ before. It lands on `main` before run 1.
   and throws outside `targetToleranceRPM` ([#9](https://github.com/blamechris/Aeolus/issues/9)).
   Until then `ScriptedControlPlane.commandTarget` returns the requested value even for a write its
   firmware discarded, so the tests here pin the rule, not the read-back.
+
+**What remains.**
+- **A target-only reclamation is stated until § 5 judges it.** The rule reads `F<n>Md`, not
+  `F<n>Tg`. If the system rewrites `F<n>Tg` while `F<n>Md` stays manual, the snapshot states § 5's
+  record until § 5's next examination marks the fan, at most one § 5 period. The same holds for one
+  hop after a re-apply's command lands and before it is reported, and after a re-command of an
+  engaged fan throws, which leaves the record standing. Closing it, for example by reading `F<n>Tg`
+  as a confirming condition, needs a further ruling.
 
 **Alternatives considered.**
 - *`F<n>Tg`, the request, or level 6's memory as the snapshot's target.* The first changes v1's

@@ -222,9 +222,10 @@ public struct FanState: Sendable, Hashable, Codable {
     public let maximumRPM: FanReading
     /// The speed the helper is holding this fan at under a lease, or `nil`. Non-nil only when
     /// § 5 has recorded it for the snapshot's live lease, the same snapshot read the fan's mode
-    /// as manual, and § 5 has not marked it reclaimed by the system — so never beside
-    /// `isReclaimedBySystem` or an automatic mode. `nil` when the helper is asking for nothing,
-    /// or for a speed this snapshot cannot confirm the fan is holding.
+    /// as manual, § 5 has not marked it reclaimed by the system, and no thermal emergency is
+    /// active — so never beside `isReclaimedBySystem`, `isThermalEmergencyActive` or an
+    /// automatic mode. `nil` when the helper is asking for nothing, or for a speed this snapshot
+    /// cannot confirm the fan is holding.
     ///
     /// That distinction (an unset target vs. a reading that could not be produced) is what
     /// `FanReading` exists to make for `actualRPM`/`minimumRPM`/`maximumRPM`, each of which

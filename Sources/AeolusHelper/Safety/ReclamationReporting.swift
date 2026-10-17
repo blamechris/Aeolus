@@ -29,8 +29,8 @@ import Foundation
 /// fan handed back and engaged again under a newer lease is held under that lease's id, which this
 /// is not asked about. So a target that crosses is one § 5 held under the reported lease, and
 /// `ReadOnlyFanReport.heldTarget` states it only for a fan that lease covers and the machine read
-/// showed in manual with no reclamation mark. A hop between the reads can take a target away; none
-/// can put another lease's target, or one § 5 has dropped, beside the reported lease.
+/// showed in manual, with no reclamation mark and § 3's latch clear. A hop between the reads can
+/// take a target away; none can put another lease's target, or one § 5 dropped, beside the lease.
 protocol ReclamationReporting: Actor {
 
     /// The target § 5 recorded for each fan it holds under `lease`, by fan index: the step level 6

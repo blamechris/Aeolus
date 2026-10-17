@@ -1313,8 +1313,11 @@ ended, as across a reconnect, can still meet one under the lease granted since, 
 before, in the same order.
 
 The snapshot states a fan's target only as § 5 holds it for the live lease, and only while the same
-snapshot reads the fan in manual and § 5 has not marked it reclaimed by the system. A reclaimed fan is
-reported with no target, its mode as read, and the mark once § 5 has judged it.
+snapshot reads the fan in manual, § 5 has not marked it reclaimed by the system, and no thermal
+emergency is active. A reclaimed fan is reported with no target, its mode as read, and the mark once
+§ 5 has judged it. A system that rewrites `F<n>Tg` and leaves `F<n>Md` manual is not seen until § 5's
+next examination, so the record is stated for up to one § 5 period (ADR 0014's #410 snapshot-target
+amendment).
 
 **The record refuses a target no plane can write.** A target that is not a number, or is below the
 floor every permit is clamped to, is not recorded, whether a report or a re-assert's write returned
