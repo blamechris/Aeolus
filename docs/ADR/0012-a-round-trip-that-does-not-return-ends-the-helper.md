@@ -297,9 +297,11 @@ and a reconnect's exclusive turn) there is one mode or bounds read per connectio
 `acquireLease` in flight — sequential within a grant, and a bounds read's two keys fit the reader
 turn below ([#270](https://github.com/blamechris/Aeolus/issues/270)) — and one per in-flight
 `restoreAllToAutomatic`, and nothing caps connections or those
-messages ([#332](https://github.com/blamechris/Aeolus/issues/332)). Today's build is N = 3: the
-write path is not built, so `acquireLease` refuses before it reads. The client-driven terms
-arrive with E3.
+messages ([#332](https://github.com/blamechris/Aeolus/issues/332)). Level 6's `apply` is one
+more, and at most one whatever the number of connections: `LeaseApplier` admits one `apply` at a
+time, and its envelope reads, engagement steps and commands are sequential (ADR 0014's A6 PR-2 and
+PR-3 amendments). Today's build is N = 3: the write path is not built, so `acquireLease` refuses
+before it reads, and `apply` before it reads anything. The client-driven terms arrive with E3.
 
 D_cycle is therefore sized for a stated **design point of N = 12**. The scheduler admits
 supervisor reads first-come first-served, in turns of at most `maxKeysPerTurn` (64) keys, and
