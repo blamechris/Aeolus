@@ -145,17 +145,27 @@ session.** A second, separate throwaway spike (`iohid_spike.swift`) exercised
 `IOHIDEventSystemClient` for the sensor-overlap question in the last subsection below.
 Both are ad hoc research tools, not something this project ships or maintains.
 
-**The command codes are documented, not observed.** `READ_BYTES` (5), `READ_INDEX` (8) and
-`READ_KEYINFO` (9) above, and the write command `WRITE_BYTES` (6), are values of the `data8`
-field of the struct passed through selector 2. Two public sources in [Sources](#sources) state
-all four, and they agree: smcFanControl's `smc-command/smc.h` (`SMC_CMD_READ_BYTES` 5,
-`SMC_CMD_WRITE_BYTES` 6, `SMC_CMD_READ_INDEX` 8, `SMC_CMD_READ_KEYINFO` 9) and Stats'
-`SMC/smc.swift` (`readBytes = 5`, `writeBytes = 6`, `readIndex = 8`, `readKeyInfo = 9`). The
-value 6 is taken as documented interface fact: a constant read from those two files, with no
-implementation copied from either. VirtualSMC's `AppleSmc.h` lists a separate command set
-(`SmcCmdWriteValue` is `0x11`); it does not state the `data8` codes, so it is not a source for
-them and does not disagree with them. **No write selector has been issued on this machine**, so
-6 is a value someone else documented and nothing here says how `Mac16,5` answers it.
+**The write command code 6 is documented, not observed.** A command code is the `data8` field of
+the struct passed to `IOConnectCallStructMethod` through method index 2. This document and
+`SMCConnection` also call a command code the "selector", as in `READ_BYTES` (selector 5), while
+the Method paragraph above says "selector 2" for the method index. The read codes
+`READ_BYTES` (5), `READ_INDEX` (8) and `READ_KEYINFO` (9) have been exercised on this machine
+throughout the observations below; the write code `WRITE_BYTES` (6) has not. All four values come
+from two public sources in [Sources](#sources), which agree: smcFanControl's `smc-command/smc.h`
+(`SMC_CMD_READ_BYTES` 5, `SMC_CMD_WRITE_BYTES` 6, `SMC_CMD_READ_INDEX` 8, `SMC_CMD_READ_KEYINFO` 9)
+and Stats' `SMC/smc.swift` (`readBytes = 5`, `writeBytes = 6`, `readIndex = 8`, `readKeyInfo = 9`).
+That is agreement between two sources, not two independent confirmations: both are public macOS
+SMC tools, the `smc.h` header credits a 2006 tool by devnull, and whether Stats' enum shares that
+lineage was not traced. The value 6 is taken as documented interface fact: a constant read from
+those two files, with no implementation copied from either. VirtualSMC's `AppleSmc.h` lists a
+separate command set (`SmcCmdWriteValue` is `0x11`, at
+[L149 of `b5c62c2`](https://github.com/acidanthera/VirtualSMC/blob/b5c62c2311540c529c00996d0d9cec33f8e571c9/VirtualSMCSDK/AppleSmc.h#L149)),
+the SMC-side command protocol and not the macOS user-client ABI; it does not state the `data8`
+codes, so it is not a source for them and does not disagree with them. **No write command
+(`data8` = 6) has been issued by any Aeolus tool or throwaway spike on this machine**, so 6 is a
+value someone else documented and nothing here says how `Mac16,5` answers it. That is a statement
+about Aeolus's own tools, not about the firmware's history: a third-party tool moved `F<n>Md` on
+this machine (below).
 
 ### Enumeration and index integrity — agrees
 
@@ -1554,9 +1564,9 @@ what licence.
 | `smcFanControl` (hholtmann) | Prior art on the Intel path | GPL — compatible with this project |
 | [Asahi Linux SMC documentation](https://asahilinux.org/docs/hw/soc/smc/) | Independent, clean-room hardware reverse-engineering corroborating the little-endian-with-quirks model behind ADR 0003, naming `#KEY`/`B0RM`/`VP3b` specifically, documenting `VP3b` as byte-reversed on M1-era hardware (the reason `flt`/`ioft` are no longer assumed unconditionally little-endian), and (for issue #52) noting that `rLD0`-class keys accept a `0x00000001`/`0x00ffffff` read payload where a plain read is rejected | Documentation consulted, no code adapted |
 | [VirtualSMC](https://github.com/acidanthera/VirtualSMC/blob/master/VirtualSMCSDK/kern_vsmcapi.hpp) | Documents attribute bit `0x04` as `ATTR_ATOMIC` on Intel, which is why ADR 0003's byte-order rule is scoped to the modern interface only | Documentation consulted, no code adapted |
-| [VirtualSMC — `VirtualSMCSDK/AppleSmc.h`](https://github.com/acidanthera/VirtualSMC/blob/master/VirtualSMCSDK/AppleSmc.h) | Names attribute bit `0x10` as `SMC_KEY_ATTRIBUTE_FUNCTION`, and result codes `0x82`/`0x89`/`0xc7`/`0xcb` as `SmcBadCommand`/`SmcBadArgumentError`/`SmcDeviceAccessError`/`SmcUnsupportedFeature` — the reference for issue #52's function-key finding | Documentation consulted, no code adapted |
-| [`exelban/stats` — `SMC/smc.swift`](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L36-L44) (read at `ea74107`) | The user-client command codes: `enum SMCKeys: UInt8` gives `kernelIndex = 2` (the selector), `readBytes = 5`, `writeBytes = 6`, `readIndex = 8`, `readKeyInfo = 9`. Each is assigned to `SMCKeyData_t.data8` before the `IOConnectCallStructMethod` call ([`readIndex` L338](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L338), [`readKeyInfo` L653](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L653), [`readBytes` L668](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L668), [`writeBytes` L693](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L693)). Source of the write command code 6, and the corroboration for 5, 8 and 9 | MIT: the repository's [`LICENSE`](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/LICENSE) reads "MIT License, Copyright (c) 2019 Serhiy Mytrovtsiy". The file's own header carries only a copyright line. Constants read; no code adapted |
-| [`hholtmann/smcFanControl` — `smc-command/smc.h`](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/smc-command/smc.h#L35-L42) (read at `e1bd672`) | The same codes as `#define`s: `KERNEL_INDEX_SMC` 2, `SMC_CMD_READ_BYTES` 5, `SMC_CMD_WRITE_BYTES` 6, `SMC_CMD_READ_INDEX` 8, `SMC_CMD_READ_KEYINFO` 9 (also `SMC_CMD_READ_PLIMIT` 11, `SMC_CMD_READ_VERS` 12). `smc.c` uses `SMC_CMD_WRITE_BYTES` as `data8` in [`SMCWriteKey2`](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/smc-command/smc.c#L462). Second source for the write command code 6, and for 5, 8 and 9 | GPL v2: the repository's [`LICENSE`](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/LICENSE) and `smc-command/LICENSE` are the GPL v2 text, and the `smc.h` header grants it "or (at your option) any later version". Constants read; no code adapted |
+| [VirtualSMC — `VirtualSMCSDK/AppleSmc.h`](https://github.com/acidanthera/VirtualSMC/blob/master/VirtualSMCSDK/AppleSmc.h) | Names attribute bit `0x10` as `SMC_KEY_ATTRIBUTE_FUNCTION`, and result codes `0x82`/`0x89`/`0xc7`/`0xcb` as `SmcBadCommand`/`SmcBadArgumentError`/`SmcDeviceAccessError`/`SmcUnsupportedFeature` — the reference for issue #52's function-key finding. Also, at `b5c62c2` ([L149](https://github.com/acidanthera/VirtualSMC/blob/b5c62c2311540c529c00996d0d9cec33f8e571c9/VirtualSMCSDK/AppleSmc.h#L149)), `SmcCmdWriteValue = 0x11` in the `SMC_COMMAND` enum (L147-L165) that sits beside the header's `SMC_PORT_OFFSET_COMMAND` and `SMC_MMIO_OFFSET_COMMAND` register definitions: the SMC-side command protocol, not the macOS user-client ABI, so it states no `data8` code and neither supports nor conflicts with 6 | Documentation consulted, no code adapted |
+| [`exelban/stats` — `SMC/smc.swift`](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L36-L44) (read at `ea74107`) | The user-client command codes: `enum SMCKeys: UInt8` gives `kernelIndex = 2` (the method index), `readBytes = 5`, `writeBytes = 6`, `readIndex = 8`, `readKeyInfo = 9`. Each is assigned to `SMCKeyData_t.data8` before the `IOConnectCallStructMethod` call ([`readIndex` L338](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L338), [`readKeyInfo` L653](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L653), [`readBytes` L668](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L668), [`writeBytes` L693](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L693)). A source for the write command code 6 and the read command codes 5, 8 and 9; it agrees with the smcFanControl row below, and the two were not shown to be independent | MIT: the repository's [`LICENSE`](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/LICENSE) is the standard MIT text with the line "Copyright (c) 2019 Serhiy Mytrovtsiy". The file's own header carries only a copyright line. Constants read; no code adapted |
+| [`hholtmann/smcFanControl` — `smc-command/smc.h`](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/smc-command/smc.h#L35-L42) (read at `e1bd672`) | The same codes as `#define`s: `KERNEL_INDEX_SMC` 2 (the method index), `SMC_CMD_READ_BYTES` 5, `SMC_CMD_WRITE_BYTES` 6, `SMC_CMD_READ_INDEX` 8, `SMC_CMD_READ_KEYINFO` 9 (also `SMC_CMD_READ_PLIMIT` 11, `SMC_CMD_READ_VERS` 12). `smc.c` uses `SMC_CMD_WRITE_BYTES` as `data8` in [`SMCWriteKey2`](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/smc-command/smc.c#L462). A second source for the write command code 6 and the read command codes 5, 8 and 9, not shown to be independent of the Stats row. The header credits "Copyright (C) 2006 devnull" and "Portions Copyright (C) 2013 Michael Wilber" | GPL v2: the repository's [`LICENSE`](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/LICENSE) and `smc-command/LICENSE` are the GPL v2 text, and the `smc.h` header grants it "or (at your option) any later version". Constants read; no code adapted |
 
 **Before adapting code from any of these**, confirm the licence, record it above, and
 attribute it in the source file. Reading a project's documentation and reimplementing from
