@@ -1767,13 +1767,13 @@ extension SafetyLog {
 
 extension SafetyLog {
 
-    /// § 5 waited `bound` for a fan's examination gate and its holder had not left: a contract
-    /// breach, since `FanExaminationGate.examinationWait` is the longest a step that keeps A6's
-    /// contract can keep § 5 waiting, a step queued ahead of § 5 and then granted included. The
-    /// one exception is a wait that spans a system sleep, which the bound counts: the line is
-    /// then a false breach, and diagnostic only. `.fault`, once per holder: later examinations
+    /// § 5 waited `bound` for a fan's examination gate and its holder had not left. Past
+    /// `FanExaminationGate.examinationWait` the contract was broken, or the helper is outside ADR
+    /// 0012's design point, where a queue that is moving can outlast G, or the wait spanned a
+    /// system sleep, which the bound counts. `.fault`, once per holder: later examinations
     /// against the same holder do not wait and say nothing more. They examine without the gate,
-    /// judging, marking and restoring, and writing nothing away from automatic control.
+    /// judging, marking and restoring, and writing nothing away from automatic control; a false
+    /// divergence among them still spends an attempt.
     func examinationGateOutwaited(fan: Int, after bound: Duration) {
         emit(
             .fault,

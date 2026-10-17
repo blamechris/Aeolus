@@ -41,35 +41,41 @@ import os
 /// it decided and do nothing. That bookkeeping is `Lanes`, a value type tested as a value.
 final class FanExaminationGate: Sendable {
 
-    /// How long § 5 waits for a fan's gate: `UnlockLimits.yieldBudget`, two
-    /// `WatchdogLimits.roundTrip`, `stepWait` and `examinationMargin`, 15.5 s.
+    /// How long § 5 waits for a fan's gate: `stepWait`, `lawfulHold` and `examinationMargin`, 32 s.
     ///
-    /// The longest a step that keeps A6's contract can keep § 5 waiting before ADR 0012 ends the
-    /// helper, with `examinationMargin` over it. A step holds the gate for at most one engagement's
-    /// polling, its last step's turn, then its undo's turn or its command's: 13.5 s. A step queued
-    /// ahead of § 5 is granted within `stepWait` of arriving or refused, so the last one ahead is
-    /// granted at most `stepWait` after § 5 arrives, and may then hold for its 13.5 s. Level 6's
-    /// hand-back runs outside the gate. A wait that runs out therefore means the contract was
-    /// broken, by a pass never released for instance, and § 5 examines without the gate.
-    ///
-    /// Measured on the composition's clock, which counts time the machine spends asleep (ADR 0007;
-    /// unverified on this machine). A wait that spans a sleep can run out on wake while its holder
-    /// is inside a lawful hold, and its `.fault` is then a false breach. That is diagnostic only:
-    /// past the bound § 5 writes nothing away from automatic control, and once that holder leaves
-    /// the next examination waits again.
-    static let examinationWait: Duration =
-        UnlockLimits.yieldBudget + WatchdogLimits.roundTrip * 2 + stepWait + examinationMargin
+    /// The last step queued ahead of § 5 is granted within `stepWait` of § 5 arriving, or refused,
+    /// and may then hold for `lawfulHold`. The margin covers that step's timer waking late, and the
+    /// actor hops inside a hold. A wait that runs out means the contract was broken; or the helper
+    /// is outside ADR 0012's design point, where G's own alarm can fire for a queue that is moving;
+    /// or the wait spanned a system sleep, which this clock counts (ADR 0007; unverified here).
+    /// Each costs a `.fault` and an examination without the gate, whose re-assert stands down and
+    /// writes nothing away from automatic control; a false divergence there still marks the fan
+    /// for a cycle and spends an attempt, and at the budget takes the terminal action.
+    static let examinationWait: Duration = stepWait + lawfulHold + examinationMargin
 
-    /// What § 5's bound allows past the longest lawful hold and the wait ahead of it: 1 s.
+    /// The longest a step that keeps A6's contract holds a fan's gate at ADR 0012's design point,
+    /// 30 s: three scheduler turns, or `UnlockLimits.yieldBudget` and two. An engagement's first
+    /// step and its one retry, then the driver's undo or the command; or its last poll, then its
+    /// undo or its command. A re-apply holds one turn.
     ///
-    /// Two things reach that far and no SMC deadline bounds either. A step's `stepWait` timer and
-    /// § 5's can each wake late, so a step granted at the instant its own wait ran out, the grant
-    /// winning that tie, starts its lawful hold later than the bound above allows for. And the
-    /// actor hops level 6 makes inside its hold, § 5's registration, the entitlement's latch and
-    /// lease-core questions, the ramp reset and § 5's report, are not SMC round trips, so ADR 0012
-    /// does not bound them. Both are assumed and unmeasured, and R1 measures them. With no margin,
-    /// that tie ran § 5's wait out at the instant a lawful hold ended: one `.fault`, and one
-    /// examination without the gate, whose false divergence spends an attempt.
+    /// A turn is its wait at the scheduler's gate plus several stamped round trips, and ADR 0012
+    /// ends the helper for neither: D bounds one round trip, and G only logs. G exceeds the longest
+    /// legal wait plus the longest write turn at the design point for every curated set
+    /// (`WatchdogLimitsTests`), so G stands for a turn. This is the design point, not ADR 0012's
+    /// enforcement: held to what ends the helper, a turn could last two § 3 gaps (ADR 0014's A6
+    /// PR-2 amendment).
+    static let lawfulHold: Duration = max(
+        UnlockLimits.yieldBudget + WatchdogLimits.gateWaiterAlarm * 2,
+        WatchdogLimits.gateWaiterAlarm * 3)
+
+    /// What § 5's bound allows past `stepWait` and `lawfulHold`: 1 s, for two things no SMC
+    /// deadline bounds. Timers wake late: a step granted at the instant its own wait ran out, the
+    /// grant winning that tie, starts its hold later than the bound allows for. And the actor hops
+    /// inside a hold are not round trips: level 6's registration with § 5, its entitlement's latch
+    /// and lease-core questions, its ramp reset and its report; and the driver's entitlement around
+    /// every step, its registration with § 3 and its after-check. Both are assumed and unmeasured;
+    /// run 1 measures them (ADR 0014 D8). With no margin, that tie ran § 5's wait out as a lawful
+    /// hold ended: one `.fault`, and an examination without the gate.
     static let examinationMargin: Duration = .seconds(1)
 
     /// How long level 6 waits for a fan's gate before its step is refused: 1 s.

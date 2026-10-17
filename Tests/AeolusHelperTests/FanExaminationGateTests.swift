@@ -311,22 +311,29 @@ struct FanExaminationGateTests {
 
     // MARK: - The bounds' derivation
 
-    /// `examinationWait` is `UnlockLimits.yieldBudget`, two `WatchdogLimits.roundTrip`,
-    /// `stepWait` and `examinationMargin`: the longest hold a step may make, after the longest wait
-    /// a step queued ahead of § 5 has for its grant, with a margin for what no SMC deadline bounds.
-    /// `stepWait` plus the yield budget stays under the client's 5 s gated-verb deadline. Literals
-    /// beside the constants, for `ReclamationLimitsTests`' reason: a bound derived from the
-    /// constant it checks moves with it.
+    /// `examinationWait` is `stepWait`, `lawfulHold` and `examinationMargin`: the longest wait a
+    /// step queued ahead of § 5 has for its grant, the longest hold it may then make at ADR 0012's
+    /// design point, and a margin for what no SMC deadline bounds. `lawfulHold` is three turns, or
+    /// the yield budget and two, each turn taken at G. `stepWait` plus the yield budget stays under
+    /// the client's 5 s gated-verb deadline. Literals beside the constants, for
+    /// `ReclamationLimitsTests`' reason: a bound derived from the constant it checks moves with
+    /// it, and a change to D or G turns a literal red and forces this to be read again.
     ///
-    /// **Mutation:** set `examinationMargin` to `.zero`. Run: red here on both literals, and in
+    /// **Mutation:** write `lawfulHold` as A6's first draft did, `UnlockLimits.yieldBudget +
+    /// WatchdogLimits.roundTrip * 2`. Run: red here on the formula and both literals.
+    /// **Mutation:** set `examinationMargin` to `.zero`. Run: red here on the literal, and in
     /// `theBoundCoversAStepGrantedAtTheEndOfItsWait`.
     @Test("The gate's bounds are derived, and fit the client's deadline")
     func theBoundsAreDerived() {
+        let turn = WatchdogLimits.gateWaiterAlarm
+        #expect(
+            FanExaminationGate.lawfulHold == max(UnlockLimits.yieldBudget + turn * 2, turn * 3))
         #expect(
             FanExaminationGate.examinationWait
-                == UnlockLimits.yieldBudget + WatchdogLimits.roundTrip * 2
-                + FanExaminationGate.stepWait + FanExaminationGate.examinationMargin)
-        #expect(FanExaminationGate.examinationWait == .milliseconds(15_500))
+                == FanExaminationGate.stepWait + FanExaminationGate.lawfulHold
+                + FanExaminationGate.examinationMargin)
+        #expect(FanExaminationGate.lawfulHold == .seconds(30))
+        #expect(FanExaminationGate.examinationWait == .seconds(32))
         #expect(FanExaminationGate.examinationMargin == .seconds(1))
         #expect(FanExaminationGate.stepWait == .seconds(1))
         #expect(UnlockLimits.yieldBudget + FanExaminationGate.stepWait < .seconds(5))
