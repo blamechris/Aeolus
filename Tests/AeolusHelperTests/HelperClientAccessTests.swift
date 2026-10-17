@@ -93,8 +93,9 @@ struct HelperClientAccessTests {
     ///   directly skips both the comparison and the observers: the signal would report a
     ///   state nothing had been told about, which is `CLAUDE.md` rule 6 in the one place this
     ///   target exists to serve it. `observers` is the registry that yield walks.
-    /// - `inFlight` decides when each message's deadline starts (#413). A sibling file holding
-    ///   it could settle a message the helper has not answered, which starts the deadline of the
+    /// - `inFlight` decides when each message's deadline starts, and answers every message
+    ///   still in flight when a connection is discarded (#413). A sibling file holding it could
+    ///   settle a message the helper has not answered, which starts the deadline of the
     ///   sequenced message behind it early: the false cut-off #413 removed, reachable again
     ///   without touching this file.
     ///
@@ -183,11 +184,12 @@ struct HelperClientAccessTests {
     /// to stay inside the line limit. They concatenate to the exact key the scan produces;
     /// the test fails naming both sides if they ever do not.
     ///
-    /// **Mutation:** drop the `private` from
-    /// `private func discardConnection(_ generation: UInt64, as health: HelperConnectionHealth)`
-    /// — chosen because it is exactly what moving `translate(_:on:)` to a sibling file would
-    /// cost. Run: red on `onlyTheAcknowledgedMethodsAreNonPrivate` alone, naming
-    /// `discardConnection(_: UInt64, as: HelperConnectionHealth)`.
+    /// **Mutation:** drop the `private` from `private func discardConnection(`, whose signature
+    /// is `(_ generation: UInt64, as health: HelperConnectionHealth, answering verdict:
+    /// HelperClientError)` since #413 — chosen because it is exactly what moving
+    /// `translate(_:on:)` to a sibling file would cost. Run: red on
+    /// `onlyTheAcknowledgedMethodsAreNonPrivate` alone, naming
+    /// `discardConnection(_: UInt64, as: HelperConnectionHealth, answering: HelperClientError)`.
     ///
     /// **A limit found by trying it, recorded because it is load-bearing and is not this
     /// suite's doing:** `private func exchange<Answer: Sendable>` cannot be widened at all.

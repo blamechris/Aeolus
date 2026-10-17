@@ -82,15 +82,16 @@ struct HelperClientSendPathSeamTests {
     /// path. That is #238's scenario one ordinary refactor away, and writing a retry as its own
     /// small function is at least as natural as writing it inline.
     ///
-    /// The downward half is **unrestricted**, and exactly one function in this target needs
-    /// saying so out loud: `publish`, whose `for continuation in observers.values` is a fan-out
-    /// over the health stream's observers and not a retry of anything. It is named in
-    /// `sendPathFanOut` and exempted from the loop half alone — it stays in the population for
-    /// the recursion and double-send halves, and the test requires it to be *in* the population,
-    /// so the exemption cannot quietly become a no-op. A restriction to `async` callees was the
-    /// alternative and is worse: it reads as principled (a retry must `await` what it retries)
-    /// and it lets the exact mutation above through, because a `resend` that loops without
-    /// awaiting anything is not `async` and is still a retry.
+    /// The downward half is **unrestricted**, and two functions in this target need saying so out
+    /// loud: `publish`, whose `for continuation in observers.values` is a fan-out over the health
+    /// stream's observers and not a retry of anything, and `InFlightMessages.abandonAll`, which
+    /// hands a discard's answer to every message already in flight (#413). Both are named in
+    /// `sendPathFanOut` and exempted from the loop half alone — they stay in the population for
+    /// the recursion and double-send halves, and the test requires each to be *in* the
+    /// population, so the exemption cannot quietly become a no-op. A restriction to `async`
+    /// callees was the alternative and is worse: it reads as principled (a retry must `await` what
+    /// it retries) and it lets the exact mutation above through, because a `resend` that loops
+    /// without awaiting anything is not `async` and is still a retry.
     ///
     /// The limits: a name no declaration of which has a body — a protocol requirement with no
     /// conformer in this target — is skipped, and the floor is what stops that being silent for
@@ -430,7 +431,7 @@ struct HelperClientSendPathSeamTests {
     /// spellings are the only ways to reach it.
     private static let sendGates = ["exchange", "withProxy", "withHandshakenProxy"]
 
-    /// The one function on the path whose loop is a **fan-out** rather than a retry.
+    /// The two functions on the path whose loop is a **fan-out** rather than a retry.
     ///
     /// `publish`'s `for continuation in observers.values` yields one health value to every
     /// observer of the stream; it retries nothing and sends nothing. It is on the path because
@@ -439,10 +440,17 @@ struct HelperClientSendPathSeamTests {
     /// function, is better than the `async`-only restriction that would have hidden it along with
     /// a `resend` that loops.
     ///
-    /// Exempted from the **loop half only**. It is still scanned for recursion and for a second
-    /// send, and `theSendPathFanOutIsOnThePath` requires it to be in the population — so a rename
+    /// `abandonAll`'s `for sent in abandoned` is the same shape, added by
+    /// [#413](https://github.com/blamechris/Aeolus/issues/413): it hands one answer to every
+    /// message already in flight on a connection `discardConnection` is giving up, so that each
+    /// is told the client discarded it rather than reading the client's own `invalidate()` as a
+    /// helper that is not installed. It is synchronous, sends nothing, and answers messages that
+    /// were sent once; it is on the path because `discardConnection` calls it.
+    ///
+    /// Exempted from the **loop half only**. Both are still scanned for recursion and for a second
+    /// send, and `theSendPathFanOutIsOnThePath` requires each to be in the population — so a rename
     /// turns this into a red test rather than into a silently empty exemption.
-    private static let sendPathFanOut = ["publish"]
+    private static let sendPathFanOut = ["publish", "abandonAll"]
 
     /// The fan-out exemption names a function that is really there, and really has nothing to
     /// send.
@@ -452,7 +460,8 @@ struct HelperClientSendPathSeamTests {
     /// that reaches a gate is a send site exempted from the loop rule.
     ///
     /// **Mutation:** rename `publish`. Run: red here. **Mutation:** add `try await
-    /// withHandshakenProxy { … }` to `publish`'s body. Run: red here.
+    /// withHandshakenProxy { … }` to `publish`'s body. Run: red here. **Mutation:** rename
+    /// `abandonAll`. Run: red here.
     @Test("The fan-out exemption names a function on the path that sends nothing")
     func theSendPathFanOutIsOnThePath() throws {
         let path = try Self.sendPath()

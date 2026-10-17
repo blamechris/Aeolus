@@ -85,16 +85,17 @@ import Foundation
 /// ## Why this is one long file, and where the split stops
 ///
 /// This file is over SwiftLint's 400-line `file_length` warning and stays that way on
-/// purpose. **247 of its lines are code**; the rest is the reasoning around them, and the
+/// purpose. **254 of its lines are code**; the rest is the reasoning around them, and the
 /// rule counts comment lines. The seventeen since this section was written are the clock the
 /// deadlines are measured on, the `internal` initialiser that names it, and the gate's choice of
-/// deadline (#325). One more is the message each send names (#413); the deadline bookkeeping
-/// behind it is `InFlightMessages`, which owns its state outright and so widens nothing here.
-/// The figure, 229 then, did not move when this section was added — the file grew by fifty-odd
-/// lines and by none of the thing the threshold is worth measuring, which is the whole argument
-/// in one measurement. The warning is deliberately **not** suppressed — no `swiftlint:disable`,
-/// no `file_length` override in `.swiftlint.yml` — because a file that grew by two hundred
-/// lines of *logic* should draw exactly the attention this one drew.
+/// deadline (#325). Eight more are the message each send names and the answer a discard gives
+/// what was still in flight (#413); the bookkeeping behind both is `InFlightMessages`, which
+/// owns its state outright and so widens nothing here. The figure, 229 then, did not move when
+/// this section was added — the file grew by fifty-odd lines and by none of the thing the
+/// threshold is worth measuring, which is the whole argument in one measurement. The warning
+/// is deliberately **not** suppressed — no `swiftlint:disable`, no `file_length` override in
+/// `.swiftlint.yml` — because a file that grew by two hundred lines of *logic* should draw
+/// exactly the attention this one drew.
 ///
 /// The split was evaluated on [#242](https://github.com/blamechris/Aeolus/issues/242) and
 /// refused. Swift `private` is file-scoped, so every remaining seam needs a member of this
@@ -459,7 +460,8 @@ public actor HelperClient {
             // handshake. See this function's own documentation for why that is fatal to the
             // connection rather than to the message.
             if generation == self.generation, self.connection != nil {
-                discardConnection(generation, as: Self.healthAfterFailedHandshake(for: error))
+                let health = Self.healthAfterFailedHandshake(for: error)
+                discardConnection(generation, as: health, answering: .connectionAbandoned)
             }
             throw error
         }
@@ -578,8 +580,15 @@ public actor HelperClient {
                 // connection's messages in the order they were sent — so every later gated
                 // verb would queue behind it and time out too, permanently. The connection
                 // goes; the next call builds another, once, when the caller asks again.
-                discardConnection(generation, as: .unresponsive)
+                //
+                // Everything else in flight on it goes too, and is told so: the client's own
+                // `invalidate()` would reach each of them as 4099, which reads as a helper
+                // that was never there (#413).
+                discardConnection(generation, as: .unresponsive, answering: .connectionAbandoned)
             }
+            // `connectionAbandoned` passes through here untouched, which is why a message a
+            // discard answered never counts as a second timeout: it moves no generation and
+            // publishes no health.
             return clientError
         }
         if let fault = AeolusXPCFault(nsError: error as NSError) { return fault }
@@ -612,14 +621,21 @@ public actor HelperClient {
             // cost nothing but a single answer.
             return HelperClientError.replyNotDelivered
         case XPCTransportCode.codeSigningRequirementFailure:
-            discardConnection(generation, as: .refused)
+            discardConnection(generation, as: .refused, answering: .helperSignatureRejected)
             return HelperClientError.helperSignatureRejected
         default:
             // Every other transport code, 4099 included: the connection failed and no
             // message was delivered. The code is carried rather than mapped, because a
             // reason this build has not heard of must still reach a log line.
-            discardConnection(generation, as: .invalidated)
-            return HelperClientError.helperUnreachable(code: nsError.code)
+            //
+            // The 4099 the client's **own** `invalidate()` produces does not arrive here. The
+            // discard answered every message on that connection first (`InFlightMessages`),
+            // so each latch already held its answer when the 4099 reached it (#413). What
+            // arrives is the transport's own report, and the messages still in flight beside
+            // the one that carried it are given the same answer.
+            let unreachable = HelperClientError.helperUnreachable(code: nsError.code)
+            discardConnection(generation, as: .invalidated, answering: unreachable)
+            return unreachable
         }
     }
 
@@ -640,8 +656,12 @@ public actor HelperClient {
     }
 
     /// The connection is dead. The next message builds another one — once.
+    ///
+    /// Anything still in flight on it is told what its own error handler would have said, and
+    /// usually already has: libxpc fails a dead connection's messages with 4099 itself.
     func connectionWasInvalidated(_ generation: UInt64) {
-        discardConnection(generation, as: .invalidated)
+        let invalid = HelperClientError.helperUnreachable(code: XPCTransportCode.invalid)
+        discardConnection(generation, as: .invalidated, answering: invalid)
     }
 
     /// Tears this client's connection down, and forgets everything negotiated on it.
@@ -664,9 +684,12 @@ public actor HelperClient {
     /// ordinary outcome for an unsigned `fanctl` — moved its health from `.refused` to
     /// `.idle` and threw away the one diagnosis this client can give with confidence. That
     /// is the same erasure `liveConnection()` publishes `.refused` to prevent.
+    ///
+    /// A message still in flight when this is called is answered `connectionAbandoned`: the
+    /// client gave the connection up before the helper answered, and nothing else is known.
     public func disconnect() {
         guard connection != nil else { return }
-        discardConnection(generation, as: .idle)
+        discardConnection(generation, as: .idle, answering: .connectionAbandoned)
     }
 
     /// Gives up on a connection: **invalidates** it, drops it, and forgets what it
@@ -683,7 +706,18 @@ public actor HelperClient {
     /// connection's own handlers — including the invalidation handler this call is about to
     /// fire — name a generation that is already past, so they are ignored instead of
     /// tearing down whatever has been built since.
-    private func discardConnection(_ generation: UInt64, as health: HelperConnectionHealth) {
+    ///
+    /// **Every message still in flight on it is answered `verdict` first** (#413). The
+    /// `invalidate()` below reaches each of them as 4099, and `translate(_:on:)` reads a 4099
+    /// as a helper that is not installed or not yet approved — so a message this client killed
+    /// itself, answered by its own invalidation, would be misdiagnosed. Each caller says what
+    /// is true instead: `connectionAbandoned` when the client chose to give up, and the
+    /// transport's own verdict when the transport ended the connection. Answering them settles
+    /// them too, so no message stays waiting for a turn on a connection that is gone.
+    private func discardConnection(
+        _ generation: UInt64, as health: HelperConnectionHealth,
+        answering verdict: HelperClientError
+    ) {
         guard generation == self.generation else { return }
         let dying = connection
         self.generation &+= 1
@@ -692,6 +726,7 @@ public actor HelperClient {
         handshake = nil
         hasEverHandshaken = false
         publish(health)
+        inFlight.abandonAll(on: generation, answering: verdict)
         dying?.invalidate()
     }
 

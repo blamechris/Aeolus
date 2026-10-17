@@ -59,6 +59,28 @@ struct HelperClientSequencedDeadlineTests {
         return snapshot
     }
 
+    /// What every message this client killed itself is told, and must not be: the answer to an
+    /// `apply` is "may have applied; control ended" (#414), never 4099's "not installed".
+    static func expectToldTheClientGaveUp(
+        _ error: HelperClientError?, _ what: String,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        #expect(
+            error == .connectionAbandoned, "\(what) was told \(String(describing: error))",
+            sourceLocation: sourceLocation)
+        let description = error?.errorDescription ?? ""
+        for truth in [
+            "Nothing can be said about whether it took effect", "ends any manual control",
+        ] {
+            #expect(
+                description.contains(truth), "\(what) was told: \(description)",
+                sourceLocation: sourceLocation)
+        }
+        #expect(
+            !description.contains("not installed"), "\(what) was told: \(description)",
+            sourceLocation: sourceLocation)
+    }
+
     // MARK: - Behind a held apply
 
     /// **D5. A snapshot sent while an `apply` is held inside its own deadline is answered.**
@@ -87,6 +109,96 @@ struct HelperClientSequencedDeadlineTests {
         await parked.release.signal()
         _ = try await Fixture.answer(of: snapshot)
         try await parked.expectAnsweredOnTheSameConnection()
+    }
+
+    /// **A snapshot behind an `apply` that runs past its own deadline is answered by the discard,
+    /// and told what is true.**
+    ///
+    /// Past its deadline the `apply` is cut off and the connection discarded, as #414 ruled. The
+    /// snapshot was waiting for its turn on that connection. It must not be left waiting, and it
+    /// must not be told the helper is not installed, which is what the client's own `invalidate()`
+    /// says when it reaches a parked message as 4099. Health stays `.unresponsive`: the snapshot's
+    /// answer passes through `translate(_:on:)` as itself and is not a second timeout.
+    ///
+    /// **Mutation:** in `HelperClient.discardConnection`, delete
+    /// `inFlight.abandonAll(on: generation, answering: verdict)`, which leaves the parked snapshot
+    /// to translate's default arm. Run: red on the snapshot's error, `helperUnreachable(code:
+    /// 4099)`, and on the three lines of its description.
+    @Test("A snapshot behind an apply past its deadline is answered with the discard")
+    func aSnapshotBehindACutOffApplyIsAnsweredWithTheDiscard() async throws {
+        let parked = try await Parked.sending(Self.oneFan)
+        defer { parked.watcher.cancel() }
+        let snapshot = try await Self.snapshotBehind(parked)
+        #expect(parked.clock.sleepers == 1, "the snapshot's deadline started before its turn")
+
+        parked.clock.advance(by: Self.applyDeadline)
+        await #expect(throws: HelperClientError.helperNeverAnswered(after: Self.applyDeadline)) {
+            try await Fixture.answer(of: parked.apply)
+        }
+        let error = await #expect(throws: HelperClientError.self) {
+            _ = try await Fixture.answer(of: snapshot)
+        }
+        Self.expectToldTheClientGaveUp(error, "the snapshot behind the cut-off apply")
+
+        #expect(await parked.client.health == .unresponsive)
+        #expect(parked.clock.sleepers == 0, "a deadline outlived the connection it was on")
+        try await waitUntil("the helper saw the connection go", timeout: .seconds(30)) {
+            await parked.authority.invalidatedConnections.count == 1
+        }
+
+        await parked.release.signal()
+        #expect(parked.harness.sessions.count == 1)
+    }
+
+    /// **An `apply` ended by the client's own discard says "may have applied; control ended"
+    /// (#413's comment).**
+    ///
+    /// Behind the parked `apply`, a heartbeat the helper holds runs out its own deadline, counted
+    /// from its send. The client discards the connection, and that discard is what ends the
+    /// `apply`: before #413 the `apply` then read the client's own `invalidate()` as 4099, "not
+    /// installed or not yet approved", about a helper that had accepted it.
+    ///
+    /// The comment's own route — a *sequenced* verb behind the `apply` timing out — no longer
+    /// exists: the verb behind waits for its turn, and the `apply` settles before its deadline can
+    /// begin. The heartbeat is the verb behind an `apply` that can still time out while the `apply`
+    /// is parked, because its deadline runs from its send.
+    ///
+    /// **Mutation:** in `HelperClient.discardConnection`, delete
+    /// `inFlight.abandonAll(on: generation, answering: verdict)`, so the `apply` falls back to
+    /// `translate`'s default arm. Run: red on the `apply`'s error, `helperUnreachable(code: 4099)`,
+    /// and on the three lines of its description.
+    @Test("An apply ended by the client's own discard says control ended")
+    func anApplyEndedByTheClientsOwnDiscardSaysControlEnded() async throws {
+        let releaseRenewal = AsyncSignal()
+        let parked = try await Parked.sending(Self.oneFan, holdingRenewals: releaseRenewal)
+        defer { parked.watcher.cancel() }
+
+        let client = parked.client
+        let renewal = Task { try await client.renewLease(id: Self.lease.id) }
+        try await waitUntil(
+            "the renewal is held beside the apply, its deadline running", timeout: .seconds(30)
+        ) {
+            await parked.authority.hasBeenAskedToRenew && parked.clock.sleepers == 2
+        }
+
+        parked.clock.advance(by: Self.deadlines.gatedVerb)
+        await #expect(
+            throws: HelperClientError.helperNeverAnswered(after: Self.deadlines.gatedVerb)
+        ) {
+            _ = try await Fixture.answer(of: renewal)
+        }
+        let error = await #expect(throws: HelperClientError.self) {
+            try await Fixture.answer(of: parked.apply)
+        }
+        Self.expectToldTheClientGaveUp(error, "the apply the discard ended")
+        #expect(await parked.client.health == .unresponsive)
+        try await waitUntil("the helper saw the connection go", timeout: .seconds(30)) {
+            await parked.authority.invalidatedConnections.count == 1
+        }
+
+        await releaseRenewal.signal()
+        await parked.release.signal()
+        #expect(parked.harness.sessions.count == 1)
     }
 
     /// **A heartbeat beside a held `apply` keeps its own deadline, counted from its send.**
@@ -198,6 +310,34 @@ struct HelperClientSequencedDeadlineTests {
             _ = try await Fixture.answer(of: snapshot)
         }
         #expect(await parked.client.health == .unresponsive)
+
+        await parked.release.signal()
+        #expect(parked.harness.sessions.count == 1)
+    }
+
+    // MARK: - Behind a disconnect
+
+    /// **An `apply` in flight when its caller disconnects says control ended.**
+    ///
+    /// `disconnect()` is the teardown a caller asks for, and it ends any lease the connection
+    /// held. A message still in flight on it was killed by this client, not refused by a missing
+    /// helper, and is told so. Health is `.idle`, because asking to disconnect is not a failure.
+    ///
+    /// **Mutation:** in `HelperClient.disconnect()`, answer with `.helperUnreachable(code:
+    /// XPCTransportCode.invalid)`. Run: red on the `apply`'s error and on the description's line
+    /// that rules out "not installed".
+    @Test("An apply in flight at a disconnect says control ended")
+    func anApplyInFlightAtADisconnectSaysControlEnded() async throws {
+        let parked = try await Parked.sending(Self.oneFan)
+        defer { parked.watcher.cancel() }
+
+        await parked.client.disconnect()
+        let error = await #expect(throws: HelperClientError.self) {
+            try await Fixture.answer(of: parked.apply)
+        }
+        Self.expectToldTheClientGaveUp(error, "the apply in flight at the disconnect")
+        #expect(await parked.client.health == .idle)
+        #expect(parked.clock.sleepers == 0, "a deadline outlived the connection it was on")
 
         await parked.release.signal()
         #expect(parked.harness.sessions.count == 1)

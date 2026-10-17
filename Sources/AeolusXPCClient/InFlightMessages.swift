@@ -15,7 +15,7 @@ import os
 ///
 /// So a sequenced message's deadline starts when every sequenced message sent before it on the
 /// same connection has **settled**: answered by its reply block, failed through the connection's
-/// error handler, or cut off by its own deadline. Until then the message
+/// error handler, cut off by its own deadline, or answered by a discard. Until then the message
 /// has been sent and is waiting for its turn, and nothing about the helper is late. The other
 /// three messages are dispatched by the helper the moment they arrive (#229), so their deadline
 /// starts at their send, exactly as before.
@@ -54,6 +54,16 @@ import os
 /// that is genuinely wedged costs one extra deadline, and a healthy one is never torn down for a
 /// caller that left.
 ///
+/// ## A discard answers everything still in flight on its connection
+///
+/// `abandonAll(on:answering:)` is how `HelperClient.discardConnection` settles a generation, and it
+/// answers each message **before** the connection is invalidated. That order is the point. The
+/// client's own `invalidate()` comes back to every message still parked on the connection as 4099,
+/// which `translate(_:on:)`'s default arm reads as "the helper is not installed or not yet
+/// approved": a message the client killed itself, misdiagnosed as a helper that was never there
+/// (#413's comment). Answered first, each one carries what is true instead, and the 4099 that
+/// follows finds its latch already resolved.
+///
 /// ## Why a lock and not the actor
 ///
 /// A message settles inside its reply block or its error handler, which libxpc calls on its own
@@ -81,6 +91,9 @@ final class InFlightMessages: Sendable {
 
         /// Hands the message's caller its deadline's answer, `helperNeverAnswered`.
         let runOut: @Sendable () -> Void
+
+        /// Hands the message's caller a discard's answer.
+        let abandon: @Sendable (HelperClientError) -> Void
 
         /// The deadline, from the moment the message's turn came. `nil` while it waits for one.
         var timer: Task<Void, Never>?
@@ -113,8 +126,8 @@ final class InFlightMessages: Sendable {
         fileprivate let pending: PendingReply<Result<Answer, Error>>
 
         /// Waits for the first of: `settle`, the message's deadline running out
-        /// (`helperNeverAnswered`), or this caller's cancellation, which leaves the message in
-        /// flight.
+        /// (`helperNeverAnswered`), a discard's answer, or this caller's cancellation, which
+        /// leaves the message in flight.
         func answer() async -> Result<Answer, Error> {
             await pending.waitForAnswer()
         }
@@ -142,7 +155,7 @@ final class InFlightMessages: Sendable {
             let ticket = Ticket(generation: generation, serial: state.issued)
             state.unsettled[ticket] = Sent(
                 isSequenced: message.isSequenced, deadline: deadline,
-                runOut: { pending.expire() })
+                runOut: { pending.expire() }, abandon: { pending.deliver(.failure($0)) })
             if !message.isSequenced || Self.turn(on: generation, in: state) == ticket {
                 state.unsettled[ticket]?.timer = startDeadline(of: ticket, after: deadline)
             }
@@ -153,6 +166,26 @@ final class InFlightMessages: Sendable {
             take(ticket)?.timer?.cancel()
         }
         return Admission(settle: settle, pending: pending)
+    }
+
+    /// Answers every message still unsettled on `generation` with `verdict`, and ends their
+    /// deadlines. In send order, so the answers do too.
+    ///
+    /// `HelperClient.discardConnection` calls this before it invalidates the connection; see the
+    /// type's documentation for why the order matters. The loop is a **fan-out** of one answer to
+    /// the messages already sent and never a resend: nothing here sends, and
+    /// `HelperClientSendPathSeamTests.sendPathFanOut` names it for that reason.
+    func abandonAll(on generation: UInt64, answering verdict: HelperClientError) {
+        let abandoned = state.withLock { state -> [Sent] in
+            state.unsettled.keys
+                .filter { $0.generation == generation }
+                .sorted { $0.serial < $1.serial }
+                .compactMap { state.unsettled.removeValue(forKey: $0) }
+        }
+        for sent in abandoned {
+            sent.timer?.cancel()
+            sent.abandon(verdict)
+        }
     }
 
     // MARK: - The turn
