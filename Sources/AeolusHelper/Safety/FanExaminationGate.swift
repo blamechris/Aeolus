@@ -80,10 +80,9 @@ final class FanExaminationGate: Sendable {
 
     /// How long level 6 waits for a fan's gate before its step is refused: 1 s.
     ///
-    /// `UnlockLimits.yieldBudget` plus this stays under `HelperClientDeadlines.gatedVerb`'s 5 s,
-    /// leaving room for the envelope read, the command write and its report. Provisional:
-    /// [#325](https://github.com/blamechris/Aeolus/issues/325) measures the round trips it rests
-    /// on.
+    /// `apply`'s client deadline counts it for each fan (`HelperClientDeadlines.applyPerFan`).
+    /// Provisional: [#325](https://github.com/blamechris/Aeolus/issues/325) measures the round
+    /// trips it rests on.
     static let stepWait: Duration = .seconds(1)
 
     /// Who is waiting: § 5 or level 6. Only an examination's wait that runs out remembers the

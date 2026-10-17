@@ -9,9 +9,11 @@ enum UnlockLimits {
     static let pollInterval: Duration = .milliseconds(100)
 
     /// How long an engagement waits for the firmware to yield before it undoes and refuses: run
-    /// 1's 3.5 s, so at most 35 steps. Sized to the client rather than to the report — it leaves
-    /// `HelperClientDeadlines.gatedVerb`'s 5 s room for the target write and its read-back — and
-    /// a budget that proves too short fails safe.
+    /// 1's 3.5 s, so at most 35 steps. Sized to the report (U3). `apply`'s client deadline is
+    /// derived from the gate's bounds, which count this, so raising it needs no client change
+    /// while it stays within `WatchdogLimits.gateWaiterAlarm`. Past that it lengthens
+    /// `FanExaminationGate.lawfulHold`, and `HelperClientDeadlineTests` requires the client's copy
+    /// to follow. A budget that proves too short fails safe.
     static let yieldBudget: Duration = .milliseconds(3_500)
 }
 

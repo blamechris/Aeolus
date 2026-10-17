@@ -92,6 +92,23 @@ final class ManualClock: MonotonicClock, Sendable {
     }
 }
 
+/// The same hands as a `Clock`, which is what the XPC client measures its deadlines on.
+///
+/// `HelperClient` cannot take a `MonotonicClock`: that protocol is the helper's, and the client
+/// must not link the daemon. It takes `any Clock<Duration>` instead, and this conformance lets
+/// its suite drive a deadline with the double the gate's suite already trusts rather than with
+/// a second hand-wound clock. A sleep parks until `advance(by:)` reaches it and ends at once when
+/// its task is cancelled, exactly as above; the tolerance is ignored, because no hand moves
+/// except when the test moves it.
+extension ManualClock: Clock {
+
+    var minimumResolution: Duration { .nanoseconds(1) }
+
+    func sleep(until deadline: ContinuousClock.Instant, tolerance: Duration?) async throws {
+        try await sleep(until: deadline)
+    }
+}
+
 /// Level 6's step as A6's contract has it, before level 6 exists: the fan's examination gate taken
 /// as a step, the target written through level 6's `GovernedFanWriter` straight to the plane, the
 /// `CommandedTarget` that write returned reported under the lease after it returned, and the gate

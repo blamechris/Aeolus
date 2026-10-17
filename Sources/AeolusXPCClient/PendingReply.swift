@@ -82,9 +82,17 @@ final class PendingReply<Answer>: @unchecked Sendable {
     /// The deadline is a detached task rather than a `withTaskGroup` race, because the
     /// thing being raced is not a task at all — it is two C callbacks libxpc may or may not
     /// invoke.
-    func answer(within deadline: Duration = .seconds(10)) async -> Answer {
+    ///
+    /// `clock` is what the deadline is measured on: `ContinuousClock` everywhere but the suite,
+    /// which substitutes one it moves by hand, so a deadline of nearly two minutes can be run
+    /// out, or shown not to have run out, without waiting for it and without a runner stall
+    /// running it out instead.
+    func answer(
+        within deadline: Duration = .seconds(10),
+        on clock: any Clock<Duration> = ContinuousClock()
+    ) async -> Answer {
         let deadlineTask = Task.detached { [self] in
-            try? await Task.sleep(for: deadline)
+            try? await clock.sleep(for: deadline)
             giveUp(with: fallback)
         }
         defer { deadlineTask.cancel() }
