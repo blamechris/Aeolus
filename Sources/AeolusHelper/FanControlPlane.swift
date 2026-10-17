@@ -293,10 +293,12 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// makes the mismatch unrepresentable rather than merely discouraged.
     ///
     /// **Its admission.** The plane calls `ledger.admitCommand()` first inside the command's turn,
-    /// before key info or any write. Once `.forExit` has been requested it refuses with
-    /// `FanControlPlaneError.superseded`, having written nothing: the exit's seal, and its only
-    /// guard against a target written after the final keystone. A contract B1's plane implements
-    /// (ADR 0014's #410 ticket-and-seal amendment); on this build nothing writes.
+    /// before key info or any write, and keeps the admission and the command's writes in that one
+    /// turn (ADR 0014's U15, D7): the seal's command half depends on it. Once `.forExit` has been
+    /// requested it refuses with `FanControlPlaneError.superseded`, having written nothing: the
+    /// exit's seal, and its only guard against a target written after the final keystone. A
+    /// contract B1's plane implements (ADR 0014's #410 ticket-and-seal amendment); on this build
+    /// nothing writes.
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget
 

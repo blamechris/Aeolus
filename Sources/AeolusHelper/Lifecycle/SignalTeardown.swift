@@ -223,7 +223,8 @@ actor DispatchSignalSources: SignalSourcing {
 ///    and a fan the previous process left behind.
 /// 4. **Stop the supervisors**, after the writes rather than before them. A supervisor
 ///    stopped first is § 3 and § 5 not watching while the last two writes of the process's
-///    life are issued. The seal begins at step 5, once § 3 can no longer write.
+///    life are issued. The seal begins at step 5, once § 3's supervisor has been stopped: `stop()`
+///    cancels a cycle already running rather than draining it.
 /// 5. **Re-issue the keystone, and take the exit code from *that* write.** Ruling D19 on
 ///    [#197](https://github.com/blamechris/Aeolus/pull/197). `stop()` cancels the three
 ///    supervisors; it does not await a cycle already in flight. A § 5 re-assert that began

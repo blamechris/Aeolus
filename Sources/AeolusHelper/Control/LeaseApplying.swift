@@ -30,7 +30,7 @@ import Foundation
 ///   seal if it comes after, before it writes a target;
 /// - an engagement whose entitlement was answered first took its ticket before that, so its first
 ///   step, admitted after the teardown's restores were requested, is refused at its admission
-///   before it writes, and the seal refuses it as well.
+///   before it writes, and the seal as well, if it is admitted after the final keystone's request.
 ///
 /// The last was the residual ruling D19 on [#197](https://github.com/blamechris/Aeolus/pull/197)
 /// accepted, which level 6 inherited (ADR 0014's A6 PR-3 amendment): a first step admitted after

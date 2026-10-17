@@ -969,9 +969,11 @@ Each run's findings are recorded, and the branch revised, before the next.
   - Row 10, "`Ftst` semantics: whether sleep resets the Apple Silicon force key, and where the
     unlock must re-run". The restatement: § 4's handback leaves raw `F<n>Md = 0` and `Ftst = 0` at
     wake, and a post-wake acquire re-runs the unlock. (Since the #410 ticket-and-seal amendment it
-    holds for an engagement in flight when the handback begins, when the handback completes inside
-    its acknowledgement budget: its first step is refused if admitted after the handback's restore
-    request, and otherwise covered by the restore that follows.)
+    holds for an engagement in flight when the handback begins, when the handback's restores take
+    effect: the engagement's first step is refused if admitted after the handback's restore
+    request, and otherwise covered by the restore that follows, so no engagement in flight undoes
+    a restore that took effect. The ticket does not make the firmware cooperate: a restore the
+    firmware refuses leaves its fan as it was, and the handback still acknowledges the sleep.)
   - Row 18's last sentence. The restatement: the corrupted-helper-state case is carried by D8's
     scripted integration test, and row 18 on hardware is 1c's SSH reset.
   - E5's "the unlock is re-run as part of the grant (ADR 0007)" (D6).
@@ -2945,14 +2947,15 @@ Every machine-wide path met it with an engagement in flight:
   first in every command's turn, refuses a target command. Restores are never refused, and nothing
   unseals.
 - `SignalTeardown`'s first keystone issues `.everyFan`, and its last, after the supervisors stop,
-  issues `.forExit`: the seal begins once § 3 can no longer write. Sealing at the first keystone
-  refused § 3's bridge to maximum on a fan whose restore the firmware had refused, while § 3 still
-  ran: the bridge D4 relies on to cover a refused undo. Sealing at the last costs the exit nothing.
-  No first step is admitted after the release, because its ticket is stale, and every command
-  admitted between the two keystones runs before the last one's turn, which covers the fan.
-  `.forExit` still moves the epoch, as every restore does: D3 step 3's in-turn re-check and the
-  force-key rule read the epoch alone, and the seal adds to supersession rather than replacing it.
-  The exit codes are unchanged.
+  issues `.forExit`: the seal begins once § 3's supervisor has been stopped — `stop()` cancels a
+  cycle already running rather than draining it, which is the residual below. Sealing at the first
+  keystone refused § 3's bridge to maximum on a fan whose restore the firmware had refused, while
+  § 3 still ran: the bridge D4 relies on to cover a refused undo. Sealing at the last costs the exit
+  nothing. No first step past its entitlement is admitted after the release's restores are
+  requested, because its ticket is stale, and every command admitted between the two keystones runs
+  before the last one's turn, which covers the fan. `.forExit` still moves the epoch, as every
+  restore does: D3 step 3's in-turn re-check and the force-key rule read the epoch alone, and the
+  seal adds to supersession rather than replacing it. The exit codes are unchanged.
 - Nothing but that final keystone names `.forExit`. On a `.notBuilt` plane both keystones are
   refused `.controlPathNotBuilt`, which is still `.nothingToRestore`.
 - **Why the exit is sealed as well as ticketed.** D1's discharge needs a process that outlives the
@@ -2970,10 +2973,12 @@ Every machine-wide path met it with an engagement in flight:
   been requested since. The tripwire holds the ticket's callers to the driver.
 - A forward write from outside this process (D9).
 - A § 3 fire in flight across `stop()`, whose bridge to maximum takes its turn after the last
-  keystone was requested, is refused; its restore is still issued. This is microseconds before the
-  exit. If that fan's restore was refused, the exit is non-zero, and launchd restarts the helper
-  where it restarts at all. Once the process has ended, nothing raises a fan the firmware would not
-  hand back: that was so before the seal.
+  keystone was requested, is refused. `ThermalSupervisor.stop()` cancels the cycle without joining
+  it, so the teardown does not wait for that fire: the seal permits its restore, which runs only if
+  execution reaches it before the process ends. The exit code comes from the final keystone alone. A
+  refused § 3 restore does not set it; a refused final keystone is what makes the exit non-zero, and
+  launchd then restarts the helper where it restarts at all. Once the process has ended, nothing
+  raises a fan the firmware would not hand back: that was so before the seal.
 - Every ticket and seal test runs against `ScriptedControlPlane`. If B1's plane skipped
   `admitCommand()`, or called it after the target write, none of them would turn red, so B1 must
   carry its own: the in-flight tests at the exit, a sleep and the panic verb, or a plane-agnostic
@@ -3000,9 +3005,10 @@ Every machine-wide path met it with an engagement in flight:
 `FanControlPlane`'s verbs: forward `beginEngagement(fanAt:)` to the ledger; call
 `ledger.restoreRequested(scope)` before each restore's turn; call `admitStep(fanAt:)` first inside
 every step's turn, and `admitCommand()` first inside every command's turn, before key info or any
-write; keep a step's admission and its writes in one exclusive turn (U15); build each restore from
-`ledger.plan(for: scope)`, never from a scope switch of its own, so `.forExit` plans exactly what
-`.everyFan` plans; and carry the plane-level tests or tripwire "What remains" names.
+write; keep a step's or a command's admission and its writes in one exclusive turn (U15, D7), on
+which the seal's command half depends; build each restore from `ledger.plan(for: scope)`, never from
+a scope switch of its own, so `.forExit` plans exactly what `.everyFan` plans; and carry the
+plane-level tests or tripwire "What remains" names.
 
 **No `AeolusXPCVersion` bump.** No field, case or method crosses the boundary. `.forExit` and
 `beginEngagement(fanAt:)` are below the seam, in the helper, and no client can name either. On every
@@ -3030,7 +3036,7 @@ under. **Status stays Proposed.**
 | U11 | A power cycle returns raw `F<n>Md` and `Ftst` to `0` | `RECOVERY.md` step 7 asserts that the force key resets. That `F<n>Md` does not persist is `docs/SAFETY.md` row 7's unverified assumption, and ADR 0011's | D8's recovery steps end in a loud fan and `RECOVERY.md` § 8. Run 1's target choice is what makes that acceptable |
 | U12 | Sleep resets `Ftst` | Reported. Not depended on (D5) | Only the never-issued-keystone residual widens |
 | U13 | Apple's controller never commands above the declared `F<n>Mx` | The highest fan speed recorded under Apple's control is 3,683 RPM, against 5,777 declared (2026-08-20; key not recorded). The highest recorded `F0Tg` is 2,195 RPM. The pre-flight records `F<n>Tg` through a load and its soak | 1b's "at or above demand" fails by the excess. Aborts 9 and 1 catch it |
-| U15 | A plane's step admission and its writes are one exclusive turn, and `beginEngagement` precedes the entitlement. The order is what holds: a suspension between the two only makes the ticket older, which refuses more | D4 (the turn rule) and D7 | The ticket and the exit seal narrow the window instead of closing it |
+| U15 | A plane's step or command admission and its writes are one exclusive turn (D7), and `beginEngagement` precedes the entitlement. The order is what holds: a suspension between the two only makes the ticket older, which refuses more | D4 (the turn rule) and D7 | The ticket and the exit seal narrow the window instead of closing it |
 | — | The preparation step can enumerate the fans and record both restore keys' types | `FNum`, `F<n>Md` and `Ftst` have read on every capture. Both are `ui8`, one byte, on 27.0.1 | `.everyFan` writes the touched set's fans and the force key, then throws `.fanSetUnknown`. An unknown key is written as one zero byte (D5, D7). Start 0 stops |
 | — | One engagement per fan at a time | **Enforced by the gate** (the A6 PR-2 amendment): § 5 re-engages only inside an examination, which holds the fan's examination gate, and level 6 engages only under that gate, one holder at a time. *(It was false for two applies until the same amendment admitted one `apply` at a time: a refused `apply`'s undo takes no gate, so it could restore a fan another `apply` had engaged and commanded since, under the same lease or a newer one. The claim closes that.)* The ledger still keeps one in-progress record and one ticket per fan index, and a ticket taken by one engagement clears the record and replaces the ticket of another of the same fan, which the gate keeps from existing | An engagement that bypasses the gate, a contract breach, brings back #389's overlap, and one engagement's ticket could admit the other's first step: key the record and the ticket per engagement. Also: § 5's `finaliseRelease` restores and then revokes the leases, so for that window a genuine restore has not yet ended the lease; level 6's driver then finds the lease live. A step already past its first is caught by the restore's epoch; a first step superseded by that restore takes a fresh ticket in its retry, past the restore, so only the after-check catches it (#410's ticket-and-seal amendment). Across leases, a second engagement fails safe (the 2026-10-15 identity amendment): the stale one's next check asks about its own ended lease and undoes, and the undo supersedes the other |
 | — | One lease-table entry, one production plane | True today | Concurrent leases or a second plane: re-check D4's epoch scope and D5's gate. Since the 2026-10-15 amendment, no lease is granted while § 7's panic verb or § 4's handback runs (`sealingGrants(during:)`). The seal is machine-wide, so concurrent leases or a second plane re-check that it still covers every restore that can undo a grant. |

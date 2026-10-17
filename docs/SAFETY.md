@@ -692,11 +692,13 @@ admitted only if no restore has been requested since. The handback requests its 
 ends every lease, so a step admitted after them is refused inside its own turn, before it writes,
 and one admitted before them is covered by the restore that follows it. A command that lands after
 `.everyFan` writes a target to an automatic fan and moves no mode — reported harmless on Apple
-Silicon, and untested on Intel (`CLAUDE.md` rule 11). So when the handback completes inside its
-acknowledgement budget, it leaves raw `F<n>Md = 0` and `Ftst = 0` behind it, as ADR 0014's
-restatement says, whatever was in flight: a step is refused if it is admitted after the handback's
-restore request, and otherwise covered by the restore that follows.
-`MachineWideRestoreInFlightApplyTests` holds it with an `apply` in flight, on both unlock paths.
+Silicon, and untested on Intel (`CLAUDE.md` rule 11). So when the handback's restores take effect,
+it leaves raw `F<n>Md = 0` and `Ftst = 0` behind it, as ADR 0014's restatement says, whatever was in
+flight: a step is refused if it is admitted after the handback's restore request, and otherwise
+covered by the restore that follows. The ticket guarantees that no engagement in flight undoes a
+restore that took effect; it does not make the firmware take one, and a refused restore still lets
+the machine sleep. `MachineWideRestoreInFlightApplyTests` drives the first half, a step admitted
+after the request, with an `apply` in flight on both unlock paths.
 
 **Two seals, because they are two facts** (#364, [#347](https://github.com/blamechris/Aeolus/issues/347)).
 `sleepSeal` is the episode's: the machine is going to sleep. It is set before the teardown and
@@ -1473,14 +1475,17 @@ handler plus `atexit`" — and that one is undefined behaviour on the path it wa
   target command. So whatever was in flight — level 6's `apply` past its entitlement, a § 5
   re-assert, a § 3 bridge — every forward write is issued before the exit's restore or not at all
   (ADR 0014's #410 ticket-and-seal amendment). Until that amendment this sentence said the window
-  was narrowed rather than closed, and it was: a first step admitted after the last restore wrote `F<n>Md = 1`, and on the force-key path `Ftst = 1`,
-  and left its undo to a process that was ending. `SignalTeardownInFlightApplyTests` now holds
+  was narrowed rather than closed, and it was: a first step admitted after the last restore wrote
+  `F<n>Md = 1`, and on the force-key path `Ftst = 1`, and left its undo to a process that was
+  ending. `SignalTeardownInFlightApplyTests` now holds
   that an engagement, a command and a re-assert in flight at the exit write nothing after the
   keystone, and that § 3 still bridges a fan to maximum between the two keystones; ruling D19 on
   [#197](https://github.com/blamechris/Aeolus/pull/197), which accepted the window, is closed by
   the amendment. One residual is left: a § 3 fire in flight across `stop()` whose maximum takes its
-  turn after the final keystone's request is refused, though its restore is still issued —
-  microseconds before the exit, and if that fan's restore was refused the exit is non-zero.
+  turn after the final keystone's request is refused. `stop()` cancels § 3's cycle without joining
+  it, so the teardown does not wait for that fire; the seal permits its restore, which runs only if
+  execution reaches it before the exit. The exit code comes from the final keystone alone: a
+  refused final keystone exits non-zero, and a refused § 3 restore does not.
   **A restore refused with `controlPathNotBuilt` — this build, which has
   no SMC write path — exits `0`, because a helper that cannot write cannot have left a fan in
   manual, and restarting it after every quit would tell the user nothing.**
@@ -1728,15 +1733,17 @@ then reads back the handbacks the firmware accepted (`confirmAcceptedHandbacks()
 past its entitlement when the verb arrives is refused at its first step's admission when that
 admission comes after the verb's restore request — on a `.built` plane, where the verb issues
 `.everyFan` — and one admitted earlier is covered by the restore that follows it (ADR 0014's #410
-ticket-and-seal amendment; `MachineWideRestoreInFlightApplyTests`). So the read-back never sees a
-step written after the keystone. The machine-wide restore is what reaches a fan held in manual under
-no live lease that Aeolus is *not* accountable for — one another tool pinned, one reconciliation
-recorded as `handbackRefused` — and the force key, which only a machine-wide restore clears. It sits
-between the other two so that the read-back follows the keystone and never precedes it ([ADR
-0007](ADR/0007-safety-composition.md)'s 2026-09-20 amendment). The handler is handed two narrow
-roles of the plane — the keystone (`KeystoneRestoring`) and `FanWriteCapabilityReporting` — and
-never the plane itself, so it still cannot command a fan. On every build on `main` the capability is
-`.notBuilt`: the restore is not issued, and what ships is the lease release and the read-back.
+ticket-and-seal amendment; `MachineWideRestoreInFlightApplyTests` drives an admission after the
+request). So the read-back never sees a step written after the keystone. The machine-wide restore is
+what reaches a fan held in manual under no live lease that Aeolus is *not* accountable for — one
+another tool pinned, one reconciliation recorded as `handbackRefused` — and a stray force key that
+no remaining tracked engagement's restore would clear (a `.fan(n)` restore clears the key only when
+no engagement still depends on it). It sits between the other two so that the read-back follows the
+keystone and never precedes it ([ADR 0007](ADR/0007-safety-composition.md)'s 2026-09-20 amendment).
+The handler is handed two narrow roles of the plane — the keystone (`KeystoneRestoring`) and
+`FanWriteCapabilityReporting` — and never the plane itself, so it still cannot command a fan. On
+every build on `main` the capability is `.notBuilt`: the restore is not issued, and what ships is
+the lease release and the read-back.
 
 **The reply is v1's "accepted" in every case, and that is not a contract change.** A refused
 `.everyFan` is caught explicitly — never with `try?` — and logged at `.fault`, and the message
