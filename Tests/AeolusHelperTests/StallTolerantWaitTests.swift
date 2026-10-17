@@ -24,14 +24,14 @@ struct StallTolerantWaitTests {
     /// needs two polls after it. A wait that spent the stall would give up at the third sleep
     /// and fail on the final check.
     ///
-    /// **Mutation:** in `StallTolerantWait.poll`, change `stall += overrun` to
+    /// **Mutation:** in `StallTolerantWait.poll`, change `granted += overrun` to
     /// `_ = overrun`, so a late poll is never added to the deadline. Run: red, with
     /// "timed out after 27.3 s of waiting (plus 0.0 s of runner stall compensated)".
     @Test("A stall longer than the whole budget is not spent from it")
     func aStallIsCompensated() async throws {
         let clock = VirtualWaitClock(lateness: { $0 == 3 ? .milliseconds(27_300) : .zero })
 
-        try await waitUntil("an event the stall delayed", clock: clock) {
+        try await waitCollectingNotes("an event the stall delayed", on: clock) {
             await clock.sleeps >= 5
         }
 
@@ -49,7 +49,7 @@ struct StallTolerantWaitTests {
     func aStallInsideTheConditionIsCompensated() async throws {
         let clock = VirtualWaitClock()
 
-        try await waitUntil("an event the stall delayed", clock: clock) {
+        try await waitCollectingNotes("an event the stall delayed", on: clock) {
             await clock.stall(for: .seconds(30), atSleep: 2)
             return await clock.sleeps >= 5
         }
@@ -78,7 +78,7 @@ struct StallTolerantWaitTests {
     /// A condition that never holds is still a failure, after the budget it asked for, and the
     /// figure for stall is zero — a failure with nothing to excuse it.
     ///
-    /// **Mutation:** in `StallTolerantWait.poll`, return `.held` where it returns `.timedOut`.
+    /// **Mutation:** in `StallTolerantWait.poll`, return `.held(…)` where it returns `.timedOut`.
     /// Run: red — "Known issue was not recorded".
     @Test("A condition that never holds still times out, with no stall to report")
     func aRealTimeoutIsStillATimeout() async throws {
@@ -124,7 +124,7 @@ struct StallTolerantWaitTests {
     /// second: the last sleep lands exactly on the deadline, the loop leaves, and only the
     /// final evaluation sees it.
     ///
-    /// **Mutation:** delete the `if await condition() { return .held }` after the loop in
+    /// **Mutation:** delete the `if await condition() { return .held(…) }` after the loop in
     /// `StallTolerantWait.poll`. Run: red — "timed out after 1.0 s of waiting".
     @Test("A condition that becomes true at the deadline passes")
     func theFinalCheck() async throws {
@@ -147,7 +147,7 @@ struct StallTolerantWaitTests {
     ///
     /// **Mutation:** in `StallTolerantWait.poll`, delete `wall >= ceiling ||` from the loop's
     /// exit. Run: red — no "cap hit", and an elapsed time of 5005 s. With the compensation also
-    /// made to count the interval (`stall += overrun + interval`) the loop would never end at
+    /// made to count the interval (`granted += overrun + interval`) the loop would never end at
     /// all, and it is this suite's `.timeLimit` that bounds it.
     @Test("Endless stall compensation stops at the ceiling and says cap hit")
     func theCeiling() async throws {
@@ -205,8 +205,8 @@ struct StallTolerantWaitTests {
 
     // MARK: - The shipping entry point
 
-    /// `waitUntil(_:timeout:interval:_:)` — the one every suite calls — is this poll on the real
-    /// clock. A real, short wait, so the entry point is not asserted by nothing: twelve tests
+    /// `waitUntil(_:timeout:interval:budget:_:)` — the one every suite calls — is this poll on the
+    /// real clock. A real, short wait, so the entry point is not asserted by nothing: every test
     /// of the injectable overload would pass with the shipping one a no-op.
     @Test("The shipping waitUntil returns when its condition comes true")
     func theShippingWaitReturns() async throws {
@@ -221,86 +221,57 @@ struct StallTolerantWaitTests {
         try await setter.value
     }
 
-    /// **Mutation:** replace the body of the shipping `waitUntil` in
-    /// `AnonymousListenerTests.swift` with `return`. Run: red — "Known issue was not recorded".
+    /// The caller's `timeout:` is the one the shipping wait runs under.
+    ///
+    /// The bound is on the **scheduled waiting time the message reports**, not on the wall
+    /// clock of this test: a stop of the whole process during these 50 ms adds to the wall time
+    /// and to the stall figure, and takes nothing from the figure asserted here, so the test
+    /// cannot fail for the runner it exists to tolerate.
+    ///
+    /// **Mutations.**
+    /// - Replace the body of the shipping `waitUntil` in `AnonymousListenerTests.swift` with
+    ///   `return`. Run: red — "Known issue was not recorded".
+    /// - **X11:** in the same body, pass `timeout: .seconds(5)` where it passes `timeout`, so
+    ///   the shipping wait ignores the caller's. Run: red — the wait takes 5 s and reports
+    ///   "timed out after 5.0 s of waiting", which no fragment accepts.
     @Test("The shipping waitUntil records a timeout, and says how much stall it compensated")
     func theShippingWaitTimesOut() async throws {
         try await expectTimeout(
-            saying: "timed out after", "of runner stall compensated) for: never holds"
+            saying: "timed out after", "of runner stall compensated) for: never holds",
+            waitedUnder: 1
         ) {
             try await waitUntil("never holds", timeout: .milliseconds(50)) { false }
         }
     }
 
-    // MARK: - Support
-
-    /// Expects exactly one issue, whose text holds every fragment.
+    /// A cancelled shipping wait ends with the cancellation, and records nothing.
     ///
-    /// An issue that does not match is not "known": it fails the test as itself, so a wrong
-    /// message reads as a wrong message and not as a missing one.
-    private func expectTimeout(
-        saying fragments: String...,
-        sourceLocation: SourceLocation = #_sourceLocation,
-        _ body: () async throws -> Void
-    ) async throws {
-        try await withKnownIssue(sourceLocation: sourceLocation) {
-            try await body()
-        } matching: { issue in
-            fragments.allSatisfy { fragment in
-                issue.comments.contains { $0.rawValue.contains(fragment) }
+    /// `cancellationEndsTheWait` pins this on the virtual clock, whose `sleep` is the double's
+    /// own. `SystemWaitClock.sleep` is another function, and the only one that runs in a suite
+    /// whose `.timeLimit` expires: it has to propagate the cancellation by itself. A wait that
+    /// swallowed it would carry on to its own timeout and record one; the 2 s is that
+    /// timeout, so the test is bounded without a stopwatch on the wall clock.
+    ///
+    /// **Mutation (X16):** in `SystemWaitClock.sleep`, `try?` the
+    /// `ContinuousClock().sleep(for:)`. Run: red — the wait returns normally after spinning
+    /// to its timeout, and records one.
+    @Test("A cancelled shipping wait ends with the cancellation and records nothing")
+    func cancellationEndsTheShippingWait() async throws {
+        let began = CompletionFlag()
+        let wait = Task {
+            try await waitUntil("a condition that never holds", timeout: .seconds(2)) {
+                await began.mark()
+                return false
             }
         }
-    }
-}
+        try await waitUntil("the wait began") { await began.isSet }
+        wait.cancel()
+        let result = await wait.result
 
-/// A clock the test moves, whose sleeps can come back late.
-///
-/// Late is the whole point: `TestClock` jumps to the deadline it is asked for, so it cannot
-/// show a poll a sleep that took longer than it was told to. This one advances by the interval
-/// **plus** what `lateness` says that sleep (numbered from 1) was delayed by. Nothing here
-/// sleeps for real, so a 27 s stall costs microseconds and no cooperative-pool thread is ever
-/// blocked.
-///
-/// An `actor`, as the `WaitClock` members are `async` to allow. It yields once per sleep so a
-/// poll driven by it still gives other tasks a chance to run, and so a suite `.timeLimit` can
-/// land on a poll that has stopped making progress.
-actor VirtualWaitClock: WaitClock {
-
-    private let origin: ContinuousClock.Instant
-    private var instant: ContinuousClock.Instant
-    private let lateness: @Sendable (Int) -> Duration
-    private var stalledAt: Set<Int> = []
-
-    /// How many sleeps have been asked for.
-    private(set) var sleeps = 0
-
-    init(
-        start: ContinuousClock.Instant = ContinuousClock.now,
-        lateness: @escaping @Sendable (Int) -> Duration = { _ in .zero }
-    ) {
-        origin = start
-        instant = start
-        self.lateness = lateness
-    }
-
-    /// How far the clock has moved.
-    var elapsed: Duration { instant - origin }
-
-    func now() -> ContinuousClock.Instant { instant }
-
-    func sleep(for interval: Duration) async throws {
-        sleeps += 1
-        instant = instant.advanced(by: interval + lateness(sleeps))
-        await Task.yield()
-        // After the advance, so a wait that swallowed the cancellation would still move
-        // on the clock and end by its budget rather than spin where it stood.
-        try Task.checkCancellation()
-    }
-
-    /// Stops the process for `duration`, once, when exactly `count` sleeps have been asked
-    /// for — the stall landing in whatever runs between two polls, which is the condition.
-    func stall(for duration: Duration, atSleep count: Int) {
-        guard sleeps == count, stalledAt.insert(count).inserted else { return }
-        instant = instant.advanced(by: duration)
+        guard case .failure(let error) = result else {
+            Issue.record("a cancelled shipping wait returned as though its condition had held")
+            return
+        }
+        #expect(error is CancellationError)
     }
 }

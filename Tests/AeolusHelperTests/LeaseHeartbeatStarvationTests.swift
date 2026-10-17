@@ -42,6 +42,12 @@ struct LeaseHeartbeatStarvationTests {
     ///
     /// The green path never waits for it — `waitUntil` returns the moment its condition
     /// holds — so the generous deadline costs the suite nothing and only the red run pays it.
+    ///
+    /// **Waited for on the wall clock** (`budget: .wallTime` at both call sites): this is a
+    /// deadline the lease contract holds the product to, not a wait, and the default budget
+    /// would stretch it by any overrun in the poll, up to 50 s. The price is that a runner
+    /// stall can fail these two waits; the message says "seen, not compensated". Held by
+    /// `StallTolerantWaitBudgetTests`.
     private static let heartbeatBudget = Duration.seconds(
         Lease.defaultTimeToLive - Lease.defaultHeartbeatInterval)
 
@@ -99,7 +105,7 @@ struct LeaseHeartbeatStarvationTests {
 
         try await waitUntil(
             "the heartbeat reached the lease core inside the budget § 1 gives it",
-            timeout: Self.heartbeatBudget
+            timeout: Self.heartbeatBudget, budget: .wallTime
         ) {
             await authority.heartbeats == 1
         }
@@ -165,7 +171,7 @@ struct LeaseHeartbeatStarvationTests {
 
         try await waitUntil(
             "the release reached the lease core rather than waiting for the reads",
-            timeout: Self.heartbeatBudget
+            timeout: Self.heartbeatBudget, budget: .wallTime
         ) {
             await authority.releases == 1
         }

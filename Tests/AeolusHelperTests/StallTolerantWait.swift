@@ -32,6 +32,19 @@ struct SystemWaitClock: WaitClock {
     }
 }
 
+/// What a wait's `timeout:` bounds.
+enum WaitBudget: Sendable, Equatable {
+
+    /// Scheduled waiting time: a stall is added to the deadline. What a wait for something to
+    /// happen means, and what every caller gets unless it says otherwise.
+    case runTime
+
+    /// Elapsed time: a stall is measured and reported but spends the bound. For a `timeout:`
+    /// that is a deadline the product is held to, which compensation would stretch to the
+    /// ceiling.
+    case wallTime
+}
+
 /// A poll whose budget counts only the time the waiter **ran**.
 ///
 /// [#341](https://github.com/blamechris/Aeolus/issues/341): the poll used to measure its 5 s
@@ -45,8 +58,28 @@ struct SystemWaitClock: WaitClock {
 /// included, took longer than that by more than ``stallThreshold``, the process was not
 /// running for the difference, and the difference is added to the deadline. What a wait asks
 /// for with `timeout:` is therefore scheduled waiting time and not wall time, which is the
-/// only reading under which it can mean the same thing on a quiet laptop and a stalled
+/// only reading under which a *wait* can mean the same thing on a quiet laptop and a stalled
 /// runner.
+///
+/// ## When the timeout is a contract, not a wait
+///
+/// Not every `timeout:` is a wait. A caller that passes a bound the product promises — the
+/// time a lease heartbeat has to be answered in, derived from the TTL — is asserting a
+/// deadline, and stretching a deadline by 50 s is no longer asserting it. Those callers pass
+/// ``WaitBudget/wallTime``: the stall is still measured and still reported, but it is spent
+/// from the bound like any other time. The price is honest and paid by the caller: a runner
+/// stall can fail such a wait, and the message says that it is the stall — "seen, not
+/// compensated" — rather than the client.
+///
+/// ## What compensation cannot tell
+///
+/// A stall and a slow condition look the same from here: both are an iteration that overran.
+/// A condition that regresses from 10 ms to 2 s, on an idle runner, is compensated exactly as
+/// a descheduled process is, and a *passing* wait says nothing. So a pass that compensated
+/// more than ``noteThreshold`` writes a line to standard error — never an issue, since the
+/// test passed — naming the wait. Seeing that line on a run with no stall in it is how a slow
+/// condition is caught; this is the trade the fix makes, and it is chosen over failing a
+/// correct test for the runner's pause.
 ///
 /// ## Why 250 ms
 ///
@@ -81,19 +114,28 @@ enum StallTolerantWait {
     /// The most wall time one wait may take, stall compensation included.
     static let ceiling: Duration = .seconds(50)
 
+    /// How much stall a *passing* wait may compensate before it says so on standard error.
+    static let noteThreshold: Duration = .seconds(1)
+
     enum Outcome: Sendable, Equatable {
-        case held
+
+        /// The condition held, having compensated `compensated` of stall on the way.
+        case held(compensated: Duration)
         case timedOut(Expiry)
     }
 
     /// What a wait spent before it gave up.
     struct Expiry: Sendable, Equatable {
 
-        /// Scheduled waiting time: the wall time spent, less the stall.
+        /// Time the wait spent: wall time, less whatever was compensated.
         let waited: Duration
 
-        /// Wall time the runner was not running the wait, added to its deadline.
+        /// Wall time the runner was not running the wait, as measured.
         let stall: Duration
+
+        /// Whether `stall` was added to the deadline (``WaitBudget/runTime``) or spent from
+        /// it (``WaitBudget/wallTime``).
+        let compensated: Bool
 
         /// Whether it was the ceiling rather than the budget that ended the wait.
         let capHit: Bool
@@ -101,18 +143,33 @@ enum StallTolerantWait {
         /// The ceiling this wait ran under, so the message names the one that applied.
         let ceiling: Duration
 
-        /// The issue text, which says in every case how much stall was compensated — zero
-        /// included, so that "no stall" is a statement and not an omission.
+        /// The issue text, which says in every case how much stall there was and what was done
+        /// about it — zero included, so that "no stall" is a statement and not an omission.
         func message(waitingFor what: String) -> String {
             let spent = "\(Self.render(waited)) of waiting"
-            let compensated = "plus \(Self.render(stall)) of runner stall compensated"
+            let stalled =
+                compensated
+                ? "plus \(Self.render(stall)) of runner stall compensated"
+                : "wall-clock bound: \(Self.render(stall)) of runner stall seen, not compensated"
             guard capHit else {
-                return "timed out after \(spent) (\(compensated)) for: \(what)"
+                return "timed out after \(spent) (\(stalled)) for: \(what)"
             }
             return """
                 timed out at the \(Self.render(ceiling)) cap (cap hit) after \
-                \(spent) (\(compensated)) for: \(what)
+                \(spent) (\(stalled)) for: \(what)
                 """
+        }
+
+        /// The line a passing wait writes when it compensated more than
+        /// ``StallTolerantWait/noteThreshold``.
+        static func passNote(
+            waitingFor what: String, compensated: Duration, at location: String
+        ) -> String {
+            """
+            note: waitUntil at \(location) passed after compensating \(render(compensated)) of \
+            runner stall, for: \(what). A stall and a slow condition look alike to the wait; \
+            if this line appears on a run with no runner stall in it, the condition is slow.
+            """
         }
 
         private static func render(_ duration: Duration) -> String {
@@ -122,11 +179,18 @@ enum StallTolerantWait {
         }
     }
 
+    /// The default sink for a pass that compensated a lot: one write, so concurrent tests do not
+    /// interleave inside a line.
+    static func writeToStandardError(_ line: String) {
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+    }
+
     /// Polls `condition` until it holds or the budget is spent.
     ///
     /// - Parameters:
-    ///   - timeout: scheduled waiting time, not wall time.
+    ///   - timeout: scheduled waiting time, or elapsed time under ``WaitBudget/wallTime``.
     ///   - interval: the sleep between polls.
+    ///   - budget: whether a stall is added to the deadline or spent from it.
     ///   - threshold: how far past `interval` an iteration may run before the overrun counts
     ///     as a stall.
     ///   - ceiling: the most wall time the wait may take, stall included.
@@ -137,6 +201,7 @@ enum StallTolerantWait {
     static func poll(
         timeout: Duration,
         interval: Duration,
+        budget: WaitBudget = .runTime,
         threshold: Duration = StallTolerantWait.stallThreshold,
         ceiling: Duration = StallTolerantWait.ceiling,
         clock: some WaitClock,
@@ -145,12 +210,13 @@ enum StallTolerantWait {
         let start = await clock.now()
         var mark = start
         var stall = Duration.zero
+        var granted = Duration.zero
 
         while true {
             let wall = mark - start
-            if wall >= ceiling || wall - stall >= timeout { break }
+            if wall >= ceiling || wall - granted >= timeout { break }
 
-            if await condition() { return .held }
+            if await condition() { return .held(compensated: granted) }
 
             try await clock.sleep(for: interval)
             let woke = await clock.now()
@@ -158,15 +224,20 @@ enum StallTolerantWait {
             // Condition and sleep both: a process stopped while the condition was being
             // evaluated lost that time as surely as one stopped while sleeping.
             let overrun = (woke - mark) - interval
-            if overrun > threshold { stall += overrun }
+            if overrun > threshold {
+                stall += overrun
+                if budget == .runTime { granted += overrun }
+            }
             mark = woke
         }
 
-        if await condition() { return .held }
+        if await condition() { return .held(compensated: granted) }
 
         let wall = mark - start
         return .timedOut(
-            Expiry(waited: wall - stall, stall: stall, capHit: wall >= ceiling, ceiling: ceiling))
+            Expiry(
+                waited: wall - granted, stall: stall, compensated: budget == .runTime,
+                capHit: wall >= ceiling, ceiling: ceiling))
     }
 }
 
@@ -178,12 +249,17 @@ enum StallTolerantWait {
 /// to polling is a fixed sleep — which is either flaky or slow, and gives no diagnostic
 /// when it fails. Fails the test with the reason rather than hanging the suite.
 ///
-/// `timeout` is scheduled waiting time, not wall time, so every caller keeps the meaning it
-/// had: a runner that stalled for 30 s does not spend it. A timeout says how much stall it
-/// compensated. The figure is evidence and not an excuse — the budget was spent in full
-/// either way — but a large one says the run was on a stalled runner, so look first for
-/// something else the stall tripped, such as a client deadline measured on the wall clock,
-/// before looking for a client defect. Zero says there was nothing to look for.
+/// By default `timeout` is scheduled waiting time, not wall time: a runner that stalled for
+/// 30 s does not spend it. A caller whose `timeout` is a deadline the product is held to, and
+/// not a wait for something to happen, passes `budget: .wallTime` and is not stretched. A
+/// timeout says how much stall there was and which of the two was done about it. The figure is
+/// evidence and not an excuse — the budget was spent in full either way — but a large one says
+/// the run was on a stalled runner, so look first for something else the stall tripped, such
+/// as a client deadline measured on the wall clock, before looking for a client defect. Zero
+/// says there was nothing to look for.
+///
+/// A *pass* that compensated more than a second writes a line to `note`, standard error by
+/// default; see "What compensation cannot tell" on ``StallTolerantWait``.
 ///
 /// This is the injectable overload, and it is what the shipping one calls. `clock` has no
 /// default, so a call without it can only mean the overload below.
@@ -191,16 +267,26 @@ func waitUntil(
     _ what: String,
     timeout: Duration = .seconds(5),
     interval: Duration = .milliseconds(10),
+    budget: WaitBudget = .runTime,
     threshold: Duration = StallTolerantWait.stallThreshold,
     ceiling: Duration = StallTolerantWait.ceiling,
     clock: some WaitClock,
+    note: (String) -> Void = StallTolerantWait.writeToStandardError,
     _ condition: () async -> Bool,
     sourceLocation: SourceLocation = #_sourceLocation
 ) async throws {
     let outcome = try await StallTolerantWait.poll(
-        timeout: timeout, interval: interval, threshold: threshold, ceiling: ceiling,
-        clock: clock, condition: condition)
-    if case .timedOut(let expiry) = outcome {
+        timeout: timeout, interval: interval, budget: budget, threshold: threshold,
+        ceiling: ceiling, clock: clock, condition: condition)
+    switch outcome {
+    case .held(let compensated) where compensated > StallTolerantWait.noteThreshold:
+        note(
+            StallTolerantWait.Expiry.passNote(
+                waitingFor: what, compensated: compensated,
+                at: "\(sourceLocation.fileID):\(sourceLocation.line)"))
+    case .held:
+        break
+    case .timedOut(let expiry):
         Issue.record(
             Comment(rawValue: expiry.message(waitingFor: what)), sourceLocation: sourceLocation)
     }
