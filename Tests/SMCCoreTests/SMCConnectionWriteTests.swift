@@ -191,4 +191,100 @@ struct SMCRequestLayoutTests {
     }
 }
 
+/// A5: `encode(scalar:byteOrder:)` for the two types the write plane writes, round-tripped
+/// through the production decoder, `SMCValue.scalar()`, in both byte orders.
+///
+/// A round trip alone cannot see a byte swap made the same way in both directions, so `flt`'s
+/// little-endian output is also pinned to bytes this machine produced: `F0Tg` and `F1Tg` read
+/// 1350 and 1458 as raw `00c0a844` and `0040b644` on `Mac16,5` (`docs/SMC-RESEARCH.md`, the
+/// sleep/wake section). Those are the key and the order the write plane targets.
+@Suite("SMC key type encode, ui8 and flt")
+struct SMCKeyTypeEncodeTests {
+
+    private static let modeKey = SMCKey("F0Md")!
+    private static let targetKey = SMCKey("F0Tg")!
+
+    @Test("ui8 encodes one byte, whatever the order, and decodes back to the same value")
+    func ui8RoundTrips() throws {
+        for value in [0.0, 1.0, 2.0, 255.0] {
+            for order in [nil, SMCByteOrder.littleEndian, .bigEndian] {
+                let bytes = try SMCKeyType.ui8.encode(scalar: value, byteOrder: order)
+                #expect(bytes == [UInt8(value)])
+                let decoded = try SMCValue(key: Self.modeKey, type: .ui8, bytes: bytes).scalar()
+                #expect(decoded == value)
+            }
+        }
+    }
+
+    @Test("ui8 refuses a fraction, a value out of range, NaN and the infinities")
+    func ui8RefusesWhatIsNotAByte() {
+        for value in [0.5, 1.000_001, -1.0, 256.0, Double.nan, .infinity, -.infinity] {
+            #expect(throws: SMCError.notPermitted, "\(value)") {
+                _ = try SMCKeyType.ui8.encode(scalar: value, byteOrder: nil)
+            }
+        }
+    }
+
+    @Test("flt little-endian is the bytes F0Tg and F1Tg were observed holding on Mac16,5")
+    func fltLittleEndianMatchesObservedBytes() throws {
+        #expect(
+            try SMCKeyType.flt.encode(scalar: 1350, byteOrder: .littleEndian) == [
+                0x00, 0xC0, 0xA8, 0x44,
+            ])
+        #expect(
+            try SMCKeyType.flt.encode(scalar: 1458, byteOrder: .littleEndian) == [
+                0x00, 0x40, 0xB6, 0x44,
+            ])
+    }
+
+    @Test("flt big-endian is the same four bytes, reversed")
+    func fltBigEndianIsReversed() throws {
+        #expect(
+            try SMCKeyType.flt.encode(scalar: 1350, byteOrder: .bigEndian) == [
+                0x44, 0xA8, 0xC0, 0x00,
+            ])
+    }
+
+    @Test("flt round-trips through scalar() in both byte orders")
+    func fltRoundTripsInBothOrders() throws {
+        for value in [1350.0, 1458.0, 1234.5, 7826.0, 0.0, -12.25, 3.0e38] {
+            for order in [SMCByteOrder.littleEndian, .bigEndian] {
+                let bytes = try SMCKeyType.flt.encode(scalar: value, byteOrder: order)
+                #expect(bytes.count == 4)
+                let decoded = try SMCValue(
+                    key: Self.targetKey, type: .flt, bytes: bytes, byteOrder: order
+                ).scalar()
+                #expect(decoded == Double(Float(value)), "\(value), \(order)")
+            }
+        }
+    }
+
+    @Test("flt refuses NaN, the infinities, and a Double past Float's range")
+    func fltRefusesWhatIsNotAFiniteFloat() {
+        for value in [Double.nan, .infinity, -.infinity, 1.0e39, -1.0e39] {
+            for order in [SMCByteOrder.littleEndian, .bigEndian] {
+                #expect(throws: SMCError.notPermitted, "\(value), \(order)") {
+                    _ = try SMCKeyType.flt.encode(scalar: value, byteOrder: order)
+                }
+            }
+        }
+    }
+
+    @Test("flt with no resolved byte order is refused rather than guessed")
+    func fltRefusesWithoutAByteOrder() {
+        #expect(throws: SMCError.notPermitted) {
+            _ = try SMCKeyType.flt.encode(scalar: 1350, byteOrder: nil)
+        }
+    }
+
+    @Test("Every other type still has no encoder")
+    func otherTypesAreNotImplemented() {
+        for type in [SMCKeyType.fpe2, .sp78, .ui16, .ui32, .si8, .flag, .ioft, .hex] {
+            #expect(throws: SMCError.encodingNotImplemented(type: type)) {
+                _ = try type.encode(scalar: 1, byteOrder: .littleEndian)
+            }
+        }
+    }
+}
+
 // swiftlint:enable force_unwrapping

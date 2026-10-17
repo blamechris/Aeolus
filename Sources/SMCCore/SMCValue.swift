@@ -239,10 +239,71 @@ extension SMCKeyType {
     /// single byte has no byte order to apply — and so do `fpe2`/`fp78`/`sp78`, which are
     /// big-endian by definition of the type.
     ///
-    /// - Note: Implemented in E3 (Intel, `fpe2`) and E4 (Apple Silicon, `flt`), each with
-    ///   round-trip tests against `SMCValue.scalar()`. Left unimplemented rather than
-    ///   guessed: a wrong encoding here writes a wrong RPM to real hardware.
+    /// Two types are encoded, the two the Apple Silicon write plane writes (ADR 0014 B1):
+    /// - **`ui8`**, for `F<n>Md` and `Ftst`: one byte, exactly an integer in `0...255`. A
+    ///   fraction, a value out of range, `NaN` or an infinity is refused rather than rounded
+    ///   or wrapped, because a rounded mode byte is a different mode. The order is ignored.
+    /// - **`flt`**, for `F<n>Tg`: IEEE-754 single precision, in the order given, which must be
+    ///   given. A value that is not finite as a `Float` — `NaN`, an infinity, or a `Double`
+    ///   past `Float`'s range, which converts to one — is refused (ADR 0004; ADR 0008's clamp
+    ///   only ever produces finite targets, and this does not trust that it did).
+    ///
+    /// A refusal throws `SMCError.notPermitted`. `encodingFailed(key:type:)` is the case for
+    /// "the value does not fit the type", but it carries a key, and this function — whose
+    /// signature the SPI census pins — has none. Every other type still throws
+    /// `encodingNotImplemented(type:)`: E3's `fpe2`, and anything the write plane does not
+    /// write, stay unwritten rather than guessed — a wrong encoding writes a wrong RPM to
+    /// real hardware.
+    ///
+    /// Encoding is type-level only. Whether a value is a *safe* RPM is `FanKit`'s
+    /// `FanControlEnvelope`'s question, answered before anything reaches here, and a
+    /// restore's zero bytes never come through this function at all (ADR 0014 B1).
+    ///
+    /// - Note: `flt`'s little-endian output is pinned to the bytes `F0Tg` and `F1Tg` were
+    ///   observed holding on `Mac16,5`, so a byte swap made symmetrically here and in
+    ///   `scalar()` cannot pass as a round trip. See `SMCKeyTypeEncodeTests`.
     @_spi(FanWrite) public func encode(scalar: Double, byteOrder: SMCByteOrder?) throws -> [UInt8] {
-        throw SMCError.encodingNotImplemented(type: self)
+        switch self {
+        case .ui8:
+            guard let byte = UInt8(exactly: scalar) else {
+                Self.logRefusal(scalar, of: self, reason: "not an integer in 0...255")
+                throw SMCError.notPermitted
+            }
+            return [byte]
+
+        case .flt:
+            guard let order = byteOrder else {
+                Self.logRefusal(scalar, of: self, reason: "no resolved byte order")
+                throw SMCError.notPermitted
+            }
+            let single = Float(scalar)
+            guard single.isFinite else {
+                Self.logRefusal(scalar, of: self, reason: "not finite as a Float")
+                throw SMCError.notPermitted
+            }
+            let bits = single.bitPattern
+            let littleEndian: [UInt8] = [
+                UInt8(bits & 0xFF),
+                UInt8((bits >> 8) & 0xFF),
+                UInt8((bits >> 16) & 0xFF),
+                UInt8((bits >> 24) & 0xFF),
+            ]
+            return order == .littleEndian ? littleEndian : littleEndian.reversed()
+
+        default:
+            throw SMCError.encodingNotImplemented(type: self)
+        }
     }
+
+    private static func logRefusal(_ scalar: Double, of type: SMCKeyType, reason: String) {
+        encodeLogger.fault(
+            """
+            Refused to encode \(scalar, privacy: .public) as \
+            \(type.fourCharString, privacy: .public): \(reason, privacy: .public). Nothing was \
+            written.
+            """
+        )
+    }
+
+    private static let encodeLogger = Logger(subsystem: "dev.aeolus.SMCCore", category: "Encode")
 }
