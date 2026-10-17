@@ -218,18 +218,19 @@ struct SupervisedFanAuthorityTests {
             """)
     }
 
-    // MARK: - apply: authorises, then refuses
+    // MARK: - apply: refuses during teardown, authorises, then reaches level 6
 
     /// `apply` authorises before it refuses, so a client debugging its own lease handling is
     /// told *which* thing is wrong.
     ///
     /// A blanket `.writePathNotBuilt` for every input would hide `.leaseUnknown`,
-    /// `.leaseNotHeldByThisConnection` and `.leaseExpired` behind one answer, and would also
-    /// mean the authorisation is not there to be in front of the write on the day E3 adds
-    /// one. That is the whole reason the check is written before a body that cannot use it.
+    /// `.leaseNotHeldByThisConnection` and `.leaseExpired` behind one answer. Since A6's third
+    /// step the authorisation is `LeaseApplier`'s first act, in front of the write it guards, so
+    /// this asks the authority and not level 6 directly: the forward must reach it.
     ///
-    /// **Mutation:** delete `_ = try await leases.heldLease(id: leaseID, from: connection)`.
-    /// Run: red — the unknown lease is answered `.writePathNotBuilt`.
+    /// **Mutation:** replace the delegation in `SupervisedFanAuthority.apply` with `throw
+    /// AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)`. Run: red — the
+    /// unknown lease is answered `.writePathNotBuilt`.
     @Test("Applying with an unknown lease is refused as unknown, not as unwritable")
     func applyAuthorisesBeforeItRefuses() async throws {
         let helper = await Self.bound()
@@ -239,22 +240,24 @@ struct SupervisedFanAuthorityTests {
         }
     }
 
-    /// A **held** lease over a seam that can write is still refused, and the refusal names
-    /// the build.
+    /// A **held** lease over a seam that can write reaches level 6: the fan is engaged, commanded
+    /// at the setting, and both safety registries hold it under the lease.
     ///
-    /// This is the assertion that stood behind removing the authority's stored
-    /// `FanWriteCapabilityReporting`, and it still stands now that § 7 holds one again: `apply`
-    /// refuses because there is no control loop in that type, not because the seam said
-    /// `.notBuilt`. `ScriptedControlPlane` answers `.built`, so a capability-sourced refusal
-    /// would have to say something else here. Without this test the deleted property and the
-    /// doc comment that contradicted it were indistinguishable from a working gate.
+    /// This was `supervisedApplyRefusesEvenWhenTheSeamCanWrite`, which pinned the opposite while
+    /// the authority had no level 6 behind it: `.writePathNotBuilt` over a seam that answered
+    /// `.built`, because there was nothing in the type for a capable plane to reach. Since A6's
+    /// third step the authority delegates to the composition's `LeaseApplier` (ADR 0014's A6 PR-3
+    /// amendment), so the same lease over the same seam is applied. Each assertion is on the
+    /// firmware or a registry, never on the reply alone, which a forward that swallowed the call
+    /// would also satisfy.
     ///
-    /// **Mutation:** make `apply` return normally after the authorisation, as E3 eventually
-    /// will. Run: red — which is the reminder that E3 owns replacing this test, not
-    /// deleting it.
-    @Test("Applying with a held lease is refused even when the seam can write")
-    func supervisedApplyRefusesEvenWhenTheSeamCanWrite() async throws {
-        let helper = await Self.bound()
+    /// **Mutation:** restore the old body, `_ = try await leases.heldLease(id: leaseID, from:
+    /// connection)` and then `throw AeolusXPCFault.manualControlUnavailable(reason:
+    /// .writePathNotBuilt)`, after the shutdown refusal. Run: red, at the apply.
+    @Test("Applying with a held lease over a seam that can write reaches level 6")
+    func supervisedApplyReachesLevelSixWhenTheSeamCanWrite() async throws {
+        let helper = HelperRestorerTests.composed(clock: TestClock())
+        await helper.bindSafetyRegistries()
         #expect(
             helper.plane.writeCapability == .built,
             "this test is vacuous unless the seam under the helper really can write")
@@ -262,14 +265,23 @@ struct SupervisedFanAuthorityTests {
         let lease = try await helper.authority.acquireLease(
             LeaseFixture.request(fans: [0]), from: connection)
 
-        await #expect(
-            throws: AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
-        ) {
-            try await helper.authority.apply(
-                [FanSetting(fanIndex: 0, control: .fixed(rpm: 2_400))],
-                leaseID: lease.id,
-                from: connection)
-        }
+        try await helper.authority.apply(
+            [FanSetting(fanIndex: 0, control: .fixed(rpm: 2_400))],
+            leaseID: lease.id,
+            from: connection)
+
+        #expect(
+            try await helper.plane.firmwareMode(ofFan: 0) == .manual,
+            "the authority answered applied and the fan is not in manual control")
+        #expect(
+            await helper.plane.attempts.contains(.commandTarget(fan: 0, rpm: 2_400)),
+            "no target was written for the setting the authority answered applied")
+        #expect(
+            await helper.reclamationWatchdog.lastCommanded(ofFan: 0)?.rpm == 2_400,
+            "§ 5 holds no record of the target, so its next cycle watches nothing")
+        #expect(
+            await helper.thermalEmergency.fansUnderManualControl == [0],
+            "§ 3 was not told of the engagement, so an emergency would not bridge the fan")
     }
 
     // MARK: - The snapshot's ordering

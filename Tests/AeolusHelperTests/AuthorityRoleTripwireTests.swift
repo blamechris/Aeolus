@@ -144,6 +144,7 @@ struct AuthorityRoleTripwireTests {
             "private let keystone: any KeystoneRestoring",
             "private let writeCapability: any FanWriteCapabilityReporting",
             "private let telemetry: any SightednessProving",
+            "private let control: any LeaseApplying",
             "let controlGate = ControlMessageGate()",
             "private let log: HelperLog",
             "private static let shuttingDown = AeolusXPCFault.helperFailed(",

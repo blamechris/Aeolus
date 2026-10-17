@@ -322,7 +322,7 @@ struct BlindAvailabilityTests {
         let authority = SupervisedFanAuthority(
             reading: helper.reading, leases: helper.leases, reconciliation: helper.reconciliation,
             keystone: helper.plane, writeCapability: helper.plane, telemetry: sighting,
-            log: Fixture.helperLog)
+            control: NoLevelSix(), log: Fixture.helperLog)
 
         let snapshot = Task { try await authority.snapshot() }
         await yieldUntil("the snapshot's sighting to park") { await sighting.parked == 1 }

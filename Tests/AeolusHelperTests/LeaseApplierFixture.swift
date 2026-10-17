@@ -70,6 +70,19 @@ func fixed(_ targets: (fan: Int, rpm: Double)...) -> [FanSetting] {
     targets.map { FanSetting(fanIndex: $0.fan, control: .fixed(rpm: $0.rpm)) }
 }
 
+/// Level 6 for an authority a test builds by hand to drive something other than `apply`: the
+/// panic verb, the snapshot's sighting. It records an issue if it is asked, so a suite that meant
+/// to leave `apply` alone cannot pass by reaching it. The authority the composition builds holds
+/// the real `LeaseApplier` (ADR 0014's A6 PR-3 amendment).
+struct NoLevelSix: LeaseApplying {
+    func apply(
+        _ settings: [FanSetting], leaseID lease: UUID, from connection: ConnectionID
+    ) async throws {
+        Issue.record("an authority built to test something other than apply was asked to apply")
+        throw AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
+    }
+}
+
 /// A write path that reports itself not built, for item 5's `.notBuilt` row. A state only a test
 /// can produce: a lease granted on a capability the write path does not share.
 struct NotBuiltWritePath: FanWriteCapabilityReporting {

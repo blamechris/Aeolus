@@ -6,12 +6,12 @@ import Foundation
 /// fan at a time under that fan's examination gate
 /// ([ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)'s A6 and A6 PR-2 amendments).
 ///
-/// ## Built only by tests
+/// ## Composed once, and reached only through the boundary
 ///
-/// `HelperComposition` does not build this and `SupervisedFanAuthority.apply` does not reach it:
-/// A6's next step wires it to the privilege boundary, and nothing on `main` can observe it. On a
-/// `.notBuilt` build it is unreachable however it is wired, because no lease is granted there and
-/// `apply` asks `heldLease(id:from:)` before anything else.
+/// `HelperComposition` builds exactly one, and `SupervisedFanAuthority.apply` reaches it through
+/// `LeaseApplying` after the authority's shutdown refusal (ADR 0014's A6 PR-3 amendment). On a
+/// `.notBuilt` build it writes nothing, because no lease is granted there and `apply` asks
+/// `heldLease(id:from:)` before anything else.
 ///
 /// ## The order is the design
 ///
@@ -61,7 +61,7 @@ import Foundation
 /// lease never meet: a lease has one connection, and that connection's `MessageSequencer` runs
 /// one message at a time. That is ordering, not this type's guarantee, and it does not stop an
 /// `apply` under an ended lease meeting one under the lease granted since.
-actor LeaseApplier<Plane: FanControlPlane> {
+actor LeaseApplier<Plane: FanControlPlane>: LeaseApplying {
 
     /// The only holder of a target verb here: `hold(_:of:)` writes each fixed setting whole.
     private let writer: GovernedFanWriter<Plane>
