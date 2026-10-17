@@ -136,6 +136,33 @@ struct SMCConnectionCacheTests {
         #expect(await connection.readKeyInfoAttempts == 1)
     }
 
+    /// A6: the write path's key-info read never answers from the cache. The handle is the dead
+    /// port, so the `READ_KEYINFO` is stamped and fails inside IOKit with nothing sent; a
+    /// version that served the seeded entry would return it, issuing nothing.
+    @Test("freshKeyInfo(for:) issues READ_KEYINFO even when the cache holds the key")
+    func freshKeyInfoBypassesTheCache() async throws {
+        let connection = SMCConnection()
+        let monitor = connection.roundTrips
+        let key = SMCKey("F0Md")!
+        let seeded = SMCKeyInfo(key: key, type: .ui8, dataSize: 1, attributes: 0xD0)
+        await connection.seedKeyInfoCacheForTesting(seeded)
+        await connection.adoptUnusableHandleForTesting()
+
+        await #expect(throws: SMCError.self) {
+            _ = try await connection.freshKeyInfo(for: key)
+        }
+
+        #expect(monitor.issuedCount == 1, "one READ_KEYINFO, whatever the cache held")
+        #expect(monitor.lastBegunOperation == .call(key: key.fourCharCode, selector: 9))
+        #expect(await connection.readKeyInfoAttempts == 1)
+
+        // A failure leaves the cache as it was: the read path still answers from it, and
+        // that answer costs nothing.
+        #expect(try await connection.keyInfo(for: key) == seeded)
+        #expect(monitor.issuedCount == 1)
+        await connection.close()
+    }
+
     @Test("key(at:) returns a seeded entry without attempting READ_INDEX")
     func keyAtIndexServesFromCache() async throws {
         let connection = SMCConnection()
