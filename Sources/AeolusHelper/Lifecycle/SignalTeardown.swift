@@ -226,13 +226,18 @@ actor DispatchSignalSources: SignalSourcing {
 ///    life are issued.
 /// 5. **Re-issue the keystone, and take the exit code from *that* write.** Ruling D19 on
 ///    [#197](https://github.com/blamechris/Aeolus/pull/197). `stop()` cancels the three
-///    supervisors; it does not await a cycle already in flight. A § 3 fire or a § 5
-///    re-assert that began before step 4 can therefore land its `engageManualControl` write
-///    *after* step 3 has run, and the process would then exit `0` — "every fan is back" —
-///    over a fan it had just put into manual. The keystone takes no reading, no bound and no
-///    lease, so re-issuing it is idempotent and cheap, and it narrows the window — a write
-///    landing between this restore and the exit is still possible — without reordering
-///    anything A4 fixed. Step 3 is not redundant with it: a restore issued only
+///    supervisors; it does not await a cycle already in flight. A § 5 re-assert that began
+///    before step 4 can therefore land its `engageManualControl` write *after* step 3 has run,
+///    and the process would then exit `0` — "every fan is back" — over a fan it had just put
+///    into manual. (§ 3's fire never engages: it commands the maximum, then restores.) The
+///    keystone takes no reading, no bound and no lease, so re-issuing it is idempotent and
+///    cheap, and it narrows the window — a write landing between this restore and the exit is
+///    still possible — without reordering anything A4 fixed. Level 6's `apply` in flight
+///    inherits that window, and on a plane that can write it is not acceptable: an engagement's
+///    first step admitted after this restore leaves `Ftst = 1` with exit `0` on the force-key
+///    path. [#410](https://github.com/blamechris/Aeolus/issues/410)'s items 1 and 1a, the
+///    `.forExit` seal and the engagement's ticket, close it before B1's first `.built` commit
+///    (ADR 0014's A6 PR-3 amendment). Step 3 is not redundant with it: a restore issued only
 ///    after the supervisors stop is a restore that has not happened while § 3 and § 5 are
 ///    still running, which is the ordering step 4's own paragraph exists to protect.
 /// 6. **Exit**, `0` if the final restore landed or there was nothing to restore, and

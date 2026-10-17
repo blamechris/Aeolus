@@ -580,6 +580,10 @@ struct WriteVerbAllowlistTests {
         "LeaseApplier.swift: step(_: Double, toFanAt: Int, under: UUID, engaging: inout [Int])",
         "LeaseApplier.swift: undo(_: [Int], under: UUID)",
         "LeaseApplier.swift: refusal(for: any Error, leaseID: UUID, from: ConnectionID)",
+        // The role the authority reaches level 6 through (ADR 0014's A6 PR-3 amendment): the
+        // same verb, as a requirement, with no permit. Its one conformer is `LeaseApplier`'s,
+        // above, and `LeaseApplyingTripwireTests` holds that it is never widened.
+        "LeaseApplying.swift: apply(_: [FanSetting], leaseID: UUID, from: ConnectionID)",
         "ReclamationWatchdog.swift: reassert(fanAt: Int, heldUnder: UUID, attempt: Int, "
             + "reengaging: Bool)",
         // #381's: the re-fetch after the re-assert's first step, out of `reassert` for its

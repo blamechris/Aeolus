@@ -54,4 +54,16 @@ struct EngagementDriverLevelTests {
         let helper = HelperRestorerTests.composed()
         #expect(helper.reclamationWatchdog.engagementLevel == .reclamationWatchdog)
     }
+
+    /// Level 6's composed driver is asked about the control loop's level, read by property on the
+    /// composition's one `LeaseApplier`, the instance the authority delegates to
+    /// (`LevelSixCompositionTests`; ADR 0014's A6 PR-3 amendment).
+    ///
+    /// **Mutation:** in `HelperComposition.init`, compose level 6's driver with `level:
+    /// .reclamationWatchdog`. Run: red.
+    @Test("The composition builds level 6's driver at the control loop's level")
+    func theComposedLevelSixDriverIsAtTheControlLoopsLevel() {
+        let helper = HelperRestorerTests.composed()
+        #expect(helper.leaseApplier.engagementLevel == .controlLoop)
+    }
 }

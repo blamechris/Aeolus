@@ -334,17 +334,6 @@ struct PlaneRestoreContractTests {
         #expect(line.contains("which landed"))
     }
 
-    /// The composition hands the driver § 3's own latch — a second latch would be an
-    /// entitlement check against a bit nothing sets.
-    @Test("The composed driver reads the composed latch")
-    func theComposedDriverReadsTheComposedLatch() throws {
-        let code = try HelperCompositionTests.compositionSource()
-        let start = try #require(code.range(of: "engagement: EngagementDriver("))
-        let rest = code[start.upperBound...]
-        let end = try #require(rest.range(of: "),"))
-        #expect(rest[..<end.lowerBound].contains("latch: latch"))
-    }
-
     /// A machine-wide restore the preparation step issued and the firmware refused is a fault:
     /// a force key may still be set.
     @Test("A refused preparation restore is logged at fault")
@@ -375,5 +364,36 @@ struct PlaneRestoreContractTests {
         #expect(recorded.levels == [.notice, .fault])
         #expect(recorded.lines.first?.contains("enumerated 2 fan(s)") == true)
         #expect(recorded.lines.last?.contains("could not enumerate the fans") == true)
+    }
+}
+
+/// The composition's latch census, in an extension so the suite's body stays under
+/// `type_body_length`. It is the same suite.
+extension PlaneRestoreContractTests {
+
+    /// The composition hands both drivers § 3's own latch, § 5's and level 6's — a second latch
+    /// would be an entitlement check against a bit nothing sets. Each `EngagementDriver(` argument
+    /// list is read to its balanced close (`SeamScanner.closingParenthesis`): level 6's holds a
+    /// `SafetyActorWriter(…)` of its own, so the first `),` is not the list's end.
+    ///
+    /// **Mutation:** in `HelperComposition.init`, compose level 6's driver with `latch:
+    /// ThermalEmergencyLatch()`. Run: red here, and in `LevelSixCompositionTests`.
+    @Test("Both composed drivers read the composed latch")
+    func theComposedDriverReadsTheComposedLatch() throws {
+        let code = try HelperCompositionTests.compositionSource()
+        var lists: [Substring] = []
+        var rest = code.startIndex..<code.endIndex
+        while let found = code.range(of: "EngagementDriver(", range: rest) {
+            let open = code.index(before: found.upperBound)
+            let close = try #require(SeamScanner.closingParenthesis(in: code, openingAt: open))
+            lists.append(code[open...close])
+            rest = close..<code.endIndex
+        }
+        #expect(
+            lists.count == 2,
+            "the composition builds \(lists.count) drivers, not § 5's and level 6's")
+        #expect(
+            lists.allSatisfy { $0.contains("latch: latch,") },
+            "a composed driver reads a latch of its own: \(lists)")
     }
 }

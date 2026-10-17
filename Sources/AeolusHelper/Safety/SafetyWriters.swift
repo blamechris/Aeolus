@@ -165,8 +165,8 @@ struct SafetyActorWriter<Plane: FanControlPlane>: KeystoneRestoring {
 ///
 /// ## Held by level 6's `apply`, and with no control loop yet
 ///
-/// `LeaseApplier` holds one and writes each fixed setting through `hold(_:of:)`; it is built by
-/// tests until A6's next step composes it. `command(towards:of:since:)` has no caller at all
+/// `LeaseApplier` holds one and writes each fixed setting through `hold(_:of:)`; the composition
+/// builds one, behind the authority's `apply`. `command(towards:of:since:)` has no caller at all
 /// until E8a's loop steps on its own, and hysteresis — § 8's other half — arrives with the curve
 /// evaluator in
 /// [#17](https://github.com/blamechris/Aeolus/issues/17). What exists here is the governor

@@ -84,9 +84,8 @@ import Foundation
 /// earlier replies first; the exemption buys promptness, not ordering.
 /// [#180](https://github.com/blamechris/Aeolus/issues/180) built the helper's backstop for that
 /// interleaving — a fan held with no live lease is handed back at the next supervisor cycle —
-/// and it is dormant until a caller registers fans with that supervisor, which nothing in this
-/// build does. The check at `apply`'s own write arrives with the write path, which does not
-/// exist yet; until it does, this ordering is the client's to manage.
+/// and it watches only fans level 6's `apply` registered, which no shipped build can: a `.notBuilt`
+/// plane grants no lease. `apply` asks its lease before each write; ordering is the client's.
 ///
 /// **What ordering costs a client that pipelines.** One message at a time is one message at
 /// a time in both directions: while a sequenced message N is being handled, the sequenced
@@ -286,7 +285,9 @@ import Foundation
     /// `id` is checked with `AeolusXPCValidation.validateLeaseID(_:)`, as for `renewLease`.
     func releaseLease(id: String, reply: @escaping @Sendable (Error?) -> Void)
 
-    /// Applies fan settings under an active lease.
+    /// Applies fan settings under an active lease. A refused re-apply may already have
+    /// re-commanded fans an earlier `apply` engaged, so a refused client re-reads the snapshot,
+    /// whose `targetRPM` stays `nil` until #410's item 5: the fan's mode is what it can confirm.
     ///
     /// - Parameters:
     ///   - settings: JSON-encoded `[FanSetting]`.

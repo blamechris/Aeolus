@@ -7,7 +7,7 @@ import Foundation
 /// A role rather than the actor, for `HeldLeaseRole`'s first reason: it narrows what
 /// `LeaseApplier` can do to § 5 to the three calls it makes, so level 6 cannot run a cycle, send
 /// a release notice in the lease core's place or read § 5's diagnostics. `ReclamationWatchdog` is
-/// the one conformer in `Sources/`, and A6's next step hands level 6 the instance § 5's
+/// the one conformer in `Sources/`, and the composition hands level 6 the instance § 5's
 /// supervisor cycles. `LeaseApplierTripwireTests` holds where the role is named.
 ///
 /// ## It refines `Actor`, so the report stays synchronous on the conformer

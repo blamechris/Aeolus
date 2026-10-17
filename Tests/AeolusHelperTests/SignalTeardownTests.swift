@@ -178,11 +178,11 @@ struct SignalTeardownTests {
     ///
     /// `stop()` cancels the three supervisors; it does not await a cycle already in flight,
     /// and neither `ThermalSupervisor.stop()` nor `ReclamationSupervisor.stop()` claims
-    /// otherwise. So a § 3 fire or a § 5 bounded re-assert that began before step 4 can land
-    /// its `engageManualControl` write after step 3 has already run. The stop closure is
-    /// exactly that window — it is the last thing the teardown awaits before the write whose
-    /// answer launchd reads — so the manual engage is issued from inside it, which is a
-    /// stronger placement than a race the test would have to win.
+    /// otherwise. So a § 5 bounded re-assert that began before step 4 can land its
+    /// `engageManualControl` write after step 3 has already run; § 3's fire never engages. The
+    /// stop closure is exactly that window — it is the last thing the teardown awaits before the
+    /// write whose answer launchd reads — so the manual engage is issued from inside it, which is
+    /// a stronger placement than a race the test would have to win.
     ///
     /// The assertion is on the firmware's own state rather than on the journal alone: the
     /// point of the ruling is not that a second write was issued, it is that the fan is back.
@@ -199,7 +199,7 @@ struct SignalTeardownTests {
 
         await helper.signalTeardown.run(stoppingSupervisorsWith: {
             await journal.record(.supervisorsStopped)
-            // What a § 3 fire or a § 5 re-assert does, at the one moment it can still do it.
+            // What a § 5 re-assert does, at the one moment it can still do it.
             _ = try? await plane.engageManualControl(of: fan)
         })
 

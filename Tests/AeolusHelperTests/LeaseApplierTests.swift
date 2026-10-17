@@ -257,11 +257,13 @@ struct LeaseApplierTests {
     // MARK: - A shipped build
 
     /// **On a build that cannot write, `apply` fails at `heldLease(id:from:)` with the faults it
-    /// answers today, in the same order after the authority's shutdown refusal, and never enters
-    /// the gate.** Composed over a plane that
-    /// answers `.notBuilt`, no lease is granted, so level 6's `apply` and the shipped
-    /// `SupervisedFanAuthority.apply` answer each request alike: `.leaseUnknown`, before item 0
-    /// and before the capability, whatever the settings say.
+    /// answered before A6's third step, in the same order after the authority's shutdown refusal,
+    /// and never enters the gate.** Composed over a plane that answers `.notBuilt`, no lease is
+    /// granted, so the composition's level 6, asked directly and through the authority, answers
+    /// `.leaseUnknown` before item 0 and before the capability, whatever the settings say. The
+    /// authority delegates to this same instance, so each answer is pinned to `.leaseUnknown`
+    /// rather than compared with the other. `SupervisedApplyBoundaryTests` holds the answers
+    /// through the listener.
     ///
     /// **Mutation:** in `LeaseApplier.apply`, check item 0 before `heldLease(id:from:)`. Run: red,
     /// an empty list answered `invalidParameter`. Moving the capability `guard` first is red the
@@ -280,15 +282,6 @@ struct LeaseApplierTests {
             teardown: TeardownSeams(sources: RecordingSignalSources()))
         #expect(helper.plane.writeCapability == .notBuilt, "this test is vacuous on a .built plane")
         await helper.bindSafetyRegistries()
-        let applier = LeaseApplier(
-            writer: GovernedFanWriter(plane: helper.plane),
-            engagement: EngagementDriver(
-                writer: SafetyActorWriter(plane: helper.plane, level: .leaseExpiry),
-                leases: helper.leases, latch: helper.latch, emergency: helper.thermalEmergency,
-                clock: SystemMonotonicClock(), level: .controlLoop, log: helper.safetyLog),
-            gate: helper.examinationGate, envelopes: helper.plane,
-            reclamation: helper.reclamationWatchdog, leases: helper.leases, latch: helper.latch,
-            writeCapability: helper.plane, log: helper.safetyLog)
         await #expect(throws: (any Error).self, "a lease was granted on .notBuilt") {
             try await helper.leases.acquireLease(
                 LeaseFixture.request(fans: [0]), from: ConnectionID())
@@ -297,14 +290,14 @@ struct LeaseApplierTests {
         let connection = ConnectionID()
         for settings in [fixed((0, 2_400)), [], fixed((0, 2_400), (0, 2_000))] {
             let lease = UUID()
-            let today = await LeaseApplierAnswerTests.answer {
+            let throughTheAuthority = await LeaseApplierAnswerTests.answer {
                 try await helper.authority.apply(settings, leaseID: lease, from: connection)
             }
             let levelSix = await LeaseApplierAnswerTests.answer {
-                try await applier.apply(settings, leaseID: lease, from: connection)
+                try await helper.leaseApplier.apply(settings, leaseID: lease, from: connection)
             }
-            #expect(today as? AeolusXPCFault == .leaseUnknown)
-            #expect(levelSix as? AeolusXPCFault == today as? AeolusXPCFault, "\(settings)")
+            #expect(throughTheAuthority as? AeolusXPCFault == .leaseUnknown, "\(settings)")
+            #expect(levelSix as? AeolusXPCFault == .leaseUnknown, "\(settings)")
         }
         #expect(helper.examinationGate.entrants == 0, "the gate was entered on a shipped build")
         #expect(await firmware.attempts.isEmpty, "a shipped build's apply reached the firmware")
@@ -312,8 +305,8 @@ struct LeaseApplierTests {
 
     // MARK: - The driver's level
 
-    /// Level 6's driver is asked about the control loop's level. A6's next step composes it and
-    /// pins the composed one; until then this pins the one level 6 is built with here.
+    /// Level 6's driver is asked about the control loop's level: the one level 6 is built with
+    /// here. `EngagementDriverLevelTests` pins the composed one.
     ///
     /// **Mutation:** build `LevelSix`'s driver with `level: .reclamationWatchdog`. Run: red.
     @Test("Level 6's driver is at the control loop's level")

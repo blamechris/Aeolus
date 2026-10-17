@@ -54,7 +54,8 @@ made before any of it is coded, and both are expensive to reverse:
 
 Five facts about the tree constrain both:
 
-1. **Level 6 does not exist.** `SupervisedFanAuthority.apply` refuses unconditionally.
+1. **Level 6 does not exist.** `SupervisedFanAuthority.apply` refuses unconditionally. *(Until
+   the A6 PR-3 amendment, which wires it to `LeaseApplier`.)*
    `GovernedFanWriter` has no caller and no engage verb. `engageManualControl(of:)` has one caller:
    § 5's re-assert, through `SafetyActorWriter`.
 2. **A release can arrive mid-unlock.** `renewLease` and `releaseLease` are dispatched on arrival
@@ -455,7 +456,9 @@ nothing more.
   - a restore-only role, whose one verb is `restoreToAutomatic(_:)`;
   - `FanWriteCapabilityReporting`.
 
-  It still cannot command a fan.
+  It still cannot command a fan. *(Since the A6 PR-3 amendment it also holds level 6's `apply`, as
+  `any LeaseApplying`, whose one verb takes the client's settings, the lease and the connection.
+  The authority still names no plane, writer or permit.)*
 - **The reply is v1's "accepted" in every case.** `restoreAllToAutomatic` answers *accepted*, never
   *done* (ADR 0013).
   - **A refused `.everyFan` on a `.built` plane** is caught explicitly — never with `try?` — and
@@ -520,7 +523,7 @@ nothing more.
 If any fan's engagement fails, every fan that `apply` engaged is restored, and the call is
 refused. *(All or nothing for the fans an `apply` engages. A re-apply refused part-way may already
 have re-commanded fans an earlier `apply` engaged, and those are not undone: the A6 PR-2
-amendment's "What remains". The client contract for that is A6's next step's.)*
+amendment's "What remains". The client contract says so since the A6 PR-3 amendment.)*
 
 - **A lease that is never applied never takes a fan off automatic control.**
 - **A post-wake re-acquire re-runs the unlock with no special case,** because § 4's `.everyFan`
@@ -2157,7 +2160,7 @@ resolved by A6's ordering, not by excuse, under this amendment.
   no envelope; every permit clamps to it, so only a defective plane returns one.
 - *A system target equal to the record* is read as Aeolus's, as it always was (#119).
 - *Until A6*, nothing takes the gate, and nothing steps. *(From the A6 PR-2 amendment, level 6's
-  `apply` takes it for every step. It is built by tests until A6's next step wires it.)*
+  `apply` takes it for every step, and from the A6 PR-3 amendment the composition builds it.)*
 
 **Alternatives considered.**
 
@@ -2590,6 +2593,7 @@ remains).
 - *A re-apply refused part-way* may have re-commanded the fans an earlier `apply` engaged, at the
   targets it reported for them before the refusal. Only what it engaged is undone, and the client is
   told only that it was refused. Whether `apply`'s client contract says so is A6's next step's.
+  *(It says so: the A6 PR-3 amendment.)*
 - *§ 3 latching after the entitlement and before the command lands* lets one command write reach a
   fan § 3 is about to bridge. Item 4 refuses the reply, and § 3 takes the fan.
 - *A fan the system took back under a lease that still counts it engaged* is registered and
@@ -2609,9 +2613,10 @@ remains).
   the lease's end.
 - *A6's next step's:* the composed level-6 driver and the pin on its level, the shutdown refusal
   ahead of `LeaseApplier`, teardown with an `apply` in flight, and a test that the connection's
-  sequencer still carries `apply`.
+  sequencer still carries `apply`. *(All four: the A6 PR-3 amendment.)*
 - *The client's deadline.* A fan's step can take `stepWait` and an engagement's yield budget, so an
-  `apply` that engages several fans can outlast `gatedVerb`'s 5 s. #325 decides it.
+  `apply` that engages several fans can outlast `gatedVerb`'s 5 s. #325 decides it. *(#410's item
+  4: landed client-side by #414's amendment below; #325 stays open for run 1's hardware row.)*
 
 **Alternatives considered.**
 
@@ -2647,6 +2652,173 @@ remains).
 **No `AeolusXPCVersion` bump:** every answer is an existing case, no field, case or method changes,
 and `apply`'s version-1 meaning is unchanged and still unreachable. This amendment corrects clauses
 of a Proposed ADR rather than the decisions they sit under. **Status stays Proposed.**
+
+## Amendment (2026-10-17, A6 PR-3, [#405](https://github.com/blamechris/Aeolus/issues/405)) — level 6's `apply` reaches the privilege boundary
+
+A6's third step wires `LeaseApplier` to the privilege boundary. `HelperComposition` builds one, and
+`SupervisedFanAuthority.apply` delegates to it. Every build on `main` is still `.notBuilt`, and a
+`.notBuilt` plane grants no lease. So an `apply` answers exactly what it answered before, in the
+same order, and reaches no write. B1 is what makes it reachable, and what must land first, and
+when, is on [#410](https://github.com/blamechris/Aeolus/issues/410).
+
+**Decision: the role the authority holds.**
+
+- **`LeaseApplying` has one requirement, `apply(_:leaseID:from:)`.** It refines `Sendable` and
+  nothing else, and takes no permit: its arguments are the client's settings, the lease and the
+  connection, which is what a decoded message carries. `LeaseApplier` is its one conformer. It is
+  never extended, refined or converted, and its verb is called only from
+  `SupervisedFanAuthority.swift`. A census holds where its name and its verb are written, and the
+  authority file's conversion ban holds the rest.
+- **`SupervisedFanAuthority` gains exactly one stored property,** `private let control: any
+  LeaseApplying`, a required initialiser parameter with no default. The authority still names no
+  plane, no writer and no permit, and `theAuthorityStoresOnlyItsAllowedProperties` gains exactly
+  that line.
+- **The shutdown refusal comes first.** `apply` asks `refuseIfShuttingDown` and then delegates. An
+  `apply` that arrives once the teardown has begun reaches no `LeaseApplier`: it is answered by
+  neither the claim, the lease core nor the plane.
+- **On `.notBuilt` the answers are unchanged.** The shutdown refusal, then `heldLease(id:from:)`'s
+  faults, then `.writePathNotBuilt`: the authority's order before this step and `LeaseApplier`'s
+  order after the refusal. A composed `.notBuilt` helper can hold no lease, so through the listener
+  the answers are the shutdown refusal and `leaseUnknown`, and the gate is never entered.
+
+**Decision: the composition.** It builds exactly one `LeaseApplier` from:
+
+- the composition's one examination gate;
+- the `ReclamationWatchdog` instance the supervisor cycles, as `ReclamationRegistrationRole`;
+- an `EngagementDriver` of its own at `.controlLoop`, over a `SafetyActorWriter` at `.leaseExpiry`.
+  The writer's level is provenance nothing reads; the lease is what level 6 writes under;
+- a `GovernedFanWriter` over the plane;
+- the lease core, § 3's latch and § 3's registration role;
+- and the plane, as the envelope reader and the write capability.
+
+It is stored on the composition, so a composed test can pin its driver's level by property and
+show that it waits on the gate § 5 examines. The authority holds it only as the role.
+
+**Decision: ordering.** `apply` stays on the connection's `MessageSequencer`.
+
+- `LeaseHeartbeatStarvationTests.theSequencedVerbsAreTheOnesAClientPipelines` already names the
+  four sequenced verbs, `apply` among them, and `MessageOrderingTests` counts them. `apply`'s place
+  on that list now carries this claim as well, and both say so.
+- A test pipelines two applies on one connection through the real listener. Each is answered on its
+  merits, and neither meets the claim.
+- The sequencer is what keeps a well-behaved client from ever meeting `LeaseApplier`'s refusal of a
+  second `apply`. The claim covers any overlap the sequencer does not order: another connection's,
+  or an ended lease's.
+
+**Decision: ADR 0012's reader count gains level 6.** Level 6 is at most one outstanding
+supervisor-priority reader, whatever the number of connections, because `LeaseApplier` admits one
+`apply` at a time and its envelope reads, engagement steps and commands are sequential. ADR 0012's
+design point, N = 12, is a stated number and not this list's sum, so the allowance formula is
+unchanged. `WatchdogLimitsTests.theBoundsAreDerivedAndConstant` was re-run and nothing moved.
+[#332](https://github.com/blamechris/Aeolus/issues/332) still bounds the client-driven terms. Today's
+build stays at N = 3: on `.notBuilt`, `apply` refuses before it reads.
+
+**Decision: teardown with an `apply` in flight is ruling D19's residual, which level 6 inherits.**
+`SignalTeardown`'s control gate refuses an `apply` that arrives, and one already in flight runs on:
+
+- Every step whose entitlement is asked after `releaseEveryLease()` has emptied the table refuses on
+  the lease. That covers an engagement, § 5's registration, the entitlement before a command, and
+  item 4.
+- Its undo's hand-back is a restore. After the keystone it is redundant, and it takes no gate.
+- A command whose entitlement was answered before the table emptied can land after a keystone, on a
+  fan the keystone has restored: a target write to a fan on automatic.
+- **An engagement whose entitlement was answered before the table emptied can have its first step
+  admitted after the final keystone.** The plane records the restore epoch at an engagement's first
+  step, so a restore requested between the driver's entitlement and that step's turn does not
+  supersede it: ADR 0009 D1's residual, and `PlaneWriteLedger`'s "What the epoch cannot see". The
+  step writes `F<n>Md = 1`, and on the force-key path `Ftst = 1` as well. The only undo is the
+  driver's after-check, and it runs after the teardown's process-end call, whose outcome is
+  `.restored`.
+
+That is the residual ruling D19 on [#197](https://github.com/blamechris/Aeolus/pull/197) accepts for
+§ 5's re-assert, recorded in `SignalTeardown`'s step 5 and `docs/SAFETY.md` § 6. § 3's fire does
+not carry it: it commands the maximum and then restores, and never engages. Level 6 adds at most one
+such engagement per teardown: one `apply` at a time, the gate refuses arrivals once it is closed,
+and every later entitlement refuses on the emptied table.
+
+**What it costs on a plane that can write.**
+
+- On the naive path, the after-check's undo races the exit.
+- On the force-key path, the first step answers `.awaitingYield`, and the after-check waits behind
+  the driver's 100 ms poll sleep, which an exiting process does not outlive. So if the step's
+  writes land, `Ftst = 1` is in practice left set, with exit code 0. That is not an occasional race.
+- Nothing outside the process reconciles it. Exit code 0 means launchd does not restart the helper,
+  and a bootout or an uninstall restarts nothing.
+
+So D19's acceptance does not extend to a plane that can write. The fix is #410's items 1 and 1a,
+landing with item 1b in one change on `main` **before B1's first `.built` commit**:
+
+- item 1, a `.forExit` restore scope that seals the plane against every forward write, steps and
+  commands, from every writer;
+- item 1a, an engagement ticket taken before the entitlement, so that a first step admitted after
+  a restore request is refused before it writes. That also closes the same window across a system
+  sleep, and the panic verb's transient;
+- item 1b, a test of the seal's command half.
+
+This step only documents and pins the residual: `SignalTeardownInFlightApplyTests` parks the
+step past the recorded exit, so the after-check's undo runs in the test; in production the race is
+between `exit()` finishing and the step's write.
+
+**Decision: the client contract.** `apply`'s documentation in `AeolusXPCProtocol` says what a
+refused re-apply means: it may already have re-commanded fans an earlier `apply` engaged, at the
+targets it reported for them before the refusal, so the client re-reads the snapshot. That is the
+A6 PR-2 amendment's open question, answered in the documentation alone.
+
+**What the snapshot reports after `apply`.**
+
+- `mode` is `.manualFixed`, from the snapshot's own `F<n>Md` read.
+- `activeLease` is the lease.
+- `manualControlAvailability` is `.available`, step 9's answer for a fan under lease.
+- `isReclaimedBySystem` is `false`.
+- `targetRPM` stays `nil`. `ReadOnlyFanReport.fanState` states it unconditionally, so on a `.built`
+  plane the snapshot says the fan is in manual and asking for nothing while level 6 is commanding a
+  target. The end-to-end test pins it as it is, and #410's item 5 decides it.
+
+**What remains ([#410](https://github.com/blamechris/Aeolus/issues/410)).** Each item is reachable
+only once B1 makes the plane `.built`, and #410's rulings say when each lands:
+
+- **Items 1, 1a and 1b, teardown with an `apply` in flight** (above), and the same window across a
+  system sleep: one change, before B1's first `.built` commit.
+- **Items 2 and 3**, in one change after #405 and before run 1:
+  - [#406](https://github.com/blamechris/Aeolus/issues/406), a refused undo inside the engagement
+    driver losing level 6's account of the fan;
+  - the landed-mode kept-entry residual (#405's comment): a hand-back that throws after
+    `F<n>Md = 0` landed keeps a fan level 6 believes engaged, and its next re-apply is answered
+    applied on an automatic fan for one § 5 cycle.
+- **Item 4, [#325](https://github.com/blamechris/Aeolus/issues/325)'s client deadline**, before run
+  1 and before #324 merges. Its client half has landed (#414, the amendment below); #325 stays open
+  for run 1's hardware row.
+- **Item 5, the snapshot's `targetRPM` after `apply`** (above): before run 1 if possible, and
+  required before E4 merges.
+
+E8a's obligations to level 6 are on [#12](https://github.com/blamechris/Aeolus/issues/12): the
+real loop re-runs #383's ramp item, takes the gate for each step, never runs beside a client's
+`apply` under the same lease, and steps through `GovernedFanWriter.command(towards:of:since:)`.
+
+**Alternatives considered.**
+
+- *The authority holding `LeaseApplier<Plane>` itself.* That makes the authority generic over the
+  plane, and puts the plane's type one name from a decoded client message: the shape E2 froze this
+  boundary against, and `AuthorityRoleTripwireTests` refuses.
+- *Delegating before the shutdown refusal.* An `apply` arriving during the teardown would reach the
+  claim and the lease core, and be answered by them: `applyInProgress` beside an `apply` in flight,
+  where the truthful answer is that the helper is shutting down.
+- *Closing the teardown residual in this step.* The fix, #410's items 1 and 1a, changes the plane's
+  rules for every writer and the driver's order, and lands before B1's first `.built` commit. A
+  teardown that waited for level 6's `apply` instead would leave § 5's re-assert where D19 left
+  it.
+
+**Revisit if:**
+
+- `apply` leaves the sequencer;
+- a second caller of `LeaseApplying`'s verb, such as E8a's loop, is proposed;
+- B1 makes the plane `.built`, which is #410;
+- #332 or D8 moves N or G.
+
+**No `AeolusXPCVersion` bump.** No field, case or method crosses the boundary, and `apply`'s
+version-1 meaning is unchanged: on every shipped build it answers what it answered, in the same
+order. Its documentation gains one sentence about a refused re-apply. This amendment corrects
+clauses of a Proposed ADR rather than the decisions they sit under. **Status stays Proposed.**
 
 ## Amendment (2026-10-17, [#410](https://github.com/blamechris/Aeolus/issues/410), [#325](https://github.com/blamechris/Aeolus/issues/325)) — `apply`'s client waits as long as the helper may
 

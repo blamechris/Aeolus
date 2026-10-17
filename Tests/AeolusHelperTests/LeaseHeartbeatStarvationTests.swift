@@ -248,6 +248,11 @@ struct LeaseHeartbeatStarvationTests {
     /// leave the count at four**, which is why the membership is asserted separately rather
     /// than trusted to it.
     ///
+    /// **`apply`'s place on the queue carries a second claim since A6's third step** (ADR 0014's A6
+    /// PR-3 amendment): it is what keeps a client's two applies from meeting `LeaseApplier`'s
+    /// claim. `SupervisedApplyBoundaryTests.twoPipelinedAppliesAreEachAnsweredOnTheirMerits` holds
+    /// that through the listener, red when `apply` leaves the queue.
+    ///
     /// Read off the source rather than driven through the wire, because it is a claim about the
     /// *route*, and both routes reach the same method behind the same gates: nothing a client
     /// can observe distinguishes them except timing, which the tests above assert one verb at a

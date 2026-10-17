@@ -6,8 +6,8 @@ import Testing
 @testable import AeolusHelper
 
 /// Level 6 on a `ReclamationMachine`: the real `LeaseApplier`, wired to the machine's lease core,
-/// § 3's latch, the fans' examination gate and § 5 as A6's next step will wire it in the
-/// composition, and writing through `writes`, the machine's own plane or a double over it.
+/// § 3's latch, the fans' examination gate and § 5 as `HelperComposition.init` wires it, and
+/// writing through `writes`, the machine's own plane or a double over it.
 ///
 /// Its driver is level 6's own, at `.controlLoop`, stepping through a `SafetyActorWriter` whose
 /// level is provenance nothing reads (`.leaseExpiry` here: the lease is what level 6 writes
@@ -68,6 +68,19 @@ extension ReclamationMachine {
 /// `.fixed(rpm:)` settings, one per `(fan, rpm)`, in the order given.
 func fixed(_ targets: (fan: Int, rpm: Double)...) -> [FanSetting] {
     targets.map { FanSetting(fanIndex: $0.fan, control: .fixed(rpm: $0.rpm)) }
+}
+
+/// Level 6 for an authority a test builds by hand to drive something other than `apply`: the
+/// panic verb, the snapshot's sighting. It records an issue if it is asked, so a suite that meant
+/// to leave `apply` alone cannot pass by reaching it. The authority the composition builds holds
+/// the real `LeaseApplier` (ADR 0014's A6 PR-3 amendment).
+struct NoLevelSix: LeaseApplying {
+    func apply(
+        _ settings: [FanSetting], leaseID lease: UUID, from connection: ConnectionID
+    ) async throws {
+        Issue.record("an authority built to test something other than apply was asked to apply")
+        throw AeolusXPCFault.manualControlUnavailable(reason: .writePathNotBuilt)
+    }
 }
 
 /// A write path that reports itself not built, for item 5's `.notBuilt` row. A state only a test

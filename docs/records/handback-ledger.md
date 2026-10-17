@@ -820,7 +820,10 @@ is now a reason: `.releaseInProgress` tells the running teardown apart from fan 
 **Airtight, and narrower.** § 7's, § 4's and bring-up's machine-wide restores now run behind
 airtight grant interlocks. § 6's is narrower, and harmless: its gate refuses a grant on arrival
 rather than in flight, and `apply` is refused by the same gate, so a grant that lands never engages
-and its `.everyFan` has nothing to undo.
+and its `.everyFan` has nothing to undo. An `apply` already in flight when the gate closes is
+another matter, and not harmless on a plane that can write: ADR 0014's A6 PR-3 amendment, and
+[#410](https://github.com/blamechris/Aeolus/issues/410)'s items 1 and 1a, before B1's first `.built`
+commit.
 
 **Tested by** `SleepGrantSealTests`: a grant during a declined seal's teardown, with the keystone
 or the sweep parked; a keystone parked across its wake; and a sweep parked across its wake — each
