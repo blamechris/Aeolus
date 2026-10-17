@@ -287,22 +287,30 @@ struct AnonymousListenerTests {
     }
 }
 
-/// Polls `condition` until it holds or the deadline passes.
+/// Polls `condition` until it holds or the budget is spent, counting only time the waiter ran.
 ///
 /// Connection invalidation is delivered by libxpc on its own schedule, so the alternative
 /// to polling is a fixed sleep — which is either flaky or slow, and gives no diagnostic
 /// when it fails. Fails the test with the reason rather than hanging the suite.
+///
+/// By default `timeout` is **scheduled waiting time, not wall time**. A runner stall is added
+/// to the deadline rather than spent from it, up to a ceiling below the smallest suite
+/// `.timeLimit`; the condition is checked once more when the budget is spent; and a timeout
+/// says how much stall it compensated, so an infrastructure failure reads as one
+/// ([#341](https://github.com/blamechris/Aeolus/issues/341)). A `timeout` that is a deadline
+/// the product is held to, rather than a wait for something to happen, passes
+/// `budget: .wallTime` and is not stretched. The mechanism, and the reason for each number in
+/// it, is on ``StallTolerantWait``; the injectable overload this forwards to is in
+/// `StallTolerantWait.swift`.
 func waitUntil(
     _ what: String,
     timeout: Duration = .seconds(5),
     interval: Duration = .milliseconds(10),
+    budget: WaitBudget = .runTime,
     _ condition: () async -> Bool,
     sourceLocation: SourceLocation = #_sourceLocation
 ) async throws {
-    let deadline = ContinuousClock.now + timeout
-    while ContinuousClock.now < deadline {
-        if await condition() { return }
-        try await Task.sleep(for: interval)
-    }
-    Issue.record("timed out after \(timeout) waiting for: \(what)", sourceLocation: sourceLocation)
+    try await waitUntil(
+        what, timeout: timeout, interval: interval, budget: budget, clock: SystemWaitClock(),
+        condition, sourceLocation: sourceLocation)
 }
