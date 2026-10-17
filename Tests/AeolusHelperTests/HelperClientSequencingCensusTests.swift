@@ -187,4 +187,29 @@ struct HelperClientSequencingCensusTests {
             is sent from exactly one place in the client.
             """)
     }
+
+    /// **`apply` alone chooses its own deadline** ([#415](https://github.com/blamechris/Aeolus/issues/415)).
+    ///
+    /// `withHandshakenProxy` lets any verb pass `within:`, and nothing else checks that only
+    /// `apply` does. A heartbeat given `apply`'s 57 s against a wedged helper outlives the 30 s
+    /// TTL it is renewing, so the client keeps reporting a lease that has lapsed (rule 6) and
+    /// `fanctl`'s "control lost" arrives about 52 s late. The handshake's `exchange` names its own
+    /// deadline too, and is left out: it is the handshake's, not a verb's.
+    ///
+    /// **Mutation:** in `HelperClient.renewLease(id:)`, pass `within: { $0.gatedVerb +
+    /// $0.applyPerFan }`. Run: red, naming `renewLease` beside `apply`.
+    @Test("apply alone chooses its own deadline")
+    func applyAloneChoosesItsOwnDeadline() throws {
+        let choosing = try Self.gateCalls().calls
+            .filter { $0.gate == "withHandshakenProxy" && $0.arguments.contains("within:") }
+            .map(\.named)
+
+        #expect(
+            choosing == ["apply"],
+            """
+            \(choosing) choose their own deadline. Only `apply` may: it is the one gated verb \
+            whose lawful wait grows with what it names, and every other verb's bound is \
+            `gatedVerb`.
+            """)
+    }
 }
