@@ -132,11 +132,15 @@ struct HelperClientAccessTests {
     /// as much of an event as a new internal one, so the list pins the whole exported surface
     /// and a widening cannot hide by being a bigger one.
     ///
-    /// All three are **get-only computed views** of private storage, which is the property
+    /// All four are **get-only computed views** of private storage, which is the property
     /// worth stating: `negotiated` and `health` are the public read API — the second is ADR
     /// 0006's switch for the app — and `currentGeneration` is `internal` for the suite, for
     /// the reason the source gives, that the generation is the parameter every late-handler
-    /// guard turns on and a test unable to name it could only assert them by accident. **A
+    /// guard turns on and a test unable to name it could only assert them by accident.
+    /// `deadlinesRunning` is `internal` for the suite too (#418's review): a deadline's instant
+    /// is read when its timer first runs, so a test moving a hand-wound clock has to know how
+    /// many deadlines are running before it can know they have all parked. It reads a count off
+    /// `inFlight` and can settle nothing. **A
     /// stored property appearing in this list is the failure to argue about**, because that
     /// is the shape that hands a caller an assignment; a computed one can only re-derive what
     /// something in the declaring file still owns.
@@ -149,6 +153,7 @@ struct HelperClientAccessTests {
         "negotiated",
         "health",
         "currentGeneration",
+        "deadlinesRunning",
     ]
 
     /// Every method of `HelperClient` that is not `private`, and what each is.

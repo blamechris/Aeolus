@@ -20,11 +20,12 @@ import Testing
 /// Every client measures its deadlines on `HelperClientApplyDeadlineTests`' `ManualClock` and
 /// deadlines, 7 s for a gated verb and 70 s per fan. A deadline runs out when the test moves the
 /// hands past it and at no other time. Before the hands move, the test has observed what they are
-/// meant to move past: the sleepers parked on the clock, and the arrival at the helper of the
-/// message whose deadline is in question. A deadline's instant is fixed when its turn comes, not
-/// when its timer is scheduled, so a message seen to have arrived has a deadline that is already
-/// counted from the right moment. The XPC round trips are the only thing on the wall clock, waited
-/// for with a generous bound and never asserted on.
+/// meant to move past: the arrival at the helper of the message whose deadline is in question, the
+/// client's own count of running deadlines (`HelperClient.deadlinesRunning`), and that many
+/// sleepers parked on the clock. The count is what makes the last step sound. A deadline's instant
+/// is read when its timer first runs (`InFlightMessages`), so a timer that has not run yet has no
+/// instant to move past, and only the client knows it exists. The XPC round trips are the only
+/// thing on the wall clock, waited for with a generous bound and never asserted on.
 @Suite("A sequenced verb's deadline starts at its turn", .timeLimit(.minutes(1)))
 struct HelperClientSequencedDeadlineTests {
 
@@ -57,6 +58,25 @@ struct HelperClientSequencedDeadlineTests {
             snapshotsArrived(at: parked.harness) == 2
         }
         return snapshot
+    }
+
+    /// The `apply`'s deadline is the only one running, and it has parked, so the hands can move.
+    ///
+    /// The first half is the claim behind every test here: a message waiting for its turn has no
+    /// deadline yet. Read from the client's own count, it holds whether or not a timer started too
+    /// early has run. The second half is what makes the move that follows land past every
+    /// running deadline, the early one included.
+    static func expectOnlyTheApplysDeadline(
+        _ parked: Parked, sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws {
+        let running = await parked.client.deadlinesRunning
+        #expect(
+            running == 1, "\(running) deadlines are running behind a held apply",
+            sourceLocation: sourceLocation)
+        try await waitUntil(
+            "every running deadline has parked on the clock", timeout: .seconds(30),
+            { await parked.client.deadlinesRunning == parked.clock.sleepers },
+            sourceLocation: sourceLocation)
     }
 
     /// What every message this client killed itself is told, and must not be: the answer to an
@@ -95,14 +115,15 @@ struct HelperClientSequencedDeadlineTests {
     /// started with.
     ///
     /// **Mutation:** in `InFlightMessages.admit`, start every message's deadline at once, turn or
-    /// not. Run: red on the snapshot's answer, thrown `helperNeverAnswered(after: 7.0 seconds)`:
-    /// cut off at the move, inside the `apply`'s deadline.
+    /// not. Run: red on the client's count of running deadlines, 2 where the claim is 1, and on
+    /// the snapshot's answer, thrown `helperNeverAnswered(after: 7.0 seconds)`: cut off at the
+    /// move, inside the `apply`'s deadline.
     @Test("A snapshot behind a lawful apply is not cut off")
     func aSnapshotBehindALawfulApplyIsNotCutOff() async throws {
         let parked = try await Parked.sending(Self.oneFan)
         defer { parked.watcher.cancel() }
         let snapshot = try await Self.snapshotBehind(parked)
-        #expect(parked.clock.sleepers == 1, "the snapshot's deadline started before its turn")
+        try await Self.expectOnlyTheApplysDeadline(parked)
 
         parked.clock.advance(by: Self.insideTheApply)
 
@@ -129,7 +150,7 @@ struct HelperClientSequencedDeadlineTests {
         let parked = try await Parked.sending(Self.oneFan)
         defer { parked.watcher.cancel() }
         let snapshot = try await Self.snapshotBehind(parked)
-        #expect(parked.clock.sleepers == 1, "the snapshot's deadline started before its turn")
+        try await Self.expectOnlyTheApplysDeadline(parked)
 
         parked.clock.advance(by: Self.applyDeadline)
         await #expect(throws: HelperClientError.helperNeverAnswered(after: Self.applyDeadline)) {
@@ -262,6 +283,7 @@ struct HelperClientSequencedDeadlineTests {
         #expect(parked.clock.sleepers == 1, "the apply's deadline ended with its caller")
 
         let snapshot = try await Self.snapshotBehind(parked)
+        try await Self.expectOnlyTheApplysDeadline(parked)
         parked.clock.advance(by: Self.insideTheApply)
         #expect(parked.clock.sleepers == 1)
 

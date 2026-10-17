@@ -85,11 +85,12 @@ import Foundation
 /// ## Why this is one long file, and where the split stops
 ///
 /// This file is over SwiftLint's 400-line `file_length` warning and stays that way on
-/// purpose. **254 of its lines are code**; the rest is the reasoning around them, and the
+/// purpose. **255 of its lines are code**; the rest is the reasoning around them, and the
 /// rule counts comment lines. The seventeen since this section was written are the clock the
 /// deadlines are measured on, the `internal` initialiser that names it, and the gate's choice of
-/// deadline (#325). Eight more are the message each send names and the answer a discard gives
-/// what was still in flight (#413); the bookkeeping behind both is `InFlightMessages`, which
+/// deadline (#325). Nine more are the message each send names, the answer a discard gives what
+/// was still in flight, the refusal to send on a connection already given up, and the suite's
+/// count of running deadlines (#413); the bookkeeping behind them is `InFlightMessages`, which
 /// owns its state outright and so widens nothing here. The figure, 229 then, did not move when
 /// this section was added — the file grew by fifty-odd lines and by none of the thing the
 /// threshold is worth measuring, which is the whole argument in one measurement. The warning
@@ -265,6 +266,15 @@ public actor HelperClient {
     /// can see it and nothing inside it reads it except the guards themselves.
     var currentGeneration: UInt64 { generation }
 
+    /// How many messages have a deadline running, for a suite that moves a hand-wound clock.
+    ///
+    /// `internal`, like `currentGeneration`, and for the suite alone. A deadline's instant is read
+    /// when its timer first runs (`InFlightMessages`), so a test may move the clock only once every
+    /// running deadline has parked on it, and only this count says how many that is. It also
+    /// states the claim the sequenced deadlines turn on directly: behind a held `apply`, one
+    /// deadline is running, not two.
+    var deadlinesRunning: Int { inFlight.running }
+
     /// The same signal as a stream, for a client that renders it rather than polls it.
     ///
     /// Yields the current value immediately on subscription, so a subscriber never has to
@@ -393,9 +403,10 @@ public actor HelperClient {
         defer { if self.generation == generation { handshake = nil } }
         _ = try await task.value
 
-        // The connection this handshake ran on, not whatever is current now. If it died in
-        // between, the message about to be sent on it fails through the error handler and is
-        // reported as what it was — there is no second attempt here.
+        // The connection this handshake ran on, not whatever is current now. If this client
+        // gave it up in between — a `disconnect()`, or another message's cut-off, both of which
+        // can run while this one waits to resume — `exchange` refuses to send on it and says
+        // so. There is no second attempt here.
         return live
     }
 
@@ -504,6 +515,12 @@ public actor HelperClient {
     /// this handler runs, so a client whose failure path lives only in the reply block has no
     /// failure path for the case that matters most.
     ///
+    /// **Nothing is sent on a connection this client has already given up.** `live` is read
+    /// before a caller's last suspension, and a handshake waiter resumes after one: a discard can
+    /// land in between. Sent anyway, the message would reach a connection the client invalidated,
+    /// and its 4099 would read as a helper that is not installed. The check and the send are one
+    /// synchronous stretch on this actor, so nothing can move the generation between them.
+    ///
     /// **The deadline belongs to the message, not to this wait.** `inFlight` starts it when the
     /// message's turn comes and ends it when the message settles, which `sent.settle` does from
     /// both blocks below.
@@ -516,15 +533,15 @@ public actor HelperClient {
         _ send: (any AeolusXPCProtocol, @escaping @Sendable (Result<Answer, Error>) -> Void) ->
             Void
     ) async throws -> Answer {
+        guard live.generation == generation else { throw HelperClientError.connectionAbandoned }
         // The latch it is answered through, with its two fallbacks, is the message's too.
         let sent = inFlight.admit(
             message, on: live.generation, within: deadline, answering: Answer.self)
         let proxy = live.connection.remoteObjectProxyWithErrorHandler { sent.settle(.failure($0)) }
         guard let typed = proxy as? any AeolusXPCProtocol else {
-            let violation = HelperClientError.protocolViolation(
-                detail: "the connection vended a proxy that does not speak this protocol")
-            sent.settle(.failure(violation))
-            throw violation
+            throw sent.failing(
+                with: HelperClientError.protocolViolation(
+                    detail: "the connection vended a proxy that does not speak this protocol"))
         }
         send(typed, sent.settle)
 
@@ -568,8 +585,9 @@ public actor HelperClient {
         // deadline outlives its caller (`InFlightMessages`), so the next sequenced verb waits
         // for it to settle: answered, or cut off by that deadline, which with nobody waiting
         // discards nothing. The next verb then hits its **own** deadline and discards — one
-        // extra timeout on a genuinely wedged helper, which is the right price for never
-        // tearing down a healthy one.
+        // extra deadline on a genuinely wedged helper for each cancelled message ahead of it,
+        // which is the price of never tearing down a healthy one. Several orphans add up; #419
+        // is the design note the app's control UI settles before it pipelines.
         if error is CancellationError { return error }
         if let clientError = error as? HelperClientError {
             if case .helperNeverAnswered = clientError {
@@ -657,8 +675,13 @@ public actor HelperClient {
 
     /// The connection is dead. The next message builds another one — once.
     ///
-    /// Anything still in flight on it is told what its own error handler would have said, and
-    /// usually already has: libxpc fails a dead connection's messages with 4099 itself.
+    /// Anything still in flight on it is answered `helperUnreachable(code: 4099)`, which is what
+    /// libxpc reports for a dead connection's messages, and is usually what each has been told
+    /// already by its own error handler. Usually, not always: the order in which libxpc runs a
+    /// connection's error handlers and its invalidation handler is libxpc's, and after a 4102
+    /// signing failure the first answer to reach a message is the one it keeps.
+    /// `HelperClientConnectionTests.aPeerThatFailsTheRequirementIsNamedAsSuch` is what holds the
+    /// 4102 case to `helperSignatureRejected` in practice.
     func connectionWasInvalidated(_ generation: UInt64) {
         let invalid = HelperClientError.helperUnreachable(code: XPCTransportCode.invalid)
         discardConnection(generation, as: .invalidated, answering: invalid)

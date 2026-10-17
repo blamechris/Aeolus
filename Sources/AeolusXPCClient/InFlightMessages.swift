@@ -50,9 +50,18 @@ import os
 /// So the deadline belongs to the **message**, not to its caller. It keeps running when the caller
 /// goes, and when it runs out it settles the message and passes the turn. It does not discard the
 /// connection, because cancellation is not a teardown (`translate(_:on:)`): with nobody waiting,
-/// nothing reports the cut-off, and the message behind it then gets its own deadline. A helper
-/// that is genuinely wedged costs one extra deadline, and a healthy one is never torn down for a
-/// caller that left.
+/// nothing reports the cut-off, and the message behind it then gets its own deadline. A healthy
+/// helper is never torn down for a caller that left.
+///
+/// **What a wedged helper costs is one deadline per orphan, not one in all.** Each cancelled
+/// sequenced message ahead of a live read settles only when its own deadline runs out, and only
+/// then does the next one's begin. So a read behind N orphans waits N deadlines before its own
+/// starts. A caller that cancels and re-sends a `snapshot` every 2 s behind a wedged `apply` adds
+/// orphans faster than their 5 s deadlines retire them, and the read it is waiting for is never
+/// cut off. No client does that today: `fanctl` awaits each verb, and the app has no control UI.
+/// [#419](https://github.com/blamechris/Aeolus/issues/419) is the design note that the control UI
+/// must settle first — either it never cancels a sequenced verb it means to re-send, or an
+/// orphan's expiry discards when a live message waits behind it.
 ///
 /// ## A discard answers everything still in flight on its connection
 ///
@@ -113,6 +122,15 @@ final class InFlightMessages: Sendable {
         self.clock = clock
     }
 
+    /// How many messages have a deadline running: started at their turn and not yet settled.
+    ///
+    /// For the suite, through `HelperClient.deadlinesRunning`. A deadline's instant is read when
+    /// its timer first runs, so a test that moves a hand-wound clock must first know that every
+    /// running deadline has parked on it; this count beside the clock's own sleepers says so.
+    var running: Int {
+        state.withLock { state in state.unsettled.values.filter { $0.timer != nil }.count }
+    }
+
     /// One sent message as its sender holds it: the block that answers it, and the wait for that
     /// answer.
     struct Admission<Answer>: Sendable {
@@ -130,6 +148,13 @@ final class InFlightMessages: Sendable {
         /// leaves the message in flight.
         func answer() async -> Result<Answer, Error> {
             await pending.waitForAnswer()
+        }
+
+        /// Settles the message with `error`, for a message that never reached the helper, and
+        /// hands `error` back for its sender to throw.
+        func failing(with error: Error) -> Error {
+            settle(.failure(error))
+            return error
         }
     }
 
@@ -226,7 +251,7 @@ final class InFlightMessages: Sendable {
         take(ticket)?.runOut()
     }
 
-    /// Starts `ticket`'s deadline, counted from now.
+    /// Starts `ticket`'s deadline, counted from when its timer first runs.
     private func startDeadline(of ticket: Ticket, after deadline: Duration) -> Task<Void, Never> {
         clock.timer(after: deadline) { [weak self] in self?.deadlineRanOut(ticket) }
     }
@@ -237,15 +262,24 @@ extension Clock {
     /// A task that calls `ranOut` once `duration` has passed on this clock, and never if it is
     /// cancelled first.
     ///
-    /// The instant is fixed when the timer is made, not when its task first runs, so a deadline
-    /// is counted from the moment its turn came however late the task is scheduled. A method on
-    /// the clock rather than a function taking one, so that `now` and the instant it is advanced
-    /// to are the same clock's, whichever clock was injected.
+    /// **The instant is read when the task first runs, not when the timer is made**, as
+    /// `PendingReply.answer(within:on:)` reads it. A deadline is the client's statement that the
+    /// helper took too long, so time the client spent unable to run its own timer must not count
+    /// against the helper: a client whose cooperative pool is stalled would otherwise cut off a
+    /// reply the helper sent in time. The cost is that a deadline can run long by the stall, which
+    /// is the direction a client that cannot see its helper should err in.
+    ///
+    /// `HelperClientSequencedDeadlineTests.aDeadlineIsReadOnItsTimersOwnTask` pins where the
+    /// instant is read. That a stall delays the read is the runtime's, and no test here can stall
+    /// a pool on demand.
+    ///
+    /// A method on the clock rather than a function taking one, so that `now` and the instant it
+    /// is advanced to are the same clock's, whichever clock was injected.
     fileprivate func timer(
         after duration: Duration, _ ranOut: @escaping @Sendable () -> Void
     ) -> Task<Void, Never> {
-        let due = now.advanced(by: duration)
-        return Task.detached {
+        Task.detached {
+            let due = now.advanced(by: duration)
             do {
                 try await sleep(until: due, tolerance: nil)
             } catch {
