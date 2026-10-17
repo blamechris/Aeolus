@@ -277,6 +277,11 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// with nothing written. One that finds the epoch moved after its mode write, before the force
     /// key's, throws `.supersededAfterWrite`. A contract B1's plane implements (ADR 0014's #410
     /// ticket-and-seal amendment); on this build nothing writes.
+    ///
+    /// A first step that issues no write throws `.superseded`, `.notAutomatic` or
+    /// `.failedBeforeFirstWrite`, and nothing else. A later step may be `.superseded` at its
+    /// admission, but never throws the other two. No step throws a `CancellationError` once
+    /// admitted (ADR 0014's #410 refused-hand-back amendment).
     func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep
 
     /// Commands a target speed, `F<n>Tg`.

@@ -18,6 +18,15 @@ struct EngagementUndoRefusedTests {
     /// What the driver says at `.fault` when its undo is refused.
     static let undoRefused = "Could not undo the engagement of fan 0"
 
+    /// Whether `error` is the plane's refusal of a first step of `fan`'s that failed before it
+    /// issued any write.
+    static func failedBeforeFirstWrite(_ error: (any Error)?, fan: Int) -> Bool {
+        guard case .failedBeforeFirstWrite(let index, _)? = error as? FanControlPlaneError else {
+            return false
+        }
+        return index == fan
+    }
+
     // MARK: - The driver (H6)
 
     /// **Only a refused undo is wrapped.** Three refusals of one engagement each: § 3 latching
@@ -71,6 +80,40 @@ struct EngagementUndoRefusedTests {
             nothingWritten as? FanControlPlaneError == .notAutomatic(index: 0, rawMode: 1),
             "a refusal that wrote nothing threw \(nothingWritten as Any)")
         #expect(await foreign.plane.keyWrites.isEmpty)
+    }
+
+    /// **A first step that could not read its fan is not undone.** The fan's `F0Md` does not
+    /// answer, so the engagement's first step fails before it issues any write and says so, as
+    /// `.failedBeforeFirstWrite`. The driver throws it bare: no restore is requested, § 3 is not
+    /// told of the fan, and the refusal's line says nothing was written. Writing `F0Md = 0` to a
+    /// fan whose mode was never read would be ADR 0011's contest (ADR 0014's #410 refused-hand-back
+    /// amendment).
+    ///
+    /// **Mutation:** drop `.failedBeforeFirstWrite` from `EngagementDriver.wroteNothing`. Run: red,
+    /// the fan restored and registered with § 3, and the line saying it was handed back.
+    @Test("A first step that could not read its fan is refused bare, with nothing undone")
+    func aFirstStepThatCouldNotReadItsFanIsNotUndone() async throws {
+        let plane = ScriptedControlPlane(
+            fans: [0: .nominal], stages: [ScriptedControlPlane.Stage(unreadableModes: [0])])
+        let rig = try await EngagementRig(
+            plane: plane, writes: InterferingFanStateSensing(plane, during: .restoreWrite))
+
+        let refused = await LeaseApplierAnswerTests.answer {
+            try await rig.driver.engageManualControl(of: rig.fan(0))
+        }
+
+        #expect(
+            Self.failedBeforeFirstWrite(refused, fan: 0),
+            "a first step that could not read its fan threw \(refused as Any)")
+        #expect(
+            await plane.attempts.contains(.restoreToAutomatic(.fan(0))) == false,
+            "the driver restored a fan whose mode it never read")
+        #expect(await rig.registry.engaged.isEmpty, "§ 3 was told of a fan nothing wrote to")
+        let refusal = rig.log.lines(containing: "The engagement of fan 0 was refused")
+        #expect(refusal.count == 1)
+        #expect(
+            refusal.allSatisfy { $0.contains("Nothing was written.") },
+            "the refusal's line said: \(refusal)")
     }
 
     // MARK: - § 5 (H7)

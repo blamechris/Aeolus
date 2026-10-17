@@ -1,6 +1,6 @@
 import Foundation
 
-/// What the engagement driver throws when the undo of a step that may have written was itself
+/// What the engagement driver throws when the undo of an engagement that issued a write was itself
 /// refused ([#406](https://github.com/blamechris/Aeolus/issues/406),
 /// [ADR 0014](../../../docs/ADR/0014-apple-silicon-unlock.md)'s #410 refused-hand-back amendment):
 /// the fan, and the step's own refusal, exactly what the driver threw before it said so.
@@ -9,7 +9,7 @@ import Foundation
 /// it as one whose hand-back was refused, and § 5 still holds its own record. **Every router reads
 /// the cause** (`cause(of:)`), so a refusal is answered and routed as it was before the wrapper
 /// existed. It is thrown for a refused undo and nothing else: an undo that landed throws the bare
-/// refusal, and a refusal that wrote nothing is unchanged.
+/// refusal, and a refusal that wrote nothing is thrown bare and never undone.
 struct EngagementUndoRefused: Error, Sendable {
 
     /// The fan whose hand-back the firmware refused.

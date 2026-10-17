@@ -233,6 +233,10 @@ struct WriteVerbAllowlistTests {
     ///   admission's `.superseded`, which is thrown before anything is written; a
     ///   `.supersededAfterWrite` is never retried. `manualControlEngaged(_:)` is § 3's registration
     ///   role (#181), the requirement `ThermalEmergency`'s entry above already witnesses.
+    ///   `reAdopted(_:)` hands that role the permit of a fan level 6 holds again without an
+    ///   engagement, and writes nothing: the permit goes only to § 3's registration, so the
+    ///   emergency bridges every fan level 6 commands (ADR 0014's #410 refused-hand-back
+    ///   amendment).
     private static let permitBearingVerbs: Set<String> = [
         "FanControlPlane.swift: commandTarget(_: AuthorisedFanTarget)",
         "FanControlPlane.swift: engageManualControl(of: CommandableFan)",
@@ -254,6 +258,7 @@ struct WriteVerbAllowlistTests {
         "EngagementDriver.swift: requireEntitlement(for: CommandableFan)",
         "EngagementDriver.swift: firstStep(of: CommandableFan)",
         "EngagementDriver.swift: manualControlEngaged(_: CommandableFan)",
+        "EngagementDriver.swift: reAdopted(_: CommandableFan)",
     ]
 
     /// The keystone verbs, which take no authorisation of any kind and must not start.
