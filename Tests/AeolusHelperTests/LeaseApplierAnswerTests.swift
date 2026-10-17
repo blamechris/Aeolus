@@ -174,7 +174,7 @@ struct LeaseApplierAnswerTests {
         let plane = ScriptedControlPlane(fans: [0: .automatic(at: 1_800)], unlock: .neverYields)
         let machine = ReclamationMachine(plane: plane, fans: [0: .automatic(at: 1_800)])
         let lease = try await machine.lease(fans: [0]).id
-        await plane.duringNextModeWrite { plane.ledger.restoreRequested() }
+        await plane.duringNextModeWrite { plane.ledger.restoreRequested(.fan(0)) }
 
         await #expect(throws: AeolusXPCFault.manualControlUnavailable(reason: .releaseInProgress)) {
             try await machine.levelSix().apply(fixed((0, 2_400)), under: lease)

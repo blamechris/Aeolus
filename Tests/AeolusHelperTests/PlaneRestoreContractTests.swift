@@ -13,9 +13,10 @@ struct PlaneRestoreContractTests {
         try commandableFan(index, declaring: .nominal)
     }
 
-    /// Engages `fans` on `plane` the way the driver does, step by step, until each reads back.
+    /// Engages `fans` on `plane` the way the driver does: a ticket, then steps until it reads back.
     private static func engage(_ fans: [Int], on plane: ScriptedControlPlane) async throws {
         for index in fans {
+            plane.beginEngagement(fanAt: index)
             while try await plane.engageManualControl(of: fan(index)) == .awaitingYield {}
         }
     }
@@ -89,7 +90,7 @@ struct PlaneRestoreContractTests {
     @Test("Undoing an engagement that never joined clears the key it set")
     func anEmptyEngagedSetClearsTheKey() async throws {
         let plane = ScriptedControlPlane(fans: [0: .nominal], unlock: .neverYields)
-        #expect(try await plane.engageManualControl(of: Self.fan(0)) == .awaitingYield)
+        #expect(try await plane.ticketedStep(of: Self.fan(0)) == .awaitingYield)
 
         try await plane.restoreToAutomatic(.fan(0))
 
@@ -99,20 +100,20 @@ struct PlaneRestoreContractTests {
             ])
     }
 
-    /// The restore epoch moves on the request itself, before any write, and supersedes every
-    /// engagement in progress — a restore of a different fan included.
-    ///
-    /// **Mutation:** delete `state.epoch &+= 1` from `restoreRequested()`. Run: red.
+    /// A request moves the epoch, before any write, and supersedes any engagement in progress,
+    /// whichever fan. **Mutation:** delete `state.epoch &+= 1` from `restoreRequested(_:)`. Red.
     @Test("Any restore request supersedes an engagement in progress")
     func aRestoreRequestMovesTheEpoch() throws {
         let ledger = PlaneWriteLedger(enumerated: [0, 1], forceKey: .present)
+        ledger.beginEngagement(fanAt: 0)
         #expect(try ledger.admitStep(fanAt: 0) == .first)
         #expect(try ledger.admitStep(fanAt: 0) == .continuing)
 
-        ledger.restoreRequested()
+        ledger.restoreRequested(.fan(1))
 
         #expect(ledger.isCurrent(fanAt: 0) == false)
         #expect(throws: FanControlPlaneError.superseded) { try ledger.admitStep(fanAt: 0) }
+        ledger.beginEngagement(fanAt: 0)
         #expect(try ledger.admitStep(fanAt: 0) == .first, "a fresh engagement was not admitted")
     }
 

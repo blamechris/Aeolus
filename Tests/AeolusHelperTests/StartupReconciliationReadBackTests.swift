@@ -568,12 +568,17 @@ actor ReadBackScriptedPlane: FanControlPlane {
         try await wrapped.restoreToAutomatic(scope)
         let misses: Set<Int>
         switch scope {
-        case .everyFan: misses = keystoneMisses
+        case .everyFan, .forExit: misses = keystoneMisses
         case .fan(let index): misses = perFanMisses.intersection([index])
         }
         for fan in misses {
             await wrapped.setMode(.manual, ofFan: fan)
         }
+    }
+
+    /// The engagement's ticket, forwarded: synchronous, so it costs no hop.
+    nonisolated func beginEngagement(fanAt index: Int) {
+        wrapped.beginEngagement(fanAt: index)
     }
 
     func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {

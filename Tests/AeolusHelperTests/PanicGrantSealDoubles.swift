@@ -86,6 +86,11 @@ actor ScopeParkingPlane: FanControlPlane {
         try await reads.reconnect()
     }
 
+    /// The engagement's ticket, forwarded: synchronous, so it costs no hop.
+    nonisolated func beginEngagement(fanAt index: Int) {
+        reads.beginEngagement(fanAt: index)
+    }
+
     func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
         try await reads.engageManualControl(of: fan)
     }

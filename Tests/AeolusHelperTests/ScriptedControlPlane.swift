@@ -241,6 +241,9 @@ actor ScriptedControlPlane: FanControlPlane {
         case mode(fan: Int, value: UInt8)
         /// `Ftst = value`.
         case forceKey(UInt8)
+        /// `F<n>Tg = rpm`: a target command the plane admitted, so the write itself is observed
+        /// rather than only the attempt (ADR 0014's #410 ticket-and-seal amendment).
+        case target(fan: Int, rpm: Double)
     }
 
     /// One fan as the firmware currently has it. Mutated by writes the firmware honours.
@@ -547,21 +550,22 @@ actor ScriptedControlPlane: FanControlPlane {
         attempts.append(.restoreToAutomatic(scope))
         if case .fan(let index) = scope { _ = try condition(ofFan: index) }
         // Requested, then issued: one actor turn here, two moments on a plane whose restore
-        // waits for a scheduler turn between them — `PlaneWriteLedger` keeps them apart.
-        ledger.restoreRequested()
-        let plan =
-            switch scope {
-            case .fan(let index): ledger.issueRestore(fanAt: index)
-            case .everyFan: ledger.issueMachineWideRestore()
-            }
-        try plan.attemptEvery { write in try applyRestoreWrite(write) }
+        // waits for a scheduler turn between them — `PlaneWriteLedger` keeps them apart, and
+        // decides the plan and the exit's seal by scope, so this plane and B1's cannot differ.
+        ledger.restoreRequested(scope)
+        try ledger.plan(for: scope).attemptEvery { write in try applyRestoreWrite(write) }
     }
 
+    /// A target command, admitted first in its turn: once the exit's restore has been requested the
+    /// ledger refuses it with `.superseded` before anything is written (ADR 0014's #410
+    /// ticket-and-seal amendment). The attempt is still recorded, because it was made.
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
         let index = target.fanIndex
         attempts.append(.commandTarget(fan: index, rpm: target.rpm))
+        try ledger.admitCommand()
         _ = try condition(ofFan: index)
+        keyWrites.append(.target(fan: index, rpm: target.rpm))
         try applyWrite(behaviour: stage.targetWrites ?? stage.writes) { fans in
             fans[index]?.targetRPM = target.rpm
         }
@@ -733,6 +737,20 @@ extension ScriptedControlPlane {
         }
         return WritePathPreparation(
             enumeratedFans: enumerated, forceKey: forceKey, machineWideRestore: restore)
+    }
+
+    /// The engagement's ticket, taken on `ledger` as B1's plane takes it (ADR 0014's #410
+    /// ticket-and-seal amendment): `nonisolated`, because the verb is synchronous and the ledger is
+    /// a lock rather than this actor's state. Records no attempt, because it reaches no firmware.
+    nonisolated func beginEngagement(fanAt index: Int) {
+        ledger.beginEngagement(fanAt: index)
+    }
+
+    /// A first step as the driver takes one, for a test that steps this plane directly: the
+    /// ticket, then the step. A first step with no ticket is refused `.superseded`.
+    func ticketedStep(of fan: CommandableFan) async throws -> EngagementStep {
+        beginEngagement(fanAt: fan.index)
+        return try await engageManualControl(of: fan)
     }
 
     /// One step of the unlock model: D3, decided by `EngagementRules` and recorded in `ledger`.

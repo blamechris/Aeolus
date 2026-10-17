@@ -108,20 +108,24 @@ struct SignalTeardownTests {
     ///
     /// A lease is held, so `releaseEveryLease()` has real work: fan 0's own restore is the
     /// `.fan(0)` entry, and the `.everyFan` entry after it is the keystone this path issues
-    /// unconditionally. Both carry the gate's state at the write, which is what pins step 1
-    /// ahead of step 2.
+    /// unconditionally. Both carry the gate's state at the write, which is what pins step 1 ahead
+    /// of step 2.
     ///
     /// The keystone appears **twice**: once at step 3 and once at step 5, ruling D19's, after
     /// the supervisors have stopped. Both are in the journal, and their positions either side
-    /// of `.supervisorsStopped` are the whole of that ruling.
+    /// of `.supervisorsStopped` are the whole of that ruling. The second is the exit's own scope,
+    /// `.forExit`, which writes what `.everyFan` writes and seals the plane; the first is not, so
+    /// § 3 can still bridge a fan to maximum until it stops (ADR 0014's #410 ticket-and-seal
+    /// amendment).
     ///
     /// **Mutation:** swap the `gate.close()`/`releaseEveryLease()` pair with the first
-    /// `keystone()` call in `SignalTeardown.run(stoppingSupervisorsWith:)`. Run: red.
+    /// `keystone(.everyFan)` call in `SignalTeardown.run(stoppingSupervisorsWith:)`. Run: red.
     /// **Mutation:** move `await gate.close()` below `await leases.releaseEveryLease()`.
     /// Run: red — the first restore is recorded with the gate still open.
-    /// **Mutation:** move `await stop()` above the first `keystone()`. Run: red.
-    /// **Mutation:** delete the first `keystone()` call. Run: red.
-    /// **Mutation:** delete the second `keystone()` call. Run: red.
+    /// **Mutation:** move `await stop()` above the first keystone. Run: red.
+    /// **Mutation:** delete the first `keystone(.everyFan)` call. Run: red.
+    /// **Mutation:** delete the second `keystone(.forExit)` call. Run: red.
+    /// **Mutation:** make the first keystone `.forExit`. Run: red, on the first keystone's scope.
     @Test("A signal releases every lease, then restores every fan, then stops, then exits")
     func theTeardownRunsItsStepsInOrder() async throws {
         let journal = TeardownJournal()
@@ -135,7 +139,7 @@ struct SignalTeardownTests {
                 .restored(.fan(0), gateClosed: true),
                 .restored(.everyFan, gateClosed: true),
                 .supervisorsStopped,
-                .restored(.everyFan, gateClosed: true),
+                .restored(.forExit, gateClosed: true),
                 .exited(.restored),
             ],
             """
@@ -166,14 +170,14 @@ struct SignalTeardownTests {
         await helper.signalTeardown.run(stoppingSupervisorsWith: Self.stopRecorder(journal))
 
         #expect(
-            await journal.restoreScopes == [.everyFan, .everyFan],
+            await journal.restoreScopes == [.everyFan, .forExit],
             """
             the machine-wide restore is conditional on something this process knows about, \
             so a fan the previous helper left in manual is never handed back.
             """)
     }
 
-    /// D19's window, narrowed: a fan put into manual **after** the first keystone is still
+    /// D19's window, closed: a fan put into manual **after** the first keystone is still
     /// automatic when the process exits.
     ///
     /// `stop()` cancels the three supervisors; it does not await a cycle already in flight,
@@ -187,7 +191,12 @@ struct SignalTeardownTests {
     /// The assertion is on the firmware's own state rather than on the journal alone: the
     /// point of the ruling is not that a second write was issued, it is that the fan is back.
     ///
-    /// **Mutation:** delete the second `keystone()` call from
+    /// The step takes its ticket as the driver would, after the first keystone, so it is current;
+    /// and the first keystone is `.everyFan`, which seals nothing (ADR 0014's #410 ticket-and-seal
+    /// amendment), so the step is admitted and writes. The second keystone, `.forExit`, is what
+    /// hands the fan back.
+    ///
+    /// **Mutation:** delete the second `keystone(.forExit)` call from
     /// `SignalTeardown.run(stoppingSupervisorsWith:)` and return the first one's outcome.
     /// Run: red — fan 0 is `.manual` at exit.
     @Test("A fan put into manual while the supervisors are stopping is still handed back")
@@ -199,7 +208,9 @@ struct SignalTeardownTests {
 
         await helper.signalTeardown.run(stoppingSupervisorsWith: {
             await journal.record(.supervisorsStopped)
-            // What a § 5 re-assert does, at the one moment it can still do it.
+            // What a § 5 re-assert does, at the one moment it can still do it: its ticket, under
+            // the current epoch, then its first step.
+            plane.beginEngagement(fanAt: fan.index)
             _ = try? await plane.engageManualControl(of: fan)
         })
 
@@ -225,7 +236,7 @@ struct SignalTeardownTests {
     /// plane is asked for fan 0 again with the gate already closed. No lease is held at that
     /// point, so nothing but the register names it.
     ///
-    /// Counted on `.fan(0)` and not on `.everyFan`, which the teardown issues twice whether or
+    /// Counted on `.fan(0)` and not on the keystones, which the teardown issues whether or
     /// not the sweep reached the fan. The journal is read before and after, so the setup's own
     /// attempts are not the ones counted.
     ///
@@ -260,7 +271,7 @@ struct SignalTeardownTests {
             `restoreAbandoned` hands the next process a fan still in manual.
             """)
         #expect(
-            atTeardown.contains(.everyFan),
+            atTeardown.contains(.forExit),
             "the teardown never reached its keystone, so the count above describes another path")
         #expect(
             await helper.leases.fansWithAbandonedHandbacks == [0],
@@ -306,7 +317,7 @@ struct SignalTeardownTests {
     /// non-zero exit here would make #165's `SuccessfulExit = false` restart the helper after
     /// every `launchctl bootout` and every app quit on today's build.
     ///
-    /// **Mutation:** replace the whole `do`/`catch` in `SignalTeardown.keystone()` with
+    /// **Mutation:** replace the whole `do`/`catch` in `SignalTeardown.keystone(_:)` with
     /// `return .restored` — "treat every error as success". Run: red
     /// (`aFailedRestoreExitsNonZero`).
     /// **Mutation:** delete the `catch FanControlPlaneError.controlPathNotBuilt` clause —
@@ -512,7 +523,7 @@ struct SignalTeardownTests {
         await signals.fire()
         #expect(await journal.waitForExit(), "the teardown never reached its exit")
 
-        #expect(await journal.restoreScopes == [.everyFan, .everyFan])
+        #expect(await journal.restoreScopes == [.everyFan, .forExit])
         #expect(await journal.events.last == .exited(.restored))
     }
 
@@ -571,7 +582,7 @@ struct SignalTeardownTests {
             await journal.events == [
                 .restored(.everyFan, gateClosed: true),
                 .supervisorsStopped,
-                .restored(.everyFan, gateClosed: true),
+                .restored(.forExit, gateClosed: true),
                 .exited(.restored),
             ],
             "the teardown ran twice, so the process was told to exit twice")

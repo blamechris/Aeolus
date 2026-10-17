@@ -612,9 +612,21 @@ actor InterferingFanStateSensing: FanControlPlane {
     private var beforeEngageStep: (ordinal: Int, effect: @Sendable () async -> Void)?
     private var engageSteps = 0
 
+    /// An effect run before the plane is asked for the `ordinal`th target command — after the
+    /// caller's entitlement and before the command's turn (ADR 0014's #410 ticket-and-seal
+    /// amendment).
+    private var beforeCommandTarget: (ordinal: Int, effect: @Sendable () async -> Void)?
+    private var commands = 0
+
     /// What `commandTarget(_:)` returns in place of the plane's answer once set, after the plane
     /// has taken the write: a write path returning a target no plane can write (#395).
     private var misreportedRPM: Double?
+
+    /// An effect run once, synchronously, inside the next `beginEngagement(fanAt:)` before the
+    /// plane takes the ticket, and whether it ran. Synchronous because the verb is: what runs here
+    /// can only be what a path does without suspending, so it is held in a lock, not the actor.
+    private let beforeTicket = OSAllocatedUnfairLock(
+        initialState: (effect: (@Sendable () -> Void)?.none, fired: false))
 
     /// Whether the effect actually ran.
     ///
@@ -642,9 +654,41 @@ actor InterferingFanStateSensing: FanControlPlane {
         beforeEngageStep = (ordinal, effect)
     }
 
+    /// Runs `effect` before the `ordinal`th target command, counting from one.
+    func interfere(
+        beforeCommandTarget ordinal: Int, with effect: @escaping @Sendable () async -> Void
+    ) {
+        beforeCommandTarget = (ordinal, effect)
+    }
+
     /// Makes every later `commandTarget(_:)` return `rpm` for the fan it wrote. Independent of
     /// `moment`, and fires no effect.
     func misreport(commandedRPM rpm: Double) { misreportedRPM = rpm }
+
+    /// Runs `effect` inside the next `beginEngagement(fanAt:)`, before the ticket is taken: the
+    /// instant just before an engagement asks the plane for its epoch (ADR 0014's #410
+    /// ticket-and-seal amendment).
+    ///
+    /// Not an `interfere` overload: a trailing closure with a synchronous body would bind to this
+    /// one, and every `interfere { … }` whose effect never awaits would silently move here.
+    nonisolated func runBeforeBeginEngagement(_ effect: @escaping @Sendable () -> Void) {
+        beforeTicket.withLock { $0.effect = effect }
+    }
+
+    /// Whether the effect `runBeforeBeginEngagement(_:)` set has run.
+    nonisolated var didFireBeforeBeginEngagement: Bool { beforeTicket.withLock { $0.fired } }
+
+    nonisolated func beginEngagement(fanAt index: Int) {
+        let effect = beforeTicket.withLock { state in
+            defer { state.effect = nil }
+            return state.effect
+        }
+        if let effect {
+            effect()
+            beforeTicket.withLock { $0.fired = true }
+        }
+        plane.beginEngagement(fanAt: index)
+    }
 
     func readControlState(ofFan index: Int) async throws -> FanControlState {
         if moment == .controlStateRead { await fireOnce() }
@@ -705,6 +749,12 @@ actor InterferingFanStateSensing: FanControlPlane {
 
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
+        commands += 1
+        if let pending = beforeCommandTarget, pending.ordinal == commands {
+            beforeCommandTarget = nil
+            await pending.effect()
+            didFire = true
+        }
         let commanded: CommandedTarget
         do {
             commanded = try await plane.commandTarget(target)

@@ -62,7 +62,7 @@ extension ReclamationReassertViewTests {
         let permit = try Self.permit(machine)
         await sensing.interfere(beforeEngageStep: 1) { [machine] in
             do {
-                _ = try await machine.plane.engageManualControl(of: permit)
+                _ = try await machine.plane.ticketedStep(of: permit)
             } catch {
                 Issue.record("the unregistered engagement failed: \(error)")
             }
@@ -127,7 +127,7 @@ extension ReclamationReassertViewTests {
         await sensing.interfere(beforeEngageStep: 1) { [machine] in
             await machine.watchdog.manualControlReleased(fanAt: 0)
             do {
-                _ = try await machine.plane.engageManualControl(of: permit)
+                _ = try await machine.plane.ticketedStep(of: permit)
             } catch {
                 Issue.record("the other engagement failed: \(error)")
             }

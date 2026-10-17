@@ -31,7 +31,7 @@ struct SMCFanControlPlaneTests {
     /// provider recording no request at all is what proves the property.
     @Test("Restoring to automatic reaches the SMC for nothing at all before refusing")
     func restoringToAutomaticIssuesNoRead() async throws {
-        for scope in [FanRestoreScope.everyFan, .fan(0)] {
+        for scope in [FanRestoreScope.everyFan, .fan(0), .forExit] {
             let provider = FakeSensorProvider(keyedResults: [:])
             let plane = supervisorPlane(over: provider)
 
@@ -51,9 +51,16 @@ struct SMCFanControlPlaneTests {
     /// `CLAUDE.md` rule 1 as a test. E5 gates E3 and E4, so the seam models the write side
     /// and implements none of it; a stubbed success here would be a lease that controls
     /// nothing wearing a different name.
+    ///
+    /// The engagement's ticket (ADR 0014's #410 ticket-and-seal amendment) changes none of it:
+    /// taking one reaches nothing, the step after it still refuses, and the exit's scope is refused
+    /// like the others, so the teardown's exit code is `.nothingToRestore` as before.
     @Test("Every write verb refuses, because this build has no write path")
     func everyWriteVerbRefuses() async throws {
-        let plane = Self.plane([:])
+        let provider = FakeSensorProvider(keyedResults: [:])
+        let plane = supervisorPlane(over: provider)
+        plane.beginEngagement(fanAt: 0)
+        #expect(await provider.subsetRequests.isEmpty, "taking a ticket issued a read")
 
         await #expect(throws: FanControlPlaneError.controlPathNotBuilt) {
             try await plane.engageManualControl(of: commandableFan(0, declaring: .nominal))
@@ -64,6 +71,9 @@ struct SMCFanControlPlaneTests {
         }
         await #expect(throws: FanControlPlaneError.controlPathNotBuilt) {
             try await plane.restoreToAutomatic(.fan(0))
+        }
+        await #expect(throws: FanControlPlaneError.controlPathNotBuilt) {
+            try await plane.restoreToAutomatic(.forExit)
         }
     }
 
