@@ -85,8 +85,10 @@ import Foundation
 /// ## Why this is one long file, and where the split stops
 ///
 /// This file is over SwiftLint's 400-line `file_length` warning and stays that way on
-/// purpose. **229 of its lines are code**; the rest is the reasoning around them, and the
-/// rule counts comment lines. That figure did not move when this section was added — the file
+/// purpose. **246 of its lines are code**; the rest is the reasoning around them, and the
+/// rule counts comment lines. The seventeen since this section was written are the clock the
+/// deadlines are measured on, the `internal` initialiser that names it, and the gate's choice of
+/// deadline (#325). The figure, 229 then, did not move when this section was added — the file
 /// grew by fifty-odd lines and by none of the thing the threshold is worth measuring, which
 /// is the whole argument in one measurement. The warning is deliberately **not** suppressed —
 /// no `swiftlint:disable`, no `file_length` override in `.swiftlint.yml` — because a file that
@@ -146,6 +148,7 @@ public actor HelperClient {
     private let pinning: any HelperConnectionPinning
     private let clientDescription: String
     private let deadlines: HelperClientDeadlines
+    private let clock: any Clock<Duration>
 
     private var connection: NSXPCConnection?
     private var negotiatedReply: HelloReply?
@@ -196,18 +199,41 @@ public actor HelperClient {
     ///   - clientDescription: What this client calls itself in the helper's log —
     ///     `Aeolus.app 0.3.0`, `fanctl`. Validated by the helper, which refuses rather than
     ///     repairs.
-    ///   - deadlines: How long to wait for one message. Unmeasured; see
-    ///     `HelperClientDeadlines`.
+    ///   - deadlines: How long to wait for one message. Two of them are guesses and two are
+    ///     derived from the helper's own bounds; see `HelperClientDeadlines`.
     public init(
         transport: HelperClientTransport = .machService,
         pinning: any HelperConnectionPinning = SignedHelperPinning(),
         clientDescription: String,
         deadlines: HelperClientDeadlines = .default
     ) {
+        self.init(
+            transport: transport,
+            pinning: pinning,
+            clientDescription: clientDescription,
+            deadlines: deadlines,
+            clock: ContinuousClock())
+    }
+
+    /// The same client, with the clock its deadlines are measured on named.
+    ///
+    /// `internal`, for the suite alone. A deadline is run out, or shown not to have run out, by
+    /// moving a clock the test holds rather than by waiting for it: `apply`'s runs to nearly two
+    /// minutes for two fans, and a deadline measured on the wall clock is one a stalled runner
+    /// can run out for a client that did nothing wrong. Production has one clock and no way to
+    /// name another.
+    init(
+        transport: HelperClientTransport,
+        pinning: any HelperConnectionPinning,
+        clientDescription: String,
+        deadlines: HelperClientDeadlines,
+        clock: any Clock<Duration>
+    ) {
         self.transport = transport
         self.pinning = pinning
         self.clientDescription = clientDescription
         self.deadlines = deadlines
+        self.clock = clock
     }
 
     // MARK: - What a caller may ask about the connection
@@ -265,11 +291,17 @@ public actor HelperClient {
     /// on a cold connection produce **one** `hello` and both wait for it. The second `hello`
     /// on a connection is refused by the helper — a connection has one negotiated identity —
     /// so "whoever gets there second loses" would be a race a correct caller could not avoid.
+    ///
+    /// `deadline` picks the message's bound out of this client's deadlines, which stay private
+    /// to this file: a verb says which bound it needs and never holds the deadlines itself.
+    /// Every verb but `apply` takes `gatedVerb`; `apply` takes its own, which grows with the
+    /// fans it names (`HelperClientDeadlines.applyDeadline(naming:)`).
     func withHandshakenProxy<Answer: Sendable>(
+        within deadline: (HelperClientDeadlines) -> Duration = { $0.gatedVerb },
         _ send: (any AeolusXPCProtocol, @escaping @Sendable (Result<Answer, Error>) -> Void) -> Void
     ) async throws -> Answer {
         let live = try await handshakenConnection()
-        return try await exchange(on: live, within: deadlines.gatedVerb, send)
+        return try await exchange(on: live, within: deadline(deadlines), send)
     }
 
     /// Runs one message on a live connection **without** a handshake.
@@ -475,7 +507,7 @@ public actor HelperClient {
         }
         send(typed) { pending.deliver($0) }
 
-        switch await pending.answer(within: deadline) {
+        switch await pending.answer(within: deadline, on: clock) {
         case .success(let answer):
             return answer
         case .failure(let error):

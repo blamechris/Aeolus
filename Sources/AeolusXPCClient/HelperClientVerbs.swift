@@ -78,9 +78,15 @@ extension HelperClient {
     /// Success means the helper accepted and applied the request, not that a fan reached a
     /// speed: what the firmware does with a clamped target is reported by the next
     /// `snapshot()`, never inferred from this returning.
+    ///
+    /// **The one gated verb with a deadline of its own**, which grows with the fans `settings`
+    /// names (`HelperClientDeadlines.applyDeadline(naming:)`): an `apply` that engages fans may
+    /// lawfully take a gate wait, a yield and several scheduler turns for each, and cutting it
+    /// off at `gatedVerb` would end a lease the helper was honouring.
     public func apply(_ settings: [FanSetting], leaseID: UUID) async throws {
         let payload = try HelperClientPayload.encode(settings)
-        try await withHandshakenProxy { proxy, resolve in
+        let deadline: (HelperClientDeadlines) -> Duration = { $0.applyDeadline(naming: settings) }
+        try await withHandshakenProxy(within: deadline) { proxy, resolve in
             proxy.apply(settings: payload, leaseID: leaseID.uuidString) { error in
                 resolve(HelperClientPayload.acknowledgement(error))
             }

@@ -1,3 +1,4 @@
+import FanKit
 import Foundation
 
 /// How long this client waits for one message before it gives up on it.
@@ -6,8 +7,9 @@ import Foundation
 /// literals at the call sites so that the guess is in one place and is visible as a guess;
 /// neither was derived from a measurement, and the only timing this project has measured on
 /// its own hardware is a snapshot's 0.9–2.9 s, which is what the gated figure is loosely
-/// scaled against. `handshakeVerb` is the exception: it is *derived*, from the helper's own
-/// startup budget plus a stated spawn allowance, and the arithmetic is written out below
+/// scaled against. `handshakeVerb` and `applyPerFan` are the exceptions: both are *derived*
+/// from the helper's own bounds — the startup budget plus a stated spawn allowance, and the
+/// examination gate's bound plus two scheduler turns — and the arithmetic is written out below
 /// where a reviewer can disagree with a term rather than with a number.
 /// [#229](https://github.com/blamechris/Aeolus/issues/229) is the helper-side deadline;
 /// this is the client's, and the two are independent.
@@ -71,20 +73,64 @@ public struct HelperClientDeadlines: Sendable, Hashable {
         + HelperClientDeadlines.spawnAllowance
         + HelperClientDeadlines.gatedVerb
 
+    /// What each fan an `apply` names adds to its deadline: the longest the helper may lawfully
+    /// spend on one fan's engagement, restated.
+    ///
+    ///     applyPerFan = FanExaminationGate.examinationWait + WatchdogLimits.gateWaiterAlarm × 2
+    ///                 = 32 s                             + 10 s × 2                       = 52 s
+    ///
+    /// The envelope read's scheduler turn before the fan's examination gate, the gate wait and the
+    /// hold that § 5's bound already counts, and one undo's turn after the gate, each turn taken at
+    /// G, ADR 0012's design-point slot (ADR 0014's #410 amendment). Those terms live in
+    /// `AeolusHelper`, which this target must not link, so the figure is copied here as
+    /// `reconciliationBudget` is, and
+    /// `HelperClientDeadlineTests.theApplyDeadlineIsDerivedFromTheHelpersOwnBounds` imports both
+    /// modules and fails the moment the copy and the helper's bounds stop agreeing.
+    ///
+    /// **Derived, not measured,** as `handshakeVerb` is: it states what the helper may lawfully
+    /// take, so no lawful `apply` is cut off. A measured figure would be one machine at one load,
+    /// shorter than the lawful worst case and no statement at all about a Mac nobody has tested.
+    public static let applyPerFan: Duration = .seconds(52)
+
     public let gatedVerb: Duration
     public let panicVerb: Duration
     public let handshakeVerb: Duration
+    public let applyPerFan: Duration
 
-    public init(gatedVerb: Duration, panicVerb: Duration, handshakeVerb: Duration) {
+    /// `applyPerFan` defaults to the shipping figure, because it is read only by `apply`, and a
+    /// construction made to bound some other verb has no reason to restate it.
+    public init(
+        gatedVerb: Duration,
+        panicVerb: Duration,
+        handshakeVerb: Duration,
+        applyPerFan: Duration = HelperClientDeadlines.applyPerFan
+    ) {
         self.gatedVerb = gatedVerb
         self.panicVerb = panicVerb
         self.handshakeVerb = handshakeVerb
+        self.applyPerFan = applyPerFan
     }
 
-    /// The shipping trio.
+    /// The shipping deadlines.
     public static let `default` = HelperClientDeadlines(
         gatedVerb: HelperClientDeadlines.gatedVerb,
         panicVerb: HelperClientDeadlines.panicVerb,
-        handshakeVerb: HelperClientDeadlines.handshakeVerb
+        handshakeVerb: HelperClientDeadlines.handshakeVerb,
+        applyPerFan: HelperClientDeadlines.applyPerFan
     )
+
+    /// How long `apply` waits for `settings`: `gatedVerb`, plus `applyPerFan` for each distinct
+    /// fan they name. At the shipping figures that is 57 s for one fan and 109 s for two; every
+    /// other verb keeps its own deadline.
+    ///
+    /// **Distinct fans, not settings.** Level 6 refuses settings that name a fan twice
+    /// (`LeaseApplier`), so a deadline that counted the second setting would double for a request
+    /// that engages one fan at most. With no fan named it is `gatedVerb`, every gated verb's.
+    ///
+    /// It is long because an `apply` that engages fans may lawfully take that long, and a client
+    /// that gave up first would end a lease the helper was honouring: the cut-off discards the
+    /// connection, and the helper releases a connection's leases when it goes.
+    func applyDeadline(naming settings: [FanSetting]) -> Duration {
+        gatedVerb + applyPerFan * Set(settings.map(\.fanIndex)).count
+    }
 }

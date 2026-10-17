@@ -200,7 +200,8 @@ struct HelperClientAccessTests {
         "restoreAllToAutomatic()",
         "disconnect()",
         "healthUpdates()",
-        "withHandshakenProxy(_: (any AeolusXPCProtocol, @escaping @Sendable "
+        "withHandshakenProxy(within: (HelperClientDeadlines) -> Duration, "
+            + "_: (any AeolusXPCProtocol, @escaping @Sendable "
             + "(Result<Answer, Error>) -> Void) -> Void)",
         "withProxy(_: (any AeolusXPCProtocol, @escaping @Sendable "
             + "(Result<Void, Error>) -> Void) -> Void)",

@@ -56,6 +56,7 @@ actor LeaseGrantingAuthority: FanAuthority {
 
     private let lease: Lease
     private let snapshotGate: AsyncSignal?
+    private let applyGate: AsyncSignal?
     private(set) var applied: [FanSetting] = []
     private(set) var released: [UUID] = []
 
@@ -70,13 +71,20 @@ actor LeaseGrantingAuthority: FanAuthority {
     /// than inferred from a sleep.
     private(set) var hasBeenAskedForSnapshot = false
 
+    /// Set before `apply` parks, for the same reason.
+    private(set) var hasBeenAskedToApply = false
+
     /// - Parameters:
     ///   - lease: the lease every `acquireLease` and `renewLease` answers with.
     ///   - snapshotGate: when given, `snapshot` parks on it — so a test can hold a gated
     ///     verb open on a connection whose lease it is watching.
-    init(lease: Lease, snapshotGate: AsyncSignal? = nil) {
+    ///   - applyGate: when given, `apply` parks on it after recording its settings — an `apply`
+    ///     the helper accepted and is still working on, which is the state `apply`'s own
+    ///     deadline is the bound for.
+    init(lease: Lease, snapshotGate: AsyncSignal? = nil, applyGate: AsyncSignal? = nil) {
         self.lease = lease
         self.snapshotGate = snapshotGate
+        self.applyGate = applyGate
     }
 
     func snapshot() async throws -> SystemSnapshot {
@@ -101,6 +109,8 @@ actor LeaseGrantingAuthority: FanAuthority {
         _ settings: [FanSetting], leaseID: UUID, from connection: ConnectionID
     ) async throws {
         applied = settings
+        hasBeenAskedToApply = true
+        if let applyGate { try? await applyGate.wait() }
     }
 
     func restoreAllToAutomatic(from connection: ConnectionID) async throws {}
