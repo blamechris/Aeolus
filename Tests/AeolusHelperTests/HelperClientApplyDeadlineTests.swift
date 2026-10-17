@@ -11,10 +11,10 @@ import Testing
 ///
 /// ## Nothing here waits for a deadline
 ///
-/// `apply`'s shipping deadline is 57 s for one fan and 109 s for two, and the client tests that
-/// wait for a bound in real time are the ones a stalled runner fails
-/// ([#341](https://github.com/blamechris/Aeolus/issues/341),
-/// [#407](https://github.com/blamechris/Aeolus/issues/407)). So every client here measures its
+/// `apply`'s shipping deadline is 57 s for one fan and 109 s for two, and a test that waits for a
+/// bound in real time is one a stalled runner fails: the XPC client's tests in
+/// [#341](https://github.com/blamechris/Aeolus/issues/341), reconciliation's budget in
+/// [#407](https://github.com/blamechris/Aeolus/issues/407). So every client here measures its
 /// deadlines on a `ManualClock` that only the test moves. A deadline runs out when the test moves
 /// the hands past it and at no other time, whatever the runner is doing. The XPC round trips are
 /// the only thing still on the wall clock: the suite waits for each hop with a generous bound and
@@ -192,9 +192,9 @@ struct HelperClientApplyDeadlineTests {
     /// Past its deadline the helper is outside its contract, so the connection is still
     /// discarded: everything sequenced behind the `apply` would otherwise wait for it too. The
     /// discard is what ends the lease, because the helper releases a connection's leases when it
-    /// goes, so the error has to say so. Before #325 it said only that nothing could be said about
-    /// whether the request took effect, which leaves a caller believing it still holds fans it
-    /// has just given back (rule 6).
+    /// goes, so the error has to say so. Before this change it said only that nothing could be
+    /// said about whether the request took effect, which leaves a caller believing it still holds
+    /// fans it has just given back (rule 6).
     ///
     /// The clock is moved to exactly one fan's deadline, which ends it. The client must report the
     /// deadline it waited, read `.unresponsive`, and say that giving up the connection ended any

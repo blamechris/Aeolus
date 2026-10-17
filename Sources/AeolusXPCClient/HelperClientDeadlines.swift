@@ -81,9 +81,10 @@ public struct HelperClientDeadlines: Sendable, Hashable {
     ///
     /// The envelope read's scheduler turn before the fan's examination gate, the gate wait and the
     /// hold that § 5's bound already counts, and one undo's turn after the gate, each turn taken at
-    /// G, ADR 0012's design-point slot (ADR 0014's #410 amendment). Those terms live in
-    /// `AeolusHelper`, which this target must not link, so the figure is copied here as
-    /// `reconciliationBudget` is, and
+    /// G, which stands for one turn at ADR 0012's design point (ADR 0014's #410 amendment).
+    ///
+    /// Those terms live in `AeolusHelper`, which this target must not link, so the figure is
+    /// copied here as `reconciliationBudget` is, and
     /// `HelperClientDeadlineTests.theApplyDeadlineIsDerivedFromTheHelpersOwnBounds` imports both
     /// modules and fails the moment the copy and the helper's bounds stop agreeing.
     ///
