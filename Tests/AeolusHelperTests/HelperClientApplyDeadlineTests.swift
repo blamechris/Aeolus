@@ -187,6 +187,51 @@ struct HelperClientApplyDeadlineTests {
         try await parked.expectAnsweredOnTheSameConnection()
     }
 
+    /// **D4. An `apply` past its deadline says that control ended, and it has.**
+    ///
+    /// Past its deadline the helper is outside its contract, so the connection is still
+    /// discarded: everything sequenced behind the `apply` would otherwise wait for it too. The
+    /// discard is what ends the lease, because the helper releases a connection's leases when it
+    /// goes, so the error has to say so. Before #325 it said only that nothing could be said about
+    /// whether the request took effect, which leaves a caller believing it still holds fans it
+    /// has just given back (rule 6).
+    ///
+    /// The clock is moved to exactly one fan's deadline, which ends it. The client must report the
+    /// deadline it waited, read `.unresponsive`, and say that giving up the connection ended any
+    /// manual control it held; and the helper must see the connection go.
+    ///
+    /// **Mutation:** put `helperNeverAnswered`'s description back to its text before #325. Run:
+    /// red on the description alone. **Mutation:** in `HelperClient.translate(_:on:)`, delete the
+    /// `discardConnection(generation, as: .unresponsive)` in the `.helperNeverAnswered` arm. Run:
+    /// red on the health, on the generation, and on the helper's sighting of the connection.
+    @Test("An apply past its deadline says control ended")
+    func anApplyPastItsDeadlineSaysControlEnded() async throws {
+        let parked = try await ParkedApply.sending([Self.fan(0)])
+        defer { parked.watcher.cancel() }
+        let deadline = Self.deadlines.gatedVerb + Self.deadlines.applyPerFan
+
+        parked.clock.advance(by: deadline)
+        let error = await #expect(throws: HelperClientError.self) {
+            try await parked.apply.value
+        }
+        #expect(error == .helperNeverAnswered(after: deadline))
+
+        let description = error?.errorDescription ?? ""
+        #expect(
+            description.contains("ends any manual control it held"),
+            "a cut-off apply said only: \(description)")
+        #expect(await parked.client.health == .unresponsive)
+        #expect(await parked.client.currentGeneration != parked.generation)
+        try await waitUntil(
+            "the helper saw the connection go, which ends its lease", timeout: .seconds(30)
+        ) {
+            await parked.authority.invalidatedConnections.count == 1
+        }
+
+        await parked.release.signal()
+        #expect(parked.harness.sessions.count == 1)
+    }
+
     /// **Two settings for one fan are one fan's deadline.**
     ///
     /// Level 6 refuses settings that name a fan twice, so the request engages one fan at most and
