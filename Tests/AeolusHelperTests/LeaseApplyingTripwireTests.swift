@@ -61,7 +61,8 @@ struct LeaseApplyingTripwireTests {
     ]
 
     /// **Mutation:** add `func cycle() async` to `LeaseApplying`, with an empty `cycle()` on
-    /// `LeaseApplier` so the target builds. Run: red here, on the body. **Mutation:** make it
+    /// `LeaseApplier` and on the test target's `NoLevelSix` so the target builds. Run: red here, on
+    /// the body. **Mutation:** make it
     /// `protocol LeaseApplying: Actor`. Run: red here, on the header.
     @Test("The role declares exactly one requirement, takes no permit, and refines only Sendable")
     func theRoleDeclaresExactlyOneRequirement() throws {
@@ -114,8 +115,10 @@ struct LeaseApplyingTripwireTests {
         #expect(verdict.missing.isEmpty, "Listed and not found:\(Self.lines(verdict.missing))")
     }
 
-    /// **Mutation:** add `func probe() async throws { try await control.apply([], leaseID: UUID(),
-    /// from: ConnectionID()) }` to `HelperComposition`. Run: red here, at that line.
+    /// **Mutation:** add `func probe(_ settings: [FanSetting], _ lease: UUID, _ connection:
+    /// ConnectionID) async throws { try await leaseApplier.apply(settings, leaseID: lease, from:
+    /// connection) }` to `HelperComposition`, with `import Foundation`. Run: red here, at that
+    /// line.
     @Test("The verb is called in the helper only from the authority and the session")
     func theVerbIsCalledOnlyWhereListed() throws {
         let verdict = RoleCensus.reconcile(
@@ -131,15 +134,17 @@ struct LeaseApplyingTripwireTests {
     }
 
     /// The census above reads code, not prose: a word in a string literal, on one line or many,
-    /// is not a spelling of the verb, and a call is one however it is spaced, an interpolation's
-    /// included.
+    /// raw or not, is not a spelling of the verb, and a call is one however it is spaced, an
+    /// interpolation's included. A raw literal's `"` does not end it, so a call after one is code.
     ///
     /// **Mutation:** make `blankingStringLiterals(_:)` return `code` unchanged. Run: red here, on
-    /// the three literals. **Mutation:** in `blankingProse(of:)`, blank an interpolation's code
-    /// as prose. Run: red here, on the interpolated call.
+    /// the literals. **Mutation:** in `blankingProse(of:hashes:)`, blank an interpolation's code
+    /// as prose. Run: red here, on the interpolated calls. **Mutation:** in
+    /// `blankingStringLiterals(_:)`, count no `#` (`let hashes = 0`). Run: red here, the call after
+    /// the raw literal blanked.
     @Test("The verb census blanks string literals and keeps every call")
     func theVerbCensusReadsCodeNotProse() {
-        let source = #"""
+        let source = ###"""
             let refused = "level 6's apply was refused"
             log("""
                 the apply in flight
@@ -148,7 +153,11 @@ struct LeaseApplyingTripwireTests {
             let detail = "an \"apply\" quoted"
             try await other.apply(settings)
             let note = "\(try await hidden.apply(settings)) and a \\(apply) escaped"
-            """#
+            let raw = #"say " hi"#
+            try await sneaky.apply(settings)
+            let prose = ##"an "# apply"##
+            let rawNote = #"\#(try await rawHidden.apply(settings)) and \(apply) as text"#
+            """###
         let found = RoleCensus.occurrences(
             inSource: Self.blankingStringLiterals(RoleCensus.code(of: source)), path: "Probe.swift",
             roles: ["apply"])
@@ -157,10 +166,12 @@ struct LeaseApplyingTripwireTests {
                 // A blanked literal is whitespace, so the walk back from a call can cross it to the
                 // declaration it sat in: the statement names the call either way.
                 "try await control . apply", "let detail = try await other.apply",
-                "let note = try await hidden.apply",
+                "let note = try await hidden.apply", "let raw = try await sneaky.apply",
+                "let rawNote = try await rawHidden.apply",
             ],
             "the census read \(found.map(\.statement))")
-        #expect(found.map(\.line) == [5, 7, 8], "a blanked literal moved the lines: \(found)")
+        #expect(
+            found.map(\.line) == [5, 7, 8, 10, 12], "a blanked literal moved the lines: \(found)")
     }
 
     /// Every spelling of `apply` in `target`'s code, string literals blanked, by path and then
@@ -180,50 +191,75 @@ struct LeaseApplyingTripwireTests {
 
     /// `code` with the prose of every string literal replaced by spaces, its newlines kept, so a
     /// word in prose is not read as a spelling of the verb. An interpolation's code is kept: a call
-    /// inside `\( … )` is still a call. The literal's end is found by `SeamScanner.copyDelimited`,
-    /// the walker every scan here shares, with its limit: a `"` inside an interpolation ends the
-    /// literal early, and what follows is read as code.
+    /// inside `\( … )`, or `\#( … )` in a raw literal, is still a call.
+    ///
+    /// An ordinary literal's end is found by `SeamScanner.copyDelimited`, the walker every scan
+    /// here shares, with its limit: a `"` inside an interpolation ends the literal early, and what
+    /// follows is read as code. A raw literal, `#"…"#`, `##"…"##` and their `"""` forms, ends only
+    /// at its quotes followed by as many `#` as opened it, so a `"` inside it hides nothing.
     static func blankingStringLiterals(_ code: String) -> String {
         var output = ""
         var index = code.startIndex
         while index < code.endIndex {
-            guard code[index] == "\"" else {
-                output.append(code[index])
-                index = code.index(after: index)
+            let hashes = code[index...].prefix { $0 == "#" }.count
+            let quote = code.index(index, offsetBy: hashes)
+            guard quote < code.endIndex, code[quote] == "\"" else {
+                // Not a literal: a `#` of `#expect` or `#if`, or any other character.
+                let next = hashes > 0 ? quote : code.index(after: index)
+                output += code[index..<next]
+                index = next
                 continue
             }
-            let delimiter = code[index...].hasPrefix("\"\"\"") ? "\"\"\"" : "\""
-            var literal = ""
-            index = SeamScanner.copyDelimited(
-                code, from: index, delimiter: delimiter, into: &literal)
-            output += Self.blankingProse(of: literal)
+            let delimiter = code[quote...].hasPrefix("\"\"\"") ? "\"\"\"" : "\""
+            if hashes == 0 {
+                var literal = ""
+                index = SeamScanner.copyDelimited(
+                    code, from: index, delimiter: delimiter, into: &literal)
+                output += Self.blankingProse(of: literal)
+            } else {
+                let closing = delimiter + String(repeating: "#", count: hashes)
+                var end = code.index(quote, offsetBy: delimiter.count)
+                while end < code.endIndex, !code[end...].hasPrefix(closing) {
+                    end = code.index(after: end)
+                }
+                end =
+                    code.index(end, offsetBy: closing.count, limitedBy: code.endIndex)
+                    ?? code.endIndex
+                output += Self.blankingProse(of: String(code[index..<end]), hashes: hashes)
+                index = end
+            }
         }
         return output
     }
 
     /// One literal, delimiters included, as spaces with its newlines kept, except the code inside
-    /// each interpolation. An escape is two characters, so `\\(` is an escaped backslash and not
-    /// an interpolation, and a line continuation keeps its newline.
-    static func blankingProse(of literal: String) -> String {
+    /// each interpolation. An escape is a `\` and as many `#` as the literal's delimiter carries,
+    /// then one character: so `\\(` is an escaped backslash and not an interpolation, a line
+    /// continuation keeps its newline, and in a raw literal a lone `\` is prose.
+    static func blankingProse(of literal: String, hashes: Int = 0) -> String {
+        let escape = "\\" + String(repeating: "#", count: hashes)
         var output = ""
         var depth = 0
         var index = literal.startIndex
         while index < literal.endIndex {
             let character = literal[index]
-            let next = literal.index(after: index)
+            let after =
+                literal.index(index, offsetBy: escape.count, limitedBy: literal.endIndex)
+                ?? literal.endIndex
             if depth > 0 {
                 if character == "(" { depth += 1 }
                 if character == ")" { depth -= 1 }
                 output.append(depth > 0 ? character : " ")
-            } else if character == "\\", next < literal.endIndex {
-                depth = literal[next] == "(" ? 1 : 0
-                output += literal[next] == "\n" ? " \n" : "  "
-                index = literal.index(after: next)
-                continue
+                index = literal.index(after: index)
+            } else if literal[index...].hasPrefix(escape), after < literal.endIndex {
+                depth = literal[after] == "(" ? 1 : 0
+                output += String(repeating: " ", count: escape.count)
+                output.append(literal[after] == "\n" ? "\n" : " ")
+                index = literal.index(after: after)
             } else {
                 output.append(character == "\n" ? "\n" : " ")
+                index = literal.index(after: index)
             }
-            index = next
         }
         return output
     }

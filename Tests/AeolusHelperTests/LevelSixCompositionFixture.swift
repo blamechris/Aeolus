@@ -22,14 +22,17 @@ struct LevelSixMachine: Sendable {
     /// The connection the machine's lease is bound to.
     let holder = ConnectionID()
 
+    /// `moment` is where `writes.interfere(with:)`'s effect runs; nothing runs there unless a
+    /// scenario sets one.
     init(
         unlock: ScriptedControlPlane.UnlockBehaviour = .naive,
+        during moment: InterferingFanStateSensing.Moment = .restoreWrite,
         clock: some MonotonicClock = TestClock()
     ) async {
         let firmware = ScriptedControlPlane(
             fans: [0: .automatic(at: 1_800)],
             stages: [.nominal(temperatures: LeaseFixture.nominalDieTemperatures)], unlock: unlock)
-        let writes = InterferingFanStateSensing(firmware, during: .restoreWrite)
+        let writes = InterferingFanStateSensing(firmware, during: moment)
         let journal = TeardownJournal()
         let lines = RecordedLog()
         helper = HelperComposition(
@@ -59,6 +62,23 @@ struct LevelSixMachine: Sendable {
     func apply(rpm: Double, under lease: UUID) async throws {
         try await helper.authority.apply(
             [FanSetting(fanIndex: 0, control: .fixed(rpm: rpm))], leaseID: lease, from: holder)
+    }
+
+    /// Every engagement step and target command the firmware has been asked for after `count` of
+    /// its attempts: the writes away from automatic control.
+    func forwardWrites(after count: Int) async -> [ScriptedControlPlane.Attempt] {
+        await firmware.attempts.dropFirst(count).filter { attempt in
+            switch attempt {
+            case .engageManualControl, .commandTarget: return true
+            default: return false
+            }
+        }
+    }
+
+    /// Latches § 3 on the composition's one latch, as a cycle that read a critical die would.
+    func latchTheThermalEmergency() async {
+        await helper.latch.engage(
+            by: CriticalTemperature(key: smcKey("Tp01"), celsius: 99), answering: [smcKey("Tp01")])
     }
 
     /// The fault an `apply` ended with, or `nil` when it was applied.

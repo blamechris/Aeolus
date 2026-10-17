@@ -3,6 +3,7 @@ import FanKit
 import Foundation
 import SMCCore
 import Testing
+import os
 
 @testable import AeolusHelper
 
@@ -665,8 +666,17 @@ actor InterferingFanStateSensing: FanControlPlane {
     // MARK: - The write seam
 
     /// `.built`, for `ScriptedControlPlane.writeCapability`'s reason: this is a double over
-    /// firmware that takes writes, and whether one lands is the plane's stage to say.
-    nonisolated var writeCapability: FanWriteCapability { .built }
+    /// firmware that takes writes, and whether one lands is the plane's stage to say. A scenario
+    /// can make it answer `.notBuilt` after a lease was granted on `.built` (`report(_:)`), a state
+    /// only a test can produce, to ask which capability a mechanism reads.
+    nonisolated var writeCapability: FanWriteCapability { reported.withLock { $0 } }
+
+    private let reported = OSAllocatedUnfairLock(initialState: FanWriteCapability.built)
+
+    /// Makes `writeCapability` answer `capability` from now on.
+    nonisolated func report(_ capability: FanWriteCapability) {
+        reported.withLock { $0 = capability }
+    }
 
     func readCriticalTemperatures(_ keys: [SMCKey]) async throws -> CriticalTemperatureReport {
         try await plane.readCriticalTemperatures(keys)
