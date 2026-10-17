@@ -10,8 +10,8 @@ import os
 // `SMCFanControlPlane` from the E4 branch's B1 — and by nothing above it, which is how "above
 // the seam, nothing writes, reads or names `Ftst`" stays true while two conformers share one
 // set of rules. It takes fan indices rather than permits for the same reason: an index here
-// only decides what a restore covers, and a restore takes no permit. Above it, level 6 reads one
-// rule, `EngagementRules.isEngagedMode`, a predicate on a value the driver's refusal carried.
+// only decides what a restore covers, and a restore takes no permit. D3's rules, the functions both
+// conformers decide each answer by, are `EngagementRules`, in a file of their own.
 
 /// Whether the firmware declares the Apple Silicon force key, as the bring-up preparation step
 /// recorded it (D5).
@@ -33,80 +33,6 @@ enum FirmwareWriteAnswer: Sendable, Hashable {
     /// Anything else, including the codes this machine has returned to reads (`0x89`, `0xc7`,
     /// `0xcb`, `0xd8`). D3 retries none of them.
     case refused(code: UInt8)
-}
-
-/// D3's decisions, as functions of what the firmware answered.
-///
-/// The plane performs each read and write inside its step's one turn; these say what each answer
-/// means, so the production plane and the scripted one cannot come to decide differently. The
-/// sequence they encode is the hypothesis under test, not a specification (D3).
-enum EngagementRules {
-
-    /// What the plane does next, in the same turn, after its mode write was answered.
-    enum AfterModeWrite: Sendable, Hashable {
-        /// Read raw `F<n>Md` back.
-        case readBack
-        /// Re-check the restore epoch, take a fresh key info, and write `Ftst = 1`.
-        case setForceKey
-        /// Write nothing more. The fan waits for its yield under a key already set.
-        case awaitYield
-    }
-
-    /// Step 1: a fan whose raw mode is not `0` is not Aeolus's to take, and nothing is written.
-    static func requireAutomatic(rawMode: UInt8, fanAt index: Int) throws {
-        guard rawMode == 0 else {
-            throw FanControlPlaneError.notAutomatic(index: index, rawMode: rawMode)
-        }
-    }
-
-    /// Steps 2 to 4. `firstStep` is the engagement's first; a later one is a Y-write, whose
-    /// `0x82` only means the yield has not arrived yet.
-    static func afterModeWrite(
-        _ answer: FirmwareWriteAnswer, firstStep: Bool, forceKey: ForceKeyPresence,
-        forceKeySet: Bool
-    ) throws -> AfterModeWrite {
-        switch answer {
-        case .accepted:
-            return .readBack
-        case .heldBySystem:
-            // A Y-write, or a second fan engaging while another holds the key: wait under it.
-            guard firstStep, !forceKeySet else { return .awaitYield }
-            guard forceKey != .absent else {
-                throw FanControlPlaneError.firmwareRefusedControl(
-                    detail: "the mode write was held (0x82) and this firmware has no force key")
-            }
-            return .setForceKey
-        case .refused(let code):
-            throw FanControlPlaneError.firmwareRefusedControl(
-                detail: "the mode write answered \(hex(code)); D3 retries no such answer")
-        }
-    }
-
-    /// Raw `1`, the value an engagement writes (U4): what step 2 confirms it by, and what level 6
-    /// reads a fan whose hand-back was refused by (ADR 0014's #410 refused-hand-back amendment).
-    static func isEngagedMode(_ rawMode: UInt8) -> Bool { rawMode == 1 }
-
-    /// Step 2's read-back: `isEngagedMode(_:)` is engagement, because the same turn read `0`
-    /// before the write (or an earlier step did, under the same epoch).
-    static func afterReadBack(rawMode: UInt8, fanAt index: Int) throws -> EngagementStep {
-        guard isEngagedMode(rawMode) else {
-            throw FanControlPlaneError.engagementNotConfirmed(index: index, rawMode: rawMode)
-        }
-        return .engaged
-    }
-
-    /// Step 3's force-key write: accepted sets the plane's flag; anything else is refused.
-    static func afterForceKeyWrite(_ answer: FirmwareWriteAnswer) throws -> EngagementStep {
-        guard answer == .accepted else {
-            throw FanControlPlaneError.firmwareRefusedControl(
-                detail: "Ftst = 1 answered \(answer)")
-        }
-        return .awaitingYield
-    }
-
-    private static func hex(_ code: UInt8) -> String {
-        "0x" + String(code, radix: 16, uppercase: false)
-    }
 }
 
 /// The restore epoch, the engaged set, the touched set, the force-key flag and what the
