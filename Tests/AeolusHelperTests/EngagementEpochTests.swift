@@ -80,7 +80,7 @@ struct EngagementEpochTests {
     @Test("A restore inside the first step, after its mode write, is undone and never retried")
     func aRestoreAfterTheFirstModeWriteIsUndone() async throws {
         let rig = try await EngagementRig(unlock: .neverYields)
-        await rig.plane.duringNextModeWrite { rig.plane.ledger.restoreRequested() }
+        await rig.plane.duringNextModeWrite { rig.plane.ledger.restoreRequested(.fan(0)) }
 
         await #expect(throws: FanControlPlaneError.supersededAfterWrite) {
             try await rig.driver.engageManualControl(of: rig.fan(0))

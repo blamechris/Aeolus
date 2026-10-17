@@ -5,17 +5,19 @@ import Testing
 /// `PlaneWriteLedger`'s sets and the scripted unlock model's record of an engagement
 /// (ADR 0014 D3, D5): what a restore issues, what the touched set holds, and when a step is a
 /// first step.
-@Suite("The plane's write ledger")
+@Suite("The plane's write ledger", .timeLimit(.minutes(1)))
 struct PlaneWriteLedgerTests {
 
     private static func fan(_ index: Int) throws -> CommandableFan {
         try commandableFan(index, declaring: .nominal)
     }
 
-    /// Steps `index` until it engages, giving up after `limit` steps.
+    /// Steps `index` until it engages, giving up after `limit` steps, having taken the
+    /// engagement's ticket first as the driver does.
     private static func engage(
         _ index: Int, on plane: ScriptedControlPlane, limit: Int = 6
     ) async throws -> EngagementStep {
+        plane.ledger.beginEngagement(fanAt: index)
         var last = EngagementStep.awaitingYield
         for _ in 0..<limit {
             last = try await plane.engageManualControl(of: fan(index))
@@ -44,20 +46,22 @@ struct PlaneWriteLedgerTests {
     /// that restore's wait for its turn; issued afterwards, the restore finds fan 1 engaged and
     /// leaves the force key it depends on.
     ///
-    /// **Mutation:** decide the key's clear in `restoreRequested()` from the engaged set as it
+    /// **Mutation:** decide the key's clear in `restoreRequested(_:)` from the engaged set as it
     /// is then, and issue that decision. Run: red.
     @Test("A restore's turn sees an engagement that completed while it waited")
     func aRestoreIsPlannedWhenIssued() throws {
         let ledger = PlaneWriteLedger(enumerated: [0, 1], forceKey: .present)
+        ledger.beginEngagement(fanAt: 0)
         #expect(try ledger.admitStep(fanAt: 0) == .first)
         ledger.recordForceKeyAccepted()
         ledger.recordEngaged(fanAt: 0)
+        ledger.beginEngagement(fanAt: 1)
         #expect(try ledger.admitStep(fanAt: 1) == .first)
         #expect(try ledger.admitStep(fanAt: 1) == .continuing)
 
-        ledger.restoreRequested()
+        ledger.restoreRequested(.fan(0))
         ledger.recordEngaged(fanAt: 1)
-        let plan = ledger.issueRestore(fanAt: 0)
+        let plan = ledger.plan(for: .fan(0))
 
         #expect(plan.writes == [.mode(fan: 0)], "the key was cleared while fan 1 depended on it")
         #expect(ledger.isForceKeySet)
@@ -74,11 +78,12 @@ struct PlaneWriteLedgerTests {
     @Test("A restore's turn leaves the key an engagement under the current epoch may have set")
     func aRestoreLeavesAKeyACurrentEngagementSet() throws {
         let ledger = PlaneWriteLedger(enumerated: [0, 1], forceKey: .present)
-        ledger.restoreRequested()
+        ledger.restoreRequested(.fan(0))
+        ledger.beginEngagement(fanAt: 1)
         #expect(try ledger.admitStep(fanAt: 1) == .first)
         ledger.recordForceKeyAccepted()
 
-        let plan = ledger.issueRestore(fanAt: 0)
+        let plan = ledger.plan(for: .fan(0))
 
         #expect(plan.writes == [.mode(fan: 0)], "the key was cleared under an engagement it began")
         #expect(ledger.isForceKeySet)
@@ -95,6 +100,7 @@ struct PlaneWriteLedgerTests {
     @Test("A fan whose mode write was not confirmed is still written machine-wide")
     func anUnconfirmedModeWriteIsTouched() async throws {
         let plane = await Self.unprepared(unlock: .readsBack(rawMode: 3))
+        plane.ledger.beginEngagement(fanAt: 0)
         await #expect(throws: FanControlPlaneError.self) {
             try await plane.engageManualControl(of: Self.fan(0))
         }
@@ -157,6 +163,7 @@ struct PlaneWriteLedgerTests {
         let plane = ScriptedControlPlane(fans: [0: .nominal], unlock: .naive)
         await plane.setMode(.manual, ofFan: 0)
         for _ in 0..<2 {
+            plane.ledger.beginEngagement(fanAt: 0)
             await #expect(throws: FanControlPlaneError.notAutomatic(index: 0, rawMode: 1)) {
                 try await plane.engageManualControl(of: Self.fan(0))
             }
@@ -169,7 +176,8 @@ struct PlaneWriteLedgerTests {
     @Test("Engaging an already engaged fan reads the pre-state again")
     func anEngagedFanIsNotInProgress() async throws {
         let plane = ScriptedControlPlane(fans: [0: .nominal], unlock: .naive)
-        #expect(try await plane.engageManualControl(of: Self.fan(0)) == .engaged)
+        #expect(try await Self.engage(0, on: plane) == .engaged)
+        plane.ledger.beginEngagement(fanAt: 0)
         await #expect(throws: FanControlPlaneError.notAutomatic(index: 0, rawMode: 1)) {
             try await plane.engageManualControl(of: Self.fan(0))
         }
@@ -184,6 +192,7 @@ struct PlaneWriteLedgerTests {
             fans: [0: .nominal],
             stages: [.nominal(forceKeyWrites: .refused(reason: "Ftst refused"))],
             unlock: .heldUntilForced(stepsToYield: 0))
+        plane.ledger.beginEngagement(fanAt: 0)
         await #expect(throws: FanControlPlaneError.self) {
             try await plane.engageManualControl(of: Self.fan(0))
         }

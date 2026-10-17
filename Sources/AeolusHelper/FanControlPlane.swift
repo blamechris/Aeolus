@@ -301,4 +301,12 @@ enum FanRestoreScope: Sendable, Hashable {
     /// Every fan the bring-up enumeration found and every fan this process engaged or restored
     /// by index, plus the Apple Silicon force key (ADR 0014 D5). `SAFETY.md` §7's panic verb.
     case everyFan
+    /// The orderly exit's restore: everything `.everyFan` writes, and from the moment it is
+    /// requested the plane admits no forward write for the rest of the process — no engagement
+    /// step and no target command — while every restore is still issued (ADR 0014's #410
+    /// amendment). `SignalTeardown`'s two keystones are the only callers, and nothing unseals.
+    ///
+    /// Its name deliberately does not contain the other machine-wide scope's, so a substring scan
+    /// for one cannot count the other.
+    case forExit
 }

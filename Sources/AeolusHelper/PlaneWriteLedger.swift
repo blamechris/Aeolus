@@ -108,11 +108,12 @@ enum EngagementRules {
 /// preparation step recorded (D4, D5), lock-guarded under `SMCRoundTripMonitor`'s discipline so a
 /// plane that is a `struct` can hold it.
 ///
-/// - **The epoch** moves when a restore is *requested* (`restoreRequested()`), synchronously,
-///   before the restore waits for its turn. An engagement records it at its first step, and a
-///   later step admitted under an older one writes nothing (`admitStep(fanAt:)`). That holds for
-///   a restore of any fan, the engaging fan's own and a machine-wide one included: a restore
-///   leaves the engagement's record as it was, and the mismatch is what supersedes it.
+/// - **The epoch** moves when a restore is *requested* (`restoreRequested(_:)`), synchronously,
+///   before the restore waits for its turn. An engagement takes it as its ticket before its
+///   entitlement (`beginEngagement(fanAt:)`), and no step is admitted under an older one
+///   (`admitStep(fanAt:)`) — whichever fan the restore covered: the mismatch supersedes it.
+/// - **The seal** is set when `.forExit` is requested, in the same lock, and never cleared: no
+///   step and no target command is admitted after it, and every restore still is.
 /// - **The engaged set** holds a fan from its confirmed read-back until a restore covering it
 ///   is *issued* — inside the restore's turn, whatever the firmware then answers.
 /// - **The touched set** holds every addressable fan this plane issued a mode write to or
@@ -140,6 +141,10 @@ final class PlaneWriteLedger: Sendable {
         /// The epoch each engagement in progress recorded at its first step. A restore never
         /// erases one; a step finding it out of date throws `.superseded` and removes it.
         var inProgress: [Int: UInt64] = [:]
+        /// The epoch each engagement took before its entitlement, until its first step consumes it.
+        var tickets: [Int: UInt64] = [:]
+        /// Set by `.forExit`'s request, and never cleared.
+        var sealed = false
         var engaged: Set<Int> = []
         var touched: Set<Int> = []
         var forceKeySet = false
@@ -174,24 +179,49 @@ final class PlaneWriteLedger: Sendable {
 
     // MARK: - Engagement
 
-    /// Admits one step for `index`, or throws `.superseded` when a restore was requested after
-    /// the engagement's first step. Called first in the step's turn, before any read or write,
-    /// so a superseded step has written nothing.
-    ///
-    /// A record found out of date is removed as it refuses. A *fresh* engagement can find one —
-    /// left by an earlier engagement of the same fan, whose undo is itself a restore — and the
-    /// driver retries its first step once for that reason, after asking the entitlement again.
+    /// An engagement of `index` begins: its ticket is the current epoch (ADR 0014's #410
+    /// amendment). Synchronous and write-free, so the driver takes it with no suspension before the
+    /// entitlement. It clears the fan's in-progress record, which under the fan's gate can only be
+    /// one an earlier engagement's undo left, so a fresh engagement needs no retry for it.
+    func beginEngagement(fanAt index: Int) {
+        state.withLock {
+            $0.inProgress[index] = nil
+            $0.tickets[index] = $0.epoch
+        }
+    }
+
+    /// Admits one step for `index`, or throws `.superseded`, first in the step's turn so a refused
+    /// step has written nothing. Sealed: refused, clearing the ticket and the record. In progress:
+    /// continued unless a restore was requested since its first step. Otherwise the ticket is
+    /// consumed, and only a current one admits `.first`; a missing or stale one records nothing.
     func admitStep(fanAt index: Int) throws -> Admission {
         try state.withLock { state in
-            guard let recorded = state.inProgress[index] else {
-                state.inProgress[index] = state.epoch
-                return .first
-            }
-            guard recorded == state.epoch else {
+            guard !state.sealed else {
+                state.tickets[index] = nil
                 state.inProgress[index] = nil
                 throw FanControlPlaneError.superseded
             }
-            return .continuing
+            if let recorded = state.inProgress[index] {
+                guard recorded == state.epoch else {
+                    state.inProgress[index] = nil
+                    throw FanControlPlaneError.superseded
+                }
+                return .continuing
+            }
+            guard state.tickets.removeValue(forKey: index) == state.epoch else {
+                throw FanControlPlaneError.superseded
+            }
+            state.inProgress[index] = state.epoch
+            return .first
+        }
+    }
+
+    /// Admits one target command, or throws `.superseded` once `.forExit` has been requested, first
+    /// in the command's turn so a refused one has written nothing. No ticket: a command after an
+    /// ordinary restore writes a target to an automatic fan and moves no mode.
+    func admitCommand() throws {
+        try state.withLock { state in
+            guard !state.sealed else { throw FanControlPlaneError.superseded }
         }
     }
 
@@ -228,12 +258,27 @@ final class PlaneWriteLedger: Sendable {
 
     // MARK: - Restores
 
-    /// A restore was requested: the epoch moves, and every engagement in progress is superseded.
-    /// Called synchronously when `restoreToAutomatic(_:)` is called, before it waits for a turn,
-    /// so no forward write lands after a restore that was requested first. It decides nothing
-    /// else: what the restore writes is decided when it is issued.
-    func restoreRequested() {
-        state.withLock { $0.epoch &+= 1 }
+    /// A restore of `scope` was requested: the epoch moves, superseding every engagement and ticket
+    /// before it, and `.forExit` seals, in one lock. Called synchronously when `restoreToAutomatic`
+    /// is called, before it waits for a turn. What it writes is decided when issued (`plan(for:)`).
+    func restoreRequested(_ scope: FanRestoreScope) {
+        state.withLock { state in
+            state.epoch &+= 1
+            switch scope {
+            case .forExit: state.sealed = true
+            case .fan, .everyFan: break
+            }
+        }
+    }
+
+    /// Issues a restore of `scope` inside its turn, and is never refused, sealed or not: `.fan(n)`
+    /// is the per-fan restore, `.everyFan` and `.forExit` the machine-wide one. Every plane decides
+    /// by this, so no two can come to disagree.
+    func plan(for scope: FanRestoreScope) -> RestorePlan {
+        switch scope {
+        case .fan(let index): return issueRestore(fanAt: index)
+        case .everyFan, .forExit: return issueMachineWideRestore()
+        }
     }
 
     /// Issues a `.fan(index)` restore, inside its turn: the fan's mode write, then the force
@@ -242,7 +287,7 @@ final class PlaneWriteLedger: Sendable {
     /// never while an engagement under the **current** epoch is still waiting for its yield: it
     /// began after this restore was requested, so this restore does not supersede it, and it
     /// may be the one that set the key. One under an older epoch is superseded anyway.
-    func issueRestore(fanAt index: Int) -> RestorePlan {
+    private func issueRestore(fanAt index: Int) -> RestorePlan {
         state.withLock { state in
             state.engaged.remove(index)
             if SMCKey.fanMode(index) != nil { state.touched.insert(index) }
@@ -258,7 +303,7 @@ final class PlaneWriteLedger: Sendable {
     /// Issues a machine-wide restore, inside its turn: every enumerated fan and every touched
     /// fan, then the force key unless it is recorded absent. A failed enumeration is reported
     /// by the plan, after every write it can name.
-    func issueMachineWideRestore() -> RestorePlan {
+    private func issueMachineWideRestore() -> RestorePlan {
         state.withLock { state in
             state.engaged.removeAll()
             state.forceKeySet = false

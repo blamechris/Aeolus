@@ -568,7 +568,7 @@ actor ReadBackScriptedPlane: FanControlPlane {
         try await wrapped.restoreToAutomatic(scope)
         let misses: Set<Int>
         switch scope {
-        case .everyFan: misses = keystoneMisses
+        case .everyFan, .forExit: misses = keystoneMisses
         case .fan(let index): misses = perFanMisses.intersection([index])
         }
         for fan in misses {

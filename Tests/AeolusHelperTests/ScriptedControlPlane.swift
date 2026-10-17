@@ -547,20 +547,20 @@ actor ScriptedControlPlane: FanControlPlane {
         attempts.append(.restoreToAutomatic(scope))
         if case .fan(let index) = scope { _ = try condition(ofFan: index) }
         // Requested, then issued: one actor turn here, two moments on a plane whose restore
-        // waits for a scheduler turn between them — `PlaneWriteLedger` keeps them apart.
-        ledger.restoreRequested()
-        let plan =
-            switch scope {
-            case .fan(let index): ledger.issueRestore(fanAt: index)
-            case .everyFan: ledger.issueMachineWideRestore()
-            }
-        try plan.attemptEvery { write in try applyRestoreWrite(write) }
+        // waits for a scheduler turn between them — `PlaneWriteLedger` keeps them apart, and
+        // decides the plan and the exit's seal by scope, so this plane and B1's cannot differ.
+        ledger.restoreRequested(scope)
+        try ledger.plan(for: scope).attemptEvery { write in try applyRestoreWrite(write) }
     }
 
+    /// A target command, admitted first in its turn: once the exit's restore has been requested
+    /// the ledger refuses it with `.superseded` before anything is written (ADR 0014's #410
+    /// amendment). The attempt is still recorded, because it was made.
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
         let index = target.fanIndex
         attempts.append(.commandTarget(fan: index, rpm: target.rpm))
+        try ledger.admitCommand()
         _ = try condition(ofFan: index)
         try applyWrite(behaviour: stage.targetWrites ?? stage.writes) { fans in
             fans[index]?.targetRPM = target.rpm
