@@ -22,8 +22,8 @@ import Foundation
 ///
 /// handback-ledger.md § *"Where this sits: the third role, and the swap from #134"*.
 ///
-/// **Still no write of any kind** — `SMCConnection.write` is SPI-gated and still
-/// throws, and no write selector exists anywhere in `Sources/`.
+/// **Still no write of any kind** — `SMCConnection.write` is SPI-gated and nothing in
+/// the helper calls it.
 ///
 /// Tests run it against the shipped cache over the scripted firmware, not a hand-rolled
 /// double, so emptying `CriticalSensorSet.mac16x5` turns the lease suite red.

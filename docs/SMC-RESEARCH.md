@@ -167,6 +167,36 @@ value someone else documented and nothing here says how `Mac16,5` answers it. Th
 about Aeolus's own tools, not about the firmware's history: a third-party tool moved `F<n>Md` on
 this machine (below).
 
+**The write request's field usage is documented, not observed either.** Both sources' write
+functions fill four fields of `SMCKeyData_t` and leave the rest zero. smcFanControl's
+`SMCWriteKey2`
+([`smc.c` L461-L464 at `e1bd672`](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/smc-command/smc.c#L461-L464))
+sets `key`, `data8 = SMC_CMD_WRITE_BYTES`, `keyInfo.dataSize` to the value's size, and copies
+the value into `bytes`. Stats' `write(_:)`
+([`smc.swift` L692-L695 at `ea74107`](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L692-L695))
+sets the same four: `key`, `data8 = writeBytes`, `keyInfo.dataSize` and `bytes`. The struct
+smcFanControl declares
+([`smc.h` L77-L113](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/smc-command/smc.h#L77-L113))
+puts those fields at byte offsets 0, 42, 28 and 48 under C layout, 80 bytes in all. That was
+checked with `offsetof` over the declared field types for both arm64 and x86_64, not taken
+from either source's prose. They are the offsets `SMCConnection` already uses for every read
+(key 0, `keyInfo.dataSize` 28, `data8` 42, `data32` 44, `bytes` 48), and
+`SMCConnection.write(_:to:)` builds its request with the same builder: key at 0, `dataSize`
+at 28 equal to the payload's length, `data8` at 42 equal to 6, the payload from 48, and every
+other byte zero.
+
+What is observed is the reads: every read in this document went through those offsets. What
+is not is the write. Aeolus's tests call `write(_:to:)` only on a connection that was never
+opened or on a dead port that sends no message, so whether `AppleSMC` on `Mac16,5` accepts a
+write laid out this way is first seen at the first supervised write. Two differences from the
+sources are deliberate, and are design rather than observation. Aeolus does not read the key
+inside the write: `SMCWriteKey2` reads it first to compare sizes, and Aeolus's write plane
+takes fresh key info itself, before the write and in the same turn (ADR 0004; ADR 0014 D7).
+And a non-zero `result` byte in the reply is a failure: Stats checks that byte
+([L709](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L709)),
+and `SMCWriteKey2` returns only the kernel's answer. Constants and field usage were read; no
+code was adapted from either.
+
 ### Enumeration and index integrity — agrees
 
 `#KEY` reports **3385** (`ui32`, raw `00000d39`, big-endian → 0x0D39 = 3385). Enumerating
@@ -693,8 +723,7 @@ indistinguishable from working code until the values were inspected. The fix siz
 payload from the `dataSize` the caller already obtained from a prior `READ_KEYINFO` call,
 rather than trusting the `READ_BYTES` reply's own field — the same approach the enumeration
 spike used from the start, which is why the spike's dumps were never affected. Both now
-agree, and `SMCConnection.read(_:)` documents the reasoning inline at
-`call(key:selector:data32:dataSize:)`.
+agree, and `SMCConnection.read(_:)` documents the reasoning inline at `call(_:)`.
 
 The failure mode is what makes this worth recording here rather than letting it stay in a
 PR body: it does not throw, does not log, and does not fail a health check. It produces
@@ -1565,8 +1594,8 @@ what licence.
 | [Asahi Linux SMC documentation](https://asahilinux.org/docs/hw/soc/smc/) | Independent, clean-room hardware reverse-engineering corroborating the little-endian-with-quirks model behind ADR 0003, naming `#KEY`/`B0RM`/`VP3b` specifically, documenting `VP3b` as byte-reversed on M1-era hardware (the reason `flt`/`ioft` are no longer assumed unconditionally little-endian), and (for issue #52) noting that `rLD0`-class keys accept a `0x00000001`/`0x00ffffff` read payload where a plain read is rejected | Documentation consulted, no code adapted |
 | [VirtualSMC](https://github.com/acidanthera/VirtualSMC/blob/master/VirtualSMCSDK/kern_vsmcapi.hpp) | Documents attribute bit `0x04` as `ATTR_ATOMIC` on Intel, which is why ADR 0003's byte-order rule is scoped to the modern interface only | Documentation consulted, no code adapted |
 | [VirtualSMC — `VirtualSMCSDK/AppleSmc.h`](https://github.com/acidanthera/VirtualSMC/blob/master/VirtualSMCSDK/AppleSmc.h) | Names attribute bit `0x10` as `SMC_KEY_ATTRIBUTE_FUNCTION`, and result codes `0x82`/`0x89`/`0xc7`/`0xcb` as `SmcBadCommand`/`SmcBadArgumentError`/`SmcDeviceAccessError`/`SmcUnsupportedFeature` — the reference for issue #52's function-key finding. Also, at `b5c62c2` ([L149](https://github.com/acidanthera/VirtualSMC/blob/b5c62c2311540c529c00996d0d9cec33f8e571c9/VirtualSMCSDK/AppleSmc.h#L149)), `SmcCmdWriteValue = 0x11` in the `SMC_COMMAND` enum (L147-L165) that sits beside the header's `SMC_PORT_OFFSET_COMMAND` and `SMC_MMIO_OFFSET_COMMAND` register definitions: the SMC-side command protocol, not the macOS user-client ABI, so it states no `data8` code and neither supports nor conflicts with 6 | Documentation consulted, no code adapted |
-| [`exelban/stats` — `SMC/smc.swift`](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L36-L44) (read at `ea74107`) | The user-client command codes: `enum SMCKeys: UInt8` gives `kernelIndex = 2` (the method index), `readBytes = 5`, `writeBytes = 6`, `readIndex = 8`, `readKeyInfo = 9`. Each is assigned to `SMCKeyData_t.data8` before the `IOConnectCallStructMethod` call ([`readIndex` L338](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L338), [`readKeyInfo` L653](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L653), [`readBytes` L668](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L668), [`writeBytes` L693](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L693)). A source for the write command code 6 and the read command codes 5, 8 and 9; it agrees with the smcFanControl row below, and the two were not shown to be independent | MIT: the repository's [`LICENSE`](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/LICENSE) is the standard MIT text with the line "Copyright (c) 2019 Serhiy Mytrovtsiy". The file's own header carries only a copyright line. Constants read; no code adapted |
-| [`hholtmann/smcFanControl` — `smc-command/smc.h`](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/smc-command/smc.h#L35-L42) (read at `e1bd672`) | The same codes as `#define`s: `KERNEL_INDEX_SMC` 2 (the method index), `SMC_CMD_READ_BYTES` 5, `SMC_CMD_WRITE_BYTES` 6, `SMC_CMD_READ_INDEX` 8, `SMC_CMD_READ_KEYINFO` 9 (also `SMC_CMD_READ_PLIMIT` 11, `SMC_CMD_READ_VERS` 12). `smc.c` uses `SMC_CMD_WRITE_BYTES` as `data8` in [`SMCWriteKey2`](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/smc-command/smc.c#L462). A second source for the write command code 6 and the read command codes 5, 8 and 9, not shown to be independent of the Stats row. The header credits "Copyright (C) 2006 devnull" and "Portions Copyright (C) 2013 Michael Wilber" | GPL v2: the repository's [`LICENSE`](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/LICENSE) and `smc-command/LICENSE` are the GPL v2 text, and the `smc.h` header grants it "or (at your option) any later version". Constants read; no code adapted |
+| [`exelban/stats` — `SMC/smc.swift`](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L36-L44) (read at `ea74107`) | The user-client command codes: `enum SMCKeys: UInt8` gives `kernelIndex = 2` (the method index), `readBytes = 5`, `writeBytes = 6`, `readIndex = 8`, `readKeyInfo = 9`. Each is assigned to `SMCKeyData_t.data8` before the `IOConnectCallStructMethod` call ([`readIndex` L338](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L338), [`readKeyInfo` L653](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L653), [`readBytes` L668](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L668), [`writeBytes` L693](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L693)). A source for the write command code 6 and the read command codes 5, 8 and 9; it agrees with the smcFanControl row below, and the two were not shown to be independent. Also a source for the write request's field usage: `write(_:)` ([L692-L695](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L692-L695)) sets `key`, `data8`, `keyInfo.dataSize` and `bytes`, and treats a non-zero reply `result` as failure ([L709](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/SMC/smc.swift#L709)) — see "The write request's field usage is documented, not observed either" | MIT: the repository's [`LICENSE`](https://github.com/exelban/stats/blob/ea74107ca4012312818d31120461776fb9451780/LICENSE) is the standard MIT text with the line "Copyright (c) 2019 Serhiy Mytrovtsiy". The file's own header carries only a copyright line. Constants and field usage read; no code adapted |
+| [`hholtmann/smcFanControl` — `smc-command/smc.h`](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/smc-command/smc.h#L35-L42) (read at `e1bd672`) | The same codes as `#define`s: `KERNEL_INDEX_SMC` 2 (the method index), `SMC_CMD_READ_BYTES` 5, `SMC_CMD_WRITE_BYTES` 6, `SMC_CMD_READ_INDEX` 8, `SMC_CMD_READ_KEYINFO` 9 (also `SMC_CMD_READ_PLIMIT` 11, `SMC_CMD_READ_VERS` 12). `smc.c` uses `SMC_CMD_WRITE_BYTES` as `data8` in [`SMCWriteKey2`](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/smc-command/smc.c#L462). A second source for the write command code 6 and the read command codes 5, 8 and 9, not shown to be independent of the Stats row. Also the source for the write request's layout: `SMCWriteKey2` ([`smc.c` L461-L464](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/smc-command/smc.c#L461-L464)) sets `key`, `data8`, `keyInfo.dataSize` and `bytes`, and the `SMCKeyData_t` declaration ([`smc.h` L77-L113](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/smc-command/smc.h#L77-L113)) puts them at offsets 0, 42, 28 and 48, checked here with `offsetof` — see "The write request's field usage is documented, not observed either". The header credits "Copyright (C) 2006 devnull" and "Portions Copyright (C) 2013 Michael Wilber" | GPL v2: the repository's [`LICENSE`](https://github.com/hholtmann/smcFanControl/blob/e1bd672bcd2d72eddff9b6da7b9cae38e35c4206/LICENSE) and `smc-command/LICENSE` are the GPL v2 text, and the `smc.h` header grants it "or (at your option) any later version". Constants, field usage and the struct's layout read; no code adapted |
 
 **Before adapting code from any of these**, confirm the licence, record it above, and
 attribute it in the source file. Reading a project's documentation and reimplementing from

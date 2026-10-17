@@ -13,8 +13,8 @@
 /// [#103](https://github.com/blamechris/Aeolus/issues/103)'s adjudication decided the shape:
 /// *"the read-only path survives as a capability gate on the seam, not a literal."* The
 /// answer therefore comes from the conformer that would have to perform the write —
-/// `SMCFanControlPlane` answers `.notBuilt` because `SMCConnection.write(_:to:)` is
-/// SPI-gated and throws and no write selector exists anywhere in `Sources`, and
+/// `SMCFanControlPlane` answers `.notBuilt` because it holds no route to
+/// `SMCConnection.write(_:to:)`, which is SPI-gated and called by nothing in the helper, and
 /// `ScriptedControlPlane` answers `.built` because its scripted firmware really does take
 /// writes.
 ///
