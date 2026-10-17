@@ -97,10 +97,10 @@ struct LeaseApplierReceiptTests {
 
         try await levelSix.apply(fixed((0, 2_400), (1, 2_600)), under: lease)
 
+        let seen = await witness.seen
         #expect(
-            await witness.seen == [
-                "register 0: true", "report 0: true", "register 1: true", "report 1: true",
-            ])
+            seen == ["register 0: true", "report 0: true", "register 1: true", "report 1: true"],
+            "the witness saw \(seen)")
         #expect(machine.gate.isIdle)
     }
 }
