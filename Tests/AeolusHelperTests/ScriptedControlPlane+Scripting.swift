@@ -4,9 +4,21 @@ import SMCCore
 
 // The parts of `ScriptedControlPlane`'s scripting that read none of the actor's private state, in
 // a file of their own so `ScriptedControlPlane.swift` stays inside `file_length`'s error. The
-// vocabulary is P0's of B1 (#9): the built stages that script it.
+// vocabulary is P0's of B1 (#9): the writes the scripted firmware can leave unanswered, and the
+// built stages that script them.
 
 extension ScriptedControlPlane {
+
+    /// An engagement write the firmware does not answer: the call fails in the kernel, or its
+    /// reply is cut short (`FirmwareWriteAnswer.unanswered`). Whether the register changed anyway
+    /// is what no answer the plane receives can say — issued, not landed (ADR 0014's #410
+    /// refused-hand-back amendment) — so the scenario says it.
+    enum UnansweredWrite: Sendable, Hashable {
+        /// The register changed: only the answer was lost.
+        case landed
+        /// The register did not change either.
+        case lost
+    }
 
     /// One RPM value as a readback, with the seam's finiteness rule applied.
     ///
@@ -29,6 +41,22 @@ extension ScriptedControlPlane.Stage {
     func holdingNoTarget(ofFan index: Int) -> Self {
         var stage = self
         stage.targetsNotHeldAtReadBack.insert(index)
+        return stage
+    }
+
+    /// This stage, with fan `index`'s engagement mode writes unanswered, landing as `write` says.
+    func leavingModeWriteUnanswered(
+        ofFan index: Int, _ write: ScriptedControlPlane.UnansweredWrite
+    ) -> Self {
+        var stage = self
+        stage.unansweredModeWrites[index] = write
+        return stage
+    }
+
+    /// This stage, with an engagement's `Ftst = 1` unanswered, landing as `write` says.
+    func leavingForceKeyWriteUnanswered(_ write: ScriptedControlPlane.UnansweredWrite) -> Self {
+        var stage = self
+        stage.unansweredForceKeyWrite = write
         return stage
     }
 }

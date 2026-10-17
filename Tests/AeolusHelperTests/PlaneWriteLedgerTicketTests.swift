@@ -189,7 +189,7 @@ extension PlaneWriteLedgerTests {
         let ledger = Self.prepared()
         ledger.beginEngagement(fanAt: 0)
         #expect(try ledger.admitStep(fanAt: 0) == .first)
-        ledger.recordForceKeyAccepted()
+        ledger.recordForceKeyWrite(answered: .accepted)
         ledger.recordEngaged(fanAt: 0)
         ledger.restoreRequested(.forExit)
 

@@ -178,6 +178,11 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
     /// The firmware refused the control write. On Apple Silicon this is the expected answer
     /// while the thermal manager is holding the fans; see `SMCError.isCommandRejection` for
     /// why the response code alone does not identify that condition.
+    ///
+    /// Also what an engagement step throws for a write the firmware did not answer at all
+    /// (`FirmwareWriteAnswer.unanswered`). Either way the write was issued and may have taken
+    /// effect, so it is never retried and is always undone (ADR 0014's #410 refused-hand-back
+    /// amendment, "issued, not landed").
     case firmwareRefusedControl(detail: String)
 
     /// A target command's in-turn read-back of `F<n>Tg` fell outside

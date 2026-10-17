@@ -33,6 +33,11 @@ enum FirmwareWriteAnswer: Sendable, Hashable {
     /// Anything else, including the codes this machine has returned to reads (`0x89`, `0xc7`,
     /// `0xcb`, `0xd8`). D3 retries none of them.
     case refused(code: UInt8)
+    /// No answer: the call failed in the kernel, or its reply was cut short. The write was
+    /// issued and may have landed (ADR 0014's #410 refused-hand-back amendment, "issued, not
+    /// landed"), so it is never retried and never read as `0x82`: it is thrown, and the driver
+    /// undoes it.
+    case unanswered(detail: String)
 }
 
 /// The restore epoch, the engaged set, the touched set, the force-key flag and what the
@@ -49,8 +54,8 @@ enum FirmwareWriteAnswer: Sendable, Hashable {
 /// - **The touched set** holds every addressable fan this plane issued a mode write to or
 ///   restored by index, and never shrinks: a machine-wide restore writes it whatever the
 ///   enumeration knew.
-/// - **The force-key flag** is set when this plane's `Ftst = 1` is accepted and cleared when a
-///   restore issues `Ftst = 0`.
+/// - **The force-key flag** is set when this plane's `Ftst = 1` is accepted or goes unanswered,
+///   and cleared when a restore issues `Ftst = 0`.
 ///
 /// **What the epoch cannot see.** An engagement's epoch is taken before its entitlement
 /// (`beginEngagement(fanAt:)`), so a restore requested after the engagement began supersedes its
@@ -178,9 +183,14 @@ final class PlaneWriteLedger: Sendable {
         state.withLock { _ = $0.inProgress.removeValue(forKey: index) }
     }
 
-    /// This plane's `Ftst = 1` was accepted.
-    func recordForceKeyAccepted() {
-        state.withLock { $0.forceKeySet = true }
+    /// This plane's `Ftst = 1` was answered, recorded before D3 decides on the answer. Accepted, or
+    /// unanswered — issued and possibly landed — sets the flag, so the restore that undoes the
+    /// engagement clears the key it may have set (D5; ADR 0014's B1 amendment). A refusal does not.
+    func recordForceKeyWrite(answered answer: FirmwareWriteAnswer) {
+        switch answer {
+        case .accepted, .unanswered: state.withLock { $0.forceKeySet = true }
+        case .heldBySystem, .refused: break
+        }
     }
 
     // MARK: - Restores

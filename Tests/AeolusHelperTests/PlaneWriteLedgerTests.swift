@@ -53,7 +53,7 @@ struct PlaneWriteLedgerTests {
         let ledger = PlaneWriteLedger(enumerated: [0, 1], forceKey: .present)
         ledger.beginEngagement(fanAt: 0)
         #expect(try ledger.admitStep(fanAt: 0) == .first)
-        ledger.recordForceKeyAccepted()
+        ledger.recordForceKeyWrite(answered: .accepted)
         ledger.recordEngaged(fanAt: 0)
         ledger.beginEngagement(fanAt: 1)
         #expect(try ledger.admitStep(fanAt: 1) == .first)
@@ -81,7 +81,7 @@ struct PlaneWriteLedgerTests {
         ledger.restoreRequested(.fan(0))
         ledger.beginEngagement(fanAt: 1)
         #expect(try ledger.admitStep(fanAt: 1) == .first)
-        ledger.recordForceKeyAccepted()
+        ledger.recordForceKeyWrite(answered: .accepted)
 
         let plan = ledger.plan(for: .fan(0))
 

@@ -127,6 +127,12 @@ actor ScriptedControlPlane: FanControlPlane {
         /// held at the read-back and discarded after it. Set on a built stage
         /// (`holdingNoTarget(ofFan:)`), for `minimumReads`' reason.
         var targetsNotHeldAtReadBack: Set<Int> = []
+        /// Fans whose engagement `F<n>Md = 1` the firmware does not answer this stage, whatever
+        /// `writes` says, and whether it landed (`leavingModeWriteUnanswered(ofFan:_:)`).
+        var unansweredModeWrites: [Int: UnansweredWrite] = [:]
+        /// An engagement's `Ftst = 1` unanswered this stage, whatever `forceKeyWrites` says, and
+        /// whether it landed (`leavingForceKeyWriteUnanswered(_:)`).
+        var unansweredForceKeyWrite: UnansweredWrite?
 
         init(
             temperatures: [String: Double] = [:],
@@ -819,9 +825,9 @@ extension ScriptedControlPlane {
             guard ledger.isCurrent(fanAt: index) else {
                 throw FanControlPlaneError.supersededAfterWrite
             }
-            let step = try EngagementRules.afterForceKeyWrite(answerForceKeyWrite())
-            ledger.recordForceKeyAccepted()
-            return step
+            let answer = answerForceKeyWrite()
+            ledger.recordForceKeyWrite(answered: answer)
+            return try EngagementRules.afterForceKeyWrite(answer)
         case .awaitYield:
             return .awaitingYield
         }
@@ -851,10 +857,15 @@ extension ScriptedControlPlane {
     }
 
     /// `F<n>Md = 1`, answered as this stage and `UnlockBehaviour` say. A refused stage refuses
-    /// it outright; a discarding stage accepts it and leaves the fan as it was.
+    /// it outright; a discarding stage accepts it and leaves the fan as it was. One the stage
+    /// leaves unanswered answers nothing, whatever else it says, and lands as the stage says.
     private func answerModeWrite(fanAt index: Int) throws -> FirmwareWriteAnswer {
         keyWrites.append(.mode(fan: index, value: 1))
         ledger.recordModeWriteIssued(fanAt: index)
+        if let unanswered = stage.unansweredModeWrites[index] {
+            if unanswered == .landed { fans[index]?.mode = .manual }
+            return .unanswered(detail: "F\(index)Md = 1: the scripted firmware sent no reply")
+        }
         guard try lands(stage.writes) else { return .accepted }
         switch unlock {
         case .naive:
@@ -879,9 +890,13 @@ extension ScriptedControlPlane {
         }
     }
 
-    /// `Ftst = 1`, answered as this stage's force-key behaviour says.
+    /// `Ftst = 1`, answered as this stage's force-key behaviour says, or not at all.
     private func answerForceKeyWrite() -> FirmwareWriteAnswer {
         keyWrites.append(.forceKey(1))
+        if let unanswered = stage.unansweredForceKeyWrite {
+            if unanswered == .landed { isForceKeySet = true }
+            return .unanswered(detail: "Ftst = 1: the scripted firmware sent no reply")
+        }
         switch stage.forceKeyWrites ?? stage.writes {
         case .honoured:
             isForceKeySet = true
