@@ -122,6 +122,11 @@ actor ScriptedControlPlane: FanControlPlane {
         /// (`AvailabilityFixture.fanZeroMinimum(_:)`), so the actor's own body stays inside
         /// `type_body_length`'s warning.
         var minimumReads: [Int: BoundRead] = [:]
+        /// Fans whose `F<n>Tg` holds no accepted target even at the command's in-turn read-back
+        /// this stage, so the command throws `.targetNotConfirmed` (#9); `.reverted` is a target
+        /// held at the read-back and discarded after it. Set on a built stage
+        /// (`holdingNoTarget(ofFan:)`), for `minimumReads`' reason.
+        var targetsNotHeldAtReadBack: Set<Int> = []
 
         init(
             temperatures: [String: Double] = [:],
@@ -214,6 +219,13 @@ actor ScriptedControlPlane: FanControlPlane {
         /// The firmware accepts the write and then discards it: the call succeeds and the
         /// fan keeps the state it had. Nothing but a read-back can tell the difference,
         /// which is exactly why the watchdog compares against what it last commanded.
+        ///
+        /// **A target write is held at the command's in-turn read-back and discarded after it**
+        /// (#9; ADR 0014's B1 amendment). B1's command turn reads `F<n>Tg` back before it
+        /// returns, so a target dropped before that read is a command that throws
+        /// (`Stage.targetsNotHeldAtReadBack`); this is the firmware that drops it later, so the
+        /// command returns the requested value and only a later read sees the old one. A mode
+        /// write is discarded before an engagement's own read-back, which reads the mode it had.
         case reverted
     }
 
@@ -515,19 +527,6 @@ actor ScriptedControlPlane: FanControlPlane {
             actualRPM: Self.readback(fan.actualRPM, describing: "F\(index)Ac"))
     }
 
-    /// One RPM value as a readback, with the seam's finiteness rule applied.
-    ///
-    /// The same rule `SMCFanControlPlane` applies, restated here rather than shared because
-    /// `FanControlPlaneValue.finite(_:describing:)` is the shared part — a double that
-    /// answered a NaN where the real thing reports a fault would hide the bug it was written
-    /// to catch, which is this mock's own stated contract.
-    private static func readback(_ value: Double, describing what: String) -> FanRPMReadback {
-        switch FanControlPlaneValue.finite(value, describing: what) {
-        case .success(let rpm): return .rpm(rpm)
-        case .failure(let error): return .unreadable(reason: String(describing: error))
-        }
-    }
-
     // MARK: - Recovery
 
     /// Answers according to this stage's `ReconnectBehaviour`, and **changes nothing else**.
@@ -567,7 +566,8 @@ actor ScriptedControlPlane: FanControlPlane {
 
     /// A target command, admitted first in its turn: once the exit's restore has been requested the
     /// ledger refuses it with `.superseded` before anything is written (ADR 0014's #410
-    /// ticket-and-seal amendment). The attempt is still recorded, because it was made.
+    /// ticket-and-seal amendment). The attempt is still recorded, because it was made. The write
+    /// and its in-turn read-back are `writeTarget(_:)`'s.
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
         let index = target.fanIndex
@@ -575,12 +575,10 @@ actor ScriptedControlPlane: FanControlPlane {
         try ledger.admitCommand()
         _ = try condition(ofFan: index)
         keyWrites.append(.target(fan: index, rpm: target.rpm))
-        try applyWrite(behaviour: stage.targetWrites ?? stage.writes) { fans in
-            fans[index]?.targetRPM = target.rpm
-        }
-        // Returned even when the firmware discarded it. The command was issued, and the
-        // number the watchdog compares a later read-back against is what was commanded,
-        // not what the fan ended up holding — otherwise reversion would be invisible.
+        try writeTarget(target)
+        // Returned once the in-turn read-back held it, even when the firmware discards it after
+        // (`.reverted`). The number the watchdog compares a later read-back against is what was
+        // commanded, not what the fan ended up holding — otherwise reversion would be invisible.
         return CommandedTarget(fanIndex: index, rpm: target.rpm)
     }
 
@@ -907,6 +905,31 @@ extension ScriptedControlPlane {
             keyWrites.append(.forceKey(0))
             if try lands(stage.forceKeyWrites ?? stage.writes) { setForceKey(false) }
         }
+    }
+}
+
+// MARK: - What the firmware holds at a command's read-back (B1)
+
+// In this file for the unlock model's reason; the rest of B1's scripting is in
+// `ScriptedControlPlane+Scripting.swift`, which reads no private state.
+extension ScriptedControlPlane {
+
+    /// `F<n>Tg = rpm`, and the command's in-turn read-back, as this stage says (#9). A refusal
+    /// throws first. Otherwise `.honoured` holds the target; `.reverted` holds it at the read-back
+    /// and discards it after, so the command returns and only a later read sees the old target;
+    /// and a fan in `Stage.targetsNotHeldAtReadBack` holds nothing even then: the register keeps
+    /// what it had, and the command throws `.targetNotConfirmed` with that as its read-back,
+    /// however near the commanded value it is. The tolerance is B1's command turn's (U4).
+    fileprivate func writeTarget(_ target: AuthorisedFanTarget) throws {
+        let index = target.fanIndex
+        let behaviour = stage.targetWrites ?? stage.writes
+        guard stage.targetsNotHeldAtReadBack.contains(index) else {
+            return try applyWrite(behaviour: behaviour) { $0[index]?.targetRPM = target.rpm }
+        }
+        _ = try lands(behaviour)
+        throw FanControlPlaneError.targetNotConfirmed(
+            index: index, commandedRPM: target.rpm,
+            readBackRPM: try condition(ofFan: index).targetRPM)
     }
 }
 

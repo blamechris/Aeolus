@@ -180,6 +180,15 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
     /// why the response code alone does not identify that condition.
     case firmwareRefusedControl(detail: String)
 
+    /// A target command's in-turn read-back of `F<n>Tg` fell outside
+    /// `ReclamationLimits.targetToleranceRPM` of the target it wrote
+    /// ([ADR 0004](../../docs/ADR/0004-float-byte-order.md); ADR 0014 D7 and U4): the firmware did
+    /// not hold the target, so nothing is returned to report it as commanded. Thrown after the
+    /// write, which was issued and may have taken effect, so every caller routes it as it routes a
+    /// refused command. Its answer at the boundary is `notConfirmed`'s `helperFailed`, which v1
+    /// clients already render.
+    case targetNotConfirmed(index: Int, commandedRPM: Double, readBackRPM: Double)
+
     /// This build has no SMC write path at all.
     ///
     /// Not a stub and not a placeholder: `SMCConnection.write(_:to:)` is SPI-gated
