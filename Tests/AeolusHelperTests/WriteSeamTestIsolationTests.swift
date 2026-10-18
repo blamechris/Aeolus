@@ -233,7 +233,10 @@ extension WriteSeamTestIsolationTests {
     /// The files under `Tests/` and `Tools/` whose raw text mentions `@_spi`, from the repository
     /// root: rule 1's two importers, the scanners and scanner tests that spell the attribute, and
     /// the sampler tool, whose source says in prose why it does not opt in.
+    /// `HelperDependentsTests` spells it in fixtures only: the imports of the helper it must find
+    /// include `@_spi(…) import`, and none of them is code (#445).
     static let spiMentioners: Set<String> = [
+        "Tests/AeolusHelperTests/HelperDependentsTests.swift",
         "Tests/AeolusHelperTests/MemberAccessScan.swift",
         "Tests/AeolusHelperTests/MemberAccessScanParsingTests.swift",
         "Tests/AeolusHelperTests/WriteChannelSeamTests.swift",
