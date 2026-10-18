@@ -213,8 +213,8 @@ checkout directory basename, so it works in a clone and fails in a worktree. See
 [`ClientAuthorisation.swift`](../../Sources/AeolusXPC/ClientAuthorisation/ClientAuthorisation.swift),
 which carries the observation.
 
-**Controls.** Ten: nine replacing the one that `package` supplied, and the run-time conformance
-check ADR 0014's B1 seam amendment added. Three of the nine were added by
+**Controls.** Eleven: nine replacing the one that `package` supplied, and the run-time conformance
+check and the raw `Sources/` census that ADR 0014's B1 seam amendment added. Three of the nine were added by
 #226's review, which defeated the first four, and two more by the delta re-review of that
 round, which defeated the probe's own claim one indirection later — the seam is bound to a
 local inside the probe, and applying *that* name is a write no scan looking for `write(`
@@ -222,7 +222,8 @@ can see:
 
 | Control | Where |
 |---|---|
-| The only SPI group imported under `Sources/` is `FanWrite`, and only by two helper files: the probe and `AeolusHelperMain.swift`, whose `private` forwarder is the daemon's write channel | `WriteSeamAccessTests.spiImportAppearsOnlyInTheHelper` |
+| The only SPI group imported under `Sources/` is `FanWrite`, whole-module or scoped (`import class SMCCore.…`), and only by two helper files: the probe and `AeolusHelperMain.swift`, whose `private` forwarder is the daemon's write channel | `WriteSeamAccessTests.spiImportAppearsOnlyInTheHelper` |
+| The raw text under `Sources/` mentions `@_spi` only in a fixed list of six files, so an import spelling the pattern above has not met is still a new file | `WriteSeamAccessTests.everySourcesSPIMentionIsKnown` |
 | `Sources/SMCCore/` declares exactly two SPI members, both named, both in `FanWrite` | `WriteSeamAccessTests.smcCoreDeclaresExactlyTwoSPIMembers` |
 | `write` — called or taken as a member, with or without a receiver, block comments ignored — appears in exactly three helper files: declared by `protocol SMCWriteChannel` and by `AeolusHelperMain.swift`'s `private` forwarder, used only inside that forwarder's `write` body, and referenced only by the never-called probe | `WritePathAbsenceTests.helperNeverCallsWrite` |
 | No helper file declares any `extension SMCConnection` — empty or populated, `SMCCore.`-qualified or not — so the actor's isolation is never open to helper code and nothing conforms it to a helper protocol | `WritePathAbsenceTests.noHelperFileOpensSMCConnectionsIsolation` |
