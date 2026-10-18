@@ -517,21 +517,32 @@ turn — hold in every case. The coalescing is
 ADR's D2 for this cycle alone, and the arithmetic that made it necessary, are
 [ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s 2026-10-18
 amendment. The one-turn bound rests on this cycle being the admission class's only user, one call
-at a time. The class's value sets are pinned by the compiler, so no other admission or priority can
-reach it under another name; its uses are counted file by file at the source and every stored
-plane's admission is checked in the composed graph; and the premise is observed at run time, where
-the scheduler reports a second request in the class while one is outstanding.
+at a time, and the class is reached only by holding a view of it — never by a value a request
+carries (the same ADR's #440 amendment). The class's value sets are pinned by the compiler, so no
+other admission or priority can reach it under another name; its uses are counted file by file at
+the source, which also holds that views are minted only in the composition and in this cycle's
+handback, and that the lease core names no admission; every stored plane's admission is checked in
+the composed graph, at rest and after a firing. The restores this cycle's revocation causes take the
+class because this cycle holds the one restorer admitted there, its handback, and lends it to the
+lease core for that call alone: the compiler stops the lease core keeping it, and a restore's cause
+selects nothing. And the premise is observed at run time, where the scheduler reports a second
+request in the class while one is outstanding.
 
 *Tested by:* `SMCReadSchedulerLaneTests` (a lane turn is granted next, behind only the turn in
 flight, and leaves the overtake quota alone); `ThermalCycleLaneValueSetTests` (the admission and
 priority value sets, pinned by exhaustive switches); `ThermalCycleLaneRoutingTests` (in the
-composed graph only this cycle's reads, bridges and restores take the class, and every other
-restore cause routes outside it); `ThermalCycleLaneWriterTests` (every plane the composed graph
-stores is admitted at `.supervisor` but this cycle's); `ThermalCycleLaneTripwireTests` (who may
-name the class, counted per file); `ThermalCycleLaneOverlapTests` and
-`ThermalCycleLaneCounterTests` (this cycle's firing episode and its take-back never have two
-requests in the class, two outstanding together are reported, and the count returns to zero
-however a request ends); and
+composed graph only this cycle's reads, bridges and revocation's restores take the class; the
+restorer puts every cause outside it, and after a firing every other teardown restores outside
+it); `ThermalCycleLaneWriterTests` (every plane the composed graph stores is admitted at
+`.supervisor` but this cycle's, at rest and after a firing); `ThermalCycleLaneTripwireTests` and
+`ThermalCycleHandbackTripwireTests` (who may name the class, counted per file; where a view may be
+minted; that only this cycle lends to the lease core; and that the lending signatures keep
+`borrowing` and `~Copyable`); `HelperRestorerTests` and `HandbackLendingBracketTests` (the lent
+route keeps § 5's and this cycle's notices and the handback ledger's bracket);
+`ThermalCycleLaneOverlapTests` and `ThermalCycleLaneCounterTests` (this cycle's firing episode and
+its take-back — with a lease that raced the latch to revoke — never have two requests in the class,
+two outstanding together are reported, and the count returns to zero however a request ends);
+and
 `WatchdogLimitsTests` (the bound D_cycle is derived from).
 
 The sensors the comparison actually uses are curated in code, per machine, and

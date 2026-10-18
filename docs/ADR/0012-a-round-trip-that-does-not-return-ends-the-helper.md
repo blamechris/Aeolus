@@ -658,7 +658,9 @@ cycle inside a D_cycle worth having (see the alternatives below).
     `PlaneWriteLedger`) and differs only in its `PlaneAdmission`. The composition builds § 3's
     telemetry, read-back reader and writer over it. The telemetry view keeps the cache source's
     `DegradationMemo`, and the read-back is reconciliation's own loop (`PlaneHandbackReadBack`);
-  - `HelperFanRestorer`, which routes a restore through its writer's lane view when the cause is
+  - *(Superseded by the #440 amendment below: a cause routes nothing, and § 3's revocation
+    reaches the lane through a handback § 3 holds and lends.)* `HelperFanRestorer`, which routes a
+    restore through its writer's lane view when the cause is
     `.thermalEmergencyRevocation`, and every other cause through the writer at `.supervisor`. The
     cause was `.thermalEmergency` in the first draft and was renamed in review: the word was shared
     with `SafetyActorLevel.thermalEmergency`, so no scan could count the cause by its name, and a
@@ -782,7 +784,9 @@ fan count has no bound, and G fails at N = 13.
   Two shapes no census sees: a plane captured by a closure or a `Task` (today only
   `ConnectionHealth`'s recovery plane), and a restore cause stored and replayed into the restorer,
   which is a capability question for before b2's write bodies
-  ([#440](https://github.com/blamechris/Aeolus/issues/440)).
+  ([#440](https://github.com/blamechris/Aeolus/issues/440)). *(The second is closed by the #440
+  amendment below: a cause selects nothing, and the lane's restorer is lent, never held, by the
+  lease core.)*
 - **Other supervisor readers still slow under load** — § 5, the grant, level 6, and the § 4, § 6
   and § 7 keystones. The lane reorders the connection's time and adds no capacity; #332 stays open
   for them. The level-1 keystones are not on the lane.
@@ -816,7 +820,7 @@ fan count has no bound, and G fails at N = 13.
 | `ThermalCycleLaneWriterTests` | § 5's writer, § 4's, § 6's `panic:` writer or the teardown's built over the lane view. A new admission mapped to the lane with the value-set pin updated to match, given to § 5's writer. |
 | `ThermalCycleLaneValueSetTests` | A new `PlaneAdmission` case mapped to the lane, used for § 5's or § 6's writer or at a call site in § 5 (fails to compile). A new `SMCReadPriority` case queued in the lane (fails to compile). `.supervisor` mapped to the lane. The scheduler queuing `.supervisor` in the lane. |
 | `PlaneViewTests` | A view over a second firmware. A stored value on `SMCFanControlPlane` its view does not share. A view's reads at `.supervisor`. |
-| `ThermalCycleLaneRoutingTests.sectionThreesRevocationRestoresInTheLane`, `everyCauseRoutesByWhoCausedIt`, `everyOtherCauseRestoresAtSupervisor` | Route on the wrong cause. Route every cause to the lane. Route none. Move any one other cause, or several, into the lane's arm. |
+| `ThermalCycleLaneRoutingTests.sectionThreesRevocationRestoresInTheLane`, `everyCauseRoutesByWhoCausedIt`, `everyOtherCauseRestoresAtSupervisor` *(replaced by the #440 amendment's K1, K2 and K6)* | Route on the wrong cause. Route every cause to the lane. Route none. Move any one other cause, or several, into the lane's arm. |
 | `ThermalCycleLaneTripwireTests` | One more naming of the lane in any file — a computed property in `PlaneAdmission`, a lane view for § 5 in the composition, a lane default on the scheduler's read. The cause named from `ReclamationWatchdog.swift`, in any of the fixture spellings. An enumeration of the cases through a type alias or a metatype. A second reader built in place of `PlaneHandbackReadBack`. A symbolic link under `Sources`. File discovery broken. A scan that keeps comments or drops its word guards. |
 | `EngagementRouteTripwireTests.noRawStringHoldsAQuoteAndACommentMarker` | A literal nested in an interpolation holding `//`, which blinds the stripper to the rest of its line. |
 | `ThermalCycleLaneSharingTests` | A second `DegradationMemo` for § 3's telemetry, in the composition or in the view. § 3's read-back reader over the plane rather than its lane view, or a reader of its own type. |
@@ -852,5 +856,112 @@ cycle; a mixed history — a firing, its release and its read-backs in one windo
 writes after a firing — is shown to recur in a way that passes G, or the take-back bound is proven
 or refuted; the plane gains state its view does not share; or a level-1 keystone's latency under
 load becomes a requirement.
+
+**No `AeolusXPCVersion` bump**: nothing crosses the boundary.
+
+## Amendment (2026-10-18, [#440](https://github.com/blamechris/Aeolus/issues/440)) — § 3's lane is reached by holding it, and a restore cause selects nothing
+
+**Status.** Accepted on architect review of #440, under ADR authority. It supersedes two passages
+of the #332 amendment above: the second way "Only § 3 reaches it" — `HelperFanRestorer` choosing
+the lane by a restore's cause — and the sentence under "What remains" that left a stored and
+replayed cause open for b2. The constants, both bounds, the lane's admission policy, the view and
+the run-time overlap report are unchanged.
+
+### Context
+
+Both of the #332 amendment's bounds assume one thing: only § 3 puts requests in the lane. That
+amendment let a request reach the lane two ways.
+
+- **By capability.** A mechanism had to hold a view of the plane, and a view is minted only where
+  `.thermalCycle` is spelled. The value-set pins and the per-file counts hold that.
+- **By value.** `HelperFanRestorer` switched on `FanRestoreCause`, and sent
+  `.thermalEmergencyRevocation` to the lane. Every teardown path in the lease core carries a cause,
+  so code that keeps a cause and passes it again later reaches the lane without spelling the lane's
+  word or the cause's.
+
+Review of #439 built the second shape: `revokeEveryLease` keeping its last cause and
+`expireLapsedLeases` restoring under it, so after a firing every TTL expiry restored in the lane
+beside § 3. It also contradicted `FanRestoreCause`'s own contract, which says the cause is a log
+label and decides nothing. Nothing on `main`, or on `e4/bring-up` before b2, reaches it.
+
+### Decision
+
+- **The lane is reached by holding a view of it, and in no other way.** A restore's cause is a label
+  again: `HelperFanRestorer` restores every cause at `.supervisor`.
+- **§ 3 holds its handback.** `ThermalCycleHandback` is a bound over the keystone attempt whose
+  writer it admits at `.thermalCycle` itself, notifying through the one `HelperFanRestorer`. The
+  composition builds one, over § 3's writer, and gives it to `ThermalEmergency` alone, as a required
+  stored property.
+- **The lease core borrows it for one call.** `LeaseAuthority.revokeEveryLease(handingBackThrough:)`
+  takes it as a `borrowing` parameter of a generic constrained `FanRestoring & ~Copyable`, labels the
+  revocation `.thermalEmergencyRevocation` itself, and hands back inside
+  `restore(_:because:through:)` — the body and bracket every teardown uses, which
+  `restore(_:because:)` forwards to with the lease core's own restorer.
+- **Lent, and never kept, by the compiler.** `FanRestoring` suppresses `Copyable`, which is additive:
+  every conformer, `any FanRestoring` and `some FanRestoring` stay copyable. A `borrowing` parameter
+  of a generic that suppresses it cannot be stored, boxed into an existential, cast, copied, consumed,
+  or captured by an escaping closure or a `Task`. The move checker refuses each at full compilation;
+  `-typecheck` alone accepts some of them.
+- **`HelperFanRestorer` is cause-blind and holds no lane.** Its § 5-before, § 3-after notice sequence
+  is written once, in `handBack(_:because:through:)`, which borrows on the same terms and serves
+  both routes. No second `HelperFanRestorer` is built: it would need a second `bind`, and a bind
+  that was missed would skip both notices with nothing to say so.
+- **Neither `LeaseAuthority` nor `HelperFanRestorer` names an admission, a priority or a view.**
+  Only the composition, which mints views, the handback, and the plane, which honours them, know
+  admission.
+- **The handback is a copyable struct**, because `Mirror` reflects a noncopyable stored field as `()`
+  and the stored-plane census could not see what § 3 holds.
+
+**What each defence holds.**
+
+| Defence | Holds |
+|---|---|
+| The value-set pins and per-file counts | Where a view is minted |
+| The positive stored-plane census, at rest and after a firing | Who holds a lane plane |
+| The compiler, with a source pin on the three lending signatures | That a lent handback is not kept |
+| The overlap report | The one-producer premise, at run time |
+
+The cause census stays. Its reason is now provenance — who may label a restore § 3's — and not
+routing.
+
+### Tests, each with the mutation that must turn it red
+
+All runs are local, over the whole non-hardware suite; CI does not run mutations.
+
+| ID | Test | Mutation that must turn it red |
+|---|---|---|
+| K1 | `ThermalCycleLaneRoutingTests.theRestorerIsCauseBlind` — every `FanRestoreCause`, § 3's included, restores at `.supervisor` | A lane bound in `HelperFanRestorer`, chosen by a switch on the cause |
+| K2 | `ThermalCycleLaneRoutingTests.sectionThreesRevocationHandsBackThroughItsHandback` — a firing over two fans with every restore refused is three and three `.fan(n)` attempts, all in the lane, in one `cycle()` | `admitted(at: .thermalCycle)` dropped from the handback's initialiser. The verb lending `restorer` instead of its parameter. A second `restore(through: handback)` in the verb |
+| K3 | `HelperRestorerTests`' registry tests, run over the release and over § 3's handback | The handback restoring through its bound directly, bypassing `handBack` |
+| K4 | `HandbackLendingBracketTests` — the fan is mid-handback throughout, a grant meanwhile is refused `.releaseInProgress`, and a refusal is recorded abandoned | Lending outside `restore`'s bracket |
+| K5 | `ThermalCycleLaneWriterTests`' census, at rest and after a full § 3 episode: the same four lane sites, the handback's at `ThermalEmergency.handback.bounded.attempting.writer.plane` | The signatures weakened to copyable and the handback stored in `LeaseAuthority` for `expireLapsedLeases`: red after the episode, naming the stored field. Unweakened, it does not compile |
+| K6 | `ThermalCycleLaneRoutingTests.afterAFiringEveryOtherPathRestoresAtSupervisor` — TTL, invalidation, release, § 5's revocation, the panic verb's drop, § 4, § 6 and the teardown | The handback given to `LeaseAuthority` as its standing restorer. Storing the revocation's cause and replaying it on the TTL path stays green, correctly: the cause routes nothing |
+| K7 | `ThermalCycleHandbackTripwireTests`, and the updated counts in `ThermalCycleLaneTripwireTests` | A lane view minted in `Lease/`. `~Copyable` dropped from a constraint. `borrowing` dropped (with `~Copyable`; alone, it does not compile) |
+| TBR | `ThermalCycleLaneOverlapTests.sectionThreesTakeBackRevokesARacedLeaseOneRequestAtATime` — a lease granted across the latch's engagement, revoked by the take-back through the handback, one request at a time | The revocation started as an `async let` beside the bridges |
+| K8 | One local `xcodebuild` of the shipping helper target, the repository's first use of noncopyable generics | — |
+
+The per-file counts move with it: the lane's word leaves `HelperFanRestorer.swift` for
+`ThermalCycleHandback.swift`; the cause's leaves `ThermalEmergency.swift` (three) and
+`HelperFanRestorer.swift` (one) for `LeaseAuthority.swift` (one).
+
+### Alternatives considered
+
+- **Routing by cause, as #439 first built it (rejected).** Its key is a value every teardown path
+  carries through the widest actor in the helper, and it can be kept and replayed without being
+  named.
+- **A lane restorer the lease core holds at rest, reached by a § 3-only verb (rejected).** Nothing
+  at compile time stops the next teardown path from reaching it.
+- **§ 3 restoring outside the lease core, with a begin and a finish (rejected).** It splits
+  `releasing` across two actors.
+- **A non-escaping closure lent by § 3 (the fallback).** The same compile-time guarantee, without
+  `FanRestoring`'s contract.
+- **A noncopyable handback (rejected for now).** It blinds the reflection census.
+- **A task-local flag (rejected).** An unstructured `Task` inherits task-locals.
+- **Routing by cause, plus a sweep after each firing (rejected).** The sweep covers only the paths
+  it names, so it is defence in depth at best.
+
+**Revisit if:** a toolchain accepts any of the refused shapes (fall back to the closure); a second
+user of the lane is proposed; a composition edit that hands the handback to a second holder survives
+review; the lease core gains a second verb that lends a restorer; or the overlap report ever fires.
 
 **No `AeolusXPCVersion` bump**: nothing crosses the boundary.
