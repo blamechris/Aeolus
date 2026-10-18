@@ -122,7 +122,8 @@ enum SetMessages {
         """
     }
 
-    private static func sentence(for loss: Loss, hold: Hold) -> String {
+    /// What a loss says, as a clause that follows a colon.
+    static func sentence(for loss: Loss, hold: Hold) -> String {
         let id = hold.leaseID.uuidString
         switch loss {
         case .renewalFailed(let reason):

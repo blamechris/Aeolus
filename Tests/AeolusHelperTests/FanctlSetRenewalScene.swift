@@ -32,10 +32,21 @@ struct RenewalScene {
     }
 
     /// Starts `fanctl set 0 75% --for 30s --json` and returns at once.
-    func start() throws -> Task<Int32?, Never> {
-        let command = try SetHarness.command(
+    ///
+    /// - Parameter deadlines: The client's own, when a test wants the shipping ones rather than
+    ///   the harness's. A renewal that is not answered then times out in the shipping five
+    ///   seconds, well inside an `apply`'s fifty-seven.
+    /// - Returns: The running command, yielding its exit code (`nil` for exit 0).
+    /// - Throws: If the command cannot be built.
+    func start(deadlines: HelperClientDeadlines? = nil) throws -> Task<Int32?, Never> {
+        var command = try SetHarness.command(
             SetHarness.thirtySeconds + ["--json"], endpoint: harness.endpoint, output: output,
             time: time, desk: SignalDesk())
+        if let deadlines {
+            command.helper = HelperConnection(
+                transport: .endpoint(harness.endpoint), pinning: UnenforcedClientPinning(),
+                deadlines: deadlines)
+        }
         return Task { await exitCode { try await command.run() } }
     }
 
@@ -45,27 +56,28 @@ struct RenewalScene {
     /// run would then wait for the end of a request that cannot end. In production time passes on
     /// its own; here only a wait for the helper moves it, and that is the keeper's job. So a run
     /// that has not finished in a moment is reported as that, and let go.
+    ///
+    /// **The recovery happens inside the watchdog child, before the group is left.** Leaving a
+    /// task group waits for every child, and a child that waits on the command cannot finish
+    /// until the command does: a recovery run after the group would never run, and a mutation
+    /// that never starts the keeper would sit out the suite's whole time limit instead of failing
+    /// at once.
     func run() async throws -> Int32? {
         let running = try start()
-        let finished = await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                _ = await running.value
-                return true
-            }
+        let time = self.time
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { _ = await running.value }
             group.addTask {
                 try? await Task.sleep(for: .seconds(10))
-                return false
+                guard !Task.isCancelled else { return }
+                let why =
+                    "the run did not finish: the helper was still working on `apply` and nothing "
+                    + "was waiting for it, so no renewal was ever sent and the clock stood still"
+                Issue.record(Comment(rawValue: why))
+                time.advance(by: .seconds(3_600))
             }
-            let first = await group.next() ?? false
+            await group.next()
             group.cancelAll()
-            return first
-        }
-        if !finished {
-            let why =
-                "the run did not finish: the helper was still working on `apply` and nothing "
-                + "was waiting for it, so no renewal was ever sent and the clock stood still"
-            Issue.record(Comment(rawValue: why))
-            time.advance(by: .seconds(3_600))
         }
         let code = await running.value
         _ = harness.sessions
@@ -78,14 +90,18 @@ struct RenewalScene {
         return await authority.renewalInstants.map { $0 - grant }
     }
 
-    /// The longest the helper went without a renewal, counted from the grant, among the renewals
-    /// that landed and up to `end` (virtual seconds after the grant).
-    func longestSilence(until end: Duration) async -> Duration {
+    /// The longest the lease went without a renewal, counted from the grant, through the last
+    /// renewal to the instant the lease was **released**: the final interval is the one the
+    /// helper's own clock was still running on, and it is as long as any other.
+    func longestSilence() async -> Duration {
+        let grant = await authority.grantInstants.first ?? time.now
+        var points = await renewalOffsets()
+        if let released = await authority.releaseInstants.first { points.append(released - grant) }
         var previous = Duration.zero
         var longest = Duration.zero
-        for offset in await renewalOffsets() where offset <= end {
-            longest = max(longest, offset - previous)
-            previous = offset
+        for point in points {
+            longest = max(longest, point - previous)
+            previous = point
         }
         return longest
     }

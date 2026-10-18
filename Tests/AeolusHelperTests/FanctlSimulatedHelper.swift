@@ -20,9 +20,9 @@ private struct SnapshotFailure {
 
 /// What a lease lives for, on the clock a test gives it, and the record of how it lived.
 ///
-/// `LeaseAuthority`'s deadline is the grant plus the lifetime, a renewal moves it to its own
-/// receipt plus the lifetime, and a lapse is the first time something finds it past. Every
-/// instant is on the test's clock, so a thirty-second lifetime is walked in virtual seconds.
+/// `LeaseAuthority`'s deadline is the grant plus the lifetime, and a renewal moves it to its own
+/// receipt plus the lifetime. Every instant is on the test's clock, so a thirty-second lifetime
+/// is walked in virtual seconds.
 private struct LeaseTerm {
     private var lifetime: Duration?
     private var now: (@Sendable () -> ContinuousClock.Instant)?
@@ -30,6 +30,7 @@ private struct LeaseTerm {
     private(set) var grants: [ContinuousClock.Instant] = []
     private(set) var renewals: [ContinuousClock.Instant] = []
     private(set) var lapses: [ContinuousClock.Instant] = []
+    private(set) var releases: [ContinuousClock.Instant] = []
 
     mutating func live(for duration: Duration, on clock: SettleClock) {
         lifetime = duration
@@ -44,6 +45,11 @@ private struct LeaseTerm {
 
     mutating func granted() { extend(recording: \.grants) }
     mutating func renewed() { extend(recording: \.renewals) }
+
+    /// A release reached the authority, whatever it was answered.
+    mutating func released() {
+        if let now { releases.append(now()) }
+    }
 
     mutating func lapsed() {
         if let now { lapses.append(now()) }
@@ -99,13 +105,23 @@ private struct HeldRenewal {
 ///
 /// ## A lease lifetime, when a test asks for one
 ///
-/// `expiringLeases(after:on:)` gives a lease what `LeaseAuthority` gives it: a deadline at the
-/// grant plus the lifetime, a renewal that moves the deadline to its own receipt plus the
-/// lifetime, and a lapse that ends the lease and returns its fans the first time anything
-/// notices (`LeaseAuthority.heldLease` refuses `leaseExpired`, then the lease is gone). Time is
-/// the test's clock, so a thirty-second lifetime is walked in virtual seconds. **Without it a
-/// lease never lapses**, which is what every test written before this existed assumed, and why
-/// none of them could see a lease lapse in the middle of an `apply`.
+/// `expiringLeases(after:on:)` gives a lease a deadline at the grant plus the lifetime, and a
+/// renewal that moves the deadline to its own receipt plus the lifetime. Time is the test's
+/// clock, so a thirty-second lifetime is walked in virtual seconds. **Without it a lease never
+/// lapses**, which is what every test written before this existed assumed, and why none of them
+/// could see a lease lapse in the middle of an `apply`.
+///
+/// Two things are kept apart, as `LeaseAuthority` keeps them apart:
+///
+/// - **A lookup of a lapsed lease is refused `leaseExpired` and changes nothing**
+///   (`heldLease` only throws). The lease is still there, the fans are still where they were,
+///   and the refusal says nothing has been cleaned up.
+/// - **A sweep takes the lease and returns its fans.** The real helper's expiry supervisor runs
+///   one at the deadline with nobody calling. This double has no clock of its own to run it on,
+///   so a sweep happens where the real `activeLease()` would sweep first (a snapshot) and at a
+///   grant, and a test that wants the supervisor to have run calls `sweepExpiredLeases()`.
+///   A double that swept inside the lookup would make every expired `apply` imply a cleanup
+///   that had already happened.
 actor SimulatedFanAuthority: FanAuthority {
 
     private var fans: [FanState]
@@ -163,6 +179,8 @@ actor SimulatedFanAuthority: FanAuthority {
     var grantInstants: [ContinuousClock.Instant] { term.grants }
     var renewalInstants: [ContinuousClock.Instant] { term.renewals }
     var lapseInstants: [ContinuousClock.Instant] { term.lapses }
+    /// When each `releaseLease` reached the authority, on the same clock.
+    var releaseInstants: [ContinuousClock.Instant] { term.releases }
     /// Finer than `calls`: when a message arrived, and when it was answered, in order. `calls`
     /// is what most suites compare whole, so nothing is added to it.
     private(set) var ledger: [String] = []
@@ -342,7 +360,7 @@ actor SimulatedFanAuthority: FanAuthority {
         }
         // As `LeaseAuthority.activeLease()` does: anything lapsed is swept before the lease is
         // reported, so a snapshot never lists a lease that has stopped holding the fans.
-        sweepLapsedLease()
+        sweepExpiredLeases()
         return SystemSnapshot(
             fans: fans.map(reportedState), sensors: [], activeLease: reportedLease(),
             isThermalEmergencyActive: isThermalEmergencyActive || emergencyHasBegun,
@@ -372,7 +390,7 @@ actor SimulatedFanAuthority: FanAuthority {
         if let acquireRefusal { throw acquireRefusal }
         try AeolusXPCValidation.validate(
             request, enumeratedFanIndices: Set(fans.map(\.index)))
-        sweepLapsedLease()
+        sweepExpiredLeases()
         guard lease == nil else {
             throw AeolusXPCFault.manualControlUnavailable(reason: .leaseHeldByAnotherClient)
         }
@@ -426,6 +444,7 @@ actor SimulatedFanAuthority: FanAuthority {
         calls.append("releaseLease")
         ledger.append("releaseLease received")
         defer { ledger.append("releaseLease answered") }
+        term.released()
         if let releaseRefusal { throw releaseRefusal }
         _ = try held(id, by: connection)
         if snapshotsBeforeReleaseShows > 0 {
@@ -486,12 +505,8 @@ actor SimulatedFanAuthority: FanAuthority {
         guard leaseHolder == connection else {
             throw AeolusXPCFault.leaseNotHeldByThisConnection
         }
-        // `LeaseAuthority.heldLease`: a lapsed lease is refused `leaseExpired`, and the lease
-        // is gone for whoever asks next.
-        if term.hasLapsed {
-            lapse()
-            throw AeolusXPCFault.leaseExpired
-        }
+        // `LeaseAuthority.heldLease` only throws: nothing is swept by being refused.
+        if term.hasLapsed { throw AeolusXPCFault.leaseExpired }
         return lease
     }
 
@@ -614,14 +629,16 @@ extension SimulatedFanAuthority {
         term.live(for: duration, on: clock)
     }
 
-    /// What the expiry supervisor does at the deadline: end the lease and return its fans.
+    /// What the expiry supervisor's sweep does: end the lease and return its fans. A test calls
+    /// this to have the supervisor already have run; otherwise a snapshot or a grant sweeps.
+    func sweepExpiredLeases() {
+        if lease != nil, term.hasLapsed { lapse() }
+    }
+
+    /// The sweep itself.
     private func lapse() {
         term.lapsed()
         endLease()
-    }
-
-    private func sweepLapsedLease() {
-        if lease != nil, term.hasLapsed { lapse() }
     }
 
     /// What `applyLeavesFans` leaves, and the fault it answers with.

@@ -104,9 +104,9 @@ extension SetCommand {
                 closingLine: nil)
         }
 
-        /// The lease **ended while the speed was being applied**: control lost, never a refusal.
-        /// Released, and the safe state looked at. Exit 6, or the check's verdict where that is
-        /// worse.
+        /// **Control was lost before the hold began**: the lease could no longer be shown to be
+        /// held while the speed was being applied, never a refusal. Released, and the safe state
+        /// looked at. Exit 6, or the check's verdict where that is worse.
         static func lapsed(
             _ lapse: Lapse, hold: Hold, release: Release, settlement: SafeState.Settlement
         ) -> Report {
@@ -115,7 +115,8 @@ extension SetCommand {
                     code(.controlLost, after: settlement),
                     SetMessages.lapsed(
                         lapse, hold: hold, release: release, settlement: settlement)),
-                leaseID: hold.leaseID, endedBecause: "controlLost", signal: nil, release: release,
+                leaseID: hold.leaseID, endedBecause: "controlLost", signal: nil,
+                release: release,
                 snapshot: settlement.snapshot, snapshotFollowsRelease: settlement.snapshot != nil,
                 plans: hold.plans, closingLine: nil)
         }
@@ -148,7 +149,8 @@ extension SetCommand {
                     code(failure.code, after: settlement),
                     SetMessages.unansweredApply(
                         failure, hold: hold, release: release, settlement: settlement)),
-                leaseID: hold.leaseID, endedBecause: "controlLost", signal: nil, release: release,
+                leaseID: hold.leaseID, endedBecause: "controlLost", signal: nil,
+                release: release,
                 snapshot: settlement.snapshot,
                 snapshotFollowsRelease: settlement.snapshot != nil, plans: hold.plans,
                 closingLine: nil)

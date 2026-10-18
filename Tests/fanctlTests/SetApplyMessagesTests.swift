@@ -72,13 +72,16 @@ struct SetApplyMessagesTests {
         #expect(message.contains("launchctl bootout system/"))
     }
 
-    // MARK: - A lease that ended while the speed was being applied
+    // MARK: - Control lost before the hold began
 
-    /// The lease lapsed during `apply`. That is control lost, in its own words: not a refusal,
-    /// not "did not accept the speed", and not a claim about the fans.
+    /// Control was lost before the hold began. That is said in its own words: not a refusal, not
+    /// "did not accept the speed", not a claim about the fans, and **not a claim that the lease
+    /// ended**, which nobody saw: a reply that is not delivered leaves the lease live, and a
+    /// renewal still in flight leaves it unknown. It could no longer be *shown* to be held.
     ///
-    /// **Mutation:** build a lapse's message from `faultedApply`. Run: red.
-    @Test("A lapse says control was lost, and never that the speed was refused")
+    /// **Mutation:** say the lease "ended while the helper was applying the speed" again in
+    /// `SetMessages.lapsed`. Run: red on the opening and on the absence of "ended".
+    @Test("Control lost before the hold began says it could no longer be shown, not that it ended")
     func lapseWording() throws {
         let hold = Shared.hold([try Shared.plan(0, .percent(50))])
         let lapses = [
@@ -86,16 +89,26 @@ struct SetApplyMessagesTests {
             SetCommand.Lapse(
                 renewalFailure: "the renewal was refused", apply: .answered("the lease expired")),
             SetCommand.Lapse(renewalFailure: nil, apply: .answered("the lease expired")),
+            SetCommand.Lapse(
+                renewalFailure: "the renewal timed out", apply: .unanswered("no answer")),
+            SetCommand.Lapse(
+                renewalFailure: nil, apply: .accepted, confirmation: .snapshotFailed("timed out")),
+            SetCommand.Lapse(
+                renewalFailure: nil, apply: .accepted, confirmation: .notHeld(.fanNotHeld(0))),
+            SetCommand.Lapse(renewalFailure: nil, apply: .accepted, confirmation: .timerFailed),
         ]
         for lapse in lapses {
             for verdict in [SafeState.Verdict.automatic, .notConfirmed] {
                 let message = SetMessages.lapsed(
                     lapse, hold: hold, release: .failed("no such lease"),
                     settlement: Shared.settlement(Fixtures.automatic, verdict: verdict))
-                #expect(message.hasPrefix("Control was lost before the hold began: lease "))
-                #expect(message.contains(hold.leaseID.uuidString))
+                let opening =
+                    "Control was lost before the hold began: control of lease "
+                    + "\(hold.leaseID.uuidString) could no longer be shown to be held."
+                #expect(message.hasPrefix(opening), "\(lapse)")
+                #expect(!message.contains("ended"), "no end was seen: \(message)")
                 #expect(message.contains("not renewed within 30 seconds"))
-                #expect(message.contains("this run cannot say what it did to the fans"))
+                #expect(message.contains("cannot say what it did to the fans"))
                 #expect(!message.contains("did not accept"))
                 #expect(!message.lowercased().contains("refused the speed"))
                 #expect(!message.lowercased().contains("nothing was applied"))
@@ -104,33 +117,52 @@ struct SetApplyMessagesTests {
         }
     }
 
-    /// What ended the lease is said once, in the helper's words, and whichever way this run
-    /// learned of it: a renewal that failed, or `apply` saying so itself.
-    @Test("A lapse says how this run learned the lease was gone, once")
-    func lapseSaysHowItWasLearned() throws {
+    /// What this run saw is said once each, in the helper's words, in the order it happened.
+    @Test("Control lost before the hold began says each thing it saw, once")
+    func lapseSaysWhatWasSeen() throws {
         let hold = Shared.hold([try Shared.plan(0, .percent(50))])
         let settlement = Shared.settlement(Fixtures.automatic, verdict: .automatic)
+        func words(_ lapse: SetCommand.Lapse) -> String {
+            SetMessages.lapsed(lapse, hold: hold, release: .accepted, settlement: settlement)
+        }
 
-        let accepted = SetMessages.lapsed(
-            SetCommand.Lapse(renewalFailure: "refused", apply: .accepted), hold: hold,
-            release: .accepted, settlement: settlement)
-        #expect(accepted.contains("A renewal of it failed: refused"))
+        let accepted = words(SetCommand.Lapse(renewalFailure: "refused", apply: .accepted))
+        #expect(
+            accepted.contains("A renewal of it failed while the speed was being applied: refused"))
         #expect(accepted.contains("The helper accepted the request to apply the speed."))
 
-        let both = SetMessages.lapsed(
-            SetCommand.Lapse(renewalFailure: "refused", apply: .answered("gone")), hold: hold,
-            release: .accepted, settlement: settlement)
-        #expect(both.contains("A renewal of it failed: refused"))
+        let both = words(SetCommand.Lapse(renewalFailure: "refused", apply: .answered("gone")))
+        #expect(both.contains("A renewal of it failed while the speed was being applied: refused"))
         #expect(both.contains("answered the request to apply the speed with: gone"))
 
-        let alone = SetMessages.lapsed(
-            SetCommand.Lapse(renewalFailure: nil, apply: .answered("XYZZY")), hold: hold,
-            release: .accepted, settlement: settlement)
+        let alone = words(SetCommand.Lapse(renewalFailure: nil, apply: .answered("XYZZY")))
         #expect(!alone.contains("A renewal of it failed"))
         #expect(
             alone.contains("answered the request to apply the speed that the lease was gone: XYZZY")
         )
         #expect(alone.components(separatedBy: "XYZZY").count == 2, "said once, not twice")
+
+        // A renewal that failed and an `apply` that then went unanswered: both facts.
+        let unanswered = words(
+            SetCommand.Lapse(renewalFailure: "RENEWAL-TIMEOUT", apply: .unanswered("NO-ANSWER")))
+        #expect(unanswered.contains("A renewal of it failed while the speed was being applied"))
+        #expect(unanswered.contains("RENEWAL-TIMEOUT"))
+        #expect(unanswered.contains("then got no answer, so the helper may have applied it"))
+        #expect(unanswered.contains("NO-ANSWER"))
+
+        // The snapshot after an accepted `apply`, in each way it can fail to show a hold.
+        let unread = words(
+            SetCommand.Lapse(
+                renewalFailure: nil, apply: .accepted, confirmation: .snapshotFailed("TIMED-OUT")))
+        #expect(unread.contains("The snapshot read after it could not be read: TIMED-OUT"))
+        let notHeld = words(
+            SetCommand.Lapse(
+                renewalFailure: nil, apply: .accepted, confirmation: .notHeld(.fanNotHeld(3))))
+        #expect(notHeld.contains("The snapshot read after it did not show control held: "))
+        #expect(notHeld.contains("states no held target for fan 3"))
+        let timer = words(
+            SetCommand.Lapse(renewalFailure: nil, apply: .accepted, confirmation: .timerFailed))
+        #expect(timer.contains("fanctl's timer failed"))
     }
 
     /// `leaseExpired`'s own description says the fans "have returned to automatic control". Nobody

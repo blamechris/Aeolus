@@ -330,9 +330,8 @@ enum SetCommand {
     /// The release is **best-effort and nothing waits on its answer**: a refusal is reported and
     /// the check that follows decides the exit. A loss once the hold is under way (6) skips the
     /// check — there is nothing to confirm a return to, and `fanctl auto` is how to ask — and a
-    /// signal that arrives from here on is ignored: the loop is no longer looking. (A lease that
-    /// ended while `apply` was outstanding does not skip it, and neither does any `apply` fault:
-    /// see `afterFailedApply`.)
+    /// signal that arrives from here on is ignored: the loop is no longer looking. (Nothing that
+    /// ends before `started` skips it: see `establish`.)
     static func finish(
         _ end: HoldEnd, hold: Hold, snapshot: SystemSnapshot?, in session: Session
     ) async -> Report {
@@ -363,21 +362,5 @@ enum SetCommand {
         } catch {
             return .failed(describe(error))
         }
-    }
-
-    /// An error in the words the client chose, for a message about a lease already held: every
-    /// failure there is a loss of control whatever its type.
-    ///
-    /// **One fault is not quoted.** `leaseExpired`'s own description goes on to say the fans "have
-    /// returned to automatic control", and nothing here observed that: it is the helper's claim
-    /// about what it did, and `CLAUDE.md` rule 6 forbids repeating one as though it were seen. What
-    /// `set` can say is what the helper answered, and, where it looked, what the safe-state check
-    /// then found. The same description also tells the client to acquire a new lease, which a run
-    /// that never re-acquires has no use for.
-    static func describe(_ error: any Error) -> String {
-        if let fault = error as? AeolusXPCFault, case .leaseExpired = fault {
-            return "The helper answered that the manual-control lease had expired."
-        }
-        return HelperCommandFailure(classifying: error, during: .holdingControl).message
     }
 }

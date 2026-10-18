@@ -73,10 +73,17 @@ struct FanctlSetHeldTargetTests {
             events.map { $0["event"] as? String } == ["failed"],
             "`started` is not said over a fan the helper does not hold")
         #expect(await Harness.count("renewLease", in: authority) == 0, "the hold never began")
-        // The planning snapshot and the confirming one, and no third: the snapshot after `apply`
-        // cannot predate the engagement (ADR 0013, 2026-10-18), so the first one decides and
-        // nothing waits for a better one.
-        #expect(await authority.snapshotsServed == 2, "the first snapshot after apply decided")
+        // The planning snapshot and the confirming one come before the release, and no third:
+        // the snapshot after `apply` cannot predate the engagement (ADR 0013, 2026-10-18), so
+        // the first one decides and nothing waits for a better one. The reads that follow are
+        // the safe-state check's, after the release.
+        let ledger = await authority.ledger
+        let release = try #require(ledger.firstIndex(of: "releaseLease received"))
+        #expect(
+            ledger[..<release].filter { $0 == "snapshot received" }.count == 2,
+            "the first snapshot after apply decided")
+        #expect(
+            ledger[release...].contains("snapshot received"), "and the safe state was looked at")
         _ = harness.sessions
     }
 

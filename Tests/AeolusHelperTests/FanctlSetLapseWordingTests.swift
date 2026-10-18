@@ -86,7 +86,10 @@ struct FanctlSetLapseWordingTests {
 
         #expect(code == FanctlExitCode.cannotReturnToAutomatic.rawValue)
         let message = scene.output.standardError
-        #expect(message.contains("A renewal of it failed: The helper answered that"))
+        #expect(
+            message.contains(
+                "A renewal of it failed while the speed was being applied: The helper answered that"
+            ))
         #expect(!message.contains(Self.phrase), "\(message)")
         #expect(!message.contains("Acquire a new lease"))
     }

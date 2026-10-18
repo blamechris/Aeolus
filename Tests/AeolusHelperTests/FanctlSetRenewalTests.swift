@@ -48,9 +48,10 @@ struct FanctlSetRenewalTests {
         try #require(offsets.count >= 3, "\(offsets)")
         #expect(Array(offsets.prefix(2)) == [.seconds(10), .seconds(20)], "\(offsets)")
         #expect(await scene.authority.lapseInstants.isEmpty, "the lease never lapsed")
+        #expect(await scene.authority.releaseInstants.count == 1, "the last interval has an end")
         #expect(
-            await scene.longestSilence(until: .seconds(60)) <= .seconds(10),
-            "one renewal schedule, across the hand-over: \(offsets)")
+            await scene.longestSilence() <= .seconds(10),
+            "one renewal schedule, across the hand-over, to the release: \(offsets)")
         let events = try scene.events().map { $0["event"] as? String }
         #expect(
             events == ["started", "holding", "holding", "holding", "ended"],
@@ -76,7 +77,7 @@ struct FanctlSetRenewalTests {
         #expect(
             Array(offsets.prefix(3)) == [.seconds(10), .seconds(20), .seconds(30)], "\(offsets)")
         #expect(await scene.authority.lapseInstants.isEmpty, "the lease never lapsed")
-        #expect(await scene.longestSilence(until: .seconds(65)) <= .seconds(10), "\(offsets)")
+        #expect(await scene.longestSilence() <= .seconds(10), "\(offsets)")
         let events = try scene.events()
         #expect(events.map { $0["event"] as? String }.first == "started")
         #expect(events.last?["event"] as? String == "ended")
@@ -94,7 +95,7 @@ struct FanctlSetRenewalTests {
     /// speed, which is a claim about a fan nothing observed. The safe state is looked at.
     ///
     /// **Mutation (a lapse routed as a refusal):** in `SetCommand.afterFailedApply`, skip the
-    /// `lapse(afterApplyFault:renewal:)` branch. Run: red on `endedBecause` and the opening words
+    /// `lapse(afterApplyFault:)` branch. Run: red on `endedBecause` and the opening words
     /// (the exit is 6 either way: a lease fault classifies to `controlLost` on its own).
     @Test("An apply of 35 seconds whose renewals cannot land is a lapse, not a refusal")
     func aLapseIsNotARefusal() async throws {
@@ -118,8 +119,12 @@ struct FanctlSetRenewalTests {
         #expect(failed["endedBecause"] as? String == "controlLost")
         #expect(failed["releaseAccepted"] is Bool, "the lease was given back, best effort")
         #expect(failed["snapshotFollowsRelease"] as? Bool == true, "the safe state was looked at")
+        // The lease lapsed by time and nothing has swept it: a lookup is refused and changes
+        // nothing, so the release is refused too, and it is the check's snapshot that sweeps.
+        #expect(failed["releaseAccepted"] as? Bool == false)
         let message = scene.output.standardError
-        #expect(message.hasPrefix("Control was lost before the hold began: lease "))
+        #expect(message.hasPrefix("Control was lost before the hold began: control of lease "))
+        #expect(message.contains("could no longer be shown to be held"))
         #expect(message.contains("the heartbeat could not land"))
         #expect(!message.contains("did not accept the speed"))
         #expect(!message.contains("refused"))
@@ -230,11 +235,12 @@ struct FanctlSetRenewalTests {
 
     /// The keeper's wait fails with something that is not a cancellation while `apply` is
     /// outstanding. It cannot pace the heartbeat, so it stops renewing, and the run says so once
-    /// `apply` has been answered: released, exit 1, as for the hold's own timer failing.
+    /// `apply` has been answered. Control could no longer be shown to be held, before the hold
+    /// began: released, the safe state looked at, and exit 6 or worse.
     ///
     /// **Mutation:** treat any failed wait as a stop in `LeaseKeeper.wait` (`return false`
     /// without recording it). Run: red — the run holds as if the timer had worked.
-    @Test("A keeper whose timer fails is a timer failure, released, exit 1")
+    @Test("A keeper whose timer fails is control lost before the hold, released and checked")
     func theKeepersTimerFails() async throws {
         let authority = SimulatedFanAuthority()
         let time = VirtualHoldTime()
@@ -263,10 +269,11 @@ struct FanctlSetRenewalTests {
         let code = await running.value
         _ = harness.sessions
 
-        #expect(code == FanctlExitCode.failure.rawValue, "\(output.standardError)")
+        #expect(code == FanctlExitCode.controlLost.rawValue, "\(output.standardError)")
         let events = try output.events()
         #expect(events.map { $0["event"] as? String } == ["failed"], "nothing says started")
-        #expect(events.first?["endedBecause"] is NSNull)
+        #expect(events.first?["endedBecause"] as? String == "controlLost")
+        #expect(events.first?["snapshotFollowsRelease"] as? Bool == true, "the check looked")
         #expect(output.standardError.contains("timer failed"))
         #expect(await Harness.count("releaseLease", in: authority) == 1)
         #expect(await Harness.count("renewLease", in: authority) == 0)

@@ -7,28 +7,60 @@ import Foundation
 // works, and see whether the helper says the fans are held. Everything that can go wrong in that
 // step is here, because every one of them is a lease that was taken and a speed that may have
 // been sent, and what `set` says about it must be true.
+//
+// **One rule covers every way this step ends short of `started`:** the lease is released, the
+// safe state is looked at, and the exit is the worse of the failure's own code and the check's
+// verdict (9, then 8). A refused `apply`, one nobody answered, a lease that went, a confirming
+// snapshot that failed or showed no hold, and a keeper that could not pace itself are all a lease
+// that was taken and a speed that may have been sent. None of them says what the fans are doing.
 
 extension SetCommand {
 
-    /// What `apply` itself said, when the lease ended while it was being applied.
+    /// What `apply` itself said, when control was lost before the hold began.
     enum ApplyAnswer: Equatable, Sendable {
-        /// It was accepted, after (or despite) the lease ending.
+        /// It was accepted.
         case accepted
         /// The helper answered with a fault, in its own words.
         case answered(String)
+        /// It got no answer, with what the client saw instead.
+        case unanswered(String)
     }
 
-    /// The lease ended while the speed was still being applied: a renewal was refused or went
-    /// unanswered, or `apply` itself answered that the lease is gone. Exit 6, or worse.
+    /// What the snapshot after an **accepted** `apply` came to, when that is why the hold never
+    /// began.
+    enum LapseConfirmation: Equatable, Sendable {
+        /// It could not be read.
+        case snapshotFailed(String)
+        /// It does not show control held.
+        case notHeld(Loss)
+        /// The keeper that renews the lease could not pace itself.
+        case timerFailed
+    }
+
+    /// Control was lost before the hold began: the lease could no longer be **shown** to be held
+    /// while the speed was being applied. Exit 6, or worse.
     ///
-    /// **Control lost, never a refusal.** The helper may have engaged a fan before the lease
-    /// ended, and what it did about the fan when it did is not something `apply`'s answer says.
+    /// **Control lost, never a refusal, and never a claim that the lease ended.** A renewal
+    /// failed or went unanswered, `apply` answered that the lease is gone, `apply` went
+    /// unanswered, or the snapshot after it did not show the fan held. What this run knows is
+    /// what it saw; what the helper did with the lease and the fans is what the check after the
+    /// release found.
     struct Lapse: Equatable, Sendable {
         /// The helper's words for the renewal that failed while `apply` worked, if one did.
         let renewalFailure: String?
-        /// What `apply` itself said. With no failed renewal this is the answer that the lease
-        /// is gone, which is then the whole of how this run knows.
+        /// What `apply` itself said. With no failed renewal and an answer, this is the answer
+        /// that the lease is gone, which is then the whole of how this run knows.
         let apply: ApplyAnswer
+        /// The snapshot after an accepted `apply`, if that is the reason.
+        let confirmation: LapseConfirmation?
+
+        init(
+            renewalFailure: String?, apply: ApplyAnswer, confirmation: LapseConfirmation? = nil
+        ) {
+            self.renewalFailure = renewalFailure
+            self.apply = apply
+            self.confirmation = confirmation
+        }
     }
 
     /// What `apply` and the snapshot that confirms it came to.
@@ -71,36 +103,42 @@ extension SetCommand {
         let confirmation: Result<SystemSnapshot, any Error>
         switch attempt {
         case .applyFailed(let error):
-            return await afterFailedApply(error, hold: hold, renewal: kept.failure, in: session)
+            return await afterFailedApply(
+                error, hold: hold, renewal: kept.failure, in: session)
         case .applied(let result):
             confirmation = result
         }
 
-        switch kept.failure {
-        case .renewal(let reason)?:
-            // The lease ended while the speed was being applied, whatever `apply` then said.
-            return await afterLapse(
-                Lapse(renewalFailure: reason, apply: .accepted), hold: hold, in: session)
-        case .timer?:
-            return await finish(.timerFailed, hold: hold, snapshot: nil, in: session)
-        case nil:
-            break
+        // Each of these is a lease that was taken and a speed that was accepted, and none says
+        // what the fans are doing: released, and the safe state looked at, before anything is
+        // said.
+        let lapse: Lapse
+        switch (kept.failure, confirmation) {
+        case (.renewal(let reason)?, _):
+            lapse = Lapse(renewalFailure: reason, apply: .accepted)
+        case (.timer?, _):
+            lapse = Lapse(renewalFailure: nil, apply: .accepted, confirmation: .timerFailed)
+        case (nil, .failure(let error)):
+            lapse = Lapse(
+                renewalFailure: nil, apply: .accepted,
+                confirmation: .snapshotFailed(describe(error)))
+        case (nil, .success(let read)):
+            // The first snapshot after `apply` decides, because it cannot predate the
+            // engagement: ADR 0013's 2026-10-18 amendment records why.
+            guard let loss = Self.loss(in: read, leaseID: hold.leaseID, covering: hold.fans)
+            else {
+                return await begin(hold, from: read, kept: kept, in: session)
+            }
+            lapse = Lapse(renewalFailure: nil, apply: .accepted, confirmation: .notHeld(loss))
         }
+        return await afterLapse(lapse, hold: hold, in: session)
+    }
 
-        let snapshot: SystemSnapshot
-        switch confirmation {
-        case .failure(let error):
-            return await finish(
-                .lost(.snapshotFailed(describe(error))), hold: hold, snapshot: nil, in: session)
-        case .success(let read):
-            snapshot = read
-        }
-        // The first snapshot after `apply` decides, because it cannot predate the engagement:
-        // ADR 0013's 2026-10-18 amendment records why.
-        if let loss = loss(in: snapshot, leaseID: hold.leaseID, covering: hold.fans) {
-            return await finish(.lost(loss), hold: hold, snapshot: snapshot, in: session)
-        }
-
+    /// The helper says the fans are held: say so, and hold them.
+    private static func begin(
+        _ hold: Hold, from snapshot: SystemSnapshot, kept: LeaseKeeper.Handoff,
+        in session: Session
+    ) async -> Report {
         // Handed over, not written: nothing the hold does waits on a reader. If standard output
         // has failed or is not taking them, the first look in `heartbeats` finds out.
         session.output.started(hold, snapshot: snapshot)
@@ -119,11 +157,17 @@ extension SetCommand {
     /// the lease gone or a thermal emergency set once every fan was written. A refusal tells
     /// this run nothing about the fans, so it is never taken to mean none was touched.
     ///
+    /// In this order:
+    ///
+    /// - **A renewal failed while it worked** (the keeper recorded it): control lost, whatever
+    ///   `apply` then said. A renewal that timed out makes the client give up the connection,
+    ///   and the `apply` in flight is then answered `connectionAbandoned`; reading that as "no
+    ///   answer" and nothing more would never mention the renewal. The text states both facts.
     /// - **It did not answer** (`helperNeverAnswered`, `replyNotDelivered`, `helperRestarted`,
     ///   `connectionAbandoned`, or any transport failure): it may have applied the speed, as a
     ///   refused `apply` may have engaged a fan.
-    /// - **It answered that the lease is gone, or a renewal failed while it worked**: the lease
-    ///   lapsed. Control lost, with its own text and never a refusal.
+    /// - **It answered that the lease is gone**: control lost, with its own text and never a
+    ///   refusal.
     /// - **It answered with another fault**: the helper said no. That is still all the answer
     ///   says: the words "did not accept the speed" are used only if the check that follows
     ///   found every fan automatic and no lease.
@@ -133,21 +177,30 @@ extension SetCommand {
     static func afterFailedApply(
         _ error: any Error, hold: Hold, renewal: LeaseKeeper.Failure?, in session: Session
     ) async -> Report {
-        let failure = HelperCommandFailure(classifying: error, during: .beforeControl)
+        let classified = HelperCommandFailure(classifying: error, during: .beforeControl)
         let release = await release(hold.leaseID, using: session.client)
         let settlement = await checkSafeState(in: session)
-        guard helperAnswered(error) else {
-            return .applyUnanswered(failure, hold: hold, release: release, settlement: settlement)
+        let answered = helperAnswered(error)
+        if case .renewal(let reason)? = renewal {
+            let said: ApplyAnswer =
+                answered ? .answered(describe(error)) : .unanswered(describe(error))
+            return .lapsed(
+                Lapse(renewalFailure: reason, apply: said), hold: hold, release: release,
+                settlement: settlement)
         }
-        if let lapse = lapse(afterApplyFault: error, renewal: renewal) {
+        guard answered else {
+            return .applyUnanswered(
+                classified, hold: hold, release: release, settlement: settlement)
+        }
+        if let lapse = lapse(afterApplyFault: error) {
             return .lapsed(lapse, hold: hold, release: release, settlement: settlement)
         }
-        return .applyFaulted(failure, hold: hold, release: release, settlement: settlement)
+        return .applyFaulted(
+            classified, hold: hold, release: release, settlement: settlement)
     }
 
-    /// The lease ended while the speed was being applied, and `apply` said nothing about it.
-    /// Released, and the safe state looked at: the lease is gone, which says nothing of the
-    /// fans.
+    /// Control was lost before the hold began, and `apply` was accepted or said nothing about
+    /// it. Released, and the safe state looked at: that is all this run can say of the fans.
     private static func afterLapse(
         _ lapse: Lapse, hold: Hold, in session: Session
     ) async -> Report {
@@ -156,19 +209,12 @@ extension SetCommand {
         return .lapsed(lapse, hold: hold, release: release, settlement: settlement)
     }
 
-    /// Whether the lease ended during `apply`: a renewal failed while it worked, or `apply`
-    /// answered with a fault that says the lease is not live.
-    static func lapse(
-        afterApplyFault error: any Error, renewal: LeaseKeeper.Failure?
-    ) -> Lapse? {
-        let answered = ApplyAnswer.answered(describe(error))
-        if case .renewal(let reason)? = renewal {
-            return Lapse(renewalFailure: reason, apply: answered)
-        }
+    /// Whether `apply` answered that the lease is not live.
+    static func lapse(afterApplyFault error: any Error) -> Lapse? {
         guard let fault = error as? AeolusXPCFault else { return nil }
         switch fault {
         case .leaseExpired, .leaseUnknown, .leaseNotHeldByThisConnection:
-            return Lapse(renewalFailure: nil, apply: answered)
+            return Lapse(renewalFailure: nil, apply: .answered(describe(error)))
         case .handshakeRequired, .versionMismatch, .malformedPayload, .invalidParameter,
             .manualControlUnavailable, .thermalEmergencyActive, .reclaimedBySystem,
             .boundsImplausible, .helperFailed, .unknown:

@@ -206,20 +206,23 @@ extension SetMessages {
             hold: hold, release: release, settlement: settlement)
     }
 
-    /// The lease **ended while the speed was being applied**. Control lost, said as that: not a
-    /// refusal, and not "did not accept". The helper ends a lease that is not renewed within
-    /// `lifetime` seconds and returns the fans to automatic control when it does, but neither
-    /// `apply`'s answer nor a failed renewal says what it did to the fans, so this run released
-    /// the lease and looked.
+    /// **Control was lost before the hold began**: the lease could no longer be *shown* to be
+    /// held while the speed was being applied. Said as that: not a refusal, not "did not
+    /// accept", and not a claim that the lease ended, which nobody saw (a reply that is not
+    /// delivered leaves the lease live, and a renewal still in flight leaves it unknown). The
+    /// helper ends a lease that is not renewed within `lifetime` seconds, but neither `apply`'s
+    /// answer nor a failed renewal nor a snapshot says what it did to the fans, so this run
+    /// released the lease and looked, and the verdict that follows is all it says of them.
     static func lapsed(
         _ lapse: SetCommand.Lapse, hold: Hold, release: Release, settlement: SafeState.Settlement
     ) -> String {
         var sentences = [
-            "Control was lost before the hold began: lease \(hold.leaseID.uuidString) ended while "
-                + "the helper was applying the speed."
+            "Control was lost before the hold began: control of lease \(hold.leaseID.uuidString) "
+                + "could no longer be shown to be held."
         ]
         if let failure = lapse.renewalFailure {
-            sentences.append("A renewal of it failed: \(failure)")
+            sentences.append(
+                "A renewal of it failed while the speed was being applied: \(failure)")
         }
         switch lapse.apply {
         case .accepted:
@@ -230,9 +233,26 @@ extension SetMessages {
                     + "\(answer)")
         case .answered(let answer):
             sentences.append("The helper answered the request to apply the speed with: \(answer)")
+        case .unanswered(let seen):
+            sentences.append(
+                "The request to apply the speed then got no answer, so the helper may have "
+                    + "applied it: \(seen)")
+        }
+        switch lapse.confirmation {
+        case .snapshotFailed(let reason)?:
+            sentences.append("The snapshot read after it could not be read: \(reason)")
+        case .notHeld(let loss)?:
+            sentences.append(
+                "The snapshot read after it did not show control held: "
+                    + "\(sentence(for: loss, hold: hold))")
+        case .timerFailed?:
+            sentences.append(
+                "fanctl's timer failed, so it could no longer pace the lease's heartbeat.")
+        case nil:
+            break
         }
         sentences.append(
-            "The helper ends a lease that is not renewed within \(lifetime) seconds, and this run "
+            "The helper ends a lease that is not renewed within \(lifetime) seconds. This run "
                 + "cannot say what it did to the fans, so it released the lease and looked.")
         return afterApply(
             lead: sentences.joined(separator: " "), hold: hold, release: release,

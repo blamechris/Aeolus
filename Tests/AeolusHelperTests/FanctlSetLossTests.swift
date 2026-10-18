@@ -188,14 +188,17 @@ struct FanctlSetLossTests {
     }
 
     /// Control is held from the moment `apply` is accepted, so a snapshot that cannot confirm it
-    /// is a loss, and `started` is never said.
+    /// is a loss, and `started` is never said. Only the confirming snapshot fails here, so the
+    /// check after the release reads fine and the exit stays 6
+    /// (`FanctlSetLostBeforeHoldTests` has the one that cannot read, and the one that finds a
+    /// fan still pinned).
     ///
-    /// **Mutation:** in `SetCommand.perform`, skip the loss check on the confirming snapshot.
+    /// **Mutation:** in `SetCommand.establish`, skip the loss check on the confirming snapshot.
     /// Run: red on the second test.
     @Test("A confirming snapshot that fails is exit 6, and nothing says started")
     func theConfirmingSnapshotFails() async throws {
         let authority = SimulatedFanAuthority()
-        await authority.failingSnapshots(after: 1)
+        await authority.failingSnapshots(after: 1, times: 1)
 
         let run = try await Self.run(authority)
 
