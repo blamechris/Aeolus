@@ -126,7 +126,8 @@ import SMCCore
 /// caches what comes back for the life of the daemon, so the machine would run on a silently
 /// truncated sensor set until the next boot. `withExclusiveAccess(_:)` and `readAll()`
 /// therefore wait for each other, without either holding a turn while it waits; ruling D22 and
-/// that method's documentation have the shape.
+/// that method's documentation have the shape. `withWriteTurn(_:)` waits for neither, because a
+/// write closes no handle.
 ///
 /// Ungated against *reads*, `readAll()`'s own walk hops the `SMCConnection`
 /// actor twice per key, ~2929 times, and a supervisor read enqueued there is serviced
@@ -479,6 +480,51 @@ actor SMCReadScheduler {
         // The turn is taken after the walk, never before it: holding one across a 5.9 s cold
         // walk would lock the safety cycle out for exactly the span this type exists to stop
         // anything holding.
+        await takeTurn(at: .supervisor)
+        defer { endTurn(at: .supervisor) }
+        return try await body()
+    }
+
+    // MARK: - Write turns
+
+    /// Runs `body` inside one `.supervisor` turn and **never waits for a discovery walk**: the
+    /// write path's turn ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s B1
+    /// amendment, which decides that a step, a command or a restore is one synchronous job on the
+    /// connection's actor inside one of these).
+    ///
+    /// ## Why not `withExclusiveAccess(_:)`
+    ///
+    /// That verb waits for a walk in flight because a recycle **closes the handle** the walk is
+    /// reading through (#103's ruling D22). A write closes nothing, so D22's reason to wait does
+    /// not apply, and waiting anyway would put a keystone behind a walk of 5.9 s cold and 24.9 s
+    /// contended (`longestMeasuredDiscoveryWalk`, `longestContendedDiscoveryWalk`) — a read-shaped
+    /// wait queued ahead of the restore, which
+    /// [ADR 0007](../../docs/ADR/0007-safety-composition.md)'s 2026-09-20 amendment keeps the
+    /// keystone free of. So this takes the turn and nothing else: a write turn waits only for the
+    /// turns ahead of it, which is the bound ADR 0014 D4 gives a restore.
+    ///
+    /// **It does not raise `exclusiveClaims` either**, so a walk never waits for a write turn. A
+    /// write runs on the connection's actor between two of the walk's hops, which is how a read
+    /// turn's provider call meets a walk too.
+    ///
+    /// ## What it costs the safety cycle
+    ///
+    /// One `.supervisor` turn, admitted first-come first-served with every other supervisor turn
+    /// and spending the overtake quota exactly as a read does, because it is `takeTurn(at:)` and
+    /// `endTurn(at:)` and nothing more. ADR 0012's D_cycle allowance already counts it: a write
+    /// turn is one of the N outstanding readers, at `WatchdogLimits.writeTurnRoundTrips` round
+    /// trips (`readerTurnRoundTrips` is the larger of that and a mode read). Keeping each job
+    /// within that many round trips is its caller's obligation.
+    ///
+    /// Nothing in the helper calls this yet: the plane's write turns, its only intended callers,
+    /// are not built, and the plane answers `.notBuilt`.
+    ///
+    /// - Important: `body` runs while this actor is suspended and the turn is held, as
+    ///   `withExclusiveAccess(_:)`'s does, so it must not issue a read through this scheduler —
+    ///   it would queue behind a turn only its own caller can release.
+    func withWriteTurn<T: Sendable>(
+        _ body: @Sendable () async throws -> T
+    ) async rethrows -> T {
         await takeTurn(at: .supervisor)
         defer { endTurn(at: .supervisor) }
         return try await body()
