@@ -107,13 +107,24 @@ import Foundation
 /// in the tree is still copyable, and so are `any FanRestoring` and `some FanRestoring`, so no
 /// existing holder changes. What it adds is a generic constraint the compiler holds to a contract.
 /// A parameter declared `borrowing` of a generic `Restorer: FanRestoring & ~Copyable` may be
-/// called, and may not be stored, copied, cast, boxed into an existential, consumed, or captured by
-/// an escaping closure or a `Task` — the move checker refuses each at full compilation.
+/// called, and — in safe Swift, through that parameter — may not be kept for later. The type
+/// checker refuses storing it, boxing it into an existential and casting it; the move checker's
+/// final pass refuses copying or consuming it, and capturing it in an escaping closure, a `Task`,
+/// an `async let` or a deferred `Task`; a key path to it is refused only by a compiler crash, and
+/// could not keep it anyway. What this does not cover is stated rather than left to be found:
+/// `withoutActuallyEscaping` and the `Unsafe*` family can move the bits out, which is why
+/// `Lease/` may name neither (`ThermalCycleHandbackTripwireTests`); and a protocol requirement
+/// that handed back something derived from `self` would give the borrower a copy, which is why
+/// this protocol's body is pinned to its one requirement and nothing extends it. Each refused shape
+/// is compiled again on CI's own toolchain (`scripts/lending-probes/`), because the refusals were
+/// first observed on Swift 6.4 only.
 ///
 /// That is how `docs/SAFETY.md` § 3's lane is reached. § 3 holds `ThermalCycleHandback`, the one
 /// restorer whose writer is admitted in § 3's lane, and the lease core borrows it for one call,
-/// `LeaseAuthority.revokeEveryLease(handingBackThrough:)`. The three lending signatures are
-/// `ThermalCycleLaneTripwireTests`' to pin, because dropping either word compiles.
+/// `LeaseAuthority.revokeEveryLease(handingBackThrough:)`. `ThermalCycleHandbackTripwireTests`
+/// pins the three lending signatures: dropping `borrowing` alone does not compile, but dropping
+/// `~Copyable` from `revokeEveryLease`'s or `handBack`'s constraint does, and so does dropping
+/// both words together.
 protocol FanRestoring: Sendable, ~Copyable {
 
     /// Returns `fans` to the system's own thermal management.

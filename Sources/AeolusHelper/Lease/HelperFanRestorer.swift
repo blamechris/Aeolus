@@ -163,17 +163,14 @@ struct KeystoneRestoreAttempt<Plane: FanControlPlane>: FanRestoreAttempting {
 /// handback hands back through `handBack(_:because:through:)`, lending its bound on. So the
 /// notices above are written once, for both routes, and this type names no admission, no
 /// priority and no view. A second `HelperFanRestorer` built for the lane would need a second
-/// `bind`, and a missed bind silently skips § 5's notice and § 3's mark — which is why the
-/// handback notifies through this one.
+/// `bind`, and a restore through one that missed it would still skip § 5's notice and § 3's mark —
+/// said at `.fault` (`LeaseLog.restoredWithoutSafetyRegistries`), but lost all the same — which is
+/// why the handback notifies through this one.
 actor HelperFanRestorer<Plane: FanControlPlane>: FanRestoring {
 
     private let bounded: BoundedFanRestorer<KeystoneRestoreAttempt<Plane>>
 
-    /// The lease log every bound over this restorer's notices writes to: its own, and the
-    /// handback's (`ThermalCycleHandback` reads it, so a lane restore's abandonment is a line in
-    /// the same log as every other). `LeaseLog` wraps an `os.Logger` and is constructible anywhere
-    /// in the module, so reading it hands out nothing.
-    let log: LeaseLog
+    private let log: LeaseLog
 
     /// `docs/SAFETY.md` § 3's registry of fans off automatic control. `nil` until `bind`.
     private var thermalEmergency: ThermalEmergency<Plane>?

@@ -533,10 +533,12 @@ actor LeaseAuthority: HeldLeaseRole {
     /// **`handback` is lent, for this call, and the compiler keeps it lent** (#440). § 3 holds
     /// `ThermalCycleHandback`, the restorer in its lane, and passes it here; this actor
     /// hands back through it inside `restore(_:because:through:)`, the bracket every teardown
-    /// uses, and cannot keep it — a `borrowing` parameter of a generic that suppresses `Copyable`
-    /// cannot be stored, copied, cast, boxed or captured. So no later teardown here can restore
-    /// in § 3's lane, whatever it carries. The cause is fixed here rather than taken, because it is
-    /// a label: § 3 passes none, and nothing passing it could route anything.
+    /// uses, and cannot keep it through the parameter: in safe Swift a `borrowing` parameter of a
+    /// generic that suppresses `Copyable` cannot be stored, copied, cast, boxed or captured, and
+    /// `FanRestoring` exposes nothing derived from `self` (see its "`~Copyable`" note for the
+    /// exclusions). So no later teardown here can restore in § 3's lane, whatever it carries. The
+    /// cause is fixed here rather than taken, because it is a label: § 3 passes none, and nothing
+    /// passing it could route anything.
     func revokeEveryLease<Handback: FanRestoring & ~Copyable>(
         handingBackThrough handback: borrowing Handback
     ) async {

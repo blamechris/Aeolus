@@ -337,7 +337,9 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         // auditable fact — which mechanism handed the fans back — travels separately, as the
         // `FanRestoreCause` every teardown path supplies and `LeaseLog` records. Whoever
         // makes the arbiter govern restores must revisit this: a `.allLeasesDropped` restore
-        // is § 7's level 1, not level 5.
+        // is § 7's level 1, not level 5. Since #440 the lease core restores at two levels: this
+        // standing restorer's `.leaseExpiry`, and the `.thermalEmergency` of the handback § 3 lends
+        // it for its revocation (below) — provenance on both, and the level § 3 itself writes at.
         let restorer = HelperFanRestorer(
             writer: SafetyActorWriter(plane: plane, level: .leaseExpiry), log: leaseLog)
         self.restorer = restorer
@@ -375,8 +377,9 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
         // `.supervisor`.
         //
         // The restores § 3's revocation causes reach the lane through the handback, built here
-        // once and held by § 3 alone (#440): § 3's writer, admitted in the lane by
-        // `ThermalCycleHandback` itself, notifying through the one restorer. § 3 lends it to
+        // once and held by § 3 alone (#440): a writer at § 3's level on the plane, which
+        // `ThermalCycleHandback` admits in the lane itself, notifying through the one restorer and
+        // logging to the lease log. § 3 lends it to
         // `revokeEveryLease(handingBackThrough:)` and the lease core cannot keep it, so no other
         // teardown restores in the lane. The lease core's own `restorer:` above stays the
         // `.supervisor` one; handing it this would put every teardown in § 3's lane.
@@ -387,7 +390,7 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
                 plane: plane.admitted(at: .thermalCycle), level: .thermalEmergency),
             handback: ThermalCycleHandback(
                 notifying: restorer,
-                writer: SafetyActorWriter(plane: plane, level: .thermalEmergency)),
+                writer: SafetyActorWriter(plane: plane, level: .thermalEmergency), log: leaseLog),
             leases: leases,
             latch: latch,
             // The read-back that clears a fan whose handback the firmware accepted (#295), or
