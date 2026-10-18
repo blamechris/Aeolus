@@ -19,8 +19,8 @@ struct FirmwareSMCScriptingTests {
     /// The fake's headline claim: `provider` reads the registers a channel write set, through the
     /// real scheduler, in a later turn.
     ///
-    /// **Mutation:** make `providerRead(_:)` answer from a copy of the registers taken at
-    /// construction. Run: red here.
+    /// **Mutation:** make `providerRead(_:)` answer each key with its construction-time value,
+    /// `[0x00]`, instead of reading the register. Run: red here.
     @Test("A scheduler read through the provider sees what a write turn set")
     func aSchedulerReadSeesAChannelWrite() async throws {
         let firmware = FirmwareSMC.mac16x5()
@@ -84,7 +84,8 @@ struct FirmwareSMCScriptingTests {
     /// `.answers(code:)` is a code neither `0x00` nor `0x82`; either of those is another case, and
     /// a scenario that spelled it this way would read as testing something it does not.
     ///
-    /// **Mutation:** delete the check in `FirmwareSMC.init`. Run: red here.
+    /// **Mutation:** make the check in `FirmwareSMC.init` never fire (`&&` for `||`). Run: red
+    /// here.
     @Test("An unlock answering 0x00 or 0x82 through answers(code:) is refused")
     func theAnswersCaseRefusesTheOtherCasesCodes() {
         for code: UInt8 in [0x00, 0x82] {
