@@ -55,6 +55,20 @@
 # locale to C, and unsets GREP_*, GIT_*, DYLD_*, PERL*, LD_*, CDPATH, GLOBIGNORE and
 # POSIXLY_CORRECT.
 #
+# ## The toolchain
+#
+# /usr/bin/git, /usr/bin/lipo and /usr/bin/strings are not the tools: they are launchers that
+# ask xcrun which developer directory to run the real one from, and DEVELOPER_DIR answers.
+# Pinning PATH does not help, because the launcher is on the pinned PATH. A directory holding
+# an `xcrun` of its own (macOS 27.0.1 runs `$DEVELOPER_DIR/usr/bin/xcrun`) is enough to
+# answer `git status` with nothing, so a tree with a tracked change and an untracked .swift
+# file recorded as `clean`. The script therefore unsets DEVELOPER_DIR, and TOOLCHAINS and
+# SDKROOT with it: xcrun(1) documents all three as choosing what it runs, though only
+# DEVELOPER_DIR was shown to redirect these tools. The launchers then use the active developer
+# directory (`xcode-select -p`). Not tested: whether xcrun's cache under $TMPDIR can be
+# planted. scripts/e4-verify-running.sh runs no launcher (`otool -L` shows none of its tools
+# linked against libxcselect), so it needs no such scrub.
+#
 # ## What a record proves
 #
 # That, when it was made, the source tree at <source-worktree> was clean at the HEAD it names
@@ -174,7 +188,7 @@ LC_ALL=C
 export LC_ALL
 for scrub_name in $(compgen -e); do
     case "${scrub_name}" in
-        GIT_* | GREP_* | DYLD_* | PERL* | LD_* | CDPATH | GLOBIGNORE | POSIXLY_CORRECT)
+        GIT_* | GREP_* | DYLD_* | PERL* | LD_* | CDPATH | GLOBIGNORE | POSIXLY_CORRECT | DEVELOPER_DIR | TOOLCHAINS | SDKROOT)
             unset "${scrub_name}"
             ;;
     esac

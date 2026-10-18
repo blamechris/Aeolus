@@ -45,7 +45,10 @@
 # the locale to C, and unsets GREP_*, GIT_*, DYLD_*, PERL*, LD_*, CDPATH, GLOBIGNORE and
 # POSIXLY_CORRECT. The perl reader below runs under `env -i`, with an empty environment and no
 # `use` line, so neither PERL5LIB, PERL5OPT nor a module on a search path can replace the code
-# that reads the kernel.
+# that reads the kernel. Unlike scripts/e4-build-record.sh it does not unset DEVELOPER_DIR,
+# TOOLCHAINS or SDKROOT: none of the tools it runs is an xcrun launcher like git, lipo or
+# strings (`otool -L` shows none of them linked against libxcselect), so those variables
+# choose nothing here.
 #
 # ## How the running hash is read
 #
