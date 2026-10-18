@@ -58,17 +58,18 @@ import Foundation
 /// comes up and refuses each connection with a logged reason. Exiting instead would leave
 /// launchd restarting a daemon on every connection attempt and a user with nothing in
 /// `log show` to explain why Aeolus does nothing.
+///
+/// ## Why it is `private`
+///
+/// `main()` composes the daemon's graph, gives it `DaemonWriteChannel`, and runs bring-up before
+/// `dispatchMain()`. Once the plane can write, that is a write. A test that could name this type
+/// could run it, through `@testable import AeolusHelper`, by any spelling a name scan might miss —
+/// a typealias, `.self.main()`. So the type is `private` and no other file, in this module or a
+/// test's, can name it at all (ADR 0014's B1 seam amendment, fix round 2). `@main` needs no
+/// access: the compiler's entry point is synthesised in this file. The build string it used to
+/// hold is `HelperBuild.string`.
 @main
-enum AeolusHelperMain {
-
-    /// Advertised in `HelloReply.helperBuild`. Display-grade: never parsed to decide
-    /// behaviour, because that would be a second version vocabulary competing with
-    /// `helperProtocolRange`.
-    ///
-    /// On `e4/bring-up` this names the branch, so a helper built from it says so in
-    /// `fanctl status` and in the listening line. `HelperBuildStringTests` pins the value, so
-    /// changing it at the E4 merge is an edit to both.
-    static let build = "0.0.0 (E4 bring-up)"
+private enum AeolusHelperMain {
 
     static func main() {
         let log = HelperLog()
@@ -97,7 +98,7 @@ enum AeolusHelperMain {
         let delegate = HelperListenerDelegate(
             authorisation: authorisation,
             authority: helper.authority,
-            helperBuild: build,
+            helperBuild: HelperBuild.string,
             log: log
         )
 
@@ -238,7 +239,7 @@ enum AeolusHelperMain {
         broughtUp.wait()
 
         log.listening(
-            machServiceName: AeolusXPCService.machServiceName, build: build,
+            machServiceName: AeolusXPCService.machServiceName, build: HelperBuild.string,
             writeCapability: helper.plane.writeCapability)
         listener.resume()
     }

@@ -31,15 +31,21 @@ struct CompositionWriteChannelTests {
         #expect(helper.plane.writeCapability == .notBuilt)
     }
 
-    /// **Mutation:** drop the `writeChannel:` argument from `main()`'s `production` call. Run: red.
-    @Test("The daemon gives the production graph its file-private forwarder")
+    /// One contiguous needle, the macOS 14 gate inside it: two needles either side of the gate
+    /// left every test green with the gate deleted (#436's delta review).
+    ///
+    /// **Mutations:** drop the `writeChannel:` argument from `main()`'s `production` call; delete
+    /// the `guard #available(macOS 14, *)` line. Run: red, each.
+    @Test("The daemon gives the production graph its file-private forwarder, from macOS 14 only")
     func theDaemonGivesTheForwarder() throws {
         let main = Self.unwrapped(try Self.code(of: "AeolusHelperMain.swift"))
-        let gives =
+        #expect(
             main.contains(
-                "HelperComposition.production(log:log,writeChannel:{connectionin")
-            && main.contains("returnDaemonWriteChannel(over:connection)})")
-        #expect(gives, "AeolusHelperMain no longer gives the graph DaemonWriteChannel")
+                "HelperComposition.production(log:log,writeChannel:{connectionin"
+                    + "guard#available(macOS14,*)else{returnnil}"
+                    + "returnDaemonWriteChannel(over:connection)})"),
+            "AeolusHelperMain no longer gives the graph DaemonWriteChannel behind the macOS 14 gate"
+        )
     }
 
     /// One connection in the factory, and the provider, the plane's recycler and its channel all
@@ -73,10 +79,13 @@ struct CompositionWriteChannelTests {
     }
 
     /// `main`'s file opts into the write SPI, so what it declares beyond `private` is reachable by
-    /// every file in the helper — and, through `@testable`, every helper test.
+    /// every file in the helper — and, through `@testable`, every helper test. Since #436's delta
+    /// review that includes the entry point itself, which is `private` (`HelperBuild` holds the
+    /// build string it used to).
     ///
-    /// **Mutation:** add an internal `static func channel(over:)` to `AeolusHelperMain`. Run: red.
-    @Test("main's file declares nothing but the entry point beyond private")
+    /// **Mutations:** add an internal `static func channel(over:)` in an `extension
+    /// AeolusHelperMain`; drop `private` from the entry point. Run: red, each.
+    @Test("main's file declares nothing beyond private")
     func mainsFileExposesOnlyTheEntryPoint() throws {
         let code = SeamScanner.strippingAllComments(
             try String(
@@ -106,8 +115,7 @@ struct CompositionWriteChannelTests {
             }
         }
         #expect(
-            exposed.sorted() == ["enum AeolusHelperMain", "method main()", "property build"],
-            "AeolusHelperMain.swift exposes \(exposed.sorted()) beyond private")
+            exposed.isEmpty, "AeolusHelperMain.swift exposes \(exposed.sorted()) beyond private")
     }
 
     /// The premise of a require made once, at construction: the plane a composition holds cannot be

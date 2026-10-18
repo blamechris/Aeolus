@@ -13,13 +13,13 @@ struct HelperBuildStringTests {
 
     /// This pins the value, not the idea, and it guards one direction only. A sync from `main`
     /// that resolves the constant to `main`'s string fails here. The E4 merge does not: the
-    /// constant and this test arrive on `main` together, still agreeing. So reverting `build` to
+    /// constant and this test arrive on `main` together, still agreeing. So reverting it to
     /// a release value and deleting this test is a named step of the E4 merge (#9), not something
     /// this test enforces.
     ///
-    /// **Mutation:** in `AeolusHelperMain`, set `build` back to `"0.0.0 (E2)"`. Run: red here.
+    /// **Mutation:** set `HelperBuild.string` back to `"0.0.0 (E2)"`. Run: red here.
     @Test("The branch build says it is the E4 bring-up build")
     func theBranchBuildIdentifiesItself() {
-        #expect(AeolusHelperMain.build == "0.0.0 (E4 bring-up)")
+        #expect(HelperBuild.string == "0.0.0 (E4 bring-up)")
     }
 }
