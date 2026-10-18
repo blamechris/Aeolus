@@ -95,6 +95,8 @@ extension SetCommand {
         case .success(let read):
             snapshot = read
         }
+        // The first snapshot after `apply` decides, because it cannot predate the engagement:
+        // ADR 0013's 2026-10-18 amendment records why.
         if let loss = loss(in: snapshot, leaseID: hold.leaseID, covering: hold.fans) {
             return await finish(.lost(loss), hold: hold, snapshot: snapshot, in: session)
         }

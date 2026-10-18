@@ -283,34 +283,4 @@ struct FanctlSetTests {
         #expect(!run.output.standardOutput.contains("expiresAt"))
         _ = harness.sessions
     }
-
-    // MARK: - Never trust the mode alone
-
-    /// `apply` is accepted and the fan reads automatic with no target: the helper reports an
-    /// unread mode as automatic, and a lease it lists says it is the holder. That is not a loss.
-    /// `started` does not claim the fan reached its speed either, and says what it reads.
-    ///
-    /// **Mutation:** in `SetCommand.loss(in:leaseID:covering:)`, report a loss for a covered fan
-    /// whose `mode == .automatic`. Run: red — exit 6.
-    @Test("A fan that reads automatic beside a listed lease is not a loss, and not a speed")
-    func modeAloneIsNotALoss() async throws {
-        let authority = SimulatedFanAuthority()
-        await authority.ignoringApply()
-        let harness = ClientListenerHarness(authority: authority)
-
-        let run = try await Harness.run(Harness.thirtySeconds + ["--json"], over: harness)
-
-        #expect(run.code == nil)
-        let events = try run.output.events()
-        #expect(
-            events.map { $0["event"] as? String } == ["started", "holding", "holding", "ended"])
-        let started = try #require(events.first)
-        let fan = try #require((started["fans"] as? [[String: Any]])?.first)
-        #expect(fan["commandedRPM"] as? Double == 4670, "what was asked for")
-        let observed = try #require(fan["observed"] as? [String: Any])
-        #expect(observed["mode"] as? String == "automatic", "what the helper reports")
-        #expect(observed["targetRPM"] is NSNull)
-        #expect(await Harness.count("renewLease", in: authority) == 2)
-        _ = harness.sessions
-    }
 }

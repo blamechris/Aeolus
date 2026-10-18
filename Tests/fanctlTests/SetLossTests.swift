@@ -28,6 +28,15 @@ struct SetLossTests {
             capturedAt: Fixtures.captured)
     }
 
+    /// A fan the helper says it holds: manual, with the held target `FanState.targetRPM` states
+    /// only while the same snapshot shows the fan held under the live lease.
+    private static func held(_ index: Int, target: Double? = 4_670) -> FanState {
+        FanState(
+            index: index, actualRPM: .measured(1351), minimumRPM: .measured(1350),
+            maximumRPM: .measured(5777), targetRPM: target, mode: .manualFixed,
+            isReclaimedBySystem: false, manualControlAvailability: .available)
+    }
+
     private static func reclaimed(_ index: Int) -> FanState {
         FanState(
             index: index, actualRPM: .measured(1350), minimumRPM: .measured(1350),
@@ -35,9 +44,9 @@ struct SetLossTests {
             isReclaimedBySystem: true, manualControlAvailability: .unavailable(.reclaimedBySystem))
     }
 
-    @Test("A snapshot that lists the lease, with the fans in hand, is no loss")
+    @Test("A snapshot that lists the lease, with every covered fan held, is no loss")
     func noLoss() {
-        let snapshot = Self.snapshot(fans: [Fixtures.fan(0), Fixtures.fan(1)], lease: Self.lease())
+        let snapshot = Self.snapshot(fans: [Self.held(0), Self.held(1)], lease: Self.lease())
         #expect(SetCommand.loss(in: snapshot, leaseID: Self.leaseID, covering: [0, 1]) == nil)
     }
 
@@ -48,7 +57,7 @@ struct SetLossTests {
     /// Run: red.
     @Test("A covered fan the snapshot no longer reports is a loss")
     func aCoveredFanIsMissing() {
-        let snapshot = Self.snapshot(fans: [Fixtures.fan(0)], lease: Self.lease())
+        let snapshot = Self.snapshot(fans: [Self.held(0)], lease: Self.lease())
         #expect(
             SetCommand.loss(in: snapshot, leaseID: Self.leaseID, covering: [0, 1])
                 == .fanNotReported(1))
@@ -62,7 +71,7 @@ struct SetLossTests {
     @Test("A fan the hold does not cover being reclaimed is not a loss")
     func anUncoveredFanIsReclaimed() {
         let snapshot = Self.snapshot(
-            fans: [Fixtures.fan(0), Self.reclaimed(1)], lease: Self.lease())
+            fans: [Self.held(0), Self.reclaimed(1)], lease: Self.lease())
         #expect(SetCommand.loss(in: snapshot, leaseID: Self.leaseID, covering: [0]) == nil)
         #expect(
             SetCommand.loss(in: snapshot, leaseID: Self.leaseID, covering: [0, 1])
@@ -121,17 +130,88 @@ struct SetLossTests {
     }
 
     /// The mode is the helper's report of a register it may not have been able to read, so it
-    /// is not read here: a fan that reads automatic or manual beside a lease the helper lists
-    /// is not a loss.
+    /// is not read here: whatever it says, a fan that carries the helper's held target beside a
+    /// lease the helper lists is held, and the mode is not what decides.
     ///
     /// **Mutation:** report a loss for `fan.mode == .automatic` in `SetCommand.loss`. Run: red.
     @Test("The mode alone is never a loss")
     func modeAlone() {
         for mode in [FanControlMode.automatic, .manualFixed, .manualCurve] {
-            let snapshot = Self.snapshot(fans: [Fixtures.fan(0, mode: mode)], lease: Self.lease())
+            let fan = FanState(
+                index: 0, actualRPM: .measured(1351), minimumRPM: .measured(1350),
+                maximumRPM: .measured(5777), targetRPM: 4_670, mode: mode,
+                isReclaimedBySystem: false, manualControlAvailability: .available)
+            let snapshot = Self.snapshot(fans: [fan], lease: Self.lease())
             #expect(
                 SetCommand.loss(in: snapshot, leaseID: Self.leaseID, covering: [0]) == nil,
                 "\(mode)")
         }
+    }
+
+    // MARK: - The held target
+
+    /// **A lease the helper lists beside a fan it states no target for is not a hold.** The
+    /// firmware can take a fan back before the reclamation watchdog has marked it; the snapshot
+    /// then lists the lease, reads the fan automatic and states no held target
+    /// (`HeldTargetReport`, #426). That used to be `started`, and then `holding` every ten
+    /// seconds.
+    ///
+    /// Every mode is tried: the target, not the mode, is what is missing.
+    ///
+    /// **Mutation:** delete the `fan.targetRPM` guard in `SetCommand.loss`. Run: red on every row.
+    @Test("A covered fan with no held target is a loss, whatever mode it reads")
+    func noHeldTarget() {
+        for mode in [FanControlMode.automatic, .manualFixed, .manualCurve] {
+            let fan = FanState(
+                index: 0, actualRPM: .measured(1351), minimumRPM: .measured(1350),
+                maximumRPM: .measured(5777), targetRPM: nil, mode: mode,
+                isReclaimedBySystem: false, manualControlAvailability: .available)
+            let snapshot = Self.snapshot(fans: [fan], lease: Self.lease())
+            #expect(
+                SetCommand.loss(in: snapshot, leaseID: Self.leaseID, covering: [0])
+                    == .fanNotHeld(0),
+                "\(mode)")
+        }
+    }
+
+    /// Nothing is ever held at 0 RPM, and a negative speed is not a speed: neither is evidence
+    /// that anything is held.
+    ///
+    /// **Mutation:** relax `held > 0` to `held >= 0` in `SetCommand.loss`. Run: red on the zero
+    /// row.
+    @Test("A held target that is not a positive speed is no target")
+    func aTargetThatIsNotASpeed() {
+        for target in [0.0, -1.0] {
+            let snapshot = Self.snapshot(
+                fans: [Self.held(0, target: target)], lease: Self.lease())
+            #expect(
+                SetCommand.loss(in: snapshot, leaseID: Self.leaseID, covering: [0])
+                    == .fanNotHeld(0),
+                "\(target)")
+        }
+    }
+
+    /// `all` holds several fans under one lease: one of them without a target is a loss, and the
+    /// fan that is named is the one.
+    @Test("Every covered fan must carry a target, and the one without is named")
+    func eachCoveredFanIsChecked() {
+        let snapshot = Self.snapshot(
+            fans: [Self.held(0), Self.held(1, target: nil)], lease: Self.lease())
+        #expect(
+            SetCommand.loss(in: snapshot, leaseID: Self.leaseID, covering: [0, 1])
+                == .fanNotHeld(1))
+        #expect(
+            SetCommand.loss(in: snapshot, leaseID: Self.leaseID, covering: [0]) == nil,
+            "a fan the lease does not cover is not its business")
+    }
+
+    /// A reclaimed fan states no target either, but reclamation is the more specific thing to
+    /// say about it; and the lease and the emergency still come first.
+    @Test("A reclaimed fan is reported as reclaimed, not as lacking a target")
+    func reclaimedBeforeNotHeld() {
+        let snapshot = Self.snapshot(fans: [Self.reclaimed(0)], lease: Self.lease())
+        #expect(
+            SetCommand.loss(in: snapshot, leaseID: Self.leaseID, covering: [0])
+                == .reclaimed(fan: 0))
     }
 }

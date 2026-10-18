@@ -14,9 +14,10 @@ import Foundation
 /// ## The sequence
 ///
 /// Handshake, one snapshot, validate (exit 2), **one** `acquireLease` (30-second lifetime, not
-/// self-renewing, held by `fanctl <version> (pid N)`), `apply`, a snapshot that lists this
-/// lease, `started`. Then every ten seconds: renew, then snapshot. When the hold ends: release,
-/// and the safe-state check `fanctl auto` ends on (`SafeState`, exit 0, 8 or 9).
+/// self-renewing, held by `fanctl <version> (pid N)`), `apply`, a snapshot in which every
+/// covered fan carries the helper's held target, `started`. Then every ten seconds: renew, then
+/// snapshot. When the hold ends: release, and the safe-state check `fanctl auto` ends on
+/// (`SafeState`, exit 0, 8 or 9).
 ///
 /// **The lease is renewed from the moment it is asked for**, not from the moment `apply`
 /// answers: the helper's thirty seconds start at the grant and `apply` may take a minute or
@@ -32,16 +33,20 @@ import Foundation
 ///
 /// ## What a loss is, and what it is not
 ///
-/// A renewal that errored, a snapshot that does not list this lease, `isReclaimedBySystem` on a
-/// fan this lease covers, or a thermal emergency. **Never `mode` alone:** the helper reports an
-/// unreadable `F<n>Md` as `automatic` ([#178](https://github.com/blamechris/Aeolus/issues/178)),
-/// so a fan that reads automatic beside a lease the helper lists is not evidence of anything.
+/// A renewal that errored, a snapshot that does not list this lease, `isReclaimedBySystem` on
+/// a fan this lease covers, a thermal emergency, or a covered fan the helper states **no held
+/// target** for. **Never `mode` alone:** the helper reports an unreadable `F<n>Md` as
+/// `automatic` ([#178](https://github.com/blamechris/Aeolus/issues/178)), so a fan that reads
+/// automatic beside a lease the helper lists is not evidence of anything. The held target is:
+/// the helper states one only while the same snapshot shows the fan held under the live lease,
+/// with no reclamation and no thermal override (`FanState.targetRPM`, #426).
 ///
 /// ## What it may say
 ///
-/// "Holding" is said once, after `apply` was accepted and a snapshot listed this lease; the
-/// speed is a **target**, never the fan's speed, and the helper's own reading travels beside it
-/// (`observed`). Nothing is claimed to have reached a fan.
+/// "Holding" is said once, after `apply` was accepted and a snapshot showed every covered fan
+/// with the helper's held target under this lease; the speed is a **target**, never the fan's
+/// speed, and the helper's own reading travels beside it (`observed`). Nothing is claimed to
+/// have reached a fan.
 enum SetCommand {
 
     /// The fans `set` took, and for how long it asked to keep them.
@@ -99,6 +104,11 @@ enum SetCommand {
         case reclaimed(fan: Int)
         case thermalEmergency
         case fanNotReported(Int)
+        /// The snapshot lists this run's lease and states **no held target** for a fan it
+        /// covers: the helper does not say the fan is held. `FanState.targetRPM` is non-nil only
+        /// while the same snapshot shows the fan in manual under the live lease, with no
+        /// reclamation and no thermal override.
+        case fanNotHeld(Int)
     }
 
     /// Another client's lease, as a snapshot named it.
@@ -276,12 +286,23 @@ enum SetCommand {
         }
     }
 
-    /// Whether `snapshot` says the lease is no longer proof of control.
+    /// Whether `snapshot` says the lease is no longer proof of control, which is also whether it
+    /// is evidence of control at all: this is the one judgement behind `started` and behind every
+    /// `holding`.
     ///
     /// In this order: the lease is not listed, a thermal emergency is active, or a fan the lease
-    /// covers is reclaimed (or is no longer reported at all, which this run cannot call holding).
+    /// covers is no longer reported at all, is reclaimed, or carries **no held target**.
+    ///
+    /// **The held target is the evidence a fan is held.** `FanState.targetRPM` is non-nil only
+    /// while the same snapshot shows the fan in manual under the live lease, with no
+    /// reclamation and no thermal override (#426). A fan beside a lease the helper lists that
+    /// carries none, because the firmware took it back and the watchdog has not marked it yet,
+    /// is not held, and "holding" is not said about it. A target that is not positive is no
+    /// target: nothing is ever held at 0 RPM.
+    ///
     /// **`mode` is not read.** A fan that reads automatic beside a lease the helper lists is the
-    /// helper's report of a mode it could not read as often as it is anything else.
+    /// helper's report of a mode it could not read as often as it is anything else; the held
+    /// target already says what the mode could not.
     static func loss(in snapshot: SystemSnapshot, leaseID: UUID, covering fans: [Int]) -> Loss? {
         guard let listed = snapshot.activeLease, listed.id == leaseID else {
             return .leaseNotListed(
@@ -295,6 +316,7 @@ enum SetCommand {
                 return .fanNotReported(index)
             }
             if fan.isReclaimedBySystem { return .reclaimed(fan: index) }
+            guard let held = fan.targetRPM, held > 0 else { return .fanNotHeld(index) }
         }
         return nil
     }

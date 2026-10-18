@@ -298,6 +298,7 @@ struct SetMessagesTests {
             (.reclaimed(fan: 3), "fan 3 reclaimed by the system"),
             (.thermalEmergency, "thermal emergency"),
             (.fanNotReported(2), "no longer reports fan 2"),
+            (.fanNotHeld(1), "states no held target for fan 1"),
         ]
         for (loss, expected) in cases {
             let message = SetMessages.lost(loss, hold: hold, release: .accepted)

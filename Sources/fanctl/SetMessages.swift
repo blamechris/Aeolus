@@ -146,6 +146,10 @@ enum SetMessages {
         case .fanNotReported(let fan):
             return "the helper's snapshot no longer reports fan \(fan), so this run cannot say it "
                 + "is holding it."
+        case .fanNotHeld(let fan):
+            return "the helper's snapshot lists lease \(id) but states no held target for fan "
+                + "\(fan), so the helper is not saying it holds that fan and this run cannot say "
+                + "it is holding it. A fan the helper holds under a live lease carries one."
         }
     }
 

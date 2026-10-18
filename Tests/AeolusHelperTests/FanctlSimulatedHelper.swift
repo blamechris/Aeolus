@@ -141,6 +141,7 @@ actor SimulatedFanAuthority: FanAuthority {
     private var heldAcquire: AsyncSignal?
     private var heldApply: AsyncSignal?
     private var applyLeavesFans: ApplyAftermath?
+    private var heldTargetLostAfterRenewals: Int?
     private var heldRenewal: HeldRenewal?
     private var renewalFailure: AeolusXPCFault?
     private var heldAcquireReply: AsyncSignal?
@@ -410,6 +411,9 @@ actor SimulatedFanAuthority: FanAuthority {
         if let reclaimAfterRenewals, renewals >= reclaimAfterRenewals {
             for index in leasedFans { reclaim(index) }
         }
+        if let heldTargetLostAfterRenewals, renewals >= heldTargetLostAfterRenewals {
+            for index in leasedFans { set(index, mode: .automatic, target: nil) }
+        }
         let renewed = Lease(
             id: current.id, holderDescription: current.holderDescription,
             expiresAt: Date().addingTimeInterval(current.timeToLive),
@@ -585,6 +589,11 @@ extension SimulatedFanAuthority {
     func refusingApplyAfterEngagingEveryFan(with fault: AeolusXPCFault) {
         applyLeavesFans = ApplyAftermath(fault: fault, pinned: nil, engagedEveryFan: true)
     }
+
+    /// **The helper takes a fan back and has not said so.** From the `renewals`-th renewal on,
+    /// the lease is still listed and the fans it covers read automatic and state no target: the
+    /// firmware took them, and the reclamation watchdog has not marked them yet.
+    func losingHeldTarget(afterRenewals renewals: Int) { heldTargetLostAfterRenewals = renewals }
 
     /// The `number`-th `renewLease` (counting from one) is taken and **not answered until
     /// `signal` fires**: a renewal on the wire when something else has finished.
