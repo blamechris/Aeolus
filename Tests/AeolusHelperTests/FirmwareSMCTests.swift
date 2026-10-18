@@ -73,7 +73,8 @@ struct FirmwareSMCTests {
     func anAbsentKeyAnswersItsScriptedCode() async throws {
         let code: UInt8 = 0xA0  // this scenario's; no not-found answer is observed
         let firmware = FirmwareSMC(
-            keys: [Self.forceKey: .absent(answering: code)], registers: [:], generation: .modern)
+            keys: [Self.forceKey: .absent(answering: .firmware(code: code))], registers: [:],
+            generation: .modern)
 
         await #expect(throws: SMCError.firmware(code: code)) {
             try await firmware.freshKeyInfo(for: Self.forceKey)

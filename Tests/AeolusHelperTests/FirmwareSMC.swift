@@ -37,8 +37,10 @@ import Testing
 ///   trip, and reads nothing (699–709).
 ///
 /// **The firmware's not-found answer is not observed** on any machine this project has, so it is
-/// never assumed here: an absent key is scripted with the code it answers. A key the table does not
-/// declare at all is a scenario that forgot one, recorded as an issue.
+/// never assumed here: an absent key is scripted with the error it answers, which may be a result
+/// byte (`.firmware(code:)`) or a kernel return (`.connectionFailed(kernReturn:)`) — the 27.0.1
+/// capture saw `0xE00002C1` from key info, without root. A key the table does not declare at all
+/// is a scenario that forgot one, recorded as an issue.
 ///
 /// Readings decode through `SMCValue.scalar()`, with the byte order `resolveByteOrder` gives for
 /// the key's declared attributes — the production decoder, not a second one. The key-info cache
@@ -48,10 +50,13 @@ import Testing
 /// ## What it is not
 ///
 /// It never wraps a real connection and never touches IOKit; `kIOReturnNotOpen` is the only IOKit
-/// name in it, a constant. The index walk is not modelled — a discovery walk reads every key the
-/// table declares — and nothing here says what a real firmware does with a write whose length
-/// differs from the key's declared size, beyond storing it as written: a read returns the declared
-/// size, zero-padded or cut, as the real read sizes its payload from the request (777–782).
+/// name in it, a constant. It starts open — a scenario that needs a closed handle calls `close()`
+/// first — and its `open()` never fails: the real `open()`'s failures, an `IOServiceOpen` kernel
+/// return, are not modelled, so a reopen that fails cannot be scripted here. The index walk is not
+/// modelled — a discovery walk reads every key the table declares — and nothing here says what a
+/// real firmware does with a write whose length differs from the key's declared size, beyond
+/// storing it as written: a read returns the declared size, zero-padded or cut, as the real read
+/// sizes its payload from the request (777–782).
 actor FirmwareSMC: SMCWriteChannel {
 
     // MARK: - The firmware's vocabulary
@@ -60,10 +65,11 @@ actor FirmwareSMC: SMCWriteChannel {
     enum Key: Sendable, Equatable {
         /// The key exists, and `READ_KEYINFO` answers this.
         case present(SMCKeyInfo)
-        /// The key does not exist, and the firmware answers this result byte for it — to key info,
-        /// to a read and to a write alike. The code is the scenario's, because no not-found answer
-        /// has been observed.
-        case absent(answering: UInt8)
+        /// The key does not exist, and the firmware answers this for it — to key info, to a read
+        /// and to a write alike, each a round trip — and a walk leaves it out. The answer is the
+        /// scenario's, because no not-found answer has been observed: a result byte or a kernel
+        /// return, which is why it is an `SMCError` and not a byte.
+        case absent(answering: SMCError)
         /// `READ_KEYINFO` of this key fails with this error. On macOS 27.0.1, 37 keys on `Mac16,5`
         /// failed it with kernel result `0xE00002C1` (`docs/SMC-RESEARCH.md`, "Mode keys and `Ftst`
         /// re-checked on macOS 27.0.1").
@@ -135,6 +141,7 @@ actor FirmwareSMC: SMCWriteChannel {
     var keyInfoCache: [SMCKey: SMCKeyInfo] = [:]
     var knownKeys: Set<SMCKey>?
     var hooks: [Operation: @Sendable () -> Void] = [:]
+    var afterHooks: [Operation: @Sendable () -> Void] = [:]
 
     var holdsProviderReads = false
     var parkedReads: [CheckedContinuation<Void, Never>] = []
@@ -152,6 +159,14 @@ actor FirmwareSMC: SMCWriteChannel {
         self.declaredGeneration = generation
         self.generation = generation
         self.unlock = unlock
+        if case .answers(let code) = unlock, code == 0x00 || code == 0x82 {
+            Issue.record(
+                """
+                FirmwareSMC was given .answers(code: \(code)). That case is a code neither 0x00, \
+                the default answer (.naive), nor 0x82, the held answer (.neverYields): script one \
+                of those instead.
+                """)
+        }
     }
 
     // MARK: - SMCWriteChannel
@@ -160,6 +175,7 @@ actor FirmwareSMC: SMCWriteChannel {
 
     func freshKeyInfo(for key: SMCKey) throws(SMCError) -> SMCKeyInfo {
         fire(.keyInfo(key))
+        defer { fireAfter(.keyInfo(key)) }
         let site = FirmwareLog.Site.keyInfo(key)
         guard isOpen else { throw refuse(site, Self.notOpen) }
         do throws(SMCError) {
@@ -175,6 +191,7 @@ actor FirmwareSMC: SMCWriteChannel {
 
     func read(_ key: SMCKey) throws(SMCError) -> SMCValue {
         fire(.read(key))
+        defer { fireAfter(.read(key)) }
         let site = FirmwareLog.Site.read(key)
         let info: SMCKeyInfo
         if let cached = keyInfoCache[key] {
@@ -212,14 +229,15 @@ actor FirmwareSMC: SMCWriteChannel {
 
     func write(_ bytes: [UInt8], to key: SMCKey) throws(SMCError) {
         fire(.write(key))
+        defer { fireAfter(.write(key)) }
         let site = FirmwareLog.Site.write(key, bytes)
         guard !bytes.isEmpty, bytes.count <= Self.maxPayloadBytes else {
             throw refuse(site, .notPermitted)
         }
         guard isOpen else { throw refuse(site, Self.notOpen) }
-        if case .absent(let code) = table[key] {
-            log.record(site.entry(.threw(.firmware(code: code))))
-            throw .firmware(code: code)
+        if case .absent(let error) = table[key] {
+            log.record(site.entry(.threw(error)))
+            throw error
         }
         if table[key] == nil { unscripted(key) }
 
@@ -256,7 +274,7 @@ actor FirmwareSMC: SMCWriteChannel {
     private func declaredInfo(of key: SMCKey) throws(SMCError) -> SMCKeyInfo {
         switch table[key] {
         case .present(let info): return info
-        case .absent(let code): throw .firmware(code: code)
+        case .absent(let error): throw error
         case .keyInfoFails(let error): throw error
         case nil:
             unscripted(key)
@@ -305,6 +323,12 @@ actor FirmwareSMC: SMCWriteChannel {
         hook()
     }
 
+    private func fireAfter(_ operation: Operation) {
+        guard let hook = afterHooks.removeValue(forKey: operation) else { return }
+        log.record(.afterHookFired(operation))
+        hook()
+    }
+
     /// Records a refusal no round trip was made for, and hands back the error to throw.
     private func refuse(_ site: FirmwareLog.Site, _ error: SMCError) -> SMCError {
         log.record(site.entry(.unsent(error)))
@@ -315,7 +339,7 @@ actor FirmwareSMC: SMCWriteChannel {
         Issue.record(
             """
             FirmwareSMC was asked about \(key), which its key table does not declare. Script it \
-            .present, or .absent(answering:) with the code the scenario means.
+            .present, or .absent(answering:) with the answer the scenario means.
             """)
     }
 

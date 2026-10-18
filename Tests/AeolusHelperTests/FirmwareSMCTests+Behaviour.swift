@@ -97,6 +97,28 @@ struct FirmwareSMCBehaviourTests {
         #expect(try outcomes.first?.result.get().value == 0)
     }
 
+    /// A release ends the hold, not only the reads parked at that instant. A release that resumed
+    /// the parked reads and left the hold on would park every later read, and a test that held a
+    /// turn once would wedge every read after it (#436's review).
+    ///
+    /// **Mutation:** delete `holdsProviderReads = false` from `releaseReads()`. Run: red here.
+    @Test("A released hold lets every later read through unparked")
+    func aReleasedHoldLetsLaterReadsThrough() async throws {
+        let firmware = FirmwareSMC.mac16x5()
+        let scheduler = SMCReadScheduler(provider: firmware.provider)
+        await firmware.holdReads()
+        let held = observing { try await scheduler.read(keys: ["F0Md"], at: .supervisor) }
+        await yieldUntil("the held read to park") { await firmware.readsParked == 1 }
+        await firmware.releaseReads()
+        try #require(try await finished("the held read", held) != nil)
+
+        let later = observing { try await scheduler.read(keys: ["F0Md"], at: .supervisor) }
+        let outcomes = try await finished("a read after the release", later)
+        #expect(outcomes?.first.map { (try? $0.result.get().value) == 0 } == true)
+        #expect(await firmware.readsParked == 0, "a read after the release parked")
+        await firmware.releaseReads()
+    }
+
     @Test("A held walk parks and resumes, and returns every reading the table declares")
     func aHeldWalkParksAndResumes() async throws {
         let firmware = FirmwareSMC.mac16x5()

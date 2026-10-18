@@ -9,6 +9,21 @@ extension FirmwareSMC {
 
     // MARK: - Scripting
 
+    /// The key table declares `key` this way from now on, and its cached key info is dropped, so
+    /// the next read asks again. For setting a scenario up — a key `mac16x5()` lacks, or one of its
+    /// keys varied — before the key is used: a real firmware's table does not change under a
+    /// running connection.
+    func declare(_ key: SMCKey, _ entry: Key) {
+        table[key] = entry
+        keyInfoCache[key] = nil
+    }
+
+    /// `key`'s register holds `bytes` from now on, as if the firmware had set it itself: no write
+    /// is answered and nothing is logged.
+    func setRegister(_ key: SMCKey, _ bytes: [UInt8]) {
+        registers[key] = bytes
+    }
+
     /// `key`'s `READ_BYTES` answers this from now on.
     func setRead(of key: SMCKey, _ answer: ReadAnswer) {
         readAnswers[key] = answer
@@ -39,6 +54,14 @@ extension FirmwareSMC {
     /// land, without parking a pool thread to make it.
     func onNext(_ operation: Operation, run hook: @escaping @Sendable () -> Void) {
         hooks[operation] = hook
+    }
+
+    /// Runs `hook` once, synchronously and inside this actor, immediately after the next
+    /// `operation` is answered — returned or thrown, and logged — and before its caller resumes,
+    /// so a scenario can act between an answer and whatever comes next without depending on which
+    /// operation that is.
+    func onAfter(_ operation: Operation, run hook: @escaping @Sendable () -> Void) {
+        afterHooks[operation] = hook
     }
 
     /// What `key`'s register holds now, as bytes.

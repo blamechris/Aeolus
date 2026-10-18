@@ -35,6 +35,7 @@ final class FirmwareLog: SchedulerObserving, Sendable {
         case read(SMCKey, Answer)
         case write(SMCKey, [UInt8], Answer)
         case hookFired(FirmwareSMC.Operation)
+        case afterHookFired(FirmwareSMC.Operation)
         case providerReadBegan([String])
         case providerReadEnded
         case walkBegan
@@ -140,9 +141,11 @@ extension FirmwareSMC {
 
 extension FirmwareSMC {
 
-    /// `Mac16,5` on macOS 27.0.1 (26A434), from what the repository records and nothing else.
-    /// Each value names where it was observed; the sections are `docs/SMC-RESEARCH.md`'s unless
-    /// another file is named.
+    /// `Mac16,5`, from what the repository records and nothing else: the key table as observed on
+    /// macOS 27.0.1 (26A434), and register bytes from 26.5.2 and 26.6.2 where 27.0.1 recorded a
+    /// range rather than bytes. Each value names where, and on which release, it was observed; the
+    /// sections are `docs/SMC-RESEARCH.md`'s unless another file is named. Vary a key or a register
+    /// with `declare(_:_:)` and `setRegister(_:_:)`, and build `flt` bytes with `flt(rpm:)`.
     ///
     /// - `F0Md`, `F1Md`, `Ftst`: `ui8`, size 1, attributes `0xD0`, register `00` — the table in
     ///   "Mode keys and `Ftst` re-checked on macOS 27.0.1".
@@ -184,5 +187,13 @@ extension FirmwareSMC {
         declare("Ftst", .ui8, 0xD0, [0x00])
         declare("FNum", .ui8, 0x80, [0x02])
         return FirmwareSMC(keys: keys, registers: registers, generation: .modern, unlock: unlock)
+    }
+
+    /// The `flt` bytes a `.modern` register holds for `rpm`: an IEEE 754 single, least significant
+    /// byte first, as `mac16x5()`'s recorded fan bytes are (`00c0a844` is 1350). Built here, not by
+    /// `SMCKeyType.encode(scalar:byteOrder:)`, which is SPI and which no test file outside
+    /// `WriteSeamTestIsolationTests.allowedImporters` may name.
+    static func flt(rpm: Float) -> [UInt8] {
+        withUnsafeBytes(of: rpm.bitPattern.littleEndian) { Array($0) }
     }
 }
