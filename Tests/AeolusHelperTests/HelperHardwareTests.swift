@@ -408,6 +408,20 @@ struct HelperHardwareTests {
             watchdogTicks: ManualWatchdogTicks())
         let composed = ContinuousClock.now - composingStarted
 
+        // Rule zero: no test writes to this Mac's SMC. Bring-up runs the preparation step and
+        // reconciliation over the real plane, and on a plane that can write both write. The
+        // composition withholds the channel (`production`'s default); this is the second layer,
+        // which catches that default having been changed. Immediately before the call, so nothing
+        // between them can change the answer — `NotBuiltRequireTripwireTests`.
+        //
+        // Before the `do` rather than inside it: bring-up does not throw, so a failed require has
+        // started nothing to stop. (Inside it, beside the teardown's require below, the release
+        // build's optimiser crashed splitting this function's coroutine — swiftlang 6.3.3 and 6.4.)
+        let bringUpStarted = ContinuousClock.now
+        try #require(helper.plane.writeCapability == .notBuilt, "bring-up would write the SMC")
+        await helper.bringUp()
+        let broughtUp = ContinuousClock.now - bringUpStarted
+
         // The three supervisors this bring-up starts are 1 Hz loops on the real SMC, so
         // they have to be stopped however this test leaves — a `snapshot()` that throws
         // included. `defer` cannot do it: a `defer` body may not `await`, which is a
@@ -415,16 +429,6 @@ struct HelperHardwareTests {
         // spelled the way Swift allows. Leaking them is the concurrent-load hazard this
         // suite's header names, and this test is the only one here that starts any.
         do {
-            let bringUpStarted = ContinuousClock.now
-            // Rule zero: no test writes to this Mac's SMC. Bring-up runs the preparation step and
-            // reconciliation over the real plane, and on a plane that can write both write. The
-            // composition withholds the channel (`production`'s default); this is the second
-            // layer, which catches that default having been changed. Immediately before the call,
-            // so nothing between them can change the answer — `NotBuiltRequireTripwireTests`.
-            try #require(helper.plane.writeCapability == .notBuilt, "bring-up would write the SMC")
-            await helper.bringUp()
-            let broughtUp = ContinuousClock.now - bringUpStarted
-
             let snapshotStarted = ContinuousClock.now
             let snapshot = try await helper.authority.snapshot()
             let firstSnapshot = ContinuousClock.now - snapshotStarted

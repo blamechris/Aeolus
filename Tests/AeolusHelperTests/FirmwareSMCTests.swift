@@ -196,7 +196,7 @@ struct FirmwareSMCTests {
         do {
             try await firmware.write([0x01], to: Self.forceKey)
             #expect(scenario.thrown == nil, "answered nothing")
-        } catch let error as SMCError {
+        } catch {
             #expect(error == scenario.thrown)
         }
         #expect(await firmware.register(Self.forceKey) == scenario.register)

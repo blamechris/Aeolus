@@ -110,7 +110,7 @@ struct SMCWriteTurnTests {
         let scheduler = SMCReadScheduler(provider: firmware.provider, observer: firmware.log)
         let hold = TurnHold()
 
-        let turn = observing { try await scheduler.withWriteTurn { await hold.park() } }
+        let turn = observing { await scheduler.withWriteTurn { await hold.park() } }
         await yieldUntil("the write turn to hold its turn") { await hold.isParked }
 
         let walk = observing { try await scheduler.readAll() }
@@ -168,7 +168,7 @@ struct SMCWriteTurnTests {
         let scheduler = SMCReadScheduler(provider: firmware.provider, observer: firmware.log)
         let hold = TurnHold()
 
-        let turn = observing { try await scheduler.withWriteTurn { await hold.park() } }
+        let turn = observing { await scheduler.withWriteTurn { await hold.park() } }
         await yieldUntil("the write turn to hold its turn") { await hold.isParked }
 
         let began = FirmwareLog.Entry.providerReadBegan(["F0Md"])
