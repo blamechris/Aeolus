@@ -7,8 +7,9 @@ import Testing
 @testable import AeolusXPCClient
 @testable import fanctl
 
-/// `fanctl set` when control is lost: exit 6, a best-effort release first, and **never a retry,
-/// never a second `acquireLease`**.
+/// `fanctl set` when control is lost: a best-effort release, the safe-state check, exit 6 (or 8 or
+/// 9 where the check finds worse: `FanctlSetHoldLossCheckTests`), and **never a retry, never a
+/// second `acquireLease`**.
 ///
 /// A lease is the proof that something still wants the fans. A process that took it back after
 /// losing it would be deciding, alone, that it still does, over a machine the helper may have
@@ -103,8 +104,8 @@ struct FanctlSetLossTests {
     /// said so nowhere else.
     ///
     /// **Mutation:** in `SetCommand.loss(in:leaseID:covering:)`, drop the lease-ID comparison
-    /// (`guard snapshot.activeLease != nil`). Run: red on the second test, where another
-    /// client's lease is listed.
+    /// (`guard snapshot.activeLease != nil`). Run: red on
+    /// `FanctlSetHoldLossCheckTests.anotherLeaseIsListed`, where another client's lease is listed.
     @Test("A snapshot that lists no lease is exit 6")
     func theLeaseIsNotListed() async throws {
         let authority = SimulatedFanAuthority()
@@ -115,19 +116,6 @@ struct FanctlSetLossTests {
         _ = try await Self.expectLost(run, authority: authority)
         #expect(run.output.standardError.contains("no longer lists lease"))
         #expect(run.output.standardError.contains("It lists no lease."))
-    }
-
-    @Test("A snapshot that lists someone else's lease is exit 6, and names the holder")
-    func anotherLeaseIsListed() async throws {
-        let authority = SimulatedFanAuthority()
-        let other = Lease(holderDescription: "Aeolus.app 0.3.0", expiresAt: Date())
-        await authority.listingNoLease(afterRenewals: 1, showing: other)
-
-        let run = try await Self.run(authority)
-
-        _ = try await Self.expectLost(run, authority: authority)
-        #expect(run.output.standardError.contains("a lease held by \"Aeolus.app 0.3.0\""))
-        #expect(run.output.standardError.contains(other.id.uuidString))
     }
 
     /// `isReclaimedBySystem` on a fan the lease covers. The text says Aeolus is not driving it,
@@ -173,13 +161,14 @@ struct FanctlSetLossTests {
         #expect(run.output.standardError.contains("thermal emergency"))
     }
 
-    /// A snapshot that cannot be read leaves this run unable to say it holds the fans.
+    /// A snapshot that cannot be read leaves this run unable to say it holds the fans. Only the
+    /// heartbeat's snapshot fails here, so the check after the release reads fine: exit 6.
     ///
     /// **Mutation:** in `SetCommand.heartbeats`, `try?` the snapshot. Run: red.
-    @Test("A snapshot that fails mid-hold is exit 6")
+    @Test("A snapshot that fails mid-hold is exit 6 when the check can read")
     func aSnapshotFails() async throws {
         let authority = SimulatedFanAuthority()
-        await authority.failingSnapshots(after: 2)
+        await authority.failingSnapshots(after: 2, times: 1)
 
         let run = try await Self.run(authority)
 
@@ -261,7 +250,8 @@ struct FanctlSetLossTests {
         let closing = events.filter { ["ended", "failed"].contains($0["event"] as? String) }
         #expect(closing.count == 1)
         #expect(closing.first?["endedBecause"] as? String == "controlLost")
-        #expect(output.standardError.contains("This process renews nothing now"))
+        #expect(!output.standardError.contains("Nothing is held"), "only the check can say that")
+        #expect(closing.first?["snapshotFollowsRelease"] as? Bool == true, "the check looked")
         #expect(harness.sessions.count >= 2, "libxpc reconnected to a new session")
     }
 

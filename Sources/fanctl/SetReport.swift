@@ -162,28 +162,39 @@ extension SetCommand {
 
         // MARK: Control held, then lost
 
-        /// Exit 6: the helper reported that the lease is no longer proof of control.
+        /// Exit 6, or the check's verdict where that is worse (`code(_:after:)`): the helper
+        /// reported that the lease is no longer proof of control, the lease was released, and the
+        /// safe state was looked at. The snapshot is the check's when it read one, and the hold's
+        /// last (described as such: `snapshotFollowsRelease` is false) when it did not.
         static func lost(
-            _ loss: Loss, hold: Hold, release: Release, snapshot: SystemSnapshot?
+            _ loss: Loss, hold: Hold, release: Release, settlement: SafeState.Settlement,
+            before: SystemSnapshot?
         ) -> Report {
             Report(
                 failure: HelperCommandFailure(
-                    .controlLost, SetMessages.lost(loss, hold: hold, release: release)),
+                    code(.controlLost, after: settlement),
+                    SetMessages.lost(
+                        loss, hold: hold, release: release, settlement: settlement)),
                 leaseID: hold.leaseID, endedBecause: "controlLost", signal: nil,
-                release: release, snapshot: snapshot, snapshotFollowsRelease: false,
-                plans: hold.plans, closingLine: nil)
+                release: release, snapshot: settlement.snapshot ?? before,
+                snapshotFollowsRelease: settlement.snapshot != nil, plans: hold.plans,
+                closingLine: nil)
         }
 
-        /// The loop's own timer failed: released, and exit 1, because it is neither a loss the
-        /// helper reported nor an ending anyone asked for.
+        /// The loop's own timer failed: released and checked, and exit 1 (or the check's verdict
+        /// where that is worse), because it is neither a loss the helper reported nor an ending
+        /// anyone asked for.
         static func timerFailed(
-            hold: Hold, release: Release, snapshot: SystemSnapshot?
+            hold: Hold, release: Release, settlement: SafeState.Settlement,
+            before: SystemSnapshot?
         ) -> Report {
             Report(
                 failure: HelperCommandFailure(
-                    .failure, SetMessages.timerFailed(hold: hold, release: release)),
+                    code(.failure, after: settlement),
+                    SetMessages.timerFailed(hold: hold, release: release, settlement: settlement)),
                 leaseID: hold.leaseID, endedBecause: nil, signal: nil, release: release,
-                snapshot: snapshot, snapshotFollowsRelease: false, plans: hold.plans,
+                snapshot: settlement.snapshot ?? before,
+                snapshotFollowsRelease: settlement.snapshot != nil, plans: hold.plans,
                 closingLine: nil)
         }
 

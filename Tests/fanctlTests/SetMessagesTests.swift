@@ -227,27 +227,6 @@ struct SetMessagesTests {
         }
     }
 
-    // MARK: - What a release that did not take leaves
-
-    /// A release the helper did not confirm leaves a lease it may keep listing for up to 30
-    /// seconds: "Nothing is held by this process" is only said when the release was accepted.
-    ///
-    /// **Mutation:** return the accepted sentence for a failed release in
-    /// `SetMessages.heldSentence`. Run: red.
-    @Test("'Nothing is held' is only said when the release was accepted")
-    func heldSentence() throws {
-        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
-        let accepted = SetMessages.lost(.thermalEmergency, hold: hold, release: .accepted)
-        let unconfirmed = SetMessages.lost(.thermalEmergency, hold: hold, release: .failed("x"))
-        let timer = SetMessages.timerFailed(hold: hold, release: .failed("x"))
-
-        #expect(accepted.contains("Nothing is held by this process now."))
-        for message in [unconfirmed, timer] {
-            #expect(!message.contains("Nothing is held"))
-            #expect(message.contains("may keep listing the lease for up to 30 seconds"))
-        }
-    }
-
     // MARK: - Another client's words
 
     /// Another client's holder is hostile input to a terminal: a control or formatting
@@ -260,7 +239,8 @@ struct SetMessagesTests {
         let hostile = SetCommand.ListedLease(id: UUID(), holder: "Evil\u{1B}[2J\u{202E}Corp")
 
         let message = SetMessages.lost(
-            .leaseNotListed(listed: hostile), hold: hold, release: .accepted)
+            .leaseNotListed(listed: hostile), hold: hold, release: .accepted,
+            settlement: Shared.settlement(Fixtures.automatic, verdict: .automatic))
 
         #expect(message.contains("Evil[2J"), "the readable part of the name survives")
         #expect(!message.unicodeScalars.contains("\u{1B}"))
@@ -301,11 +281,13 @@ struct SetMessagesTests {
             (.fanNotHeld(1), "states no held target for fan 1"),
         ]
         for (loss, expected) in cases {
-            let message = SetMessages.lost(loss, hold: hold, release: .accepted)
+            let message = SetMessages.lost(
+                loss, hold: hold, release: .accepted,
+                settlement: Shared.settlement(Fixtures.automatic, verdict: .automatic))
             #expect(message.hasPrefix("Control was lost: "), "\(loss)")
             #expect(message.contains(expected), "\(loss): \(message)")
             #expect(message.contains("never re-acquires"))
-            #expect(message.contains("Nothing is held by this process now."))
+            #expect(!message.contains("Nothing is held"), "only the check can say that")
             #expect(!message.contains("now reports"), "a loss never says the fans are fine")
         }
     }

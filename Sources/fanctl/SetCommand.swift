@@ -31,7 +31,8 @@ import Foundation
 /// A lease is the proof that something still wants the fans. Re-acquiring one after losing it
 /// would be this process deciding, alone, that it still does, over a machine that may be hot
 /// because the helper took the fans back for a reason. Every loss the helper reports is exit 6
-/// after a best-effort release, and the person or script that wants the fans again asks again.
+/// (or 8 or 9, if the safe-state check after the best-effort release finds worse), and the person
+/// or script that wants the fans again asks again.
 ///
 /// ## What a loss is, and what it is not
 ///
@@ -325,24 +326,30 @@ enum SetCommand {
 
     // MARK: - The ending
 
-    /// Releases the lease, and for an ordinary ending checks the safe state.
+    /// Releases the lease and checks the safe state, **whatever ended the hold**.
     ///
     /// The release is **best-effort and nothing waits on its answer**: a refusal is reported and
-    /// the check that follows decides the exit. A loss once the hold is under way (6) skips the
-    /// check — there is nothing to confirm a return to, and `fanctl auto` is how to ask — and a
-    /// signal that arrives from here on is ignored: the loop is no longer looking. (Nothing that
-    /// ends before `started` skips it: see `establish`.)
+    /// the check that follows decides the exit. A loss (6) used to skip the check, on the
+    /// grounds that there was nothing to confirm a return to and that the check can take its
+    /// whole ten-second window against a thermal emergency that will not clear. But a fan can
+    /// be engaged, the release answered accepted and its restore refused, and "nothing is held"
+    /// said over a fan that is still pinned is a claim nothing observed (`CLAUDE.md` rule 6).
+    /// The window costs the fans nothing: during an emergency § 3 is driving them either way.
+    /// A signal that arrives from here on is ignored: the loop is no longer looking. (Nothing
+    /// that ends before `started` skips the check either: see `establish`.)
     static func finish(
         _ end: HoldEnd, hold: Hold, snapshot: SystemSnapshot?, in session: Session
     ) async -> Report {
         let release = await release(hold.leaseID, using: session.client)
+        let settlement = await checkSafeState(in: session)
         switch end {
         case .lost(let loss):
-            return .lost(loss, hold: hold, release: release, snapshot: snapshot)
+            return .lost(
+                loss, hold: hold, release: release, settlement: settlement, before: snapshot)
         case .timerFailed:
-            return .timerFailed(hold: hold, release: release, snapshot: snapshot)
+            return .timerFailed(
+                hold: hold, release: release, settlement: settlement, before: snapshot)
         case .ended(let ending):
-            let settlement = await checkSafeState(in: session)
             return .ended(
                 ending, hold: hold, release: release, settlement: settlement, before: snapshot)
         }

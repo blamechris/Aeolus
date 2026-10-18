@@ -136,7 +136,7 @@ extension SetMessages {
     ///
     /// **Nothing that reads as "no fan was touched" is said here.** Only the `.automatic` arm
     /// describes the fans, and in the helper's voice with the time it captured the snapshot.
-    private static func afterApply(
+    static func afterApply(
         lead: String, hold: Hold, release: Release, settlement: SafeState.Settlement
     ) -> String {
         switch settlement.verdict {

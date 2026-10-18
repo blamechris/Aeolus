@@ -79,19 +79,6 @@ enum SetMessages {
         }
     }
 
-    /// What this process still holds once it has asked for the release. A release the helper
-    /// did not confirm leaves a lease it may keep listing for its whole lifetime, so that is
-    /// said instead of "nothing".
-    static func heldSentence(_ release: Release) -> String {
-        switch release {
-        case .accepted:
-            return "Nothing is held by this process now."
-        case .failed:
-            return "This process renews nothing now; the helper may keep listing the lease for "
-                + "up to \(lifetime) seconds."
-        }
-    }
-
     /// The one sentence a clean ending prints, and the only place `set` says the helper reports
     /// the safe state. In the helper's voice, with the time the helper captured it.
     ///
@@ -111,15 +98,17 @@ enum SetMessages {
 
     // MARK: - Control held, then lost: 6
 
-    static func lost(_ loss: Loss, hold: Hold, release: Release) -> String {
-        """
-        Control was lost: \(sentence(for: loss, hold: hold))
-
-        This run took the lease once and never re-acquires it. \
-        \(releaseSentence(release, hold: hold)) \(heldSentence(release)) Run `fanctl status` to \
-        see what the helper reports, or `fanctl auto` to ask it to return every fan to automatic \
-        control and check.
-        """
+    /// Control was lost once the hold was under way. The lease was released and the safe state
+    /// looked at, and **what is said of the fans is the check's verdict and nothing else**: a
+    /// release answered "accepted" says nothing of a restore the firmware refused, so "nothing is
+    /// held" is never said on the release's word.
+    static func lost(
+        _ loss: Loss, hold: Hold, release: Release, settlement: SafeState.Settlement
+    ) -> String {
+        afterApply(
+            lead: "Control was lost: \(sentence(for: loss, hold: hold))\n\n"
+                + "This run took the lease once and never re-acquires it.",
+            hold: hold, release: release, settlement: settlement)
     }
 
     /// What a loss says, as a clause that follows a colon.
@@ -143,7 +132,8 @@ enum SetMessages {
                 + "that fan right now, whatever the target says."
         case .thermalEmergency:
             return "the helper reports a thermal emergency, and its override outranks manual "
-                + "control."
+                + "control. The helper's thermal protection, not this run, is in control of the "
+                + "fans."
         case .fanNotReported(let fan):
             return "the helper's snapshot no longer reports fan \(fan), so this run cannot say it "
                 + "is holding it."
@@ -163,13 +153,14 @@ enum SetMessages {
         return "\n\n\(signal.name) was received while the speed was being applied."
     }
 
-    static func timerFailed(hold: Hold, release: Release) -> String {
-        """
-        fanctl's timer failed, so it can no longer pace the lease's heartbeat. \
-        \(releaseSentence(release, hold: hold)) \(heldSentence(release)) Run `fanctl status` to \
-        see what the helper reports, or `fanctl auto` to ask it to return every fan to automatic \
-        control and check.
-        """
+    /// The hold's own timer failed. Released, and the safe state looked at: what is said of the
+    /// fans is the check's verdict.
+    static func timerFailed(
+        hold: Hold, release: Release, settlement: SafeState.Settlement
+    ) -> String {
+        afterApply(
+            lead: "fanctl's timer failed, so it can no longer pace the lease's heartbeat.",
+            hold: hold, release: release, settlement: settlement)
     }
 
     static func interruptedBeforeControl(_ signal: HoldSignal) -> String {

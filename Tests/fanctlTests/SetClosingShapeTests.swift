@@ -73,18 +73,57 @@ struct SetClosingShapeTests {
         let hold = Shared.hold([try Shared.plan(0, .percent(50)), try Shared.plan(7, .rpm(2000))])
         let report = SetCommand.Report.lost(
             .thermalEmergency, hold: hold, release: .failed("x"),
-            snapshot: SystemSnapshot(
+            settlement: Shared.settlement(nil, interruption: Shared.Gone()),
+            before: SystemSnapshot(
                 fans: [Fixtures.fan(0)], sensors: [], activeLease: nil,
                 isThermalEmergencyActive: true, capturedAt: Fixtures.captured))
         let facts = report.facts
         #expect(facts.endedBecause == "controlLost")
         #expect(facts.releaseAccepted == false)
-        #expect(facts.snapshotFollowsRelease == false)
+        #expect(facts.snapshotFollowsRelease == false, "the check read nothing after the release")
         let fans = try #require(facts.fans)
         try #require(fans.count == 2)
         #expect(fans.map(\.plan.index) == [0, 7])
         #expect(fans[0].observed?.index == 0)
         #expect(fans[1].observed == nil, "fan 7 was not in the snapshot")
+    }
+
+    /// A loss once the hold is under way is released and checked, like everything before
+    /// `started`: exit 6, or the check's verdict where that is worse (9, then 8). The hold's
+    /// own timer failing is 1 in the same way.
+    ///
+    /// **Mutation:** return the loss's own code whatever the verdict in `SetCommand.Report.lost`.
+    /// Run: red on the 8 and 9 rows.
+    @Test("A loss or a timer failure during the hold exits with the check's verdict when worse")
+    func lostShape() throws {
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
+        struct Row {
+            let verdict: SafeState.Verdict
+            let loss: FanctlExitCode
+            let timer: FanctlExitCode
+        }
+        let rows = [
+            Row(verdict: .automatic, loss: .controlLost, timer: .failure),
+            Row(
+                verdict: .notConfirmed, loss: .safeStateNotConfirmed,
+                timer: .safeStateNotConfirmed),
+            Row(
+                verdict: .cannotReturn(fans: [0]), loss: .cannotReturnToAutomatic,
+                timer: .cannotReturnToAutomatic),
+        ]
+        for row in rows {
+            let settlement = Shared.settlement(Fixtures.automatic, verdict: row.verdict)
+            let lost = SetCommand.Report.lost(
+                .reclaimed(fan: 0), hold: hold, release: .accepted, settlement: settlement,
+                before: nil)
+            #expect(lost.failure?.code == row.loss, "\(row.verdict)")
+            #expect(lost.facts.endedBecause == "controlLost")
+            #expect(lost.facts.snapshotFollowsRelease == true, "the check's snapshot")
+            let timer = SetCommand.Report.timerFailed(
+                hold: hold, release: .accepted, settlement: settlement, before: nil)
+            #expect(timer.failure?.code == row.timer, "\(row.verdict)")
+            #expect(timer.facts.endedBecause == nil)
+        }
     }
 
     @Test("A signal before control has the signal and no lease")

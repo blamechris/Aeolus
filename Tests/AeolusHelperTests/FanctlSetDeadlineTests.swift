@@ -80,7 +80,35 @@ struct FanctlSetDeadlineTests {
         let failed = try #require(try run.output.events().last)
         #expect(failed["event"] as? String == "failed")
         #expect(failed["endedBecause"] is NSNull)
+        #expect(failed["snapshotFollowsRelease"] as? Bool == true, "the safe state was looked at")
         #expect(run.output.standardError.contains("timer failed"))
+        #expect(!run.output.standardError.contains("Nothing is held"))
+        _ = harness.sessions
+    }
+
+    /// The timer failing is not a loss the helper reported, but it is the same release: the lease
+    /// is given back and the safe state looked at, and a fan the restore failed to return is 9.
+    ///
+    /// **Mutation:** hand a `.timerFailed` end a constant `.automatic` settlement in
+    /// `SetCommand.finish`. Run: red.
+    @Test("A timer that fails, with a restore that failed, is exit 9")
+    func theTimerFailsAndARestoreFailed() async throws {
+        let authority = SimulatedFanAuthority()
+        await authority.failingToRestore(afterRenewals: 1)
+        let harness = ClientListenerHarness(authority: authority)
+        let time = VirtualHoldTime(script: { number, _ in
+            if number == 2 { throw CancellationError() }
+        })
+
+        let run = try await Harness.run(
+            Harness.thirtySeconds + ["--json"], over: harness, time: time)
+
+        #expect(run.code == FanctlExitCode.cannotReturnToAutomatic.rawValue)
+        let failed = try #require(try run.output.events().last)
+        #expect(failed["snapshotFollowsRelease"] as? Bool == true)
+        #expect(run.output.standardError.contains("timer failed"))
+        #expect(run.output.standardError.contains("(reason: restoreToAutomaticFailed)"))
+        #expect(!run.output.standardError.contains("Nothing is held"))
         _ = harness.sessions
     }
 }

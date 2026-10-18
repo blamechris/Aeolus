@@ -159,6 +159,8 @@ actor SimulatedFanAuthority: FanAuthority {
     private var applyLeavesFans: ApplyAftermath?
     private var heldTargetLostAfterRenewals: Int?
     private var heldRenewal: HeldRenewal?
+    private var restoreFailsAfterRenewals:
+        (renewals: Int, reason: ManualControlAvailability.Reason)?
     private var renewalFailure: AeolusXPCFault?
     private var heldAcquireReply: AsyncSignal?
     private var term = LeaseTerm()
@@ -432,6 +434,9 @@ actor SimulatedFanAuthority: FanAuthority {
         if let heldTargetLostAfterRenewals, renewals >= heldTargetLostAfterRenewals {
             for index in leasedFans { set(index, mode: .automatic, target: nil) }
         }
+        if let restoreFailsAfterRenewals, renewals == restoreFailsAfterRenewals.renewals {
+            for index in leasedFans { pin(index, as: restoreFailsAfterRenewals.reason) }
+        }
         let renewed = Lease(
             id: current.id, holderDescription: current.holderDescription,
             expiresAt: Date().addingTimeInterval(current.timeToLive),
@@ -609,6 +614,19 @@ extension SimulatedFanAuthority {
     /// the lease is still listed and the fans it covers read automatic and state no target: the
     /// firmware took them, and the reclamation watchdog has not marked them yet.
     func losingHeldTarget(afterRenewals renewals: Int) { heldTargetLostAfterRenewals = renewals }
+
+    /// **At the `renewals`-th renewal the firmware stops taking the fans back.** The fans the
+    /// lease covers are left in manual and pinned for `reason` (`restoreToAutomaticFailed` by
+    /// default), once: a release that is accepted afterwards is a release that "succeeded" while
+    /// the restore did not, and the fan keeps its target, so the hold itself looks sound until
+    /// something else goes wrong.
+    func failingToRestore(
+        afterRenewals renewals: Int,
+        as reason: ManualControlAvailability.Reason =
+            .restoreToAutomaticFailed
+    ) {
+        restoreFailsAfterRenewals = (renewals, reason)
+    }
 
     /// The `number`-th `renewLease` (counting from one) is taken and **not answered until
     /// `signal` fires**: a renewal on the wire when something else has finished.
