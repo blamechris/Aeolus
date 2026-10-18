@@ -1,4 +1,6 @@
+import Foundation
 import SMCCore
+import Testing
 
 @testable import AeolusHelper
 
@@ -18,6 +20,19 @@ extension ScriptedFirmware {
         case landed
         /// The register did not change either.
         case lost
+    }
+
+    /// `UnlockBehaviour.answers(code:)`'s precondition, held where the scenario is built: the
+    /// code is neither `0x00` nor `0x82`, each of which has a case of its own. An issue rather
+    /// than a trap, so the scenario that broke it fails by name and the run goes on.
+    static func requireAnUnlockAnswerOfItsOwn(_ unlock: UnlockBehaviour) {
+        guard case .answers(let code) = unlock, code == 0x00 || code == 0x82 else { return }
+        Issue.record(
+            """
+            UnlockBehaviour.answers(code: \(String(format: "0x%02x", code))) names a code with a \
+            case of its own — 0x00 is .naive's, 0x82 is .heldUntilForced's and .neverYields' — \
+            and B1's plane would not answer it as a refusal
+            """)
     }
 
     /// One RPM value as a readback, with the seam's finiteness rule applied.
@@ -111,7 +126,11 @@ extension ScriptedFirmware {
         case heldUntilForced(stepsToYield: Int)
         /// Every mode write is answered `0x82`, force key or not: the yield never arrives.
         case neverYields
-        /// The mode write is answered with this code — neither `0x00` nor `0x82`.
+        /// The mode write is answered with this code — neither `0x00` nor `0x82`, which have
+        /// cases of their own (`naive`; `heldUntilForced` and `neverYields`) and which B1's plane
+        /// reads as accepted and as held. A scenario naming either would answer here as a refusal
+        /// what the production plane answers as something else, so building the firmware with one
+        /// records an issue (`ScriptedFirmware.requireAnUnlockAnswerOfItsOwn(_:)`).
         case answers(code: UInt8)
         /// The mode write is accepted and raw `F<n>Md` reads back this value: `0` is
         /// accepted-not-applied (#291), anything but `1` is outside the hypothesis.

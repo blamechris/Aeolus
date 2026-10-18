@@ -1,5 +1,6 @@
 import FanKit
 import SMCCore
+import Testing
 
 @testable import AeolusHelper
 
@@ -386,6 +387,7 @@ actor ScriptedFirmware {
         prepared: Bool = true
     ) {
         precondition(!stages.isEmpty, "a ScriptedControlPlane needs at least one stage")
+        Self.requireAnUnlockAnswerOfItsOwn(unlock)
         self.fans = fans
         self.stages = stages
         forceKeyDeclaration = forceKey
