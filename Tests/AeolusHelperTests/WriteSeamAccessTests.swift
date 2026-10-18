@@ -87,7 +87,14 @@ struct WriteSeamAccessTests {
         pattern: #"@_spi\s*\(\s*(\w+)\s*\)\s+([^{]+)"#)
 
     private static func code(of file: URL) throws -> String {
-        SeamScanner.strippingComments(try String(contentsOf: file, encoding: .utf8))
+        withoutCommentsOrBackticks(try String(contentsOf: file, encoding: .utf8))
+    }
+
+    /// Comments stripped, and backticks: `` @`_spi`(FanWrite) import SMCCore `` compiles and grants
+    /// the group, and read with its backticks it matched neither pattern here (#436's final
+    /// review, B1).
+    static func withoutCommentsOrBackticks(_ source: String) -> String {
+        SeamScanner.strippingComments(source).replacingOccurrences(of: "`", with: "")
     }
 
     /// Path relative to `Sources/`, so a failure names something a reader can open.
@@ -138,15 +145,17 @@ struct WriteSeamAccessTests {
     /// this file, `WriteSeamReachability.swift`'s own documentation, and the ADR all discuss
     /// the import in prose, and a tripwire that fires on the sentence describing it is a
     /// tripwire nobody keeps.
-    /// The fail-closed half, beneath the import pattern: no lexer or pattern stands between a new
-    /// mention and this list, so an import spelling the pattern has not met is still a new file.
+    /// The fail-closed half, beneath the import pattern: the raw `_spi` token is counted, so an
+    /// import spelling the pattern has not met — `` @`_spi`(FanWrite) `` was one — is still a new
+    /// file. It catches accidents and ordinary spellings; against determined evasion the compiler's
+    /// seam (ADR 0014's B1 seam amendment) is the control.
     ///
     /// **Mutation:** `@_spi(FanWrite) import class SMCCore.SMCConnection` in a `fanctl` file. Run:
     /// red here and at `spiImportAppearsOnlyInTheHelper`.
     @Test("The raw text under Sources mentions @_spi only in the known files")
     func everySourcesSPIMentionIsKnown() throws {
         let mentioning = try WriteSeamTestIsolationTests.rawMentioners(
-            of: #"@\s*_spi"#, under: ["Sources"])
+            of: WriteSeamTestIsolationTests.spiToken, under: ["Sources"])
         #expect(
             mentioning == Self.sourcesSPIMentioners,
             """
@@ -160,12 +169,15 @@ struct WriteSeamAccessTests {
     @Test("An SPI import is found whole-module or scoped")
     func spiImportsAreFoundScopedOrNot() throws {
         let pattern = try #require(Self.spiImport)
-        for spelling in [
+        for raw in [
             "@_spi(FanWrite) import SMCCore",
+            "@`_spi`(FanWrite) import SMCCore",
+            "@`_spi`(FanWrite) import class SMCCore.SMCConnection",
             "@_spi(FanWrite) import class SMCCore.SMCConnection",
             "@_spi(FanWrite) @preconcurrency import struct SMCCore.SMCKeyType",
             "@_spi(FanWrite)\nimport func SMCCore.resolveByteOrder",
         ] {
+            let spelling = Self.withoutCommentsOrBackticks(raw)
             let range = NSRange(spelling.startIndex..., in: spelling)
             #expect(pattern.numberOfMatches(in: spelling, range: range) == 1, "\(spelling)")
         }

@@ -223,7 +223,7 @@ can see:
 | Control | Where |
 |---|---|
 | The only SPI group imported under `Sources/` is `FanWrite`, whole-module or scoped (`import class SMCCore.…`), and only by two helper files: the probe and `AeolusHelperMain.swift`, whose `private` forwarder is the daemon's write channel | `WriteSeamAccessTests.spiImportAppearsOnlyInTheHelper` |
-| The raw text under `Sources/` mentions `@_spi` only in a fixed list of six files, so an import spelling the pattern above has not met is still a new file | `WriteSeamAccessTests.everySourcesSPIMentionIsKnown` |
+| The raw text under `Sources/` holds the `_spi` token only in a fixed list of six files, so an import spelling the pattern above has not met — the backticked `` @`_spi` `` was one — is still a new file. It catches accidents and ordinary spellings; against determined evasion the compiler's seam is the control | `WriteSeamAccessTests.everySourcesSPIMentionIsKnown` |
 | `Sources/SMCCore/` declares exactly two SPI members, both named, both in `FanWrite` | `WriteSeamAccessTests.smcCoreDeclaresExactlyTwoSPIMembers` |
 | `write` — called or taken as a member, with or without a receiver, block comments ignored — appears in exactly three helper files: declared by `protocol SMCWriteChannel` and by `AeolusHelperMain.swift`'s `private` forwarder, used only inside that forwarder's `write` body, and referenced only by the never-called probe | `WritePathAbsenceTests.helperNeverCallsWrite` |
 | No helper file declares any `extension SMCConnection` — empty or populated, `SMCCore.`-qualified or not — so the actor's isolation is never open to helper code and nothing conforms it to a helper protocol | `WritePathAbsenceTests.noHelperFileOpensSMCConnectionsIsolation` |

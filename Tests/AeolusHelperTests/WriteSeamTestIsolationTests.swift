@@ -28,8 +28,10 @@ import Testing
 ///    the one SMCCore type that opens a connection it is handed.
 /// 3. No test file at all declares an extension of `SMCConnection` or `SMCKeyType`, the shape
 ///    that would hand the seam to a file that may open one.
-/// 4. The raw text under `Tests/` and `Tools/` mentions `@_spi` only in `spiMentioners`, so no
-///    string, comment or lexer gap can hide an opt-in from rule 1.
+/// 4. The raw text under `Tests/` and `Tools/` holds the `_spi` token only in `spiMentioners`, so
+///    no string, comment, backtick or lexer gap hides an ordinary opt-in from rule 1. It catches
+///    accidents and every spelling met so far; against a test written to evade it, the compiler's
+///    seam (ADR 0014's B1 seam amendment) is the control, a residual the B1 plan accepted.
 ///
 /// Every rule normalises before it matches: comments are removed, trailing ones included, and
 /// every pattern allows whitespace and newlines wherever Swift does, so `open ()`,
@@ -129,7 +131,9 @@ struct WriteSeamTestIsolationTests {
     /// removed first, because an import can be neither, and a fixture describing one — this
     /// file has several — is not one.
     static func spiImportGroups(in source: String) throws -> [String] {
+        // Backticks go too: `` @`_spi`(FanWrite) `` is the same opt-in (#436's final review, B1).
         let code = strippingStringLiterals(SeamScanner.strippingAllComments(source))
+            .replacingOccurrences(of: "`", with: "")
         let pattern = try NSRegularExpression(
             pattern: #"@_spi\s*\(\s*(\w+)\s*\)"#
                 + #"(?:\s*@[A-Za-z_]\w*(?:\s*\([^)]*\))?)*"#
@@ -237,17 +241,18 @@ extension WriteSeamTestIsolationTests {
         "Tools/SMCSampler/SMCSamplerCore.swift",
     ]
 
-    /// Rule 4, and it fails closed. The **raw** text is matched, with no comment or string
-    /// stripped, so no lexer stands between an opt-in and this list: a mention anywhere new — an
-    /// import, or the word in prose — is a file to justify here. Rule 1 still reads code, and
-    /// still says which two files import.
+    /// Rule 4, and it fails closed. The **raw** text is matched for the `_spi` token, with no
+    /// comment or string stripped, so no lexer stands between an ordinary opt-in and this list: a
+    /// mention anywhere new — an import, backticked or not, or the word in prose — is a file to
+    /// justify here. Rule 1 still reads code, and still says which two files import. Until #436's
+    /// final review this matched `@\s*_spi`, which `` @`_spi`(FanWrite) `` passed.
     ///
     /// **Mutation:** a new test file holding `#"a "b"#`, then `@_spi(FanWrite) import SMCCore`.
     /// Run: red here. Rule 1's normalised scan goes red too, now that the lexer reads that raw
     /// string; this census is the layer that needs no lexer.
     @Test("The raw text under Tests and Tools mentions @_spi only in the known files")
     func everySPIMentionIsKnown() throws {
-        let mentioning = try Self.rawMentioners(of: #"@\s*_spi"#, under: ["Tests", "Tools"])
+        let mentioning = try Self.rawMentioners(of: Self.spiToken, under: ["Tests", "Tools"])
         #expect(
             mentioning == Self.spiMentioners,
             """
@@ -262,6 +267,10 @@ extension WriteSeamTestIsolationTests {
     /// mangled symbol, the write's included; `dlsym` finds one at run time; and an `@_private(…)`
     /// import, with `-enable-private-imports`, sees every `private` declaration — the daemon's
     /// forwarder and entry point among them.
+    /// The token, not the attribute: `_spi` with no word character either side, so `@_spi`,
+    /// `` @`_spi` `` and `@ _spi` are all one mention (#436's final review, B1).
+    static let spiToken = #"(?<![A-Za-z0-9_])_spi(?![A-Za-z0-9_])"#
+
     static let escapeHatches: [(pattern: String, mentioners: Set<String>)] = [
         (#"@\s*_silgen_name"#, ["Tests/AeolusHelperTests/WriteSeamTestIsolationTests.swift"]),
         (
@@ -331,6 +340,8 @@ struct WriteSeamTestIsolationScannerTests {
             "@preconcurrency @_spi(FanWrite) @testable import SMCCore",
             "@_spi(FanWrite) import struct SMCCore.SMCConnection",
             "@_spi(FanUnlock) import SMCCore",
+            "@`_spi`(FanWrite) import SMCCore",
+            "@`_spi`(FanWrite) @testable import class SMCCore.SMCConnection",
         ]
         for spelling in spellings {
             let groups = try WriteSeamTestIsolationTests.spiImportGroups(in: spelling)
