@@ -126,8 +126,8 @@ import SMCCore
 /// caches what comes back for the life of the daemon, so the machine would run on a silently
 /// truncated sensor set until the next boot. `withExclusiveAccess(_:)` and `readAll()`
 /// therefore wait for each other, without either holding a turn while it waits; ruling D22 and
-/// that method's documentation have the shape. `withWriteTurn(_:)` waits for neither, because a
-/// write closes no handle.
+/// that method's documentation have the shape. `withWriteTurn(on:_:)` takes neither wait,
+/// because a write closes no handle.
 ///
 /// Ungated against *reads*, `readAll()`'s own walk hops the `SMCConnection`
 /// actor twice per key, ~2929 times, and a supervisor read enqueued there is serviced
@@ -487,10 +487,18 @@ actor SMCReadScheduler {
 
     // MARK: - Write turns
 
-    /// Runs `body` inside one `.supervisor` turn and **never waits for a discovery walk**: the
-    /// write path's turn ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s B1
-    /// amendment, which decides that a step, a command or a restore is one synchronous job on the
-    /// connection's actor inside one of these).
+    /// Runs `job` on `channel`, inside one `.supervisor` turn, and **takes neither of D22's
+    /// waits**: the write path's turn ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s
+    /// B1 amendment, which decides that a step, a command or a restore is one synchronous job on
+    /// the connection's actor inside one of these, and its B1 seam amendment, which gave the job
+    /// its type).
+    ///
+    /// ## The job's type is the contract
+    ///
+    /// `job` is synchronous and takes an `isolated` channel, so it runs on the channel's executor
+    /// with nothing suspended inside it: one job per turn, no suspension and no re-entry into this
+    /// scheduler belong to the type rather than to a comment. A job cannot issue a read through
+    /// this scheduler — it cannot `await` — and so cannot queue behind its own turn.
     ///
     /// ## Why not `withExclusiveAccess(_:)`
     ///
@@ -500,34 +508,35 @@ actor SMCReadScheduler {
     /// contended (`longestMeasuredDiscoveryWalk`, `longestContendedDiscoveryWalk`) — a read-shaped
     /// wait queued ahead of the restore, which
     /// [ADR 0007](../../docs/ADR/0007-safety-composition.md)'s 2026-09-20 amendment keeps the
-    /// keystone free of. So this takes the turn and nothing else: a write turn waits only for the
-    /// turns ahead of it, which is the bound ADR 0014 D4 gives a restore.
+    /// keystone free of. So this takes the turn and neither of D22's waits: it waits for the turns
+    /// ahead of it, and on the connection's actor for whatever a walk has in flight there, which
+    /// is how a read turn's provider call meets a walk too.
     ///
-    /// **It does not raise `exclusiveClaims` either**, so a walk never waits for a write turn. A
-    /// write runs on the connection's actor between two of the walk's hops, which is how a read
-    /// turn's provider call meets a walk too.
+    /// **It does not raise `exclusiveClaims` either**, so a walk never waits for a write turn.
+    ///
+    /// **A cancelled waiter still runs its job.** Waiting for a turn is not cancellable (this
+    /// type's documentation), and the job is synchronous, so a task cancelled while it queues is
+    /// admitted and runs the job like any other.
     ///
     /// ## What it costs the safety cycle
     ///
     /// One `.supervisor` turn, admitted first-come first-served with every other supervisor turn
     /// and spending the overtake quota exactly as a read does, because it is `takeTurn(at:)` and
-    /// `endTurn(at:)` and nothing more. ADR 0012's D_cycle allowance already counts it: a write
-    /// turn is one of the N outstanding readers, at `WatchdogLimits.writeTurnRoundTrips` round
-    /// trips (`readerTurnRoundTrips` is the larger of that and a mode read). Keeping each job
-    /// within that many round trips is its caller's obligation.
+    /// `endTurn(at:)` and nothing more. The longest a job may hold it is
+    /// `WatchdogLimits.writeTurnRoundTrips`, its caller's obligation. **The re-queue cost of a
+    /// firing cycle's write turns against D_cycle is unresolved** — recorded on
+    /// [#332](https://github.com/blamechris/Aeolus/issues/332), and to be ruled before any write
+    /// turn has a body.
     ///
     /// Nothing in the helper calls this yet: the plane's write turns, its only intended callers,
     /// are not built, and the plane answers `.notBuilt`.
-    ///
-    /// - Important: `body` runs while this actor is suspended and the turn is held, as
-    ///   `withExclusiveAccess(_:)`'s does, so it must not issue a read through this scheduler —
-    ///   it would queue behind a turn only its own caller can release.
     func withWriteTurn<T: Sendable>(
-        _ body: @Sendable () async throws -> T
-    ) async rethrows -> T {
+        on channel: any SMCWriteChannel,
+        _ job: @Sendable (isolated any SMCWriteChannel) throws -> T
+    ) async throws -> T {
         await takeTurn(at: .supervisor)
         defer { endTurn(at: .supervisor) }
-        return try await body()
+        return try await job(channel)
     }
 
     /// Discovery. **Takes no turn** — see this type's documentation for why holding one

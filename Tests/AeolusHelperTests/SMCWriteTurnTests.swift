@@ -1,16 +1,18 @@
 import Foundation
 import Testing
+import os
 
 @testable import AeolusHelper
 @testable import SMCCore
 
-/// `SMCReadScheduler.withWriteTurn(_:)`: one `.supervisor` turn, excluded against every other
-/// turn, and against **no** discovery walk (ADR 0014's B1 amendment; #103's D22 is why a recycle
+/// `SMCReadScheduler.withWriteTurn(on:_:)`: one `.supervisor` turn, excluded against every other
+/// turn, and taking neither of D22's waits (ADR 0014's B1 amendment; #103's D22 is why a recycle
 /// waits for a walk and a write need not).
 ///
-/// Every hold here **suspends** — a continuation, never a semaphore — and each exclusion claim is
-/// shown from both sides of the hold. A double with no `await` inside cannot park anything, and an
-/// "only one at a time" assertion against it passes whatever the scheduler does.
+/// Every hold here **suspends** — a continuation, or a job parked on an executor that has not run
+/// it yet — and never blocks a thread. Each exclusion claim is shown from both sides of the hold: a
+/// double with no suspension inside cannot park anything, and an "only one at a time" assertion
+/// against it passes whatever the scheduler does.
 @Suite("The scheduler's write turn", .timeLimit(.minutes(1)))
 struct SMCWriteTurnTests {
 
@@ -40,15 +42,14 @@ struct SMCWriteTurnTests {
 
     // MARK: - The shape
 
-    /// The shape the plane's write turns will take, compiling now: a synchronous job on the
-    /// channel's actor, reached through an `isolated` existential, inside one write turn. B1's
-    /// amendment allows a generic in its place if this form would not build; it builds.
+    /// The shape the plane's write turns take: a synchronous job on an `isolated` channel, passed
+    /// straight in as a function, inside one write turn.
     @Test("One synchronous job on an isolated channel runs inside one supervisor turn")
     func aJobOnAnIsolatedChannelRunsInsideOneTurn() async throws {
         let firmware = FirmwareSMC.mac16x5()
         let scheduler = SMCReadScheduler(provider: firmware.provider, observer: firmware.log)
 
-        let info = try await scheduler.withWriteTurn { try await runsOneWriteJob(on: firmware) }
+        let info = try await scheduler.withWriteTurn(on: firmware, runsOneWriteJob(on:))
 
         #expect(info.type == .ui8 && info.dataSize == 1)
         #expect(
@@ -59,6 +60,28 @@ struct SMCWriteTurnTests {
                 .write(Self.forceKey, [0x01], .answered),
                 .turnEnded(.supervisor),
             ])
+    }
+
+    /// The turn is given back on every exit, a throwing job's included — asserted by taking one
+    /// after it, which is what a caller gets, rather than by inspecting a flag.
+    ///
+    /// **Mutation:** move `endTurn(at:)` out of the `defer`, after the job. Run: red — the read
+    /// after the throwing job is never served.
+    @Test("A write turn whose job throws still gives the connection back")
+    func aThrowingJobReleasesItsTurn() async throws {
+        let firmware = FirmwareSMC.mac16x5()
+        let scheduler = SMCReadScheduler(provider: firmware.provider)
+
+        await #expect(throws: SMCError.notPermitted) {
+            try await scheduler.withWriteTurn(on: firmware) { channel in
+                try channel.write([], to: Self.forceKey)
+            }
+        }
+
+        let follow = observing { try await scheduler.read(keys: ["F0Md"], at: .supervisor) }
+        let served = await Self.completes(follow)
+        #expect(served, "a read after a throwing write turn was never served: the turn leaked")
+        _ = try await finished("the read after the throwing job", follow)
     }
 
     // MARK: - Walks
@@ -78,7 +101,7 @@ struct SMCWriteTurnTests {
         await yieldUntil("the walk to park inside the firmware") { await firmware.walksParked == 1 }
 
         let turn = observing {
-            try await scheduler.withWriteTurn { try await runsOneWriteJob(on: firmware) }
+            try await scheduler.withWriteTurn(on: firmware, runsOneWriteJob(on:))
         }
         let completed = await Self.completes(turn)
         #expect(
@@ -104,21 +127,22 @@ struct SMCWriteTurnTests {
     /// held starts.
     ///
     /// **Mutation:** raise `exclusiveClaims` in `withWriteTurn`. Run: red — the walk parks.
+    @available(macOS 14, *)
     @Test("A discovery walk started during a write turn does not wait for it")
     func aWalkDoesNotWaitForAWriteTurn() async throws {
         let firmware = FirmwareSMC.mac16x5()
         let scheduler = SMCReadScheduler(provider: firmware.provider, observer: firmware.log)
-        let hold = TurnHold()
+        let held = HeldChannel()
 
-        let turn = observing { await scheduler.withWriteTurn { await hold.park() } }
-        await yieldUntil("the write turn to hold its turn") { await hold.isParked }
+        let turn = observing { try await scheduler.withWriteTurn(on: held, runsOneWriteJob(on:)) }
+        await yieldUntil("the write turn's job to park") { held.executor.parked == 1 }
 
         let walk = observing { try await scheduler.readAll() }
         let walked = await Self.completes(walk)
         #expect(walked, "a discovery walk waited for a write turn, which closes no handle")
         #expect(await scheduler.walksWaitingForARecycle == 0)
 
-        await hold.release()
+        held.executor.release()
         _ = try await finished("the write turn", turn)
         _ = try await finished("the walk", walk)
     }
@@ -127,7 +151,7 @@ struct SMCWriteTurnTests {
 
     /// The positive control on the exclusion: the write turn is a turn.
     ///
-    /// **Mutation:** take no turn in `withWriteTurn` — run the body bare. Run: red — the job writes
+    /// **Mutation:** take no turn in `withWriteTurn` — run the job bare. Run: red — the job writes
     /// while the read holds the turn.
     @Test("A held supervisor read parks the write turn until it is released")
     func aHeldReadParksTheWriteTurn() async throws {
@@ -139,7 +163,7 @@ struct SMCWriteTurnTests {
         await yieldUntil("the read to hold its turn") { await firmware.readsParked == 1 }
 
         let turn = observing {
-            try await scheduler.withWriteTurn { try await runsOneWriteJob(on: firmware) }
+            try await scheduler.withWriteTurn(on: firmware, runsOneWriteJob(on:))
         }
         // A disjunction, so the mutant's barging write ends this wait rather than timing it out.
         await yieldUntil("the write turn to queue behind the read, or to barge in") {
@@ -160,16 +184,20 @@ struct SMCWriteTurnTests {
         #expect(Self.precedes(readEnded, write), "\(entries)")
     }
 
+    /// The turn is held by a job parked on its channel's executor, which is a suspension rather
+    /// than a blocked thread.
+    ///
     /// **Mutation:** take no turn in `withWriteTurn`. Run: red — the read runs inside the held
     /// write turn.
+    @available(macOS 14, *)
     @Test("A held write turn parks a supervisor read until it ends")
     func aHeldWriteTurnParksARead() async throws {
         let firmware = FirmwareSMC.mac16x5()
         let scheduler = SMCReadScheduler(provider: firmware.provider, observer: firmware.log)
-        let hold = TurnHold()
+        let held = HeldChannel()
 
-        let turn = observing { await scheduler.withWriteTurn { await hold.park() } }
-        await yieldUntil("the write turn to hold its turn") { await hold.isParked }
+        let turn = observing { try await scheduler.withWriteTurn(on: held, runsOneWriteJob(on:)) }
+        await yieldUntil("the write turn's job to park") { held.executor.parked == 1 }
 
         let began = FirmwareLog.Entry.providerReadBegan(["F0Md"])
         let read = observing { try await scheduler.read(keys: ["F0Md"], at: .supervisor) }
@@ -181,15 +209,42 @@ struct SMCWriteTurnTests {
             !firmware.log.entries.contains(began),
             "a supervisor read ran inside a held write turn")
 
-        await hold.release()
+        held.executor.release()
         _ = try await finished("the write turn", turn)
         _ = try await finished("the read", read)
     }
+
+    /// A recycle takes a turn, so it waits for a held write turn and never closes the handle under
+    /// a job.
+    @available(macOS 14, *)
+    @Test("A held write turn parks a recycle until it ends")
+    func aHeldWriteTurnParksARecycle() async throws {
+        let firmware = FirmwareSMC.mac16x5()
+        let scheduler = SMCReadScheduler(provider: firmware.provider, observer: firmware.log)
+        let plane = SMCFanControlPlane(scheduler: scheduler, connection: firmware.recycler)
+        let held = HeldChannel()
+
+        let turn = observing { try await scheduler.withWriteTurn(on: held, runsOneWriteJob(on:)) }
+        await yieldUntil("the write turn's job to park") { held.executor.parked == 1 }
+
+        let recycle = observing { try await plane.reconnect() }
+        await yieldUntil("the recycle to queue behind the write turn, or to barge in") {
+            let queued = await scheduler.queuedTurns(at: .supervisor) == 1
+            return queued || firmware.log.entries.contains(.closed)
+        }
+        #expect(
+            !firmware.log.entries.contains(.closed),
+            "a recycle closed the handle inside a write turn")
+
+        held.executor.release()
+        _ = try await finished("the write turn", turn)
+        _ = try await finished("the recycle", recycle)
+    }
 }
 
-/// A write turn's job as the plane's will be, on the channel's own actor with no suspension inside:
-/// fresh key info, the raw read, and the write. `private`, so no other file — and no file that can
-/// open a real connection — can hand it one.
+/// A write turn's job as the plane's will be, on the channel's own executor with no suspension
+/// inside: fresh key info, the raw read, and the write. `private`, so no other file can hand it a
+/// channel.
 private func runsOneWriteJob(on channel: isolated any SMCWriteChannel) throws -> SMCKeyInfo {
     let info = try channel.freshKeyInfo(for: SMCKey.forceTest)
     _ = try channel.read(SMCKey.forceTest)
@@ -197,21 +252,66 @@ private func runsOneWriteJob(on channel: isolated any SMCWriteChannel) throws ->
     return info
 }
 
-/// A body that holds its turn until released: a continuation, so the hold suspends.
-private actor TurnHold {
-    private var parked: CheckedContinuation<Void, Never>?
-    private var released = false
+// MARK: - A channel whose jobs wait to be let run
 
-    var isParked: Bool { parked != nil }
-
-    func park() async {
-        guard !released else { return }
-        await withCheckedContinuation { parked = $0 }
+/// A serial executor that queues every job until `release()`, then runs them, and everything after,
+/// on one serial queue. A job queued on it is suspended — its task parked, no thread blocked —
+/// which is how a write turn is held open here: the turn is taken, and its job waits.
+@available(macOS 14, *)
+private final class HeldExecutor: SerialExecutor {
+    private struct State {
+        var isHeld = true
+        var pending: [UnownedJob] = []
     }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    private let queue = DispatchQueue(label: "dev.aeolus.tests.held-executor")
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        let job = UnownedJob(job)
+        let runsNow = state.withLock { state in
+            guard state.isHeld else { return true }
+            state.pending.append(job)
+            return false
+        }
+        if runsNow { run(job) }
+    }
+
+    func asUnownedSerialExecutor() -> UnownedSerialExecutor {
+        UnownedSerialExecutor(ordinary: self)
+    }
+
+    var parked: Int { state.withLock { $0.pending.count } }
 
     func release() {
-        released = true
-        parked?.resume()
-        parked = nil
+        let jobs = state.withLock { state in
+            state.isHeld = false
+            defer { state.pending.removeAll() }
+            return state.pending
+        }
+        for job in jobs { run(job) }
     }
+
+    private func run(_ job: UnownedJob) {
+        queue.async { job.runSynchronously(on: self.asUnownedSerialExecutor()) }
+    }
+}
+
+/// A channel on a `HeldExecutor`, answering every requirement trivially.
+@available(macOS 14, *)
+private actor HeldChannel: SMCWriteChannel {
+    nonisolated let executor = HeldExecutor()
+
+    nonisolated var unownedExecutor: UnownedSerialExecutor { executor.asUnownedSerialExecutor() }
+
+    var interfaceGeneration: SMCInterfaceGeneration? { .modern }
+
+    func freshKeyInfo(for key: SMCKey) throws -> SMCKeyInfo {
+        SMCKeyInfo(key: key, type: .ui8, dataSize: 1, attributes: 0xD0)
+    }
+
+    func read(_ key: SMCKey) throws -> SMCValue {
+        SMCValue(key: key, type: .ui8, bytes: [0x00])
+    }
+
+    func write(_ bytes: [UInt8], to key: SMCKey) throws {}
 }

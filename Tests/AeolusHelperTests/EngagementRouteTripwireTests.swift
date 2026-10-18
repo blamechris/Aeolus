@@ -275,10 +275,12 @@ struct EngagementRouteTripwireTests {
 
     /// No raw string literal in `Sources/AeolusHelper` holds both a `"` and a `//`.
     ///
-    /// The one blind spot `strippingAllComments(_:)` states: it counts quotes and does not lex,
-    /// and a raw string `#"say "hi" // x"#` puts the count out of step, so the `//` is read as a
-    /// comment and the rest of its line is dropped. Nothing in the tree is written that way, and
-    /// this is what keeps that true. In the style of `noBlockCommentIsWrittenInSources`.
+    /// This was the blind spot `strippingAllComments(_:)` stated until #436: it counted quotes
+    /// and did not lex, so a raw string `#"say "hi" // x"#` put the count out of step, the `//`
+    /// read as a comment, and the rest of its line was dropped. The shared walker now lexes raw
+    /// strings (`SeamScannerLiteralTests`), so this is depth, not the only control: were the
+    /// lexer to regress, the helper would still hold no literal that exploits it. Kept for that,
+    /// and because it costs one file read. In the style of `noBlockCommentIsWrittenInSources`.
     ///
     /// **Mutation:** add `private let probe = #"say "hi" // x"#` at file scope in
     /// `SafetyWriters.swift`. Run: red here, naming the file.
@@ -295,10 +297,10 @@ struct EngagementRouteTripwireTests {
         #expect(
             offenders.isEmpty,
             """
-            a raw string literal holds a `"` and a `//`: \(offenders). \
-            `SeamScanner.strippingAllComments` counts quotes and does not lex, so it reads the \
-            `//` as a comment and drops the rest of the line, which can hide a use of the \
-            step verb from every scan in this suite.
+            a raw string literal holds a `"` and a `//`: \(offenders). A scanner that misreads \
+            a raw string reads the `//` as a comment and drops the rest of the line, which can \
+            hide a use of the step verb from every scan in this suite; #436's lexer reads it \
+            correctly, and this keeps the helper out of the shape in case it stops.
             """)
     }
 

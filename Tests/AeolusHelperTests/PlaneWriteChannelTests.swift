@@ -45,14 +45,6 @@ struct PlaneWriteChannelTests {
             "the plane reached its channel: \(firmware.log.entries)")
     }
 
-    @Test("The production write path gives a plane its connection only when asked")
-    func theWritePathGivesTheChannelOnlyWhenAsked() async {
-        let firmware = FirmwareSMC.mac16x5()
-        #expect(ProductionWritePath.withheld.channel(over: firmware) == nil)
-        let given = ProductionWritePath.connection.channel(over: firmware)
-        #expect(given.map { $0 === firmware } == true, "the channel is not the connection passed")
-    }
-
     // MARK: - At the source
 
     private static func code(of file: String) throws -> String {

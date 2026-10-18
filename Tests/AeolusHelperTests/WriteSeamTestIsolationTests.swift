@@ -10,16 +10,26 @@ import Testing
 /// - Naming `write` needs the `FanWrite` SPI opt-in, and an opt-in is per file. `@testable
 ///   import SMCCore` alone does not reach an SPI member: measured on Swift 6.4, a file with
 ///   only that import naming `write(_:to:)` fails with `'write' is inaccessible due to
-///   '@_spi' protection level`.
+///   '@_spi' protection level`. Nor does `@testable import AeolusHelper`: `SMCConnection`
+///   conforms to no helper protocol an SPI member could witness
+///   (`WriteChannelSeamTests.smcConnectionConformsToNoChannel`), and the daemon's forwarder is
+///   `private` to `main`'s file (`WriteChannelSeamTests.theForwarderIsPinned`).
 /// - So the test files that can write are exactly the test files that opt in, and those files
 ///   can be held to never opening a connection.
+///
+/// **The second bullet was false from #431 until #436's review.** An empty
+/// `extension SMCConnection: SMCWriteChannel {}` in the helper let every
+/// `@testable import AeolusHelper` test call the write with no opt-in. ADR 0014's B1 seam
+/// amendment removed it, and the two tests the first bullet cites keep it removed.
 ///
 /// The rules, each its own test:
 /// 1. The only test files that opt into an SPI group are `allowedImporters`.
 /// 2. Neither names `open` — called, referenced, or in a string — nor `SMCSensorProvider`,
 ///    the one SMCCore type that opens a connection it is handed.
-/// 3. Neither declares an extension of `SMCConnection` or `SMCKeyType`, the shape that would
-///    hand the seam to a file that may open one.
+/// 3. No test file at all declares an extension of `SMCConnection` or `SMCKeyType`, the shape
+///    that would hand the seam to a file that may open one.
+/// 4. The raw text under `Tests/` and `Tools/` mentions `@_spi` only in `spiMentioners`, so no
+///    string, comment or lexer gap can hide an opt-in from rule 1.
 ///
 /// Every rule normalises before it matches: comments are removed, trailing ones included, and
 /// every pattern allows whitespace and newlines wherever Swift does, so `open ()`,
@@ -93,9 +103,12 @@ struct WriteSeamTestIsolationTests {
         }
     }
 
-    @Test("A test file that can name the write extends neither SMCConnection nor SMCKeyType")
+    /// Every test file, not only the two that opt in: an extension in any test file is visible to
+    /// every other file in its target, and an `extension SMCCore.SMCConnection` binding the write
+    /// to a member was one of #436's review findings.
+    @Test("No test file extends SMCConnection or SMCKeyType")
     func theWriteTestFilesDoNotReExportTheSeam() throws {
-        for file in try Self.allowedImporterFiles() {
+        for file in try SeamScanner.swiftFilesUnderTests() {
             let extended = try Self.seamTypeExtensions(
                 in: String(contentsOf: file, encoding: .utf8))
             #expect(
@@ -134,11 +147,14 @@ struct WriteSeamTestIsolationTests {
         try forbiddenNames.filter { try SeamScanner.mentions(of: $0, inSource: source) > 0 }
     }
 
-    /// The seam's types that `source` extends, by name, with or without the module prefix.
+    /// The seam's types that `source` extends, by name, with or without the module prefix. Comments
+    /// and string literals are removed first: the scanner tests hold fixtures in strings, and an
+    /// extension is never one. An extension a lexer gap hid could name the write only with the
+    /// opt-in, which rule 4 counts in the raw text.
     static func seamTypeExtensions(in source: String) throws -> [String] {
-        let code = SeamScanner.strippingAllComments(source)
+        let code = strippingStringLiterals(SeamScanner.strippingAllComments(source))
         let pattern = try NSRegularExpression(
-            pattern: #"extension\s+(?:SMCCore\s*\.\s*)?"#
+            pattern: #"(?<![A-Za-z0-9_])extension\s+(?:SMCCore\s*\.\s*)?"#
                 + #"(SMCConnection|SMCKeyType)(?![A-Za-z0-9_])"#)
         let range = NSRange(code.startIndex..., in: code)
         return pattern.matches(in: code, range: range).compactMap { match in
@@ -146,24 +162,37 @@ struct WriteSeamTestIsolationTests {
         }
     }
 
-    /// `code` with every string literal removed — `"…"` and `"""…"""`, escapes honoured — by
-    /// the same walker `SeamScanner` copies literals with, rather than a second one. Only the
-    /// import scan uses this: an import is never inside a string.
+    /// `code` with the text of every string literal removed — `"…"`, `"""…"""` and their raw
+    /// forms, by the walker `SeamScanner` shares, rather than a second one — and the code of every
+    /// interpolation kept, itself stripped the same way. Regex literals go too, by
+    /// `SeamScanner.regexLiteralEnd`. An import is never inside a string, and a call inside `\(…)`
+    /// is still a call.
     static func strippingStringLiterals(_ code: String) -> String {
         var output = ""
         var discarded = ""
         var index = code.startIndex
         while index < code.endIndex {
-            if code[index...].hasPrefix("\"\"\"") {
-                index = SeamScanner.copyDelimited(
-                    code, from: index, delimiter: "\"\"\"", into: &discarded)
-            } else if code[index] == "\"" {
-                index = SeamScanner.copyDelimited(
-                    code, from: index, delimiter: "\"", into: &discarded)
-            } else {
+            if let end = SeamScanner.regexLiteralEnd(at: index, in: code) {
+                // A regex is a literal too, and its `#`s were copied as code before its `/`.
+                output.removeLast(min(SeamScanner.rawHashes(before: index, in: code), output.count))
+                output += " "
+                index = end
+                continue
+            }
+            guard code[index] == "\"" else {
                 output.append(code[index])
                 index = code.index(after: index)
+                continue
             }
+            // A raw literal's `#`s were copied as code before its quote; they are its delimiter.
+            output.removeLast(min(SeamScanner.rawHashes(before: index, in: code), output.count))
+            let delimiter = code[index...].hasPrefix("\"\"\"") ? "\"\"\"" : "\""
+            var interpolations: [Range<String.Index>] = []
+            index = SeamScanner.copyDelimited(
+                code, from: index, delimiter: delimiter, into: &discarded,
+                interpolations: &interpolations)
+            let kept = interpolations.map { strippingStringLiterals(String(code[$0])) }
+            output += " " + kept.joined(separator: " ") + " "
         }
         return output
     }
@@ -183,6 +212,65 @@ struct WriteSeamTestIsolationTests {
         let components = file.pathComponents
         guard let tests = components.lastIndex(of: "Tests") else { return file.lastPathComponent }
         return components[components.index(after: tests)...].joined(separator: "/")
+    }
+}
+
+// MARK: - Rule 4: the raw census
+
+extension WriteSeamTestIsolationTests {
+
+    /// The files under `Tests/` and `Tools/` whose raw text mentions `@_spi`, from the repository
+    /// root: rule 1's two importers, the scanners and scanner tests that spell the attribute, and
+    /// the sampler tool, whose source says in prose why it does not opt in.
+    static let spiMentioners: Set<String> = [
+        "Tests/AeolusHelperTests/MemberAccessScan.swift",
+        "Tests/AeolusHelperTests/MemberAccessScanParsingTests.swift",
+        "Tests/AeolusHelperTests/WriteChannelSeamTests.swift",
+        "Tests/AeolusHelperTests/WritePathAbsenceTests.swift",
+        "Tests/AeolusHelperTests/WriteSeamAccessTests.swift",
+        "Tests/AeolusHelperTests/WriteSeamTestIsolationTests.swift",
+        "Tests/SMCCoreTests/SMCConnectionTests.swift",
+        "Tests/SMCCoreTests/SMCConnectionWriteTests.swift",
+        "Tests/SMCCoreTests/StampSiteScannerTests.swift",
+        "Tests/SMCSamplerTests/ToolsSeamScanner.swift",
+        "Tests/SMCSamplerTests/ToolsSeamTests.swift",
+        "Tools/SMCSampler/SMCSamplerCore.swift",
+    ]
+
+    /// Rule 4, and it fails closed. The **raw** text is matched, with no comment or string
+    /// stripped, so no lexer stands between an opt-in and this list: a mention anywhere new — an
+    /// import, or the word in prose — is a file to justify here. Rule 1 still reads code, and
+    /// still says which two files import.
+    ///
+    /// **Mutation:** a new test file holding `#"a "b"#`, then `@_spi(FanWrite) import SMCCore`.
+    /// Run: red here. What rule 1's normalised scan does with it is recorded in #436.
+    @Test("The raw text under Tests and Tools mentions @_spi only in the known files")
+    func everySPIMentionIsKnown() throws {
+        var mentioning: Set<String> = []
+        var read = 0
+        for directory in ["Tests", "Tools"] {
+            let root = RuleZeroScan.repositoryRoot.appendingPathComponent(directory)
+            let enumerator = try #require(
+                FileManager.default.enumerator(
+                    at: root, includingPropertiesForKeys: [.isSymbolicLinkKey]))
+            let entries = enumerator.compactMap { $0 as? URL }
+            SeamScanner.refuseSymbolicLinks(in: entries, under: root)
+            for url in entries where url.pathExtension == "swift" {
+                read += 1
+                let raw = try String(contentsOf: url, encoding: .utf8)
+                if raw.range(of: #"@\s*_spi"#, options: .regularExpression) != nil {
+                    mentioning.insert(RuleZeroScan.relativePath(of: url))
+                }
+            }
+        }
+        #expect(read > 100, "the census read \(read) files, which is not the tree")
+        #expect(
+            mentioning == Self.spiMentioners,
+            """
+            New: \(mentioning.subtracting(Self.spiMentioners).sorted()). Gone: \
+            \(Self.spiMentioners.subtracting(mentioning).sorted()). A file that opts in can \
+            write through a real connection; justify a new mention here, or remove it.
+            """)
     }
 }
 
@@ -264,6 +352,7 @@ struct WriteSeamTestIsolationScannerTests {
         #expect(try scan("extension SMCConnection {}") == ["SMCConnection"])
         #expect(try scan("extension\n  SMCCore.SMCKeyType {") == ["SMCKeyType"])
         #expect(try scan("extension SMCConnectionRecycling {}").isEmpty)
+        #expect(try scan("extension SMCCore . SMCConnection: P {}") == ["SMCConnection"])
         #expect(try scan("// extension SMCConnection {}").isEmpty)
     }
 }

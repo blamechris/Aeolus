@@ -67,8 +67,10 @@ struct HelperWatchdogCompositionTests {
     /// **Mutation:** replace `production`'s default `watchdogTicks` with a source that never
     /// fires. Run: red.
     @Test("The shipped daemon's watchdog is given the real timer")
-    func theProductionGraphIsGivenARealTickSource() {
-        let ticks = HelperComposition.production(log: Self.helperLog).watchdog.ticks
+    func theProductionGraphIsGivenARealTickSource() throws {
+        let helper = HelperComposition.production(log: Self.helperLog)
+        try #require(!helper.plane.holdsWriteChannel, "the production graph holds a write channel")
+        let ticks = helper.watchdog.ticks
         let held = String(describing: type(of: ticks))
 
         #expect(
@@ -89,7 +91,7 @@ struct HelperWatchdogCompositionTests {
     /// **Mutation:** build the watchdog over `GateWaitMonitor()` instead of the `gateMonitor`
     /// parameter. Run: red, on both.
     @Test("The composed watchdog reads the gate monitor the composition holds")
-    func theWatchdogReadsTheMonitorTheCompositionHolds() {
+    func theWatchdogReadsTheMonitorTheCompositionHolds() throws {
         let monitor = GateWaitMonitor()
         let given = HelperComposition(
             plane: Self.scriptedPlane(), snapshotProvider: fanProvider(fanCount: 1),
@@ -104,6 +106,8 @@ struct HelperWatchdogCompositionTests {
         // The shipped graph, built and thrown away on a machine with no SMC, like the tick-source
         // test above: nothing is armed and no timer is made.
         let production = HelperComposition.production(log: Self.helperLog)
+        try #require(
+            !production.plane.holdsWriteChannel, "the production graph holds a write channel")
         #expect(production.watchdog.gateMonitor === production.gateMonitor)
     }
 

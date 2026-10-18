@@ -376,8 +376,9 @@ struct WatchdogTripwireTests {
         let unwrapped = body.filter { !$0.isWhitespace }
         #expect(
             unwrapped.contains(
-                "SMCFanControlPlane(scheduler:scheduler,connection:connection,"
-                    + "channel:writePath.channel(over:connection))"))
+                "SMCFanControlPlane(scheduler:scheduler,"
+                    + "connection:SMCConnectionRecycler(connection:connection),"
+                    + "channel:writeChannel(connection))"))
         #expect(
             body.contains("roundTrips: connection.roundTrips"),
             "the watchdog is not given the monitor of the connection the daemon reads through")

@@ -26,8 +26,11 @@ enum RuleZeroScan {
     static func files(under directory: String) throws -> [File] {
         let root = repositoryRoot.appendingPathComponent(directory)
         let enumerator = try #require(
-            FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
-        let urls = enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+            FileManager.default.enumerator(
+                at: root, includingPropertiesForKeys: [.isSymbolicLinkKey]))
+        let entries = enumerator.compactMap { $0 as? URL }
+        SeamScanner.refuseSymbolicLinks(in: entries, under: root)
+        let urls = entries.filter { $0.pathExtension == "swift" }
         #expect(!urls.isEmpty, "no Swift files were found under \(directory)")
         return try urls.map { url in
             File(
@@ -49,7 +52,7 @@ enum RuleZeroScan {
             .numberOfMatches(in: text, range: NSRange(text.startIndex..., in: text))
     }
 
-    private static func relativePath(of url: URL) -> String {
+    static func relativePath(of url: URL) -> String {
         let root = repositoryRoot.standardizedFileURL.pathComponents
         let components = url.standardizedFileURL.pathComponents
         return components.dropFirst(root.count).joined(separator: "/")
@@ -66,11 +69,20 @@ enum RuleZeroScan {
     ///
     /// `InertSMCConnection()` and `SMCConnectionRecycling` are other names, which the word
     /// boundaries keep out.
+    ///
+    /// The factory is in reach whether it is called or taken as a value (`let f =
+    /// HelperComposition.production`, #436's review). Only `fanctl`'s two other `production`
+    /// members, `SettleClock`'s and `HelperConnection`'s, are excepted, by name: any other
+    /// receiver — a typealias of the composition, say — counts.
     static let reachPatterns = [
         #"(?<![A-Za-z0-9_])SMCConnection(?![A-Za-z0-9_])"#,
-        #"\.\s*production\s*\("#,
+        productionMember,
         #"(?<![A-Za-z0-9_])SMCSensorProvider\s*\("#,
     ]
+
+    /// `.production`, called or not, on any receiver but `fanctl`'s two.
+    static let productionMember =
+        #"(?<!SettleClock)(?<!HelperConnection)\.\s*production(?![A-Za-z0-9_])"#
 
     static func reaches(_ code: String) throws -> Bool {
         try reachPatterns.contains { try count($0, in: code) > 0 }

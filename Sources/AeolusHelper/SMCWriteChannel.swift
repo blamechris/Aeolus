@@ -1,49 +1,50 @@
-@_spi(FanWrite) import SMCCore
+import SMCCore
 
 /// The four things the Apple Silicon write path needs of an SMC connection, and nothing else:
 /// the interface generation, a fresh key-info read, a raw read and the raw write.
 ///
 /// [ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s B1 amendment, "the seam is the
-/// helper's". It is `SMCConnectionRecycling`'s pattern for the lifecycle verbs, applied to the
-/// write path: production conforms through an empty extension below, and a test conforms a fake
-/// that never touches IOKit, so a write turn can be tested on a machine with no SMC.
+/// helper's", as its B1 seam amendment corrected it. A write turn runs a synchronous job on an
+/// `isolated` channel; `FirmwareSMC`, a fake that never touches IOKit, is the only conformer a test
+/// has, so a write turn can be tested on a machine with no SMC.
 ///
-/// ## Declared here, and never in SMCCore
+/// ## `SMCConnection` conforms to nothing here
 ///
-/// `write(_:to:)` is witnessed by `SMCConnection.write(_:to:)`, which is `@_spi(FanWrite)`. A
-/// **public** protocol in SMCCore with this requirement would let any module holding an
-/// `SMCConnection` name the write through the existential, with a plain `import SMCCore` — so
-/// `fanctl` and the app could write, and the SPI gate would gate nothing (the 2026-09-06
-/// amendment to [ADR 0008](../../docs/ADR/0008-write-authorisation.md)). Internal to
-/// `AeolusHelper`, the requirement is nameable only inside the helper and, through
-/// `@testable import`, its tests.
-/// `WriteChannelSeamTests.noSMCCoreProtocolDeclaresAWrite` holds SMCCore to declaring no protocol
-/// with a `write` requirement.
+/// The B1 amendment had `SMCConnection` conform through an empty extension, and that was a hole.
+/// `write(_:to:)`'s witness is the SPI member `SMCConnection.write(_:to:)`, and a conformance is
+/// visible wherever its protocol is. `@testable import AeolusHelper` makes this internal protocol
+/// visible to every helper test, so with the conformance any such test could write through a
+/// concrete connection, or hand one to any helper function taking an `isolated any
+/// SMCWriteChannel`, with no `@_spi(FanWrite)` opt-in at all. Without it, both fail to compile:
+/// the conformance is the only thing that made a real connection a channel.
 ///
-/// ## The signatures are `SMCConnection`'s, exactly
+/// So this file does not import the SPI, and the daemon's channel is `DaemonWriteChannel`, a
+/// `private actor` in `AeolusHelperMain.swift` that forwards these four members to the connection
+/// on the connection's own executor. Nothing outside that file can name it.
+/// `WriteChannelSeamTests.smcConnectionConformsToNoChannel` checks the absence at runtime, and
+/// `WritePathAbsenceTests.noHelperFileOpensSMCConnectionsIsolation` forbids any `extension
+/// SMCConnection` in the helper.
 ///
-/// So the conformance below declares no member. An empty extension puts no unqualified name in
-/// scope: inside a populated `extension SMCConnection`, `self` is the actor and a bare
-/// `write(bytes, to: key)` is a live SMC write that a scan for `.write(` cannot see (#226).
-/// `WritePathAbsenceTests.noHelperFileOpensSMCConnectionsIsolation` permits this extension
-/// because it is empty, and fails on a populated one.
+/// ## Never declared in SMCCore
 ///
-/// Every requirement is synchronous, and the protocol refines `Actor`. A job given an `isolated`
-/// channel therefore runs on the connection's actor with no suspension inside it, which is the
-/// shape the B1 amendment rules a write turn takes.
+/// A **public** protocol in SMCCore with this requirement, witnessed by the SPI member, would let
+/// any module holding an `SMCConnection` name the write through the existential with a plain
+/// `import SMCCore` — `fanctl` and the app included — and the SPI gate
+/// ([ADR 0008](../../docs/ADR/0008-write-authorisation.md), 2026-09-06) would gate nothing.
+/// `WriteChannelSeamTests.noSMCCoreProtocolDeclaresAWrite` holds SMCCore to declaring none.
 ///
-/// ## Why this file imports the SPI
+/// ## The shape
 ///
-/// The witness for `write(_:to:)` must be visible where the conformance is declared, and a plain
-/// `import SMCCore` cannot see it. This is the second file under `Sources/AeolusHelper` with the
-/// opt-in, beside `WriteSeamReachability.swift`; `WriteSeamAccessTests` allows the opt-in in any
-/// helper file and nowhere else.
+/// Every requirement is synchronous and the protocol refines `Actor`: a job given an `isolated`
+/// channel runs on the channel's executor with nothing suspended, which is the shape the B1
+/// amendment rules a write turn takes. The signatures are `SMCConnection`'s own, so the forwarder
+/// is four one-line calls.
 ///
 /// ## Nothing calls the write
 ///
-/// The requirement is the one place in the helper that declares the name, and no helper code
-/// calls it — `WritePathAbsenceTests.helperNeverCallsWrite` counts that declaration and zero call
-/// sites.
+/// This requirement and the forwarder's are the helper's only declarations of the name, the
+/// forwarder's body is its only use, and no write turn exists yet —
+/// `WritePathAbsenceTests.helperNeverCallsWrite` counts all three.
 protocol SMCWriteChannel: Actor {
 
     /// `SMCConnection.interfaceGeneration`: `nil` until the connection has opened, or when the
@@ -59,7 +60,3 @@ protocol SMCWriteChannel: Actor {
     /// `SMCConnection.write(_:to:)`: one `WRITE_BYTES` round trip, and nothing read.
     func write(_ bytes: [UInt8], to key: SMCKey) throws
 }
-
-/// The production conformance. All four members already exist on `SMCConnection`, so this
-/// declares none, and must stay empty — see this protocol's documentation.
-extension SMCConnection: SMCWriteChannel {}

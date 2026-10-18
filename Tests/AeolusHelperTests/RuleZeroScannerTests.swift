@@ -21,6 +21,8 @@ struct RuleZeroScannerTests {
             "let helper = HelperComposition<SMCFanControlPlane>\n    .production ()",
             "let provider = SMCSensorProvider()",
             "let provider = SMCSensorProvider(connection: connection)",
+            "let f = HelperComposition.production",
+            "let f = HC.production",
         ]
         for spelling in spellings {
             #expect(try RuleZeroScan.reaches(Self.code(spelling)), "\(spelling)")
@@ -36,127 +38,109 @@ struct RuleZeroScannerTests {
             "let pin = \"let connection = SMCConnection()\"",
             "let kind = SMCSensorProvider.kind(for: key)",
             "let p = Production(); p.productionLine()",
+            "let clock = SettleClock.production",
+            "let connection = HelperConnection.production",
         ]
         for source in sources {
             #expect(try !RuleZeroScan.reaches(Self.code(source)), "\(source)")
         }
     }
 
-    // MARK: - Driven calls
+    // MARK: - Construction sites
 
-    private static func calls(_ source: String) throws -> (String, [RuleZeroScan.DrivenCall]) {
-        let tightened = RuleZeroScan.tightened(Self.code(source))
-        return (tightened, try RuleZeroScan.drivenCalls(in: tightened))
+    private static func judged(_ source: String) throws -> [RuleZeroScan.Construction] {
+        try RuleZeroScan.constructions(in: Self.code(source))
     }
 
-    @Test("Every verb that writes once the plane can is found, with the plane to require")
-    func everyDrivenCallIsFound() throws {
-        let (_, found) = try Self.calls(
-            """
-            await helper.bringUp()
-            await helper
-                .signalTeardown
-                .run(stoppingSupervisorsWith: {})
-            await helper.prepareWritePath ( )
-            await helper.reconcileFans()
-            _ = try await helper.authority.apply([], leaseID: id, from: connection)
-            try await plane.restoreToAutomatic(.everyFan)
-            _ = try await rig.helper.plane.engageManualControl(of: fan)
-            _ = await plane.prepareWritePath(enumerating: fans)
-            """)
-        #expect(
-            found.map { "\($0.call) ← \($0.guardPath)" } == [
-                "helper.bringUp ← helper.plane",
-                "helper.signalTeardown.run ← helper.plane",
-                "helper.prepareWritePath ← helper.plane",
-                "helper.reconcileFans ← helper.plane",
-                "helper.authority.apply ← helper.plane",
-                "plane.restoreToAutomatic ← plane",
-                "rig.helper.plane.engageManualControl ← rig.helper.plane",
-                "plane.prepareWritePath ← plane",
-            ])
-        #expect(
-            found.map(\.root) == [
-                "helper", "helper", "helper", "helper", "helper", "plane", "rig", "plane",
-            ])
-    }
-
-    @Test("A declaration of a verb is not a call of one")
-    func aDeclarationIsNotACall() throws {
-        let (_, found) = try Self.calls(
-            "func restoreToAutomatic(_ scope: FanRestoreScope) async throws {}\n"
-                + "func bringUp() async {}"
-        )
-        #expect(found.isEmpty)
-    }
-
-    @Test("The require is accepted only as the statement just before, and only as a require")
-    func theGuardIsReadExactly() throws {
-        let guarded = [
-            "try #require(helper.plane.writeCapability == .notBuilt)\nawait helper.bringUp()",
-            "try #require(\n    helper.plane.writeCapability == .notBuilt,\n    \"why\")\n"
-                + "await helper.bringUp()",
-            "try #require(helper . plane . writeCapability==.notBuilt, \"\\(x)\")  "
-                + "await helper.bringUp()",
+    @Test("A let required to hold no channel on its first use is accepted, for both kinds")
+    func aRequiredConstructionIsAccepted() throws {
+        let accepted = [
+            "let helper = HelperComposition.production(log: log)\n"
+                + "try #require(!helper.plane.holdsWriteChannel, \"why\")\nawait helper.bringUp()",
+            "let helper = HelperComposition.production(\n    log: log,\n    watchdogTicks: t)\n"
+                + "let composed = 1\ntry #require(\n    !helper . plane . holdsWriteChannel)",
+            "let plane = SMCFanControlPlane(scheduler: s, connection: c)\n"
+                + "try #require(!plane.holdsWriteChannel)",
+            "let plane = supervisorPlane(over: provider)\ntry #require(!plane.holdsWriteChannel)",
+            "let helper: HelperComposition<SMCFanControlPlane> = .production()\n"
+                + "try #require(!helper.plane.holdsWriteChannel)",
+            // B-1: swift-format breaks after `=`, and 65 bindings under Tests are written so.
+            "let helper =\n    HelperComposition.production(log: log)\n"
+                + "try #require(!helper.plane.holdsWriteChannel)",
+            "let plane =\n\n    SMCFanControlPlane(\n        scheduler: s, connection: c)\n"
+                + "try #require(!plane.holdsWriteChannel)",
         ]
-        for source in guarded {
-            let (code, found) = try Self.calls(source)
-            #expect(found.count == 1 && RuleZeroScan.isGuarded(found[0], in: code), "\(source)")
-        }
-
-        let unguarded = [
-            "await helper.bringUp()",
-            "try #require(helper.plane.writeCapability == .notBuilt)\nlet x = 1\n"
-                + "await helper.bringUp()",
-            "#expect(helper.plane.writeCapability == .notBuilt)\nawait helper.bringUp()",
-            "try #require(other.plane.writeCapability == .notBuilt)\nawait helper.bringUp()",
-            "try #require(helper.plane.writeCapability != .notBuilt)\nawait helper.bringUp()",
-            "try #require(helper.plane.writeCapability == .notBuilt || true)\n"
-                + "await helper.bringUp()",
-            "// try #require(helper.plane.writeCapability == .notBuilt)\nawait helper.bringUp()",
-        ]
-        for source in unguarded {
-            let (code, found) = try Self.calls(source)
-            #expect(found.count == 1 && !RuleZeroScan.isGuarded(found[0], in: code), "\(source)")
+        for source in accepted {
+            let found = try Self.judged(source)
+            #expect(found.count == 1 && found[0].violation == nil, "\(source): \(found)")
         }
     }
 
-    @Test("A scripted graph bound here is exempt; the real graph, a parameter and a helper are not")
-    func theExemptionReadsTheBinding() throws {
-        func exempt(_ source: String) throws -> Bool {
-            let (code, found) = try Self.calls(source)
-            let call = try #require(found.last)
-            guard
-                let initializer = try RuleZeroScan.binding(of: call.root, before: call.at, in: code)
-            else { return false }
-            return try RuleZeroScan.composesAFake(initializer, in: code)
+    @Test("Every way past the rule is a violation")
+    func everyWayPastTheRuleIsAViolation() throws {
+        let rejected = [
+            "let helper = HelperComposition.production(log: log)\nawait helper.bringUp()",
+            "let helper = HelperComposition.production(log: log)\n"
+                + "try? #require(!helper.plane.holdsWriteChannel)",
+            "let helper = HelperComposition.production(log: log)\n"
+                + "try! #require(!helper.plane.holdsWriteChannel)",
+            "var helper = HelperComposition.production(log: log)\n"
+                + "try #require(!helper.plane.holdsWriteChannel)",
+            "let f = HelperComposition.production\nlet helper = f(log, t, w, { _ in nil })",
+            "use(HelperComposition.production())",
+            "let observer = HelperComposition.production(log: log).powerObserver\n"
+                + "try #require(!observer.plane.holdsWriteChannel)",
+            "let helper = HelperComposition.production(log: log)\nlet p = helper.plane\n"
+                + "try #require(!helper.plane.holdsWriteChannel)",
+            "let helper = HelperComposition.production(log: log)\n"
+                + "#expect(!helper.plane.holdsWriteChannel)",
+            "let plane = SMCFanControlPlane(scheduler: s, connection: c)\n"
+                + "try #require(plane.holdsWriteChannel)",
+            "let helper = HelperComposition.production(log: log)\n"
+                + "try #require(!helper.holdsWriteChannel)",
+            "// try #require\nlet helper = HelperComposition.production(log: log)",
+            // B-1's shape, unrequired: it must be judged on its binding, and judged red.
+            "let helper =\n    HelperComposition.production(log: log)\nawait helper.bringUp()",
+            // An initialiser the scan cannot read is outside every let, which is a violation.
+            "let helper = try await\n    HelperComposition.production(log: log)\n"
+                + "try #require(!helper.plane.holdsWriteChannel)",
+            // S-3: an optional binding's first use is not the require.
+            "let helper: HelperComposition? = .production(log: log)\nawait helper?.bringUp()",
+            "let helper = HC.production(log: log)\nawait helper.bringUp()",
+        ]
+        for source in rejected {
+            let found = try Self.judged(source)
+            #expect(
+                !found.isEmpty && found.contains { $0.violation != nil }, "\(source): \(found)")
         }
+    }
 
-        #expect(
-            try exempt(
-                """
-                private static func composed(over plane: some FanControlPlane) -> Graph {
-                    HelperComposition(plane: plane)
-                }
-                let helper = Self.composed(
-                    over: ScriptedControlPlane(fans: [:]))
-                await helper.bringUp()
-                """))
-        #expect(
-            try !exempt(
-                "let helper = HelperComposition.production(\n log: log)\nawait helper.bringUp()"))
-        #expect(
-            try !exempt(
-                "let plane = SMCFanControlPlane(scheduler: s, connection: c)\n"
-                    + "try await plane.restoreToAutomatic(.everyFan)"))
-        #expect(try !exempt("func f(helper: Graph) async { await helper.bringUp() }"))
-        #expect(
-            try !exempt(
-                """
-                private static func realOne() -> Graph { HelperComposition.production() }
-                let helper = Self.realOne()
-                await helper.bringUp()
-                """))
+    @Test("A declaration and a string are not constructions")
+    func declarationsAndStringsAreNotConstructions() throws {
+        let sources = [
+            "func supervisorPlane(over provider: P) -> SMCFanControlPlane { fatalError() }",
+            "static func production(log: HelperLog) -> Graph { fatalError() }",
+            "let pin = \"let helper = HelperComposition.production(log: log)\"",
+            "let source = #\"SMCFanControlPlane(scheduler: s, connection: c)\"#",
+            "let clock = SettleClock.production",
+            "let connection = HelperConnection.production",
+        ]
+        for source in sources {
+            let found = try Self.judged(source)
+            #expect(found.isEmpty, "\(source): \(found)")
+        }
+    }
+
+    /// B-1 by itself: the binding is found across the break, so the violation names it.
+    ///
+    /// **Mutation:** in `letAndVarBindings`, start the initialiser at the `=` instead of at its
+    /// first non-blank character. Run: red here, and at `aRequiredConstructionIsAccepted`.
+    @Test("A binding that breaks after its = is judged on that binding")
+    func aBreakAfterTheEqualsKeepsItsBinding() throws {
+        let found = try Self.judged(
+            "let helper =\n    HelperComposition.production(log: log)\nawait helper.bringUp()")
+        #expect(found.map(\.binding) == ["helper"], "\(found)")
+        #expect(found.first?.violation?.contains("not the holdsWriteChannel require") == true)
     }
 
     @Test("A hardware gate is found on the suite, and on a file that extends it")
@@ -173,80 +157,4 @@ struct RuleZeroScannerTests {
         #expect(try RuleZeroScan.hardwareGated(files) == ["A.swift", "B.swift"])
     }
 
-    // MARK: - The channel out of reach
-
-    @Test("The forbidden names are found as code and not as prose, strings or longer names")
-    func theForbiddenNamesAreReadExactly() throws {
-        let present = [
-            "let c: any SMCWriteChannel = x",
-            "SMCFanControlPlane(scheduler: s, connection: c, channel: c)",
-            "SMCFanControlPlane(scheduler: s, connection: c, channel : c)",
-            ".production(log: log, writePath: path)",
-            ".production(log: log, `writePath`: path)",
-        ]
-        for source in present {
-            let found = try WriteChannelReachTripwireTests.forbidden.filter {
-                try RuleZeroScan.count($0.pattern, in: Self.code(source)) > 0
-            }
-            #expect(!found.isEmpty, "\(source)")
-        }
-        let absent = [
-            "// channel: c, writePath: .connection, SMCWriteChannel",
-            "let s = \"channel: c\"",
-            "let channelCount: Int = 2; let writePathName = 1",
-            "struct S: SMCWriteChannelLike {}",
-        ]
-        for source in absent {
-            let found = try WriteChannelReachTripwireTests.forbidden.filter {
-                try RuleZeroScan.count($0.pattern, in: Self.code(source)) > 0
-            }
-            #expect(found.isEmpty, "\(source)")
-        }
-    }
-
-    @Test("A function taking a channel is found, with whether another file can call it")
-    func channelTakersAreFound() throws {
-        let file = RuleZeroScan.File(
-            path: "T.swift",
-            code: Self.code(
-                """
-                func open(on channel: isolated any SMCWriteChannel) {}
-                private func hidden(_ c: any SMCWriteChannel) {}
-                    fileprivate static func alsoHidden<C: SMCWriteChannel>(_ c: C) {}
-                @discardableResult static func generic<C: SMCWriteChannel>(
-                    _ c: isolated C
-                ) -> Int { 0 }
-                func unrelated(_ x: Int) {}
-                """))
-        let takers = try RuleZeroScan.channelTakers(in: file)
-        #expect(takers.map(\.name) == ["open", "hidden", "alsoHidden", "generic"])
-        #expect(takers.map(\.isPrivate) == [false, true, true, false])
-    }
-
-    // MARK: - The daemon's write path
-
-    @Test("The connection as the write path is found however it is spelled")
-    func theWritePathIsFoundInEverySpelling() throws {
-        func found(_ source: String) throws -> Bool {
-            let code = Self.code(source).filter { !$0.isWhitespace }
-            return try RuleZeroScan.count(ProductionWritePathTripwireTests.needle, in: code) > 0
-        }
-        for spelling in [
-            ".production(log: log, writePath: .connection)",
-            ".production(writePath:.connection)",
-            ".production(\n    writePath:\n        .connection)",
-            ".production(writePath: ProductionWritePath.connection)",
-            ".production(`writePath`: .connection)",
-        ] {
-            #expect(try found(spelling), "\(spelling)")
-        }
-        for source in [
-            ".production(writePath: .withheld)",
-            "// .production(writePath: .connection)",
-            "let s = \".production(writePath: .connection)\"",
-            ".production(writePath: .connectionless)",
-        ] {
-            #expect(try !found(source), "\(source)")
-        }
-    }
 }

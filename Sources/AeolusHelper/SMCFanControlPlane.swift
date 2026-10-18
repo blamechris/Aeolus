@@ -394,6 +394,18 @@ protocol SMCConnectionRecycling: Sendable {
     func open() async throws
 }
 
-/// The production conformance. Both verbs already exist and are `public`; this states that
-/// the pair of them is what a recycle means, without adding anything to `SMCCore`.
-extension SMCConnection: SMCConnectionRecycling {}
+/// The production recycler: `SMCConnection`'s own `close()` and `open()`, one call each.
+///
+/// A wrapper rather than an `extension SMCConnection: SMCConnectionRecycling {}`, though that
+/// conformance would be harmless — both verbs are `public`. The helper declares no extension of
+/// `SMCConnection` at all, in any form (ADR 0014's B1 seam amendment): a conformance is visible
+/// wherever its protocol is, and the empty `SMCWriteChannel` conformance that let every `@testable`
+/// test write was exactly this shape. A rule with no exception is one a scan can hold
+/// (`WritePathAbsenceTests.noHelperFileOpensSMCConnectionsIsolation`).
+struct SMCConnectionRecycler: SMCConnectionRecycling {
+    let connection: SMCConnection
+
+    func close() async { await connection.close() }
+
+    func open() async throws { try await connection.open() }
+}

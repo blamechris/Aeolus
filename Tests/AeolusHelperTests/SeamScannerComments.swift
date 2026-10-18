@@ -14,11 +14,12 @@ extension SeamScanner {
     /// last word of the comment, which can be the one name the scan allows.
     ///
     /// Built on `strippingComments`, so block comments and whole-line comments are gone before
-    /// this looks, and on `copyDelimited` for string literals, so the `//` in `"https://…"`
-    /// opens no comment. The limits are that walker's, stated at `strippingBlockComments`: a
-    /// quote counter and not a lexer, so a raw string with a `"` and a `//` inside it can put it
-    /// out of step. None is written in `Sources/AeolusHelper` that way, and
-    /// `EngagementRouteTripwireTests.noRawStringHoldsAQuoteAndACommentMarker` fails the day one is.
+    /// this looks, on `copyDelimited` for string literals, so the `//` in `"https://…"` or in
+    /// `#"say "hi" // x"#` opens no comment, and on `regexLiteralEnd` for regex literals, so the
+    /// `//` in `#/a//b/#` opens none either. Until #436 this was a quote counter, and a raw string
+    /// with a `"` and a `//` put it out of step;
+    /// `EngagementRouteTripwireTests.noRawStringHoldsAQuoteAndACommentMarker` still keeps that
+    /// shape out of `Sources/AeolusHelper`, as depth.
     static func strippingAllComments(_ source: String) -> String {
         let code = strippingComments(source)
         var output = ""
@@ -29,6 +30,9 @@ extension SeamScanner {
                 while index < code.endIndex, code[index] != "\n" {
                     index = code.index(after: index)
                 }
+            } else if let end = regexLiteralEnd(at: index, in: code) {
+                output += code[index..<end]
+                index = end
             } else if code[index...].hasPrefix("\"\"\"") {
                 index = copyDelimited(code, from: index, delimiter: "\"\"\"", into: &output)
             } else if code[index] == "\"" {

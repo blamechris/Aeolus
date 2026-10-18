@@ -311,7 +311,8 @@ struct RestorePlan: Sendable, Hashable {
     /// unknown, otherwise the first refusal, if any. Synchronous, because a plane issues the
     /// whole restore inside one turn.
     func attemptEvery(_ issue: (Write) throws -> Void) throws {
-        var firstRefusal: (write: Write, error: any Error)?
+        // `planned`, not `write`: the helper's write scan reads `.write` as the SMC write.
+        var firstRefusal: (planned: Write, error: any Error)?
         for each in writes {
             do {
                 try issue(each)
@@ -321,7 +322,7 @@ struct RestorePlan: Sendable, Hashable {
         }
         if fanSetUnknown {
             throw FanControlPlaneError.fanSetUnknown(
-                refusedWrite: firstRefusal.map { "\($0.write): \($0.error)" })
+                refusedWrite: firstRefusal.map { "\($0.planned): \($0.error)" })
         }
         if let firstRefusal { throw firstRefusal.error }
     }

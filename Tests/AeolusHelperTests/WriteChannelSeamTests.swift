@@ -1,5 +1,8 @@
 import Foundation
+import SMCCore
 import Testing
+
+@testable import AeolusHelper
 
 /// No protocol SMCCore declares carries a `write` requirement (ADR 0014's B1 amendment, "the seam
 /// is the helper's").
@@ -63,6 +66,86 @@ struct WriteChannelSeamTests {
             try Self.protocolBodies(in: code)["SMCWriteChannel"],
             "SMCWriteChannel.swift declares no protocol SMCWriteChannel that this scan can read")
         #expect(try Self.writeRequirements(in: body) == 1)
+    }
+
+    // MARK: - No conformance, and one forwarder
+
+    /// `SMCConnection` is not a write channel, checked by the runtime rather than by reading the
+    /// source (ADR 0014's B1 seam amendment). A conformance anywhere the runtime can see it — this
+    /// target or a test file, any spelling — makes a real connection a channel that every
+    /// `@testable` test can write through, with no SPI opt-in.
+    ///
+    /// **Mutation:** add `@_spi(FanWrite) import SMCCore` and `extension SMCConnection:
+    /// SMCWriteChannel {}` to `SMCWriteChannel.swift`. Run: red.
+    @Test("SMCConnection conforms to no write channel; the fake does")
+    func smcConnectionConformsToNoChannel() {
+        #expect(
+            !((SMCConnection.self as Any.Type) is any SMCWriteChannel.Type),
+            """
+            SMCConnection conforms to SMCWriteChannel. Any @testable test can then write through a \
+            real connection, or hand one to a write turn, with no FanWrite opt-in — ADR 0014's B1 \
+            seam amendment.
+            """)
+        #expect(
+            (FirmwareSMC.self as Any.Type) is any SMCWriteChannel.Type,
+            "the check cannot see a conformance at all: the fake should be one")
+    }
+
+    /// The forwarder's text, word for word, whitespace and comments aside.
+    ///
+    /// No test can run `DaemonWriteChannel`: it is `private`, which is the point. So its text is
+    /// pinned here, its mechanism is tested on a stand-in written the same way
+    /// (`ExecutorSharingTests`), and it is named exactly twice — its declaration and `main`'s
+    /// closure — so nothing else in the file can hold one.
+    static let forwarder = """
+        private actor DaemonWriteChannel: SMCWriteChannel {
+            private let connection: SMCConnection
+            init(over connection: SMCConnection) { self.connection = connection }
+            nonisolated var unownedExecutor: UnownedSerialExecutor { connection.unownedExecutor }
+            var interfaceGeneration: SMCInterfaceGeneration? {
+                connection.assumeIsolated { $0.interfaceGeneration }
+            }
+            func freshKeyInfo(for key: SMCKey) throws -> SMCKeyInfo {
+                try connection.assumeIsolated { try $0.freshKeyInfo(for: key) }
+            }
+            func read(_ key: SMCKey) throws -> SMCValue {
+                try connection.assumeIsolated { try $0.read(key) }
+            }
+            func write(_ bytes: [UInt8], to key: SMCKey) throws {
+                try connection.assumeIsolated { try $0.write(bytes, to: key) }
+            }
+        }
+        """
+
+    /// **Mutation:** make `DaemonWriteChannel` internal. Run: red.
+    @Test("The daemon's forwarder is private, word for word, and named only twice")
+    func theForwarderIsPinned() throws {
+        let url = SeamScanner.sourcesRoot.appendingPathComponent(
+            "AeolusHelper/AeolusHelperMain.swift")
+        let code = SeamScanner.strippingAllComments(try String(contentsOf: url, encoding: .utf8))
+        let unwrapped = code.filter { !$0.isWhitespace }
+
+        let declared = try NSRegularExpression(
+            pattern: #"(?<![A-Za-z0-9_])actor\s+DaemonWriteChannel(?![A-Za-z0-9_])"#
+        )
+        .numberOfMatches(in: code, range: NSRange(code.startIndex..., in: code))
+        #expect(declared == 1, "DaemonWriteChannel is declared \(declared) times, not once")
+
+        // `fileprivate actor …` contains `private actor …`, so either access passes and nothing
+        // wider does.
+        let privately = unwrapped.contains(Self.forwarder.filter { !$0.isWhitespace })
+        #expect(
+            privately,
+            """
+            AeolusHelperMain.swift's DaemonWriteChannel is not the pinned private forwarder. \
+            Widened, any helper file — and any @testable test — could build a real write channel.
+            """)
+
+        let named = try NSRegularExpression(
+            pattern: #"(?<![A-Za-z0-9_])DaemonWriteChannel(?![A-Za-z0-9_])"#
+        )
+        .numberOfMatches(in: code, range: NSRange(code.startIndex..., in: code))
+        #expect(named == 2, "DaemonWriteChannel is named \(named) times, not 2")
     }
 
     // MARK: - The scanner

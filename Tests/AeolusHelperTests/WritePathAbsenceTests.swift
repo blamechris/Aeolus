@@ -95,32 +95,29 @@ struct WritePathAbsenceTests {
     /// point: one file, by name, with zero calls in it.
     static let writeSeamProbe = "WriteSeamReachability.swift"
 
-    /// The one file permitted to *declare* the name: the write channel's protocol, whose
-    /// requirement `SMCConnection.write(_:to:)` witnesses through an empty extension (ADR 0014's
-    /// B1 amendment, "the seam is the helper's").
+    /// The write channel's protocol, which declares the requirement.
     static let writeChannelDeclaration = "SMCWriteChannel.swift"
 
-    /// The helper is the only thing that could reach `SMCConnection.write(_:to:)`, and it
-    /// never calls it. It names the write in exactly two places: the probe's reference, and
-    /// the write channel's one requirement.
+    /// `main`'s file, where `DaemonWriteChannel` declares the forwarder and makes the one call.
+    static let daemonChannelFile = "AeolusHelperMain.swift"
+
+    /// The helper names `SMCConnection.write(_:to:)` in exactly three files, each in one way, and
+    /// calls it in exactly one place (ADR 0014's B1 seam amendment).
     ///
-    /// Comment lines are dropped before the scan, which is not a detail: this file's first
-    /// green run failed on `AeolusHelperMain`'s own documentation explaining that
-    /// `SMCConnection.write(_:to:)` was `package`-scoped and still throws. A tripwire that
-    /// fires on the sentence saying the thing does not exist is a tripwire nobody keeps.
-    /// The trade is that a call hidden after code on a commented line is not seen — which
-    /// is a contrived case, where an added write is not. Backticks are dropped too, because
-    /// `` `write`(bytes, to: key) `` is the same call.
+    /// Comments are dropped first — block comments, so `write /* c */ (…)` is the call it is, and
+    /// whole `//` lines, so the prose explaining a rule does not trip it. **String literals are
+    /// kept**: a call inside `"\(…)"` is a call, and a mention in prose fails loudly and gets
+    /// reworded. Backticks are dropped, because `` `write`(bytes, to: key) `` is the same call.
     ///
-    /// Three kinds of occurrence are told apart, because the tree has to make two of them
-    /// without making the third:
+    /// Three kinds of occurrence are told apart:
     /// - a **reference**, `write(` followed by a compound name's label placeholders —
-    ///   `.write(_:to:)` — permitted in the probe and nowhere else;
-    /// - a **declaration**, `func write(` — permitted once, as the requirement inside
-    ///   `protocol SMCWriteChannel`, and nowhere else;
-    /// - a **call**, anything else — `.write(bytes, to: key)`, `write()`, an unqualified
-    ///   `write(bytes, to: key)` — permitted nowhere. B1 builds no write turn.
-    @Test("The helper never calls the SMC write API, and declares it once, in the channel")
+    ///   `.write(_:to:)` — in the probe and nowhere else;
+    /// - a **declaration**, `func write(` — exactly one inside `protocol SMCWriteChannel`, and one
+    ///   inside `DaemonWriteChannel`;
+    /// - a **use**, anything else — a call, or `.write` taken as a value — exactly one, inside
+    ///   `DaemonWriteChannel`'s `func write` body. The write turns will add theirs in their own
+    ///   file; B1 builds none.
+    @Test("The helper calls the SMC write once, in the daemon's forwarder, and declares it twice")
     func helperNeverCallsWrite() throws {
         let helperSources = try Self.swiftFiles().filter {
             $0.pathComponents.contains("AeolusHelper")
@@ -128,111 +125,106 @@ struct WritePathAbsenceTests {
         #expect(!helperSources.isEmpty, "the helper's sources were not found")
 
         var mentioning: [String] = []
-        var declaring: [String] = []
+        var declared: [String] = []
+        var used: [String] = []
         for file in helperSources {
             let name = file.lastPathComponent
-            let code = try String(contentsOf: file, encoding: .utf8)
-                .split(separator: "\n", omittingEmptySubsequences: false)
-                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
-                .joined(separator: "\n")
+            let code = SeamScanner.strippingComments(try String(contentsOf: file, encoding: .utf8))
                 .replacingOccurrences(of: "`", with: "")
 
             let occurrences = try Self.writeOccurrences(in: code)
             guard !occurrences.isEmpty else { continue }
             mentioning.append(name)
 
-            for occurrence in occurrences {
-                if occurrence == .declaration { declaring.append(name) }
-                Self.judge(occurrence, in: name)
+            for (occurrence, at) in occurrences {
+                let place = "\(name): \(try Self.container(of: at, in: code))"
+                switch occurrence {
+                case .declaration:
+                    declared.append(place)
+                case .reference:
+                    #expect(
+                        name == Self.writeSeamProbe,
+                        """
+                        \(name) names the SMC write API. Only \(Self.writeSeamProbe) may, and only \
+                        as a reference — see docs/ADR/0008-write-authorisation.md.
+                        """)
+                case .use(let shape):
+                    used.append(place)
+                    #expect(
+                        place == "\(Self.daemonChannelFile): DaemonWriteChannel.write's body",
+                        """
+                        \(place) uses the write — write\(shape). Only DaemonWriteChannel's \
+                        forwarder may, and B1 builds no write turn.
+                        """)
+                }
             }
         }
 
-        // Coverage, both halves. Without it, an enumerator that found nothing — or a scan that
-        // stopped recognising `write(` — would make zero assertions above and report the tree
-        // clean. The probe and the channel are the two files guaranteed to be seen, and the
-        // channel's one requirement is the one declaration.
+        // Coverage, every half: an enumerator that found nothing, or a scan that stopped
+        // recognising the name, would make zero assertions above and report the tree clean.
+        let expected = [Self.daemonChannelFile, Self.writeChannelDeclaration, Self.writeSeamProbe]
         #expect(
-            mentioning.sorted() == [Self.writeChannelDeclaration, Self.writeSeamProbe].sorted(),
+            mentioning.sorted() == expected.sorted(),
             """
-            Expected exactly \(Self.writeSeamProbe) and \(Self.writeChannelDeclaration) to name \
-            the SMC write API; found \(mentioning.sorted()). If the probe is gone, nothing proves \
-            the Xcode helper target can still reach the write seam.
-            """
-        )
-        #expect(
-            declaring == [Self.writeChannelDeclaration],
-            """
-            The helper declares the write \(declaring.count) times, in \(declaring). It is \
-            declared once, as SMCWriteChannel's requirement.
+            Expected exactly \(expected.sorted()) to name the SMC write; found \
+            \(mentioning.sorted()). If the probe is gone, nothing proves the Xcode helper target \
+            can still reach the seam.
             """)
         #expect(
-            try Self.channelProtocolDeclaresTheWrite(),
+            declared.sorted() == [
+                "\(Self.daemonChannelFile): DaemonWriteChannel",
+                "\(Self.writeChannelDeclaration): protocol SMCWriteChannel",
+            ],
             """
-            \(Self.writeChannelDeclaration) declares the write outside `protocol \
-            SMCWriteChannel`. The one declaration the helper may make is that requirement.
+            The helper declares the write at \(declared.sorted()): it is declared once in \
+            protocol SMCWriteChannel and once in DaemonWriteChannel.
             """)
+        #expect(
+            used == ["\(Self.daemonChannelFile): DaemonWriteChannel.write's body"],
+            "The helper uses the write at \(used), not once, in DaemonWriteChannel's forwarder")
     }
 
-    /// Nothing under `Sources/AeolusHelper` may declare a *populated* `extension
-    /// SMCConnection`.
+    /// Nothing under `Sources/AeolusHelper` declares an extension of `SMCConnection` — in any form,
+    /// empty or populated, `SMCConnection` or `SMCCore.SMCConnection` (ADR 0014's B1 seam
+    /// amendment, which reverses ADR 0008's permission for an empty one).
     ///
-    /// This is the shape guard behind the scan above, and #226's review is why it exists.
-    /// Inside an extension of the actor, `self` is an `SMCConnection`, so `write(bytes, to:
-    /// key)` — no receiver, no dot — is a real SMC write. `WriteSeamReachability` was such
-    /// an extension when the PR was reviewed; a mutation inserting that call compiled and
-    /// left every control green, because the scan was looking for `.write(`.
-    ///
-    /// The scan is now widened, so this is belt *and* braces — deliberately. The widened
-    /// scan is text matching and can be evaded by spelling; the isolation cannot be opened
-    /// at all without the declaration this test forbids, which is the structural half.
-    ///
-    /// An **empty** extension is permitted, and is the form `SMCFanControlPlane.swift`'s
-    /// `extension SMCConnection: SMCConnectionRecycling {}` takes, and `SMCWriteChannel.swift`'s
-    /// `extension SMCConnection: SMCWriteChannel {}`. A conformance that declares no member puts
-    /// no unqualified name in scope, so it cannot host the call this test is about — and the
-    /// second of those sits in a file that imports the write SPI, so a member added to it could
-    /// write. That is a property of the declaration, checked here, rather than a file allowlist
-    /// that another such extension would slip past.
-    @Test("No helper file opens SMCConnection's isolation")
+    /// #226's review is why a populated one was forbidden: inside it, `self` is the actor and an
+    /// unqualified `write(bytes, to: key)` is a real write. #436's is why an empty one is too: an
+    /// empty conformance to a protocol whose requirement the SPI member witnesses makes the write
+    /// callable from every `@testable` test, and inside `extension SMCCore.SMCConnection` a bound
+    /// `let submit = write` resolved through it. The plane's recycler is a forwarding struct,
+    /// `SMCConnectionRecycler`, so the rule has no exception.
+    @Test("No helper file extends SMCConnection, in any form")
     func noHelperFileOpensSMCConnectionsIsolation() throws {
         let helperSources = try Self.swiftFiles().filter {
             $0.pathComponents.contains("AeolusHelper")
         }
-        #expect(!helperSources.isEmpty, "the helper's sources were not found")
-
-        var extending: [String] = []
+        var read: [String] = []
         for file in helperSources {
-            let code = SeamScanner.strippingComments(
-                try String(contentsOf: file, encoding: .utf8))
-            for body in try Self.smcConnectionExtensionBodies(in: code) {
-                extending.append(file.lastPathComponent)
-                #expect(
-                    body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                    """
-                    \(file.lastPathComponent) declares a populated extension of \
-                    SMCConnection. Inside one, `self` is the actor and an unqualified \
-                    write(bytes, to: key) is a live SMC write — see \
-                    docs/ADR/0008-write-authorisation.md. Only an empty conformance \
-                    extension is permitted.
-                    """
-                )
-            }
+            read.append(file.lastPathComponent)
+            let code = SeamScanner.strippingComments(try String(contentsOf: file, encoding: .utf8))
+            let extensions = try Self.smcConnectionExtensions(in: code)
+            #expect(
+                extensions == 0,
+                """
+                \(file.lastPathComponent) declares an extension of SMCConnection. Any \
+                conformance or member there can hand the SPI write to a file without the FanWrite \
+                opt-in — see docs/ADR/0014-apple-silicon-unlock.md's B1 seam amendment.
+                """)
         }
 
-        // Coverage, not decoration. The helper has two such extensions today — the empty
-        // `SMCConnectionRecycling` and `SMCWriteChannel` conformances — so a scan that stopped
-        // recognising the declaration, or an enumerator that found nothing, would leave the loop
-        // making zero assertions and this test green over a tree that had reopened the
-        // isolation. Both are named, so a scan that found only one is not reading the tree.
-        let known: Set<String> = ["SMCFanControlPlane.swift", Self.writeChannelDeclaration]
+        // Coverage: the files that once held the two extensions must be among those read, and the
+        // matcher must see every spelling (`WriteChannelSeamScannerTests`' sibling below).
         #expect(
-            Set(extending).isSuperset(of: known),
-            """
-            The extensions of SMCConnection found under Sources/AeolusHelper are in \
-            \(extending.sorted()), not in every one of \(known.sorted()). The empty conformances \
-            in those files are expected to match, so this scan is not reading the source tree.
-            """
-        )
+            Set(read).isSuperset(of: ["SMCFanControlPlane.swift", Self.writeChannelDeclaration]),
+            "the scan read \(read.count) helper files and missed the two it must read")
+        for spelling in [
+            "extension SMCConnection {}", "extension SMCConnection: P {}",
+            "extension SMCCore.SMCConnection {}", "extension\n  SMCCore . SMCConnection where X {",
+        ] {
+            #expect(try Self.smcConnectionExtensions(in: spelling) == 1, "\(spelling)")
+        }
+        #expect(try Self.smcConnectionExtensions(in: "extension SMCConnectionRecycling {}") == 0)
     }
 
     /// The reachability probe contains no call and no effect: no `try`, no `await`, and no
@@ -350,33 +342,14 @@ struct WritePathAbsenceTests {
         )
     }
 
-    /// `extension SMCConnection` matched by name, and only that name —
-    /// `SMCConnectionRecycling` is a different type and does not count.
-    private static let smcConnectionExtension = try? NSRegularExpression(
-        pattern: #"extension\s+SMCConnection(?![A-Za-z0-9_])"#)
-
-    /// The text between the braces of every `extension SMCConnection` in `code`,
-    /// brace-balanced rather than stopped at the first `}`.
-    private static func smcConnectionExtensionBodies(in code: String) throws -> [String] {
-        let pattern = try #require(Self.smcConnectionExtension)
-        var bodies: [String] = []
-
-        let whole = NSRange(code.startIndex..<code.endIndex, in: code)
-        for match in pattern.matches(in: code, range: whole) {
-            guard let matched = Range(match.range, in: code),
-                let open = code.range(of: "{", range: matched.upperBound..<code.endIndex)
-            else { continue }
-
-            var depth = 1
-            var index = open.upperBound
-            while index < code.endIndex, depth > 0 {
-                if code[index] == "{" { depth += 1 }
-                if code[index] == "}" { depth -= 1 }
-                index = code.index(after: index)
-            }
-            let close = depth == 0 ? code.index(before: index) : code.endIndex
-            bodies.append(String(code[open.upperBound..<close]))
-        }
-        return bodies
+    /// How many `extension SMCConnection` declarations `code` makes, with or without the module
+    /// qualifier and with any whitespace between the words — and only that name:
+    /// `SMCConnectionRecycling` is a different type.
+    static func smcConnectionExtensions(in code: String) throws -> Int {
+        try NSRegularExpression(
+            pattern:
+                #"(?<![A-Za-z0-9_])extension\s+(?:SMCCore\s*\.\s*)?SMCConnection(?![A-Za-z0-9_])"#
+        )
+        .numberOfMatches(in: code, range: NSRange(code.startIndex..., in: code))
     }
 }

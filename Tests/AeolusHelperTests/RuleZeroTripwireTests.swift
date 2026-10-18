@@ -1,207 +1,94 @@
 import Foundation
 import Testing
 
-/// A composition over the real SMC is required `.notBuilt` immediately before anything that would
-/// write once the plane can — bring-up, a teardown, `apply`, or a plane's own write verb.
+/// A composition or a plane built over the real SMC is required to hold no write channel, once, on
+/// its binding's first use (ADR 0014's B1 seam amendment).
 ///
 /// The population is every test file that can reach an openable connection (`RuleZeroScan`'s
-/// reach), and every hardware-gated one. In it, each `bringUp()`, `prepareWritePath()`,
-/// `reconcileFans()`, `signalTeardown.run(…)` and `authority.apply(…)` on a composition, and each
-/// `restoreToAutomatic`, `engageManualControl`, `commandTarget` and
-/// `prepareWritePath(enumerating:)` on a plane, must have
-/// `#require(<plane>.writeCapability == .notBuilt …)` as the statement just before it.
+/// reach) and every hardware-gated one. In it, every `.production` — called or taken as a value —
+/// and every `SMCFanControlPlane(…)` or `supervisorPlane(…)` must be the whole initialiser of a
+/// `let`, and the first later mention of that `let` must be `try #require(!<name>.plane
+/// .holdsWriteChannel …)` for a composition, or `try #require(!<name>.holdsWriteChannel …)` for a
+/// plane, with no `?` or `!` on the `try`.
 ///
-/// **One exemption:** outside a hardware-gated file, a receiver bound in the same file to a
-/// composition that builds nothing real — `HelperWatchdogCompositionTests`' scripted graphs —
-/// needs none, since there is no SMC under it to write to.
+/// **One check covers every later call** because nothing can change the answer: a composition's
+/// `plane` is a `let`, a plane's `writeChannel` a `private let`
+/// (`CompositionWriteChannelTests.theRequiresPremiseHolds`), and the binding is a `let`. It fails
+/// on a build whose capability is constant, which the `writeCapability == .notBuilt` require it
+/// replaces could not: that one would have caught a changed default only once the plane could
+/// write.
 ///
-/// This is the second layer. The first is `production`'s default, which withholds the channel; the
-/// require is what fails the test, before it drives anything, if that default is ever changed.
-/// A tripwire and not a proof: a composition built in another file and handed in as a parameter
-/// is required here like any other (an unbound receiver is never exempt), and one built behind
-/// two levels of helper in a file that is not hardware-gated would be read as a fake.
-@Suite("Rule zero: a real composition is required .notBuilt before it is driven")
+/// This is the second layer. The first is `production`'s default, which withholds the channel, and
+/// beneath both is that no test can make a real connection a channel at all
+/// (`WriteChannelSeamTests.smcConnectionConformsToNoChannel`).
+@Suite("Rule zero: a real composition or plane is required to hold no write channel")
 struct NotBuiltRequireTripwireTests {
 
-    /// The files the scan must read as the population, or it is not reading the tree.
-    static let knownPopulation: Set<String> = [
-        "Tests/AeolusHelperTests/HelperHardwareTests.swift",
-        "Tests/AeolusHelperTests/HelperHardwareSightingTests.swift",
-        "Tests/AeolusHelperTests/WatchdogHardwareTests.swift",
-        "Tests/AeolusHelperTests/HelperWatchdogCompositionTests.swift",
-        "Tests/AeolusHelperTests/HelperCompositionTests.swift",
-        "Tests/AeolusHelperTests/ProductionWritePathTests.swift",
+    /// The bindings the audit found, each of which must be found and judged.
+    static let knownBindings: Set<String> = [
+        "Tests/AeolusHelperTests/HelperHardwareTests.swift: helper",
+        "Tests/AeolusHelperTests/HelperHardwareTests.swift: plane",
+        "Tests/AeolusHelperTests/HelperHardwareSightingTests.swift: plane",
+        "Tests/AeolusHelperTests/WatchdogHardwareTests.swift: helper",
+        "Tests/AeolusHelperTests/HelperWatchdogCompositionTests.swift: helper",
+        "Tests/AeolusHelperTests/HelperWatchdogCompositionTests.swift: production",
+        "Tests/AeolusHelperTests/HelperCompositionTests.swift: helper",
+        "Tests/AeolusHelperTests/CompositionWriteChannelTests.swift: helper",
     ]
 
-    /// The three calls over the real SMC the audit found: each must be found, and guarded.
-    static let knownDriven: Set<String> = [
-        "Tests/AeolusHelperTests/HelperHardwareTests.swift: helper.bringUp",
-        "Tests/AeolusHelperTests/HelperHardwareTests.swift: helper.signalTeardown.run",
-        "Tests/AeolusHelperTests/WatchdogHardwareTests.swift: helper.bringUp",
-    ]
-
-    /// The scripted graphs the exemption must recognise, or it is exempting nothing it was written
-    /// for.
-    static let knownExempt: Set<String> = [
-        "Tests/AeolusHelperTests/HelperWatchdogCompositionTests.swift: helper.bringUp",
-        "Tests/AeolusHelperTests/HelperWatchdogCompositionTests.swift: helper.signalTeardown.run",
-    ]
-
-    @Test("Every driven composition over the real SMC is required .notBuilt just before")
-    func everyDrivenRealCompositionIsRequiredNotBuilt() throws {
+    /// **Mutations**, each red here: delete a require; `try?` on one; `var helper`;
+    /// `let f = HelperComposition.production`; `HelperComposition.production()` passed straight
+    /// to a function.
+    @Test("Every real composition and plane is a let, required to hold no channel on first use")
+    func everyRealConstructionIsRequiredOnFirstUse() throws {
         let files = try RuleZeroScan.files(under: "Tests")
         let gated = try RuleZeroScan.hardwareGated(files)
-        var population: Set<String> = []
-        var driven: Set<String> = []
-        var exempt: Set<String> = []
+        var judged: Set<String> = []
 
         for file in files {
-            let isGated = gated.contains(file.path)
-            guard try isGated || RuleZeroScan.reaches(file.code) else { continue }
-            population.insert(file.path)
-
-            let code = RuleZeroScan.tightened(file.code)
-            for call in try RuleZeroScan.drivenCalls(in: code) {
-                let site = "\(file.path): \(call.call)"
-                if try !isGated && RuleZeroScan.isBoundToAFake(call, in: code) {
-                    exempt.insert(site)
-                    continue
-                }
-                driven.insert(site)
+            guard try gated.contains(file.path) || RuleZeroScan.reaches(file.code) else { continue }
+            for construction in try RuleZeroScan.constructions(in: file.code) {
+                judged.insert("\(file.path): \(construction.binding ?? "(unbound)")")
                 #expect(
-                    RuleZeroScan.isGuarded(call, in: code),
+                    construction.violation == nil,
                     """
-                    \(site) is not immediately preceded by \
-                    #require(\(call.guardPath).writeCapability == .notBuilt). It can reach a real \
-                    SMC, and once the plane can write this call writes to this Mac — rule zero.
+                    \(file.path) builds a \(construction.built) over a reachable SMC \
+                    (\(construction.binding ?? "unbound")), and \(construction.violation ?? ""). \
+                    Bind it with let and make its first use try #require(!…holdsWriteChannel): \
+                    once the plane can write, a composition holding a channel writes to this Mac.
                     """)
             }
         }
 
         #expect(
-            population.isSuperset(of: Self.knownPopulation),
-            "the scan read \(population.sorted()), not all of \(Self.knownPopulation.sorted())"
-        )
-        #expect(
-            driven.isSuperset(of: Self.knownDriven),
-            "the scan found \(driven.sorted()), not every one of \(Self.knownDriven.sorted())")
-        #expect(
-            exempt.isSuperset(of: Self.knownExempt),
-            "the scan exempted \(exempt.sorted()), not every one of \(Self.knownExempt.sorted())")
+            judged.isSuperset(of: Self.knownBindings),
+            "the scan judged \(judged.sorted()), not all of \(Self.knownBindings.sorted())")
     }
 }
 
-/// No test file that can reach an openable connection names the write channel, passes a
-/// `channel:`, or passes a `writePath:` — nor names a test function, callable from another file,
-/// that takes a channel. `WriteSeamTestIsolationTests`' rule, generalised.
-///
-/// `@testable import AeolusHelper` makes `SMCWriteChannel`'s `write` requirement callable through
-/// the existential with no SPI opt-in, so that suite's rule — the files that opt in never open a
-/// connection — no longer bounds who can write. This bounds it the other way: the files that can
-/// open one never hold the channel. A `FirmwareSMC` is therefore the only channel a test can pass,
-/// since a file that names no real connection has none to pass.
-///
-/// What it cannot see: a real connection made in one file and handed, by type inference, to a
-/// channel in another; and a test type whose initialiser takes a channel under another label.
-@Suite("Rule zero: a file that can reach a real connection never names the write channel")
-struct WriteChannelReachTripwireTests {
+/// A test that calls the daemon's entry point composes the daemon's graph, write channel and all
+/// (ADR 0014's B1 seam amendment, "What remains"). Nothing under `Tests/` or `Tools/` names it.
+@Suite("Rule zero: no test or tool runs the daemon's entry point")
+struct DaemonEntryPointTripwireTests {
 
-    static let forbidden: [(name: String, pattern: String)] = [
-        ("SMCWriteChannel", #"(?<![A-Za-z0-9_])SMCWriteChannel(?![A-Za-z0-9_])"#),
-        ("channel:", #"(?<![A-Za-z0-9_])channel\s*:"#),
-        ("writePath:", #"(?<![A-Za-z0-9_])writePath\s*:"#),
-    ]
+    static let entryPoint = #"(?<![A-Za-z0-9_])AeolusHelperMain\s*\.\s*main(?![A-Za-z0-9_])"#
+    static let extending = #"(?<![A-Za-z0-9_])extension\s+AeolusHelperMain(?![A-Za-z0-9_])"#
 
-    /// Files the reach must find, or it is not reading the tree — SMCCore's write tests among them,
-    /// because the rule is not the helper's alone.
-    static let knownReaching: Set<String> = [
-        "Tests/AeolusHelperTests/HelperHardwareTests.swift",
-        "Tests/AeolusHelperTests/HelperHardwareSightingTests.swift",
-        "Tests/AeolusHelperTests/WatchdogHardwareTests.swift",
-        "Tests/AeolusHelperTests/HelperWatchdogCompositionTests.swift",
-        "Tests/AeolusHelperTests/HelperCompositionTests.swift",
-        "Tests/AeolusHelperTests/ProductionWritePathTests.swift",
-        "Tests/AeolusHelperTests/RawFanModeReading.swift",
-        "Tests/SMCCoreTests/SMCConnectionTests.swift",
-        "Tests/SMCCoreTests/SMCConnectionWriteTests.swift",
-    ]
-
-    /// Functions taking a channel that the declaration scan must find, private or not.
-    static let knownTakers: Set<String> = [
-        "Tests/AeolusHelperTests/SMCWriteTurnTests.swift: runsOneWriteJob",
-        "Tests/AeolusHelperTests/PlaneWriteChannelTests.swift: plane",
-    ]
-
-    /// **Mutation:** pass `channel: connection` to the plane in `HelperHardwareTests`. Run: red.
-    @Test("No test file that can reach a real connection names the channel, channel: or writePath:")
-    func noReachingFileNamesTheChannel() throws {
-        let files = try RuleZeroScan.files(under: "Tests")
-        let takers = try files.flatMap(RuleZeroScan.channelTakers(in:))
-        let callable = takers.filter { !$0.isPrivate }.map {
-            (name: $0.name, pattern: #"(?<![A-Za-z0-9_])"# + $0.name + #"(?![A-Za-z0-9_])"#)
-        }
-
-        var reaching: Set<String> = []
-        for file in files where try RuleZeroScan.reaches(file.code) {
-            reaching.insert(file.path)
-            let named = try (Self.forbidden + callable).filter {
-                try RuleZeroScan.count($0.pattern, in: file.code) > 0
-            }
-            #expect(
-                named.isEmpty,
-                """
-                \(file.path) can reach an openable connection and names \(named.map(\.name)). A \
-                channel there can be the real connection, and a write through it writes to this \
-                Mac — rule zero. Use FirmwareSMC, in a file that names no real connection.
-                """)
-        }
-
-        #expect(
-            reaching.isSuperset(of: Self.knownReaching),
-            "the reach found \(reaching.sorted()), not every one of \(Self.knownReaching.sorted())")
-        let found = Set(takers.map { "\($0.path): \($0.name)" })
-        #expect(
-            found.isSuperset(of: Self.knownTakers),
-            "the declaration scan found \(found.sorted()), not \(Self.knownTakers.sorted())")
-    }
-}
-
-/// The write path is passed as the connection in exactly one place, `AeolusHelperMain`, and nowhere
-/// else under `Sources`, `Tests` or `Tools`.
-///
-/// Whitespace is removed before matching, so `writePath:\n    .connection` is the spelling, and the
-/// type may be written out. The needle is built from pieces inside a string, which the scan strips,
-/// so this file cannot match itself.
-@Suite("Rule zero: only the daemon passes the connection as the write path")
-struct ProductionWritePathTripwireTests {
-
-    static let daemon = "Sources/AeolusHelper/AeolusHelperMain.swift"
-
-    static let needle =
-        "write" + "Path:" + "(?:Production" + "WritePath)?" + #"\.connection(?![A-Za-z0-9_])"#
-
-    /// **Mutation:** pass the connection as the write path in a test file. Run: red.
-    @Test("The connection is passed as the write path by AeolusHelperMain alone")
-    func onlyTheDaemonPassesTheConnection() throws {
-        var found: [String: Int] = [:]
-        for directory in ["Sources", "Tests", "Tools"] {
+    /// **Mutation:** call `AeolusHelperMain.main()` from a test file. Run: red.
+    @Test("No file under Tests or Tools names AeolusHelperMain.main or extends AeolusHelperMain")
+    func nothingRunsTheDaemon() throws {
+        var naming: [String] = []
+        var read = 0
+        for directory in ["Tests", "Tools"] {
             for file in try RuleZeroScan.files(under: directory) {
-                let count = try RuleZeroScan.count(
-                    Self.needle, in: file.code.filter { !$0.isWhitespace })
-                if count > 0 { found[file.path] = count }
+                read += 1
+                let found =
+                    try RuleZeroScan.count(Self.entryPoint, in: file.code)
+                    + RuleZeroScan.count(Self.extending, in: file.code)
+                if found > 0 { naming.append(file.path) }
             }
         }
-
-        let elsewhere = found.keys.filter { $0 != Self.daemon }.sorted()
-        #expect(
-            elsewhere.isEmpty,
-            """
-            \(elsewhere) pass the connection as the production graph's write path. Only \
-            \(Self.daemon) may: anything else composing the real SMC with a channel writes to it \
-            once the plane can — rule zero.
-            """)
-        #expect(
-            found[Self.daemon] == 1,
-            "the scan did not find the daemon's one write path in \(Self.daemon): \(found)")
+        #expect(naming.isEmpty, "\(naming) name the daemon's entry point")
+        #expect(read > 100, "the scan read \(read) files, which is not the tree")
     }
 }

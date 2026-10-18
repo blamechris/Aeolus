@@ -1,7 +1,7 @@
 import AeolusXPC
 import FanKit
 import Foundation
-import SMCCore
+@_spi(FanWrite) import SMCCore
 
 // AeolusHelper — the privileged daemon.
 //
@@ -35,14 +35,16 @@ import SMCCore
 /// ## What this build can and cannot do
 ///
 /// It serves `snapshot` from real hardware and refuses everything that would need a write.
-/// `SMCConnection.write(_:to:)` is SPI-gated and nothing in the helper calls it; the plane
-/// answers `.notBuilt`. **The helper's strongest safety property is structural: it cannot
-/// fail open into a write, because nothing in it calls one.** Calling one "ready for E5",
+/// `SMCConnection.write(_:to:)` is SPI-gated, and its one caller in the helper is
+/// `DaemonWriteChannel.write`, below, which nothing calls: no write turn has a body yet, and the
+/// plane answers `.notBuilt`. **The helper's strongest safety property is structural: it cannot
+/// fail open into a write, because nothing in it reaches one.** Calling one "ready for E5",
 /// ahead of the plane's write turns, would spend that property for nothing.
 ///
-/// The safe default is in place ahead of them: this is the one caller that passes
-/// `writePath: .connection`, so the daemon's plane holds its connection as a write channel and
-/// no test composition's does. The plane holds it and uses it for nothing.
+/// The safe default is in place ahead of them. This is the one caller that gives the production
+/// graph a write channel — `DaemonWriteChannel`, below, over the graph's own connection — so
+/// the daemon's plane holds one and no test composition's does. The plane holds it and uses it
+/// for nothing.
 ///
 /// What changed in #163 is that the refusal is no longer a literal in the type serving
 /// clients. `SMCFanControlPlane` answers `FanWriteCapability.notBuilt`, `LeaseAuthority`
@@ -75,11 +77,22 @@ enum AeolusHelperMain {
         // and must not be on a per-connection path.
         let authorisation = ClientAuthorisation.resolveForRunningProcess()
 
-        // The one composition given the write path: the plane holds the daemon's connection as
-        // its write channel. On this build that changes nothing a fan sees — the plane answers
+        // The one composition given a write channel: the forwarder over the graph's own
+        // connection. On this build that changes nothing a fan sees — the plane answers
         // `.notBuilt` and nothing writes through the channel — and every other composition,
-        // every test's included, is given none (`HelperComposition.production`).
-        let helper = HelperComposition.production(log: log, writePath: .connection)
+        // every test's included, is given none (`HelperComposition.production`'s default).
+        //
+        // Only on macOS 14 or later. A channel is a job run on the connection's executor, and
+        // executor sharing (SE-0392's custom `unownedExecutor`) is runtime behaviour that begins
+        // with the macOS 14 runtime; this target deploys to 13, where it is unobserved. The gate
+        // narrows a capability and claims nothing: below 14 the plane holds no channel and
+        // answers `.notBuilt`.
+        let helper = HelperComposition.production(
+            log: log,
+            writeChannel: { connection in
+                guard #available(macOS 14, *) else { return nil }
+                return DaemonWriteChannel(over: connection)
+            })
 
         let delegate = HelperListenerDelegate(
             authorisation: authorisation,
@@ -228,5 +241,45 @@ enum AeolusHelperMain {
             machServiceName: AeolusXPCService.machServiceName, build: build,
             writeCapability: helper.plane.writeCapability)
         listener.resume()
+    }
+}
+
+/// The daemon's write channel: the four `SMCWriteChannel` requirements forwarded to the
+/// connection, on the connection's own executor.
+///
+/// ADR 0014's B1 seam amendment. `SMCConnection` does not conform to `SMCWriteChannel` — a
+/// conformance would let any `@testable` test write through a real connection without the SPI
+/// opt-in — so the daemon needs a channel of its own, and this is it.
+///
+/// - **`private`, so nothing but this file can name it.** `@testable import AeolusHelper` does not
+///   reach a `private` declaration, and this file is the one place in the helper, beside the
+///   reachability probe, that imports the write SPI. `WriteChannelSeamTests` pins its text, its
+///   access and its two mentions.
+/// - **It adopts the connection's executor** (`unownedExecutor`), so a job run on it is a job run
+///   on the connection's actor: `assumeIsolated` holds, nothing suspends between the job's
+///   operations, and nothing else on the connection — a read through the scheduler, a discovery
+///   walk's hop — runs inside one. Without the shared executor the first `assumeIsolated` traps,
+///   before any member is reached.
+/// - **Each member is the same-named `SMCConnection` member**, so a write still crosses the one
+///   stamped `IOConnectCallStructMethod` site (ADR 0012), and this body is the helper's only use
+///   of `SMCConnection.write(_:to:)` (`WritePathAbsenceTests.helperNeverCallsWrite`).
+///
+/// No test can construct one; its mechanism is tested on a stand-in written the same way
+/// (`ExecutorSharingTests`), in debug and release.
+private actor DaemonWriteChannel: SMCWriteChannel {
+    private let connection: SMCConnection
+    init(over connection: SMCConnection) { self.connection = connection }
+    nonisolated var unownedExecutor: UnownedSerialExecutor { connection.unownedExecutor }
+    var interfaceGeneration: SMCInterfaceGeneration? {
+        connection.assumeIsolated { $0.interfaceGeneration }
+    }
+    func freshKeyInfo(for key: SMCKey) throws -> SMCKeyInfo {
+        try connection.assumeIsolated { try $0.freshKeyInfo(for: key) }
+    }
+    func read(_ key: SMCKey) throws -> SMCValue {
+        try connection.assumeIsolated { try $0.read(key) }
+    }
+    func write(_ bytes: [UInt8], to key: SMCKey) throws {
+        try connection.assumeIsolated { try $0.write(bytes, to: key) }
     }
 }

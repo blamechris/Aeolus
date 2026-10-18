@@ -120,7 +120,7 @@ struct WriteSeamAccessTests {
     /// this file, `WriteSeamReachability.swift`'s own documentation, and the ADR all discuss
     /// the import in prose, and a tripwire that fires on the sentence describing it is a
     /// tripwire nobody keeps.
-    @Test("The only SPI group imported under Sources is FanWrite, and only by the helper")
+    @Test("The only SPI group imported under Sources is FanWrite, by exactly two helper files")
     func spiImportAppearsOnlyInTheHelper() throws {
         let pattern = try #require(Self.spiImport)
         var importers: [String] = []
@@ -158,16 +158,20 @@ struct WriteSeamAccessTests {
             """
         )
 
-        // Coverage, not decoration. Without it an enumerator that found no files, or a
-        // pattern that stopped matching the form actually written, would leave the loop
-        // making zero assertions and this test green over an unguarded tree.
+        // Exactly two helper files, and the list doubles as coverage: the reachability probe,
+        // which proves the Xcode helper target can name the seam, and `main`'s file, whose
+        // `private` forwarder is the daemon's write channel (ADR 0014's B1 seam amendment).
+        // An enumerator that found nothing, or a pattern that stopped matching the form
+        // written, is red here rather than green over an unguarded tree.
         #expect(
-            importers.contains("AeolusHelper/WriteSeamReachability.swift"),
+            importers.sorted() == [
+                "AeolusHelper/AeolusHelperMain.swift", "AeolusHelper/WriteSeamReachability.swift",
+            ],
             """
-            The FanWrite SPI import was not found in AeolusHelper/WriteSeamReachability.swift. \
-            Either the reachability probe is gone — in which case nothing proves the Xcode \
-            helper target can still reach the write seam — or this scan is not reading the \
-            source tree.
+            The FanWrite SPI is imported by \(importers.sorted()), not exactly \
+            AeolusHelper/AeolusHelperMain.swift and AeolusHelper/WriteSeamReachability.swift. \
+            Any other helper file holding the opt-in can name the write; if the probe is gone, \
+            nothing proves the Xcode helper target still reaches the seam.
             """
         )
     }
