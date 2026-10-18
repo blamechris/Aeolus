@@ -28,12 +28,32 @@
 # ## The environment
 #
 # The script does not trust the one it is started in. `#!/bin/bash -p` makes macOS's bash 3.2
-# ignore BASH_ENV, ENV, SHELLOPTS, BASHOPTS, CDPATH and GLOBIGNORE and import no shell
-# function from the environment; it is used instead of `env -i` so the script keeps its own
-# name and arguments. `bash script` ignores that flag, so the script also refuses (exit 2) to
-# run with BASH_ENV or ENV set, or with xtrace or verbose on, either of which would print the
-# signature it reads. It then pins PATH to /usr/bin:/bin and the locale to C, and unsets
-# GREP_*, GIT_*, DYLD_*, PERL*, LD_*, CDPATH, GLOBIGNORE and POSIXLY_CORRECT.
+# ignore BASH_ENV, ENV and SHELLOPTS and import no shell function from the environment; it is
+# used instead of `env -i` so the script keeps its own name and arguments. It does not make
+# bash 3.2 ignore CDPATH or GLOBIGNORE (CDPATH is still honoured by `cd`), which the scrub
+# below unsets for that reason; BASHOPTS does not exist in 3.2.
+#
+# `bash script` ignores the flag on the shebang line and imports functions, so the first thing
+# the script does is refuse to run unless bash was started with `-p`. The refusal is a
+# parameter expansion, `${…:?}`, because every command name, `echo` and `exit` included, could
+# be an imported function that swallows the refusal; a parameter expansion and `case` are
+# syntax and cannot be replaced. Bash 3.2 exits 1 for it, writes no record, and says why on
+# standard error. Two tests, both required:
+# - `$-` contains `p`.
+# - The kernel's record of this process's arguments, `/bin/ps -ww -o args= -p $$` (a path, so
+#   never a function), has `-p` straight after the shell's own name.
+# The first alone is not proof: `SHELLOPTS=privileged bash script`, and a BASH_ENV file that
+# runs `set -p` and unsets itself, both put `p` in `$-` after bash has imported the functions
+# or run the file. Neither puts `-p` in the arguments, which bash reads before it touches the
+# environment. (A parent that execs bash under a forged argument vector controls the process,
+# which is beyond what a script can check.) `SHELLOPTS=noexec bash script` is the one start
+# this cannot refuse, because noexec skips every command, the guard included: it exits 0 and
+# prints nothing, and no record is not a record.
+#
+# It then refuses (exit 2) to run with BASH_ENV or ENV set, or with xtrace or verbose on,
+# either of which would print the signature it reads. It pins PATH to /usr/bin:/bin and the
+# locale to C, and unsets GREP_*, GIT_*, DYLD_*, PERL*, LD_*, CDPATH, GLOBIGNORE and
+# POSIXLY_CORRECT.
 #
 # ## What a record proves
 #
@@ -118,8 +138,25 @@
 #   5  a binary is unsigned, or its signature or architectures cannot be read
 #   6  a system tool failed where it should not have (git, date, grep, or any other utility);
 #      the message says that and names no output of it
+#   1  (macOS's bash 3.2, for a failed `${…:?}`; not a code of this script's own) bash was not
+#      started with -p: see "The environment"; no record is made
 
 # --- The environment ----------------------------------------------------------------------
+
+# Nothing in this block names a command until it has passed: a function imported from the
+# environment would replace one. `case` and parameter expansions are syntax, and /bin/ps has a
+# path, which is never looked up as a function. `${name:?word}` ends a non-interactive shell,
+# whatever `exit` or `:` have been redefined to. See "The environment" in the header for why
+# both tests are needed.
+shell_privileged=${-//[!p]/}
+: "${shell_privileged:?refusing to run unless bash was started with -p, because without it bash imports shell functions from the environment; run the script itself (its first line asks for -p) or use bash -p}"
+shell_arguments=$(/bin/ps -ww -o args= -p "$$") || shell_arguments=
+shell_arguments=${shell_arguments#* }
+shell_started_with_p=
+case "${shell_arguments}" in
+    "-p" | "-p "*) shell_started_with_p=yes ;;
+esac
+: "${shell_started_with_p:?refusing to run: bash was not started with -p as its first argument, so SHELLOPTS or a BASH_ENV file may have put p in the flags after bash imported functions or ran the file; run the script itself (its first line asks for -p) or use bash -p}"
 
 case "$-" in
     *[xv]*)

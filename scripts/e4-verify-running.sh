@@ -9,21 +9,43 @@
 #
 # **The operator's test is exactly: exit status 0 and a last line equal to
 # `result=verified seams=none`.** Nothing else is a verification. Whenever the script reaches a
-# verdict (every exit in the table at the end of this header) the last line of standard output
-# is `result=<word> seams=<none|ACTIVE(...)>`, and the exit status says the same thing as the
-# word. A consumer that greps must anchor the whole line, never a substring.
+# verdict (every exit in the table at the end of this header except 1) the last line of
+# standard output is `result=<word> seams=<none|ACTIVE(...)>`, and the exit status says the
+# same thing as the word. A consumer that greps must anchor the whole line, never a substring.
 #
 # ## The environment
 #
 # The script does not trust the one it is started in. `#!/bin/bash -p` makes macOS's bash 3.2
-# ignore BASH_ENV, ENV, SHELLOPTS, BASHOPTS, CDPATH and GLOBIGNORE and import no shell
-# function from the environment. `bash script` ignores that flag, so the script also refuses
-# (exit 2) to run with BASH_ENV or ENV set, or with xtrace or verbose on, either of which
-# would print the signature output it reads. It then pins PATH to /usr/bin:/bin and the locale
-# to C, and unsets GREP_*, GIT_*, DYLD_*, PERL*, LD_*, CDPATH, GLOBIGNORE and POSIXLY_CORRECT.
-# The perl reader below runs under `env -i`, with an empty environment and no `use` line, so
-# neither PERL5LIB, PERL5OPT nor a module on a search path can replace the code that reads
-# the kernel.
+# ignore BASH_ENV, ENV and SHELLOPTS and import no shell function from the environment. It
+# does not make bash 3.2 ignore CDPATH or GLOBIGNORE (CDPATH is still honoured by `cd`), which
+# the scrub below unsets for that reason; BASHOPTS does not exist in 3.2.
+#
+# `bash script` ignores the flag on the shebang line and imports functions, and one imported
+# `sed` is enough to print `result=verified seams=none` for a hash the process does not have.
+# So the first thing the script does is refuse to run unless bash was started with `-p`. The
+# refusal is a parameter expansion, `${…:?}`, because every command name, `echo` and `exit`
+# included, could be an imported function that swallows the refusal; a parameter expansion and
+# `case` are syntax and cannot be replaced. Bash 3.2 exits 1 for it, prints nothing on
+# standard output (so there is no `result=` line, and the operator's test fails on both
+# counts), and says why on standard error. Two tests, both required:
+# - `$-` contains `p`.
+# - The kernel's record of this process's arguments, `/bin/ps -ww -o args= -p $$` (a path, so
+#   never a function), has `-p` straight after the shell's own name.
+# The first alone is not proof: `SHELLOPTS=privileged bash script`, and a BASH_ENV file that
+# runs `set -p` and unsets itself, both put `p` in `$-` after bash has imported the functions
+# or run the file. Neither puts `-p` in the arguments, which bash reads before it touches the
+# environment. (A parent that execs bash under a forged argument vector controls the process,
+# which is beyond what a script can check.) `SHELLOPTS=noexec bash script` is the one start
+# this cannot refuse, because noexec skips every command, the guard included: it exits 0 and
+# prints nothing, which is why the operator's test above insists on the last line as well as
+# the exit status.
+#
+# It then refuses (exit 2) to run with BASH_ENV or ENV set, or with xtrace or verbose on,
+# either of which would print the signature output it reads. It pins PATH to /usr/bin:/bin and
+# the locale to C, and unsets GREP_*, GIT_*, DYLD_*, PERL*, LD_*, CDPATH, GLOBIGNORE and
+# POSIXLY_CORRECT. The perl reader below runs under `env -i`, with an empty environment and no
+# `use` line, so neither PERL5LIB, PERL5OPT nor a module on a search path can replace the code
+# that reads the kernel.
 #
 # ## How the running hash is read
 #
@@ -178,8 +200,26 @@
 #                            40 hex digits equal the expected one's first 40
 #   19    verified or        a seam is active: the verdict would have been exit 0 or 18, and
 #         truncated-match    the word says which; a test run never exits 0
+#   1     (none)             not a verdict, and not a code of this script's own: macOS's bash
+#                            3.2 ended the run because it was not started with -p. Nothing was
+#                            looked at and no `result=` line is printed; see "The environment"
 
 # --- The environment ----------------------------------------------------------------------
+
+# Nothing in this block names a command until it has passed: a function imported from the
+# environment would replace one. `case` and parameter expansions are syntax, and /bin/ps has a
+# path, which is never looked up as a function. `${name:?word}` ends a non-interactive shell,
+# whatever `exit` or `:` have been redefined to. See "The environment" in the header for why
+# both tests are needed.
+shell_privileged=${-//[!p]/}
+: "${shell_privileged:?refusing to run unless bash was started with -p, because without it bash imports shell functions from the environment; run the script itself (its first line asks for -p) or use bash -p}"
+shell_arguments=$(/bin/ps -ww -o args= -p "$$") || shell_arguments=
+shell_arguments=${shell_arguments#* }
+shell_started_with_p=
+case "${shell_arguments}" in
+    "-p" | "-p "*) shell_started_with_p=yes ;;
+esac
+: "${shell_started_with_p:?refusing to run: bash was not started with -p as its first argument, so SHELLOPTS or a BASH_ENV file may have put p in the flags after bash imported functions or ran the file; run the script itself (its first line asks for -p) or use bash -p}"
 
 refuse_environment() {
     echo "error: $1" >&2
