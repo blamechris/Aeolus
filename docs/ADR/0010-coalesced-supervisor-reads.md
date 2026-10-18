@@ -75,6 +75,10 @@ detection of a *new* condition, never the response to the one that is holding.
 
 ### D2 — No third priority level, and no head-of-queue rule
 
+*Reopened for § 3's cycle alone by [ADR 0012](0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
+2026-10-18 amendment ([#332](https://github.com/blamechris/Aeolus/issues/332)): see "Amendment,
+2026-10-18" at the end of this Decision. D2 stands for every other reader.*
+
 Both were rejected, and the reason is not the one written at `SMCReadPriority` before this.
 
 Both fix the cycle's **place in line** under an unbounded *N* and leave the single connection
@@ -112,7 +116,9 @@ still holds; this is the stronger one, and it is now recorded at the type.
 E3's per-command `readEnvelope(ofFan:)` is the named candidate — one read per client message,
 over a value the client is about to act on, which cannot be served from a cycle's own
 reading and cannot be rate-limited without rate-limiting the client's command. If that
-lands, D2 is reopened rather than worked around.
+lands, D2 is reopened rather than worked around. *(It fired — #270's per-fan bounds read on the
+grant, and level 6's per-apply envelope reads — and D2 was reopened, for § 3's cycle alone: the
+amendment at the end of this Decision.)*
 
 ### D3 — The grant-time check is coalesced and age-bounded, served from § 3's own reading
 
@@ -277,6 +283,30 @@ the placement.
 
 This amendment corrects a clause of a Proposed ADR rather than the decision it sits under.
 **Status stays Proposed.**
+
+#### Amendment, 2026-10-18 ([#332](https://github.com/blamechris/Aeolus/issues/332)) — D2 reopened for § 3's cycle alone
+
+D2's revisit trigger fired, and under ADR 0014's B1 amendment every one of § 3's commands and
+restores became a first-come first-served `.supervisor` turn of its own: a firing cycle is up to
+1 + 5F turns, each waiting behind every outstanding reader, and the queue delayed § 3's own bridge
+and restore by seconds per turn under client load. That is not amplification a cache can
+coalesce; it is § 3's own actions.
+
+So § 3's cycle takes a third admission class, `SMCReadPriority.thermalCycle`, admitted ahead of
+every waiting turn, behind only the turn in flight, and outside the overtake quota.
+[ADR 0012](0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s 2026-10-18 amendment
+records the decision and the arithmetic. What this ADR decided otherwise stands:
+
+- **D1** stands for every other supervisor reader: § 5, the grant, level 6, and the § 4, § 6 and
+  § 7 keystones are first-come first-served among themselves, and #332 stays open for them.
+- **D3** is unchanged. The grant-time check is still served from § 3's own reading, single-flight
+  and age-bounded; the cache's own source still reads at `.supervisor`, and § 3's reads through a
+  view of the same conformer that keeps the same `DegradationMemo`.
+
+D2's three objections, answered for this case: the amplification it feared is load at the design
+point, and actions cannot be coalesced; the quota is not spent, because the lane is exempt from it
+in both directions; and a level somebody will use is held to § 3 by tripwires
+(`ThermalCycleLaneTripwireTests`).
 
 ## Alternatives considered
 

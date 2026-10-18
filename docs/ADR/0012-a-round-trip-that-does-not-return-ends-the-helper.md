@@ -1,7 +1,7 @@
 # ADR 0012 — A round trip that does not return ends the helper
 
 - **Status:** Accepted (2026-10-08) — D provisional pending [#296](https://github.com/blamechris/Aeolus/issues/296) conditions 3–4 and E4's write-selector measurement
-- **Date:** 2026-09-20 (amended 2026-10-08, see the last section)
+- **Date:** 2026-09-20 (amended 2026-10-08 and 2026-10-18, see the last two sections)
 - **Deciders:** Project maintainer, on architect review
 - **Supersedes:** — (extends [ADR 0007](0007-safety-composition.md)'s helper-death recovery;
   answers [#293](https://github.com/blamechris/Aeolus/issues/293) and
@@ -278,9 +278,9 @@ round-trip trigger at one of its reads, before the restore.)
 | Constant | Value | Bounds | Derivation |
 |---|---|---|---|
 | **D** | 5 s (provisional, reads only) | One stamped round trip. | About 437× the worst of 912,000 measured reads (11.45 ms; the four conditions in H1, [#296](https://github.com/blamechris/Aeolus/issues/296)). |
-| **D_cycle** | 3·D = 15 s | No completed § 3 cycle, while armed. | At least the interval (1 s), plus timer slop (0.1 s), plus D, plus the allowance at the design point of 12 outstanding supervisor reads (596 round trips × 11.453 ms = 6.83 s, re-run for ADR 0014's write turns; 576 and 6.60 s before them): 12.93 s. See below. |
+| **D_cycle** | 3·D = 15 s | No completed § 3 cycle, while armed. | *Superseded by the 2026-10-18 amendment: with § 3's own admission the allowance has no N, 632 round trips and 13.34 s on `Mac16,5`.* At least the interval (1 s), plus timer slop (0.1 s), plus D, plus the allowance at the design point of 12 outstanding supervisor reads (596 round trips × 11.453 ms = 6.83 s, re-run for ADR 0014's write turns; 576 and 6.60 s before them): 12.93 s. See below. |
 | **D_bringUp** | `ReconciliationLimits.budget` + 2·D = 15 s | Arming to `ThermalSupervisor.start()`. | The reconciliation budget (5 s) plus 2·D. Independent of the outstanding-read count: no client can reach the helper before `listener.resume()`. Re-checked for ADR 0014 D5's preparation step, which runs before reconciliation: at most 24 round trips for ten fans (0.27 s), inside the 2·D margin with a whole D to spare. |
-| **G** | 2·D = 10 s, per parked waiter | [#135](https://github.com/blamechris/Aeolus/issues/135)'s gate-waiter `.fault`. | Must exceed the longest supervisor wait at the design point (a reader behind both critical reads: the allowance less the cycle's writes and its own turn, 561 round trips × 11.453 ms = 6.43 s since ADR 0014's write turns, 543 and 6.22 s before them; corrected in PR C from 512 and 5.86 s, which counted § 3's own read as the worst waiter) and stay below D_cycle − interval − 2 ticks (12 s). Suppressed while a stamp is older than one tick. |
+| **G** | 2·D = 10 s, per parked waiter | [#135](https://github.com/blamechris/Aeolus/issues/135)'s gate-waiter `.fault`. | *Re-derived by the 2026-10-18 amendment with § 3's lane occupancy: 821 round trips and 9.40 s at N = 12, holding to N ≤ 12.* Must exceed the longest supervisor wait at the design point (a reader behind both critical reads: the allowance less the cycle's writes and its own turn, 561 round trips × 11.453 ms = 6.43 s since ADR 0014's write turns, 543 and 6.22 s before them; corrected in PR C from 512 and 5.86 s, which counted § 3's own read as the worst waiter) and stay below D_cycle − interval − 2 ticks (12 s). Suppressed while a stamp is older than one tick. |
 | **Tick** | 1 s | The watchdog's timer, a `.strict` `DispatchSourceTimer`. | A verdict needs two over-bound ticks, so it lands at most two ticks after the bound is crossed. |
 
 **A verdict needs two consecutive over-bound ticks on the same sequence** (the same round-trip
@@ -334,7 +334,8 @@ round trips (8.52 s) and the requirement 14.62 s; at N = 17 it is 813 (9.31 s) a
 holds for N ≤ 16**, as it did before the re-run (576, 716 and 783 round trips; 12.70, 14.30 and
 15.07 s).
 
-**Above the design point, the cycle trigger firing is the correct outcome**: the helper ends and
+*(Withdrawn by the 2026-10-18 amendment, which gives § 3's cycle its own admission and takes N
+out of its bound.)* **Above the design point, the cycle trigger firing is the correct outcome**: the helper ends and
 the fans return to automatic, which is the safe direction. It is not a safety precondition to
 bound N, but a watchdog that fires under ordinary multi-client load costs users their manual
 control, so bounding N is [#332](https://github.com/blamechris/Aeolus/issues/332), recommended
@@ -605,3 +606,166 @@ What the monitor does, and does not, rely on:
 | `theGateBoundIsDerivedAndConstant`, `theGateWaitIsTheLongerOfTheTwoWaiters`, `theGateBoundHoldsForEveryCuratedSet` | G = D. G = D_cycle. Count § 3's read as the worst waiter. Take only the mode read off the allowance. `max` for `min`. G + 1 s. |
 | `SchedulerObserversTests` | Drop the first observer. Reverse the order. Deliver through a `Task`. |
 | `theGateMonitorHoldsNoContinuationAndNamesNoConnection` | A `CheckedContinuation` in the monitor, however it is spelled. A connection named in it. |
+
+## Amendment (2026-10-18, [#332](https://github.com/blamechris/Aeolus/issues/332), B1) — § 3's cycle is admitted ahead of every other turn, and D_cycle no longer depends on N
+
+**Status.** Accepted on architect review of #332, under ADR authority. It supersedes the D_cycle
+row of the constants table and the reasoning of "Outstanding reads, and why D_cycle is 15 s" above
+for § 3's cycle, and re-derives G's lower side. D, D_bringUp, the tick and the two-tick rule are
+unchanged, and so are the values of D_cycle and G.
+
+### Context
+
+The allowance above counted one queue wait per § 3 cycle, plus a flat 30 round trips for a firing
+cycle's writes. Under [ADR 0014](0014-apple-silicon-unlock.md)'s B1 amendment every command and
+every restore is a turn of its own, first-come first-served at `.supervisor`. Counted from the
+code:
+
+- `ThermalEmergency.fire(_:from:)` bridges every fan in `engagedFans ∪ restoredUnconfirmed`, two
+  disjoint sets, so at most F fans, and each bridge was two turns: the maximum command (three round
+  trips) and a `.fan(n)` restore (one or two), the restore attempted whatever the command did.
+- The revocation that follows goes through `LeaseAuthority.restore`, `HelperFanRestorer` and
+  `BoundedFanRestorer`: up to `RestoreLimits.attemptBudget` (3) attempts per fan, each a `.fan(n)`
+  restore turn. It does not skip a fan § 3 has just restored; it is the idempotent second restore.
+
+So a firing cycle is 1 + 3F turns with every restore accepted and 1 + 5F with every one refused,
+seven to eleven on `Mac16,5`; a quiet cycle with owed read-backs is 1 + F. Each turn waited behind
+every outstanding reader. Modelled event by event against the scheduler's own policy at the
+measured worst round trip, `Mac16,5` needed about 44 s at N = 12 with the restores accepted and
+about 66 s with them refused, and a quiet cycle with one owed read-back held only to N ≤ 9.
+
+The false `.blind` verdict that follows fails safe: launchd relaunches the helper, and the
+successor's preparation step and reconciliation hand the fans back before `listener.resume()`. But
+the same queue delays § 3's own bridge and restore by seconds per turn under client load, and that
+delay — not the verdict — is the defect. No value of N, and no D_cycle worth having, fixes it.
+
+### Decision
+
+- **`SMCReadPriority.thermalCycle`, a third admission class, for § 3's cycle alone:** its critical
+  read, its owed read-backs, its bridge jobs, and the restores `FanRestoreCause.thermalEmergency`
+  causes. `SMCReadScheduler.nextTurn()` admits it ahead of every waiting turn, behind only the turn
+  in flight, and it neither spends nor resets the snapshot's overtake quota.
+- **Only § 3 reaches it**, two ways:
+  - a **view** of the one plane, `FanControlPlane.admitted(at: .thermalCycle)`, which holds the
+    plane's scheduler and connection (and, on a plane that can write, its channel and
+    `PlaneWriteLedger`) and differs only in its `PlaneAdmission`. The composition builds § 3's
+    telemetry, read-back reader and writer over it. The telemetry view keeps the cache source's
+    `DegradationMemo`, and the read-back is reconciliation's own loop (`PlaneHandbackReadBack`);
+  - `HelperFanRestorer`, which routes a restore through its writer's lane view when the cause is
+    `.thermalEmergency`, and every other cause through the writer at `.supervisor`.
+- **§ 3's bridge is one plane job per fan**, `FanControlPlane.bridgeThenRestore(_:)`: the `.fan(n)`
+  restore is requested first, before the job waits for its turn, and then, inside one turn, the
+  command's body and the restore's, each attempted whatever the other answered and both reported
+  (`BridgeOutcome`). That is three round trips and then at most two, `writeTurnRoundTrips`.
+  `SafetyActorWriter.bridgeToMaximumThenRestore(of:)` is § 3's verb and replaces
+  `commandMaximum(of:)`; `GovernedFanWriter` declares neither.
+- **So each of § 3's turns waits for at most one turn in flight.** The lane never holds more than
+  one waiter — § 3 runs one cycle at a time (`isCycling`) and its calls are sequential — and § 3
+  re-queues only after `admitNext()` has handed the connection on, so it never takes two turns in a
+  row while another waiter is parked. § 3's read is one turn because every curated set is at most
+  64 keys (`everyCuratedSetFitsOneTurn`); a longer one would run its slices back to back.
+- **D_cycle's allowance, with no N** (`WatchdogLimits.allowanceRoundTrips(criticalReadKeys:fans:)`):
+
+  > (1 + F + F·attemptBudget)·maxKeysPerTurn + K + F·writeTurnRoundTrips + F·attemptBudget·fanRestoreRoundTrips
+
+  one turn in flight ahead of each of § 3's turns in a firing cycle with every restore refused, then
+  its read, its bridge jobs and its restores. F is the curated machine's **recorded** fan count,
+  `CriticalSensorSet.fanCount` (2 on `Mac16,5`, from `FNum` in `docs/SMC-RESEARCH.md`), never one
+  read at run time. On `Mac16,5` it is **632 round trips, 13.34 s** with the interval, slop and D,
+  and 14.19 s with every round trip of § 3's write turns at 50 ms.
+- **D_cycle stays 15 s.** D, D_bringUp, G, the tick and the two-tick rule are unchanged.
+- **G's lower side is re-derived with the lane's occupancy**
+  (`WatchdogLimits.gateWaitRoundTrips(outstandingReads:criticalReadKeys:fans:)`). The worst
+  supervisor waiter is behind the supervisor queue (§ 3's own read is no longer in it) and § 3's
+  lane turns, in the longer of two windows: (a) one firing cycle, then latched cycles of the read
+  alone; (b) quiet cycles of the read plus a read-back of every fan — at most one cycle starting per
+  interval plus § 3's read, solved as a fixed point. **9.40 s at N = 12** (821 round trips), and it
+  holds to N ≤ 12 (10.58 s at 13; it held to N ≤ 20 before).
+- **This reopens [ADR 0010](0010-coalesced-supervisor-reads.md) D2 for § 3's cycle alone.** D1's
+  first-come first-served admission stands for every other supervisor reader, and D3's coalescing
+  is unchanged. D2's revisit trigger had already fired: #270's per-fan bounds read on the grant,
+  and level 6's per-apply envelope reads.
+
+**Why it is safe.** Every in-turn property is decided inside the turn, from the plane's one state:
+ADR 0014's U15, D4's restore epoch, the exit's seal, #305's re-engagement check and D5's force-key
+gate. Every order the lane produces is one first-come first-served admission could have produced
+under a different arrival timing, and the view shares the state those properties read, so none of
+them depends on admission order.
+
+**The arithmetic is reproducible.** The architect's model is a discrete-event simulation of
+`SMCReadScheduler`'s policy and a closed form of the two bounds; `WatchdogLimitsTests` derives
+both independently from the named constants and pins 632, 13.34 s, 14.19 s, 821 and 9.40 s, with
+three negative controls: K = 34 with F = 3 needs 16.40 s and fails, a curated set with no recorded
+fan count has no bound, and G fails at N = 13.
+
+### What remains
+
+- **Write round trips are unmeasured** (ADR 0014's U8; H6 above). With every read at the measured
+  worst, the bound holds while a write round trip stays under **86.98 ms** (the ruling's "about
+  87 ms"), and D8 records it.
+- **A curated machine with three or more fans breaks it**: 16.40 s at F = 3. No such machine is
+  curated, and `WatchdogLimitsTests` fails the day one is.
+- **G can log a `.fault` for a full but moving queue above N = 12.** It ends nothing.
+- **Other supervisor readers still slow under load** — § 5, the grant, level 6, and the § 4, § 6
+  and § 7 keystones. The lane reorders the connection's time and adds no capacity; #332 stays open
+  for them. The level-1 keystones are not on the lane.
+- **"Above the design point, the cycle trigger firing is the correct outcome"**, in "Outstanding
+  reads" above, is withdrawn: § 3's cycle has no design point now.
+- **The fast path's test of the lane's queue is a second line**, as its tests of the other two are:
+  while `admitNext()` keeps the in-flight flag the queue tests are redundant, so deleting the lane's
+  alone changes nothing a test can see.
+  `SchedulerTurnLifecycleTests.aQueuedLaneWaiterKeepsTheFastPathClosed` holds it with the flag
+  gone too.
+- **On `main` nothing writes.** `SMCFanControlPlane` refuses the bridge without reading; the
+  scripted plane models B1's job. B1's write turns will take their plane's admission, in the
+  change that builds them on `e4/bring-up`.
+
+### Where the implementation differs from the ruling on #332
+
+- The case is `.thermalCycle`, as suggested. The view is `FanControlPlane.admitted(at:)` over a
+  `PlaneAdmission` with two cases and no `.snapshot`, the form B1's write turn will take.
+- The break-even write round trip is stated as 86.98 ms, which the ruling rounds to 87 ms.
+- The fast path's lane test is recorded above as redundant while the flag holds, rather than as a
+  mutation a single test kills.
+
+### Tests, each with the mutation that must turn it red
+
+| Test | Mutation that must turn it red |
+|---|---|
+| `SMCReadSchedulerLaneTests.theLaneIsGrantedNextAndLeavesTheQuotaAlone` | The lane checked after `.supervisor`. A lane grant that spends the quota. One that resets it. |
+| `SchedulerTurnLifecycleTests.aLaneArrivalCannotBargeOntoAHeldTurn`, `aQueuedLaneWaiterKeepsTheFastPathClosed` | Delete `isTurnInFlight = true` from `admitNext()`. That, and the lane's queue test in the fast path. |
+| `SMCReadSchedulerLaneTests.laneTurnsAlternateWithASustainedReader`, `aLaneReadLongerThanOneTurnRunsItsSlicesBackToBack`; `WatchdogLimitsTests.everyCuratedSetFitsOneTurn` | A lane reservation. Admit before enqueue in `yieldTurn`. A 65th curated key. |
+| `ThermalCycleLaneRoutingTests.onlySectionThreeTakesTheLane`, `theProductionPlaneGrantsSectionThreeInTheLane`, `aFiringCyclesWritesAreInTheLane` | The cache's source over the lane view. § 7's read-back over it. § 3's read, read-back or writer at `.supervisor`. |
+| `PlaneViewTests` | A view over a second firmware. A stored value on `SMCFanControlPlane` its view does not share. A view's reads at `.supervisor`. |
+| `ThermalCycleLaneRoutingTests.sectionThreesRevocationRestoresInTheLane`, `everyOtherCauseRestoresAtSupervisor` | Route on the wrong cause. Route every cause to the lane. Route none. |
+| `ThermalCycleLaneTripwireTests` | The lane named in `SupervisedFanAuthority.swift`. The cause passed from `ReclamationWatchdog.swift`. File discovery broken. A scan that keeps comments, drops its word guards or keeps whitespace. A second copy of the handback read loop. |
+| `ThermalCycleLaneSharingTests` | A second `DegradationMemo` for § 3's telemetry, in the composition or in the view. § 3's read-back reader over the plane rather than its lane view. |
+| `ThermalEmergencyTests.theEmergencyReachesMaximumInOneWrite`, `aRefusedMaximumStillRestores`; `ThermalEmergencyBridgeTests`; `SMCFanControlPlaneTests.theBridgeRefusesWithoutReading` | A governor in the command half. The restore skipped after a refused command. The epoch moved inside the turn. § 3 calling the two old verbs. A read on `.notBuilt`. The verb declared on `GovernedFanWriter`. |
+| `WatchdogLimitsTests.theBoundsAreDerivedAndConstant`, `theAllowanceIsDerivedFromTheNamedConstants`, `theCycleBoundHoldsForEveryCuratedSet` | The revocation term dropped. The read counted as one round trip. A literal allowance. F taken as 1. A curated set with no fan count. |
+| `WatchdogLimitsTests.theGateBoundIsDerivedAndConstant`, `theGateWaitIsTheLongerOfTheTwoWaiters` | The lane term omitted. The firing cycle omitted from window (a). |
+| `GateWaitMonitorLaneTests` | The lane missing from the mirror. Lane outcomes ignored by `ConnectionHealth`. |
+
+**Alternatives considered**, each rejected on the arithmetic or on authority:
+
+- *Re-derive D_cycle* for first-come first-served admission: about 45–66 s, and still dependent on
+  N.
+- *Lower N*: it would have to be at most 2.
+- *Precedence for writes only*: 17.1 s.
+- *The per-fan bridge job alone*: holds to N ≤ 3.
+- *Exclude § 3's own waits from the cycle trigger*: it blinds the trigger to the case it exists for.
+- *Skip the revocation's second restore*: it entangles the handback ledger and removes the only
+  retry.
+- *One re-entrant turn for the whole firing response*: authority the turn model does not give.
+- *A bound computed at run time*: it breaks I8.
+
+ADR 0010 D2's objections are answered: the "survivable amplification" is load at the design point,
+and actions cannot be coalesced; "the quota is the cost" does not apply, because the lane is exempt
+from the quota; "a level somebody will use" is held by tripwires that keep the case to § 3's wiring.
+
+**Revisit if:** a second user of the lane is proposed; D8 or H6 measures a worst write round trip
+above 50 ms; a curated set lands for a machine with three or more fans, or with more than about 40
+keys (G's wait at N = 12 passes 10 s at 40 keys on two fans); H1's conditions 3 and 4 raise the worst read; owed
+read-backs come to run on a latched or firing cycle; the plane gains state its view does not share;
+or a level-1 keystone's latency under load becomes a requirement.
+
+**No `AeolusXPCVersion` bump**: nothing crosses the boundary.

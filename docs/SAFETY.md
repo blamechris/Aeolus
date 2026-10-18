@@ -506,13 +506,17 @@ enforced, until #104.
 override is latched a retry is refused from the latch alone, before any sensor is read;
 while it is not, every grant-time sightedness check within one cycle period is served from a
 reading no more than that old, and concurrent checks share a single read — so at most one
-grant-time read is ever outstanding, and this cycle reaches the SMC connection within four
-turns of asking. *"§ 3's own reading"* is the usual case and not the guarantee: a cold cache
-reads for itself, and a grant-path read that fails is remembered ahead of a later cycle
-sighting, which is ADR 0010's amendment of 2026-09-20. The bound that matters to this
-paragraph — one outstanding read, four turns — holds in every case. The mechanism is
-[ADR 0010](ADR/0010-coalesced-supervisor-reads.md); the arithmetic that made it necessary,
-and the third priority level that was rejected instead, are recorded there.
+grant-time read is ever outstanding. And this cycle has its own admission class, so it reaches
+the SMC connection within one turn of asking — the turn already in flight — however many reads
+are outstanding; so does each of its read-backs, bridges and restores. *"§ 3's own reading"* is
+the usual case and not the guarantee: a cold cache reads for itself, and a grant-path read that
+fails is remembered ahead of a later cycle sighting, which is ADR 0010's amendment of
+2026-09-20. The bounds that matter to this paragraph — one outstanding grant-time read, and one
+turn — hold in every case. The coalescing is
+[ADR 0010](ADR/0010-coalesced-supervisor-reads.md); the admission class, which reopens that
+ADR's D2 for this cycle alone, and the arithmetic that made it necessary, are
+[ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s 2026-10-18
+amendment.
 
 The sensors the comparison actually uses are curated in code, per machine, and
 `docs/SMC-RESEARCH.md` carries the measurement that separates the two populations — along
@@ -1989,7 +1993,8 @@ and nothing else: the driver has no target verb, and the file that holds it neve
 type in code, so the control loop holds no writer it can command a target through but the
 governed one. The two share no *writing* protocol, so no code can be
 generic over "a writer" and hand a safety actor the governed one; the compile-time guarantee is
-exactly that `GovernedFanWriter` declares neither `commandMaximum(of:)` nor
+exactly that `GovernedFanWriter` declares neither § 3's bridge,
+`bridgeToMaximumThenRestore(of:)` (`commandMaximum(of:)` until #332), nor
 `restoreToAutomatic(_:)`. (They do both satisfy `Sendable`, so a `<W: Sendable>` parameter accepts
 either — the exclusion is about the verbs, not about every protocol in the language.
 `SafetyWriters.swift` records the same correction, having said "no protocol in common" once.)
