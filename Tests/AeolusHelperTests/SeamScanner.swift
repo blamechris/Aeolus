@@ -324,17 +324,21 @@ enum SeamScanner {
     /// maintainer's hand and nothing would have reported the site it hid. A pattern nothing
     /// puts a fixture through is a pattern whose misses are invisible.
     ///
-    /// An explicit generic clause and an argument list are both optional. Reading a `Task`
-    /// *type* as a spawn is possible in principle — a protocol's `var t: Task<Void, Never> {`
-    /// would match — and is **fail-loud**: the count rises, the message names the file, and a
-    /// maintainer looks. A missed spawn is the direction that fails silently, so the pattern
-    /// errs wide.
+    /// **The pattern is `WriteSeamSpellingTests.taskSpawn`**, the one the write-turn job scan
+    /// reads, so the two cannot disagree about what a spawn is (#442's review, S1). The pattern
+    /// this had matched `Task` only when a `{` followed an argument list, which missed
+    /// `Task(operation: { … })` and `Task.detached(priority:, operation: { … })`: neither has a
+    /// `{` straight after its parentheses, and a closure holds parentheses of its own. This
+    /// census is what notices a `Task` spawned through a helper function that a write-turn job
+    /// calls, which the job scan cannot see.
+    ///
+    /// The source is read as code: comments, trailing ones included, and string literals are
+    /// removed first, so the word in prose is not a site. Reading a `Task` *type* as a spawn is
+    /// possible in principle — a protocol's `var t: Task<Void, Never> {` would match — and is
+    /// **fail-loud**: the count rises, the message names the file, and a maintainer looks. A
+    /// missed spawn is the direction that fails silently, so the pattern errs wide.
     static func unstructuredTaskSpawns(inSource source: String) throws -> Int {
-        let spawn = try NSRegularExpression(
-            pattern: #"\bTask(\.detached)?\s*(<[^<>]*>)?\s*(\([^()]*\))?\s*\{"#)
-        let code = strippingComments(source)
-        return spawn.numberOfMatches(
-            in: code, range: NSRange(code.startIndex..<code.endIndex, in: code))
+        try RuleZeroScan.count(WriteSeamSpellingTests.taskSpawn, in: RuleZeroScan.code(of: source))
     }
 
     // MARK: - Parsing
@@ -359,8 +363,9 @@ enum SeamScanner {
             .joined(separator: "\n")
     }
 
-    /// Every `/* … */` span removed, newlines kept so the line-comment filter still sees the
-    /// lines it must judge.
+    /// Every `/* … */` span replaced by one space, newlines kept so the line-comment filter
+    /// still sees the lines it must judge. The space is what the lexer sees: a comment separates
+    /// tokens, so `public/* */import` is `public import` (#442's review, S3).
     ///
     /// Swift nests block comments, so the depth is counted rather than the first `*/` taken.
     /// String literals — `"""` spans included — and `//` comments are copied through
@@ -404,6 +409,9 @@ enum SeamScanner {
                 output += source[index..<end]
                 index = end
             } else if matches("/*", at: index) {
+                // One space per span, as Swift's lexer reads it: `public/* */import` is two
+                // words, and joined they are one that no pattern for `import` finds (#442, S3).
+                output.append(" ")
                 depth = 1
                 index = source.index(index, offsetBy: 2)
             } else if matches("//", at: index) {

@@ -375,6 +375,13 @@ struct WriteSeamTestIsolationScannerTests {
         }
         let wrapped = "@_spi(FanWrite)\n@testable\npublic\nimport SMCCore"
         #expect(try WriteSeamTestIsolationTests.spiImportGroups(in: wrapped) == ["FanWrite"])
+        // S3: a block comment is a separator, so it joins nothing.
+        for spelling in ["public/* */import SMCCore", "@testable internal/**/import SMCCore"] {
+            let source = "@_spi(FanWrite) " + spelling
+            #expect(
+                try WriteSeamTestIsolationTests.spiImportGroups(in: source) == ["FanWrite"],
+                "\(source)")
+        }
         let scoped = "@_spi(FanUnlock) public import struct SMCCore.SMCConnection"
         #expect(try WriteSeamTestIsolationTests.spiImportGroups(in: scoped) == ["FanUnlock"])
 

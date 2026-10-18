@@ -172,7 +172,6 @@ struct WriteSeamAccessTests {
     @Test("An SPI import is found whole-module or scoped, at every access level")
     func spiImportsAreFoundScopedOrNot() throws {
         let pattern = try #require(Self.spiImport)
-        // How many imports `raw` holds, and the groups read out of the attribute run of the first.
         func read(_ raw: String) throws -> (count: Int, groups: [String]) {
             let text = Self.withoutCommentsOrBackticks(raw)
             let found = pattern.matches(in: text, range: NSRange(text.startIndex..., in: text))
@@ -185,6 +184,7 @@ struct WriteSeamAccessTests {
             "@_spi(FanWrite) import class SMCCore.SMCConnection",
             "@_spi(FanWrite) @preconcurrency import struct SMCCore.SMCKeyType",
             "@_spi(FanWrite)\nimport func SMCCore.resolveByteOrder",
+            "@_spi(FanWrite) public/* */import SMCCore",
         ]
         for level in ["public", "package", "internal", "fileprivate", "private"] {
             spellings += [
