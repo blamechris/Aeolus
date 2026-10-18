@@ -517,16 +517,21 @@ turn — hold in every case. The coalescing is
 ADR's D2 for this cycle alone, and the arithmetic that made it necessary, are
 [ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s 2026-10-18
 amendment. The one-turn bound rests on this cycle being the admission class's only user, one call
-at a time: censuses at the source hold the first, and the scheduler reports, once, a second request
-in the class while one is outstanding.
+at a time. The class's value sets are pinned by the compiler, so no other admission or priority can
+reach it under another name; its uses are counted file by file at the source and every stored
+plane's admission is checked in the composed graph; and the premise is observed at run time, where
+the scheduler reports a second request in the class while one is outstanding.
 
 *Tested by:* `SMCReadSchedulerLaneTests` (a lane turn is granted next, behind only the turn in
-flight, and leaves the overtake quota alone); `ThermalCycleLaneRoutingTests` (in the composed graph
-only this cycle's reads, bridges and restores take the class, and every other restore cause routes
-outside it); `ThermalCycleLaneTripwireTests` (who may name the class, counted per file);
-`ThermalCycleLaneOverlapTests` (this cycle's whole firing episode never has two requests in the
-class, and two that are outstanding together are reported once); and `WatchdogLimitsTests` (the
-bound D_cycle is derived from).
+flight, and leaves the overtake quota alone); `ThermalCycleLaneValueSetTests` (the admission and
+priority value sets, pinned by exhaustive switches); `ThermalCycleLaneRoutingTests` (in the
+composed graph only this cycle's reads, bridges and restores take the class, and every other
+restore cause routes outside it); `ThermalCycleLaneWriterTests` (every plane the composed graph
+stores is admitted at `.supervisor` but this cycle's); `ThermalCycleLaneTripwireTests` (who may
+name the class, counted per file); `ThermalCycleLaneOverlapTests` and
+`ThermalCycleLaneCounterTests` (this cycle's firing episode never has two requests in the class,
+two outstanding together are reported, and the count returns to zero however a request ends); and
+`WatchdogLimitsTests` (the bound D_cycle is derived from).
 
 The sensors the comparison actually uses are curated in code, per machine, and
 `docs/SMC-RESEARCH.md` carries the measurement that separates the two populations — along

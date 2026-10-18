@@ -39,11 +39,14 @@ import SMCCore
 /// (`PlaneViewTests` fails on a stored value that is not). The write path's channel and its
 /// `PlaneWriteLedger` are both, so the view B1 builds on shares them too.
 ///
-/// **What that bounds, exactly.** A read issued here waits at most three turns — the two it
-/// always could, ~22 ms, and one of § 3's lane, which can cut in once ahead of it (ADR 0012's
-/// 2026-10-18 amendment) — *while it is the only supervisor-priority read outstanding*, against
-/// the ~500 ms a snapshot-length occupation costs. It does not bound the wait when several are
-/// outstanding, which `LeaseAuthority.refuseIfBlind` already makes possible today; the
+/// **What that bounds, exactly.** *While it is the only supervisor-priority read outstanding*, a
+/// read issued here waits for the turn in flight, at most one snapshot turn the overtake quota
+/// forces, and at most one of § 3's lane turns **at each turn boundary it waits through** (ADR
+/// 0012's 2026-10-18 amendment): the lane is admitted ahead of every waiting turn, and § 3
+/// re-queues only after its turn is handed on. So at most four turns ahead of it — in flight, a
+/// lane turn, the forced snapshot turn, a lane turn — against the ~500 ms a snapshot-length
+/// occupation costs; the two without the lane are ~22 ms. It does not bound the wait when several
+/// are outstanding, which `LeaseAuthority.refuseIfBlind` already makes possible today; the
 /// scheduler's own documentation carries the general form, and this comment stated the
 /// two-turn figure unconditionally until a review panel produced the counterexample.
 ///

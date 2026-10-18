@@ -2509,9 +2509,12 @@ first draft, which added a margin to 14.5 s.
   takes each slot at G, which did not move). An engagement whose last step queued at 3.4 s,
   followed by its command, held the gate about 16.4 s, and § 5's 15.5 s ran out inside that lawful
   hold.
-- **One turn's slot is taken at G.** A slot is the wait plus the turn. G exceeds the longest legal
-  wait plus the longest write turn at the design point, for every curated set, and
-  `WatchdogLimitsTests` holds that.
+- **One turn's slot is taken at G.** A slot is the wait plus the turn. G exceeds the wait plus the
+  longest write turn at the design point, for every curated set, in ADR 0012's two **modelled
+  cases** (2026-10-18 amendment), and `WatchdogLimitsTests` holds that. The histories review
+  counted beyond them stay under G, but one is open: a take-back with writes recurring every § 3
+  cycle would make a slot 10.58 s, `lawfulHold` 31.75 s, and leave `examinationWait` short by
+  about 1.75 s, at an expiry's cost below.
 - **A hold is at most three slots, or the yield budget and two:**
   - an engagement's first step, its one retry, then its undo or its command;
   - or its last poll, which starts inside `yieldBudget`, then its undo or its command.
@@ -2693,8 +2696,11 @@ next re-apply runs the driver, which reads where the fan is instead of assuming 
 
 - #332 or D8 moves G or the design point. *(Fired 2026-10-18: #332's lane, ADR 0012's amendment
   of that date, moved G's reach from 20 readers to 12 and left G at 10 s. The hold is taken at G,
-  so `lawfulHold` and `examinationWait` stand; a supervisor wait of 9.40 s plus the longest write
-  turn is still under G for every curated set, which `WatchdogLimitsTests` holds.)*
+  so `lawfulHold` and `examinationWait` stand in ADR 0012's modelled cases: a supervisor wait of
+  9.40 s plus the longest write turn is still under G for every curated set, which
+  `WatchdogLimitsTests` holds.)*
+- ADR 0012's open take-back bound is settled the wrong way: if take-backs with writes can recur
+  every § 3 cycle, a slot passes G and `examinationWait` must be re-derived from the longer slot;
 - run 1 measures holds, hops or timer wakes longer than assumed;
 - an outwaited `.fault` is ever logged, which would argue for deferral;
 - E8a needs concurrent applies, or `apply` leaves the sequencer.

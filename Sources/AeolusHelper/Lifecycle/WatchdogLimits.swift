@@ -58,11 +58,15 @@ enum WatchdogLimits {
     ///   cases, not a bound over every history**: a firing cycle, its release and the read-backs
     ///   after it can fall in one window, and a latched cycle can take fans back. The amendment
     ///   records the counts for those histories — 817–831 round trips (9.36–9.52 s) counted
-    ///   correctly, 599 (6.86 s) in an event model of the shipped policy — all under G, and the
-    ///   one still open: how many take-backs with writes can follow one firing. If one recurred
-    ///   every cycle the count would be 919 (10.53 s), over G. A gate fault over G is logged for a
-    ///   queue that may be full and moving, and it ends nothing. (It held to N = 20 before the
-    ///   lane, when § 3's turns were in the FIFO.) **The
+    ///   correctly, at most 611 (7.00 s) in an event model of the shipped policy, from the scripts
+    ///   in `scripts/gate-wait-model/` — all under G, and the one still open: how many take-backs
+    ///   with writes can follow one firing. If one recurred every cycle the count would be 919
+    ///   (10.53 s), over G. The gate fault itself ends nothing, but **G is also the slot ADR 0014's
+    ///   examination gate counts its lawful hold in**: in that history a slot is 10.58 s, the three
+    ///   slots of `FanExaminationGate.lawfulHold` 31.75 s against the 30 s derived, and § 5's 32 s
+    ///   `examinationWait` could run out inside a lawful hold, at an expiry's cost (ADR 0014: a
+    ///   `.fault`, an examination without the gate, possibly a false divergence and a spent
+    ///   attempt). (G held to N = 20 before the lane, when § 3's turns were in the FIFO.) **The
     ///   snapshot priority's waiter is not derived:** it waits behind the other snapshot clients'
     ///   turns as well (64 round trips each), so enough concurrent snapshot clients can outlast G
     ///   with a queue that is full and moving. **A lane waiter waits for one turn in flight**, and
@@ -235,10 +239,11 @@ enum WatchdogLimits {
     /// **Not a bound over every history.** The latch releases, and read-backs follow a firing in
     /// the same window; a latched cycle can take a fan back
     /// (`takeBackAnythingEngagedSinceFiring`). Those histories are counted in the amendment, not
-    /// here: 817–831 round trips with the firing head counted once, 599 in an event model of the
-    /// shipped policy, both under G; and 919 if a take-back with writes recurred every cycle,
-    /// which is the one bound still open. G is a log line, so the open case costs a fault line
-    /// for a queue that may be moving, and nothing else.
+    /// here: 817–831 round trips with the firing head counted once, at most 611 in an event model
+    /// of the shipped policy, both under G; and 919 if a take-back with writes recurred every
+    /// cycle, which is the one bound still open. The open case costs more than a fault line:
+    /// ADR 0014's examination gate takes each turn's slot at G, so in that history § 5's
+    /// examination wait could run out inside a lawful hold (`gateWaiterAlarm`).
     static func gateWaitRoundTrips(outstandingReads: Int, criticalReadKeys: Int, fans: Int) -> Int {
         let queue = supervisorQueueRoundTrips(
             outstandingReads: outstandingReads, criticalReadKeys: criticalReadKeys)

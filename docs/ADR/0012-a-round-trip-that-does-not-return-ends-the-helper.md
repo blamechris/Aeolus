@@ -675,17 +675,29 @@ cycle inside a D_cycle worth having (see the alternatives below).
   re-queues only after `admitNext()` has handed the connection on, so it never takes two turns in a
   row while another waiter is parked. § 3's read is one turn because every curated set is at most
   64 keys (`everyCuratedSetFitsOneTurn`); a longer one would run its slices back to back.
+- **The lane's value sets are pinned by the compiler.** `PlaneAdmission` is exactly
+  `.supervisor` and `.thermalCycle`, and `SMCReadPriority` exactly its three cases:
+  `ThermalCycleLaneValueSetTests` switches over both with no `default`, so a new case does not
+  compile until the pin places it, and the pin holds that only `.thermalCycle` reaches the lane.
+  Without it, a case mapped to the lane beside `.thermalCycle` reached it from any file, at any
+  call site, with every word count unchanged (review's N1, N1e and N7).
 - **The one-waiter premise is observed at run time, not only at the source.** The scheduler counts
-  lane requests outstanding, queued or holding the connection, from `takeTurn` to `endTurn`. When
-  one arrives while another is outstanding it reports **once**,
-  `SchedulerEvent.thermalCycleLaneOverlapped`, which `ThermalCycleLaneWatch` writes to the safety
-  log at `.fault`, and admits the request in the lane as normal: it never traps, blocks or demotes.
-  Demoting the newcomer was considered and refused: a rogue request admitted while § 3 is idle
-  would make § 3's own next request the newcomer, and § 3 would be the one demoted. Refusing it
-  would fail a safety read. `ThermalCycleLaneOverlapTests` runs § 3's whole firing episode — a
-  firing cycle with every write refused, a latched cycle, the release and the read-backs — over a
-  plane whose every call holds a real scheduler turn, and the scheduler reports nothing; bridging
-  or reading back in a task group makes it report.
+  lane requests outstanding, queued or holding the connection, from `takeTurn` to `endTurn`, keyed
+  on the queue a request joins (`isLane(_:)`, the same mapping `enqueue` and `queuedTurns` use), so
+  a priority folded into the lane is counted. When one arrives while another is outstanding it
+  reports `SchedulerEvent.thermalCycleLaneOverlapped`, which `ThermalCycleLaneWatch` writes to the
+  safety log at `.fault`, and admits the request in the lane as normal: it never traps, blocks or
+  demotes. It reports again only when more are outstanding at once than ever before, carrying the
+  overlapping arrivals so far, so a transient overlap at bring-up cannot mask a sustained second
+  producer later. Demoting the newcomer was considered and refused: a rogue request admitted while
+  § 3 is idle would make § 3's own next request the newcomer, and § 3 would be the one demoted.
+  Refusing it would fail a safety read. `ThermalCycleLaneOverlapTests` runs § 3's firing episode —
+  a firing cycle with every write refused, a latched cycle, the release and the read-backs — over
+  a plane whose every call holds a real scheduler turn, and the scheduler reports nothing;
+  bridging or reading back in a task group makes it report. The episode omits a latched cycle's
+  take-back with writes and a blind cycle, both sequential by inspection.
+  `ThermalCycleLaneCounterTests` holds the count's lifetime through a throw, a multi-slice read and
+  a cancellation.
 - **D_cycle's allowance, with no N** (`WatchdogLimits.allowanceRoundTrips(criticalReadKeys:fans:)`):
 
   > (1 + F + F·attemptBudget)·maxKeysPerTurn + K + F·writeTurnRoundTrips + F·attemptBudget·fanRestoreRoundTrips
@@ -709,13 +721,18 @@ cycle inside a D_cycle worth having (see the alternatives below).
   can take fans back (`takeBackAnythingEngagedSinceFiring`, 56 round trips), so latched cycles are
   not always the read alone. Counted correctly — the firing head once, cycle starts spaced by the
   interval plus the cycle's own round trips — those histories are **817–831 round trips, 9.36–9.52
-  s**, under G; an event model of the shipped policy gives at most **599 round trips, 6.86 s**. The
-  scripts are review artefacts, not part of this repository (`closed_mixed.py`, `starts.py`,
-  `starts2.py`, `event.py`, `event_run.py`, `event_run2.py`). G stays 10 s. **Open:** how many
-  take-backs with writes can follow one firing. `requireEntitlement` and the abandoned-fan refusal
-  appear to bound it, which is not proven; if one recurred every cycle the count would be **919
-  round trips, 10.53 s**, over G. G is a log line, so the open case costs a `.fault` for a queue
-  that may be full and moving, and nothing else.
+  s**, under G; an event model of the shipped policy gives at most **611 round trips, 7.00 s**.
+  The scripts that produce them are in [`scripts/gate-wait-model/`](../../scripts/gate-wait-model/),
+  committed because they back a safety bound: `closed_mixed.py` and `starts.py` for the closed
+  form's counts, `event.py` with `event_run.py`, `event_run2.py` and `event_search.py` for the
+  event model (review first recorded 599 from a narrower search of it). G stays 10 s. **Open:**
+  how many take-backs with writes can follow one firing. `requireEntitlement` and the abandoned-fan
+  refusal appear to bound it, which is not proven; if one recurred every cycle the count would be
+  **919 round trips, 10.53 s**, over G. **That costs more than a `.fault`.** G is also the slot
+  ADR 0014's examination gate counts its lawful hold in: in that history a slot is 10.58 s, the
+  three slots of `lawfulHold` 31.75 s against the 30 s derived, and § 5's 32 s `examinationWait`
+  could run out inside a lawful hold, at an expiry's cost — a `.fault`, an examination without
+  the gate whose re-assert stands down, and possibly a false divergence that spends an attempt.
 - **This reopens [ADR 0010](0010-coalesced-supervisor-reads.md) D2 for § 3's cycle alone.** D1's
   first-come first-served admission stands for every other supervisor reader, and D3's coalescing
   is unchanged. D2's revisit trigger had already fired: #270's per-fan bounds read on the grant,
@@ -741,7 +758,8 @@ fan count has no bound, and G fails at N = 13.
 - **A curated machine with three or more fans breaks it**: 16.40 s at F = 3. No such machine is
   curated, and `WatchdogLimitsTests` fails the day one is.
 - **G can log a `.fault` for a full but moving queue above N = 12**, or in a history the two
-  modelled cases do not cover (see the Decision; the take-back bound is open). It ends nothing.
+  modelled cases do not cover (see the Decision; the take-back bound is open). The fault ends
+  nothing; the open history would also stretch ADR 0014's lawful hold past its derivation.
 - **F is recorded, never cross-checked.** D_cycle's allowance uses `CriticalSensorSet.fanCount`,
   and nothing compares it with the fans the machine enumerates at run time. A `Mac16,5` that
   enumerated a third fan would need 16.40 s for a firing cycle with every write refused: the cycle
@@ -751,9 +769,13 @@ fan count has no bound, and G fails at N = 13.
   turn, so its round trips interleave with lane turns on the connection actor: about 72 round
   trips, roughly 0.8 s at F = 2, inside the 1.66 s between the 13.34 s allowance and D_cycle's
   15 s. And a cold key-info lookup doubles the round trips of a slice that needs it.
-- **The lane's one producer is held by counts at the source and observed at run time.** Nothing
-  refuses a second producer: the censuses fail a change that names the lane or its cause where it
-  is not wired, and the scheduler reports an overlap once if one happens anyway.
+- **The lane's one producer is held, not enforced.** The value sets are pinned by the compiler,
+  the uses by per-file counts at the source and a positive census of every stored plane, and the
+  premise is observed at run time. Nothing refuses a second producer at run time, by the ruling.
+  Two shapes no census sees: a plane captured by a closure or a `Task` (today only
+  `ConnectionHealth`'s recovery plane), and a restore cause stored and replayed into the restorer,
+  which is a capability question for before b2's write bodies
+  ([#440](https://github.com/blamechris/Aeolus/issues/440)).
 - **Other supervisor readers still slow under load** — § 5, the grant, level 6, and the § 4, § 6
   and § 7 keystones. The lane reorders the connection's time and adds no capacity; #332 stays open
   for them. The level-1 keystones are not on the lane.
@@ -784,13 +806,15 @@ fan count has no bound, and G fails at N = 13.
 | `SchedulerTurnLifecycleTests.aLaneArrivalCannotBargeOntoAHeldTurn`, `aQueuedLaneWaiterKeepsTheFastPathClosed` | Delete `isTurnInFlight = true` from `admitNext()`. That, and the lane's queue test in the fast path. |
 | `SMCReadSchedulerLaneTests.laneTurnsAlternateWithASustainedReader`, `aLaneReadLongerThanOneTurnRunsItsSlicesBackToBack`; `WatchdogLimitsTests.everyCuratedSetFitsOneTurn` | A lane reservation. Admit before enqueue in `yieldTurn`. `mac16x5`'s die-cluster prefixes widened to four, 68 keys. |
 | `ThermalCycleLaneRoutingTests.onlySectionThreeTakesTheLane`, `theProductionPlaneGrantsSectionThreeInTheLane`, `aFiringCyclesWritesAreInTheLane` | The cache's source over the lane view. § 7's read-back over it. § 3's read, read-back or writer at `.supervisor`. The scheduler's read defaulted to the lane, with the snapshot path's priority dropped. |
-| `ThermalCycleLaneWriterTests` | § 5's writer, § 4's, § 6's `panic:` writer or the teardown's built over the lane view. |
+| `ThermalCycleLaneWriterTests` | § 5's writer, § 4's, § 6's `panic:` writer or the teardown's built over the lane view. A new admission mapped to the lane with the value-set pin updated to match, given to § 5's writer. |
+| `ThermalCycleLaneValueSetTests` | A new `PlaneAdmission` case mapped to the lane, used for § 5's or § 6's writer or at a call site in § 5 (fails to compile). A new `SMCReadPriority` case queued in the lane (fails to compile). `.supervisor` mapped to the lane. The scheduler queuing `.supervisor` in the lane. |
 | `PlaneViewTests` | A view over a second firmware. A stored value on `SMCFanControlPlane` its view does not share. A view's reads at `.supervisor`. |
 | `ThermalCycleLaneRoutingTests.sectionThreesRevocationRestoresInTheLane`, `everyCauseRoutesByWhoCausedIt`, `everyOtherCauseRestoresAtSupervisor` | Route on the wrong cause. Route every cause to the lane. Route none. Move any one other cause, or several, into the lane's arm. |
 | `ThermalCycleLaneTripwireTests` | One more naming of the lane in any file — a computed property in `PlaneAdmission`, a lane view for § 5 in the composition, a lane default on the scheduler's read. The cause named from `ReclamationWatchdog.swift`, in any of the fixture spellings. An enumeration of the cases through a type alias or a metatype. A second reader built in place of `PlaneHandbackReadBack`. A symbolic link under `Sources`. File discovery broken. A scan that keeps comments or drops its word guards. |
 | `EngagementRouteTripwireTests.noRawStringHoldsAQuoteAndACommentMarker` | A literal nested in an interpolation holding `//`, which blinds the stripper to the rest of its line. |
 | `ThermalCycleLaneSharingTests` | A second `DegradationMemo` for § 3's telemetry, in the composition or in the view. § 3's read-back reader over the plane rather than its lane view, or a reader of its own type. |
-| `ThermalCycleLaneOverlapTests`; `SchedulerObservingTests.everyEventKindIsEmittedInAScriptedRun`; `GateMonitorWiringTests.theLaneWatchIsWiredToTheScheduler` | The overlap report deleted, or unlatched, or a request not counted out. § 3's bridges or its read-backs run in a task group. The watch dropped from the scheduler's observers, or one that does not log. |
+| `ThermalCycleLaneOverlapTests`; `SchedulerObservingTests.everyEventKindIsEmittedInAScriptedRun`; `GateMonitorWiringTests.theLaneWatchIsWiredToTheScheduler` | The overlap report deleted, or a request not counted out. § 3's bridges or its read-backs run in a task group. The watch dropped from the scheduler's observers, or one that does not log. |
+| `ThermalCycleLaneCounterTests` | A request counted out on the success path only, so a throw leaks one. `yieldTurn` counting a lane request out too, or counting each slice in. A request not counted out when it was cancelled while queued. The report latched after the first, or made on every overlapping arrival. |
 | `ThermalEmergencyTests.theEmergencyReachesMaximumInOneWrite`, `aRefusedMaximumStillRestores`; `ThermalEmergencyBridgeTests`; `SMCFanControlPlaneTests.theBridgeRefusesWithoutReading` | A governor in the command half. The restore skipped after a refused command. The epoch moved inside the turn. § 3 calling the two old verbs. A read on `.notBuilt`. The verb declared on `GovernedFanWriter`, or in an extension of it. A second verb that restores inside a permit. |
 | `WatchdogLimitsTests.theBoundsAreDerivedAndConstant`, `theAllowanceIsDerivedFromTheNamedConstants`, `theCycleBoundHoldsForEveryCuratedSet` | The revocation term dropped. The read counted as one round trip. A literal allowance. F taken as 1. A curated set with no fan count. |
 | `WatchdogLimitsTests.theGateBoundIsDerivedAndConstant`, `theGateWaitIsTheLongerOfTheTwoWaiters` | The lane term omitted. The firing cycle omitted from window (a). |

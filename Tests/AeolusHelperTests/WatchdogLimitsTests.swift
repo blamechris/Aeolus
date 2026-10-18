@@ -199,10 +199,11 @@ struct WatchdogLimitsTests {
     /// **Modelled cases, not a bound over every history.** What this pins is the two windows'
     /// arithmetic. The histories § 3 really produces — a firing, its release and the read-backs
     /// after it in one window; a latched cycle taking fans back — were counted in review, outside
-    /// this suite: 817–831 round trips (9.36–9.52 s) with the firing head counted once, and 599
-    /// (6.86 s) in an event model of the shipped policy. Both are under G, and both are recorded in
-    /// ADR 0012's 2026-10-18 amendment, with the one case still open: a take-back with writes
-    /// recurring every cycle would be 919 (10.53 s).
+    /// this suite, by the scripts in `scripts/gate-wait-model/`: 817–831 round trips (9.36–9.52 s)
+    /// with the firing head counted once, and at most 611 (7.00 s) in an event model of the
+    /// shipped policy. Both are under G, and both are recorded in ADR 0012's 2026-10-18 amendment,
+    /// with the one case still open: a take-back with writes recurring every cycle would be 919
+    /// (10.53 s), which would also stretch ADR 0014's lawful hold past its derivation.
     ///
     /// **Mutation:** set `gateWaiterAlarm` to `roundTrip` (G = D). Run: red.
     /// **Mutation:** set `gateWaiterAlarm` to `cycleBound`. Run: red — the cycle trigger would
