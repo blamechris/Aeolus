@@ -11,7 +11,7 @@ import Testing
 ///
 /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` hands the fan back and then
 /// revokes the lease it was holding the fan for. In the composition the daemon runs, that
-/// revocation reaches `HelperFanRestorer.restoreToAutomatic(fans:because:)`, which tells § 5 about
+/// revocation reaches `HelperFanRestorer.handBack(_:because:through:)`, which tells § 5 about
 /// every fan it hands back — `manualControlReleased(fanAt:)` — while `finaliseRelease` is still
 /// suspended inside the revocation. Until #346 that notification cleared the entry the terminal
 /// action had just been given, logged it "resolved", and a fan the system had taken was reported to

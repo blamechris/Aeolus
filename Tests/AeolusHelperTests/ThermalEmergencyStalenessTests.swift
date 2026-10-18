@@ -248,8 +248,8 @@ struct ThermalEmergencyStalenessTests {
 
     /// **A cycle that cannot see still owes the leases whatever it can take back.**
     ///
-    /// `LeaseAuthority.revokeEveryLease(because:)` names a grant-time window it cannot close
-    /// from its own side — the latch is read, a real 34-key read is awaited, and § 3 can
+    /// `LeaseAuthority.revokeEveryLease(handingBackThrough:)` names a grant-time window it cannot
+    /// close from its own side — the latch is read, a real 34-key read is awaited, and § 3 can
     /// engage across it — and then asserts the mitigation: *"the emergency taking back
     /// whatever it finds, every cycle it holds."* A cycle whose read threw used to return
     /// before ever reaching the revocation, so that sentence was false on exactly the machine
@@ -292,7 +292,8 @@ struct ThermalEmergencyStalenessTests {
             await machine.leases.leaseCount == 0,
             "a cycle that could not see left a lease alive through the emergency")
         #expect(await machine.latch.isActive, "a cycle that could not read never releases")
-        #expect(await machine.restorer.causes == [.thermalEmergencyRevocation])
+        #expect(await machine.handbackRestores == [.restoreToAutomatic(.fan(0))])
+        #expect(await machine.restorer.restores.isEmpty, "§ 3's revocation skipped its handback")
     }
 
     /// **The compare-and-clear is asserted against the source tree, because no test can

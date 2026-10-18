@@ -404,6 +404,19 @@ enum LeaseFixture {
             log: log)
     }
 
+    /// § 3's handback over `plane`, built as the composition builds it, notifying through a
+    /// restorer of its own that nothing binds — for a fixture that builds § 3 with no § 5 to bind
+    /// beside it (#440). Its restores reach `plane` in § 3's lane; the unbound restorer says so
+    /// at `.fault` and still restores.
+    static func handback<Plane: FanControlPlane>(
+        over plane: Plane
+    ) -> ThermalCycleHandback<Plane> {
+        ThermalCycleHandback(
+            notifying: HelperFanRestorer(
+                writer: SafetyActorWriter(plane: plane, level: .leaseExpiry), log: Self.log),
+            writer: SafetyActorWriter(plane: plane, level: .thermalEmergency))
+    }
+
     /// Every curated key reading a plausible idle die temperature.
     ///
     /// 44.0 °C is inside the 41.48–44.80 °C band `docs/SMC-RESEARCH.md` recorded for this

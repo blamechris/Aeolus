@@ -160,6 +160,9 @@ struct TeardownRaceGraph: Sendable {
             telemetry: telemetry,
             sightings: CriticalTemperatureCache(source: telemetry, clock: clock),
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
+            handback: ThermalCycleHandback(
+                notifying: restorer,
+                writer: SafetyActorWriter(plane: plane, level: .thermalEmergency)),
             leases: leases,
             latch: latch,
             handbackReadBack: LeaseFixture.reconciliation(over: plane),

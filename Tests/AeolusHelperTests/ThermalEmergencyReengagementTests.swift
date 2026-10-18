@@ -43,6 +43,7 @@ struct ThermalEmergencyReengagementTests {
                 telemetry: curated,
                 sightings: sightings,
                 writer: SafetyActorWriter(plane: writes, level: .thermalEmergency),
+                handback: LeaseFixture.handback(over: writes),
                 leases: LeaseFixture.authority(
                     telemetry: sightings, thermalEmergency: latch, clock: clock),
                 latch: latch,

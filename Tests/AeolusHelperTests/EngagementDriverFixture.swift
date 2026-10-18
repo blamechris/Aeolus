@@ -87,6 +87,7 @@ struct EngagementRig {
             telemetry: telemetry,
             sightings: CriticalTemperatureCache(source: telemetry, clock: clock.base),
             writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
+            handback: LeaseFixture.handback(over: plane),
             leases: leases, latch: latch,
             handbackReadBack: LeaseFixture.reconciliation(over: plane))
     }

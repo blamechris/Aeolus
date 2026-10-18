@@ -164,7 +164,7 @@ actor AcknowledgementWitness {
 /// [#68](https://github.com/blamechris/Aeolus/issues/68)'s stale `io_connect_t`, which
 /// `FanRestoreAttempting` names as the case no attempt budget can bound: *"a single
 /// synchronous IOKit call that never comes back on a wedged connection parks
-/// `revokeEveryLease(because:)`"*. `BoundedFanRestorer` runs each attempt inside a `Task` that
+/// `revokeLease(id:forFan:because:)`"*. `BoundedFanRestorer` runs each attempt inside a `Task` that
 /// does not inherit cancellation, so the caller cannot escape by being cancelled either — which
 /// is exactly why § 4 needs a budget rather than a `withTimeout`.
 ///

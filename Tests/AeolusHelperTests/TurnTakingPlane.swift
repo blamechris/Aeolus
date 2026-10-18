@@ -20,13 +20,21 @@ import Testing
 ///
 /// A recycle is a supervisor turn whatever the view (`FanControlPlane.admitted(at:)`), and § 3's
 /// bridge requests its restore before it waits for the turn, as production's does.
+///
+/// `beforeSupervisorRead` is the one interference it offers: an effect run before the next
+/// critical read at `.supervisor` asks for its turn — the grant's cold-cache sightedness read, in
+/// a composed graph — and outside any turn, so what it runs can take turns of its own. Shared by
+/// every view, and empty unless a test arms it.
 struct TurnTakingPlane: FanControlPlane {
 
     let scripted: ScriptedControlPlane
     let turns: TurnHolder
+    var beforeSupervisorRead = OneShotEffect()
 
     func admitted(at admission: PlaneAdmission) -> TurnTakingPlane {
-        TurnTakingPlane(scripted: scripted.admitted(at: admission), turns: turns)
+        TurnTakingPlane(
+            scripted: scripted.admitted(at: admission), turns: turns,
+            beforeSupervisorRead: beforeSupervisorRead)
     }
 
     var writeCapability: FanWriteCapability { scripted.writeCapability }
@@ -34,6 +42,7 @@ struct TurnTakingPlane: FanControlPlane {
     private var priority: SMCReadPriority { scripted.admission.priority }
 
     func readCriticalTemperatures(_ keys: [SMCKey]) async throws -> CriticalTemperatureReport {
+        if priority == .supervisor { await beforeSupervisorRead.fire() }
         let scripted = scripted
         return try await turns.holding(at: priority) {
             try await scripted.readCriticalTemperatures(keys)
@@ -146,6 +155,27 @@ final class TurnHolder: Sendable {
 
 enum TurnHolderError: Error {
     case callNeverRan
+}
+
+/// An effect run at most once: armed by a test, fired by the double that holds it.
+actor OneShotEffect {
+    private var effect: (@Sendable () async -> Void)?
+
+    /// Whether the armed effect has run.
+    private(set) var didFire = false
+
+    func arm(_ effect: @escaping @Sendable () async -> Void) {
+        self.effect = effect
+    }
+
+    /// Runs the armed effect, if there is one, and disarms it first: whatever the effect does
+    /// cannot fire it again.
+    func fire() async {
+        guard let effect else { return }
+        self.effect = nil
+        didFire = true
+        await effect()
+    }
 }
 
 /// A provider whose read of a token runs the call registered under it, so the scheduler's turn is

@@ -299,6 +299,15 @@ struct WriteVerbAllowlistTests {
     /// ticket-and-seal amendment). Naming no fan is what makes it the keystone at its widest — no
     /// reading, no bound, no lease — which is exactly the shape ADR 0007 defines it to have, and
     /// the reason a helper on its way out can always issue it.
+    ///
+    /// [#440](https://github.com/blamechris/Aeolus/issues/440) added three, each the keystone over
+    /// a restorer it is lent rather than one it holds:
+    /// `LeaseAuthority.restore(_:because:through:)`, the bracket's body for every teardown and for
+    /// § 3's borrowed handback;
+    /// `HelperFanRestorer.handBack(_:because:through:)`, the notices around a lent bound; and
+    /// `ThermalCycleHandback.restoreToAutomatic(fans:because:)`, § 3's lane bound behind them. The
+    /// lent restorer is a `FanRestoring` — fans and a cause in, the refused fans out — so the
+    /// shape this list holds them to is unchanged: no permit, no bound, no reading.
     private static let restoreVerbs: Set<String> = [
         "BoundedFanRestorer.swift: restoreOnce(fanAt: Int)",
         "HelperFanRestorer.swift: restoreOnce(fanAt: Int)",
@@ -312,6 +321,12 @@ struct WriteVerbAllowlistTests {
         "SafetyWriters.swift: restoreToAutomatic(_: FanRestoreScope)",
         "FanRestoring.swift: restoreToAutomatic(fans: Set<Int>, because: FanRestoreCause)",
         "LeaseAuthority.swift: restore(_: Set<Int>, because: FanRestoreCause)",
+        "LeaseAuthority.swift: restore(_: Set<Int>, because: FanRestoreCause, "
+            + "through: borrowing Handback)",
+        "HelperFanRestorer.swift: handBack(_: Set<Int>, because: FanRestoreCause, "
+            + "through: borrowing Bound)",
+        "ThermalCycleHandback.swift: restoreToAutomatic(fans: Set<Int>, "
+            + "because: FanRestoreCause)",
         "StartupReconciliation.swift: restore(fanAt: Int)",
         "StartupReconciliation.swift: restoreEveryFan(because: SafetyLog.KeystoneReason, "
             + "until: ContinuousClock.Instant)",
@@ -337,7 +352,8 @@ struct WriteVerbAllowlistTests {
     /// misfiled, so the reason is written down rather than left to be re-derived. It sits *between*
     /// two entries on the restore list — `restoreToAutomatic(fans:because:)` calls it and it calls
     /// `restoreOnce(fanAt:)` — and holds no permit, which is the same shape as every other function
-    /// here that reaches the keystone: `LeaseAuthority`'s `revokeEveryLease(because:)` and
+    /// here that reaches the keystone: `LeaseAuthority`'s
+    /// `revokeEveryLease(handingBackThrough:)` and
     /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` are on this list for exactly
     /// that reason. What it adds is a `Task` that does not inherit cancellation, not a decision
     /// about whether the restore may happen — so `restoreVerbs`, whose entries are the verbs ADR
@@ -350,7 +366,7 @@ struct WriteVerbAllowlistTests {
     /// restore list is for. Its entries are the verbs ADR 0007 names, spelled as ADR 0007 spells
     /// them; this one reaches the firmware only through `SafetyActorWriter.restoreToAutomatic(_:)`
     /// and `LeaseAuthority.releaseEveryLease()`, both already acknowledged, which is exactly the
-    /// shape of `revokeEveryLease(because:)` and
+    /// shape of `revokeEveryLease(handingBackThrough:)` and
     /// `ReclamationWatchdog.finaliseRelease(fanAt:heldUnder:because:)` here.
     /// `allowSleepAfterHandback` and `respond(to:)` are its callers, and the two `acknowledge`
     /// verbs put no fan write on any wire at all — one of them calls `IOAllowPowerChange`, which is
@@ -512,7 +528,9 @@ struct WriteVerbAllowlistTests {
         "LeaseAuthority.swift: refuseIfThermalEmergencyActive(_: ConnectionID)",
         "LeaseAuthority.swift: releaseEveryLease()",
         "LeaseAuthority.swift: releaseLease(id: UUID, from: ConnectionID)",
-        "LeaseAuthority.swift: revokeEveryLease(because: FanRestoreCause)",
+        // § 3's revocation since #440: it borrows the restorer it hands back through, and reaches
+        // a write only through `restore(_:because:through:)`, as the two beside it do.
+        "LeaseAuthority.swift: revokeEveryLease(handingBackThrough: borrowing Handback)",
         // #353's: § 5's terminal revocation, scoped to the lease it held the fan for. It
         // reaches a write only through `restore(_:because:)`, as the two beside it do.
         "LeaseAuthority.swift: revokeLease(id: UUID, forFan: Int, because: FanRestoreCause)",

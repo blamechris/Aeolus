@@ -137,12 +137,40 @@ struct TeardownCountTripwireTests {
     /// `await restorer.restoreToAutomatic(…)`. Run: red.
     /// **Mutation (this suite's own):** replace `releasingCount` with a pattern nothing matches.
     /// Run: red on the `#require` rather than green over a count it never found.
+    ///
+    /// **Two declarations since #440, one body.** `restore(_:because:)` forwards to
+    /// `restore(_:because:through:)` with the lease core's own restorer, and § 3's revocation
+    /// calls the second with the handback it borrows. The count is read in the one that counts,
+    /// and every other `restore` must be that forward alone — a single awaited same-actor call
+    /// with nothing before it, which is the shape every teardown's own call already has.
+    /// **Mutation:** add `await Task.yield()` above the forward in `restore(_:because:)`. Run: red.
     @Test("restore(_:because:) counts every fan into releasing before it first suspends")
     func theRestoreCountsBeforeItSuspends() throws {
         let code = Self.normalised(try Self.leaseCoreWithoutAnyComment())
+        let declared = Self.functions(named: "restore", in: code)
+        let counting = declared.filter {
+            $0.body.range(of: Self.releasingCount, options: .regularExpression) != nil
+        }
+        #expect(
+            declared.count == 2 && counting.count == 1,
+            """
+            the lease core declares \(declared.count) `func restore` and \(counting.count) of \
+            them count into `releasing`; it should declare the counting body and one forward to it.
+            """)
+        for forward in declared
+        where forward.body.range(of: Self.releasingCount, options: .regularExpression) == nil {
+            #expect(
+                forward.body.range(
+                    of: #"^\s*await restore\([^()]*\)\s*$"#, options: .regularExpression) != nil,
+                """
+                a `restore` that does not count is more than a forward to the one that does: \
+                \(forward.body). Anything it awaits first is a suspension between a caller's \
+                removal and the count (#368).
+                """)
+        }
         let restore = try #require(
-            Self.function(named: "restore", in: code),
-            "the lease core declares no `func restore(`, so the count was not read")
+            counting.first,
+            "the lease core declares no counting `func restore`, so the count was not read")
         let count = try #require(
             Self.lastMatch(of: Self.releasingCount, in: restore.body),
             "restore(_:because:) has no `registers.beginHandback(ofFan:)` this scan can find")
@@ -223,18 +251,36 @@ struct TeardownCountTripwireTests {
         SeamScanner.strippingAllComments(try TeardownSweepTripwireTests.leaseCoreSource())
     }
 
-    /// The parameter list and body of `func name(` in normalised `code`, or `nil` when it is not
-    /// declared there. `(` is part of the match, so `revokeLease` does not find `revokeLeases`.
+    /// The parameter list and body of the first `func name(` in normalised `code`, or `nil`
+    /// when it is not declared there. `(` is part of the match, so `revokeLease` does not find
+    /// `revokeLeases`; a generic parameter clause between the name and the `(` is allowed, so a
+    /// verb that borrows a generic restorer (#440) is read too.
     private static func function(
         named name: String, in code: String
     ) -> (parameters: Substring, body: Substring)? {
-        guard
-            let declaration = code.range(
-                of: #"\bfunc "# + name + #"\("#, options: .regularExpression),
-            let close = Self.closingParenthesis(in: code[...], after: declaration.upperBound),
-            let body = TeardownSweepTripwireTests.bracedBody(in: code, after: close)
-        else { return nil }
-        return (code[declaration.upperBound..<close], code[body])
+        functions(named: name, in: code).first
+    }
+
+    /// Every declaration of `func name(` in normalised `code`, in order — `function(named:in:)`'s
+    /// reading of each.
+    private static func functions(
+        named name: String, in code: String
+    ) -> [(parameters: Substring, body: Substring)] {
+        let pattern = #"\bfunc "# + name + #"(?:<[^<>{}]*>)?\("#
+        var found: [(parameters: Substring, body: Substring)] = []
+        var search = code.startIndex
+        while true {
+            guard
+                let declaration = code.range(
+                    of: pattern, options: .regularExpression, range: search..<code.endIndex)
+            else { break }
+            search = declaration.upperBound
+            guard let close = Self.closingParenthesis(in: code[...], after: declaration.upperBound),
+                let body = TeardownSweepTripwireTests.bracedBody(in: code, after: close)
+            else { continue }
+            found.append((code[declaration.upperBound..<close], code[body]))
+        }
+        return found
     }
 
     /// Every match of `pattern` in `text`, in order.
@@ -314,7 +360,7 @@ struct TeardownCountTripwireTests {
         of arguments: Substring, bound: Set<String>
     ) throws -> String? {
         let text = String(arguments).replacingOccurrences(
-            of: #"\bbecause:"#, with: " ", options: .regularExpression)
+            of: #"\b(?:because|through):"#, with: " ", options: .regularExpression)
         let word = try NSRegularExpression(pattern: #"\.?[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*"#)
         let all = NSRange(text.startIndex..., in: text)
         for match in word.matches(in: text, range: all) {
