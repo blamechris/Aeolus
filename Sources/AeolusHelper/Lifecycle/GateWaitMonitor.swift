@@ -40,7 +40,7 @@ struct GateWait: Sendable, Equatable {
 ///
 /// `turnGranted` carries the `queuedAt` the waiter was parked with, and the scheduler's fast
 /// path reports a grant whose `queuedAt` is **its own grant instant** with no waiter behind it
-/// (`takeTurn`: the fast path is taken only when both queues are empty). So the mirror takes
+/// (`takeTurn`: the fast path is taken only when all three queues are empty). So the mirror takes
 /// out the waiter at that priority whose `queuedAt` equals the grant's, and a grant that matches
 /// none is the fast path and pops nothing. The alternative, to pop the head of the queue on
 /// every grant, is right only while the mirror is in step with the scheduler, and when it is

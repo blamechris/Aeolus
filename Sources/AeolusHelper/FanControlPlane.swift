@@ -315,12 +315,14 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// 2026-10-18 amendment).
     ///
     /// **Its order.** The `.fan(n)` restore is **requested first**, synchronously and before the
-    /// job waits for its turn (`ledger.restoreRequested(_:)`, D4), so an engagement that took its
-    /// ticket before the bridge was called writes nothing after it. Then, inside one turn, the
-    /// command's body — `ledger.admitCommand()` first, so the exit's seal still refuses it — and
-    /// the restore's body, `ledger.plan(for:)`, each attempted whatever the other answered
-    /// (`BridgeOutcome.attempting(maximum:thenRestore:)`). Nothing inside the turn suspends. It
-    /// never throws: a half that failed is a `.failure` in the outcome.
+    /// job waits for its turn (`ledger.restoreRequested(_:)`, D4), so an engagement step that took
+    /// its ticket before the bridge was called and has **not yet been admitted to its turn** is
+    /// superseded and writes nothing. One already inside its turn is not interrupted — nothing
+    /// is, inside a turn — and the bridge's turn, restore half included, follows it. Then, inside
+    /// one turn, the command's body — `ledger.admitCommand()` first, so the exit's seal still
+    /// refuses it — and the restore's body, `ledger.plan(for:)`, each attempted whatever the
+    /// other answered (`BridgeOutcome.attempting(maximum:thenRestore:)`). Nothing inside the turn
+    /// suspends. It never throws: a half that failed is a `.failure` in the outcome.
     ///
     /// Only § 3 calls it, through `SafetyActorWriter.bridgeToMaximumThenRestore(of:)`, and
     /// `GovernedFanWriter` declares no such verb, so § 8's ramp governor cannot reach it. A
@@ -361,6 +363,13 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// and `PlaneViewTests` fails on one. Synchronous, and it reads and writes nothing. Only the
     /// composition's § 3 wiring and `HelperFanRestorer` ask for the lane
     /// (`ThermalCycleLaneTripwireTests`).
+    ///
+    /// **One verb is not admitted at the view's class: `reconnect()`.** A recycle is
+    /// `SMCReadScheduler.withExclusiveAccess(_:)`, which waits out every discovery walk before it
+    /// takes its turn and then takes it at `.supervisor` (ruling D22), so a recycle through the
+    /// lane view would be a lane request with an unbounded wait in front of it, and the lane would
+    /// buy it nothing. § 3 must not reconnect, and does not: `ConnectionHealth` owns the recycle,
+    /// over the plane. The scripted double records a recycle at `.supervisor` through any view.
     func admitted(at admission: PlaneAdmission) -> Self
 }
 

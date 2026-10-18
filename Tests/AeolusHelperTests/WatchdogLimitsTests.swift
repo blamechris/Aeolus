@@ -165,11 +165,13 @@ struct WatchdogLimitsTests {
         return max(reader, grantPath)
     }
 
-    /// The worst supervisor waiter's wait with § 3's lane in it, written out: the queue, plus §
-    /// 3's own turns in the longer of two windows — (a) one firing cycle's read, bridge jobs and
-    /// refused restores, then a latched cycle's read per cycle; (b) a quiet cycle's read and a
-    /// read-back of every fan per cycle — at one cycle per interval plus § 3's read. Solved by
-    /// iteration from below, in microseconds.
+    /// The worst supervisor waiter's wait with § 3's lane in it, in the two **modelled cases**,
+    /// written out: the queue, plus § 3's own turns in the longer of two windows — (a) one firing
+    /// cycle's read, bridge jobs and refused restores, then a latched cycle's read per cycle; (b) a
+    /// quiet cycle's read and a read-back of every fan per cycle — at one cycle per interval plus
+    /// § 3's read. Solved by iteration from below, in microseconds. Mixed histories — a release and
+    /// read-backs inside a firing's window, a latched cycle's take-back — are not these cases; ADR
+    /// 0012's 2026-10-18 amendment counts them.
     private static func expectedGateWait(_ reads: Int, keys: Int, fans: Int) -> Int {
         let roundTrip = 11_453
         let period = 1_000_000 + roundTrip * keys
@@ -187,12 +189,20 @@ struct WatchdogLimitsTests {
         return max(settle(queue + firing, keys), settle(queue, keys + fans * 3))
     }
 
-    /// G is 2·D, and it has two sides. It must exceed the longest legal supervisor wait at the
-    /// gate at the design point — a reader behind the grant path's read, the other readers and §
-    /// 3's lane turns, 821 round trips at the measured worst, 9.40 s on `Mac16,5` — or a full,
-    /// moving queue would be logged as a fault; and it must stay under D_cycle less the
+    /// G is 2·D, and it has two sides. It must exceed the supervisor wait at the gate in the two
+    /// modelled cases at the design point — a reader behind the grant path's read, the other
+    /// readers and § 3's lane turns, 821 round trips at the measured worst, 9.40 s on `Mac16,5` —
+    /// or a full, moving queue would be logged as a fault; and it must stay under D_cycle less the
     /// supervisor's interval and two ticks, 12 s, or the cycle trigger would end the helper before
-    /// the fault explained it. It holds to N = 12 and not to 13 (10.58 s).
+    /// the fault explained it. It holds to N = 12 and not to 13 (10.58 s), N counting § 3's read.
+    ///
+    /// **Modelled cases, not a bound over every history.** What this pins is the two windows'
+    /// arithmetic. The histories § 3 really produces — a firing, its release and the read-backs
+    /// after it in one window; a latched cycle taking fans back — were counted in review, outside
+    /// this suite: 817–831 round trips (9.36–9.52 s) with the firing head counted once, and 599
+    /// (6.86 s) in an event model of the shipped policy. Both are under G, and both are recorded in
+    /// ADR 0012's 2026-10-18 amendment, with the one case still open: a take-back with writes
+    /// recurring every cycle would be 919 (10.53 s).
     ///
     /// **Mutation:** set `gateWaiterAlarm` to `roundTrip` (G = D). Run: red.
     /// **Mutation:** set `gateWaiterAlarm` to `cycleBound`. Run: red — the cycle trigger would
@@ -321,7 +331,8 @@ struct WatchdogLimitsTests {
     /// one-turn-in-flight bound would hold per request and not per turn, and D_cycle would be
     /// tight by an amount no test above would show.
     ///
-    /// **Mutation:** add a 65th key to `CriticalSensorSet.mac16x5`. Run: red.
+    /// **Mutation:** widen `CriticalSensorSet.mac16x5`'s die-cluster prefixes to `TPD`, `TRD`,
+    /// `TPE` and `TRE`, 68 keys. Run: red.
     /// **Mutation:** write `CriticalSensorSet.allCurated` as an empty array. Run: red.
     @Test("Every curated critical set is at most one scheduler turn")
     func everyCuratedSetFitsOneTurn() {

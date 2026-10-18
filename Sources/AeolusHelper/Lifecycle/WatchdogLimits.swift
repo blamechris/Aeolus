@@ -48,14 +48,21 @@ enum WatchdogLimits {
     /// **Derived, with two sides** (`requiredGateBound(outstandingReads:criticalReadKeys:fans:)`
     /// and `WatchdogLimitsTests`):
     ///
-    /// - *Above* the longest legal **supervisor** wait at the design point of 12 supervisor reads
-    ///   outstanding: a reader that arrived last, behind the grant path's critical read and the
+    /// - *Above* the **supervisor** wait in two modelled cases at the design point of N = 12
+    ///   reads outstanding — N counts § 3's own read, so with § 3 in its lane the supervisor queue
+    ///   holds N − 1: a reader that arrived last, behind the grant path's critical read and the
     ///   other readers' turns, and behind § 3's lane turns as well — one firing cycle and the
     ///   latched cycles after it, or a quiet cycle with every fan's read-back each second (ADR
-    ///   0012's 2026-10-18 amendment). On `Mac16,5` that is 821 round trips, 9.40 s at the measured
-    ///   worst round trip. It holds for up to 12 outstanding reads and fails at 13 (10.58 s): a
-    ///   gate fault above the design point can be logged for a queue that is full and moving, and
-    ///   it ends nothing. (It held to 20 before the lane, when § 3's turns were in the FIFO.) **The
+    ///   0012's 2026-10-18 amendment). On `Mac16,5` the longer case is 821 round trips, 9.40 s at
+    ///   the measured worst round trip; it fits up to N = 12 and not at 13 (10.58 s). **Modelled
+    ///   cases, not a bound over every history**: a firing cycle, its release and the read-backs
+    ///   after it can fall in one window, and a latched cycle can take fans back. The amendment
+    ///   records the counts for those histories — 817–831 round trips (9.36–9.52 s) counted
+    ///   correctly, 599 (6.86 s) in an event model of the shipped policy — all under G, and the
+    ///   one still open: how many take-backs with writes can follow one firing. If one recurred
+    ///   every cycle the count would be 919 (10.53 s), over G. A gate fault over G is logged for a
+    ///   queue that may be full and moving, and it ends nothing. (It held to N = 20 before the
+    ///   lane, when § 3's turns were in the FIFO.) **The
     ///   snapshot priority's waiter is not derived:** it waits behind the other snapshot clients'
     ///   turns as well (64 round trips each), so enough concurrent snapshot clients can outlast G
     ///   with a queue that is full and moving. **A lane waiter waits for one turn in flight**, and
@@ -149,8 +156,10 @@ enum WatchdogLimits {
     ///
     /// **There is no N.** How many other readers are outstanding no longer moves § 3's wait, which
     /// is the whole of the amendment, and the parameter list is what says so. A firing cycle with
-    /// every restore accepted is 3F turns, a quiet cycle with every owed read-back 1 + F, and a
-    /// latched one 1: all shorter than this.
+    /// every restore accepted is 1 + 2F turns (the read, a bridge job per fan, a restore per fan),
+    /// and a quiet cycle with every owed read-back 1 + F. A latched cycle is 1 when nothing was
+    /// engaged since the firing; one that takes a fan back (`takeBackAnythingEngagedSinceFiring`)
+    /// is up to 1 + F + F·attemptBudget, the firing cycle's own shape. None is longer than this.
     static func allowanceRoundTrips(criticalReadKeys: Int, fans: Int) -> Int {
         maxKeysPerTurn * thermalCycleTurns(fans: fans) + criticalReadKeys
             + thermalCycleWriteRoundTrips(fans: fans)
@@ -195,8 +204,10 @@ enum WatchdogLimits {
     /// turn. Which waiter is worst depends on the machine: a **reader** that arrived last
     /// (`readerTurnRoundTrips`) is behind the grant path's read, so its own turn comes off; with a
     /// critical set shorter than a reader's turn the **grant path's read** is the worst, behind the
-    /// N − 2 readers, and its own keys come off. § 3's own read is no longer in this queue: it is
-    /// in the lane, counted by `gateWaitRoundTrips(outstandingReads:criticalReadKeys:fans:)`.
+    /// N − 2 readers, and its own keys come off. N counts § 3's own read, which is no longer in
+    /// this queue: it is in the lane, counted by
+    /// `gateWaitRoundTrips(outstandingReads:criticalReadKeys:fans:)`. So the supervisor queue
+    /// holds N − 1 waiters, the grant path's read and N − 2 readers.
     static func supervisorQueueRoundTrips(outstandingReads: Int, criticalReadKeys: Int) -> Int {
         let turnInFlight = maxKeysPerTurn
         let grantPathRead = criticalReadKeys
@@ -207,9 +218,9 @@ enum WatchdogLimits {
             - min(readerTurnRoundTrips, criticalReadKeys)
     }
 
-    /// The round trips the worst supervisor waiter may legally wait: the queue ahead of it, plus
-    /// § 3's lane turns that can be admitted ahead of it while it waits (ADR 0012's 2026-10-18
-    /// amendment), in the longer of two windows —
+    /// The round trips the worst supervisor waiter waits in two **modelled cases**: the queue ahead
+    /// of it, plus § 3's lane turns that can be admitted ahead of it while it waits (ADR 0012's
+    /// 2026-10-18 amendment), in the longer of two windows —
     ///
     /// - **(a)** one firing cycle's turns, its read, bridge jobs and refused restores, then a
     ///   latched cycle's read for every cycle that can start during the wait;
@@ -220,6 +231,14 @@ enum WatchdogLimits {
     /// (`ThermalEmergency.readBackAcceptedHandbacks()`), and a firing cycle is followed by latched
     /// ones. At most one § 3 cycle starts per interval plus its own read, so the count is a fixed
     /// point (`laneWindow(base:perCycle:criticalReadKeys:)`).
+    ///
+    /// **Not a bound over every history.** The latch releases, and read-backs follow a firing in
+    /// the same window; a latched cycle can take a fan back
+    /// (`takeBackAnythingEngagedSinceFiring`). Those histories are counted in the amendment, not
+    /// here: 817–831 round trips with the firing head counted once, 599 in an event model of the
+    /// shipped policy, both under G; and 919 if a take-back with writes recurred every cycle,
+    /// which is the one bound still open. G is a log line, so the open case costs a fault line
+    /// for a queue that may be moving, and nothing else.
     static func gateWaitRoundTrips(outstandingReads: Int, criticalReadKeys: Int, fans: Int) -> Int {
         let queue = supervisorQueueRoundTrips(
             outstandingReads: outstandingReads, criticalReadKeys: criticalReadKeys)

@@ -490,8 +490,11 @@ actor ScriptedFirmware {
     /// to have fixed the machine advances to a stage whose `reads` is `.answered`. Tying the
     /// two together here would agree with an implementation that treated a successful
     /// reconnect as a reason to skip the restore, which is exactly what § 5 says not to do.
-    func reconnect(at admission: PlaneAdmission = .supervisor) async throws {
-        record(.reconnect, at: admission)
+    ///
+    /// Recorded at `.supervisor` through **any** view, as production takes it: a recycle is
+    /// `withExclusiveAccess(_:)`'s supervisor turn whatever view asked (`admitted(at:)`).
+    func reconnect() async throws {
+        record(.reconnect, at: .supervisor)
         if case .refused(let reason) = stage.reconnects {
             throw FanControlPlaneError.readFailed(detail: "reconnect: \(reason)")
         }

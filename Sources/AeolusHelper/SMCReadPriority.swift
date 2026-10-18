@@ -25,7 +25,9 @@
 /// named, and for § 3's cycle alone. Since ADR 0014's B1 amendment every command and every
 /// restore is its own turn, and a firing cycle on `Mac16,5` is up to eleven of § 3's turns. Each
 /// waited behind every outstanding reader, so under client load the queue delayed § 3's own
-/// bridge and restore by seconds per turn, and no value of *N* fixed it. That delay is not
+/// bridge and restore by seconds per turn, and only a design point of *N* ≤ 2 — no load worth
+/// serving — kept the firing cycle inside a D_cycle worth having (ADR 0012's alternatives). That
+/// delay is not
 /// amplification a cache can coalesce: it is § 3's own writes. ADR 0012's 2026-10-18 amendment
 /// records the decision and the arithmetic.
 ///

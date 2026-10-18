@@ -88,8 +88,9 @@ struct ScriptedControlPlane: FanControlPlane {
         try await firmware.readControlState(ofFan: index, at: admission)
     }
 
+    /// At `.supervisor` whatever this view's admission: see `FanControlPlane.admitted(at:)`.
     func reconnect() async throws {
-        try await firmware.reconnect(at: admission)
+        try await firmware.reconnect()
     }
 
     func restoreToAutomatic(_ scope: FanRestoreScope) async throws {
