@@ -76,13 +76,20 @@ enum RuleZeroScan {
     /// receiver — a typealias of the composition, say — counts.
     ///
     /// The recycler is in reach too: `SMCConnectionRecycler(connection: .init())` builds a real
-    /// connection without the word (#436's final review, S2).
+    /// connection without the word (#436's final review, S2). **Its bare name is the pattern**,
+    /// not a call of it: `SMCConnectionRecycler.init(…)` and `let r: SMCConnectionRecycler =
+    /// .init(…)` build the same thing and neither has `SMCConnectionRecycler(` in it (#441, R01i
+    /// and R01j). A mention that builds nothing — a parameter's type — only widens the files whose
+    /// constructions the rule judges, which errs loud.
     static let reachPatterns = [
         #"(?<![A-Za-z0-9_])SMCConnection(?![A-Za-z0-9_])"#,
         productionMember,
         #"(?<![A-Za-z0-9_])SMCSensorProvider\s*\("#,
-        #"(?<![A-Za-z0-9_])SMCConnectionRecycler\s*\("#,
+        recyclerMention,
     ]
+
+    /// `SMCConnectionRecycler` however it is spelled; `SMCConnectionRecycling` is another name.
+    static let recyclerMention = #"(?<![A-Za-z0-9_])SMCConnectionRecycler(?![A-Za-z0-9_])"#
 
     /// `.production`, called or not, on any receiver but `fanctl`'s two.
     static let productionMember =
