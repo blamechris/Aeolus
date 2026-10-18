@@ -54,7 +54,17 @@ import SMCCore
 /// single most common way this repository has produced a test that passes while being
 /// structurally unable to reach the failure it names — `ScriptedSensorProvider` carries the
 /// same warning about a `try?` that turned a failing tick into an empty success.
-actor ScriptedControlPlane: FanControlPlane {
+///
+/// ## The firmware, and the planes that are views of it
+///
+/// This actor is the scripted **firmware**: one machine's state and the rules its reads and
+/// writes answer by. `ScriptedControlPlane`, in `ScriptedControlPlane+Admission.swift`, is the
+/// `FanControlPlane` a test hands the helper, and every value of it is a view of one of these at
+/// an admission, as `SMCFanControlPlane`'s views are of one scheduler and connection
+/// (`FanControlPlane.admitted(at:)`). So § 3's lane view and the plane share this firmware, its
+/// ledger and its record of attempts, and `admittedAttempts` says which admission each call
+/// came through.
+actor ScriptedFirmware {
 
     // MARK: - Scripting vocabulary
 
@@ -369,6 +379,9 @@ actor ScriptedControlPlane: FanControlPlane {
     private var fans: [Int: FanCondition]
     private(set) var attempts: [Attempt] = []
 
+    /// `attempts`, each with the admission of the plane it came through (`record(_:at:)`).
+    private(set) var admittedAttempts: [AdmittedAttempt] = []
+
     /// Every key write, in order, recorded before the firmware answers — the order a restore
     /// issues its writes in is ADR 0014 D5's, and only a per-key record can show it.
     private(set) var keyWrites: [KeyWrite] = []
@@ -477,20 +490,12 @@ actor ScriptedControlPlane: FanControlPlane {
 
     private var stage: Stage { stages[min(stageIndex, stages.count - 1)] }
 
-    /// `.built`, always: this firmware really does take writes, and `WriteBehaviour` is how
-    /// a scenario says one was refused.
-    ///
-    /// `nonisolated`, so the answer costs no actor hop and no read — see
-    /// `FanWriteCapabilityReporting`, which is the whole reason a mechanism can ask it before
-    /// touching hardware. It is deliberately **not** scriptable per stage: the capability is
-    /// a property of the build behind the seam, not of the machine at a moment, and a mock
-    /// that could toggle it would let a test drive a state no executable can be in.
-    nonisolated var writeCapability: FanWriteCapability { .built }
-
     // MARK: - Reads
 
-    func readCriticalTemperatures(_ keys: [SMCKey]) async throws -> CriticalTemperatureReport {
-        attempts.append(.readCriticalTemperatures(keys))
+    func readCriticalTemperatures(
+        _ keys: [SMCKey], at admission: PlaneAdmission = .supervisor
+    ) async throws -> CriticalTemperatureReport {
+        record(.readCriticalTemperatures(keys), at: admission)
         try requireReadable(context: "critical temperatures")
 
         var readings: [CriticalTemperature] = []
@@ -509,8 +514,10 @@ actor ScriptedControlPlane: FanControlPlane {
         return try CriticalTemperatureReport(readings: readings, unreadableKeys: unreadable)
     }
 
-    func readEnvelope(ofFan index: Int) async throws -> FanEnvelope {
-        attempts.append(.readEnvelope(fan: index))
+    func readEnvelope(
+        ofFan index: Int, at admission: PlaneAdmission = .supervisor
+    ) async throws -> FanEnvelope {
+        record(.readEnvelope(fan: index), at: admission)
         let minimum = try FanControlPlaneValue.finite(
             try boundReadable(.minimum, ofFan: index),
             describing: SMCFanEnumeration.minimumKey(forFan: index)
@@ -523,8 +530,10 @@ actor ScriptedControlPlane: FanControlPlane {
         return FanEnvelope(index: index, minimumRPM: minimum, maximumRPM: maximum)
     }
 
-    func readControlState(ofFan index: Int) async throws -> FanControlState {
-        attempts.append(.readControlState(fan: index))
+    func readControlState(
+        ofFan index: Int, at admission: PlaneAdmission = .supervisor
+    ) async throws -> FanControlState {
+        record(.readControlState(fan: index), at: admission)
         let fan = try modeReadable(ofFan: index, context: "fan \(index) control")
 
         return FanControlState(
@@ -542,8 +551,8 @@ actor ScriptedControlPlane: FanControlPlane {
     /// to have fixed the machine advances to a stage whose `reads` is `.answered`. Tying the
     /// two together here would agree with an implementation that treated a successful
     /// reconnect as a reason to skip the restore, which is exactly what § 5 says not to do.
-    func reconnect() async throws {
-        attempts.append(.reconnect)
+    func reconnect(at admission: PlaneAdmission = .supervisor) async throws {
+        record(.reconnect, at: admission)
         if case .refused(let reason) = stage.reconnects {
             throw FanControlPlaneError.readFailed(detail: "reconnect: \(reason)")
         }
@@ -561,8 +570,10 @@ actor ScriptedControlPlane: FanControlPlane {
     /// The writes are the ledger's plan — every `F<n>Md = 0` in scope, then `Ftst = 0` when the
     /// plan clears it — each attempted whatever the others answered (ADR 0014 D5). A refused or
     /// discarded write leaves its key exactly as it found it, like every other field.
-    func restoreToAutomatic(_ scope: FanRestoreScope) async throws {
-        attempts.append(.restoreToAutomatic(scope))
+    func restoreToAutomatic(
+        _ scope: FanRestoreScope, at admission: PlaneAdmission = .supervisor
+    ) async throws {
+        record(.restoreToAutomatic(scope), at: admission)
         if case .fan(let index) = scope { _ = try condition(ofFan: index) }
         // Requested, then issued: one actor turn here, two moments on a plane whose restore
         // waits for a scheduler turn between them — `PlaneWriteLedger` keeps them apart, and
@@ -576,9 +587,11 @@ actor ScriptedControlPlane: FanControlPlane {
     /// ticket-and-seal amendment). The attempt is still recorded, because it was made. The write
     /// and its in-turn read-back are `writeTarget(_:)`'s.
     @discardableResult
-    func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
+    func commandTarget(
+        _ target: AuthorisedFanTarget, at admission: PlaneAdmission = .supervisor
+    ) async throws -> CommandedTarget {
         let index = target.fanIndex
-        attempts.append(.commandTarget(fan: index, rpm: target.rpm))
+        record(.commandTarget(fan: index, rpm: target.rpm), at: admission)
         try ledger.admitCommand()
         _ = try condition(ofFan: index)
         keyWrites.append(.target(fan: index, rpm: target.rpm))
@@ -623,7 +636,7 @@ actor ScriptedControlPlane: FanControlPlane {
 
 // An extension in this file for the unlock model's reason below: it reads the actor's private
 // state directly, and the actor's own body stays the read and restore model it was.
-extension ScriptedControlPlane {
+extension ScriptedFirmware {
 
     /// What `F<n>Md` reads for fan `index` this stage, **recording no attempt**: the snapshot's own
     /// read of the key, which `PlaneBackedProvider` serves from here.
@@ -651,7 +664,7 @@ extension ScriptedControlPlane {
 // MARK: - The firmware's own answer for F<n>Mn and F<n>Mx (#270)
 
 // An extension in this file for the mode extension's reason above.
-extension ScriptedControlPlane {
+extension ScriptedFirmware {
 
     /// Which of a fan's two declared bounds a read asks for.
     enum Bound: Sendable, Hashable {
@@ -709,7 +722,7 @@ extension ScriptedControlPlane {
 
 // An extension in this file, so it reads the actor's private state directly and the actor's
 // own body stays the read and restore model it was.
-extension ScriptedControlPlane {
+extension ScriptedFirmware {
 
     /// The write path's preparation step (D5), against this firmware: enumerate through `fans`,
     /// record the key's presence, read it if present, and issue `.everyFan` once when
@@ -772,8 +785,10 @@ extension ScriptedControlPlane {
     }
 
     /// One step of the unlock model: D3, decided by `EngagementRules` and recorded in `ledger`.
-    func engageManualControl(of fan: CommandableFan) async throws -> EngagementStep {
-        attempts.append(.engageManualControl(fan: fan.index))
+    func engageManualControl(
+        of fan: CommandableFan, at admission: PlaneAdmission = .supervisor
+    ) async throws -> EngagementStep {
+        record(.engageManualControl(fan: fan.index), at: admission)
         _ = try condition(ofFan: fan.index)
         do {
             let step = try unlockStep(fanAt: fan.index)
@@ -932,7 +947,7 @@ extension ScriptedControlPlane {
 
 // In this file for the unlock model's reason; the rest of B1's scripting is in
 // `ScriptedControlPlane+Scripting.swift`, which reads no private state.
-extension ScriptedControlPlane {
+extension ScriptedFirmware {
 
     /// `F<n>Tg = rpm`, and the command's in-turn read-back, as this stage says (#9). A refusal
     /// throws first. Otherwise `.honoured` holds the target; `.reverted` holds it at the read-back
@@ -953,45 +968,20 @@ extension ScriptedControlPlane {
     }
 }
 
-/// The write permit for one of a scripted machine's own fans.
-///
-/// **Derived from the mock's `FanCondition`, never from figures restated in a test.** An
-/// earlier draft declared `FanControlEnvelope.nominal = validated(1_350, 5_777)` beside
-/// `FanCondition.nominal`'s own `1_350`/`5_777`, which put the development machine's
-/// envelope in two hand-maintained places with nothing enforcing that they agree — the
-/// precise hazard `FanSafetyLimits` documents itself as avoiding. Changing the mock fan's
-/// declared minimum now changes the permit clamped against it, because there is one number.
-///
-/// It also lives in a free function rather than in an `extension FanControlEnvelope`. A
-/// test-target extension on a `FanKit` type silently shadows a same-named member added
-/// later on the `FanKit` side — no ambiguity error and no warning — so every helper test
-/// would go on using the stale figures while the library's own moved.
-///
-/// Building a `FanEnvelope` by hand is the honest shape and is the *only* route: both permit
-/// types have `fileprivate` initialisers, and `@testable` does not widen `fileprivate`. A
-/// test that wants to command a fan has to fake a firmware reading, and it looks like it.
-///
-/// - Throws: `FanBoundsImplausibility` when the condition's declared bounds fail #37's gate
-///   — which is exactly what a test asserting "this fan cannot be commanded" wants to catch.
-func commandableFan(
-    _ index: Int, declaring condition: ScriptedControlPlane.FanCondition
-) throws -> CommandableFan {
-    try FanEnvelope(
-        index: index,
-        minimumRPM: condition.minimumRPM,
-        maximumRPM: condition.maximumRPM
-    ).commandable.get()
-}
+// MARK: - Which admission each call came through (#332)
 
-/// A four-character SMC key written out in a test, where a typo can only be a typo.
-///
-/// Traps rather than returning an optional, for the same reason `SMCKey.known(_:)` does:
-/// the failure it can have is an authoring mistake in this repository, caught by the suite
-/// rather than by a user, and threading an optional through every fixture would obscure
-/// what each test is actually asserting.
-func smcKey(_ raw: String) -> SMCKey {
-    guard let key = SMCKey(raw) else {
-        preconditionFailure("'\(raw)' is not a valid four-character SMC key")
+// In this file because it writes `attempts`, whose setter is private to it.
+extension ScriptedFirmware {
+
+    /// One call, and the admission of the plane it came through.
+    struct AdmittedAttempt: Sendable, Hashable {
+        let attempt: Attempt
+        let admission: PlaneAdmission
     }
-    return key
+
+    /// Records `attempt` in both logs. Every verb's first statement, before any refusal.
+    fileprivate func record(_ attempt: Attempt, at admission: PlaneAdmission) {
+        attempts.append(attempt)
+        admittedAttempts.append(AdmittedAttempt(attempt: attempt, admission: admission))
+    }
 }

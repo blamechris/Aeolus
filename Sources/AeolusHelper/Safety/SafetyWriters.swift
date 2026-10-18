@@ -91,6 +91,14 @@ struct SafetyActorWriter<Plane: FanControlPlane>: KeystoneRestoring {
         self.level = level
     }
 
+    /// This writer over its plane's view at `admission`, at the same level: the one
+    /// `HelperFanRestorer` routes § 3's revocation through (ADR 0012's 2026-10-18 amendment). The
+    /// view is the same plane (`FanControlPlane.admitted(at:)`), so only what each turn waits for
+    /// changes.
+    func admitted(at admission: PlaneAdmission) -> SafetyActorWriter<Plane> {
+        SafetyActorWriter(plane: plane.admitted(at: admission), level: level)
+    }
+
     /// Commands this fan's highest commandable speed, as **one** write.
     ///
     /// `docs/SAFETY.md` § 3's emergency is the caller this exists for. It needs no read to

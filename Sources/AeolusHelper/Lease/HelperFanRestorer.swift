@@ -149,9 +149,25 @@ struct KeystoneRestoreAttempt<Plane: FanControlPlane>: FanRestoreAttempting {
 /// a composed helper is bound once brought up. A restore that somehow arrived first would
 /// still restore — the keystone is never gated on bookkeeping — and would say so at
 /// `.fault`.
+///
+/// ## § 3's revocation restores at § 3's admission
+///
+/// `docs/SAFETY.md` § 3 revokes every lease when it fires, and the restores that revocation
+/// causes are part of § 3's cycle: ADR 0012's 2026-10-18 amendment counts up to
+/// `RestoreLimits.attemptBudget` of them per fan in D_cycle's allowance, each waiting for at
+/// most one turn in flight. So a restore whose cause is `FanRestoreCause.thermalEmergency` goes
+/// through the writer's lane view (`SafetyActorWriter.admitted(at:)`), and every other cause
+/// through the writer at `.supervisor`. Both are `BoundedFanRestorer` over the same keystone
+/// attempt, so the budget, the order and the registries' notices are the same; only what each
+/// attempt waits for differs. The cause is the routing key because it names who caused the
+/// restore and nothing else, and `HelperRestorerTests`' composed routing test drives each one.
 actor HelperFanRestorer<Plane: FanControlPlane>: FanRestoring {
 
     private let bounded: BoundedFanRestorer<KeystoneRestoreAttempt<Plane>>
+
+    /// The same bound over the writer's view at § 3's lane, for § 3's revocation alone.
+    private let thermalCycleBounded: BoundedFanRestorer<KeystoneRestoreAttempt<Plane>>
+
     private let log: LeaseLog
 
     /// `docs/SAFETY.md` § 3's registry of fans off automatic control. `nil` until `bind`.
@@ -164,6 +180,9 @@ actor HelperFanRestorer<Plane: FanControlPlane>: FanRestoring {
     init(writer: SafetyActorWriter<Plane>, log: LeaseLog = LeaseLog()) {
         bounded = BoundedFanRestorer(
             attempting: KeystoneRestoreAttempt(writer: writer), log: log)
+        thermalCycleBounded = BoundedFanRestorer(
+            attempting: KeystoneRestoreAttempt(writer: writer.admitted(at: .thermalCycle)),
+            log: log)
         self.log = log
     }
 
@@ -202,7 +221,7 @@ actor HelperFanRestorer<Plane: FanControlPlane>: FanRestoring {
             await reclamationWatchdog?.manualControlReleased(fanAt: fan)
         }
 
-        let abandoned = await bounded.restoreToAutomatic(fans: fans, because: cause)
+        let abandoned = await bound(for: cause).restoreToAutomatic(fans: fans, because: cause)
 
         // Only the fans the firmware took, and only *marked*: accepted is not automatic
         // (#291), so § 3 keeps each one registered until its own cycle reads it automatic
@@ -214,5 +233,19 @@ actor HelperFanRestorer<Plane: FanControlPlane>: FanRestoring {
         }
 
         return abandoned
+    }
+
+    /// The bound a restore of `cause` runs through: § 3's lane for § 3's revocation, and
+    /// `.supervisor` for everything else. Exhaustive, so a new cause is routed by a decision.
+    private func bound(
+        for cause: FanRestoreCause
+    ) -> BoundedFanRestorer<KeystoneRestoreAttempt<Plane>> {
+        switch cause {
+        case .thermalEmergency:
+            return thermalCycleBounded
+        case .systemReclaimed, .supervisorBlind, .leaseExpired, .connectionInvalidated,
+            .leaseReleased, .allLeasesDropped, .startupReconciliation:
+            return bounded
+        }
     }
 }

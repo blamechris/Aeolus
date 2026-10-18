@@ -28,7 +28,8 @@ import SMCCore
 ///
 /// The scheduling this seam made *possible* is `SMCReadScheduler`'s, per
 /// [#127](https://github.com/blamechris/Aeolus/issues/127): the production conformer issues
-/// every read above at `.supervisor`, which is admitted ahead of a waiting snapshot turn.
+/// every read above at its admission — `.supervisor`, which is admitted ahead of a waiting
+/// snapshot turn, or § 3's lane through the view § 3 is given (`admitted(at:)`).
 /// Naming the keys was necessary and was never sufficient — a small read still waits for a
 /// big one on a connection that grants no turns.
 ///
@@ -325,6 +326,21 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     /// read, no write — and returns `nil`. It reaches a write only through
     /// `restoreToAutomatic(_:)`, so it is no new verb.
     func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation?
+
+    // MARK: - Admission
+
+    /// This plane at `admission`: the same plane, every turn it takes admitted as `admission`
+    /// says ([ADR 0012](../../docs/ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
+    /// 2026-10-18 amendment). A plane is built at `.supervisor`.
+    ///
+    /// **The view is the plane.** It holds the scheduler and the connection this plane holds and,
+    /// on a plane that can write, its channel and its `PlaneWriteLedger`: a restore through the
+    /// view supersedes a step through the plane and the reverse, and every in-turn rule is decided
+    /// from the one state (`PlaneAdmission`). A view with state of its own would be a second plane,
+    /// and `PlaneViewTests` fails on one. Synchronous, and it reads and writes nothing. Only the
+    /// composition's § 3 wiring and `HelperFanRestorer` ask for the lane
+    /// (`ThermalCycleLaneTripwireTests`).
+    func admitted(at admission: PlaneAdmission) -> Self
 }
 
 // MARK: - Scope

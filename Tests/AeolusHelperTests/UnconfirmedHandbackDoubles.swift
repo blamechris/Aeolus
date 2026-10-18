@@ -29,7 +29,7 @@ import Testing
 /// **Only the first attempt parks**, so `BoundedFanRestorer` spends its remaining two without
 /// any inter-attempt wait — `RestoreLimits` has none by design — and the test does not have to
 /// release the wedge three times.
-actor WedgedThenRefusingRestorePlane: FanControlPlane {
+actor WedgedThenRefusingRestorePlane: AdmissionBlindPlane {
 
     private let wrapped: ScriptedControlPlane
     private let held = AsyncSignal()
@@ -113,7 +113,7 @@ actor WedgedThenRefusingRestorePlane: FanControlPlane {
 ///
 /// Wraps `ScriptedControlPlane` for the reason every other double here does: the firmware
 /// underneath is the shipped mock and only the one verb behaves differently.
-actor CycleWedgingRestorePlane: FanControlPlane {
+actor CycleWedgingRestorePlane: AdmissionBlindPlane {
 
     private let wrapped: ScriptedControlPlane
     private var isWedging = false

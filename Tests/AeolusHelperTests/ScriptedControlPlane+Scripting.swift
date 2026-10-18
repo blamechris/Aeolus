@@ -7,7 +7,7 @@ import SMCCore
 // vocabulary is P0's of B1 (#9): what the scripted firmware declares for the restore keys, the
 // writes it can leave unanswered, and the built stages that script them.
 
-extension ScriptedControlPlane {
+extension ScriptedFirmware {
 
     /// An engagement write the firmware does not answer: the call fails in the kernel, or its
     /// reply is cut short (`FirmwareWriteAnswer.unanswered`). Whether the register changed anyway

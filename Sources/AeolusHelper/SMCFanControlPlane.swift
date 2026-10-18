@@ -25,9 +25,18 @@ import SMCCore
 ///
 /// Naming the keys is what made the ordering *possible*; it is not the ordering.
 /// [#127](https://github.com/blamechris/Aeolus/issues/127) supplies that: every read below
-/// goes through `SMCReadScheduler` at `.supervisor`, which admits it ahead of a waiting
-/// snapshot turn. Before that, a subset read was merely *small*, and a small read still
-/// waits for a big one on a connection that grants no turns.
+/// goes through `SMCReadScheduler` at this plane's admission — `.supervisor`, which admits it
+/// ahead of a waiting snapshot turn, or § 3's lane on the view § 3 is given. Before that, a
+/// subset read was merely *small*, and a small read still waits for a big one on a connection
+/// that grants no turns.
+///
+/// ## A view at § 3's admission is this plane
+///
+/// `admitted(at:)` copies this value with a different `admission` and nothing else, so the view
+/// holds the one scheduler and the one connection, and every stored property added later is
+/// shared by the copy as long as it is a reference: an actor, a class or an existential of one
+/// (`PlaneViewTests` fails on a stored value that is not). The write path's channel and its
+/// `PlaneWriteLedger` are both, so the view B1 builds on shares them too.
 ///
 /// **What that bounds, exactly.** A read issued here waits at most two turns — ~22 ms —
 /// *while it is the only supervisor-priority read outstanding*, against the ~500 ms a
@@ -62,6 +71,12 @@ struct SMCFanControlPlane: FanControlPlane {
     /// one is ever constructed in the helper.
     private let connection: any SMCConnectionRecycling
 
+    /// The admission every turn this plane takes is admitted at: `.supervisor` for the plane the
+    /// composition builds, § 3's lane for the view § 3 is given (`admitted(at:)`). Set by nothing
+    /// else, so a plane's admission is fixed when the view is made. The write path's turns take it
+    /// too, when B1 builds them: a view's admission is its turns', reads and writes alike.
+    private(set) var admission: PlaneAdmission = .supervisor
+
     /// Takes the scheduler rather than a `SensorProvider`, so that **this type names its
     /// own priority** at the point each read is issued. A `SensorProvider` carries no
     /// priority in its signature, so a prioritised one would be a value whose behaviour
@@ -77,6 +92,14 @@ struct SMCFanControlPlane: FanControlPlane {
     init(scheduler: SMCReadScheduler, connection: some SMCConnectionRecycling) {
         self.scheduler = scheduler
         self.connection = connection
+    }
+
+    /// This plane at `admission`: a copy with every stored reference shared and the admission
+    /// changed. See this type's documentation, and `FanControlPlane.admitted(at:)`.
+    func admitted(at admission: PlaneAdmission) -> SMCFanControlPlane {
+        var view = self
+        view.admission = admission
+        return view
     }
 
     // MARK: - Reads
@@ -315,7 +338,7 @@ struct SMCFanControlPlane: FanControlPlane {
     ) async throws -> [String: SensorReadOutcome] {
         let outcomes: [SensorReadOutcome]
         do {
-            outcomes = try await scheduler.read(keys: keys.map(\.rawValue), at: .supervisor)
+            outcomes = try await scheduler.read(keys: keys.map(\.rawValue), at: admission.priority)
         } catch {
             throw FanControlPlaneError.readFailed(
                 detail: "\(context): \(String(describing: error))")

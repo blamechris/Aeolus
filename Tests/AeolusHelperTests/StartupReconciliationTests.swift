@@ -730,7 +730,7 @@ struct ForeignManualControlReportingTests {
 /// time to pass **inside** the pass rather than around it — the same shape
 /// `ClockAdvancingProvider` gives `SupervisedFanAuthorityTests` for the snapshot's ordering.
 /// A real delay would make the test slow and flaky; this makes it exact.
-actor ClockAdvancingPlane: FanControlPlane {
+actor ClockAdvancingPlane: AdmissionBlindPlane {
 
     private let wrapped: ScriptedControlPlane
     private let clock: TestClock

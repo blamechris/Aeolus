@@ -138,9 +138,43 @@ enum HandbackReading: Sendable, Hashable {
 /// already holds.
 protocol HandbackReadingBack: Sendable {
 
-    /// One fresh `.supervisor` read of each fan in `fans`. Every fan asked about is in the
+    /// One fresh read of each fan in `fans`, at the reader's admission: § 3's lane for the reader
+    /// § 3 is given, `.supervisor` for reconciliation's own. Every fan asked about is in the
     /// answer; one that is absent must be treated as `.unreadable` by the caller.
     func handbackReadings(of fans: Set<Int>) async -> [Int: HandbackReading]
+}
+
+/// The one read loop behind every `HandbackReadingBack`: one `readControlState` per fan, in fan
+/// order, sequentially, and **logging nothing**.
+///
+/// It serves two callers, and that it is one loop is the point (ADR 0012's 2026-10-18
+/// amendment). `StartupReconciliation.handbackReadings(of:)` runs it over reconciliation's plane,
+/// at `.supervisor`, for the lease core's `fansReadingAutomatic(among:)`; § 3 is given it over the
+/// lane view of the same plane (`StartupReconciliation.handbackReadBack(admittedAt:)`). Two
+/// copies of the loop would be two answers to what a fan read, and the lease core and § 3 would
+/// come to disagree about one fan. `ThermalCycleLaneTripwireTests` counts the plane reads that
+/// could be a second copy.
+///
+/// Sequential, never a task group, for `StartupReconciliation.reconcile()`'s reason: what costs
+/// the scheduler is the number of outstanding reads, and § 3's lane holds one waiter at a time.
+struct PlaneHandbackReadBack<Sensing: FanStateSensing>: HandbackReadingBack {
+
+    let sensing: Sensing
+
+    func handbackReadings(of fans: Set<Int>) async -> [Int: HandbackReading] {
+        var readings: [Int: HandbackReading] = [:]
+        for fan in fans.sorted() {
+            do {
+                switch try await sensing.readControlState(ofFan: fan).mode {
+                case .automatic: readings[fan] = .automatic
+                case .manual: readings[fan] = .manual
+                }
+            } catch {
+                readings[fan] = .unreadable(detail: String(describing: error))
+            }
+        }
+        return readings
+    }
 }
 
 // MARK: - The bound
