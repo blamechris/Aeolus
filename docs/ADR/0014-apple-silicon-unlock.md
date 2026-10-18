@@ -3457,10 +3457,13 @@ every spelling: its bare name, a typealias of it, and `.self.main()` each answer
 
 **What remains.**
 - A test that adds `@_spi(FanWrite) import SMCCore` can write. #431's rule is the control. It now
-  also matches `@_spi` in the raw text of every file under `Tests/` and `Tools/` against a fixed
-  list, so no string or comment can hide an opt-in, and refuses `@_silgen_name`, `dlsym` and
-  `@_private(` imports there the same way. The raw text under `Sources/` is held to a fixed `@_spi`
-  list too, so a scoped `import class SMCCore.SMCConnection` in `fanctl` is a new file to justify.
+  also matches the `_spi` token in the raw text of every file under `Tests/` and `Tools/` against a
+  fixed list, so no string, comment or backtick hides an ordinary opt-in, and refuses
+  `@_silgen_name`, `dlsym` and `@_private(` imports there the same way. The raw text under
+  `Sources/` is held to a fixed `_spi` list too, so a scoped `import class SMCCore.SMCConnection`
+  or a backticked `` @`_spi` `` in `fanctl` is a new file to justify. These censuses catch
+  accidents and ordinary spellings. Against a test written to evade them, the compiler's seam
+  above is the control, a residual the B1 plan accepted.
 - **No test can call the daemon's entry point.** `AeolusHelperMain` is a `private` type (fix round
   2), so the compiler refuses every spelling of it outside its own file. A scan holds it `private`,
   and a token scan over the code under `Tests/` and `Tools/` is depth beneath that. Until fix round
@@ -3508,7 +3511,10 @@ every spelling: its bare name, a typealias of it, and `.self.main()` each answer
 - writes are needed on macOS 13;
 - a second production caller of `SMCConnection.write` is proposed;
 - `-enable-private-imports` is adopted for any target, since an `@_private(sourceFile:)` import
-  sees the forwarder and the entry point.
+  sees the forwarder and the entry point;
+- `-disable-access-control` is passed to any target, which opens every `private` and SPI member to
+  a plain-import test. A manifest tripwire refuses both flags, and `unsafeFlags`, in
+  `Package.swift`.
 
 **No `AeolusXPCVersion` bump**: nothing crosses the boundary. **Status stays Proposed.**
 

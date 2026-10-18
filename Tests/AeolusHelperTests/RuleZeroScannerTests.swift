@@ -21,6 +21,8 @@ struct RuleZeroScannerTests {
             "let helper = HelperComposition<SMCFanControlPlane>\n    .production ()",
             "let provider = SMCSensorProvider()",
             "let provider = SMCSensorProvider(connection: connection)",
+            // S2: a real connection built through the recycler, without the word.
+            "let recycler = SMCConnectionRecycler(connection: .init())",
             "let f = HelperComposition.production",
             "let f = HC.production",
         ]
@@ -136,13 +138,23 @@ struct RuleZeroScannerTests {
             // The same blocks as formatted, where the `try` begins a line of its own and only
             // the open brace says it can be swallowed or skipped.
             "let helper = HelperComposition.production(log: log)\n"
-                + "do {\n    try #require(!helper.plane.holdsWriteChannel)\n} catch {}\n_ = helper.plane",
+                + "do {\n    try #require(!helper.plane.holdsWriteChannel)\n} catch {}\n"
+                + "_ = helper.plane",
             "let helper = HelperComposition.production(log: log)\n"
                 + "withKnownIssue {\n    try #require(!helper.plane.holdsWriteChannel)\n}",
             "let helper = HelperComposition.production(log: log)\n"
                 + "if Bool.random() {\n    try #require(!helper.plane.holdsWriteChannel)\n}",
             "let helper = HelperComposition.production(log: log)\n"
                 + "Task {\n    try #require(!helper.plane.holdsWriteChannel)\n}",
+            // S1: a require a conditional-compilation block can compile out.
+            "let helper = HelperComposition.production(log: log)\n"
+                + "#if false\n    try #require(!helper.plane.holdsWriteChannel)\n#endif\n"
+                + "_ = helper.plane",
+            "let helper = HelperComposition.production(log: log)\n"
+                + "#if DEBUG\n    try #require(!helper.plane.holdsWriteChannel)\n#endif\n"
+                + "_ = helper.plane",
+            "let helper = HelperComposition.production(log: log)\n#if DEBUG\n#else\n#endif\n"
+                + "try #require(!helper.plane.holdsWriteChannel)",
             // …or an argument, which an autoclosure can swallow.
             "let helper = HelperComposition.production(log: log)\n"
                 + "swallow(try #require(!helper.plane.holdsWriteChannel))",

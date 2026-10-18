@@ -130,13 +130,16 @@ extension SeamScanner {
     }
 
     /// Whether the `/` at `index` can open a bare regex literal, `/…/`, rather than divide: it is
-    /// followed by something other than a space, `/`, `*` or `=`, and what precedes it is not an
-    /// operand — an operator, an opening bracket, a separator, a keyword that starts an
-    /// expression, or nothing.
+    /// followed by something other than a space, `/`, `*`, `=` or a closing bracket or separator,
+    /// and what precedes it is not an operand — an operator, an opening bracket, a separator, a
+    /// keyword that starts an expression, or nothing. `reduce(64, /)` passes the operator itself,
+    /// which is not a regex (#436's final review, N1).
     static func opensBareRegex(at index: String.Index, in source: String) -> Bool {
         guard source[index] == "/" else { return false }
         let next = source.index(after: index)
-        guard next < source.endIndex, !" \t\n/*=".contains(source[next]) else { return false }
+        guard next < source.endIndex, !" \t\n/*=),;]}".contains(source[next]) else {
+            return false
+        }
         let before = source[..<index].reversed().drop { $0.isWhitespace }
         guard let last = before.first else { return true }
         if last.isLetter || last.isNumber || last == "_" {

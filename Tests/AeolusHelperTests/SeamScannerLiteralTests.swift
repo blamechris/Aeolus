@@ -145,9 +145,13 @@ struct SeamScannerLiteralTests {
             "let half = total / 2", "let rate = count/seconds", "let q = (a + b)/2",
             "x /= 2", "let z = rows[0]/rows[1]", #"let s = "a"/b"#, "let w = (x)/y/z",
             "let v = -1/x",
+            // N1: the operator passed as an argument, with a later `/` on the line.
+            "let total = values.reduce(64, /) + rows[0]/rows[1]",
         ]
         for source in sources {
             #expect(SeamScanner.strippingAllComments(source) == source)
         }
+        // Read as a regex, `/) + f(a)/` would be dropped as a literal's text, and the call with it.
+        #expect(Self.code("let t = xs.reduce(64, /) + f(a)/2").contains("f(a)"))
     }
 }

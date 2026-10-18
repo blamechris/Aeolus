@@ -133,7 +133,21 @@ extension RuleZeroScan {
         // No brace opened since the binding is still open at the require: a require inside
         // `do {…} catch {}`, `withKnownIssue {…}`, an `if`, a closure or a `Task` can be swallowed
         // or skipped, and the test carries on to its drive (B1).
-        guard bracesBalance(code[binding.initializer.upperBound..<named.lowerBound]) else {
+        // A conditional-compilation directive between them is a block too: `#if DEBUG` compiles
+        // the require out of CI's `-c release`, and `#if false` out of everything (#436's final
+        // review, S1).
+        let between = code[binding.initializer.upperBound..<named.lowerBound]
+        if between.range(
+            of: #"(?m)^[ \t]*#(?:if|elseif|else|endif)\b"#, options: .regularExpression)
+            != nil
+        {
+            return Construction(
+                built: built, binding: binding.name,
+                violation: "a conditional-compilation directive stands between it and its require, "
+                    + "which can compile the require out; the accepted spelling is "
+                    + "\(acceptedRequire(built, binding.name)), with no #if around it")
+        }
+        guard bracesBalance(between) else {
             return Construction(
                 built: built, binding: binding.name,
                 violation: "its require is inside a block the binding is not, which can swallow or "

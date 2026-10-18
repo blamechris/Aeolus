@@ -74,10 +74,14 @@ enum RuleZeroScan {
     /// HelperComposition.production`, #436's review). Only `fanctl`'s two other `production`
     /// members, `SettleClock`'s and `HelperConnection`'s, are excepted, by name: any other
     /// receiver — a typealias of the composition, say — counts.
+    ///
+    /// The recycler is in reach too: `SMCConnectionRecycler(connection: .init())` builds a real
+    /// connection without the word (#436's final review, S2).
     static let reachPatterns = [
         #"(?<![A-Za-z0-9_])SMCConnection(?![A-Za-z0-9_])"#,
         productionMember,
         #"(?<![A-Za-z0-9_])SMCSensorProvider\s*\("#,
+        #"(?<![A-Za-z0-9_])SMCConnectionRecycler\s*\("#,
     ]
 
     /// `.production`, called or not, on any receiver but `fanctl`'s two.

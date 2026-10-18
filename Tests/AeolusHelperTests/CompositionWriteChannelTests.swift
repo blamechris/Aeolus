@@ -83,39 +83,84 @@ struct CompositionWriteChannelTests {
     /// review that includes the entry point itself, which is `private` (`HelperBuild` holds the
     /// build string it used to).
     ///
+    /// **It fails closed** (#436's final review, B2). The scan it replaces listed declarations it
+    /// recognised, and never recognised one whose line began with a parenthesised attribute: an
+    /// extract-function refactor of `main()` into `@inline(never) func daemonGraph(log:)` at file
+    /// scope handed every `@testable` test the daemon's graph with the real forwarder. Now every
+    /// column-0 code line must be one this file is allowed — `exposedLines` says which.
+    ///
     /// **Mutations:** add an internal `static func channel(over:)` in an `extension
-    /// AeolusHelperMain`; drop `private` from the entry point. Run: red, each.
+    /// AeolusHelperMain`; drop `private` from the entry point; add `@inline(never) func f()` at
+    /// file scope. Run: red, each.
     @Test("main's file declares nothing beyond private")
     func mainsFileExposesOnlyTheEntryPoint() throws {
-        let code = SeamScanner.strippingAllComments(
-            try String(
-                contentsOf: SeamScanner.sourcesRoot.appendingPathComponent(
-                    "AeolusHelper/AeolusHelperMain.swift"),
-                encoding: .utf8))
-        var exposed: [String] = []
-        let topLevel = try NSRegularExpression(
-            pattern: #"(?m)^((?:(?:@\w+|[a-z]+)[ \t]+|@\w+\n)*)"#
-                + #"(enum|struct|class|actor|protocol|extension|func|let|var|typealias)\s+(\w+)"#)
-        for match in topLevel.matches(in: code, range: NSRange(code.startIndex..., in: code)) {
-            guard let modifiers = Range(match.range(at: 1), in: code),
-                let keyword = Range(match.range(at: 2), in: code),
-                let name = Range(match.range(at: 3), in: code)
-            else { continue }
-            guard !code[modifiers].contains("private") else { continue }
-            exposed.append("\(code[keyword]) \(code[name])")
-            guard let open = code[name.upperBound...].firstIndex(of: "{") else { continue }
-            let body = String(RuleZeroScan.balanced(in: code, from: open))
-            for member in MemberAccessScan.members(inSource: body, keyword: .property)
-            where !member.isPrivate {
-                exposed.append("property \(member.key)")
-            }
-            for member in MemberAccessScan.members(inSource: body, keyword: .method)
-            where !member.isPrivate {
-                exposed.append("method \(member.key)")
-            }
-        }
+        let code = WriteSeamTestIsolationTests.strippingStringLiterals(
+            SeamScanner.strippingAllComments(
+                try String(
+                    contentsOf: SeamScanner.sourcesRoot.appendingPathComponent(
+                        "AeolusHelper/AeolusHelperMain.swift"),
+                    encoding: .utf8)))
+        let exposed = Self.exposedLines(in: code)
+        #expect(exposed.isEmpty, "AeolusHelperMain.swift exposes \(exposed) beyond private")
         #expect(
-            exposed.isEmpty, "AeolusHelperMain.swift exposes \(exposed.sorted()) beyond private")
+            code.contains("private enum AeolusHelperMain"), "the scan is not reading main's file")
+    }
+
+    /// Every column-0 line of `code` that is not an `import`, a `}`, a blank, or a declaration
+    /// whose first word after its attributes is `private` or `fileprivate`. A line holding only
+    /// attributes joins the line after it, so `@main` over `private enum` is the private
+    /// declaration it is, and `@available(macOS 14, *)` over `func f()` is the exposed one it is.
+    /// Anything else at column 0 — `#if`, an attribute split across lines — is refused.
+    static func exposedLines(in code: String) -> [String] {
+        let attributes = #"^(?:@\w+(?:\([^()\n]*\))?\s*)+"#
+        var exposed: [String] = []
+        var pending = ""
+        for raw in code.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(raw)
+            guard let first = line.first, !first.isWhitespace else { continue }
+            let joined = pending + line
+            if line.range(of: attributes + "$", options: .regularExpression) != nil {
+                pending = joined + " "
+                continue
+            }
+            pending = ""
+            let rest = joined.replacingOccurrences(
+                of: attributes, with: "", options: .regularExpression)
+            let allowed =
+                rest == "}" || rest.hasPrefix("} ") || rest.hasPrefix("import ")
+                || rest.range(of: #"^(?:private|fileprivate)\s"#, options: .regularExpression)
+                    != nil
+            if !allowed { exposed.append(joined) }
+        }
+        if !pending.isEmpty { exposed.append(pending) }
+        return exposed
+    }
+
+    /// **Mutation:** in `exposedLines`, accept any line that starts with `@`. Run: red here.
+    @Test("An attribute-prefixed or unmarked declaration in main's file is exposed")
+    func exposedLinesAreFound() {
+        let exposed = [
+            "@available(macOS 14, *) func runDaemon() {}",
+            "@inline(never) func daemonGraph(log: HelperLog) -> Graph {",
+            "@available(macOS 14, *) extension HelperComposition {",
+            "@available(macOS 14, *)\n@MainActor func runDaemon() {}",
+            "extension AeolusHelperMain {",
+            "func f() {}",
+            "let x = 1",
+            "#if DEBUG",
+            "public actor A {}",
+        ]
+        for line in exposed {
+            #expect(Self.exposedLines(in: line).count == 1, "\(line)")
+        }
+        let allowed = [
+            "import SMCCore", "@preconcurrency import Foundation", "@main\nprivate enum E {", "}",
+            "@available(macOS 14, *)\nprivate actor A {", "fileprivate func f() {}",
+            "private extension E {", "    func indented() {}", "",
+        ]
+        for line in allowed {
+            #expect(Self.exposedLines(in: line).isEmpty, "\(line)")
+        }
     }
 
     /// The premise of a require made once, at construction: the plane a composition holds cannot be
