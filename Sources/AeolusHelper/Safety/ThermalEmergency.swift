@@ -88,6 +88,16 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// coalescing mechanism that silently does nothing while every test still passes.
     private let sightings: any CriticalTemperatureRecording
     private let writer: SafetyActorWriter<Plane>
+
+    /// The restorer in this cycle's lane, lent to the lease core for every revocation (#440).
+    ///
+    /// **Required, with no default**, for `sightings`' reason, and held here alone. § 3's
+    /// revocation's restores take § 3's lane (ADR 0012's 2026-10-18 amendment) because § 3 holds
+    /// the restorer whose writer is admitted there:
+    /// `LeaseAuthority.revokeEveryLease(handingBackThrough:)` borrows it for one call, and the
+    /// compiler stops the lease core keeping it. A default would be a second holder nobody chose,
+    /// or a handback at no lane at all. See `ThermalCycleHandback`.
+    private let handback: ThermalCycleHandback<Plane>
     private let leases: LeaseAuthority
     private let latch: ThermalEmergencyLatch
     private let log: SafetyLog
@@ -227,6 +237,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         telemetry: some CriticalTemperatureSensing,
         sightings: some CriticalTemperatureRecording,
         writer: SafetyActorWriter<Plane>,
+        handback: ThermalCycleHandback<Plane>,
         leases: LeaseAuthority,
         latch: ThermalEmergencyLatch,
         handbackReadBack: some HandbackReadingBack,
@@ -236,6 +247,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         self.telemetry = telemetry
         self.sightings = sightings
         self.writer = writer
+        self.handback = handback
         self.leases = leases
         self.latch = latch
         self.handbackReadBack = handbackReadBack
@@ -290,9 +302,10 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// Marks a registered fan whose handback the firmware **accepted** as owed a read-back.
     /// It stays registered — and bridgeable — until § 3's own cycle reads it automatic.
     ///
-    /// **Called by `HelperFanRestorer.restoreToAutomatic(fans:because:)`**, after the write
-    /// and only for the fans the firmware did not refuse. Every lease teardown path —
-    /// released, expired, connection death, revoked, the panic verb — ends in that restorer.
+    /// **Called by `HelperFanRestorer.handBack(_:because:through:)`**, after the write and only
+    /// for the fans the firmware did not refuse. Every lease teardown path — released, expired,
+    /// connection death, revoked, the panic verb — ends in that restorer, and so does § 3's own
+    /// revocation, through the handback that lends it its lane bound (#440).
     ///
     /// ## Why accepted is not enough to forget a fan
     ///
@@ -561,8 +574,9 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         // Still holding — above the release threshold, or judged against an episode that has
         // since moved on. `fire(_:)` empties the registry as it goes, so anything in it now
         // came under manual control **after** the emergency fired — a fan whose lease was
-        // granted in the window described on `LeaseAuthority.revokeEveryLease(because:)`,
-        // or one engaged under a lease that raced the latch. Without this the emergency is
+        // granted in the window described on
+        // `LeaseAuthority.revokeEveryLease(handingBackThrough:)`, or one engaged under a lease
+        // that raced the latch. Without this the emergency is
         // one-shot per episode: `fire(_:)` is unreachable while latched, so such a fan
         // would never be bridged, never restored, and its lease never revoked, with the
         // machine above its ceiling the whole time. Idempotent, and silent on an empty
@@ -580,7 +594,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         guard !engagedFans.isEmpty else {
             // Still revoke, because a lease can exist without a fan having been engaged
             // under it yet — that is the case the registry cannot see.
-            await leases.revokeEveryLease(because: .thermalEmergencyRevocation)
+            await leases.revokeEveryLease(handingBackThrough: handback)
             return
         }
         let engagedSince = engagedFans.values.sorted { $0.index < $1.index }
@@ -589,7 +603,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         for fan in engagedSince {
             await bridgeThenFileRestored(fan)
         }
-        await leases.revokeEveryLease(because: .thermalEmergencyRevocation)
+        await leases.revokeEveryLease(handingBackThrough: handback)
     }
 
     // MARK: - Accepted handbacks (#295)
@@ -710,11 +724,11 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     ///    a lease over a *subset* it can no longer command would be told it has control it
     ///    does not have, which is `CLAUDE.md` rule 6. Selecting on the bridged fans instead
     ///    left a lease alive through an emergency whenever the client had not yet engaged
-    ///    manual control under it; `LeaseAuthority.revokeEveryLease(because:)` records that
-    ///    defect and the grant-time window it also closes. The restore revocation triggers
-    ///    is idempotent, and is deliberately the second one: ADR 0007's keystone makes the
-    ///    restore this actor's own terminal action, never something it delegates to the
-    ///    lease core.
+    ///    manual control under it; `LeaseAuthority.revokeEveryLease(handingBackThrough:)`
+    ///    records that defect and the grant-time window it also closes. The restore revocation
+    ///    triggers is idempotent, and is deliberately the second one: ADR 0007's keystone makes
+    ///    the restore this actor's own terminal action, never something it delegates to the
+    ///    lease core. It is handed back through `handback`, in this cycle's lane (#440).
     ///
     /// ## Every fan, not "the affected fan"
     ///
@@ -783,8 +797,8 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         // Every lease, not one per bridged fan. A client can hold a live lease without
         // having engaged manual control under it yet, and such a fan is in no registry —
         // selecting on `engagedFans` here left exactly that lease alive through an
-        // emergency. See `LeaseAuthority.revokeEveryLease(because:)`.
-        await leases.revokeEveryLease(because: .thermalEmergencyRevocation)
+        // emergency. See `LeaseAuthority.revokeEveryLease(handingBackThrough:)`.
+        await leases.revokeEveryLease(handingBackThrough: handback)
     }
 
     /// Bridges one fan, then files it as restored by § 3 — **unless it was engaged again
@@ -861,8 +875,8 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     ///
     /// ## It does still take back what it finds, and that is not the same thing
     ///
-    /// `LeaseAuthority.revokeEveryLease(because:)` names a grant-time window it cannot close
-    /// from its own side, and the mitigation it names is *"the emergency taking back whatever
+    /// `LeaseAuthority.revokeEveryLease(handingBackThrough:)` names a grant-time window it cannot
+    /// close from its own side, and the mitigation it names is *"the emergency taking back whatever
     /// it finds, every cycle it holds."* This branch used to return before reaching that, so
     /// the sentence was false on exactly the machine where it matters most: the SMC stops
     /// answering, every cycle returns here, and the lease granted in the window survives —
