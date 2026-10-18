@@ -40,6 +40,11 @@ struct FanctlOneShotOutputTests {
     /// `status --json` into a pipe that has room for less than the document, with a reader that
     /// starts reading a moment later. The whole document must arrive.
     ///
+    /// **The reader owns its end of the pipe, and closes it when it stops for any reason**,
+    /// including the cutoff (`SlowReader`). **The writer is closed in a `defer` as well as when
+    /// the command returns**, so a failed `#require` in between cannot leave the reader waiting
+    /// for an end that never comes.
+    ///
     /// **Mutation:** write only what a refusal-free write takes and report the rest as a failure
     /// (`FileDescriptorWriterTests.toTheEndWaitsForTheReader` is the same guard at the writer).
     /// Run: red — the document is cut off and the prefill is all the reader gets.
@@ -49,38 +54,22 @@ struct FanctlOneShotOutputTests {
         let harness = ClientListenerHarness(authority: authority)
         let out = try RealPipe()
         let errors = try RealPipe()
+        let writerIsOpen = OSAllocatedUnfairLock(initialState: true)
+        func closeTheWriter() {
+            let wasOpen = writerIsOpen.withLock { isOpen -> Bool in
+                defer { isOpen = false }
+                return isOpen
+            }
+            if wasOpen { Darwin.close(out.writer) }
+        }
         defer {
-            Darwin.close(out.reader)
+            closeTheWriter()
             errors.close()
         }
         out.fill(leavingFree: 300)
         let prefill = out.queued
-
-        let received = OSAllocatedUnfairLock<[UInt8]>(initialState: [])
-        let finished = OSAllocatedUnfairLock(initialState: false)
-        let reader = out.reader
-        BackgroundThread.run {
-            Thread.sleep(forTimeInterval: 0.05)
-            // Until the writer is closed, or forty-five seconds have passed: never a read that
-            // can park the test process. It is not "until nothing arrives for a moment": the
-            // document arrives after the command's round trips to the helper, and on a runner
-            // that is starved a gap of more than two seconds there was seen on CI, twice, at
-            // the same head. A reader that had left by then took the pipe's prefill and nothing
-            // else, and the command, writing into an empty pipe, still exited 0.
-            var chunk = [UInt8](repeating: 0, count: 8_192)
-            let deadline = Date().addingTimeInterval(45)
-            while Date() < deadline {
-                var request = pollfd(fd: reader, events: Int16(POLLIN), revents: 0)
-                let ready = poll(&request, 1, 250)
-                if ready == 0 { continue }
-                if ready < 0 { break }
-                let count = Darwin.read(reader, &chunk, chunk.count)
-                if count <= 0 { break }
-                let bytes = Array(chunk.prefix(count))
-                received.withLock { $0 += bytes }
-            }
-            finished.withLock { $0 = true }
-        }
+        let reader = SlowReader(reading: out.reader)
+        reader.start()
 
         var command = try #require(Fanctl.parseAsRoot(["status", "--json"]) as? Fanctl.Status)
         command.helper = HelperConnection(
@@ -89,13 +78,15 @@ struct FanctlOneShotOutputTests {
         command.terminal = Terminal.writing(
             to: out.writer, errors: errors.writer, ignoringSIGPIPE: false)
         let code = await exitCode { try await command.run() }
-        Darwin.close(out.writer)  // The reader's end of the story: nothing more is coming.
+        // The reader's end of the story: nothing more is coming.
+        closeTheWriter()
+        reader.writerClosed()
         #expect(
-            await Self.eventually { finished.withLock { $0 } },
+            await Self.eventually { reader.isFinished },
             "the reader never saw the end of the document")
 
         #expect(code == nil)
-        let document = received.withLock { Array($0.dropFirst(prefill)) }
+        let document = Array(reader.received.dropFirst(prefill))
         let object = try? JSONSerialization.jsonObject(with: Data(document))
         let json = try #require(object as? [String: Any], "the document arrived whole")
         #expect(json["schema"] as? Int == 1)
@@ -182,5 +173,84 @@ struct FanctlOneShotOutputTests {
         #expect(code == FanctlExitCode.safeStateNotConfirmed.rawValue)
         #expect(Self.sigpipesAfterAMoment() == 0, "the write raised SIGPIPE")
         _ = harness.sessions
+    }
+}
+
+/// The reading end of a pipe, on a thread of its own, that starts a moment late and stops when the
+/// writer has closed and the pipe is drained.
+///
+/// **It owns its descriptor and closes it when it stops, for any reason**, including the cutoff. A
+/// writer blocked on a full pipe whose reader has gone but whose descriptor is still open has
+/// neither a consumer nor EPIPE and can stay blocked for good, in a syscall the suite's
+/// cooperative `.timeLimit` cannot cancel. Closing the descriptor gives it EPIPE, `status` ignores
+/// that, and the test fails on the truncated document instead of hanging the process.
+///
+/// Not "until nothing arrives for a moment": the document arrives after the command's round trips
+/// to the helper, and on a runner that is starved a gap of more than two seconds there was seen on
+/// CI, twice, at the same head. A reader that had left by then took the pipe's prefill and nothing
+/// else, and the command, writing into an empty pipe, still exited 0.
+private final class SlowReader: Sendable {
+
+    /// The longest the reader waits for the command, counted from when it started reading.
+    ///
+    /// CI measured the test at **33 seconds** on a starved runner, at the head where it flaked
+    /// (the document arrives after the command's round trips to the helper, and every one of
+    /// them was slow); the old forty-five left twelve seconds of margin over it. Fifty-five is
+    /// 1.7 times that, and still under the suite's one-minute `.timeLimit`, so a reader that
+    /// gives up does so *before* the limit and the test fails on what it read, not on a timeout.
+    static let wholeRun: TimeInterval = 55
+
+    /// How long the reader may take to see the end of the document once the writer has closed:
+    /// the ten seconds `eventually` gives the test to see it finish. Every byte is already in the
+    /// pipe by then, so the reader has only to drain it. This is not a wait for the command.
+    static let drainAfterTheWriterClosed: TimeInterval = 10
+
+    private let descriptor: Int32
+    private let bytes = OSAllocatedUnfairLock<[UInt8]>(initialState: [])
+    private let done = OSAllocatedUnfairLock(initialState: false)
+    private let closedAt = OSAllocatedUnfairLock<Date?>(initialState: nil)
+
+    init(reading descriptor: Int32) {
+        self.descriptor = descriptor
+    }
+
+    var received: [UInt8] { bytes.withLock { $0 } }
+    var isFinished: Bool { done.withLock { $0 } }
+
+    /// The test has closed the writer: the drain bound counts from now.
+    func writerClosed() {
+        closedAt.withLock { $0 = Date() }
+    }
+
+    func start() {
+        BackgroundThread.run { [self] in
+            Thread.sleep(forTimeInterval: 0.05)
+            read()
+            Darwin.close(descriptor)
+            done.withLock { $0 = true }
+        }
+    }
+
+    private func isOverdue(at now: Date, cutoff: Date) -> Bool {
+        if now >= cutoff { return true }
+        // Counted from when the writer closed, not from when the command began: how long the
+        // command took says nothing about how long a drain should.
+        guard let closed = closedAt.withLock({ $0 }) else { return false }
+        return now >= closed.addingTimeInterval(Self.drainAfterTheWriterClosed)
+    }
+
+    private func read() {
+        let cutoff = Date().addingTimeInterval(Self.wholeRun)
+        var chunk = [UInt8](repeating: 0, count: 8_192)
+        while !isOverdue(at: Date(), cutoff: cutoff) {
+            var request = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&request, 1, 250)
+            if ready == 0 { continue }
+            if ready < 0 { return }
+            let count = Darwin.read(descriptor, &chunk, chunk.count)
+            if count <= 0 { return }
+            let taken = Array(chunk.prefix(count))
+            bytes.withLock { $0 += taken }
+        }
     }
 }
