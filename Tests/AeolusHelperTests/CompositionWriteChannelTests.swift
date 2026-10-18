@@ -173,8 +173,8 @@ struct CompositionWriteChannelTests {
             ),
             ("fileprivate extension E {\n    internal(set) var x: Int { 0 }\n}", ["internal"]),
             (
-                "@main private enum E {\n    static func main() {}\n    internal static let x = 1\n}",
-                ["internal"]
+                "@main private enum E {\n    static func main() {}\n"
+                    + "    internal static let x = 1\n}", ["internal"]
             ),
         ]
         for (source, words) in widening {
@@ -187,7 +187,8 @@ struct CompositionWriteChannelTests {
             "private let words = \"internal public package open\"",
             "private enum E {\n    static func main() { opened(); isOpen = false }\n}",
             // N1: `open` and `package` as names. The forwarder's own `func open()` is one.
-            "private actor E {\n    func open() throws { try connection.assumeIsolated { try $0.open() } }\n}",
+            "private actor E {\n    func open() throws {\n"
+                + "        try connection.assumeIsolated { try $0.open() }\n    }\n}",
             "private enum E {\n    static func main() { let open = 1; _ = open; _ = self.open }\n}",
             "private enum E {\n    var package: Int { 0 }\n    func package(_ x: Int) {}\n}",
             "private enum E {\n    func f() { if open { return } else { _ = package } }\n}",

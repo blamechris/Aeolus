@@ -182,17 +182,21 @@ struct ManifestScanTests {
                     problem?.contains("not under") == true, "\(kind) \(path): \(problem ?? "nil")")
             }
         }
-        let inside: [(kind: String, path: String, resolved: String)] = [
-            ("target", "Sources/T", "Sources/T"), ("testTarget", "Tests/T/", "Tests/T"),
-            ("testTarget", "./Tests/T", "Tests/T"), ("target", "Tests/../Sources/T", "Sources/T"),
-            ("target", "Tools/X/../Y", "Tools/Y"), ("testTarget", "Tests//T", "Tests/T"),
-            ("target", "Sources", "Sources"), ("testTarget", "Sources/../Tests/T", "Tests/T"),
+        func at(_ kind: String, _ path: String) -> ManifestScan.Target {
+            ManifestScan.Target(kind: kind, name: "T", path: .literal(path))
+        }
+        let inside: [(ManifestScan.Target, String)] = [
+            (at("target", "Sources/T"), "Sources/T"), (at("testTarget", "Tests/T/"), "Tests/T"),
+            (at("testTarget", "./Tests/T"), "Tests/T"),
+            (at("target", "Tests/../Sources/T"), "Sources/T"),
+            (at("target", "Tools/X/../Y"), "Tools/Y"), (at("testTarget", "Tests//T"), "Tests/T"),
+            (at("target", "Sources"), "Sources"),
+            (at("testTarget", "Sources/../Tests/T"), "Tests/T"),
         ]
-        for (kind, path, resolved) in inside {
-            let target = ManifestScan.Target(kind: kind, name: "T", path: .literal(path))
+        for (target, resolved) in inside {
             let (problem, asked) = Self.lookingFor(target)
-            #expect(problem == nil, "\(kind) \(path): \(problem ?? "")")
-            #expect(asked == [resolved], "\(path) was looked for at \(asked)")
+            #expect(problem == nil, "\(target): \(problem ?? "")")
+            #expect(asked == [resolved], "\(target) was looked for at \(asked)")
         }
     }
 
