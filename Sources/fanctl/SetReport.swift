@@ -94,6 +94,36 @@ extension SetCommand {
                 closingLine: nil)
         }
 
+        /// The lease **ended while the speed was being applied**: control lost, never a refusal.
+        /// Released, and the safe state looked at. Exit 6, or the check's verdict where that is
+        /// worse.
+        static func lapsed(
+            _ lapse: Lapse, hold: Hold, release: Release, settlement: SafeState.Settlement
+        ) -> Report {
+            Report(
+                failure: HelperCommandFailure(
+                    code(.controlLost, after: settlement),
+                    SetMessages.lapsed(
+                        lapse, hold: hold, release: release, settlement: settlement)),
+                leaseID: hold.leaseID, endedBecause: "controlLost", signal: nil, release: release,
+                snapshot: settlement.snapshot, snapshotFollowsRelease: settlement.snapshot != nil,
+                plans: hold.plans, closingLine: nil)
+        }
+
+        /// The exit for a run whose `apply` failed and whose safe state was then looked at: the
+        /// check's verdict where it is **worse** than the failure's own code — 9, a reason that
+        /// releasing will not change, then 8, not confirmed — and the failure's code when the
+        /// check found every fan automatic and no lease.
+        static func code(
+            _ code: FanctlExitCode, after settlement: SafeState.Settlement
+        ) -> FanctlExitCode {
+            switch settlement.verdict {
+            case .cannotReturn: return .cannotReturnToAutomatic
+            case .notConfirmed: return .safeStateNotConfirmed
+            case .automatic: return code
+            }
+        }
+
         /// `apply` got **no answer**: the speed may have been applied, which is not a refusal.
         /// The lease was released and the safe-state check looked; the exit is still the code the
         /// failure classified to, and the check's verdict is in the message and the facts.

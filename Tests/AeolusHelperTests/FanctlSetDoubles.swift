@@ -17,6 +17,16 @@ import os
 /// wall-clock bound ([#319](https://github.com/blamechris/Aeolus/issues/319)). A script that
 /// **parks** (sleeps on the real clock for an hour) is woken by cancellation, which is exactly
 /// how a signal reaches the loop in production, and then the sleep ends without time passing.
+///
+/// ## Waits made while a request is with the helper
+///
+/// `SettleClock.waitOnHelper` is a different thing from `sleep`: the keeper (`LeaseKeeper`)
+/// makes it while `apply` is outstanding, and an `apply` that is answered in a millisecond of
+/// real time must not have been waited on for ten seconds of this clock. So **a wait does not
+/// elapse by itself.** It parks until it is cancelled (which is how the run stops the keeper),
+/// unless `helperBusy(for:then:)` says the helper is working on a request, in which case each
+/// wait elapses, up to the moment that request ends. Waits are counted apart from sleeps
+/// (`waits`), so no script keyed on a sleep's number moves.
 final class VirtualHoldTime: Sendable {
 
     typealias Script = @Sendable (_ number: Int, _ duration: Duration) async throws -> Void
@@ -24,6 +34,10 @@ final class VirtualHoldTime: Sendable {
     private struct State {
         var elapsed = Duration.zero
         var sleeps: [Duration] = []
+        var waits: [Duration] = []
+        /// When the request the helper is working on ends, as an `elapsed`, and what to do then.
+        var busyUntil: Duration?
+        var onEnd: (@Sendable () async -> Void)?
     }
 
     private let origin = ContinuousClock.now
@@ -43,10 +57,49 @@ final class VirtualHoldTime: Sendable {
 
     var elapsed: Duration { state.withLock { $0.elapsed } }
     var sleeps: [Duration] { state.withLock { $0.sleeps } }
+    /// The waits made for the helper (`SettleClock.waitOnHelper`), in the length asked for.
+    var waits: [Duration] { state.withLock { $0.waits } }
+
+    /// The clock's own instant for `elapsed`: what a double that keeps the helper's time reads.
+    var now: ContinuousClock.Instant { origin + elapsed }
 
     /// Time passing with nothing asleep: a write that took a long time, a machine that stalled.
+    /// If it carries the clock to the end of a request the helper is working on, that request
+    /// ends.
     func advance(by duration: Duration) {
-        state.withLock { $0.elapsed += duration }
+        let finished = state.withLock { value -> (@Sendable () async -> Void)? in
+            value.elapsed += duration
+            return Self.endIfReached(&value)
+        }
+        if let finished { Task { await finished() } }
+    }
+
+    /// The request the helper is working on is over **now**: the clock moves to its end, if it is
+    /// not there already, and the double lets the held `apply` go. For a test that has seen what
+    /// it came to see and has no wish to depend on how far the clock got.
+    func finishHelperWork() {
+        let finished = state.withLock { value -> (@Sendable () async -> Void)? in
+            if let until = value.busyUntil { value.elapsed = max(value.elapsed, until) }
+            return Self.endIfReached(&value)
+        }
+        if let finished { Task { await finished() } }
+    }
+
+    /// **The helper starts working on a request now, and answers when `length` of this clock has
+    /// passed.** Waits made for it elapse, each as far as the end of the request and no further,
+    /// and `finish` runs when the clock reaches it: the double lets the held `apply` go.
+    func helperBusy(for length: Duration, then finish: @escaping @Sendable () async -> Void) {
+        state.withLock {
+            $0.busyUntil = $0.elapsed + length
+            $0.onEnd = finish
+        }
+    }
+
+    private static func endIfReached(_ value: inout State) -> (@Sendable () async -> Void)? {
+        guard let until = value.busyUntil, value.elapsed >= until else { return nil }
+        value.busyUntil = nil
+        defer { value.onEnd = nil }
+        return value.onEnd
     }
 
     /// A hold that sleeps this many times is a loop that has stopped ending. Under a clock that
@@ -64,6 +117,22 @@ final class VirtualHoldTime: Sendable {
                 if number > Self.runaway { throw CancellationError() }
                 try await script?(number, duration)
                 state.withLock { $0.elapsed += duration + (stalls[number] ?? .zero) }
+            },
+            waitOnHelper: { [state] duration in
+                try Task.checkCancellation()
+                let step = state.withLock { value -> (@Sendable () async -> Void)?? in
+                    value.waits.append(duration)
+                    guard let until = value.busyUntil else { return .none }
+                    value.elapsed += min(duration, max(until - value.elapsed, .zero))
+                    return .some(Self.endIfReached(&value))
+                }
+                // Not busy: the helper is not working on anything this clock measures, so the
+                // wait does not end by itself. It parks, and cancellation is how it ends.
+                guard let ended = step else {
+                    try await Task.sleep(for: .seconds(3_600))
+                    throw CancellationError()
+                }
+                await ended?()
             })
     }
 }

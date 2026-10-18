@@ -18,6 +18,11 @@ import Foundation
 /// lease, `started`. Then every ten seconds: renew, then snapshot. When the hold ends: release,
 /// and the safe-state check `fanctl auto` ends on (`SafeState`, exit 0, 8 or 9).
 ///
+/// **The lease is renewed from the moment it is asked for**, not from the moment `apply`
+/// answers: the helper's thirty seconds start at the grant and `apply` may take a minute or
+/// more (`LeaseKeeper`). One schedule runs the whole way, and a lapse during `apply` is control
+/// lost, never a refusal.
+///
 /// ## Why it never retries and never re-acquires
 ///
 /// A lease is the proof that something still wants the fans. Re-acquiring one after losing it
@@ -139,6 +144,11 @@ enum SetCommand {
         // for a person who has already asked to stop.
         if let signal = session.interrupt.pending { return .interruptedBeforeControl(signal) }
 
+        // **Before the request is sent**, never after it is answered. The helper's thirty
+        // seconds start at the grant, which is no earlier than this instant, so a renewal
+        // scheduled from here is due no later than the helper's own clock says. Taken after the
+        // answer it would be late by however long the answer took.
+        let requestedAt = session.clock.now()
         let lease: Lease
         do {
             lease = try await session.client.acquireLease(leaseRequest(for: plans))
@@ -155,62 +165,7 @@ enum SetCommand {
             return .interruptedBeforeApply(signal, hold: hold, release: release)
         }
 
-        do {
-            try await session.client.apply(settings(for: plans), leaseID: lease.id)
-        } catch {
-            return await afterFailedApply(error, hold: hold, in: session)
-        }
-        return await holding(hold, in: session)
-    }
-
-    /// Control is held from here: `apply` was accepted. What is still to be seen is whether the
-    /// helper lists this lease, and then the hold itself.
-    private static func holding(_ hold: Hold, in session: Session) async -> Report {
-        let confirmation: SystemSnapshot
-        do {
-            confirmation = try await session.client.snapshot()
-        } catch {
-            return await finish(
-                .lost(.snapshotFailed(describe(error))), hold: hold, snapshot: nil, in: session)
-        }
-        if let loss = loss(in: confirmation, leaseID: hold.leaseID, covering: hold.fans) {
-            return await finish(.lost(loss), hold: hold, snapshot: confirmation, in: session)
-        }
-
-        // Handed over, not written: nothing the hold does waits on a reader. If standard output
-        // has failed or is not taking them, the first look in `heartbeats` finds out.
-        session.output.started(hold, snapshot: confirmation)
-
-        let (end, latest) = await heartbeats(
-            hold, from: confirmation, startingParent: session.startingParent, in: session)
-        return await finish(end, hold: hold, snapshot: latest, in: session)
-    }
-
-    /// `apply` threw. Whether the helper **answered** decides what that means.
-    ///
-    /// - **It answered with a fault**: it refused the speed. The lease is given back and the exit
-    ///   is the code the fault classifies to, with nothing to check afterwards.
-    /// - **It did not answer** (`helperNeverAnswered`, `replyNotDelivered`, `helperRestarted`, or
-    ///   any transport failure): it may have applied the speed. "Refused" would be a statement
-    ///   about the machine nothing observed. The lease is given back as before, and then the
-    ///   safe-state check looks, because only a snapshot can say what the fans are doing; the
-    ///   exit is still the code the failure classifies to.
-    static func afterFailedApply(
-        _ error: any Error, hold: Hold, in session: Session
-    ) async -> Report {
-        let failure = HelperCommandFailure(classifying: error, during: .beforeControl)
-        let release = await release(hold.leaseID, using: session.client)
-        guard !helperAnswered(error) else {
-            return .refused(failure, hold: hold, release: release)
-        }
-        let settlement = await checkSafeState(in: session)
-        return .applyUnanswered(failure, hold: hold, release: release, settlement: settlement)
-    }
-
-    /// Whether `error` is the helper answering. A fault is its answer; everything else is the
-    /// transport failing, and says nothing about what the helper did with the message.
-    static func helperAnswered(_ error: any Error) -> Bool {
-        error is AeolusXPCFault
+        return await establish(hold, leaseRequestedAt: requestedAt, in: session)
     }
 
     /// The holder the helper lists: this tool, its version, and the process, so a person looking
@@ -239,6 +194,11 @@ enum SetCommand {
 
     /// Renews and looks, every `heartbeat`, until something ends the hold.
     ///
+    /// **It takes the schedule over from `LeaseKeeper`**: `renewedAt` is when the last renewal
+    /// was sent, or when the lease was asked for if the keeper sent none. A loop that started
+    /// its own schedule here, at the moment the hold begins, would leave up to a whole
+    /// `apply` between the last renewal and the next, and there would be two schedules.
+    ///
     /// **The deadline is minted here, on `session.clock`, and compared here.** `Lease.expiresAt`
     /// is the helper's wall-clock estimate and is never consulted: a step in the wall clock
     /// must not lengthen or shorten a hold. A deadline handed in from outside would be an
@@ -258,7 +218,9 @@ enum SetCommand {
     ///
     /// Returns the snapshot the loop last read, for the closing report.
     static func heartbeats(
-        _ hold: Hold, from confirmation: SystemSnapshot, startingParent: Int32, in session: Session
+        _ hold: Hold, from confirmation: SystemSnapshot,
+        renewedAt lastRenewal: ContinuousClock.Instant,
+        startingParent: Int32, in session: Session
     ) async -> (end: HoldEnd, snapshot: SystemSnapshot) {
         var latest = confirmation
         let deadline = session.clock.now() + hold.duration
@@ -266,7 +228,7 @@ enum SetCommand {
             interrupt: session.interrupt, environment: session.environment, clock: session.clock,
             startingParent: startingParent, deadline: deadline)
         let output = session.output
-        var renewedAt = session.clock.now()
+        var renewedAt = lastRenewal
         while true {
             var now = session.clock.now()
             let remaining = deadline - now
@@ -342,9 +304,11 @@ enum SetCommand {
     /// Releases the lease, and for an ordinary ending checks the safe state.
     ///
     /// The release is **best-effort and nothing waits on its answer**: a refusal is reported and
-    /// the check that follows decides the exit. A loss (6) and a refusal skip the check — there
-    /// is nothing to confirm a return to, and `fanctl auto` is how to ask — and a signal that
-    /// arrives from here on is ignored: the loop is no longer looking.
+    /// the check that follows decides the exit. A loss once the hold is under way (6) and a
+    /// refusal skip the check — there is nothing to confirm a return to, and `fanctl auto` is how
+    /// to ask — and a signal that arrives from here on is ignored: the loop is no longer
+    /// looking. (A lease that ended while `apply` was outstanding does not skip it: see
+    /// `afterFailedApply`.)
     static func finish(
         _ end: HoldEnd, hold: Hold, snapshot: SystemSnapshot?, in session: Session
     ) async -> Report {

@@ -18,6 +18,57 @@ private struct SnapshotFailure {
     }
 }
 
+/// What a lease lives for, on the clock a test gives it, and the record of how it lived.
+///
+/// `LeaseAuthority`'s deadline is the grant plus the lifetime, a renewal moves it to its own
+/// receipt plus the lifetime, and a lapse is the first time something finds it past. Every
+/// instant is on the test's clock, so a thirty-second lifetime is walked in virtual seconds.
+private struct LeaseTerm {
+    private var lifetime: Duration?
+    private var now: (@Sendable () -> ContinuousClock.Instant)?
+    private var deadline: ContinuousClock.Instant?
+    private(set) var grants: [ContinuousClock.Instant] = []
+    private(set) var renewals: [ContinuousClock.Instant] = []
+    private(set) var lapses: [ContinuousClock.Instant] = []
+
+    mutating func live(for duration: Duration, on clock: SettleClock) {
+        lifetime = duration
+        now = clock.now
+    }
+
+    /// Whether the lease has outlived its deadline. Never, without `live(for:on:)`.
+    var hasLapsed: Bool {
+        guard let now, let deadline else { return false }
+        return now() >= deadline
+    }
+
+    mutating func granted() { extend(recording: \.grants) }
+    mutating func renewed() { extend(recording: \.renewals) }
+
+    mutating func lapsed() {
+        if let now { lapses.append(now()) }
+        deadline = nil
+    }
+
+    /// The lease is gone by some other way: no deadline is left to pass.
+    mutating func ended() { deadline = nil }
+
+    private mutating func extend(
+        recording record: WritableKeyPath<LeaseTerm, [ContinuousClock.Instant]>
+    ) {
+        guard let lifetime, let now else { return }
+        deadline = now() + lifetime
+        self[keyPath: record].append(now())
+    }
+}
+
+/// A renewal the helper takes and does not answer until it is told to.
+private struct HeldRenewal {
+    /// Which renewal, counting from one.
+    let number: Int
+    let signal: AsyncSignal
+}
+
 /// A `FanAuthority` that behaves like a helper **with** a write path, for driving `fanctl`'s
 /// helper commands end to end.
 ///
@@ -33,6 +84,16 @@ private struct SnapshotFailure {
 /// **Nothing here writes to a fan, and nothing pretends the shipped helper can.** The shipped
 /// helper answers every lease with `writePathNotBuilt`; `refusingEveryLease(with:)` is how a
 /// test reproduces that.
+///
+/// ## A lease lifetime, when a test asks for one
+///
+/// `expiringLeases(after:on:)` gives a lease what `LeaseAuthority` gives it: a deadline at the
+/// grant plus the lifetime, a renewal that moves the deadline to its own receipt plus the
+/// lifetime, and a lapse that ends the lease and returns its fans the first time anything
+/// notices (`LeaseAuthority.heldLease` refuses `leaseExpired`, then the lease is gone). Time is
+/// the test's clock, so a thirty-second lifetime is walked in virtual seconds. **Without it a
+/// lease never lapses**, which is what every test written before this existed assumed, and why
+/// none of them could see a lease lapse in the middle of an `apply`.
 actor SimulatedFanAuthority: FanAuthority {
 
     private var fans: [FanState]
@@ -67,6 +128,10 @@ actor SimulatedFanAuthority: FanAuthority {
     private var takenAfterRelease: String?
     private var heldAcquire: AsyncSignal?
     private var heldApply: AsyncSignal?
+    private var heldRenewal: HeldRenewal?
+    private var renewalFailure: AeolusXPCFault?
+    private var heldAcquireReply: AsyncSignal?
+    private var term = LeaseTerm()
 
     // Records.
     private(set) var calls: [String] = []
@@ -79,6 +144,14 @@ actor SimulatedFanAuthority: FanAuthority {
     private(set) var acquiredRequests: [LeaseRequest] = []
     private(set) var appliedSettings: [[FanSetting]] = []
     private(set) var renewals = 0
+    /// When each lease was granted, each renewal landed and a lease lapsed, on the lifetime's
+    /// clock. Empty unless `expiringLeases(after:on:)` was called.
+    var grantInstants: [ContinuousClock.Instant] { term.grants }
+    var renewalInstants: [ContinuousClock.Instant] { term.renewals }
+    var lapseInstants: [ContinuousClock.Instant] { term.lapses }
+    /// Finer than `calls`: when a message arrived, and when it was answered, in order. `calls`
+    /// is what most suites compare whole, so nothing is added to it.
+    private(set) var ledger: [String] = []
 
     /// Two fans with the shipping development machine's declared range, both automatic and
     /// available.
@@ -230,6 +303,7 @@ actor SimulatedFanAuthority: FanAuthority {
 
     func snapshot() async throws -> SystemSnapshot {
         calls.append("snapshot")
+        ledger.append("snapshot received")
         snapshotsServed += 1
         if let heldSnapshots { try await heldSnapshots.wait() }
         if let snapshotFailure, snapshotFailure.fails(snapshotsServed) {
@@ -252,6 +326,9 @@ actor SimulatedFanAuthority: FanAuthority {
                 snapshotsLeftBeforeReleaseShows = remaining - 1
             }
         }
+        // As `LeaseAuthority.activeLease()` does: anything lapsed is swept before the lease is
+        // reported, so a snapshot never lists a lease that has stopped holding the fans.
+        sweepLapsedLease()
         return SystemSnapshot(
             fans: fans.map(reportedState), sensors: [], activeLease: reportedLease(),
             isThermalEmergencyActive: isThermalEmergencyActive || emergencyHasBegun,
@@ -281,6 +358,7 @@ actor SimulatedFanAuthority: FanAuthority {
         if let acquireRefusal { throw acquireRefusal }
         try AeolusXPCValidation.validate(
             request, enumeratedFanIndices: Set(fans.map(\.index)))
+        sweepLapsedLease()
         guard lease == nil else {
             throw AeolusXPCFault.manualControlUnavailable(reason: .leaseHeldByAnotherClient)
         }
@@ -294,17 +372,28 @@ actor SimulatedFanAuthority: FanAuthority {
         lease = granted
         leaseHolder = connection
         leasedFans = Set(request.fanIndices)
+        term.granted()
+        if let heldAcquireReply { try await heldAcquireReply.wait() }
         return granted
     }
 
     func renewLease(id: UUID, from connection: ConnectionID) async throws -> Lease {
         calls.append("renewLease")
-        let current = try held(id, by: connection)
+        ledger.append("renewLease received")
+        defer { ledger.append("renewLease answered") }
+        var current = try held(id, by: connection)
+        if let renewalFailure { throw renewalFailure }
+        if let heldRenewal, heldRenewal.number == calls.filter({ $0 == "renewLease" }).count {
+            try await heldRenewal.signal.wait()
+            // Whatever happened to the lease while this was parked has happened to it.
+            current = try held(id, by: connection)
+        }
         if let limit = renewalsBeforeRefusal, renewals >= limit {
             endLease()
             throw renewalRefusal
         }
         renewals += 1
+        term.renewed()
         if let reclaimAfterRenewals, renewals >= reclaimAfterRenewals {
             for index in leasedFans { reclaim(index) }
         }
@@ -318,6 +407,8 @@ actor SimulatedFanAuthority: FanAuthority {
 
     func releaseLease(id: UUID, from connection: ConnectionID) async throws {
         calls.append("releaseLease")
+        ledger.append("releaseLease received")
+        defer { ledger.append("releaseLease answered") }
         if let releaseRefusal { throw releaseRefusal }
         _ = try held(id, by: connection)
         if snapshotsBeforeReleaseShows > 0 {
@@ -332,8 +423,13 @@ actor SimulatedFanAuthority: FanAuthority {
         _ settings: [FanSetting], leaseID: UUID, from connection: ConnectionID
     ) async throws {
         calls.append("apply")
+        ledger.append("apply received")
+        defer { ledger.append("apply answered") }
         _ = try held(leaseID, by: connection)
         if let heldApply { try await heldApply.wait() }
+        // As `LeaseApplier` does before it replies (item 4): the lease again, so the reply never
+        // says applied under a lease that has ended while the helper worked.
+        _ = try held(leaseID, by: connection)
         if let applyRefusal { throw applyRefusal }
         appliedSettings.append(settings)
         guard !ignoresApply else { return }
@@ -372,6 +468,12 @@ actor SimulatedFanAuthority: FanAuthority {
         guard leaseHolder == connection else {
             throw AeolusXPCFault.leaseNotHeldByThisConnection
         }
+        // `LeaseAuthority.heldLease`: a lapsed lease is refused `leaseExpired`, and the lease
+        // is gone for whoever asks next.
+        if term.hasLapsed {
+            lapse()
+            throw AeolusXPCFault.leaseExpired
+        }
         return lease
     }
 
@@ -394,6 +496,7 @@ actor SimulatedFanAuthority: FanAuthority {
         lease = nil
         leaseHolder = nil
         leasedFans = []
+        term.ended()
     }
 
     private func envelope(for index: Int) throws -> FanControlEnvelope {
@@ -441,5 +544,42 @@ actor SimulatedFanAuthority: FanAuthority {
                 mode: .automatic, isReclaimedBySystem: true,
                 manualControlAvailability: .available)
         }
+    }
+}
+
+// MARK: - What a hold that goes wrong in new ways needs
+
+/// Scripting and internals for lifetimes and renewals in flight.
+/// An extension in this file, so it reaches the private state, and so the actor's own body stays
+/// the size SwiftLint's `type_body_length` allows.
+extension SimulatedFanAuthority {
+
+    /// The `number`-th `renewLease` (counting from one) is taken and **not answered until
+    /// `signal` fires**: a renewal on the wire when something else has finished.
+    func holdingRenewal(number: Int, until signal: AsyncSignal) {
+        heldRenewal = HeldRenewal(number: number, signal: signal)
+    }
+
+    /// Every `renewLease` is answered with `fault` and **does nothing else**: the lease is
+    /// neither extended nor ended, so only time takes it. A renewal that cannot land.
+    func failingRenewals(with fault: AeolusXPCFault) { renewalFailure = fault }
+
+    /// `acquireLease` grants the lease and **does not answer until `signal` fires**: a grant
+    /// whose reply is a long time on the way, so the client learns of it late.
+    func holdingAcquireReply(until signal: AsyncSignal) { heldAcquireReply = signal }
+
+    /// **Leases live for `duration`, measured on `clock`.** See the type's documentation.
+    func expiringLeases(after duration: Duration, on clock: SettleClock) {
+        term.live(for: duration, on: clock)
+    }
+
+    /// What the expiry supervisor does at the deadline: end the lease and return its fans.
+    private func lapse() {
+        term.lapsed()
+        endLease()
+    }
+
+    private func sweepLapsedLease() {
+        if lease != nil, term.hasLapsed { lapse() }
     }
 }

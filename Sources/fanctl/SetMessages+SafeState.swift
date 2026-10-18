@@ -3,7 +3,7 @@ import FanKit
 import Foundation
 
 // What `fanctl set` says when the check after the release did not find the safe state (8 and 9),
-// and when `apply` was never answered.
+// and when `apply` did not become a hold: it got no answer, or the lease ended while it worked.
 //
 // **Everything said about the lease and the fans here comes from a snapshot read after the
 // release, or is not said.** The snapshot the hold last read was taken while the lease was
@@ -127,22 +127,17 @@ extension SetMessages {
         return paragraphs.joined(separator: "\n\n")
     }
 
-    // MARK: - An apply nobody answered
+    // MARK: - An apply that did not become a hold
 
-    /// The first sentence when `apply` got no answer. It says what is known (nothing came back)
-    /// and what is not (whether the speed was applied), and never "refused".
-    static func unansweredApplyLead(_ failure: HelperCommandFailure, hold: Hold) -> String {
-        "The helper took lease \(hold.leaseID.uuidString) and then did not answer the request to "
-            + "apply the speed, so it may have applied it. \(failure.message)"
-    }
-
-    /// `apply` got no answer: the lease was released, the safe-state check looked, and this is
-    /// what it found. The exit stays the code the failure classified to, whatever the check says.
-    static func unansweredApply(
-        _ failure: HelperCommandFailure, hold: Hold, release: Release,
-        settlement: SafeState.Settlement
+    /// What is said after the lease was released and the safe state looked at, whatever came
+    /// before it: the lead says what happened to `apply`, and the check's verdict says what the
+    /// helper reports now.
+    ///
+    /// **Nothing that reads as "no fan was touched" is said here.** Only the `.automatic` arm
+    /// describes the fans, and in the helper's voice with the time it captured the snapshot.
+    private static func afterApply(
+        lead: String, hold: Hold, release: Release, settlement: SafeState.Settlement
     ) -> String {
-        let lead = unansweredApplyLead(failure, hold: hold)
         switch settlement.verdict {
         case .automatic:
             let captured =
@@ -158,5 +153,56 @@ extension SetMessages {
         case .notConfirmed:
             return notConfirmed(lead: lead, hold: hold, release: release, settlement: settlement)
         }
+    }
+
+    /// The first sentence when `apply` got no answer. It says what is known (nothing came back)
+    /// and what is not (whether the speed was applied), and never "refused".
+    static func unansweredApplyLead(_ failure: HelperCommandFailure, hold: Hold) -> String {
+        "The helper took lease \(hold.leaseID.uuidString) and then did not answer the request to "
+            + "apply the speed, so it may have applied it. \(failure.message)"
+    }
+
+    /// `apply` got no answer: the lease was released, the safe-state check looked, and this is
+    /// what it found. The exit stays the code the failure classified to, whatever the check says.
+    static func unansweredApply(
+        _ failure: HelperCommandFailure, hold: Hold, release: Release,
+        settlement: SafeState.Settlement
+    ) -> String {
+        afterApply(
+            lead: unansweredApplyLead(failure, hold: hold), hold: hold, release: release,
+            settlement: settlement)
+    }
+
+    /// The lease **ended while the speed was being applied**. Control lost, said as that: not a
+    /// refusal, and not "did not accept". The helper ends a lease that is not renewed within
+    /// `lifetime` seconds and returns the fans to automatic control when it does, but neither
+    /// `apply`'s answer nor a failed renewal says what it did to the fans, so this run released
+    /// the lease and looked.
+    static func lapsed(
+        _ lapse: SetCommand.Lapse, hold: Hold, release: Release, settlement: SafeState.Settlement
+    ) -> String {
+        var sentences = [
+            "Control was lost before the hold began: lease \(hold.leaseID.uuidString) ended while "
+                + "the helper was applying the speed."
+        ]
+        if let failure = lapse.renewalFailure {
+            sentences.append("A renewal of it failed: \(failure)")
+        }
+        switch lapse.apply {
+        case .accepted:
+            sentences.append("The helper accepted the request to apply the speed.")
+        case .answered(let answer) where lapse.renewalFailure == nil:
+            sentences.append(
+                "The helper answered the request to apply the speed that the lease was gone: "
+                    + "\(answer)")
+        case .answered(let answer):
+            sentences.append("The helper answered the request to apply the speed with: \(answer)")
+        }
+        sentences.append(
+            "The helper ends a lease that is not renewed within \(lifetime) seconds, and this run "
+                + "cannot say what it did to the fans, so it released the lease and looked.")
+        return afterApply(
+            lead: sentences.joined(separator: " "), hold: hold, release: release,
+            settlement: settlement)
     }
 }

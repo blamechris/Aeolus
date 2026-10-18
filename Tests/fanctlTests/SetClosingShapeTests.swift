@@ -138,6 +138,32 @@ struct SetClosingShapeTests {
         #expect(unread.facts.releaseAccepted == false)
     }
 
+    // MARK: - A lease that ended while the speed was being applied
+
+    /// A lapse is control lost, exit 6, and worse only if the check found worse.
+    ///
+    /// **Mutation:** report `refused` for a lapse in `SetCommand.Report.lapsed`. Run: red.
+    @Test("A lapse is controlLost with exit 6, or the check's verdict where that is worse")
+    func lapsedShape() throws {
+        let hold = Shared.hold([try Shared.plan(0, .percent(50))])
+        let lapse = SetCommand.Lapse(renewalFailure: "gone", apply: .accepted)
+        let rows: [(SafeState.Verdict, FanctlExitCode)] = [
+            (.automatic, .controlLost),
+            (.notConfirmed, .safeStateNotConfirmed),
+            (.cannotReturn(fans: [0]), .cannotReturnToAutomatic),
+        ]
+        for (verdict, code) in rows {
+            let report = SetCommand.Report.lapsed(
+                lapse, hold: hold, release: .failed("no such lease"),
+                settlement: Shared.settlement(Fixtures.automatic, verdict: verdict))
+            #expect(report.failure?.code == code, "\(verdict)")
+            #expect(report.facts.endedBecause == "controlLost", "\(verdict)")
+            #expect(report.facts.releaseAccepted == false)
+            #expect(
+                report.failure?.message.hasPrefix("Control was lost before the hold began") == true)
+        }
+    }
+
     // MARK: - Terminal
 
     @Test("A terminal made from a plain sink always delivers, to either stream")
