@@ -126,10 +126,17 @@ struct WriteSeamTestIsolationTests {
 
     // MARK: - The scanner
 
+    /// The access level an import may carry, after its attributes and before `import`:
+    /// `@_spi(FanWrite) public import SMCCore` compiles and grants the group as surely as the
+    /// plain form, at every level (#441). An access level before an attribute does not parse,
+    /// and one between two attributes does not either, so this is the only place it can stand.
+    /// Shared with `WriteSeamAccessTests`' pattern for `Sources/`, so the two cannot disagree.
+    static let importAccess = #"(?:(?:public|package|internal|fileprivate|private)\s+)?"#
+
     /// Every SPI group named by an import in `source`: the `@_spi(Group)` attribute, then any
-    /// further attributes in any order, then `import`. Comments and string literals are
-    /// removed first, because an import can be neither, and a fixture describing one — this
-    /// file has several — is not one.
+    /// further attributes in any order, then an optional access level, then `import`. Comments and
+    /// string literals are removed first, because an import can be neither, and a fixture
+    /// describing one — this file has several — is not one.
     static func spiImportGroups(in source: String) throws -> [String] {
         // Backticks go too: `` @`_spi`(FanWrite) `` is the same opt-in (#436's final review, B1).
         let code = strippingStringLiterals(SeamScanner.strippingAllComments(source))
@@ -137,7 +144,7 @@ struct WriteSeamTestIsolationTests {
         let pattern = try NSRegularExpression(
             pattern: #"@_spi\s*\(\s*(\w+)\s*\)"#
                 + #"(?:\s*@[A-Za-z_]\w*(?:\s*\([^)]*\))?)*"#
-                + #"\s*import(?![A-Za-z0-9_])"#)
+                + #"\s*"# + importAccess + #"import(?![A-Za-z0-9_])"#)
         let range = NSRange(code.startIndex..., in: code)
         return pattern.matches(in: code, range: range).compactMap { match in
             Range(match.range(at: 1), in: code).map { String(code[$0]) }
@@ -346,6 +353,39 @@ struct WriteSeamTestIsolationScannerTests {
         for spelling in spellings {
             let groups = try WriteSeamTestIsolationTests.spiImportGroups(in: spelling)
             #expect(!groups.isEmpty, "\(spelling)")
+        }
+    }
+
+    /// An access-level import compiles and grants the group (probed on Swift 6.4: every level
+    /// reaches `write`, and `package` only wants a package name). The pattern that read `import`
+    /// straight after the attributes passed all five (#441, T05p).
+    ///
+    /// **Mutation:** in `spiImportGroups`, drop `importAccess` from the pattern. Run: red here,
+    /// at the first level.
+    @Test("An SPI import is found at every access level, and a plain access import is not one")
+    func accessLevelImportsAreFound() throws {
+        let runs = ["@_spi(FanWrite)", "@_spi(FanWrite) @testable", "@`_spi`(FanWrite)"]
+        for level in ["public", "package", "internal", "fileprivate", "private"] {
+            for attributes in runs {
+                let spelling = "\(attributes) \(level) import SMCCore"
+                #expect(
+                    try WriteSeamTestIsolationTests.spiImportGroups(in: spelling) == ["FanWrite"],
+                    "\(spelling)")
+            }
+        }
+        let wrapped = "@_spi(FanWrite)\n@testable\npublic\nimport SMCCore"
+        #expect(try WriteSeamTestIsolationTests.spiImportGroups(in: wrapped) == ["FanWrite"])
+        let scoped = "@_spi(FanUnlock) public import struct SMCCore.SMCConnection"
+        #expect(try WriteSeamTestIsolationTests.spiImportGroups(in: scoped) == ["FanUnlock"])
+
+        for source in [
+            "public import SMCCore", "@testable internal import SMCCore",
+            "@_spi(FanWrite) publicly import SMCCore", "@_spi(FanWrite) publicimport SMCCore",
+            "// @_spi(FanWrite) public import SMCCore",
+            "let text = \"@_spi(FanWrite) public import SMCCore\"",
+        ] {
+            #expect(
+                try WriteSeamTestIsolationTests.spiImportGroups(in: source).isEmpty, "\(source)")
         }
     }
 
