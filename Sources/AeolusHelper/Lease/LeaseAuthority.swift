@@ -76,9 +76,9 @@ import Foundation
 /// the registers and the seal as value types this actor holds `private`.
 ///
 /// Relocating prose cannot relieve `type_body_length`, which counts this body's code: 308 lines
-/// after #270's bounds gate, 287 after that pass and 288 since #269 carried the sleep seal to the
-/// snapshot, so 62 of headroom remain before its error at 350; the file is 853 lines against its
-/// error at 1000. New behaviour belongs in value
+/// after #270's bounds gate, 287 after that pass, 290 by the time #439 landed, and 299 since #440
+/// lent § 3's handback through `restore(_:because:through:)`, so 51 of headroom remain before its
+/// error at 350; the file is 879 lines against its error at 1000. New behaviour belongs in value
 /// types — these two, `LeaseTable`, `ConnectionTombstones` — and the `EngagementDriver`
 /// (ADR 0014), not in this actor.
 actor LeaseAuthority: HeldLeaseRole {
@@ -520,7 +520,8 @@ actor LeaseAuthority: HeldLeaseRole {
         return outcome
     }
 
-    /// Revokes **every** live lease, whatever fans it covers.
+    /// Revokes **every** live lease, whatever fans it covers, and hands their fans back through
+    /// `handback` — § 3's revocation, labelled `.thermalEmergencyRevocation` here.
     ///
     /// Selected by § 3 on every live lease, not on its registry of engaged fans: a client can
     /// hold a lease before it has engaged manual control, and the emergency takes that back on
@@ -528,14 +529,25 @@ actor LeaseAuthority: HeldLeaseRole {
     /// deliberately not shared with `releaseEveryLease()`.
     /// handback-ledger.md § *"Why § 3 revokes every lease, and why it is not
     /// `releaseEveryLease()`"*.
-    func revokeEveryLease(because cause: FanRestoreCause) async {
+    ///
+    /// **`handback` is lent, for this call, and the compiler keeps it lent** (#440). § 3 holds
+    /// `ThermalCycleHandback`, the restorer in its lane, and passes it here; this actor
+    /// hands back through it inside `restore(_:because:through:)`, the bracket every teardown
+    /// uses, and cannot keep it — a `borrowing` parameter of a generic that suppresses `Copyable`
+    /// cannot be stored, copied, cast, boxed or captured. So no later teardown here can restore
+    /// in § 3's lane, whatever it carries. The cause is fixed here rather than taken, because it is
+    /// a label: § 3 passes none, and nothing passing it could route anything.
+    func revokeEveryLease<Handback: FanRestoring & ~Copyable>(
+        handingBackThrough handback: borrowing Handback
+    ) async {
         let revoked = table.removeAll()
         guard !revoked.isEmpty else { return }
+        let cause = FanRestoreCause.thermalEmergencyRevocation
         for entry in revoked {
             log.revoked(entry.connection, fans: entry.fanIndices, because: cause)
         }
         let fans = revoked.reduce(into: Set<Int>()) { $0.formUnion($1.fanIndices) }
-        await restore(fans, because: cause)
+        await restore(fans, because: cause, through: handback)
     }
 
     // MARK: - The panic path
@@ -806,6 +818,17 @@ actor LeaseAuthority: HeldLeaseRole {
     ///   make it unreachable changes. Recorded rather than implied, so nobody simplifies it
     ///   believing a test is watching — handback-ledger.md § *"`releasing` — the transient half"*.
     private func restore(_ fans: Set<Int>, because cause: FanRestoreCause) async {
+        await restore(fans, because: cause, through: restorer)
+    }
+
+    /// `restore(_:because:)`'s body and bracket, through `handback`: this actor's own `restorer`
+    /// for every teardown, and the restorer § 3 lends for its revocation alone (#440). One body, so
+    /// the lent route cannot drift from the bracket: `releasing` is held across it, a refusal lands
+    /// in `restoreAbandoned`, and the waiters are resumed, exactly as for every other path.
+    private func restore<Handback: FanRestoring & ~Copyable>(
+        _ fans: Set<Int>, because cause: FanRestoreCause,
+        through handback: borrowing Handback
+    ) async {
         log.restored(fans: fans, because: cause)
         for fan in fans { registers.beginHandback(ofFan: fan) }
         defer {
@@ -817,7 +840,7 @@ actor LeaseAuthority: HeldLeaseRole {
         // Whatever came back was not handed back. Recorded rather than dropped: the fan is
         // in a mode nothing has confirmed, so the next `acquireLease` over it is refused
         // durably instead of being told to retry a window that has closed.
-        let abandoned = await restorer.restoreToAutomatic(fans: fans, because: cause)
+        let abandoned = await handback.restoreToAutomatic(fans: fans, because: cause)
         let accepted = registers.recordRestore(of: fans, abandoned: abandoned)
         guard !accepted.isEmpty else { return }
         log.abandonedHandbackAcceptedUnconfirmed(fans: accepted, because: cause)
