@@ -29,13 +29,28 @@ struct ThermalCycleLaneTripwireTests {
 
     // MARK: - The scans
 
+    /// Every file in `Sources/AeolusHelper`, by name, with its comments removed — read and
+    /// stripped **once** for the whole suite.
+    ///
+    /// Stripping is a walk over every character of every helper file, and this suite runs beside
+    /// the XPC suites, whose deadlines are wall clock: on a three-core runner, four walks of the
+    /// tree where one will do is load those suites pay for. A `static let` is initialised once,
+    /// on first use, whichever test touches it first.
+    private static let helperCode: Result<[String: String], any Error> = Result {
+        var code: [String: String] = [:]
+        for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            code[file.lastPathComponent] = SeamScanner.strippingAllComments(source)
+        }
+        return code
+    }
+
     /// The files in `Sources/AeolusHelper` whose code names `identifier`, as a whole word, after
     /// every comment is removed.
     static func files(naming identifier: String) throws -> Set<String> {
         var found: Set<String> = []
-        for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
-            let source = try String(contentsOf: file, encoding: .utf8)
-            if try names(identifier, inSource: source) { found.insert(file.lastPathComponent) }
+        for (name, code) in try helperCode.get() where try names(identifier, inCode: code) {
+            found.insert(name)
         }
         return found
     }
@@ -43,10 +58,17 @@ struct ThermalCycleLaneTripwireTests {
     /// Whether `source`'s code names `identifier` as a whole word. A dot and whitespace around
     /// it change nothing, because an identifier cannot be split.
     static func names(_ identifier: String, inSource source: String) throws -> Bool {
-        let code = SeamScanner.strippingAllComments(source)
-        let word = try NSRegularExpression(
-            pattern: #"(?<![A-Za-z0-9_])"# + identifier + #"(?![A-Za-z0-9_])"#)
-        return word.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)) != nil
+        try names(identifier, inCode: SeamScanner.strippingAllComments(source))
+    }
+
+    /// `names(_:inSource:)` over code whose comments are already removed.
+    private static func names(_ identifier: String, inCode code: String) throws -> Bool {
+        try wholeWord(identifier).firstMatch(
+            in: code, range: NSRange(code.startIndex..., in: code)) != nil
+    }
+
+    private static func wholeWord(_ identifier: String) throws -> NSRegularExpression {
+        try NSRegularExpression(pattern: #"(?<![A-Za-z0-9_])"# + identifier + #"(?![A-Za-z0-9_])"#)
     }
 
     /// How many times `source`'s code passes § 3's restore cause: as a `because:` or `cause:`
@@ -55,7 +77,12 @@ struct ThermalCycleLaneTripwireTests {
     /// a space inside the expression changes nothing. A `case .thermalEmergency:` in a switch is
     /// a match, not a pass, and so is the safety actor level of the same name.
     static func causePasses(inSource source: String) throws -> Int {
-        let code = SeamScanner.strippingAllComments(source).filter { !$0.isWhitespace }
+        try causePasses(inCode: SeamScanner.strippingAllComments(source))
+    }
+
+    /// `causePasses(inSource:)` over code whose comments are already removed.
+    private static func causePasses(inCode stripped: String) throws -> Int {
+        let code = stripped.filter { !$0.isWhitespace }
         let pass = try NSRegularExpression(
             pattern: #"(?:(?:because|cause):|FanRestoreCause\.|:FanRestoreCause=)\.?"#
                 + #"thermalEmergency(?![A-Za-z0-9_])"#)
@@ -65,9 +92,9 @@ struct ThermalCycleLaneTripwireTests {
     /// Every file in `Sources/AeolusHelper` that passes § 3's restore cause, with its count.
     static func causePassers() throws -> [String: Int] {
         var found: [String: Int] = [:]
-        for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
-            let count = try causePasses(inSource: try String(contentsOf: file, encoding: .utf8))
-            if count > 0 { found[file.lastPathComponent] = count }
+        for (name, code) in try helperCode.get() {
+            let count = try causePasses(inCode: code)
+            if count > 0 { found[name] = count }
         }
         return found
     }
@@ -122,7 +149,7 @@ struct ThermalCycleLaneTripwireTests {
     /// **Mutation:** break the file discovery — scan `under: "AeolusHelperX"`. Run: red.
     @Test("The lane is named only where it is wired")
     func theLaneIsNamedOnlyWhereItIsWired() throws {
-        #expect(try SeamScanner.swiftFiles(under: "AeolusHelper").count > 50)
+        #expect(try Self.helperCode.get().count > 50, "the scan found too few helper files")
         let named = try Self.files(naming: "thermalCycle")
         #expect(
             named == [
@@ -136,12 +163,9 @@ struct ThermalCycleLaneTripwireTests {
             """)
 
         var everyCase: Set<String> = []
-        for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
-            let code = SeamScanner.strippingAllComments(
-                try String(contentsOf: file, encoding: .utf8))
-            if code.filter({ !$0.isWhitespace }).contains("SMCReadPriority.allCases") {
-                everyCase.insert(file.lastPathComponent)
-            }
+        for (name, code) in try Self.helperCode.get()
+        where code.filter({ !$0.isWhitespace }).contains("SMCReadPriority.allCases") {
+            everyCase.insert(name)
         }
         #expect(
             everyCase == ["GateWaitMonitor.swift"],
@@ -176,11 +200,17 @@ struct ThermalCycleLaneTripwireTests {
     /// private reader of its own with a copy of the loop. Run: red — four calls in the file.
     @Test("The handback read loop has one copy")
     func theHandbackReadLoopHasOneCopy() throws {
+        // `SeamScanner.mentions(of:inSource:)`'s count — every use, declarations excluded — over
+        // the code already stripped.
+        let named = try Self.wholeWord("readControlState")
+        let declared = try NSRegularExpression(pattern: #"\bfunc\s+readControlState\b"#)
         var calls: [String: Int] = [:]
-        for file in try SeamScanner.swiftFiles(under: "AeolusHelper") {
-            let source = try String(contentsOf: file, encoding: .utf8)
-            let count = try SeamScanner.mentions(of: "readControlState", inSource: source)
-            if count > 0 { calls[file.lastPathComponent] = count }
+        for (name, code) in try Self.helperCode.get() {
+            let range = NSRange(code.startIndex..., in: code)
+            let count =
+                named.numberOfMatches(in: code, range: range)
+                - declared.numberOfMatches(in: code, range: range)
+            if count > 0 { calls[name] = count }
         }
         #expect(
             calls == [

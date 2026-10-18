@@ -78,7 +78,10 @@ struct GateWaitMonitorLaneTests {
             for priority in script {
                 _ = try await scheduler.read(keys: ["TPD0", "TPD1"], at: priority)
             }
-            await yieldUntil("every outcome to be handled") {
+            // A sleeping, stall-tolerant wait rather than a yield spin: the pump is a task on the
+            // cooperative pool, and on a loaded runner ten thousand yields can pass before it is
+            // scheduled at all.
+            try await waitUntil("every outcome to be handled", timeout: .seconds(10)) {
                 await health.observedOutcomes == script.count
             }
 
