@@ -61,12 +61,19 @@ struct FanctlOneShotOutputTests {
         let reader = out.reader
         BackgroundThread.run {
             Thread.sleep(forTimeInterval: 0.05)
-            // Until the writer is closed, or nothing arrives for two seconds: never a read that
-            // can park the test process.
+            // Until the writer is closed, or forty-five seconds have passed: never a read that
+            // can park the test process. It is not "until nothing arrives for a moment": the
+            // document arrives after the command's round trips to the helper, and on a runner
+            // that is starved a gap of more than two seconds there was seen on CI, twice, at
+            // the same head. A reader that had left by then took the pipe's prefill and nothing
+            // else, and the command, writing into an empty pipe, still exited 0.
             var chunk = [UInt8](repeating: 0, count: 8_192)
-            while true {
+            let deadline = Date().addingTimeInterval(45)
+            while Date() < deadline {
                 var request = pollfd(fd: reader, events: Int16(POLLIN), revents: 0)
-                guard poll(&request, 1, 2_000) > 0 else { break }
+                let ready = poll(&request, 1, 250)
+                if ready == 0 { continue }
+                if ready < 0 { break }
                 let count = Darwin.read(reader, &chunk, chunk.count)
                 if count <= 0 { break }
                 let bytes = Array(chunk.prefix(count))
