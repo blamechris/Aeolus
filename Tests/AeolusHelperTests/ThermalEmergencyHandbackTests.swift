@@ -214,7 +214,7 @@ struct ThermalEmergencyHandbackTests {
         await machine.emergency.cycle()
 
         #expect(await machine.handbackReadBack.requests.isEmpty)
-        #expect(await machine.writes.contains(.commandTarget(fan: 0, rpm: 5_777)))
+        #expect(await machine.writes.contains(.bridgeThenRestore(fan: 0, rpm: 5_777)))
         #expect(await machine.emergency.fansOwedHandbackReadBack.isEmpty)
         #expect(await machine.emergency.fansUnderManualControl.isEmpty)
     }

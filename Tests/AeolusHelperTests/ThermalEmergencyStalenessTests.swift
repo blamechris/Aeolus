@@ -292,7 +292,7 @@ struct ThermalEmergencyStalenessTests {
             await machine.leases.leaseCount == 0,
             "a cycle that could not see left a lease alive through the emergency")
         #expect(await machine.latch.isActive, "a cycle that could not read never releases")
-        #expect(await machine.restorer.causes == [.thermalEmergency])
+        #expect(await machine.restorer.causes == [.thermalEmergencyRevocation])
     }
 
     /// **The compare-and-clear is asserted against the source tree, because no test can

@@ -52,7 +52,8 @@ import SMCCore
 struct HelperComposition<Plane: FanControlPlane>: Sendable {
 
     /// The single control plane. Every safety mechanism's reads and writes go through it, at
-    /// `.supervisor` priority.
+    /// `.supervisor` priority — § 3's through its view at § 3's own admission
+    /// (`FanControlPlane.admitted(at:)`), which is this plane.
     let plane: Plane
 
     /// The snapshot path: fan enumeration, the discovered sensor set, `F<n>Md` per fan.
@@ -63,6 +64,9 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
 
     /// § 3's curated critical set, **shared** between the thermal emergency's cycle and the
     /// cache the lease core's grant-time blindness gate proves sightedness from.
+    ///
+    /// This instance is the cache's source, at `.supervisor`; § 3 reads through its lane view,
+    /// `admitted(at: .thermalCycle)`, which carries this instance's memo (#332).
     ///
     /// One instance, deliberately. `DegradationMemo` is per instance, so two of these would
     /// each log the same partial sensor loss on their own schedule — the collapse
@@ -358,16 +362,27 @@ struct HelperComposition<Plane: FanControlPlane>: Sendable {
             log: leaseLog)
         self.leases = leases
 
+        // § 3 at its own admission (ADR 0012's 2026-10-18 amendment): every read and write its
+        // cycle takes is admitted ahead of every waiting turn, behind only the turn in flight, so
+        // each waits for one turn whatever else is outstanding. Three views of the one plane and
+        // nothing built beside it: the curated telemetry's view shares the cache source's memo, so
+        // a degraded set is logged once whichever of the two read it (#124); the read-back is
+        // reconciliation's own loop over the lane view, so § 3 and the lease core's confirmation
+        // cannot disagree about what a fan read (#295); and the writer is the plane's lane view at
+        // § 3's level. The cache's source above, § 7's read-back through `reconciliation`, and
+        // every other mechanism stay at `.supervisor`. The restores § 3's revocation causes reach
+        // the lane through `HelperFanRestorer`'s routing by cause, not through anything here.
         let thermalEmergency = ThermalEmergency(
-            telemetry: telemetry,
+            telemetry: telemetry.admitted(at: .thermalCycle),
             sightings: sightings,
-            writer: SafetyActorWriter(plane: plane, level: .thermalEmergency),
+            writer: SafetyActorWriter(
+                plane: plane.admitted(at: .thermalCycle), level: .thermalEmergency),
             leases: leases,
             latch: latch,
-            // § 6's reader, for the read-back that clears a fan whose handback the firmware
-            // accepted (#295). The same `.supervisor` reads the lease core's confirmation
-            // uses, through the seam that does not log each throw — § 3 asks at 1 Hz.
-            handbackReadBack: reconciliation,
+            // The read-back that clears a fan whose handback the firmware accepted (#295), or
+            // that § 3 restored itself (#300), through the seam that does not log each throw —
+            // § 3 asks at 1 Hz.
+            handbackReadBack: reconciliation.handbackReadBack(admittedAt: .thermalCycle),
             log: safetyLog)
         // The one examination gate, on the lease core's clock: § 5 takes it before each
         // examination and level 6 for each step; no restore path, § 3, driver or plane holds it.
@@ -727,7 +742,9 @@ extension HelperComposition where Plane == SMCFanControlPlane {
         let gateMonitor = GateWaitMonitor()
         let scheduler = SMCReadScheduler(
             provider: SMCSensorProvider(connection: connection),
-            observer: SchedulerObservers([connectionHealth, gateMonitor]))
+            observer: SchedulerObservers([
+                connectionHealth, gateMonitor, ThermalCycleLaneWatch(log: SafetyLog()),
+            ]))
         let plane = SMCFanControlPlane(scheduler: scheduler, connection: connection)
         return HelperComposition(
             plane: plane,

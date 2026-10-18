@@ -202,6 +202,13 @@ enum CriticalTemperatureSighting: Sendable {
 /// unprivileged client — the snapshot starves, the § 5 sweep stretches — so it makes read
 /// amplification survivable rather than impossible. This removes the amplification instead.
 ///
+/// **§ 3's own cycle has a third admission class since #332**, for a different problem: not the
+/// grant's reads, which this still coalesces, but § 3's own writes and read-backs, which no cache
+/// can coalesce
+/// ([ADR 0012](../../../docs/ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
+/// 2026-10-18 amendment). This cache's source reads at `.supervisor`; § 3 reads through the lane
+/// view of the same conformer.
+///
 /// ## What it guarantees
 ///
 /// - **At most one grant-time read is ever outstanding.** Concurrent callers share one

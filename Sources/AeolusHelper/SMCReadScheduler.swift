@@ -91,6 +91,36 @@ import SMCCore
 /// `CLAUDE.md` rule 6 is why the second bound is not "the supervisor always wins": a client
 /// that never receives a snapshot is a UI reporting nothing, which a user cannot act on.
 ///
+/// ## § 3's lane, and what it adds to both bounds
+///
+/// `.thermalCycle` is admitted ahead of every waiting turn and behind only the turn in flight
+/// ([ADR 0012](../../docs/ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
+/// 2026-10-18 amendment). It is outside the quota in both directions: a lane turn neither counts
+/// as an overtake nor resets the count, so the arithmetic above is unchanged for the two queues
+/// it was written for. What the lane adds is its own turns.
+///
+/// - **Each lane turn waits for at most one turn in flight.** § 3 holds at most one waiter in
+///   the lane, and re-queues only after `admitNext()` has handed the connection on, so the lane
+///   never takes two turns in a row while anything else is parked. That rests on two facts
+///   outside this type. § 3's calls are sequential under its `isCycling`, and this type checks
+///   that one where it is spent: a lane request arriving while another is outstanding is
+///   reported (`SchedulerEvent.thermalCycleLaneOverlapped`) and admitted as normal, and
+///   `ThermalCycleLaneOverlapTests` drives § 3's firing episode over a plane whose every call
+///   holds a real turn and hears nothing. What counts as a lane request is decided by the queue
+///   it joins (`isLane(_:)`), not by a name, so a priority folded into the lane is counted too.
+///   And its critical read is one turn because every curated set is at most `maxKeysPerTurn`
+///   keys (`WatchdogLimitsTests.everyCuratedSetFitsOneTurn`). A longer read would yield back into
+///   its own lane and run its slices back to back.
+/// - **Any other waiter waits for at most one lane turn more per turn it waits behind**, and for
+///   one § 3 cycle's turns per supervisor interval: 1 + F + F·attemptBudget in a firing cycle,
+///   1 + F in a quiet one. G is re-derived with that occupancy
+///   (`WatchdogLimits.gateWaitRoundTrips(outstandingReads:criticalReadKeys:fans:)`) **as modelled
+///   cases**, a firing cycle and a quiet one, not as a bound over every history § 3 can produce:
+///   a firing cycle, its release and the read-backs after it can fall in one window, and a
+///   latched cycle can take fans back. ADR 0012's 2026-10-18 amendment records the counts for
+///   those histories, all under G, and what is still open. A snapshot's completion bound grows
+///   by the same turns.
+///
 /// ### What that came out as, on the machine
 ///
 /// `HelperHardwareTests` drives the real thing and prints it. One run on `Mac16,5`, with the
@@ -237,9 +267,27 @@ actor SMCReadScheduler {
     private let provider: any SensorProvider
 
     /// Whether a turn is executing. The invariant that makes the rest simple: **when this
-    /// is `false`, both queues are empty**, because every release admits the next waiter in
+    /// is `false`, every queue is empty**, because every release admits the next waiter in
     /// the same actor-isolated step that clears it.
     private var isTurnInFlight = false
+
+    /// § 3's lane. Never more than one waiter in production: see this type's documentation on
+    /// the lane. An array rather than an optional so that a second waiter, which nothing in
+    /// the helper produces, is queued like any other rather than overwriting the first.
+    private var thermalCycleWaiters: [ParkedTurn] = []
+
+    /// Lane requests outstanding — queued, or holding the connection — counted from `takeTurn`
+    /// to `endTurn`, so a read's later slices are the same request and not a second one, and a
+    /// read that throws is counted out by the same `defer` that releases its turn.
+    private var outstandingThermalCycleRequests = 0
+
+    /// The most lane requests reported outstanding at once. One until the first overlap; an
+    /// arrival that makes more outstanding than this reports, whatever the arrivals count.
+    private var mostThermalCycleRequestsReported = 1
+
+    /// Lane requests that arrived while another was outstanding, ever, reported or not. Carried in
+    /// every report, and itself a reason to report each time it reaches a power of two.
+    private var overlappingThermalCycleArrivals = 0
 
     /// Waiters, FIFO within each priority, so equal-priority reads cannot starve each
     /// other either.
@@ -553,7 +601,8 @@ actor SMCReadScheduler {
     /// a race test that infers it reports a regression as a CI timeout instead of a red
     /// assertion, which is [#109](https://github.com/blamechris/Aeolus/issues/109).
     func queuedTurns(at priority: SMCReadPriority) -> Int {
-        switch priority {
+        switch Self.queue(for: priority) {
+        case .lane: return thermalCycleWaiters.count
         case .supervisor: return supervisorWaiters.count
         case .snapshot: return snapshotWaiters.count
         }
@@ -599,7 +648,14 @@ actor SMCReadScheduler {
 
     /// Waits for the connection, then holds it.
     private func takeTurn(at priority: SMCReadPriority) async {
-        if !isTurnInFlight && supervisorWaiters.isEmpty && snapshotWaiters.isEmpty {
+        if Self.isLane(priority) { noteThermalCycleRequest() }
+
+        // Every queue, the lane's included. While the flag is kept the queue tests are
+        // redundant — see the invariant on `isTurnInFlight` — and they are the second line if it
+        // ever is not: `SchedulerTurnLifecycleTests.aQueuedLaneWaiterKeepsTheFastPathClosed`.
+        let nobodyWaits =
+            thermalCycleWaiters.isEmpty && supervisorWaiters.isEmpty && snapshotWaiters.isEmpty
+        if !isTurnInFlight && nobodyWaits {
             isTurnInFlight = true
             // `queuedAt` is now, because this turn queued for nothing. A consumer computing
             // a wait therefore gets zero rather than a missing value, which is what lets
@@ -646,9 +702,70 @@ actor SMCReadScheduler {
 
     /// Releases the connection at the end of a read, or of an exclusive body.
     private func endTurn(at priority: SMCReadPriority) {
+        if Self.isLane(priority) { outstandingThermalCycleRequests -= 1 }
         isTurnInFlight = false
         report(.turnEnded(priority: priority))
         admitNext()
+    }
+
+    /// Counts a lane request in, and reports an overlapping arrival that is deeper than any
+    /// reported, or that brings the overlapping arrivals to a power of two.
+    ///
+    /// **It reports and admits; it does not trap, block or demote.** ADR 0012's 2026-10-18
+    /// amendment rules § 3 the lane's one producer, with its calls sequential, and both bounds
+    /// rest on that: a lane turn waits for at most one turn in flight only while the lane holds at
+    /// most one waiter. The source censuses in `ThermalCycleLaneTripwireTests` hold who names the
+    /// lane; this observes the premise where it is spent. Demoting the newcomer was ruled out:
+    /// a request admitted while § 3 is idle would make § 3's own next request the newcomer, and
+    /// § 3 would be the one demoted. Refusing it would fail a safety read. So the second request
+    /// waits in the lane like the first, the bound it was owed is no longer the one derived, and
+    /// the log says so.
+    ///
+    /// **When it reports: at a new depth, and at every power of two of the arrivals.** § 3 has at
+    /// most one request outstanding, so a second producer making its calls one at a time reaches
+    /// depth 2 and no deeper, however long it runs — the depth any transient overlap has already
+    /// reported. A report on depth alone would let one early overlap mask that producer for good.
+    /// So an overlapping arrival also reports whenever the cumulative count reaches 1, 2, 4, 8 and
+    /// so on: a sustained second producer keeps writing lines, and the log grows only
+    /// logarithmically in the overlaps. A deeper overlap reports at once. Every report carries the
+    /// depth and the arrivals so far.
+    private func noteThermalCycleRequest() {
+        outstandingThermalCycleRequests += 1
+        guard outstandingThermalCycleRequests > 1 else { return }
+        overlappingThermalCycleArrivals += 1
+        let arrivals = overlappingThermalCycleArrivals
+        let deeper = outstandingThermalCycleRequests > mostThermalCycleRequestsReported
+        let powerOfTwo = arrivals & (arrivals - 1) == 0
+        guard deeper || powerOfTwo else { return }
+        if deeper { mostThermalCycleRequestsReported = outstandingThermalCycleRequests }
+        report(
+            .thermalCycleLaneOverlapped(
+                outstanding: outstandingThermalCycleRequests,
+                overlappingArrivals: overlappingThermalCycleArrivals))
+    }
+
+    /// The queues a request can join.
+    private enum Queue {
+        case lane, supervisor, snapshot
+    }
+
+    /// The queue a request at `priority` joins: **the one place a priority is mapped to a queue.**
+    /// `enqueue(_:at:)` and `queuedTurns(at:)` switch on it, and the lane's outstanding count
+    /// keys on it through `isLane(_:)`, so a priority folded into the lane's queue is counted as a
+    /// lane request by construction, and cannot be queued in the lane while the run-time report
+    /// looks for a different name. `SMCReadPriority`'s cases themselves are pinned by
+    /// `ThermalCycleLaneValueSetTests`.
+    private static func queue(for priority: SMCReadPriority) -> Queue {
+        switch priority {
+        case .thermalCycle: return .lane
+        case .supervisor: return .supervisor
+        case .snapshot: return .snapshot
+        }
+    }
+
+    /// Whether a request at `priority` joins § 3's lane — the queue's answer, not a name's.
+    private static func isLane(_ priority: SMCReadPriority) -> Bool {
+        queue(for: priority) == .lane
     }
 
     private func enqueue(
@@ -656,7 +773,8 @@ actor SMCReadScheduler {
     ) {
         let parked = ParkedTurn(
             continuation: continuation, priority: priority, queuedAt: ContinuousClock.now)
-        switch priority {
+        switch Self.queue(for: priority) {
+        case .lane: thermalCycleWaiters.append(parked)
         case .supervisor: supervisorWaiters.append(parked)
         case .snapshot: snapshotWaiters.append(parked)
         }
@@ -671,13 +789,20 @@ actor SMCReadScheduler {
         next.continuation.resume()
     }
 
-    /// The policy itself: strict supervisor priority, spent down by a quota.
+    /// The policy itself: § 3's lane first, then strict supervisor priority, spent down by a
+    /// quota.
     ///
-    /// Deleting the middle branch is the mutation `SMCReadSchedulerTests` names — it leaves
+    /// Deleting the supervisor branch is the mutation `SMCReadSchedulerTests` names — it leaves
     /// a plain two-queue FIFO that compiles, answers every key correctly, and orders the
     /// supervisor behind the snapshot again. Run: the three ordering tests go red and the
     /// read-correctness ones stay green, which is the split worth having.
     private func nextTurn() -> ParkedTurn? {
+        // § 3's lane, ahead of everything that waits and outside the quota in both
+        // directions: it returns before the quota is read, so a lane turn neither spends it nor
+        // resets it, and the supervisor and snapshot turns around it are admitted exactly as
+        // they would have been without it. `SMCReadSchedulerLaneTests` holds both halves.
+        if !thermalCycleWaiters.isEmpty { return thermalCycleWaiters.removeFirst() }
+
         // Nobody to starve: the quota has nothing to protect, so it does not run down.
         guard !snapshotWaiters.isEmpty else {
             consecutiveOvertakes = 0

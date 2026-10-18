@@ -203,7 +203,7 @@ struct ThermalEmergencyReengagementTests {
 ///
 /// Every verb delegates to the wrapped `ScriptedControlPlane`, so its record of attempts is
 /// the record of what the writer did.
-actor RestoreInterferingPlane: FanControlPlane {
+actor RestoreInterferingPlane: AdmissionBlindPlane {
 
     let wrapped: ScriptedControlPlane
     private var pending: (fan: Int, effect: @Sendable () async -> Void)?

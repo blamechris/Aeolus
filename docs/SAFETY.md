@@ -506,13 +506,33 @@ enforced, until #104.
 override is latched a retry is refused from the latch alone, before any sensor is read;
 while it is not, every grant-time sightedness check within one cycle period is served from a
 reading no more than that old, and concurrent checks share a single read — so at most one
-grant-time read is ever outstanding, and this cycle reaches the SMC connection within four
-turns of asking. *"§ 3's own reading"* is the usual case and not the guarantee: a cold cache
-reads for itself, and a grant-path read that fails is remembered ahead of a later cycle
-sighting, which is ADR 0010's amendment of 2026-09-20. The bound that matters to this
-paragraph — one outstanding read, four turns — holds in every case. The mechanism is
-[ADR 0010](ADR/0010-coalesced-supervisor-reads.md); the arithmetic that made it necessary,
-and the third priority level that was rejected instead, are recorded there.
+grant-time read is ever outstanding. And this cycle has its own admission class, so it reaches
+the SMC connection within one turn of asking — the turn already in flight — however many reads
+are outstanding; so does each of its read-backs, bridges and restores. *"§ 3's own reading"* is
+the usual case and not the guarantee: a cold cache reads for itself, and a grant-path read that
+fails is remembered ahead of a later cycle sighting, which is ADR 0010's amendment of
+2026-09-20. The bounds that matter to this paragraph — one outstanding grant-time read, and one
+turn — hold in every case. The coalescing is
+[ADR 0010](ADR/0010-coalesced-supervisor-reads.md); the admission class, which reopens that
+ADR's D2 for this cycle alone, and the arithmetic that made it necessary, are
+[ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s 2026-10-18
+amendment. The one-turn bound rests on this cycle being the admission class's only user, one call
+at a time. The class's value sets are pinned by the compiler, so no other admission or priority can
+reach it under another name; its uses are counted file by file at the source and every stored
+plane's admission is checked in the composed graph; and the premise is observed at run time, where
+the scheduler reports a second request in the class while one is outstanding.
+
+*Tested by:* `SMCReadSchedulerLaneTests` (a lane turn is granted next, behind only the turn in
+flight, and leaves the overtake quota alone); `ThermalCycleLaneValueSetTests` (the admission and
+priority value sets, pinned by exhaustive switches); `ThermalCycleLaneRoutingTests` (in the
+composed graph only this cycle's reads, bridges and restores take the class, and every other
+restore cause routes outside it); `ThermalCycleLaneWriterTests` (every plane the composed graph
+stores is admitted at `.supervisor` but this cycle's); `ThermalCycleLaneTripwireTests` (who may
+name the class, counted per file); `ThermalCycleLaneOverlapTests` and
+`ThermalCycleLaneCounterTests` (this cycle's firing episode and its take-back never have two
+requests in the class, two outstanding together are reported, and the count returns to zero
+however a request ends); and
+`WatchdogLimitsTests` (the bound D_cycle is derived from).
 
 The sensors the comparison actually uses are curated in code, per machine, and
 `docs/SMC-RESEARCH.md` carries the measurement that separates the two populations — along
@@ -1989,7 +2009,8 @@ and nothing else: the driver has no target verb, and the file that holds it neve
 type in code, so the control loop holds no writer it can command a target through but the
 governed one. The two share no *writing* protocol, so no code can be
 generic over "a writer" and hand a safety actor the governed one; the compile-time guarantee is
-exactly that `GovernedFanWriter` declares neither `commandMaximum(of:)` nor
+exactly that `GovernedFanWriter` declares neither § 3's bridge,
+`bridgeToMaximumThenRestore(of:)` (`commandMaximum(of:)` until #332), nor
 `restoreToAutomatic(_:)`. (They do both satisfy `Sendable`, so a `<W: Sendable>` parameter accepts
 either — the exclusion is about the verbs, not about every protocol in the language.
 `SafetyWriters.swift` records the same correction, having said "no protocol in common" once.)
@@ -2026,6 +2047,14 @@ unconditionally, after and regardless of the lease teardown. And it is why § 7 
 a corrupted or blind helper state at all: there is nothing in the verb for the corruption to
 invalidate. § 2 carries the fan-bounds-local half of the same principle — the restore verb takes
 no permit, and must never acquire one — with source tripwires holding it.
+
+**One stated exception, and it is not the keystone: § 3's bridge.** `bridgeThenRestore(_:)` takes
+a permit, because its command half writes the fan's maximum, and runs a `.fan(n)` restore in the
+same job, attempted whatever the command answered and reading nothing of the permit but the fan's
+index ([ADR 0012](ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s 2026-10-18
+amendment). The keystone verbs are untouched by it, and § 3's revocation restores every fan through
+them afterwards. `ThermalEmergencyBridgeTests.theBridgeIsTheOneRestoreInsideAPermit` holds that it
+is the only such verb.
 
 *Tested by:* `SafetyPrecedenceTests` — the six levels in this order, that a constraint cannot be
 made `Comparable`, and that `Ungoverned` is exactly `allCases` minus the control loop.

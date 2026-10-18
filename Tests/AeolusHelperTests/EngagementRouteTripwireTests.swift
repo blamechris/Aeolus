@@ -273,15 +273,20 @@ struct EngagementRouteTripwireTests {
         #expect(try SeamScanner.receivers(of: Self.verb, inSource: escaped) == ["after"])
     }
 
-    /// No raw string literal in `Sources/AeolusHelper` holds both a `"` and a `//`.
+    /// No raw string literal in `Sources/AeolusHelper` holds both a `"` and a `//`, and no line
+    /// interpolates and then holds a `"` and a `//`.
     ///
-    /// The one blind spot `strippingAllComments(_:)` states: it counts quotes and does not lex,
-    /// and a raw string `#"say "hi" // x"#` puts the count out of step, so the `//` is read as a
-    /// comment and the rest of its line is dropped. Nothing in the tree is written that way, and
-    /// this is what keeps that true. In the style of `noBlockCommentIsWrittenInSources`.
+    /// The two blind spots of `strippingAllComments(_:)`: it counts quotes and does not lex, so a
+    /// raw string `#"say "hi" // x"#`, or a literal nested in an interpolation,
+    /// `"\(String("//"))"`, puts the count out of step, the `//` is read as a comment and the
+    /// rest of its line is dropped. Nothing in the tree is written either way, and this is what
+    /// keeps that true. In the style of `noBlockCommentIsWrittenInSources`.
     ///
     /// **Mutation:** add `private let probe = #"say "hi" // x"#` at file scope in
     /// `SafetyWriters.swift`. Run: red here, naming the file.
+    /// **Mutation:** add `private let laneLabel = "\(String("//"))"; private let
+    /// laneHiddenFromTheScan = PlaneAdmission.thermalCycle` in `ConnectionHealth.swift`. Run: red
+    /// here, naming the file — and green in every lane census, which the stripper blinds.
     @Test("No raw string in the helper holds a quote and a comment marker")
     func noRawStringHoldsAQuoteAndACommentMarker() throws {
         var offenders: [String] = []
@@ -290,12 +295,15 @@ struct EngagementRouteTripwireTests {
             for literal in try Self.rawStringsHoldingAQuoteAndACommentMarker(in: source) {
                 offenders.append("\(file.lastPathComponent): \(literal)")
             }
+            for line in try Self.interpolationsHoldingAQuoteAndACommentMarker(in: source) {
+                offenders.append("\(file.lastPathComponent): \(line)")
+            }
         }
 
         #expect(
             offenders.isEmpty,
             """
-            a raw string literal holds a `"` and a `//`: \(offenders). \
+            a raw string literal, or an interpolation, holds a `"` and a `//`: \(offenders). \
             `SeamScanner.strippingAllComments` counts quotes and does not lex, so it reads the \
             `//` as a comment and drops the rest of the line, which can hide a use of the \
             step verb from every scan in this suite.

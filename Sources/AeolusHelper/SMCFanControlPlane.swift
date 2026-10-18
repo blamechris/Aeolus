@@ -5,7 +5,8 @@ import SMCCore
 /// ## The write side is modelled and unimplemented, deliberately
 ///
 /// `engageManualControl(of:)`, `commandTarget(_:)` and `restoreToAutomatic(_:)`
-/// all throw `FanControlPlaneError.controlPathNotBuilt`. That is not a stub waiting to be
+/// all throw `FanControlPlaneError.controlPathNotBuilt`, and `bridgeThenRestore(_:)` reports it
+/// for both halves. That is not a stub waiting to be
 /// filled in by whoever gets here next — it is the ordering `CLAUDE.md` rule 1 mandates.
 /// E5 is the epic that gates E3 and E4, so it may not pre-empt them: `SMCConnection.write`
 /// stays behind the `FanWrite` SPI group and keeps throwing, and no write selector exists
@@ -25,14 +26,27 @@ import SMCCore
 ///
 /// Naming the keys is what made the ordering *possible*; it is not the ordering.
 /// [#127](https://github.com/blamechris/Aeolus/issues/127) supplies that: every read below
-/// goes through `SMCReadScheduler` at `.supervisor`, which admits it ahead of a waiting
-/// snapshot turn. Before that, a subset read was merely *small*, and a small read still
-/// waits for a big one on a connection that grants no turns.
+/// goes through `SMCReadScheduler` at this plane's admission — `.supervisor`, which admits it
+/// ahead of a waiting snapshot turn, or § 3's lane on the view § 3 is given. Before that, a
+/// subset read was merely *small*, and a small read still waits for a big one on a connection
+/// that grants no turns.
 ///
-/// **What that bounds, exactly.** A read issued here waits at most two turns — ~22 ms —
-/// *while it is the only supervisor-priority read outstanding*, against the ~500 ms a
-/// snapshot-length occupation costs. It does not bound the wait when several are
-/// outstanding, which `LeaseAuthority.refuseIfBlind` already makes possible today; the
+/// ## A view at § 3's admission is this plane
+///
+/// `admitted(at:)` copies this value with a different `admission` and nothing else, so the view
+/// holds the one scheduler and the one connection, and every stored property added later is
+/// shared by the copy as long as it is a reference: an actor, a class or an existential of one
+/// (`PlaneViewTests` fails on a stored value that is not). The write path's channel and its
+/// `PlaneWriteLedger` are both, so the view B1 builds on shares them too.
+///
+/// **What that bounds, exactly.** *While it is the only supervisor-priority read outstanding*, a
+/// read issued here waits for the turn in flight, at most one snapshot turn the overtake quota
+/// forces, and at most one of § 3's lane turns **at each turn boundary it waits through** (ADR
+/// 0012's 2026-10-18 amendment): the lane is admitted ahead of every waiting turn, and § 3
+/// re-queues only after its turn is handed on. So at most four turns ahead of it — in flight, a
+/// lane turn, the forced snapshot turn, a lane turn — against the ~500 ms a snapshot-length
+/// occupation costs; the two without the lane are ~22 ms. It does not bound the wait when several
+/// are outstanding, which `LeaseAuthority.refuseIfBlind` already makes possible today; the
 /// scheduler's own documentation carries the general form, and this comment stated the
 /// two-turn figure unconditionally until a review panel produced the counterexample.
 ///
@@ -62,6 +76,12 @@ struct SMCFanControlPlane: FanControlPlane {
     /// one is ever constructed in the helper.
     private let connection: any SMCConnectionRecycling
 
+    /// The admission every turn this plane takes is admitted at: `.supervisor` for the plane the
+    /// composition builds, § 3's lane for the view § 3 is given (`admitted(at:)`). Set by nothing
+    /// else, so a plane's admission is fixed when the view is made. The write path's turns take it
+    /// too, when B1 builds them: a view's admission is its turns', reads and writes alike.
+    private(set) var admission: PlaneAdmission = .supervisor
+
     /// Takes the scheduler rather than a `SensorProvider`, so that **this type names its
     /// own priority** at the point each read is issued. A `SensorProvider` carries no
     /// priority in its signature, so a prioritised one would be a value whose behaviour
@@ -77,6 +97,14 @@ struct SMCFanControlPlane: FanControlPlane {
     init(scheduler: SMCReadScheduler, connection: some SMCConnectionRecycling) {
         self.scheduler = scheduler
         self.connection = connection
+    }
+
+    /// This plane at `admission`: a copy with every stored reference shared and the admission
+    /// changed. See this type's documentation, and `FanControlPlane.admitted(at:)`.
+    func admitted(at admission: PlaneAdmission) -> SMCFanControlPlane {
+        var view = self
+        view.admission = admission
+        return view
     }
 
     // MARK: - Reads
@@ -262,6 +290,15 @@ struct SMCFanControlPlane: FanControlPlane {
         throw FanControlPlaneError.controlPathNotBuilt
     }
 
+    /// Refuses both halves **without reading anything**, and without requesting the restore: a
+    /// plane that cannot write has no ledger to request it in. B1's body is the command turn's and
+    /// the `.fan(n)` restore turn's, in one job (see the requirement).
+    func bridgeThenRestore(_ target: AuthorisedFanTarget) async -> BridgeOutcome {
+        BridgeOutcome.attempting(
+            maximum: { throw FanControlPlaneError.controlPathNotBuilt },
+            thenRestore: { throw FanControlPlaneError.controlPathNotBuilt })
+    }
+
     /// Does nothing, and that is the requirement on a plane that cannot write: no enumeration,
     /// no key-info read, no force-key read and no restore. The step's body is the E4 branch's
     /// (ADR 0014 D5, slice B1), and arrives with the `.built` that makes it reachable.
@@ -315,7 +352,7 @@ struct SMCFanControlPlane: FanControlPlane {
     ) async throws -> [String: SensorReadOutcome] {
         let outcomes: [SensorReadOutcome]
         do {
-            outcomes = try await scheduler.read(keys: keys.map(\.rawValue), at: .supervisor)
+            outcomes = try await scheduler.read(keys: keys.map(\.rawValue), at: admission.priority)
         } catch {
             throw FanControlPlaneError.readFailed(
                 detail: "\(context): \(String(describing: error))")

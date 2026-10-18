@@ -181,7 +181,11 @@ end up disagreeing about when "now" was.
   connection would still be saturated, so the snapshot would starve and this ADR's rule 6
   argument would fail from the other side — and the grant-time read is coalesced and
   age-bounded against § 3's own most recent reading instead. Also arbitration *under* this
-  decision rather than a change to it.
+  decision rather than a change to it. *(Since [#332](https://github.com/blamechris/Aeolus/issues/332),
+  § 3's own cycle has a third admission class, ahead of every waiting turn and outside the
+  overtake quota — [ADR 0012](0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
+  2026-10-18 amendment, which reopens ADR 0010 D2 for that cycle alone. The grant-time read is
+  still coalesced, and every other reader is still first-come first-served.)*
 - The app-side client and source switching are **not** built in #72. #72 builds the helper side only;
   this ADR is recorded now because it shapes #72's snapshot semantics (pull-based, `capturedAt`
   stamped, cheap at 1 Hz).

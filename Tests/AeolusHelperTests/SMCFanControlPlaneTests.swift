@@ -77,6 +77,28 @@ struct SMCFanControlPlaneTests {
         }
     }
 
+    /// § 3's bridge job on a plane that cannot write (ADR 0012's 2026-10-18 amendment): both
+    /// halves refused as `.controlPathNotBuilt`, and nothing read — no subset read and no walk —
+    /// on the way, as the keystone's refusal reads nothing.
+    ///
+    /// **Mutation:** in `SMCFanControlPlane.bridgeThenRestore(_:)`, read the fan's control state
+    /// first (`_ = try? await readControlState(ofFan: target.fanIndex)`). Run: red — one subset
+    /// request recorded.
+    @Test("The bridge refuses both halves without reading anything")
+    func theBridgeRefusesWithoutReading() async throws {
+        let provider = FakeSensorProvider(keyedResults: [:])
+        let plane = supervisorPlane(over: provider)
+        let fan = try commandableFan(0, declaring: .nominal)
+
+        let outcome = await plane.bridgeThenRestore(
+            fan.target(for: fan.envelope.highestCommandableRPM))
+
+        #expect(throws: FanControlPlaneError.controlPathNotBuilt) { try outcome.maximum.get() }
+        #expect(throws: FanControlPlaneError.controlPathNotBuilt) { try outcome.restore.get() }
+        #expect(await provider.subsetRequests.isEmpty, "the bridge issued a subset read")
+        #expect(await provider.readAllCount == 0, "the bridge issued a full enumeration")
+    }
+
     // The recovery verb is **not** a write verb, and the reason it is named here is that
     // this file used to assert the opposite.
     //

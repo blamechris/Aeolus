@@ -30,15 +30,17 @@ struct GateWait: Sendable, Equatable {
 ///
 /// ## What it holds
 ///
-/// A FIFO of waiters per priority, in the order the scheduler reported them parked. The
-/// scheduler grants the head of one queue each time, so the head is the oldest and is the only
-/// waiter whose age matters: if the head is not past the bound, nobody behind it is.
+/// A FIFO of waiters per priority, in the order the scheduler reported them parked, § 3's lane
+/// among them (`SMCReadPriority.allCases`; ADR 0012's 2026-10-18 amendment). The scheduler grants
+/// the head of one queue each time, so the head is the oldest and is the only waiter whose age
+/// matters: if the head is not past the bound, nobody behind it is. A lane waiter waits for one
+/// turn in flight, so one past G is a turn that was not given back.
 ///
 /// ## A grant takes out the waiter it names, and a fast-path grant takes out nobody
 ///
 /// `turnGranted` carries the `queuedAt` the waiter was parked with, and the scheduler's fast
 /// path reports a grant whose `queuedAt` is **its own grant instant** with no waiter behind it
-/// (`takeTurn`: the fast path is taken only when both queues are empty). So the mirror takes
+/// (`takeTurn`: the fast path is taken only when all three queues are empty). So the mirror takes
 /// out the waiter at that priority whose `queuedAt` equals the grant's, and a grant that matches
 /// none is the fast path and pops nothing. The alternative, to pop the head of the queue on
 /// every grant, is right only while the mirror is in step with the scheduler, and when it is

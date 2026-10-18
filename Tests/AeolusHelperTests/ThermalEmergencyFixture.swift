@@ -169,7 +169,9 @@ struct ThermalMachine {
         get async {
             await plane.attempts.filter {
                 switch $0 {
-                case .commandTarget, .restoreToAutomatic, .engageManualControl: return true
+                case .commandTarget, .restoreToAutomatic, .engageManualControl,
+                    .bridgeThenRestore:
+                    return true
                 // A reconnect is recovery of the read path, not a write. It belongs with
                 // the reads for the same reason `readControlState` does: an ordering
                 // assertion about what a mechanism *wrote* must not shift because it also
@@ -326,13 +328,16 @@ extension ScriptedControlPlane.Stage {
 
 extension ScriptedControlPlane.Attempt {
 
-    /// The speed a `.commandTarget` carried, or `nil` for any other call.
+    /// The speed a `.commandTarget` or a `.bridgeThenRestore` carried, or `nil` for any other
+    /// call.
     ///
     /// Assertions about § 3's bridge are about the **value** written, not merely that a
     /// write happened — an emergency that issued one write of the wrong speed is the exact
     /// failure a governed bridge would produce.
     var commandedRPM: Double? {
-        if case .commandTarget(_, let rpm) = self { return rpm }
-        return nil
+        switch self {
+        case .commandTarget(_, let rpm), .bridgeThenRestore(_, let rpm): return rpm
+        default: return nil
+        }
     }
 }

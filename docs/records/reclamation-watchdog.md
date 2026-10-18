@@ -622,7 +622,7 @@ up after this one was the wrong shape regardless; the correction belongs here, a
 and restoring if the latch engaged underneath them.
 
 > **Corrected 2026-10-11 ([#345](https://github.com/blamechris/Aeolus/pull/345)).** "Indefinitely" above is false.
-> `ThermalEmergency.fire(_:from:)` ends in `leases.revokeEveryLease(because: .thermalEmergency)`,
+> `ThermalEmergency.fire(_:from:)` ends in `leases.revokeEveryLease(because: .thermalEmergency)` (since 2026-10-18 spelled `.thermalEmergencyRevocation`),
 > which drops every live lease and restores the fans they covered, and a fan this mechanism
 > re-engages is under a live lease: `examine(fanAt:inBound:)` hands back any fan that none covers
 > (ADR 0009 D2). So the cycle that fires hands such a fan back even though no registry § 3
