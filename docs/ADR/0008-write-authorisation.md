@@ -213,7 +213,8 @@ checkout directory basename, so it works in a clone and fails in a worktree. See
 [`ClientAuthorisation.swift`](../../Sources/AeolusXPC/ClientAuthorisation/ClientAuthorisation.swift),
 which carries the observation.
 
-**Controls.** Nine, replacing the one that `package` supplied. Three of them were added by
+**Controls.** Eleven: nine replacing the one that `package` supplied, and the run-time conformance
+check and the raw `Sources/` census that ADR 0014's B1 seam amendment added. Three of the nine were added by
 #226's review, which defeated the first four, and two more by the delta re-review of that
 round, which defeated the probe's own claim one indirection later — the seam is bound to a
 local inside the probe, and applying *that* name is a write no scan looking for `write(`
@@ -221,15 +222,22 @@ can see:
 
 | Control | Where |
 |---|---|
-| The only SPI group imported under `Sources/` is `FanWrite`, and only by the helper | `WriteSeamAccessTests.spiImportAppearsOnlyInTheHelper` |
+| The only SPI group imported under `Sources/` is `FanWrite`, whole-module or scoped (`import class SMCCore.…`), and only by two helper files: the probe and `AeolusHelperMain.swift`, whose `private` forwarder is the daemon's write channel | `WriteSeamAccessTests.spiImportAppearsOnlyInTheHelper` |
+| The raw text under `Sources/` holds the `_spi` token only in a fixed list of six files, so an import spelling the pattern above has not met — the backticked `` @`_spi` `` was one — is still a new file. It catches accidents and ordinary spellings; against determined evasion the compiler's seam is the control | `WriteSeamAccessTests.everySourcesSPIMentionIsKnown` |
 | `Sources/SMCCore/` declares exactly two SPI members, both named, both in `FanWrite` | `WriteSeamAccessTests.smcCoreDeclaresExactlyTwoSPIMembers` |
-| `write(` — with or without a receiver — appears in exactly one named, never-called probe file, and only as a reference | `WritePathAbsenceTests.helperNeverCallsWrite` |
-| No helper file declares a populated `extension SMCConnection`, so the actor's isolation is never open to helper code | `WritePathAbsenceTests.noHelperFileOpensSMCConnectionsIsolation` |
+| `write` — called or taken as a member, with or without a receiver, block comments ignored — appears in exactly three helper files: declared by `protocol SMCWriteChannel` and by `AeolusHelperMain.swift`'s `private` forwarder, used only inside that forwarder's `write` body, and referenced only by the never-called probe | `WritePathAbsenceTests.helperNeverCallsWrite` |
+| No helper file declares any `extension SMCConnection` — empty or populated, `SMCCore.`-qualified or not — so the actor's isolation is never open to helper code and nothing conforms it to a helper protocol | `WritePathAbsenceTests.noHelperFileOpensSMCConnectionsIsolation` |
+| `SMCConnection` conforms to no `SMCWriteChannel`, checked at run time, so no `@testable` route reaches the SPI member through a requirement | `WriteChannelSeamTests.smcConnectionConformsToNoChannel` |
 | No declaration under `Sources/` carries the `package` access level | `WriteSeamAccessTests.noSourceFileDeclaresPackageAccess` |
 | No file under `Sources/` describes the write seam as `package`-scoped | `WriteSeamAccessTests.noSourceFileCallsTheWriteSeamPackageScoped` |
 | The probe applies none of the locals it binds the seam to, and contains no `try` and no `await` | `WritePathAbsenceTests.theWriteSeamProbeIsInert` |
 | Nothing under `Sources/` references the probe, so anything smuggled into it stays dead code | `WritePathAbsenceTests.nothingOutsideTheProbeNamesIt` |
 | The `Monitor app build` job compiles the probe and asserts its demangled symbols are in the helper | `.github/workflows/ci.yml` |
+
+The `write`, extension, opt-in and conformance rows are as ADR 0014's B1 seam amendment
+([#436](https://github.com/blamechris/Aeolus/pull/436)) left them: until then the probe was the
+only file naming `write`, and an empty `extension SMCConnection: SMCWriteChannel {}` passed the
+extension row because it declared nothing.
 
 The probe is
 [`Sources/AeolusHelper/WriteSeamReachability.swift`](../../Sources/AeolusHelper/WriteSeamReachability.swift).

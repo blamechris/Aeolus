@@ -717,10 +717,29 @@ extension HelperComposition where Plane == SMCFanControlPlane {
     /// passed a source that never fires would have disarmed ADR 0012 without touching the
     /// watchdog, which is why the parameter is on this factory and not on a public surface, and
     /// why `HelperWatchdogCompositionTests` asks the *default* what it is.
+    ///
+    /// ## The write channel is withheld unless the daemon gives one
+    ///
+    /// `writeChannel` builds the plane's write channel over this graph's one connection, and it
+    /// defaults to none. **Only `AeolusHelperMain` passes one**, its file-private forwarder
+    /// ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md)'s B1 seam amendment); no test can,
+    /// because nothing outside that file can turn a real connection into a channel. Every test
+    /// that composes this graph over the real SMC — `HelperHardwareTests` runs one on every bare
+    /// `swift test` on the development machine, bring-up and teardown included — therefore gets a
+    /// plane holding no channel, which cannot write once the plane can. A wrong default fails
+    /// safe in either direction: none here leaves the daemon unable to write,
+    /// `CompositionWriteChannelTests` fails on any other default, and a test composing the real SMC
+    /// requires `!plane.holdsWriteChannel` on the binding's first use
+    /// (`NotBuiltRequireTripwireTests`).
+    ///
+    /// The closure is applied once, here, to `connection` — the local the provider reads through
+    /// and the plane recycles — for the reason that paragraph gives above. On this build it changes
+    /// nothing a fan sees: the plane holds the channel and answers `.notBuilt`.
     static func production(
         log: HelperLog = HelperLog(),
         teardown: TeardownSeams = TeardownSeams(),
-        watchdogTicks: any WatchdogTicking = DispatchWatchdogTicks()
+        watchdogTicks: any WatchdogTicking = DispatchWatchdogTicks(),
+        writeChannel: (SMCConnection) -> (any SMCWriteChannel)? = { _ in nil }
     ) -> HelperComposition<SMCFanControlPlane> {
         let connection = SMCConnection()
         let connectionHealth = ConnectionHealth()
@@ -728,7 +747,9 @@ extension HelperComposition where Plane == SMCFanControlPlane {
         let scheduler = SMCReadScheduler(
             provider: SMCSensorProvider(connection: connection),
             observer: SchedulerObservers([connectionHealth, gateMonitor]))
-        let plane = SMCFanControlPlane(scheduler: scheduler, connection: connection)
+        let plane = SMCFanControlPlane(
+            scheduler: scheduler, connection: SMCConnectionRecycler(connection: connection),
+            channel: writeChannel(connection))
         return HelperComposition(
             plane: plane,
             snapshotProvider: scheduler.snapshotReader,

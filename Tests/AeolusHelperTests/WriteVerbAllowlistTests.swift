@@ -465,6 +465,13 @@ struct WriteVerbAllowlistTests {
         "SMCFanControlPlane.swift: close()",
         "SMCFanControlPlane.swift: open()",
         "SMCReadScheduler.swift: withExclusiveAccess(_: @Sendable () async throws -> T)",
+        // B1's write turn, on `withExclusiveAccess`'s rule: one `.supervisor` turn around a
+        // synchronous job the caller supplies, on the channel it is handed, so what the job may
+        // do is the caller's classification. It has no caller yet; the plane's write turns, when
+        // they exist, are classified where they are declared. Its own body is the turn and the
+        // call.
+        "SMCReadScheduler.swift: withWriteTurn(on: any SMCWriteChannel, "
+            + "_: @Sendable (isolated any SMCWriteChannel) throws -> T)",
         "CriticalTemperatureSensing.swift: readCriticalTemperatures()",
         "FanAuthority.swift: acquireLease(_: LeaseRequest, from: ConnectionID)",
         "FanAuthority.swift: apply(_: [FanSetting], leaseID: UUID, from: ConnectionID)",

@@ -197,10 +197,10 @@ enum FanControlPlaneError: Error, Sendable, Hashable {
 
     /// This build has no SMC write path at all.
     ///
-    /// Not a stub and not a placeholder: `SMCConnection.write(_:to:)` is SPI-gated
-    /// and nothing in the helper calls it, and E5 is the epic that gates E3 and E4 rather
-    /// than the one that pre-empts them. Every write verb on `SMCFanControlPlane` answers
-    /// with this until those epics land.
+    /// Not a stub and not a placeholder: `SMCConnection.write(_:to:)` is SPI-gated, and
+    /// nothing in the helper reaches it — its one caller, the daemon's write channel, has
+    /// none — and E5 is the epic that gates E3 and E4 rather than the one that pre-empts them.
+    /// Every write verb on `SMCFanControlPlane` answers with this until those epics land.
     case controlPathNotBuilt
 
     /// A restore was requested after this engagement's first step, so it writes nothing more (ADR

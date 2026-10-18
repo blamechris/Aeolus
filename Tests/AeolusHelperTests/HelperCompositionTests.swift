@@ -122,10 +122,12 @@ struct HelperCompositionTests {
             recycle that fixes nothing and says it worked.
             """)
 
+        // The recycler is the local, and the write channel is built over it (ADR 0014's B1 seam
+        // amendment); `CompositionWriteChannelTests` pins the factory body.
         let source = Self.strippingWhitespace(try Self.compositionSource())
-        let planeTakesTheLocal = source.contains("connection:connection)")
         #expect(
-            planeTakesTheLocal,
+            source.contains(
+                "connection:SMCConnectionRecycler(connection:connection),channel:writeChannel"),
             "the plane is no longer handed the connection local the provider was built from")
     }
 
@@ -224,7 +226,7 @@ struct HelperCompositionTests {
     func thePlaneIsBuiltFromTheOneScheduler() throws {
         let source = Self.strippingWhitespace(try Self.compositionSource())
         let builtFromTheOneScheduler = source.contains(
-            "SMCFanControlPlane(scheduler:scheduler,connection:connection)")
+            "SMCFanControlPlane(scheduler:scheduler,connection:SMCConnectionRecycler(")
 
         #expect(
             builtFromTheOneScheduler,
@@ -730,12 +732,13 @@ struct HelperCompositionTests {
     /// **Mutation:** delete `powerObserver: IOKitSystemPowerObserver(),` from
     /// `HelperComposition.production(log:)`. Run: red.
     @Test("The shipped daemon's graph carries a real power observer")
-    func theProductionGraphIsGivenASystemPowerObserver() {
-        let observer = HelperComposition.production(log: Self.silentLog).powerObserver
-        let held = observer.map { String(describing: type(of: $0)) } ?? "nothing at all"
+    func theProductionGraphIsGivenASystemPowerObserver() throws {
+        let helper = HelperComposition.production(log: Self.silentLog)
+        try #require(!helper.plane.holdsWriteChannel, "the production graph holds a write channel")
+        let held = helper.powerObserver.map { String(describing: type(of: $0)) } ?? "nothing at all"
 
         #expect(
-            observer is IOKitSystemPowerObserver,
+            helper.powerObserver is IOKitSystemPowerObserver,
             """
             the shipped helper's power observer is \(held). Nothing registers for \
             kIOMessageSystemWillSleep, so no fan is handed back before this machine sleeps \

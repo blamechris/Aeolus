@@ -273,7 +273,9 @@ struct HelperHardwareTests {
             thermalEmergency: ThermalEmergencyLatch(),
             reclamation: ReclamationLedger(),
             writeCapability: LeaseFixture.writePathNotBuilt())
-        let plane = SMCFanControlPlane(scheduler: scheduler, connection: connection)
+        let plane = SMCFanControlPlane(
+            scheduler: scheduler, connection: SMCConnectionRecycler(connection: connection))
+        try #require(!plane.holdsWriteChannel, "a plane over the real SMC holds a write channel")
         let critical = CriticalSensorSet.resolve(for: HardwareIdentity.current())
         try #require(!critical.isEmpty, "no curated critical set on the machine it was cut for")
 
@@ -407,6 +409,17 @@ struct HelperHardwareTests {
                 terminate: teardown.terminate),
             watchdogTicks: ManualWatchdogTicks())
         let composed = ContinuousClock.now - composingStarted
+
+        // Rule zero: no test writes to this Mac's SMC. Bring-up runs the preparation step and
+        // reconciliation over the real plane, and the teardown below runs the exit keystone; on a
+        // plane that can write, all three write. The composition withholds the channel
+        // (`production`'s default), and this is the second layer, which catches that default
+        // having been changed. Once, on the binding's first use: the plane is a `let` of a
+        // composition held as a `let`, and the channel a `private let` of the plane, so nothing
+        // later can give it one — `NotBuiltRequireTripwireTests`.
+        try #require(
+            !helper.plane.holdsWriteChannel,
+            "this composition over the real SMC holds a write channel; it would write to this Mac")
 
         // The three supervisors this bring-up starts are 1 Hz loops on the real SMC, so
         // they have to be stopped however this test leaves — a `snapshot()` that throws
@@ -567,6 +580,7 @@ struct HelperHardwareTests {
         let connection = SMCConnection()
         let provider = SMCSensorProvider(connection: connection)
         let plane = supervisorPlane(over: provider)
+        try #require(!plane.holdsWriteChannel, "a plane over the real SMC holds a write channel")
         let fans = try await SMCFanEnumeration.enumerate(provider: provider)
         let indices = fans.fanIndices.sorted()
 

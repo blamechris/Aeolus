@@ -371,7 +371,14 @@ struct WatchdogTripwireTests {
             body.contains("let connection = SMCConnection()"),
             "the daemon's one connection is no longer named once")
         #expect(body.contains("SMCSensorProvider(connection: connection)"))
-        #expect(body.contains("SMCFanControlPlane(scheduler: scheduler, connection: connection)"))
+        // Whitespace-blind, because the call wraps: the plane's recycler and its write channel are
+        // the same local (ADR 0014's B1 amendment).
+        let unwrapped = body.filter { !$0.isWhitespace }
+        #expect(
+            unwrapped.contains(
+                "SMCFanControlPlane(scheduler:scheduler,"
+                    + "connection:SMCConnectionRecycler(connection:connection),"
+                    + "channel:writeChannel(connection))"))
         #expect(
             body.contains("roundTrips: connection.roundTrips"),
             "the watchdog is not given the monitor of the connection the daemon reads through")

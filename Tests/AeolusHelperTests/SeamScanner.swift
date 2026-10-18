@@ -133,10 +133,27 @@ enum SeamScanner {
 
     private static func swiftFiles(beneath root: URL) throws -> [URL] {
         let enumerator = try #require(
-            FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
-        let files = enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+            FileManager.default.enumerator(
+                at: root, includingPropertiesForKeys: [.isSymbolicLinkKey]))
+        let entries = enumerator.compactMap { $0 as? URL }
+        refuseSymbolicLinks(in: entries, under: root)
+        let files = entries.filter { $0.pathExtension == "swift" }
         #expect(!files.isEmpty, "the project's sources were not found under \(root.path)")
         return files
+    }
+
+    /// A symbolic link under a scanned root is refused, not followed: the enumerator does not
+    /// descend into a linked directory, and SwiftPM compiles what is behind one, so a suite behind
+    /// a link would build and be scanned by nothing (#436's review).
+    static func refuseSymbolicLinks(in entries: [URL], under root: URL) {
+        for entry in entries
+        where (try? entry.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true {
+            Issue.record(
+                """
+                \(entry.path) is a symbolic link under \(root.lastPathComponent)/. SwiftPM \
+                compiles what it points at, and these scans do not follow it.
+                """)
+        }
     }
 
     /// Every `func` declared in one target, parsed rather than pattern-matched.
@@ -350,14 +367,12 @@ enum SeamScanner {
     /// untouched: a `/*` inside either opens nothing, and treating one as an opener would
     /// swallow the rest of the file.
     ///
-    /// The string handling is a quote-counter, not a lexer, so a `"` inside an
-    /// interpolation — `"\(row["key"])"` — ends the literal early and the remainder is read
-    /// as code. That can only matter alongside a `/*`, and it cannot silently weaken a scan
-    /// today: with no block comment anywhere in `Sources`, `depth` never rises, every branch
-    /// copies what it consumes, and the result is the input character for character. That
-    /// premise is **asserted rather than assumed** — `SeamScannerParsingTests`'
-    /// `noBlockCommentIsWrittenInSources` fails the day one is written, which is the day this
-    /// paragraph stops being true.
+    /// Literals are walked by `copyDelimited`, which reads raw delimiters and interpolations (see
+    /// it), so a `"` inside `"\(row["key"])"` or `#"a "b"#` does not end the literal early, and
+    /// regex literals by `regexLiteralEnd`, so `/"/` and `#/a//b/#` are text. With no block
+    /// comment anywhere in `Sources`, `depth` never rises and the result is the input character
+    /// for character — `SeamScannerParsingTests`' `noBlockCommentIsWrittenInSources` fails the
+    /// day one is written.
     private static func strippingBlockComments(_ source: String) -> String {
         var output = ""
         var index = source.startIndex
@@ -382,7 +397,13 @@ enum SeamScanner {
                 continue
             }
 
-            if matches("/*", at: index) {
+            // A regex first: `#//a/#` is an extended regex whose text begins `//`, not a comment
+            // (#436's delta review, S2). A bare `/` followed by `/` or `*` opens no regex, so
+            // comments are unaffected.
+            if let end = regexLiteralEnd(at: index, in: source) {
+                output += source[index..<end]
+                index = end
+            } else if matches("/*", at: index) {
                 depth = 1
                 index = source.index(index, offsetBy: 2)
             } else if matches("//", at: index) {
@@ -390,46 +411,15 @@ enum SeamScanner {
                     output.append(source[index])
                     index = source.index(after: index)
                 }
-            } else if matches("\"\"\"", at: index) {
-                index = copyDelimited(source, from: index, delimiter: "\"\"\"", into: &output)
             } else if source[index] == "\"" {
-                index = copyDelimited(source, from: index, delimiter: "\"", into: &output)
+                let delimiter = matches("\"\"\"", at: index) ? "\"\"\"" : "\""
+                index = copyDelimited(source, from: index, delimiter: delimiter, into: &output)
             } else {
                 output.append(source[index])
                 index = source.index(after: index)
             }
         }
         return output
-    }
-
-    /// Copies an opening `delimiter`, everything up to the matching closing one, and that
-    /// one too — honouring `\` escapes — and answers where to carry on.
-    ///
-    /// `internal` rather than `private`, like the three below it: `SeamScannerScopes` is this
-    /// same type in a sibling file, `private` at type scope does not reach there, and a second
-    /// copy of a string-literal walker is precisely the drift this suite exists to catch.
-    static func copyDelimited(
-        _ source: String, from open: String.Index, delimiter: String, into output: inout String
-    ) -> String.Index {
-        var index = source.index(open, offsetBy: delimiter.count)
-        output.append(delimiter)
-
-        while index < source.endIndex {
-            if source[index] == "\\", source.index(after: index) < source.endIndex {
-                output.append(source[index])
-                index = source.index(after: index)
-                output.append(source[index])
-                index = source.index(after: index)
-                continue
-            }
-            if source[index...].hasPrefix(delimiter) {
-                output.append(delimiter)
-                return source.index(index, offsetBy: delimiter.count)
-            }
-            output.append(source[index])
-            index = source.index(after: index)
-        }
-        return index
     }
 
     /// The `(` that opens a declaration's parameter list, skipping a generic clause.

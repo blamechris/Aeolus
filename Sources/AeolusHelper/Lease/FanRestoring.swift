@@ -17,7 +17,8 @@ import Foundation
 /// ## Deliberately unimplemented in this target
 ///
 /// E5.1 ships the lease core and **writes nothing to the SMC**: `SMCConnection.write` is
-/// SPI-gated and nothing in the helper calls it. The conforming type is the helper's
+/// SPI-gated, and nothing in the helper reaches it — its one caller, the daemon's write
+/// channel, has none. The conforming type is the helper's
 /// control plane, which arrives with the
 /// write path. Declaring the seam here rather than there keeps the lease core testable in
 /// full today — every teardown path below is exercised against a recording double — and

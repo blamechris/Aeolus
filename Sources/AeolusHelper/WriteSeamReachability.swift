@@ -9,10 +9,12 @@
 /// `@_spi(FanWrite) public` (see the 2026-09-06 amendment in
 /// [ADR 0008](../../docs/ADR/0008-write-authorisation.md)). An SPI declaration is public
 /// in the binary but unnameable through a plain `import SMCCore`: only a module that opts
-/// in with `@_spi(FanWrite) import SMCCore` — this file, and no other under `Sources/` —
-/// can resolve either name. That is the compile-time gate `package` used to supply and can
-/// no longer, because the Xcode `AeolusHelper` target consumes `SMCCore` as a *package
-/// product* and is therefore outside the package `package` visibility is computed against.
+/// in with `@_spi(FanWrite) import SMCCore` can resolve either name. Under `Sources/` two files
+/// do: this one, and `AeolusHelperMain.swift`, whose `private` forwarder is the daemon's write
+/// channel (ADR 0014's B1 seam amendment). That is the compile-time gate `package` used to
+/// supply and can no longer, because the Xcode `AeolusHelper` target consumes `SMCCore` as a
+/// *package product* and is therefore outside the package `package` visibility is computed
+/// against.
 ///
 /// An access level is only proven by a reference the compiler must resolve, so both
 /// members are named below — as compound-name function references

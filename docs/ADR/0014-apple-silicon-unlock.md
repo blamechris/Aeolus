@@ -3277,14 +3277,16 @@ for the branch, and none of that exists on `main`.
     unchanged.
 - **The seam will be the helper's.**
   - `SMCWriteChannel: Actor` will be declared in the helper, and `SMCConnection` will conform
-    through an empty extension.
+    through an empty extension. *Reversed by the B1 seam amendment, below: `SMCConnection` conforms
+    to nothing, and the daemon's channel is a `private` forwarder in `AeolusHelperMain.swift`.*
   - SMCCore will gain one public read, `freshKeyInfo(for:)`. Its SPI members stay at two.
   - No SMCCore protocol will carry `write`, because a public requirement witnessed by the SPI member
     would let every client name the write.
 - **Write capability will be what the plane holds.**
   - `.built` will mean the plane holds a channel.
   - `HelperComposition.production` will withhold the channel unless the caller passes `writePath:
-    .connection`, and only `AeolusHelperMain` will.
+    .connection`, and only `AeolusHelperMain` will. *Now `writeChannel:`, a closure over the
+    factory's one connection, by the B1 seam amendment, below.*
   - So every test composition, hardware-gated or not, will be `.notBuilt` unless it names a fake. A
     wrong default in either direction fails safe.
 - **B1's restore will write `restorePayload(for:)`** (built here, below), never `encode`'s output.
@@ -3351,7 +3353,8 @@ for the branch, and none of that exists on `main`.
 
 **What remains.**
 - A test written deliberately to pass a real connection as a channel will be caught only by the
-  tripwire B1 adds, which looks for the two in the same file.
+  tripwire B1 adds, which looks for the two in the same file. *Superseded by the B1 seam amendment,
+  below: a real connection passed as a channel no longer compiles.*
 - The real write body meets the plane first at run 1.
 - `.built` on a platform without `F<n>Md` is decided before the merge (#360's revisit clause).
 - Restore turns on machines with more than four fans exceed `writeTurnRoundTrips`.
@@ -3385,6 +3388,142 @@ for the branch, and none of that exists on `main`.
 - run 1 shows a refusal code that reliably means a write did not take effect.
 
 **No `AeolusXPCVersion` bump**: nothing crosses the boundary. **Status stays Proposed.**
+
+## Amendment (2026-10-18, B1, [#436](https://github.com/blamechris/Aeolus/pull/436)) — the daemon's write channel is a file-private forwarder, and `SMCConnection` conforms to nothing
+
+Cited elsewhere as the B1 seam amendment.
+
+**Why.** The B1 amendment had `SMCConnection` conform to the helper's `SMCWriteChannel` through an
+empty extension. A conformance is visible wherever its protocol is, and `@testable import
+AeolusHelper` makes an internal protocol visible to every helper test. So, with no `@_spi(FanWrite)`
+opt-in:
+- `connection.write(bytes, to: key)` on a concrete `SMCConnection` typechecks. Lookup finds the
+  internal requirement, and the SPI member witnesses it.
+- Once b2 lands, so does any helper function that takes an `isolated any SMCWriteChannel`, called
+  with a real connection.
+
+On `e4/bring-up` the write has a body, so the first route was live. #431's rule, "the test files
+that can write are exactly the test files that opt into the SPI", was false. The tripwires added to
+compensate were text scans, and they missed function values, raw strings, interpolation and bound
+methods.
+
+**Decision.**
+- `SMCConnection` conforms to no helper protocol, and `SMCWriteChannel.swift` does not import the
+  SPI.
+- The daemon's channel is `DaemonWriteChannel`, a `private actor` in `AeolusHelperMain.swift`.
+  - It adopts the connection's executor (`nonisolated var unownedExecutor {
+    connection.unownedExecutor }`).
+  - It forwards each requirement to the same-named `SMCConnection` member through
+    `connection.assumeIsolated`.
+  - So a job on it runs on the connection's actor with nothing suspended, and the write still
+    crosses the one stamped IOKit call site (ADR 0012).
+- `HelperComposition.production` takes `writeChannel: (SMCConnection) -> (any SMCWriteChannel)? = {
+  _ in nil }` and applies it to its one connection. Only `main()` passes one. `ProductionWritePath`
+  is removed.
+- The channel is given only on macOS 14 or later, the first runtime with SE-0392's executor
+  semantics. Earlier, the plane holds none and answers `.notBuilt`.
+- `withWriteTurn(on:_:)` takes the channel and a synchronous `@Sendable (isolated any
+  SMCWriteChannel) throws -> T`. One job per turn, no suspension and no re-entry into the scheduler
+  now belong to the type. A job cannot `await`; a `Task` it spawns escapes the turn, so no
+  write-turn job spawns one, and a scan holds every call site to that.
+- A test that composes the real SMC requires `!plane.holdsWriteChannel` on its first use of the
+  binding, in place of `writeCapability == .notBuilt` before each drive. The channel is a `private
+  let` of a plane held as a `let`, so one check covers every later call. It can also fail on a build
+  whose capability is constant.
+- Write latency (U8) is measured from the daemon's per-write log lines, never by a test.
+
+**What this proves.** Measured on Swift 6.4 at `e2d738c`. From a file with `@testable import
+AeolusHelper` and a plain `import SMCCore`, each of these fails to compile:
+- a concrete or bound `connection.write`;
+- a test-module `extension SMCConnection: SMCWriteChannel {}`, with or without `@retroactive`;
+- a channel-taking function called with a real connection;
+- naming the forwarder;
+- a test's own forwarding wrapper.
+
+With `@_spi(FanWrite)`, the wrapper and the conformance compile. So the opt-in is again the only way
+a test file reaches a real write.
+
+The architect's model package ran its forwarder through 400 writes against concurrent reads with no
+overlap, at `-Onone` and `-O`, and compiled it for a 13.0 target. In this repository no test can
+execute the forwarder. `ExecutorSharingTests` runs a stand-in held word for word to the forwarder's
+pinned text: 200 writes in 100 turns against 100 concurrent direct reads, with no overlap, in debug
+and release, on macOS 27.0.1 (the `Mac16,5`) and on 26.6.2 (CI run 39125154937). With
+`unownedExecutor` removed from the stand-in, it trapped at its first call ("Incorrect actor executor
+assumption") before reaching the inner actor.
+
+At fix round 2 (`06171ae`, typechecked against a clean build), the entry point fails likewise in
+every spelling: its bare name, a typealias of it, and `.self.main()` each answer "cannot find
+'AeolusHelperMain' in scope".
+
+**What remains.**
+- A test that adds `@_spi(FanWrite) import SMCCore` can write. #431's rule is the control. It now
+  also matches the `_spi` token in the raw text of every file under `Tests/` and `Tools/` against a
+  fixed list, so no string, comment or backtick hides an ordinary opt-in, and refuses
+  `@_silgen_name`, `dlsym` and `@_private(` imports there the same way. The raw text under
+  `Sources/` is held to a fixed `_spi` list too, so a scoped `import class SMCCore.SMCConnection`
+  or a backticked `` @`_spi` `` in `fanctl` is a new file to justify. These censuses catch
+  accidents and ordinary spellings. Against a test written to evade them, the compiler's seam
+  above is the control, a residual the B1 plan accepted.
+- **No test can call the daemon's entry point.** `AeolusHelperMain` is a `private` type (fix round
+  2), so the compiler refuses every spelling of it outside its own file. A scan holds it `private`,
+  and a token scan over the code under `Tests/` and `Tools/` is depth beneath that. Until fix round
+  2, `main()` was accepted here as a residual held by a name scan, which a typealias and `.self`
+  both evaded.
+- No test can execute the forwarder. Its text is pinned, and its mechanism is tested on a stand-in,
+  in debug and release. Its first real run is the installed daemon's preparation step, which reads
+  through the channel before anything writes. So a broken executor share ends the daemon before its
+  first write.
+- Executor sharing is observed, on the stand-in, on macOS 26.6.2 (CI) and 27.0.1 (`Mac16,5`). It is
+  unobserved on 14.0–26.5. The macOS 14 gate's basis is SE-0392's runtime (Swift 5.9, macOS 14),
+  the first with custom-executor semantics.
+- A composition built in another file and driven without the require is a residual of the second
+  layer only. It also needs `production`'s default to have changed.
+
+**What this amends.**
+- The B1 amendment's "`SMCConnection` will conform through an empty extension". Reversed.
+- The B1 amendment's `writePath: .connection`. Now `writeChannel:`.
+- The first bullet of the B1 amendment's What remains. A real connection passed as a channel no
+  longer compiles.
+- ADR 0008's control on populated `extension SMCConnection` declarations. It now covers any
+  extension, empty or not, in any spelling, in the helper and its tests, backed by a runtime check
+  that `SMCConnection` does not conform to `SMCWriteChannel`.
+- `SMCConnection.write` now has exactly one caller in the helper, the forwarder. Write turns call
+  the requirement.
+
+**Alternatives considered.**
+- *Keep the conformance and contain it with scans.* Rejected. Every route is a spelling, four were
+  found in one review, and each turn function b2 adds would be another route.
+- *An SPI group on the helper's protocol and conformance.* Rejected. It hides the member from a file
+  without the opt-in, but not the conformance. Measured: such a file can still pass a real
+  connection to a function taking `isolated any SMCWriteChannel`. It would also put the opt-in in
+  every file that uses the fake.
+- *A forwarder that tests can construct over a fake inner actor,* generic over the actor and holding
+  closures. Safe, because a real write closure still needs the opt-in, but it adds machinery to the
+  root daemon to test four forwarded lines whose failure is a trap before the first write. Deferred.
+- *An async turn of several hops, to avoid `assumeIsolated`.* Rejected, for the B1 amendment's
+  reasons.
+
+**Revisit if:**
+- Swift changes how `@testable` treats `private` declarations, or how `assumeIsolated` and executor
+  sharing behave;
+- the forwarder traps in the field;
+- a test is proposed that needs a real connection as a channel;
+- writes are needed on macOS 13;
+- a second production caller of `SMCConnection.write` is proposed;
+- `-enable-private-imports` is adopted for any target, since an `@_private(sourceFile:)` import
+  sees the forwarder and the entry point;
+- `-disable-access-control` is passed to any target, which opens every `private` and SPI member to
+  a plain-import test. A manifest tripwire refuses both flags, and `unsafeFlags`, in
+  `Package.swift`.
+
+**No `AeolusXPCVersion` bump**: nothing crosses the boundary. **Status stays Proposed.**
+
+**Erratum and addition (fix round 2 of [#436](https://github.com/blamechris/Aeolus/pull/436)).** This
+corrects two statements, and it closes one residual. The first statement was "the forwarder ran 400
+writes", which described the architect's model package, not this repository's test. The second was
+"unobserved on any runtime before macOS 27", which CI's macOS 26.6.2 run disproved. The residual was
+`main()`, now a `private` entry point. It also adds `-enable-private-imports` to Revisit if. None of
+this changes the decision.
 
 ## Assumptions and what would invalidate them
 

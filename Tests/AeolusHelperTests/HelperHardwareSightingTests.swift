@@ -108,7 +108,9 @@ private struct SightingRig {
         self.probe = probe
         let scheduler = SMCReadScheduler(
             provider: SMCSensorProvider(connection: connection), observer: probe)
-        let plane = SMCFanControlPlane(scheduler: scheduler, connection: connection)
+        let plane = SMCFanControlPlane(
+            scheduler: scheduler, connection: SMCConnectionRecycler(connection: connection))
+        try #require(!plane.holdsWriteChannel, "a plane over the real SMC holds a write channel")
         let critical = CriticalSensorSet.resolve(for: HardwareIdentity.current())
         try #require(!critical.isEmpty, "no curated critical set on the machine it was cut for")
         curated = CuratedCriticalTemperatures(

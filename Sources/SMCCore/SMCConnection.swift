@@ -691,8 +691,10 @@ public actor SMCConnection {
     ///   `AeolusHelper.WriteSeamReachability` for the probe that proves the level in the
     ///   build that ships the helper.
     ///
-    ///   Nothing in the helper calls this: the helper's write capability is still `.notBuilt`,
-    ///   and `WritePathAbsenceTests.helperNeverCallsWrite` holds it to that. Widening this —
+    ///   The helper calls this in one place, its daemon's `private` forwarder
+    ///   (`DaemonWriteChannel`), and nothing invokes the forwarder: the plane's write capability
+    ///   is still `.notBuilt`, and `WritePathAbsenceTests.helperNeverCallsWrite` holds the helper
+    ///   to that one call. Widening this —
     ///   to plain `public`, or by adding a third member to the group — is a safety review
     ///   under `docs/SAFETY.md`, not a refactor.
     @_spi(FanWrite) public func write(_ bytes: [UInt8], to key: SMCKey) throws {
