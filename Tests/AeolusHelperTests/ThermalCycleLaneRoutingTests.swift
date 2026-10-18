@@ -196,6 +196,29 @@ struct ThermalCycleLaneRoutingTests {
             "§ 3's read was granted at \(grants.dropFirst(flight.count))")
     }
 
+    /// § 3's writes in a firing cycle — its bridge job and its revocation's restore — are all in
+    /// the lane: a fan level 6 holds is bridged and handed back at § 3's admission.
+    ///
+    /// **Mutation:** in `HelperComposition.init`, give § 3 `SafetyActorWriter(plane: plane,
+    /// level: .thermalEmergency)`. Run: red — the bridge job is admitted at `.supervisor`.
+    @Test("A firing cycle's bridge and its revocation's restore are in the lane")
+    func aFiringCyclesWritesAreInTheLane() async throws {
+        let machine = await Machine(stages: [Self.nominal, .at(96)], fans: 1)
+        let id = try await machine.lease([0])
+        try await machine.helper.authority.apply(
+            [FanSetting(fanIndex: 0, control: .fixed(rpm: 2_400))], leaseID: id,
+            from: machine.holder)
+        await machine.firmware.advance()
+
+        let firing = await machine.calls { await machine.helper.thermalEmergency.cycle() }
+
+        #expect(firing.contains { $0.attempt == .bridgeThenRestore(fan: 0, rpm: 5_777) })
+        #expect(
+            firing.contains { $0.attempt == .restoreToAutomatic(.fan(0)) },
+            "the revocation restored nothing")
+        #expect(Self.admissions(firing) == [.thermalCycle], "the firing cycle: \(firing)")
+    }
+
     // MARK: - L5
 
     /// § 3's revocation, with every handback refused: each of the three attempts on each fan is

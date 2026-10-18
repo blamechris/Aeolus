@@ -205,75 +205,6 @@ actor ScriptedFirmware {
         case failed(reason: String)
     }
 
-    /// Whether rebuilding the connection works this stage.
-    ///
-    /// The default is `.refused`, and until #168 the reason was that this matched
-    /// `SMCFanControlPlane.reconnect()`, which had no body. It has one now, so the default
-    /// is a *scenario* choice rather than a mirror of the build: every stage that defaults
-    /// here is a § 5 blindness scenario, and the point of those is that the restore happens
-    /// whether or not the reconnect worked. A default of `.succeeded` would quietly make
-    /// every one of them test the easy branch.
-    enum ReconnectBehaviour: Sendable, Hashable {
-        /// The call returns. It says nothing about whether reads now work — that is
-        /// `ReadBehaviour`'s, on this stage or the next.
-        case succeeded
-        case refused(reason: String)
-    }
-
-    /// What the firmware does with a control write this stage.
-    ///
-    /// Three states on one axis, which is what makes a scenario readable. `.reverted` is
-    /// the reclamation signal `SAFETY.md` §5 exists for, and it applies to restore writes
-    /// too: firmware that accepts a restore and leaves the fan manual is the one case
-    /// [ADR 0007](../../docs/ADR/0007-safety-composition.md) names as defeating everything
-    /// in E5, so it must be scriptable rather than assumed away.
-    enum WriteBehaviour: Sendable, Hashable {
-        /// The write lands and reads back.
-        case honoured
-        /// The firmware refuses it. Nothing changes and the call throws.
-        case refused(reason: String)
-        /// The firmware accepts the write and then discards it: the call succeeds and the
-        /// fan keeps the state it had. Nothing but a read-back can tell the difference,
-        /// which is exactly why the watchdog compares against what it last commanded.
-        ///
-        /// **A target write is held at the command's in-turn read-back and discarded after it**
-        /// (#9; ADR 0014's B1 amendment). B1's command turn reads `F<n>Tg` back before it
-        /// returns, so a target dropped before that read is a command that throws
-        /// (`Stage.targetsNotHeldAtReadBack`); this is the firmware that drops it later, so the
-        /// command returns the requested value and only a later read sees the old one. A mode
-        /// write is discarded before an engagement's own read-back, which reads the mode it had.
-        case reverted
-    }
-
-    /// How the firmware answers an engagement's mode writes on an honoured stage: the unlock
-    /// model ([ADR 0014](../../docs/ADR/0014-apple-silicon-unlock.md) D3), every case a
-    /// hypothesis the hardware runs will confirm or refute.
-    enum UnlockBehaviour: Sendable, Hashable {
-        /// A naive `F<n>Md = 1` is accepted and applied: the system is not asserting control.
-        case naive
-        /// Refuse-then-yield: every mode write is answered `0x82` until the force key is set,
-        /// and `stepsToYield` more after that; then it is accepted and applied.
-        case heldUntilForced(stepsToYield: Int)
-        /// Every mode write is answered `0x82`, force key or not: the yield never arrives.
-        case neverYields
-        /// The mode write is answered with this code — neither `0x00` nor `0x82`.
-        case answers(code: UInt8)
-        /// The mode write is accepted and raw `F<n>Md` reads back this value: `0` is
-        /// accepted-not-applied (#291), anything but `1` is outside the hypothesis.
-        case readsBack(rawMode: UInt8)
-    }
-
-    /// One key write this plane received, whatever the firmware answered, in order.
-    enum KeyWrite: Sendable, Hashable {
-        /// `F<n>Md = value`.
-        case mode(fan: Int, value: UInt8)
-        /// `Ftst = value`.
-        case forceKey(UInt8)
-        /// `F<n>Tg = rpm`: a target command the plane admitted, so the write itself is observed
-        /// rather than only the attempt (ADR 0014's #410 ticket-and-seal amendment).
-        case target(fan: Int, rpm: Double)
-    }
-
     /// One fan as the firmware currently has it. Mutated by writes the firmware honours.
     struct FanCondition: Sendable, Hashable {
         var mode: FirmwareFanMode
@@ -369,6 +300,8 @@ actor ScriptedFirmware {
         case restoreToAutomatic(FanRestoreScope)
         case engageManualControl(fan: Int)
         case commandTarget(fan: Int, rpm: Double)
+        /// § 3's bridge job: `rpm` to `fan`, then its `.fan` restore (`bridgeTurn(_:at:)`).
+        case bridgeThenRestore(fan: Int, rpm: Double)
         case reconnect
     }
 
@@ -407,6 +340,10 @@ actor ScriptedFirmware {
     /// the force key — the instant a production restore's epoch bump can arrive from another
     /// thread mid-turn (ADR 0014 D3 step 3's re-check). See `duringNextModeWrite(_:)`.
     private var duringModeWrite: (@Sendable () -> Void)?
+
+    /// Run once, while the next bridge job waits for its turn: after its restore was requested and
+    /// before its turn's body (`duringNextBridgeWait(_:)`).
+    private var bridgeWait: (@Sendable () async -> Void)?
 
     /// The machine-wide Apple Silicon force key, `Ftst`, as the **firmware** holds it: set, or
     /// clear.
@@ -579,7 +516,7 @@ actor ScriptedFirmware {
         // waits for a scheduler turn between them — `PlaneWriteLedger` keeps them apart, and
         // decides the plan and the exit's seal by scope, so this plane and B1's cannot differ.
         ledger.restoreRequested(scope)
-        try ledger.plan(for: scope).attemptEvery { write in try applyRestoreWrite(write) }
+        try issueRestore(scope)
     }
 
     /// A target command, admitted first in its turn: once the exit's restore has been requested the
@@ -590,8 +527,23 @@ actor ScriptedFirmware {
     func commandTarget(
         _ target: AuthorisedFanTarget, at admission: PlaneAdmission = .supervisor
     ) async throws -> CommandedTarget {
+        record(.commandTarget(fan: target.fanIndex, rpm: target.rpm), at: admission)
+        return try issueCommand(target)
+    }
+
+    /// § 3's bridge job's turn (`ScriptedControlPlane.bridgeThenRestore(_:)` requested the
+    /// restore before it): the command's body, then the `.fan` restore's, the second whatever the
+    /// first answered, in this one actor step — the shape B1's job has in one write turn.
+    func bridgeTurn(_ target: AuthorisedFanTarget, at admission: PlaneAdmission) -> BridgeOutcome {
+        record(.bridgeThenRestore(fan: target.fanIndex, rpm: target.rpm), at: admission)
+        return BridgeOutcome.attempting(
+            maximum: { try issueCommand(target) },
+            thenRestore: { try issueRestore(.fan(target.fanIndex)) })
+    }
+
+    /// The command turn's body: admitted first, then the write and its in-turn read-back.
+    private func issueCommand(_ target: AuthorisedFanTarget) throws -> CommandedTarget {
         let index = target.fanIndex
-        record(.commandTarget(fan: index, rpm: target.rpm), at: admission)
         try ledger.admitCommand()
         _ = try condition(ofFan: index)
         keyWrites.append(.target(fan: index, rpm: target.rpm))
@@ -600,6 +552,11 @@ actor ScriptedFirmware {
         // (`.reverted`). The number the watchdog compares a later read-back against is what was
         // commanded, not what the fan ended up holding — otherwise reversion would be invisible.
         return CommandedTarget(fanIndex: index, rpm: target.rpm)
+    }
+
+    /// The restore turn's body: the ledger's plan for `scope`, every write attempted.
+    private func issueRestore(_ scope: FanRestoreScope) throws {
+        try ledger.plan(for: scope).attemptEvery { write in try applyRestoreWrite(write) }
     }
 
     // MARK: - Shared rules
@@ -983,5 +940,17 @@ extension ScriptedFirmware {
     fileprivate func record(_ attempt: Attempt, at admission: PlaneAdmission) {
         attempts.append(attempt)
         admittedAttempts.append(AdmittedAttempt(attempt: attempt, admission: admission))
+    }
+
+    /// Runs `effect` once, while the next bridge job waits for its turn: the instant B1's job is
+    /// queued behind another turn, with its restore already requested.
+    func duringNextBridgeWait(_ effect: @escaping @Sendable () async -> Void) {
+        bridgeWait = effect
+    }
+
+    /// The effect `duringNextBridgeWait(_:)` installed, cleared as it is taken.
+    func takeBridgeWait() -> (@Sendable () async -> Void)? {
+        defer { bridgeWait = nil }
+        return bridgeWait
     }
 }

@@ -308,6 +308,27 @@ protocol FanControlPlane: FanStateSensing, FanWriteCapabilityReporting, Keystone
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget
 
+    /// `docs/SAFETY.md` § 3's bridge for one fan, as **one job**: `target` — the fan's maximum,
+    /// from § 3's writer — and then `restoreToAutomatic(.fan(target.fanIndex))`, both attempted
+    /// and both reported
+    /// ([ADR 0012](../../docs/ADR/0012-a-round-trip-that-does-not-return-ends-the-helper.md)'s
+    /// 2026-10-18 amendment).
+    ///
+    /// **Its order.** The `.fan(n)` restore is **requested first**, synchronously and before the
+    /// job waits for its turn (`ledger.restoreRequested(_:)`, D4), so an engagement that took its
+    /// ticket before the bridge was called writes nothing after it. Then, inside one turn, the
+    /// command's body — `ledger.admitCommand()` first, so the exit's seal still refuses it — and
+    /// the restore's body, `ledger.plan(for:)`, each attempted whatever the other answered
+    /// (`BridgeOutcome.attempting(maximum:thenRestore:)`). Nothing inside the turn suspends. It
+    /// never throws: a half that failed is a `.failure` in the outcome.
+    ///
+    /// Only § 3 calls it, through `SafetyActorWriter.bridgeToMaximumThenRestore(of:)`, and
+    /// `GovernedFanWriter` declares no such verb, so § 8's ramp governor cannot reach it. A
+    /// contract B1's plane implements with the command turn's and the restore turn's bodies and
+    /// no second copy of either; on this build nothing writes, and a plane that cannot write
+    /// refuses both halves without reading.
+    func bridgeThenRestore(_ target: AuthorisedFanTarget) async -> BridgeOutcome
+
     // MARK: - Bring-up
 
     /// The write path's preparation step, run once by `HelperComposition.bringUp()` between

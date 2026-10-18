@@ -12,7 +12,8 @@ import Testing
 /// [#120](https://github.com/blamechris/Aeolus/issues/120) predicted the failure and
 /// [#141](https://github.com/blamechris/Aeolus/issues/141) recorded it arriving: by the time
 /// #136 landed, **three** write verbs matched none of the three stems —
-/// `SafetyActorWriter.command(_:of:)`, `SafetyActorWriter.commandMaximum(of:)`, and
+/// `SafetyActorWriter.command(_:of:)`, `SafetyActorWriter.commandMaximum(of:)` (since #332 the
+/// bridge verb `bridgeToMaximumThenRestore(of:)`), and
 /// `GovernedFanWriter.command(towards:of:since:)`. Every tripwire stayed green while the
 /// unseen population grew to be the majority.
 ///
@@ -206,8 +207,11 @@ struct WriteVerbAllowlistTests {
     ///
     /// - `FanControlPlane` / `SMCFanControlPlane`: `commandTarget(_:)` and
     ///   `engageManualControl(of:)` are the seam itself — the protocol requirement and its
-    ///   production conformer.
-    /// - `SafetyWriters`: `commandMaximum(of:)` is § 3's emergency write; `command(_:of:)`
+    ///   production conformer. `bridgeThenRestore(_:)` is § 3's bridge job (ADR 0012's
+    ///   2026-10-18 amendment): the permit's target, then the `.fan` restore of the permit's own
+    ///   fan, so the restore it carries can name no fan but the one the permit was minted for.
+    /// - `SafetyWriters`: `bridgeToMaximumThenRestore(of:)` is § 3's emergency write, the bridge
+    ///   job at the permit's highest commandable speed; `command(_:of:)`
     ///   is § 5's bounded re-assert, which needs the number it last commanded rather than
     ///   the loudest one; `engageManualControl(of:)` is the step an engagement driver takes,
     ///   § 5's and level 6's; `command(towards:of:since:)` is the control loop's governed step,
@@ -240,12 +244,14 @@ struct WriteVerbAllowlistTests {
     private static let permitBearingVerbs: Set<String> = [
         "FanControlPlane.swift: commandTarget(_: AuthorisedFanTarget)",
         "FanControlPlane.swift: engageManualControl(of: CommandableFan)",
+        "FanControlPlane.swift: bridgeThenRestore(_: AuthorisedFanTarget)",
         "SMCFanControlPlane.swift: commandTarget(_: AuthorisedFanTarget)",
         "SMCFanControlPlane.swift: engageManualControl(of: CommandableFan)",
+        "SMCFanControlPlane.swift: bridgeThenRestore(_: AuthorisedFanTarget)",
         "SafetyWriters.swift: command(_: Double, of: CommandableFan)",
         "SafetyWriters.swift: command(towards: Double, of: CommandableFan, since: Duration)",
         "SafetyWriters.swift: hold(_: Double, of: CommandableFan)",
-        "SafetyWriters.swift: commandMaximum(of: CommandableFan)",
+        "SafetyWriters.swift: bridgeToMaximumThenRestore(of: CommandableFan)",
         "SafetyWriters.swift: engageManualControl(of: CommandableFan)",
         "FanWriteAuthorisation.swift: target(for: Double)",
         "ThermalEmergency.swift: manualControlEngaged(_: CommandableFan)",

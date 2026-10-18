@@ -785,7 +785,7 @@ actor ThermalEmergency<Plane: FanControlPlane> {
     /// Bridges one fan, then files it as restored by § 3 — **unless it was engaged again
     /// while the bridge awaited** (#305).
     ///
-    /// The bridge is two writes, and this actor is reentrant across both. A
+    /// The bridge is one plane job of two writes, and this actor is reentrant across it. A
     /// `manualControlEngaged(_:)` for the same fan that lands after the restore write is a
     /// client taking the fan off automatic *after* § 3 put it back, and filing the fan as
     /// restored would forget that newer registration: take-back reads only `engagedFans`, so
@@ -811,25 +811,28 @@ actor ThermalEmergency<Plane: FanControlPlane> {
         restoredByEmergency(fan)
     }
 
-    /// One fan: maximum in a single write, then back to automatic.
+    /// One fan: maximum in a single write, then back to automatic — one plane job, in one turn
+    /// of § 3's lane (`SafetyActorWriter.bridgeToMaximumThenRestore(of:)`, ADR 0012's
+    /// 2026-10-18 amendment).
     ///
-    /// Neither failure stops the other. A firmware that refuses the maximum write is
-    /// exactly the machine that most needs the restore attempted, and swallowing either
-    /// error would convert "the fans are still pinned" into "the emergency completed" —
-    /// the inversion this subsystem exists to prevent, which is why this repository's
-    /// `no_silent_write_failure` rule refuses `try?` outright.
+    /// Neither failure stops the other, and both are reported. A firmware that refuses the
+    /// maximum write is exactly the machine that most needs the restore attempted, so the plane
+    /// attempts the restore whatever the command answered (`BridgeOutcome`), and swallowing
+    /// either error here would convert "the fans are still pinned" into "the emergency
+    /// completed" — the inversion this subsystem exists to prevent, which is why this
+    /// repository's `no_silent_write_failure` rule refuses `try?` outright.
     private func bridgeToMaximumThenRelease(_ fan: CommandableFan) async {
-        do {
-            let commanded = try await writer.commandMaximum(of: fan)
+        let outcome = await writer.bridgeToMaximumThenRestore(of: fan)
+
+        switch outcome.maximum {
+        case .success(let commanded):
             log.emergencyCommandedMaximum(fan: fan.index, rpm: commanded.rpm)
-        } catch {
+        case .failure(let error):
             log.emergencyWriteFailed(
                 verb: "command maximum on", fan: fan.index, detail: String(describing: error))
         }
 
-        do {
-            try await writer.restoreToAutomatic(.fan(fan.index))
-        } catch {
+        if case .failure(let error) = outcome.restore {
             log.emergencyWriteFailed(
                 verb: "restore", fan: fan.index, detail: String(describing: error))
         }

@@ -109,6 +109,16 @@ struct ScriptedControlPlane: FanControlPlane {
         try await firmware.commandTarget(target, at: admission)
     }
 
+    /// § 3's bridge as B1's plane will run it: the `.fan` restore **requested first**,
+    /// synchronously, before the job waits for its turn (D4), then the job's turn as one firmware
+    /// step (`ScriptedFirmware.bridgeTurn(_:at:)`). Between the two is the wait a scenario can act
+    /// inside (`duringNextBridgeWait(_:)`).
+    func bridgeThenRestore(_ target: AuthorisedFanTarget) async -> BridgeOutcome {
+        ledger.restoreRequested(.fan(target.fanIndex))
+        if let wait = await firmware.takeBridgeWait() { await wait() }
+        return await firmware.bridgeTurn(target, at: admission)
+    }
+
     func prepareWritePath(enumerating fans: any FanEnumerating) async -> WritePathPreparation? {
         await firmware.prepareWritePath(enumerating: fans)
     }
@@ -155,6 +165,10 @@ struct ScriptedControlPlane: FanControlPlane {
         try await firmware.ticketedStep(of: fan)
     }
 
+    func duringNextBridgeWait(_ effect: @escaping @Sendable () async -> Void) async {
+        await firmware.duringNextBridgeWait(effect)
+    }
+
     static func readback(_ value: Double, describing what: String) -> FanRPMReadback {
         ScriptedFirmware.readback(value, describing: what)
     }
@@ -175,6 +189,26 @@ protocol AdmissionBlindPlane: FanControlPlane {}
 
 extension AdmissionBlindPlane {
     func admitted(at admission: PlaneAdmission) -> Self { self }
+
+    /// § 3's bridge through this double's own two verbs, in order, the second whatever the first
+    /// answered — so a double that scripts an interleaving in `commandTarget(_:)` or
+    /// `restoreToAutomatic(_:)` still sees § 3's halves there. Two calls, not one job: a double
+    /// that is about the job's order implements the verb itself.
+    func bridgeThenRestore(_ target: AuthorisedFanTarget) async -> BridgeOutcome {
+        let maximum: Result<CommandedTarget, any Error>
+        do {
+            maximum = .success(try await commandTarget(target))
+        } catch {
+            maximum = .failure(error)
+        }
+        let restore: Result<Void, any Error>
+        do {
+            restore = .success(try await restoreToAutomatic(.fan(target.fanIndex)))
+        } catch {
+            restore = .failure(error)
+        }
+        return BridgeOutcome(maximum: maximum, restore: restore)
+    }
 }
 
 /// The write permit for one of a scripted machine's own fans.

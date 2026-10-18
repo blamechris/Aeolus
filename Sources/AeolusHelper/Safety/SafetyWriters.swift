@@ -20,13 +20,14 @@ import FanKit
 // paragraph overstating it.** Two halves, and only the first is what "by construction"
 // means here:
 //
-//  1. **Compile time.** `GovernedFanWriter` declares neither `commandMaximum(of:)` nor
-//     `restoreToAutomatic(_:)`. Pointing `ThermalEmergency.writer` at one therefore does
-//     not compile at all until somebody deliberately adds both verbs. That is the strong
-//     half, and it is stronger than any runtime check.
+//  1. **Compile time.** `GovernedFanWriter` declares neither § 3's bridge,
+//     `bridgeToMaximumThenRestore(of:)`, nor `restoreToAutomatic(_:)`. Pointing
+//     `ThermalEmergency.writer` at one therefore does not compile at all until somebody
+//     deliberately adds both verbs. That is the strong half, and it is stronger than any
+//     runtime check. `ThermalEmergencyBridgeTests` holds the absence at the source.
 //  2. **Behaviour.** The mutation that turns a test red is injecting a governor into
-//     `SafetyActorWriter.commandMaximum(of:)` below: the bridge then writes one 200 RPM/s
-//     step instead of the fan's maximum, and
+//     `SafetyActorWriter.bridgeToMaximumThenRestore(of:)` below: the bridge then writes one
+//     200 RPM/s step instead of the fan's maximum, and
 //     `ThermalEmergencyTests.theEmergencyReachesMaximumInOneWrite` fails **on the RPM
 //     value**.
 //
@@ -60,8 +61,8 @@ import FanKit
 ///
 /// ## What it still cannot do
 ///
-/// It does not widen anything. `commandMaximum(of:)` takes a `CommandableFan`, so a fan
-/// whose declared bounds failed the plausibility gate cannot be commanded through here
+/// It does not widen anything. `bridgeToMaximumThenRestore(of:)` takes a `CommandableFan`, so
+/// a fan whose declared bounds failed the plausibility gate cannot be commanded through here
 /// either — § 2's closing rule, that the only action such a fan is subject to is the
 /// bounds-free restore verb, holds for safety actors exactly as it holds for the control
 /// loop. Bypassing § 8 is not bypassing § 2, and conflating those two would be ADR 0007's
@@ -71,8 +72,9 @@ import FanKit
 ///
 /// The conformance is its existing restore verb. § 7's panic verb is handed one of these at
 /// `.panicRestore`, **typed as the role** (`SupervisedFanAuthority`, ADR 0014 D5): only that
-/// role is restore-only. This type still has `commandMaximum(of:)`, `command(_:of:)` and
-/// `engageManualControl(of:)`, and anything holding it by its own type can call them. The
+/// role is restore-only. This type still has `bridgeToMaximumThenRestore(of:)`,
+/// `command(_:of:)` and `engageManualControl(of:)`, and anything holding it by its own type can
+/// call them. The
 /// level is provenance only; nothing reads it. It is not a writing protocol shared with
 /// `GovernedFanWriter`, which still declares no restore verb, so the exclusion above stands.
 struct SafetyActorWriter<Plane: FanControlPlane>: KeystoneRestoring {
@@ -99,25 +101,27 @@ struct SafetyActorWriter<Plane: FanControlPlane>: KeystoneRestoring {
         SafetyActorWriter(plane: plane.admitted(at: admission), level: level)
     }
 
-    /// Commands this fan's highest commandable speed, as **one** write.
+    /// § 3's bridge for one fan: its highest commandable speed as **one** write, then back to
+    /// automatic, as one plane job (`FanControlPlane.bridgeThenRestore(_:)`, ADR 0012's
+    /// 2026-10-18 amendment).
     ///
     /// `docs/SAFETY.md` § 3's emergency is the caller this exists for. It needs no read to
     /// do it: `CommandableFan` already carries the gated envelope from the read that minted
     /// it, and `FanWriteAuthorisation.swift` documents that permits deliberately do not
     /// expire precisely so this call is available while the machine is above ceiling and
-    /// reading may be the thing that has failed.
+    /// reading may be the thing that has failed. The target is clamped through the permit like
+    /// every other write here, and nothing governs it.
     ///
-    /// - Returns: what was put on the wire, for the reclamation watchdog to compare a later
-    ///   read-back against ([#126](https://github.com/blamechris/Aeolus/issues/126)).
-    @discardableResult
-    func commandMaximum(of fan: CommandableFan) async throws -> CommandedTarget {
-        try await command(fan.envelope.highestCommandableRPM, of: fan)
+    /// - Returns: both halves' results. The command's carries what was put on the wire, for
+    ///   the log; the restore is attempted whatever the command answered.
+    func bridgeToMaximumThenRestore(of fan: CommandableFan) async -> BridgeOutcome {
+        await plane.bridgeThenRestore(fan.target(for: fan.envelope.highestCommandableRPM))
     }
 
     /// Commands a particular speed, as **one** write.
     ///
-    /// `docs/SAFETY.md` § 5's bounded re-assert is the caller this exists for:
-    /// `commandMaximum(of:)` is the wrong verb there, because a watchdog re-asserting a
+    /// `docs/SAFETY.md` § 5's bounded re-assert is the caller this exists for: § 3's bridge to
+    /// maximum is the wrong verb there, because a watchdog re-asserting a
     /// user's 2,400 RPM by writing 5,777 would take a reclamation and answer it with a
     /// noise complaint. Level 3 needs the number it last commanded, not the loudest one.
     ///
@@ -126,8 +130,8 @@ struct SafetyActorWriter<Plane: FanControlPlane>: KeystoneRestoring {
     /// as they bind every other write in the project. There is one clamp and this is not a
     /// second one.
     ///
-    /// `commandMaximum(of:)` is now written in terms of this rather than beside it, so the
-    /// two cannot come to disagree about what a safety-actor write does to a permit.
+    /// Both clamp through `CommandableFan.target(for:)`, so the bridge and this cannot come to
+    /// disagree about what a safety-actor write does to a permit.
     @discardableResult
     func command(_ requestedRPM: Double, of fan: CommandableFan) async throws -> CommandedTarget {
         try await plane.commandTarget(fan.target(for: requestedRPM))

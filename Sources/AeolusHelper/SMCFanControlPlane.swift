@@ -5,7 +5,8 @@ import SMCCore
 /// ## The write side is modelled and unimplemented, deliberately
 ///
 /// `engageManualControl(of:)`, `commandTarget(_:)` and `restoreToAutomatic(_:)`
-/// all throw `FanControlPlaneError.controlPathNotBuilt`. That is not a stub waiting to be
+/// all throw `FanControlPlaneError.controlPathNotBuilt`, and `bridgeThenRestore(_:)` reports it
+/// for both halves. That is not a stub waiting to be
 /// filled in by whoever gets here next — it is the ordering `CLAUDE.md` rule 1 mandates.
 /// E5 is the epic that gates E3 and E4, so it may not pre-empt them: `SMCConnection.write`
 /// stays behind the `FanWrite` SPI group and keeps throwing, and no write selector exists
@@ -283,6 +284,15 @@ struct SMCFanControlPlane: FanControlPlane {
     @discardableResult
     func commandTarget(_ target: AuthorisedFanTarget) async throws -> CommandedTarget {
         throw FanControlPlaneError.controlPathNotBuilt
+    }
+
+    /// Refuses both halves **without reading anything**, and without requesting the restore: a
+    /// plane that cannot write has no ledger to request it in. B1's body is the command turn's and
+    /// the `.fan(n)` restore turn's, in one job (see the requirement).
+    func bridgeThenRestore(_ target: AuthorisedFanTarget) async -> BridgeOutcome {
+        BridgeOutcome.attempting(
+            maximum: { throw FanControlPlaneError.controlPathNotBuilt },
+            thenRestore: { throw FanControlPlaneError.controlPathNotBuilt })
     }
 
     /// Does nothing, and that is the requirement on a plane that cannot write: no enumeration,
