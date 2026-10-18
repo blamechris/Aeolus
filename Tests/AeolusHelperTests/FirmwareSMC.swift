@@ -94,8 +94,8 @@ actor FirmwareSMC: SMCWriteChannel {
     }
 
     /// The byte-level unlock rule: how a non-zero `F<n>Md` write with nothing queued for its key is
-    /// answered. **The scripted plane's own type**, so one scenario configures both planes and b2's
-    /// contract suite runs it over each:
+    /// answered. **The scripted plane's own type**, so one scenario configures both planes and a
+    /// contract suite can run it over each:
     /// - `.naive` — the default write answer;
     /// - `.heldUntilForced(stepsToYield:)` — `0x82` until `Ftst` reads `1`, then `stepsToYield`
     ///   more, then the default write answer; clearing `Ftst` starts the count again;

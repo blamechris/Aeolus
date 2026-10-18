@@ -726,7 +726,9 @@ extension HelperComposition where Plane == SMCFanControlPlane {
     /// `swift test` on the development machine, bring-up and teardown included — therefore gets a
     /// plane holding no channel, which cannot write once the plane can, rather than one that can.
     /// A wrong default fails safe in either direction: `.withheld` here leaves the daemon unable
-    /// to write, and `ProductionWritePathTests` fails on any other default.
+    /// to write, `ProductionWritePathTests` fails on any other default, and a test composing the
+    /// real SMC is required `.notBuilt` before it drives the graph
+    /// (`NotBuiltRequireTripwireTests`).
     ///
     /// The channel, when given, is `connection` — the local the provider reads through and the
     /// plane recycles — for the reason that paragraph gives above. On this build it changes
@@ -767,7 +769,7 @@ extension HelperComposition where Plane == SMCFanControlPlane {
 /// Named for the path rather than for a mode, because it is not one: no runtime check reads it,
 /// nothing in a snapshot reports it, and the only thing it decides is whether the plane holds the
 /// channel. `HelperComposition.production` defaults it to `.withheld`, and `AeolusHelperMain`
-/// passes `.connection`.
+/// passes `.connection` — the one place anything may (`ProductionWritePathTripwireTests`).
 enum ProductionWritePath: Sendable {
 
     /// The plane holds no channel, so it can never write — every composition but the daemon's.

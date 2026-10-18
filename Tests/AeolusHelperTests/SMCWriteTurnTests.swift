@@ -63,7 +63,7 @@ struct SMCWriteTurnTests {
 
     // MARK: - Walks
 
-    /// B5. The walk is parked inside the fake, so it is in flight for the scheduler — counted, as a
+    /// The walk is parked inside the fake, so it is in flight for the scheduler — counted, as a
     /// real one is — for as long as this test says.
     ///
     /// **Mutation:** build `withWriteTurn` on `withExclusiveAccess(_:)`. Run: red — the turn

@@ -416,6 +416,12 @@ struct HelperHardwareTests {
         // suite's header names, and this test is the only one here that starts any.
         do {
             let bringUpStarted = ContinuousClock.now
+            // Rule zero: no test writes to this Mac's SMC. Bring-up runs the preparation step and
+            // reconciliation over the real plane, and on a plane that can write both write. The
+            // composition withholds the channel (`production`'s default); this is the second
+            // layer, which catches that default having been changed. Immediately before the call,
+            // so nothing between them can change the answer — `NotBuiltRequireTripwireTests`.
+            try #require(helper.plane.writeCapability == .notBuilt, "bring-up would write the SMC")
             await helper.bringUp()
             let broughtUp = ContinuousClock.now - bringUpStarted
 
@@ -477,6 +483,10 @@ struct HelperHardwareTests {
         //
         // It also doubles as this test's `shutDown()`: stopping the supervisors is the
         // teardown's own fourth step, and running it here rather than beside it is the point.
+        //
+        // The teardown issues the exit keystone, `F<n>Md = 0` and `Ftst = 0`, on a plane that can
+        // write: rule zero's second layer again, for the same reason as before bring-up.
+        try #require(helper.plane.writeCapability == .notBuilt, "the teardown would write the SMC")
         await helper.signalTeardown.run(stoppingSupervisorsWith: { await helper.shutDown() })
 
         #expect(
