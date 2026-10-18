@@ -146,16 +146,17 @@ claims more.
   `[lowest, highest]` (`0rpm` included) is exit 2 and never clamped on the client.
 - **A covered fan the snapshot no longer reports** ends the hold as a loss (6). The contract's
   list names `isReclaimedBySystem`; a fan that is simply absent cannot be called held.
-- **Exit 6 once the hold is under way skips the safe-state check.** There is nothing to confirm
-  a return to after a loss the helper reported, the check can take its whole ten-second window
-  against a thermal emergency that will not clear, and `fanctl auto` is the way to ask. The
-  ordinary endings (`--for`, a signal, a parent that exited, a standard output that stopped
-  draining) run it, **and so does every outcome before `started`**: an `apply` that was refused
-  or got no answer, a lease that could no longer be shown to be held, a confirming snapshot that
-  failed or showed no hold, a keeper that could not pace itself (*amended 2026-10-18*, below).
-  The first version skipped it for a refused `apply`, on the assumption that a refusal changed
-  nothing, and for a confirming snapshot that showed no hold, on the assumption that the helper's
-  own report of "not held" meant there was nothing to look at.
+- **Every ending and every loss releases the lease and checks the safe state.** The ordinary
+  endings (`--for`, a signal, a parent that exited, a standard output that stopped draining) ran
+  it from the first version. *Amended 2026-10-18, below:* so does **every outcome before
+  `started`** (an `apply` that was refused or got no answer, a lease that could no longer be
+  shown to be held, a confirming snapshot that failed or showed no hold, a keeper that could not
+  pace itself) and **every loss once the hold is under way** (a renewal refused, a snapshot that
+  does not list the lease, a fan reclaimed or without a held target at a heartbeat, a thermal
+  emergency). The first version skipped it for a loss and for a refused `apply`, on the
+  assumption that there was nothing to confirm a return to and that the check can take its whole
+  ten-second window against a thermal emergency that will not clear; both assumptions are
+  withdrawn.
 - **A lease still listed when the check ends is 8, not 5.** `auto` maps it to 5 to name the
   holder; for `set` the lease may be its own (the release did not take), and the message says
   whose it is.
@@ -221,7 +222,7 @@ claims more.
   state of the lease and the fans is unknown; `snapshotFollowsRelease: false` in `--json` says the
   same of the data.
 
-*Amended 2026-10-18 ([#324](https://github.com/blamechris/Aeolus/pull/324), fix rounds 1 and 2).*
+*Amended 2026-10-18 ([#324](https://github.com/blamechris/Aeolus/pull/324), fix rounds 1 to 3).*
 Two independent reviews of the carried `set` found that three things on `main` had changed underneath
 it: [#414](https://github.com/blamechris/Aeolus/issues/414) let `apply` take up to 57 seconds for
 one fan and 109 for two; level 6 (`LeaseApplier`) can engage a fan and then answer with a fault; and
@@ -313,10 +314,20 @@ a hold earlier or says less.
      the check looked at, exit 6 or the check's verdict where that is worse, and "Nothing is held"
      is not said unless the check confirmed it. A keeper that cannot pace itself is 6 here (it was
      1): control could no longer be shown to be held.
-   - *Left as it is.* A loss once the hold is under way (a renewal refused, a snapshot that does
-     not list the lease, a fan reclaimed or without a held target at a heartbeat, a thermal
-     emergency) still skips the check and still says the process holds nothing once the release
-     is accepted; the same failure is possible there, and this amendment does not change it.
+   - *And so does every loss once the hold is under way* (fix round 3): a renewal refused, a
+     snapshot that does not list the lease, a fan reclaimed or without a held target at a
+     heartbeat, a thermal emergency, and the hold's own timer failing. This **reverses** the
+     original point that "exit 6 skips the safe-state check", and the reason is the same as for
+     B1 moved into the hold: a fan is engaged, the release is accepted, its restore is refused,
+     and `set` said "Nothing is held by this process now" while the fan stayed pinned. That is a
+     claim nothing observed (`CLAUDE.md` rule 6), made by the tool the first hardware run relies
+     on. The exit is 6, or the check's verdict where that is worse (9, then 8); the hold's own
+     timer is 1 in the same way. **"Nothing is held" is no longer said at all:** the only
+     confirmation is the check's own sentence, in the helper's voice. The original reason for
+     skipping the check against a thermal emergency, that it would spend its ten-second window,
+     does not hold: waiting costs the fans nothing, because § 3 is driving them either way, and
+     an honest 8 or 9 is worth ten seconds. During an emergency the text says that the helper's
+     thermal protection, not this run, is in control of the fans, and what the check saw.
 
 3. **"Holding" needs the helper's evidence that the fan is held.**
    - *The defect.* `loss(in:)` checked the lease ID, a thermal emergency, missing fans and the
