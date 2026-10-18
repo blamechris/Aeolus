@@ -57,7 +57,8 @@ struct WriteSeamSpellingTests {
 
     // MARK: - A bare write
 
-    /// **Mutation:** in `bareWrite`, drop the lookbehind on `.`. Run: red here, the member forms.
+    /// **Mutation:** in `bareWriteUses`, take every `write:` as a label, whatever precedes it. Run:
+    /// red here, at the ternary.
     @Test("A bare write taken as a value is a use, and a label, a call or a member is not")
     func bareWritesAreFound() throws {
         let uses = [

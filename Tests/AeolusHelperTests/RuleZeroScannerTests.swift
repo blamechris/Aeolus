@@ -133,6 +133,16 @@ struct RuleZeroScannerTests {
                 + "if Bool.random() { try #require(!helper.plane.holdsWriteChannel) }",
             "let helper = HelperComposition.production(log: log)\n"
                 + "Task { try #require(!helper.plane.holdsWriteChannel) }",
+            // The same blocks as formatted, where the `try` begins a line of its own and only
+            // the open brace says it can be swallowed or skipped.
+            "let helper = HelperComposition.production(log: log)\n"
+                + "do {\n    try #require(!helper.plane.holdsWriteChannel)\n} catch {}\n_ = helper.plane",
+            "let helper = HelperComposition.production(log: log)\n"
+                + "withKnownIssue {\n    try #require(!helper.plane.holdsWriteChannel)\n}",
+            "let helper = HelperComposition.production(log: log)\n"
+                + "if Bool.random() {\n    try #require(!helper.plane.holdsWriteChannel)\n}",
+            "let helper = HelperComposition.production(log: log)\n"
+                + "Task {\n    try #require(!helper.plane.holdsWriteChannel)\n}",
             // …or an argument, which an autoclosure can swallow.
             "let helper = HelperComposition.production(log: log)\n"
                 + "swallow(try #require(!helper.plane.holdsWriteChannel))",
